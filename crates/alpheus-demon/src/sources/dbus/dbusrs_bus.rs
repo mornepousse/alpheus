@@ -9,9 +9,9 @@
 
 use super::props::{Objects, Prop, Props};
 use super::tap::Tap;
-use super::wifi;
 use super::{BUS_DRIVER, BUS_DRIVER_PATH, Bus, Domain, OBJECT_MANAGER, PROPERTIES, Signal, UPOWER, bluez, network, upower};
-use crate::system::SavedWifi;
+use super::{vpn, wifi};
+use crate::system::Saved;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
 use dbus::channel::{BusType, Channel};
@@ -337,27 +337,85 @@ pub fn paths_reply(m: &Message) -> io::Result<Vec<String>> {
     Ok(v.into_iter().map(path_string).collect())
 }
 
-/// A `GetSettings` reply (`a{sa{sv}}`) as a Wi-Fi profile (`wifi::saved_wifi`): only its
-/// `connection` and `802-11-wireless` settings are decoded, every other setting skipped. This reply
-/// carries no secret (NetworkManager gives them only through GetSecrets, never called).
-pub fn settings_reply(m: &Message) -> io::Result<Option<SavedWifi>> {
+/// The most `vpn.data` entries walked in one profile: more is no plugin's.
+const MAX_VPN_DATA: usize = 256;
+
+/// A `GetSettings` reply (`a{sa{sv}}`) as a Wi-Fi profile (`wifi::saved_wifi`) or a VPN one
+/// (`vpn::saved_vpn`): the `connection`, `802-11-wireless`, `wireguard` and `vpn` settings are
+/// read, every other one skipped. Of `wireguard` only `private-key-flags`, of `vpn` only the
+/// `data` entries named `*-flags`, are decoded: whether a secret is asked, never a secret (nor any
+/// other value: skipped, never kept). NetworkManager gives secrets only through GetSecrets, never called.
+pub fn settings_reply(m: &Message) -> io::Result<Option<Saved>> {
     let mut it = m.iter_init();
     if sig(&mut it).as_deref() != Some("a{sa{sv}}") {
         return Err(unexpected("not a{sa{sv}}"));
     }
-    let (mut connection, mut wireless) = (None, None);
+    let (mut connection, mut wireless, mut asks) = (None, None, false);
     if let Some(mut settings) = it.recurse(ArgType::Array) {
         while let Some(mut entry) = settings.recurse(ArgType::DictEntry) {
             let name: &str = entry.read().map_err(|e| unexpected(&e.to_string()))?;
             match name {
                 "connection" => connection = Some(props(&mut entry)?),
                 "802-11-wireless" => wireless = Some(props(&mut entry)?),
+                "wireguard" => asks |= secret_flags(&mut entry, |k| k == "private-key-flags", false)?,
+                "vpn" => asks |= secret_flags(&mut entry, |k| k == "data", true)?,
                 _ => {}
             }
             settings.next();
         }
     }
-    Ok(wifi::saved_wifi(connection.as_ref(), wireless.as_ref()))
+    Ok(match (wifi::saved_wifi(connection.as_ref(), wireless.as_ref()), vpn::saved_vpn(connection.as_ref(), asks)) {
+        (Some(w), _) => Some(Saved::Wifi(w)),
+        (None, Some(v)) => Some(Saved::Vpn(v)),
+        (None, None) => None,
+    })
+}
+
+/// Whether a setting (`a{sv}` at `it`) asks for a secret: for `wireguard`, the one key `want`
+/// accepts, a `u`; for `vpn` (`nested`), the `a{ss}` under `data`, each `*-flags` value a decimal
+/// string. Only those values are read; the others are skipped.
+fn secret_flags(it: &mut Iter<'_>, want: impl Fn(&str) -> bool, nested: bool) -> io::Result<bool> {
+    if sig(it).as_deref() != Some("a{sv}") {
+        return Err(unexpected("not a{sv}"));
+    }
+    let mut asks = false;
+    let Some(mut entries) = it.recurse(ArgType::Array) else { return Ok(false) };
+    while let Some(mut entry) = entries.recurse(ArgType::DictEntry) {
+        let key: &str = entry.read().map_err(|e| unexpected(&e.to_string()))?;
+        if want(key) {
+            let mut value = entry.recurse(ArgType::Variant).ok_or_else(|| unexpected("a setting without a variant"))?;
+            if nested {
+                if sig(&mut value).as_deref() == Some("a{ss}") {
+                    asks |= data_flags(&mut value);
+                }
+            } else if let Prop::Int(n) = prop(&mut value) {
+                asks |= u32::try_from(n).is_ok_and(vpn::secret_asked);
+            }
+        }
+        entries.next();
+    }
+    Ok(asks)
+}
+
+/// `vpn.data` (`a{ss}` at `it`): true when one `*-flags` value asks for a secret.
+fn data_flags(it: &mut Iter<'_>) -> bool {
+    let mut asks = false;
+    let Some(mut pairs) = it.recurse(ArgType::Array) else { return false };
+    let mut walked = 0;
+    while walked < MAX_VPN_DATA {
+        let Some(mut pair) = pairs.recurse(ArgType::DictEntry) else { break };
+        if let Some(key) = pair.get::<&str>()
+            && key.ends_with("-flags")
+        {
+            pair.next();
+            if let Some(n) = pair.get::<&str>().and_then(|v| v.parse::<u32>().ok()) {
+                asks |= vpn::secret_asked(n);
+            }
+        }
+        walked += 1;
+        pairs.next();
+    }
+    asks
 }
 
 /// The keys of the `a{sv}` (or `a{sa{sv}}`) at `it`, values skipped.
@@ -551,7 +609,7 @@ impl Bus for DbusRsBus {
         paths_reply(&self.call(destination, wifi::SETTINGS_PATH, Method::ListConnections, None)?)
     }
 
-    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<Saved>> {
         settings_reply(&self.call(destination, path, Method::GetSettings, None)?)
     }
 
@@ -615,7 +673,7 @@ mod tests {
     use super::*;
     use crate::sources::dbus::busctl_wire::push_reply;
     use crate::sources::dbus::props::busctl;
-    use crate::system::SavedWifi;
+    use crate::system::{Saved, SavedWifi, VpnKind, VpnProfile};
 
     /// A message carrying a recorded reply, as the service would send it.
     fn recorded(json: &str) -> Message {
@@ -750,18 +808,98 @@ mod tests {
         assert_eq!(call_error(e, false).kind(), io::ErrorKind::UnexpectedEof);
     }
 
-    /// Quick Wi-Fi spec § 5: GetSettings' reply keeps the connection's uuid and type and the SSID;
-    /// the security setting (its key management, never a secret here) is never decoded.
+    /// A Wi-Fi profile still reads as before (quick Wi-Fi spec § 5): its uuid and the SSID, the
+    /// security setting never decoded; a wired one, neither Wi-Fi nor VPN, is dropped.
     #[test]
-    fn a_settings_reply_keeps_a_wifi_profiles_uuid_and_ssid_only() {
+    fn settings_reply_still_reads_wifi_and_drops_ethernet() {
         let wifi = r#"{"type":"a{sa{sv}}","data":[{"connection":{"id":{"type":"s","data":"Maison-Test"},"uuid":{"type":"s","data":"11111111-2222-4333-8444-555555555555"},"type":{"type":"s","data":"802-11-wireless"}},"802-11-wireless":{"ssid":{"type":"ay","data":[77,97,105,115,111,110,45,84,101,115,116]},"mode":{"type":"s","data":"infrastructure"}},"802-11-wireless-security":{"key-mgmt":{"type":"s","data":"wpa-psk"}},"ipv4":{"method":{"type":"s","data":"auto"}}}]}"#;
         assert_eq!(
             settings_reply(&recorded(wifi)).unwrap(),
-            Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Maison-Test".to_vec() })
+            Some(Saved::Wifi(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Maison-Test".to_vec() }))
         );
         let wired = r#"{"type":"a{sa{sv}}","data":[{"connection":{"uuid":{"type":"s","data":"aaaa"},"type":{"type":"s","data":"802-3-ethernet"}}}]}"#;
         assert_eq!(settings_reply(&recorded(wired)).unwrap(), None);
         assert!(settings_reply(&recorded(r#"{"type":"a{sv}","data":[{}]}"#)).is_err(), "not a{{sa{{sv}}}}: an error");
+    }
+
+    fn vpn_reply(kind: &str, sections: &str) -> Message {
+        let json = format!(
+            r#"{{"type":"a{{sa{{sv}}}}","data":[{{"connection":{{"id":{{"type":"s","data":"Travail-Test"}},"uuid":{{"type":"s","data":"11111111-2222-4333-8444-555555555555"}},"type":{{"type":"s","data":"{kind}"}},"timestamp":{{"type":"t","data":1700000000}}}}{sections}}}]}}"#
+        );
+        recorded(&json)
+    }
+
+    fn vpn(m: &Message) -> VpnProfile {
+        match settings_reply(m).unwrap() {
+            Some(Saved::Vpn(v)) => v,
+            other => panic!("not a VPN: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn settings_reply_reads_a_vpn_and_its_secret_flags() {
+        let data = |d: &str| {
+            format!(
+                r#","vpn":{{"service-type":{{"type":"s","data":"org.freedesktop.NetworkManager.openvpn"}},"data":{{"type":"a{{ss}}","data":{d}}}}}"#
+            )
+        };
+        let asked = vpn(&vpn_reply("vpn", &data(r#"{"password-flags":"1","remote":"vpn.example.test"}"#)));
+        assert_eq!(
+            asked,
+            VpnProfile {
+                uuid: "11111111-2222-4333-8444-555555555555".into(),
+                name: "Travail-Test".into(),
+                kind: VpnKind::Plugin,
+                last_used: 1700000000,
+                asks: true
+            }
+        );
+        assert!(!vpn(&vpn_reply("vpn", &data(r#"{"password-flags":"4"}"#))).asks);
+        assert!(!vpn(&vpn_reply("vpn", &data(r#"{"password-flags":"5"}"#))).asks);
+        assert!(!vpn(&vpn_reply("vpn", &data(r#"{"remote":"1"}"#))).asks);
+        assert!(!vpn(&vpn_reply("vpn", "")).asks);
+        assert!(vpn(&vpn_reply("vpn", &data(r#"{"cert-pass-flags":"0","password-flags":"2"}"#))).asks, "any key");
+        assert!(vpn(&vpn_reply("vpn", &data(r#"{"a-flags":"2","password-flags":"0"}"#))).asks, "an earlier key still counts");
+    }
+
+    /// Hostile shapes: no panic, no error, and nothing taken for a secret asked.
+    #[test]
+    fn settings_reply_survives_hostile_vpn_types() {
+        let sections = |s: &str| vpn(&vpn_reply("vpn", s));
+        // `data` as a{sv} instead of a{ss}.
+        let wrong = r#","vpn":{"data":{"type":"a{sv}","data":{"password-flags":{"type":"u","data":1}}}}"#;
+        assert!(!sections(wrong).asks);
+        // A non-numeric value, and a negative or oversized one.
+        for v in ["abc", "", "-1", "99999999999"] {
+            let d = format!(r#","vpn":{{"data":{{"type":"a{{ss}}","data":{{"password-flags":"{v}"}}}}}}"#);
+            assert!(!sections(&d).asks, "{v:?}");
+        }
+        // A string private-key-flags, and a negative one.
+        let s = r#","wireguard":{"private-key-flags":{"type":"s","data":"1"}}"#;
+        assert!(!vpn(&vpn_reply("wireguard", s)).asks);
+        let s = r#","wireguard":{"private-key-flags":{"type":"i","data":-1}}"#;
+        assert!(!vpn(&vpn_reply("wireguard", s)).asks);
+    }
+
+    #[test]
+    fn vpn_data_is_walked_to_256_entries_only() {
+        let entries = |n: usize, flag: &str| {
+            let mut e: Vec<String> = (0..n).map(|i| format!(r#""k{i}":"v""#)).collect();
+            e.push(format!(r#""x-flags":"{flag}""#));
+            let d = format!(r#","vpn":{{"data":{{"type":"a{{ss}}","data":{{{}}}}}}}"#, e.join(","));
+            vpn(&vpn_reply("vpn", &d)).asks
+        };
+        assert!(entries(255, "2"), "the 256th entry is read");
+        assert!(!entries(256, "2"), "the 257th is not");
+    }
+
+    #[test]
+    fn settings_reply_reads_wireguard() {
+        let key =
+            |n: u32| format!(r#","wireguard":{{"private-key-flags":{{"type":"u","data":{n}}},"listen-port":{{"type":"u","data":51820}}}}"#);
+        let (zero, two) = (vpn(&vpn_reply("wireguard", &key(0))), vpn(&vpn_reply("wireguard", &key(2))));
+        assert_eq!((zero.kind, zero.asks), (VpnKind::WireGuard, false));
+        assert!(two.asks);
     }
 
     #[test]

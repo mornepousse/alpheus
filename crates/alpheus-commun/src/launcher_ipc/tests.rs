@@ -45,6 +45,7 @@ fn requests() -> Vec<Request> {
         Request::Quick(QuickVerb::Bluetooth),
         Request::Timer(TimerVerb::Start(1500)),
         Request::Timer(TimerVerb::Popup),
+        Request::Quick(QuickVerb::Vpn),
         Request::Calc,
         Request::Windows,
         Request::Notes,
@@ -97,6 +98,7 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Wifi)), b"alpheus-launcher/1 quick wifi\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Bluetooth)), b"alpheus-launcher/1 quick bluetooth\n");
+    assert_eq!(encode_request(&Request::Quick(QuickVerb::Vpn)), b"alpheus-launcher/1 quick vpn\n");
     assert_eq!(encode_request(&Request::Calc), b"alpheus-launcher/1 calc\n");
     assert_eq!(encode_request(&Request::Windows), b"alpheus-launcher/1 windows\n");
     assert_eq!(encode_request(&Request::Notes), b"alpheus-launcher/1 notes\n");
@@ -226,7 +228,8 @@ fn every_quick_word_parses_back() {
     assert_eq!(QuickVerb::parse("Sound"), None, "the words are exact");
     assert_eq!(QuickVerb::parse("wifi"), Some(QuickVerb::Wifi), "quick Wi-Fi spec § 1");
     assert_eq!(QuickVerb::parse("bluetooth"), Some(QuickVerb::Bluetooth), "quick Bluetooth spec § 1");
-    assert_eq!(QuickVerb::ALL.len(), 4);
+    assert_eq!(QuickVerb::parse("vpn"), Some(QuickVerb::Vpn), "quick VPN spec § 1");
+    assert_eq!(QuickVerb::ALL.len(), 5);
     assert_eq!(QuickVerb::parse("network"), None, "the Wi-Fi's word is wifi");
 }
 

@@ -18,6 +18,7 @@ mod session;
 mod signal;
 pub mod tap;
 pub mod upower;
+pub mod vpn;
 pub mod wifi;
 
 #[cfg(test)]
@@ -30,7 +31,7 @@ use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
-use crate::system::{BtScope, BtState, BtView, NetState, PowerState, ProfileState, SavedWifi, WifiScope, WifiState};
+use crate::system::{BtScope, BtState, BtView, NetState, PowerState, ProfileState, Saved, VpnScope, VpnState, WifiScope, WifiState};
 use bt::{BtReader, BtTap};
 use props::{Objects, Props};
 use std::io;
@@ -38,6 +39,7 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vpn::{VpnReader, VpnTap};
 use wifi::{WifiReader, WifiTap};
 
 pub use outage::{DomainLog, Outage, is_service_gone, optional, service_gone};
@@ -86,7 +88,7 @@ pub trait Bus {
     fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>>;
     /// `org.freedesktop.NetworkManager.Settings.Connection.GetSettings` on `path`, reduced to a Wi-Fi
     /// profile's uuid and SSID (`wifi::saved_wifi`); None for any other kind. Never its secrets.
-    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>>;
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<Saved>>;
     /// AddMatch (`add`) or RemoveMatch of one rule.
     fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()>;
     /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).
@@ -159,6 +161,11 @@ pub struct SystemState {
     pub bt: Option<BtView>,
     /// The open `bt` was read for (`BtTap::snapshot`), as `wifi_open`.
     pub bt_open: u64,
+    /// The quick panel's VPN profiles and active VPN connections, only while it is open (quick VPN
+    /// spec § 5); None otherwise.
+    pub vpn: Option<VpnState>,
+    /// The open `vpn` was read for (`VpnTap::snapshot`), as `wifi_open`.
+    pub vpn_open: u64,
 }
 
 /// An unused module costs nothing: with no domain shown,
@@ -172,12 +179,13 @@ fn wanted(domains: &[Domain]) -> bool {
 /// again with a growing delay if lost or if a domain's read fails. A
 /// domain's own outage shows "–" for it alone, the others keep their last
 /// value during the delay (I2); the bus itself going away blanks
-/// all three. `wifi`: the quick panel's tap (quick Wi-Fi spec § 5), polled beside the bus; None: a
-/// tap nothing ever sets.
+/// all three. `wifi`, `bt`, `vpn`: the quick panel's taps (quick Wi-Fi spec § 5), polled beside the
+/// bus; None: a tap nothing ever sets.
 pub fn start(
     domains: Vec<Domain>,
     wifi: Option<Arc<WifiTap>>,
     bt: Option<Arc<BtTap>>,
+    vpn: Option<Arc<VpnTap>>,
     send: impl Fn(Option<SystemState>) -> bool + Send + 'static,
 ) {
     if !wanted(&domains) {
@@ -190,9 +198,10 @@ pub fn start(
         let mut log_state = DomainLog::default();
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();
+        let vpn_tap = vpn.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking(bt_tap.clone());
-            session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, p)
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking(bt_tap.clone()).waking(vpn_tap.clone());
+            session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, &vpn_tap, p)
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });

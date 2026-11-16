@@ -492,8 +492,16 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
-    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound|wifi|bluetooth]"]
-    {
+    for option in [
+        "--index",
+        "--password",
+        "--visible N",
+        "--placeholder TEXT",
+        "--width N",
+        "--lines N",
+        "--quick [sound|wifi|bluetooth|vpn]",
+        "(or its wifi, bluetooth or vpn word)",
+    ] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
 }
@@ -523,6 +531,7 @@ fn quick_sends_its_word_and_exits_0() {
         (&["--quick", "sound"], Request::Quick(QuickVerb::Sound)),
         (&["--quick", "wifi"], Request::Quick(QuickVerb::Wifi)),
         (&["--quick", "bluetooth"], Request::Quick(QuickVerb::Bluetooth)),
+        (&["--quick", "vpn"], Request::Quick(QuickVerb::Vpn)),
     ]
     .into_iter()
     .enumerate()
@@ -646,6 +655,20 @@ fn a_daemon_without_the_bluetooth_word_exits_3() {
     let (code, out, err) = launch(&["--quick", "bluetooth"], &socket, b"");
     assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
     assert!(err.contains("--quick bluetooth"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
+/// Quick VPN spec § 1: a daemon of delivery 3 knows `quick` but not its `vpn` word: exit 3, one
+/// request, no retry.
+#[test]
+fn a_daemon_without_the_vpn_word_exits_3() {
+    let (socket, connections, stop, daemon) =
+        replying_daemon("quick-vpn-old", Reply::Error("malformed request: unknown quick word \"vpn\"".into()));
+    let (code, out, err) = launch(&["--quick", "vpn"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--quick vpn"), "{err}");
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
     assert_eq!(connections.load(Ordering::SeqCst), 1);

@@ -21,13 +21,16 @@ use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
 use crate::quick_bt::{Bt, BtOrder, Code};
 use crate::quick_dnd::{DndChoice, DndDetail};
+use crate::quick_vpn::Vpn;
 use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
 use crate::sources::dbus::bt_act::{ActCall, ActError, AgentId, AgentRequest};
 use crate::state::{Bar, Feed};
-use crate::system::{BtScope, BtState, BtView, Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
+use crate::system::{
+    BtScope, BtState, BtView, Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, VpnScope, VpnState, WifiScope, WifiState,
+};
 use std::time::{Duration, Instant};
 
 /// Content width in cells; a row is two more (a blank pad cell each side, as the other popups').
@@ -82,6 +85,9 @@ pub enum Focus {
     /// The Bluetooth row, its detail opened (quick Bluetooth spec § 1): a click on the Bluetooth
     /// module, or `--quick bluetooth`. Without a Bluetooth row, the first row.
     Bluetooth,
+    /// The VPN row, its detail opened once the VPN state arrives (quick VPN spec): `--quick vpn`.
+    /// Without a VPN row, the first row.
+    Vpn,
 }
 
 impl Focus {
@@ -107,6 +113,8 @@ pub enum Row {
     Wifi,
     /// The Bluetooth adapter (quick Bluetooth spec § 1): right under the Wi-Fi row.
     Bluetooth,
+    /// The VPN (quick VPN spec): right under the Bluetooth row.
+    Vpn,
     Mic,
     /// `Mixer…` (`[quick] mixer`): opens a terminal mixer, right under the microphone.
     Mixer,
@@ -198,6 +206,12 @@ pub enum Line {
     BtNote(&'static str),
     /// The pairing code under its device.
     BtCode,
+    /// The VPN detail's "‹ VPN".
+    VpnHeader,
+    /// The n-th of the VPN detail's profiles (`Vpn::listed`).
+    VpnProfile(usize),
+    /// "More…" (`[quick] vpn_more`).
+    VpnMore,
     /// The do-not-disturb detail's "‹ Do not disturb".
     DndHeader,
     /// The n-th of the do-not-disturb detail's choices (`quick_dnd::CHOICES`).
@@ -308,6 +322,8 @@ pub struct Due {
     /// cancelled, a call forgotten).
     pub bt_logs: Vec<String>,
     pub bt_orders: Vec<BtOrder>,
+    /// A VPN connection failed at this tick (the 20 s timeout): why, for the log.
+    pub vpn_failed: Option<&'static str>,
 }
 
 /// What a Wi-Fi state brought (`Quick::set_wifi`): the action to take (a rescan, a cleanup), and why
@@ -481,6 +497,8 @@ pub struct Quick {
     pub wifi: Wifi,
     /// The Bluetooth row and its detail (quick_bt.rs).
     pub bt: Bt,
+    /// The VPN row and its detail (quick_vpn.rs).
+    pub vpn: Vpn,
     /// The do-not-disturb detail (quick_dnd.rs).
     pub dnd: DndDetail,
 }
@@ -515,7 +533,7 @@ struct RowSpec {
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
 ///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
-const ROWS: [RowSpec; 12] = [
+const ROWS: [RowSpec; 13] = [
     RowSpec {
         row: Row::Volume,
         name: "volume",
@@ -527,6 +545,7 @@ const ROWS: [RowSpec; 12] = [
     RowSpec { row: Row::Brightness, name: "brightness", group: 0, present: |_, q| q.backlight.is_some(), draw: draw_brightness },
     RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
     RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
+    RowSpec { row: Row::Vpn, name: "vpn", group: 1, present: |_, q| q.vpn.shows(), draw: draw_vpn },
     RowSpec { row: Row::Mic, name: "mic", group: 1, present: |live, _| live.sound.is_some_and(|s| s.source.is_some()), draw: draw_mic },
     RowSpec {
         row: Row::Mixer,
@@ -586,6 +605,9 @@ pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
     if q.bt.open {
         return q.bt.lines();
     }
+    if q.vpn.open {
+        return q.vpn.lines(live.config);
+    }
     if q.dnd.open {
         return q.dnd.lines();
     }
@@ -642,6 +664,7 @@ impl Quick {
             failed: Vec::new(),
             wifi: Wifi { focus_pending: focus == Focus::Wifi, ..Wifi::default() },
             bt: Bt::default(),
+            vpn: Vpn { focus_pending: focus == Focus::Vpn, ..Vpn::default() },
             dnd: DndDetail::default(),
         };
         let rows = shown(live, &q);
@@ -680,6 +703,12 @@ impl Quick {
             self.back_on(Row::Bluetooth);
         }
         self.bt.fit();
+        if self.vpn.open && !present(Row::Vpn, live, self) {
+            // The row went (the last profile, or NetworkManager): back on the rows.
+            self.vpn.close_detail();
+            self.back_on(Row::Vpn);
+        }
+        self.vpn.fit(live.config);
         if self.dnd.open && !present(Row::Dnd, live, self) {
             // The row went (the notifications module is not read): back on the rows.
             self.dnd.open = false;
@@ -745,11 +774,13 @@ impl Quick {
     fn selected_line(&self, all: &[Line]) -> Option<usize> {
         let nets = if self.wifi.open { self.wifi.networks() } else { Vec::new() };
         let devices = if self.bt.open { self.bt.devices() } else { Vec::new() };
+        let profiles = if self.vpn.open { self.vpn.listed() } else { Vec::new() };
         all.iter().position(|l| match *l {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
             l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
             l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l, &devices),
+            l @ (Line::VpnProfile(_) | Line::VpnMore) => self.vpn.is_selected(l, &profiles),
             Line::DndChoice(i) => i == self.dnd.selected,
             _ => false,
         })
@@ -783,6 +814,7 @@ impl Quick {
             return QuickAction::Nothing;
         }
         self.wifi.focus_pending = false;
+        self.vpn.focus_pending = false;
         self.fit(live);
         // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
         let cancelled = k != Key::Enter && self.confirm.take().is_some();
@@ -790,6 +822,12 @@ impl Quick {
             let a = self.bt.key(k, &mut self.confirm, now);
             if !self.bt.open {
                 self.back_on(Row::Bluetooth);
+            }
+            a
+        } else if self.vpn.open {
+            let a = self.vpn.key(live.config, k, now);
+            if !self.vpn.open {
+                self.back_on(Row::Vpn);
             }
             a
         } else if self.dnd.open {
@@ -846,6 +884,8 @@ impl Quick {
                 a
             }
             (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
+            (Row::Vpn, Key::Char(' ')) => self.vpn.toggle(now),
+            (Row::Vpn, Key::Enter | Key::Right) => self.open_vpn(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Mixer, Key::Char(' ') | Key::Enter) => run_and_close(live.config.mixer.as_deref().unwrap_or(&[]), "mixer"),
             (Row::Dnd, Key::Char(' ')) => QuickAction::ToggleDnd,
@@ -925,6 +965,7 @@ impl Quick {
     /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown), spec § 3.
     pub fn press(&mut self, live: &Live, cell: (u16, u16), b: Button, now: Instant) -> QuickAction {
         self.wifi.focus_pending = false;
+        self.vpn.focus_pending = false;
         self.fit(live);
         let all = lines(live, self);
         let top = self.top.min(all.len().saturating_sub(self.visible()));
@@ -959,6 +1000,13 @@ impl Quick {
                 let a = self.bt.press(l, b, &mut self.confirm, now);
                 if !self.bt.open {
                     self.back_on(Row::Bluetooth);
+                }
+                a
+            }
+            (l @ (Line::VpnHeader | Line::VpnProfile(_) | Line::VpnMore), _) => {
+                let a = self.vpn.press(live.config, l, b, now);
+                if !self.vpn.open {
+                    self.back_on(Row::Vpn);
                 }
                 a
             }
@@ -1027,6 +1075,7 @@ impl Quick {
             return QuickAction::Nothing;
         }
         self.wifi.focus_pending = false;
+        self.vpn.focus_pending = false;
         self.fit(live);
         let all = lines(live, self);
         let visible = self.visible();
@@ -1064,6 +1113,7 @@ impl Quick {
             self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
             self.bt.deadline(),
+            self.vpn.deadline(),
         ]
         .into_iter()
         .chain(self.reread_toggles)
@@ -1116,6 +1166,9 @@ impl Quick {
         let (orders, log, redraw) = self.bt.due(now);
         d.bt_orders = orders;
         d.bt_logs.extend(log);
+        d.redraw |= redraw;
+        let (failed, redraw) = self.vpn.due(now);
+        d.vpn_failed = failed;
         d.redraw |= redraw;
         d
     }
@@ -1222,6 +1275,47 @@ impl Quick {
         self.wifi.close_detail();
         self.top = 0;
         self.bt.open_detail()
+    }
+
+    /// Enter, →, or a click on the VPN row (quick VPN spec): its detail in place of the rows.
+    fn open_vpn(&mut self, live: &Live) -> QuickAction {
+        if !present(Row::Vpn, live, self) {
+            return QuickAction::Nothing;
+        }
+        self.detail = false;
+        self.wifi.close_detail();
+        self.top = 0;
+        self.vpn.open_detail()
+    }
+
+    /// The D-Bus thread's VPN state, while open (`quick_take`). Asked for by `--quick vpn`, the first
+    /// state with a profile selects the row and opens the detail. Returns why a connection failed,
+    /// for the log (`WifiNews`' shape, no action: nothing is cleaned up).
+    pub fn set_vpn(&mut self, state: Option<VpnState>, now: Instant) -> WifiNews {
+        let failed = self.vpn.set_state(state, now);
+        let action = if self.vpn.shows() && std::mem::take(&mut self.vpn.focus_pending) {
+            self.selected = Row::Vpn;
+            self.detail = false;
+            self.wifi.close_detail();
+            self.top = 0;
+            self.vpn.open_detail()
+        } else {
+            QuickAction::Redraw
+        };
+        WifiNews { action, failed }
+    }
+
+    /// `set_vpn`, then fitted; the window follows the selection only when the state moved it (as
+    /// `follow_wifi`).
+    pub fn follow_vpn(&mut self, live: &Live, state: Option<VpnState>, now: Instant) -> WifiNews {
+        let news = self.set_vpn(state, now);
+        self.follow_selection(live);
+        news
+    }
+
+    /// What the D-Bus thread is to read for the VPNs while the panel is open.
+    pub fn vpn_scope(&self) -> VpnScope {
+        self.vpn.scope()
     }
 
     /// Enter, →, or a press on the switch of the do-not-disturb row: its detail in place of the rows.
@@ -1357,6 +1451,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
     let mut out = Boxed::default();
     let nets = if q.wifi.open { q.wifi.networks() } else { Vec::new() };
     let devices = if q.bt.open { q.bt.devices() } else { Vec::new() };
+    let profiles = if q.vpn.open { q.vpn.listed() } else { Vec::new() };
     for (r, line) in all.iter().skip(top).take(visible).enumerate() {
         let mut g = Grid::empty(WIDTH + 2);
         match *line {
@@ -1373,6 +1468,9 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
             }
             l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode) => {
                 q.bt.draw(&mut g, l, &devices, q.confirm.as_ref(), q.bt.is_selected(l, &devices))
+            }
+            l @ (Line::VpnHeader | Line::VpnProfile(_) | Line::VpnMore) => {
+                q.vpn.draw(&mut g, l, &profiles, q.vpn.is_selected(l, &profiles))
             }
             l @ (Line::DndHeader | Line::DndChoice(_)) => q.dnd.draw(&mut g, live, l),
         }
@@ -1413,6 +1511,10 @@ fn draw_bluetooth(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     if let Some(s) = live.bluetooth {
         text_row(g, Some(q.bt.glyph(s)), "Bluetooth", &format!("{} ›", q.bt.value(s)), Style::NORMAL, selected);
     }
+}
+
+fn draw_vpn(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    text_row(g, Some(crate::segments::VPN), "VPN", &format!("{} ›", q.vpn.value()), Style::NORMAL, selected);
 }
 
 fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {

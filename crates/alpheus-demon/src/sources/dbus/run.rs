@@ -52,7 +52,8 @@ pub(super) fn run_supervised(
                     // hears none until it is. Another domain's outage keeps it, marked
                     // stale: read before the outage, it may no longer hold by the backoff's
                     // end, so an attempt never deletes on it; the next session reads it afresh.
-                    Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, ..last.clone() }),
+                    // The VPN likewise: read on NetworkManager, none until the next session reads it.
+                    Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, vpn: None, ..last.clone() }),
                     // BlueZ's own outage: the panel's Bluetooth view is dropped (nothing to trust
                     // until the next session reads it), the Wi-Fi kept stale as any other's.
                     Outage::Domain(Domain::Bluetooth) => {

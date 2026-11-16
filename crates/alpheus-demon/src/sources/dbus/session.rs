@@ -115,6 +115,11 @@ pub(super) fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io:
     panel_into(r, &mut s.bt, Domain::Bluetooth)
 }
 
+/// A VPN read's result into `s`: the network domain's outage (NetworkManager is where it is read).
+pub(super) fn vpn_into(r: io::Result<Option<VpnState>>, s: &mut SystemState) -> io::Result<()> {
+    panel_into(r, &mut s.vpn, Domain::Network)
+}
+
 /// What a tap asks (`Tap::snapshot`), read through `rescope`; `open` the open last read for. A close
 /// and a reopen read as one poke (the scope unchanged) are still a new open: closed first, so
 /// everything is read again; its state tagged with the new open, and so published even when it reads
@@ -137,11 +142,13 @@ pub fn session(
     log_state: &mut DomainLog,
     wifi: &WifiTap,
     bt: &BtTap,
+    vpn: &VpnTap,
     publish: &mut dyn FnMut(SystemState) -> bool,
 ) -> io::Result<()> {
     let mut s = SystemState::default();
     let mut reader = WifiReader::default();
     let mut bt_reader = BtReader::default();
+    let mut vpn_reader = VpnReader::default();
     let mut last = None;
     let mut failed = read_all(bus, domains, &mut s, log_state);
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
@@ -154,6 +161,11 @@ pub fn session(
     bt.drain();
     let r = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
     if let Err(e) = bt_into(r, &mut s) {
+        failed = Some(e);
+    }
+    vpn.drain();
+    let r = asked(vpn.snapshot(), &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
+    if let Err(e) = vpn_into(r, &mut s) {
         failed = Some(e);
     }
     if !publish_if_changed(&mut last, &s, publish) {
@@ -184,15 +196,18 @@ pub fn session(
             // The same for Bluetooth, read whichever tap spoke (a poke does not say which).
             let b = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
             let b = bt_into(b, &mut s);
+            let v = asked(vpn.snapshot(), &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
+            let v = vpn_into(v, &mut s);
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
             // The panel closed: what this thread's arena held for it goes back, as at startup.
-            if reader.scope() == WifiScope::Closed && bt_reader.scope() == BtScope::Closed {
+            if reader.scope() == WifiScope::Closed && bt_reader.scope() == BtScope::Closed && vpn_reader.scope() == VpnScope::Closed {
                 release_memory();
             }
             r?;
             b?;
+            v?;
             continue;
         }
         if signal.is_wake() {
@@ -205,6 +220,9 @@ pub fn session(
                 failed = Some(e);
             }
             if let Err(e) = bt_into(bt_reader.reread(bus), &mut s) {
+                failed = Some(e);
+            }
+            if let Err(e) = vpn_into(vpn_reader.reread(bus), &mut s) {
                 failed = Some(e);
             }
             if !publish_if_changed(&mut last, &s, publish) {
@@ -249,6 +267,8 @@ pub fn session(
         };
         let r = read(bus, d, &mut s, log_state);
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
+        // The same re-read for an open VPN reading (the actives, not the list at the row).
+        let v = if d == Domain::Network { vpn_into(vpn_reader.reread(bus), &mut s) } else { Ok(()) };
         // BlueZ itself changed (its owner, the adapter's or a battery's properties): the panel's
         // view is read again on the owner now there.
         let b = if d == Domain::Bluetooth && change.is_none() { bt_into(bt_reader.reread(bus), &mut s).and(b) } else { b };
@@ -257,14 +277,15 @@ pub fn session(
         }
         // The Wi-Fi read fails only with the bus itself gone: that outage wins over the domain's.
         w?;
+        v?;
         b?;
         r?;
     }
 }
 
 /// The bar's messages for a published state; None (the whole bus down): "–" for every module, no
-/// power profile, no Wi-Fi.
-pub fn messages(s: Option<SystemState>) -> [Msg; 6] {
+/// power profile, no Wi-Fi, no VPN.
+pub fn messages(s: Option<SystemState>) -> [Msg; 7] {
     match s {
         Some(s) => [
             Msg::Network(s.network),
@@ -273,6 +294,7 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 6] {
             Msg::Profile(s.power),
             Msg::Wifi { open: Some(s.wifi_open), state: s.wifi },
             Msg::Bt { open: Some(s.bt_open), state: s.bt },
+            Msg::Vpn { open: Some(s.vpn_open), state: s.vpn },
         ],
         None => [
             Msg::Network(None),
@@ -281,6 +303,7 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 6] {
             Msg::Profile(None),
             Msg::Wifi { open: None, state: None },
             Msg::Bt { open: None, state: None },
+            Msg::Vpn { open: None, state: None },
         ],
     }
 }

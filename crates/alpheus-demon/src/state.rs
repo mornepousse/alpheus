@@ -8,7 +8,7 @@ use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::privacy::Privacy;
 use crate::session_bus::icons::TrayIcon;
-use crate::system::{BtState, BtView, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
+use crate::system::{BtState, BtView, NetState, PowerState, ProfileState, Resources, Sample, SoundState, VpnState, WifiState};
 use crate::timer::TimerChip;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use std::time::{Duration, Instant};
@@ -47,6 +47,13 @@ pub enum Msg {
     Bt {
         open: Option<u64>,
         state: Option<BtView>,
+    },
+    /// The quick panel's VPN profiles and active VPN connections (quick VPN spec § 5), only while
+    /// it is open: the panel's, never kept by the bar. `state` None: the panel closed or the system
+    /// bus down. `open`: as `Wifi`'s (`VpnTap::snapshot`).
+    Vpn {
+        open: Option<u64>,
+        state: Option<VpnState>,
     },
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring.
@@ -210,6 +217,7 @@ impl Bar {
             // The open quick panel's (quick_app.rs takes it first): never kept, no bar redraw.
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
+            Msg::Vpn { .. } => false,
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
             Msg::Media(view) => set_if_changed(&mut self.media, view),
@@ -381,6 +389,14 @@ mod tests {
         let mut b = Bar::new(BarConfig::default());
         assert!(!b.apply(Msg::Bt { open: Some(1), state: Some(BtView::default()) }));
         assert!(!b.apply(Msg::Bt { open: None, state: None }));
+    }
+
+    /// Quick VPN: the VPN reading is the open panel's too.
+    #[test]
+    fn a_vpn_state_is_never_kept_nor_drawn_by_the_bar() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(!b.apply(Msg::Vpn { open: Some(1), state: Some(VpnState::default()) }));
+        assert!(!b.apply(Msg::Vpn { open: None, state: None }));
     }
 
     /// The bar draws the sink only. A microphone or label change is kept (the OSD reads

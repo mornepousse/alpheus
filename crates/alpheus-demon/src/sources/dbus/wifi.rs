@@ -10,7 +10,7 @@ use super::props::Props;
 pub use super::tap::WifiTap;
 use super::{Bus, NM, is_service_gone, network, optional};
 use crate::log::write as log;
-use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
+use crate::system::{AccessPoint, Saved, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
 use std::collections::BTreeMap;
 use std::io;
 
@@ -355,7 +355,7 @@ impl WifiReader {
             if !self.saved.contains_key(p) {
                 match bus.get_settings(nm, p) {
                     Ok(s) => {
-                        self.saved.insert(p.clone(), s);
+                        self.saved.insert(p.clone(), s.and_then(|s| if let Saved::Wifi(w) = s { Some(w) } else { None }));
                     }
                     Err(e) if is_service_gone(&e) => return Ok(false),
                     // Gone since the listing, or another user's: not ours.

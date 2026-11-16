@@ -324,6 +324,48 @@ pub struct SavedWifi {
     pub ssid: Vec<u8>,
 }
 
+/// A saved connection the panel reads from `GetSettings`: Wi-Fi or VPN, never a secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Saved {
+    Wifi(SavedWifi),
+    Vpn(VpnProfile),
+}
+
+/// A VPN profile's kind: WireGuard (`wireguard`) or a plugin's (`vpn`: OpenVPN…).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VpnKind {
+    WireGuard,
+    Plugin,
+}
+
+/// A saved VPN profile: name (cleaned, capped), uuid, kind, when last used (`timestamp`, 0 unknown)
+/// and whether one of its secrets is asked at connection time (a `*-flags` of 1, 2 or 3 without 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VpnProfile {
+    pub uuid: String,
+    pub name: String,
+    pub kind: VpnKind,
+    pub last_used: u64,
+    pub asks: bool,
+}
+
+/// An active VPN connection: its profile's uuid and NMActiveConnectionState.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveVpn {
+    pub uuid: String,
+    pub state: u32,
+}
+
+/// What the quick panel's VPN reading holds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VpnState {
+    pub profiles: Vec<VpnProfile>,
+    pub active: Vec<ActiveVpn>,
+}
+
+/// What the quick panel's VPN reading covers; names only, see `WifiScope`.
+pub type VpnScope = PanelScope;
+
 /// The first Wi-Fi device NetworkManager lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WifiDevice {

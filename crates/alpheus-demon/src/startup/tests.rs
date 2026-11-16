@@ -154,6 +154,8 @@ fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         wifi_open: 0,
         bt: None,
         bt_open: 0,
+        vpn: None,
+        vpn_open: 0,
     };
     for m in messages(Some(s)) {
         on_message(&mut c, m, || AFTER);
@@ -286,10 +288,12 @@ fn settings_absent_or_invalid() {
     std::fs::create_dir_all(&d).unwrap();
     let mut expected = BarConfig::default();
     crate::config::resolve_wifi_more(&mut expected.quick, &LauncherConfig::default().terminal);
+    crate::config::resolve_vpn_more(&mut expected.quick, &LauncherConfig::default().terminal);
     crate::config::resolve_mixer(&mut expected.quick, &LauncherConfig::default().terminal);
     let (c, w) = settings(&d);
     assert_eq!((c, w.len()), (expected.clone(), 0));
     assert_eq!(expected.quick.wifi_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui".into()]), "More… defaults to nmtui");
+    assert_eq!(expected.quick.vpn_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui-edit".into()]), "the VPN's, nmtui-edit");
     std::fs::write(d.join("bar.toml"), "modules = [\"weather\"]").unwrap();
     let (c, w) = settings(&d);
     assert_eq!(c, expected, "defaults, More… resolved all the same");
@@ -298,6 +302,7 @@ fn settings_absent_or_invalid() {
     std::fs::write(d.join("bar.toml"), "height = 22\n").unwrap();
     std::fs::write(d.join("launcher.toml"), "terminal = [\"alacritty\", \"-e\"]\n").unwrap();
     assert_eq!(settings(&d).0.quick.wifi_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui".into()]));
+    assert_eq!(settings(&d).0.quick.vpn_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui-edit".into()]));
     assert_eq!(settings(&d).0.quick.mixer, Some(vec!["alacritty".to_string(), "-e".into(), "wiremix".into()]));
     std::fs::write(d.join("bar.toml"), "[quick]\nwifi_more = []\n").unwrap();
     assert_eq!(settings(&d).0.quick.wifi_more, Some(vec![]), "given in bar.toml: kept");

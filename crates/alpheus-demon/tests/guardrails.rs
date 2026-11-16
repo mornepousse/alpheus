@@ -1443,6 +1443,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "quick_wifi.rs",
     "quick_secret.rs",
     "quick_bt.rs",
+    "quick_vpn.rs",
     "quick_dnd.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
@@ -2162,7 +2163,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_dnd.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -2183,7 +2184,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 5, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs and quick_dnd.rs");
+    assert_eq!(checked, 6, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs and quick_dnd.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2197,6 +2198,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
         logout: vec!["fake-logout".into()],
         wifi_more: Some(vec!["fake-more".into()]),
+        vpn_more: Some(vec!["fake-vpn-more".into()]),
         mixer: Some(vec!["fake-mixer".into()]),
         ..QuickConfig::default()
     };
@@ -2330,6 +2332,50 @@ fn every_quick_command_stays_on_the_allowlist() {
         record(q.set_wifi(Some(failing), t).action);
         record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
+    // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
+    // key on every pick (twice), every press of every cell with every button (twice).
+    const UUID_VPN_1: &str = "00000000-0000-4000-8000-000000000001";
+    const UUID_VPN_2: &str = "00000000-0000-4000-8000-000000000002";
+    let vpn_state = |active: bool| VpnState {
+        profiles: vec![
+            VpnProfile { uuid: UUID_VPN_1.into(), name: "VPN-Test-1".into(), kind: VpnKind::Plugin, last_used: 10, asks: false },
+            VpnProfile { uuid: UUID_VPN_2.into(), name: "WG-Test".into(), kind: VpnKind::WireGuard, last_used: 20, asks: true },
+        ],
+        active: if active { vec![ActiveVpn { uuid: UUID_VPN_1.into(), state: 2 }] } else { Vec::new() },
+    };
+    for active in [false, true] {
+        let fresh_vpn = || {
+            let mut q = fresh();
+            q.set_vpn(Some(vpn_state(active)), t);
+            q.selected = quick::Row::Vpn;
+            q
+        };
+        for k in keys {
+            record(fresh_vpn().key(&live, k, false, t));
+        }
+        let mut opened = fresh_vpn();
+        record(opened.key(&live, Key::Enter, false, t));
+        for down in 0..=3 {
+            for k in keys {
+                let mut q = opened.clone();
+                for _ in 0..down {
+                    q.key(&live, Key::Down, false, t);
+                }
+                record(q.key(&live, k, false, t));
+                record(q.key(&live, k, false, later));
+            }
+        }
+        let n = quick::lines(&live, &opened).len() as u16;
+        for y in 0..n {
+            for x in 0..quick::WIDTH + 2 {
+                for b in [Button::Left, Button::Right, Button::Middle] {
+                    let mut q = opened.clone();
+                    record(q.press(&live, (x, y), b, t));
+                    record(q.press(&live, (x, y), b, later));
+                }
+            }
+        }
+    }
     // Quick Bluetooth spec § 2: Space on the row with rfkill holding the adapter off unblocks it.
     let bt_off = Live { bluetooth: Some(&BtState::Off), ..live };
     let mut q = Quick::new(Focus::Top, &bt_off, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
@@ -2382,6 +2428,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "systemctl reboot",
         "systemctl poweroff",
         "fake-more",
+        "fake-vpn-more",
         "fake-mixer",
     ];
     for c in &calls {
@@ -2394,7 +2441,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
             ["nmcli", "device", "wifi", "rescan"] => true,
-            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED].contains(u),
+            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED, UUID_VPN_1, UUID_VPN_2].contains(u),
             ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
@@ -2432,7 +2479,10 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli device wifi connect Cafe-Libre",
         "nmcli --ask device wifi connect Bureau-Test",
         "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
+        "nmcli connection up uuid 00000000-0000-4000-8000-000000000001",
+        "nmcli connection down uuid 00000000-0000-4000-8000-000000000001",
         "fake-more",
+        "fake-vpn-more",
         "fake-mixer",
         "rfkill unblock bluetooth",
     ] {
@@ -2451,6 +2501,7 @@ fn the_quick_panel_has_no_panicking_path() {
         "quick_wifi.rs",
         "quick_secret.rs",
         "quick_bt.rs",
+        "quick_vpn.rs",
         "quick_dnd.rs",
         "session.rs",
         "bt_app.rs",
@@ -2598,15 +2649,17 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
 }
 
-/// Quick Wi-Fi spec § 6: no panic in the Wi-Fi reader (the D-Bus thread's): bounded, cleaned, never
-/// unwrapped.
+/// Quick Wi-Fi spec § 6 and quick VPN spec: no panic in the panel readers (the D-Bus thread's):
+/// bounded, cleaned, never unwrapped.
 #[test]
-fn the_wifi_reader_has_no_panicking_path() {
+fn the_panel_readers_have_no_panicking_path() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "sources/dbus/wifi.rs").expect("sources/dbus/wifi.rs").1;
-    let production = production_code(t);
-    for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in sources/dbus/wifi.rs's production code");
+    for name in ["sources/dbus/wifi.rs", "sources/dbus/vpn.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
     }
 }
 
@@ -3666,4 +3719,64 @@ fn the_launcher_guard_never_logs_a_panic_payload() {
     for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)", "|p|"] {
         assert!(!scan.contains(leak), "launcher/scan.rs must never read a panic's message ({leak})");
     }
+}
+
+/// Quick VPN spec § 2: a log line never names a profile (its name, label, uuid or object path): the
+/// VPN's own files, and the VPN lines of the glue.
+#[test]
+fn the_vpn_logs_name_no_profile() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let mut statements = 0;
+    for name in ["quick_vpn.rs", "sources/dbus/vpn.rs", "quick_app.rs"] {
+        let prod = src(name);
+        let own = name != "quick_app.rs";
+        for statement in vpn_log_statements(&prod) {
+            if !own && !statement.to_ascii_lowercase().contains("vpn") {
+                continue;
+            }
+            statements += 1;
+            for word in ["name", "label", "uuid", "path", "id"] {
+                let braced = format!("{{{word}");
+                let token = statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!statement.contains(&braced) && !token, "{name}: a log line may name a profile (`{word}`): {statement}");
+            }
+        }
+    }
+    assert!(statements >= 3, "the log lines were not found: the check is hollow");
+    // The scan itself: a log call split over several lines is one statement.
+    let split = "fn f() {\n    log(&format!(\n        \"quick: vpn {name}\",\n    ));\n    other();\n}";
+    let found = vpn_log_statements(split);
+    assert!(!found.is_empty() && found.iter().all(|f| f.contains("{name}") && !f.contains("other")), "{found:?}");
+}
+
+/// Every `log(` call and every `"quick: ` string of `text`, each from its start to the next `;`
+/// (a call may span several lines).
+fn vpn_log_statements(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for start in ["log(", "\"quick: "] {
+        for (at, _) in text.match_indices(start) {
+            let end = text[at..].find(';').map_or(text.len(), |e| at + e);
+            found.push(&text[at..end]);
+        }
+    }
+    found
+}
+
+/// Quick VPN spec § 5: the D-Bus thread reads the VPNs only while the panel is open and follows it,
+/// and the VPN state goes to the panel alone.
+#[test]
+fn the_vpn_tap_follows_the_panel() {
+    let files = source_files();
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains("VpnScope::Closed"), "{closed}");
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_vpn_sync()"), "{f}: the tap follows the panel");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_vpn(") && take.contains("panel_vpn("), "{take}");
+    assert!(take.contains("Msg::Vpn { .. }"), "a VPN message refreshes the panel it shows: {take}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
 }

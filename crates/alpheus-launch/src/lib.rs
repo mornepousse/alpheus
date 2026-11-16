@@ -35,7 +35,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --windows
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
@@ -56,9 +56,9 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           next local HH:MM; either one replaces an earlier end
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
-  --quick [sound|wifi|bluetooth]
+  --quick [sound|wifi|bluetooth|vpn]
                           open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
-                          with wifi, on Bluetooth with bluetooth)
+                          with wifi, on Bluetooth with bluetooth, on the VPNs with vpn)
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   --windows               open the window switcher (the previous window selected), or select the next window when it is open
   --timer start DURATION  start the bar's focus timer: 90s, 25m, 1h30m or a bare number of minutes (1 s to 24 h)
@@ -71,7 +71,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 or timer module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc/--windows/--timer/--notes (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -588,12 +588,14 @@ const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visibl
 /// unknown request, `parse_header`'s unknown quick word): the verb it concerns (None: any), the
 /// refusal and the name for the message. Exit 3, as for the other verbs, so a key bound to it can
 /// fall back. A new word adds a row, nothing else.
-const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 3] = [
+const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
     (None, "malformed request: unknown request \"quick\"", "--quick"),
     // Quick settings delivery 1's daemon.
     (Some(QuickVerb::Wifi), "malformed request: unknown quick word \"wifi\"", "--quick wifi"),
     // Delivery 2's daemon.
     (Some(QuickVerb::Bluetooth), "malformed request: unknown quick word \"bluetooth\"", "--quick bluetooth"),
+    // Delivery 3's daemon.
+    (Some(QuickVerb::Vpn), "malformed request: unknown quick word \"vpn\"", "--quick vpn"),
 ];
 
 /// What a daemon too old for `--timer` answers (`socket::describe` of an unknown request) and the
