@@ -314,6 +314,7 @@ impl App {
             | Request::Dmenu { .. }
             | Request::Osd(_)
             | Request::Quick(_)
+            | Request::Timer(_)
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep

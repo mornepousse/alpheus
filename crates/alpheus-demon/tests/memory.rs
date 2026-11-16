@@ -19,7 +19,7 @@ mod common;
 
 use alpheus_commun::displays::wire::{self, TrialState};
 use alpheus_commun::displays::{Active, Step};
-use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, QuickVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
 use alpheus_commun::theme::presets::preset;
 use common::bluez::FakeBluez;
 use common::displays::{displays, output, outputs_snapshot, snapshot_until};
@@ -495,7 +495,7 @@ fn pss_under_30mb_and_stable() {
 /// "everything" case and `EVERYTHING`, one literal for both.
 macro_rules! every_module {
     () => {
-        "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\""
+        "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"timer\", \"clock\""
     };
 }
 
@@ -3182,4 +3182,170 @@ fn at_rest_no_wakeups_with_hooks() {
     hooks_burst(&sway, &d);
     std::thread::sleep(Duration::from_millis(300));
     displays_rest(&d, REST, "after the hooks' burst");
+}
+
+const TIMER_BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n";
+/// The chip alone before the clock, so it sits at cell 1 (the headless tests' `TIMER_AT`).
+const TIMER_CHIP_FIRST_BAR: &str = "modules = [\"timer\", \"clock\"]\n";
+const TIMER_CHIP: (u32, u32) = (12, 10);
+const NO_TIMER_BAR: &str = "modules = [\"workspaces\", \"clock\"]\n";
+
+/// One `alpheus-launch --timer <verb>` on the socket (no key is ever pressed: SCTK's repeat timer,
+/// armed by a key press, fires once ~0.6 s later and would be an unrelated wake-up).
+fn timer(sway: &Sway, verb: TimerVerb) {
+    assert_eq!(launcher(sway, &Request::Timer(verb)), Reply::Done);
+}
+
+/// One popup cycle by the verb: open, then (past the verb's own debounce) close; the n-th of each.
+fn timer_popup_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    timer(sway, TimerVerb::Popup);
+    assert!(d.wait_for_count("timer shown", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE);
+    timer(sway, TimerVerb::Popup);
+    assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+}
+
+/// Timer spec § 8: the idle chip costs next to nothing, a running countdown nothing more, and the
+/// popup keeps nothing once closed (the first open's file-backed warm-up aside, which is printed).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_pss_idle_running_and_popup() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("timer-cost");
+    let without = {
+        let (_sway, _hypr, d) = start("timer-cost-a", 1, &bus, None, Some(NO_TIMER_BAR), PwDump::Silent);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let (sway, _hypr, d) = start("timer-cost-b", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_anon = d.anon_kb();
+    timer(&sway, TimerVerb::Start(1800));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (running, running_shm) = d.pss_and_shm_kb();
+    let running_anon = d.anon_kb();
+    timer_popup_cycle(&sway, &d, 1); // the warm-up
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_anon = d.anon_kb();
+    for n in 2..=21 {
+        timer_popup_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_anon = d.anon_kb();
+    let (idle_own, running_own, closed_own, cycled_own) =
+        (idle - idle_shm, running - running_shm, closed - closed_shm, cycled - cycled_shm);
+    eprintln!(
+        "timer PSS (KB): {without} without the module, {idle} with the idle chip (module cost {}), {running} running, {closed} \
+         popup closed once, {cycled} after 20 more cycles; without the shm pools: {idle_own} idle, {running_own} running, \
+         {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm}, {running_shm}, {closed_shm}, {cycled_shm}; \
+         anonymous: {idle_anon} idle, {running_anon} running, {closed_anon} closed, {cycled_anon} cycled",
+        idle.saturating_sub(without)
+    );
+    assert!(cycled < STARTUP_MAX_KB, "{cycled} KB >= 15 MB — report to Mae, never raise");
+    assert!(idle <= without + 256, "the idle chip costs {} KB: a glyph and a cell, nothing resident", idle.saturating_sub(without));
+    // Anonymous memory only: the heap and stacks the daemon keeps. PSS also counts file pages (the
+    // first open's code and font warm-up) and the shm pools, which move with the compositor.
+    assert!(
+        running_anon <= idle_anon + 64,
+        "running {running_anon} KB anonymous vs {idle_anon} KB idle: a countdown keeps nothing but its state"
+    );
+    assert!(cycled_anon <= closed_anon + 64, "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 20 cycles must keep nothing");
+}
+
+/// Timer spec § 8: idle, then started and paused, the loop sleeps: no timer, no wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("timer-rest");
+    let (sway, _hypr, d) = start("timer-rest", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(5);
+    let window = |what: &str| {
+        away_from_the_minute(REST);
+        let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+        std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, what);
+        let delta = d.main_thread_wakeups().saturating_sub(before);
+        eprintln!("loop-thread wake-ups at rest, {what} (5 s): {delta}");
+        assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s, {what}: {:?}", d.log());
+    };
+    window("the timer idle");
+    timer(&sway, TimerVerb::Start(1800));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    timer(&sway, TimerVerb::Pause);
+    assert!(d.wait_for("timer: paused", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    window("the timer paused");
+}
+
+/// Timer spec § 8: a running countdown wakes the loop about once a minute (the chip's change), the
+/// clock's own tick aside, never each second.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_running_wakes_about_once_a_minute() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("timer-minute");
+    let (sway, _hypr, d) = start("timer-minute", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    timer(&sway, TimerVerb::Start(1800));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(65));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with a countdown running (65 s): {delta}");
+    // The chip's 1-2, the clock's 1-2, slack; a one-second tick would read about 65.
+    assert!(delta <= 6, "{delta} loop-thread wake-ups in 65 s: the countdown ticks faster than the minute: {:?}", d.log());
+}
+
+/// Timer spec § 8, plan decision 4: the popup ticks each second only while open; closed (by the
+/// verb), the loop is back to the minute at once. The windows stay within 60 s of the start, so the
+/// chip's own minute boundary (not aligned with the wall minute) never falls inside.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_popup_ticks_each_second_only_while_open() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("timer-tick");
+    let (sway, _hypr, d) = start("timer-tick", 1, &bus, None, Some(TIMER_CHIP_FIRST_BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    // The whole test (about 15 s) between two minute turns: the clock's redraw is a wake-up of its own.
+    away_from_the_minute(Duration::from_secs(25));
+    timer(&sway, TimerVerb::Start(1800));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE);
+    sway.click(TIMER_CHIP.0, TIMER_CHIP.1, "button1");
+    assert!(d.wait_for("timer shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let open = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with the popup open on a running countdown (5 s): {open}");
+    // Two per repaint, traced: the one-second tick, then the compositor's release of the previous
+    // buffer on the socket; the brief's guess of one a second ignored the second.
+    assert!((8..=12).contains(&open), "open: two wake-ups per repaint (the tick and the buffer release), {open} in 5 s: {:?}", d.log());
+    // Closed by a second click on the chip, not by the verb (whose own close sends the buffer
+    // destroys and the keyboard release: the round trip's replies are wake-ups of their own) nor by
+    // Escape (SCTK's repeat timer).
+    sway.click(TIMER_CHIP.0, TIMER_CHIP.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    // A barrier: a verb with nothing to act on is answered once the loop has handled everything
+    // the close queued before it, so the window starts after the close's own replies.
+    timer(&sway, TimerVerb::Resume);
+    assert!(d.wait_for("timer: nothing to resume", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(100)); // the verb's own hang-up
+    // The window starts right after the close: a one-second timer left armed by it would show.
+    let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the loop after the timer popup");
+    let closed = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups right after the close (5 s): {closed}");
+    assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 5 s: {:?}", d.log());
 }

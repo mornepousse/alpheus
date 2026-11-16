@@ -43,6 +43,8 @@ fn requests() -> Vec<Request> {
         Request::Quick(QuickVerb::Sound),
         Request::Quick(QuickVerb::Wifi),
         Request::Quick(QuickVerb::Bluetooth),
+        Request::Timer(TimerVerb::Start(1500)),
+        Request::Timer(TimerVerb::Popup),
         Request::Calc,
         Request::Windows,
         Request::Outputs,
@@ -509,4 +511,53 @@ fn timed_dnd_has_its_wire_and_old_words_stay() {
         assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} -> {:?}", String::from_utf8_lossy(h), decode(h));
     }
     assert_eq!((DND_MIN_SECS, DND_MAX_SECS), (60, 86_400));
+}
+
+/// Timer spec § 7: each verb round-trips (`Start(1500)` as `timer start 1500`, the others by their
+/// word); a start outside 1 s to a day, or not a number, is malformed; an unknown word is refused
+/// by name; `timer` alone is malformed.
+#[test]
+fn timer_words_round_trip_and_bad_ones_are_refused() {
+    for (v, wire) in [
+        (TimerVerb::Start(1500), "timer start 1500"),
+        (TimerVerb::Start(TIMER_MIN_SECS), "timer start 1"),
+        (TimerVerb::Start(TIMER_MAX_SECS), "timer start 86400"),
+        (TimerVerb::Pomodoro, "timer pomodoro"),
+        (TimerVerb::Stopwatch, "timer stopwatch"),
+        (TimerVerb::Pause, "timer pause"),
+        (TimerVerb::Resume, "timer resume"),
+        (TimerVerb::Toggle, "timer toggle"),
+        (TimerVerb::Stop, "timer stop"),
+        (TimerVerb::Skip, "timer skip"),
+        (TimerVerb::Popup, "timer popup"),
+    ] {
+        let bytes = encode_request(&Request::Timer(v));
+        assert_eq!(bytes, format!("{MAGIC} {wire}\n").into_bytes(), "{v:?}");
+        assert_eq!(decode(&bytes), Ok(Some(Request::Timer(v))), "{v:?}");
+        if !matches!(v, TimerVerb::Start(_)) {
+            assert_eq!(TimerVerb::parse_word(v.word()), Some(v), "{v:?}");
+        }
+    }
+    assert_eq!(TimerVerb::parse_word("start"), None, "start carries a duration");
+    for h in [
+        "timer start 0",
+        "timer start 86401",
+        "timer start x",
+        "timer start -5",
+        "timer start 1500 now",
+        "timer start",
+        "timer start 99999999999999999999",
+        "timer",
+        "timer pause now",
+        "timer Pause",
+    ] {
+        let bytes = format!("{MAGIC} {h}\n").into_bytes();
+        assert!(matches!(decode(&bytes), Err(IpcError::Malformed(_))), "{h:?} → {:?}", decode(&bytes));
+    }
+    assert_eq!(
+        decode(format!("{MAGIC} timer nap\n").as_bytes()),
+        Err(IpcError::Malformed("unknown timer word \"nap\"".into())),
+        "an unknown word is named"
+    );
+    assert_eq!(Request::Timer(TimerVerb::Stop).reply_timeout(), Some(Duration::from_secs(2)));
 }

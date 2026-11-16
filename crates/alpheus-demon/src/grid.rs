@@ -152,6 +152,8 @@ pub enum GroupKind {
     Privacy,
     /// The power button: a block of its own (power spec § 1).
     Power,
+    /// The focus timer's chip: a block of its own (timer spec § 2).
+    Timer,
 }
 
 /// One block: cells [start, end) of the bar's grid, its pads included under the block styles;

@@ -3,7 +3,8 @@
 //! reply. Never the session's real socket.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, encode_reply, socket_path,
+    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, TimerVerb, encode_reply,
+    socket_path,
 };
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
@@ -547,6 +548,29 @@ fn calc_sends_its_request_and_an_old_daemon_exits_3() {
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
     assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
+/// Timer spec § 7: `--timer` sends its request and exits 0 on Done; a daemon too old for it answers
+/// the unknown request: exit 3, one request; any other error is exit 2 with its text.
+#[test]
+fn timer_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("timer", Reply::Done);
+    assert_eq!(launch(&["--timer", "start", "25m"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Timer(TimerVerb::Start(1500)));
+    let (socket, connections, stop, daemon) =
+        replying_daemon("timer-old", Reply::Error("malformed request: unknown request \"timer\"".into()));
+    let (code, out, err) = launch(&["--timer", "popup"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--timer"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    let (socket, _connections, stop, daemon) = replying_daemon("timer-off", Reply::Error("the timer module is not in modules".into()));
+    let (code, out, err) = launch(&["--timer", "stop"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("the timer module is not in modules"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
 }
 
 /// Launcher 2: `--windows` sends its request and exits 0 on Done; a daemon too old for it answers

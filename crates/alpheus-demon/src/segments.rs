@@ -15,6 +15,7 @@ use crate::session_bus::Status;
 use crate::session_bus::icons::{Icon, TrayIcon};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
+use crate::timer::{ChipLook, TimerChip};
 use alpheus_commun::theme::settings::ModuleColors;
 
 // Material Design glyphs of the Nerd Font, checked by name in the post table
@@ -139,6 +140,26 @@ pub(crate) fn privacy(p: &Privacy) -> Option<Segment> {
     }
     let mut segment = module_segment(ModuleId::Privacy, pieces);
     segment.withhold_hue = true;
+    Some(segment)
+}
+
+/// The timer's chip (timer spec § 2): the glyph then the text, in the yellow (the glyph under
+/// `icons`, both under `full`) while it runs; dim while paused or at rest; `done` in warn. One click
+/// zone. None without a chip.
+pub(crate) fn timer(chip: Option<&TimerChip>, mc: ModuleColors) -> Option<Segment> {
+    let c = chip?;
+    let (icon, text) = match c.look {
+        ChipLook::Running => (icon_style(mc, Hue::Yellow, Style::NORMAL), text_style(mc, Hue::Yellow, Style::NORMAL)),
+        ChipLook::Paused | ChipLook::Idle => (Style::MUTED, Style::MUTED),
+        ChipLook::Done => (Style::WARN, Style::WARN),
+    };
+    let pieces = match &c.text {
+        Some(t) => vec![piece(format!("{} ", c.glyph), icon), piece(t.clone(), text)],
+        None => vec![piece(c.glyph.to_string(), icon)],
+    };
+    let mut segment = module_segment(ModuleId::Timer, pieces);
+    // Dim states take no hue behind them under `pills` (as a paused media block).
+    segment.withhold_hue = matches!(c.look, ChipLook::Idle | ChipLook::Paused);
     Some(segment)
 }
 

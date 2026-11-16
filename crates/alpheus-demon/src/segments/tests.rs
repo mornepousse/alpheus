@@ -939,3 +939,38 @@ fn net_icons_are_tinted_under_icons_and_the_figures_plain() {
     assert_eq!(t, "\u{f01da} 1.2M \u{f0552} 80K");
     assert_eq!(st, "c......c....");
 }
+
+fn chip(glyph: char, text: Option<&str>, look: crate::timer::ChipLook) -> crate::timer::TimerChip {
+    crate::timer::TimerChip { glyph, text: text.map(str::to_string), look }
+}
+
+/// Timer spec § 2: a running chip in the yellow (icon, then text under `full`), a paused one dim,
+/// `done` in warn, the idle glyph dim, nothing without a chip.
+#[test]
+fn the_timer_chip_by_look() {
+    use crate::timer::{ChipLook, DONE, TIMER};
+    let at = |c: &crate::timer::TimerChip, mc| draw(&super::timer(Some(c), mc).unwrap());
+    let running = chip(TIMER, Some("25m"), ChipLook::Running);
+    assert_eq!(at(&running, FULL), ("\u{f051b} 25m".into(), "yyyyy".into()));
+    assert_eq!(at(&running, ICONS), ("\u{f051b} 25m".into(), "yy...".into()), "only the glyph (and its space) under icons");
+    assert_eq!(at(&running, ModuleColors::None), ("\u{f051b} 25m".into(), ".....".into()));
+    assert_eq!(at(&running, ModuleColors::Pills).1, "yyyyy", "pills lays out as full");
+    let paused = chip(crate::segments::PAUSE, Some("24m"), ChipLook::Paused);
+    for mc in [ModuleColors::None, ICONS, FULL] {
+        assert_eq!(at(&paused, mc), ("\u{f03e4} 24m".into(), "mmmmm".into()), "{mc:?}");
+    }
+    let done = chip(DONE, Some("done"), ChipLook::Done);
+    for mc in [ModuleColors::None, ICONS, FULL] {
+        assert_eq!(at(&done, mc), ("\u{f009e} done".into(), "wwwwww".into()), "{mc:?}");
+    }
+    let idle = chip(TIMER, None, ChipLook::Idle);
+    for mc in [ModuleColors::None, ICONS, FULL] {
+        assert_eq!(at(&idle, mc), ("\u{f051b}".into(), "m".into()), "{mc:?}");
+    }
+    let s = super::timer(Some(&running), FULL).unwrap();
+    assert_eq!((s.module, &s.target), (ModuleId::Timer, &Some(Target::Module(ModuleId::Timer))), "one click zone");
+    assert!(super::timer(None, FULL).is_none());
+    for (c, withheld) in [(&running, false), (&paused, true), (&done, false), (&idle, true)] {
+        assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
+    }
+}

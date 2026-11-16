@@ -13,6 +13,9 @@ use std::path::Path;
 /// text says whether it ends (`until <unix>`) or came from a screen share (`sharing`).
 pub const DND_FILE: &str = "dnd";
 
+/// The focus timer's file: one line of the timer spec § 6, removed while the timer is idle.
+pub const TIMER_FILE: &str = "timer";
+
 fn euid() -> u32 {
     // SAFETY: geteuid(2) cannot fail.
     unsafe { libc::geteuid() }
@@ -114,6 +117,40 @@ pub fn save_dnd(state_dir: &Path, text: Option<&str>) -> io::Result<()> {
     match text {
         Some(t) => write_private(state_dir, DND_FILE, t.as_bytes()),
         None => remove_private(state_dir, DND_FILE),
+    }
+}
+
+/// Bytes of the timer file read: its longest line is under 100.
+const TIMER_READ_CAP: u64 = 256;
+
+/// The focus timer as saved: its text for a regular file of ours at `state_dir/timer` (followed by
+/// nothing), in a directory that passes `dir_is_ours`. Absent, a symlink, a directory, someone
+/// else's or a directory not ours: None. At most `TIMER_READ_CAP` bytes are read: a longer file,
+/// or one that cannot be read, is `Some("")`, which the model refuses (the file is then dropped).
+pub fn read_timer(state_dir: &Path) -> Option<String> {
+    use std::io::Read;
+    if dir_is_ours(state_dir).is_err() {
+        crate::log::write("timer: state directory refused, read as idle");
+        return None;
+    }
+    let path = state_dir.join(TIMER_FILE);
+    if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file() && m.uid() == euid()) {
+        return None;
+    }
+    let mut text = Vec::new();
+    let read = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .and_then(|f| f.take(TIMER_READ_CAP + 1).read_to_end(&mut text));
+    Some(if read.is_ok() && text.len() as u64 <= TIMER_READ_CAP { String::from_utf8_lossy(&text).into_owned() } else { String::new() })
+}
+
+/// Saves the focus timer: the text written, None removes the file.
+pub fn save_timer(state_dir: &Path, text: Option<&str>) -> io::Result<()> {
+    match text {
+        Some(t) => write_private(state_dir, TIMER_FILE, t.as_bytes()),
+        None => remove_private(state_dir, TIMER_FILE),
     }
 }
 
@@ -323,6 +360,38 @@ mod tests {
         std::os::unix::fs::symlink(&state, &link).unwrap();
         assert!(!dnd_on(&link), "a symlinked directory: off");
         assert!(dnd_on(&state));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_timer_file_round_trips_and_goes_when_idle() {
+        let root = scratch("timer");
+        let state = root.join("alpheus");
+        assert_eq!(read_timer(&state), None, "no directory");
+        save_timer(&state, Some("countdown paused 1000 2000\n")).unwrap();
+        assert_eq!(mode(&state), 0o700, "created owner-only");
+        assert_eq!(read_timer(&state).as_deref(), Some("countdown paused 1000 2000\n"));
+        assert_eq!(mode(&state.join(TIMER_FILE)), 0o600);
+        save_timer(&state, None).unwrap();
+        assert_eq!(read_timer(&state), None);
+        assert!(!state.join(TIMER_FILE).exists(), "idle: no file");
+        save_timer(&state, None).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_timer_file_is_read_capped_and_never_through_a_symlink() {
+        let root = scratch("timer-cap");
+        let state = root.join("alpheus");
+        save_timer(&state, Some(&"x".repeat(256))).unwrap();
+        assert_eq!(read_timer(&state), Some("x".repeat(256)), "the cap itself is read whole");
+        save_timer(&state, Some(&"x".repeat(257))).unwrap();
+        assert_eq!(read_timer(&state).as_deref(), Some(""), "one byte over: refused, not truncated");
+        save_timer(&state, Some(&"countdown paused 1 1000\n".repeat(1 << 16))).unwrap();
+        assert_eq!(read_timer(&state).as_deref(), Some(""), "a huge file: refused");
+        save_timer(&state, None).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", state.join(TIMER_FILE)).unwrap();
+        assert_eq!(read_timer(&state), None, "a symlink");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

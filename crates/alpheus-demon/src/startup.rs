@@ -578,6 +578,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         let (h, nanos) = LocalTime::now();
         on_message(state, Msg::Clock(h), || h); // never consulted: Msg::Clock is not "from the compositor"
         state.dnd_check_clock(); // a timed do-not-disturb's end, by the wall clock (suspend)
+        state.timer_check_clock(); // the focus timer's end, likewise
         TimeoutAction::ToDuration(clock::next_tick(h.second, nanos, seconds))
     });
     if mail.is_err() || timer.is_err() {
@@ -629,6 +630,9 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     if want.notifications {
         state.dnd_load(crate::notify_app::unix_now());
     }
+    // The focus timer as it was left (nothing without `timer` in `modules`): its chip, even idle,
+    // and its deadline; with the loop handle made, whatever `notifications` is.
+    state.timer_load(crate::timer_app::unix_ms());
     state.start_notifications(want.notifications);
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.theme.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));

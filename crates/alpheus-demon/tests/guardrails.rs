@@ -762,7 +762,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -775,6 +775,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
+            Request::Timer(_) => "timer",
             Request::Outputs => "outputs",
             Request::OutputsTry(_) => "outputs-try",
             Request::OutputsKeep => "outputs-keep",
@@ -792,6 +793,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
+        Request::Timer(TimerVerb::Popup),
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsKeep,
@@ -810,6 +812,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "clear-notifications",
             "osd",
             "quick",
+            "timer",
             "outputs",
             "outputs-try",
             "outputs-keep",
@@ -1008,6 +1011,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
         // forget question (quick delivery 3) is.
         ("quick_app.rs", "Timer::", 1),
+        // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
+        // runs (at its end, and at each minute of the chip).
+        ("timer_app.rs", "Timer::", 1),
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
@@ -1429,6 +1435,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/emoji.rs",
     "launcher/emoji/",
     "resources_popup.rs",
+    "timer.rs",
+    "timer_popup.rs",
 ];
 
 #[test]
@@ -2714,6 +2722,70 @@ fn the_power_menu_has_no_panicking_path() {
     }
 }
 
+/// The focus timer's wiring: the deadline's callback calls `fired()` before the clock check; the
+/// clock's tick re-checks the wall-clock end (a suspended laptop's deadline is late); the state is
+/// loaded whenever `timer` is in `modules`, not only with `notifications`; the model changes in
+/// `timer_do`, `timer_check_clock` and `timer_load` only.
+#[test]
+fn the_timer_is_wired_through_one_path() {
+    let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap();
+    let app = src("timer_app.rs");
+    let tick = function_body(&app, "fn timer_tick(");
+    let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
+    assert!(fired.is_some() && check.is_some() && fired < check, "fired() before the check: {tick}");
+    let startup = src("startup.rs");
+    let at = startup.find("Msg::Clock(h)").expect("the clock closure");
+    let end = at + startup[at..].find("TimeoutAction::ToDuration").expect("the clock closure's end");
+    assert!(startup[at..end].contains("timer_check_clock()"), "the clock tick must re-check the timer");
+    let modules = function_body(&startup, "fn start_modules(");
+    let notifications = function_body(modules, "if want.notifications");
+    assert!(modules.contains("state.timer_load("), "the timer is loaded at start");
+    assert!(!notifications.contains("timer_load"), "not only with the notifications module: {notifications}");
+    // Every file under src/: the model is assigned in timer_app.rs's three owners and nowhere else
+    // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
+    for (path, text) in source_files() {
+        let name = relative_path(&path);
+        let prod = production_code(&text);
+        let mut owner = String::new();
+        for line in prod.lines() {
+            if let Some(i) = line.find("fn ") {
+                owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
+            }
+            // `x.timer.model =`, a destructured `timer.model =` (not part of a longer name) and
+            // `mem::replace(&mut …timer.model`.
+            let assigns = line.match_indices("timer.model =").any(|(i, _)| {
+                let before = line[..i].chars().next_back();
+                !line[i..].starts_with("timer.model ==") && before.is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            }) || (["replace(&mut", "swap(&mut"].iter().any(|f| line.contains(f)) && line.contains("timer.model"));
+            if assigns {
+                assert!(
+                    name == "timer_app.rs" && ["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()),
+                    "the model changed in {name}'s {owner}"
+                );
+            }
+        }
+    }
+    // A due end is applied before a change (the pure `change_step`): a click after a resume must
+    // not pause or extend a timer that has already ended; timer_do never applies a change itself.
+    let body = function_body(&app, "pub(crate) fn timer_do(");
+    assert!(body.contains("change_step("), "timer_do goes through change_step: {body}");
+    assert!(!body.contains(".apply("), "timer_do applies no change but through change_step: {body}");
+}
+
+/// Timer spec § 8: no panic in the focus timer's production code (it parses a file it did not
+/// write, and does arithmetic on wall-clock times).
+#[test]
+fn the_timer_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["timer.rs", "timer_app.rs", "timer_popup.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
 /// Small features 1: the calculator's evaluator runs on each keystroke of the launcher's
 /// query and must never panic, whatever is typed. Production code only.
 #[test]
@@ -2790,6 +2862,22 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert!(row.contains("key: App::power_key,"), "{row}");
     let key = function_body(&power_app, "fn power_key(");
     assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
+}
+
+/// Timer spec § 3, § 8: whatever closes the timer popup, the one-second cadence goes (`timer_sync`
+/// sees the popup gone) and an end the popup showed is seen. No fake Wayland popup can be closed
+/// every way in a unit test: the wiring is checked in the source.
+#[test]
+fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let timer_app = src("timer_app.rs");
+    let row = popup_ops_row(&timer_app);
+    assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
+    let closed = function_body(&timer_app, "fn timer_closed(");
+    let (seen, sync) = (closed.find("seen_at_close("), closed.find("self.timer_sync()"));
+    assert!(closed.contains("self.timer_do("), "an end the popup showed is seen: {closed}");
+    assert!(matches!((seen, sync), (Some(a), Some(b)) if a < b), "seen first, then the deadline without the seconds: {closed}");
 }
 
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a

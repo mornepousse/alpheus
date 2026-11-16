@@ -6,6 +6,16 @@ use crate::system::*;
 use alpheus_commun::exec::fake::FakeExecutor;
 
 #[test]
+fn only_the_timer_chips_middle_button_is_the_timers() {
+    let timer = Target::Module(ModuleId::Timer);
+    assert!(timer_middle(&timer, Button::Middle));
+    for b in [Button::Left, Button::Right, Button::WheelUp, Button::WheelDown] {
+        assert!(!timer_middle(&timer, b), "{b:?}");
+    }
+    assert!(!timer_middle(&Target::Module(ModuleId::Media), Button::Middle));
+}
+
+#[test]
 fn the_media_module_answers_the_middle_button_and_the_wheel() {
     use crate::media::Control;
     let media = Target::Module(ModuleId::Media);

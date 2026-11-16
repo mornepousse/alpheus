@@ -600,6 +600,16 @@ fn the_resource_glyphs_are_in_the_font() {
 }
 
 #[test]
+fn the_timer_glyphs_are_in_the_font() {
+    use crate::timer::{BREAK, DONE, STOPWATCH, TIMER, WORK};
+    use crate::timer_popup::{PLUS, STOP};
+    let mut p = fonts();
+    for c in [TIMER, WORK, BREAK, STOPWATCH, DONE, PLUS, STOP] {
+        assert!(!p.shaped(c, false).is_empty(), "U+{:X} has no glyph in the bar's font", u32::from(c));
+    }
+}
+
+#[test]
 fn only_useful_faces_are_loaded() {
     // Regular + bold of the family, plus regular + bold of DejaVu Sans
     // Mono (the default fallback): ≈ 2 MB, DejaVu's own share close to

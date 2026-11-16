@@ -12,7 +12,7 @@
 
 use alpheus_commun::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
-    Reply, Request, exchange_waiting, numbered_lines, wipe,
+    Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
 };
 use alpheus_commun::local_time;
 pub use alpheus_commun::local_time::parse_clock;
@@ -35,7 +35,8 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --windows | --help]
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --windows
+                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -60,12 +61,16 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           with wifi, on Bluetooth with bluetooth)
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   --windows               open the window switcher (the previous window selected), or select the next window when it is open
+  --timer start DURATION  start the bar's focus timer: 90s, 25m, 1h30m or a bare number of minutes (1 s to 24 h)
+  --timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+                          start a Pomodoro or a stopwatch, pause, resume, toggle or stop the timer,
+                          skip to a Pomodoro's next phase, open or close its popup
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc/--windows (restarted since the upgrade? until then, use another menu).
+or timer module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc/--windows/--timer (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -89,6 +94,7 @@ pub enum Invocation {
     Quick(QuickVerb),
     Calc,
     Windows,
+    Timer(TimerVerb),
     Help,
 }
 
@@ -134,6 +140,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 let value = it.next().ok_or_else(|| "--until needs a time".to_string())?;
                 set_end(&mut end, "--until", utf8(value)?)?;
             }
+            "--timer" => choose(&mut mode, Invocation::Timer(timer_arg(&mut it)?))?,
             "--calc" => choose(&mut mode, Invocation::Calc)?,
             "--windows" => choose(&mut mode, Invocation::Windows)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
@@ -257,6 +264,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Quick(v) => Request::Quick(v),
         Invocation::Calc => Request::Calc,
         Invocation::Windows => Request::Windows,
+        Invocation::Timer(v) => Request::Timer(v),
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -287,6 +295,57 @@ fn ignored(name: &'static str, value: &str, dmenu_only: &mut Option<&'static str
     Ok(())
 }
 
+/// A `--timer` duration as typed, in seconds: `90s`, `25m`, `1h30m` (hours, then minutes, then
+/// seconds, each at most once) or a bare number of minutes; one second to a day. Anything else
+/// (a fraction, a sign, another order, no unit after digits but the bare form) is None.
+pub fn parse_timer_duration(s: &str) -> Option<u32> {
+    let secs = if s.bytes().all(|b| b.is_ascii_digit()) { digits(s)?.checked_mul(60)? } else { units(s)? };
+    u32::try_from(secs).ok().filter(|s| (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(s))
+}
+
+/// Plain decimal digits, at most six (a day is 1,440 minutes or 86,400 seconds).
+fn digits(s: &str) -> Option<u64> {
+    if s.is_empty() || s.len() > 6 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// `1h30m20s` and its parts, in that order, each at most once.
+fn units(s: &str) -> Option<u64> {
+    let (mut rest, mut total, mut last) = (s, 0u64, 0u8);
+    while !rest.is_empty() {
+        let at = rest.find(|c: char| !c.is_ascii_digit())?;
+        let (n, unit) = (digits(&rest[..at])?, rest.as_bytes()[at]);
+        let (rank, factor) = match unit {
+            b'h' => (1, 3600),
+            b'm' => (2, 60),
+            b's' => (3, 1),
+            _ => return None,
+        };
+        if rank <= last {
+            return None;
+        }
+        last = rank;
+        total = total.checked_add(n.checked_mul(factor)?)?;
+        rest = &rest[at + 1..];
+    }
+    Some(total)
+}
+
+/// The words after `--timer`: `start DURATION`, or one of `TimerVerb::parse_word`'s.
+fn timer_arg<'a>(it: &mut impl Iterator<Item = &'a OsString>) -> Result<TimerVerb, String> {
+    const WORDS: &str = "start, pomodoro, stopwatch, pause, resume, toggle, stop, skip or popup";
+    let word = utf8(it.next().ok_or_else(|| format!("--timer needs {WORDS}"))?)?;
+    if word == "start" {
+        let value = utf8(it.next().ok_or("--timer start needs a duration (90s, 25m, 1h30m or minutes)")?)?;
+        return parse_timer_duration(value)
+            .map(TimerVerb::Start)
+            .ok_or_else(|| format!("--timer start takes 90s, 25m, 1h30m or minutes, from 1 second to 24 hours, not {value:?}"));
+    }
+    TimerVerb::parse_word(word).ok_or_else(|| format!("--timer takes {WORDS}, not {word:?}"))
+}
+
 /// The word after `--dnd` or `--osd`: one of `words` (as `parse` knows them), else a usage message.
 fn verb_arg<'a, T>(
     it: &mut impl Iterator<Item = &'a OsString>,
@@ -305,7 +364,8 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --help".into()
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --timer, --help"
+                .into(),
         );
     }
     *slot = Some(i);
@@ -405,7 +465,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Osd(_)
             | Invocation::Quick(_)
             | Invocation::Calc
-            | Invocation::Windows),
+            | Invocation::Windows
+            | Invocation::Timer(_)),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -459,6 +520,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Quick(_)
             | Request::Calc
             | Request::Windows
+            | Request::Timer(_)
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert,
@@ -492,6 +554,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
+        Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
             Some(if matches!(end, DndEnd::For(_)) { "--dnd on --for" } else { "--dnd on --until" })
@@ -525,6 +588,11 @@ const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 3] = [
     // Delivery 2's daemon.
     (Some(QuickVerb::Bluetooth), "malformed request: unknown quick word \"bluetooth\"", "--quick bluetooth"),
 ];
+
+/// What a daemon too old for `--timer` answers (`socket::describe` of an unknown request) and the
+/// name for the message; exit 3, so a key bound to it can fall back. A word added later adds a row,
+/// as `OLD_QUICK`'s.
+const OLD_TIMER: [(&str, &str); 1] = [("malformed request: unknown request \"timer\"", "--timer")];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
@@ -638,7 +706,7 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
-            (&["--calc", "--toggle"], "--quick, --calc, --windows, --help"),
+            (&["--calc", "--toggle"], "--quick, --calc, --windows, --timer, --help"),
             (&["--windows", "--toggle"], "--windows"),
             (&["--quick", "sound", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--help", "--dmenu"], "only one of"),
@@ -683,6 +751,72 @@ mod tests {
         assert!(String::from_utf8_lossy(&err).contains("--calc"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
         assert_eq!(reply_to_exit(&Request::Calc, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+    }
+
+    /// Timer spec § 7, plan decision 12: durations as typed, in seconds.
+    #[test]
+    fn timer_durations_are_read_as_typed() {
+        for (text, secs) in [
+            ("90s", 90),
+            ("25m", 1500),
+            ("1h30m", 5400),
+            ("1m30s", 90),
+            ("25", 1500),
+            ("1h", 3600),
+            ("24h", 86_400),
+            ("1s", 1),
+            ("1h1m1s", 3661),
+            ("1440", 86_400),
+        ] {
+            assert_eq!(parse_timer_duration(text), Some(secs), "{text}");
+        }
+        for text in ["0s", "24h1s", "m", "1.5m", "30s1m", "", "1h30", "0", "1441", "-5m", "+5m", "1m1m", "5x", "h1", "1 m", "9999999"] {
+            assert_eq!(parse_timer_duration(text), None, "{text:?}");
+        }
+    }
+
+    /// `--timer`'s words, its duration and its usage errors.
+    #[test]
+    fn timer_arguments_are_parsed() {
+        for (a, v) in [
+            (&["--timer", "start", "25m"][..], TimerVerb::Start(1500)),
+            (&["--timer", "toggle"], TimerVerb::Toggle),
+            (&["--timer", "pomodoro"], TimerVerb::Pomodoro),
+            (&["--timer", "stopwatch"], TimerVerb::Stopwatch),
+            (&["--timer", "popup"], TimerVerb::Popup),
+            (&["--timer", "skip"], TimerVerb::Skip),
+        ] {
+            assert_eq!(parse_args(&args(a)), Ok(Invocation::Timer(v)), "{a:?}");
+            assert_eq!(request_of(Invocation::Timer(v), 0), Ok(Request::Timer(v)));
+        }
+        for (a, needle) in [
+            (&["--timer"][..], "needs start, pomodoro"),
+            (&["--timer", "start"], "needs a duration"),
+            (&["--timer", "start", "0s"], "from 1 second to 24 hours"),
+            (&["--timer", "start", "25h"], "from 1 second to 24 hours"),
+            (&["--timer", "nap"], "--timer takes start"),
+            (&["--timer", "stop", "--close"], "only one of"),
+            (&["--toggle", "--timer", "stop"], "only one of"),
+            (&["--timer", "stop", "-p", "x"], "--prompt only goes with --dmenu"),
+            (&["--timer", "stop", "now"], "unknown option"),
+        ] {
+            let e = parse_args(&args(a)).unwrap_err();
+            assert!(e.contains(needle), "{a:?}: {e}");
+        }
+    }
+
+    /// A daemon from before `--timer` refuses the word as an unknown request: exit 3, naming it.
+    #[test]
+    fn a_daemon_without_timer_is_too_old() {
+        let refusal = "malformed request: unknown request \"timer\"";
+        let request = Request::Timer(TimerVerb::Stop);
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--timer"), "{}", String::from_utf8_lossy(&err));
+        let mut err = Vec::new();
+        let other = "the timer module is not in modules";
+        assert_eq!(reply_to_exit(&request, Reply::Error(other.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        assert!(String::from_utf8_lossy(&err).contains(other), "{}", String::from_utf8_lossy(&err));
     }
 
     /// A daemon from before `--windows` refuses the word as an unknown request: exit 3, naming it.

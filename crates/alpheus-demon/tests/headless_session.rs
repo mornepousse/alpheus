@@ -6084,6 +6084,240 @@ fn hooks_say_what_never_fires() {
     assert_eq!(d.count("hooks: power_profile never fires"), 1, "{:?}", d.log());
 }
 
+/// The timer chip: the first module of the bar, so cell 1 (≈ 8 to 16 px), as the power button alone.
+const TIMER_AT: (u32, u32) = (12, 10);
+
+/// The timer's bar (catppuccin dark) on a private session bus (the notifications tests need one):
+/// `modules` as a TOML array, `[timer] sound` touching `<runtime>/rang` (coreutils' `touch`, a
+/// private path), `extra` appended. Never the real state directory: `XDG_STATE_HOME` is the
+/// runtime's.
+fn timer_daemon(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let toml = timer_toml(&sway, modules, extra);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    (bus, sway, hypr, d)
+}
+
+/// The timer bar's `bar.toml`: `modules` (a TOML array), the sound touching `<runtime>/rang`, `extra`.
+fn timer_toml(sway: &Sway, modules: &str, extra: &str) -> String {
+    format!("modules = {modules}\n[timer]\nsound = [\"touch\", \"{}\"]\n{extra}", sway.runtime.join("rang").display())
+}
+
+/// `alpheus-launch <args>` against the daemon: its exit code, stdout and stderr.
+fn timer_verb(sway: &Sway, args: &[&str]) -> (i32, String, String) {
+    script(sway, args, "").join().unwrap()
+}
+
+/// Waits until the timer popup is on screen: its background fills a good part of the area under
+/// the chip ("timer shown" is logged when the popup is asked for, before its first buffer).
+fn timer_drawn(sway: &Sway, d: &Daemon) {
+    let bg = rgb(preset("catppuccin").unwrap().dark.popup_bg);
+    let filled = |s: &Ppm| (29..60).flat_map(|y| (14..60).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(bg)).count() > 300;
+    assert!(sway.wait_for_screen("HEADLESS-1", filled), "the timer popup drawn: {:?}", d.log());
+}
+
+/// Timer spec § 3: a click on the chip opens the popup (idle: its Timer row selected); Enter starts
+/// the countdown of the row's length (10 min), the popup stays open; Escape closes it; the state
+/// file says it runs.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_a_click_opens_the_popup_and_enter_starts_a_countdown() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-popup", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: countdown started (10 min)", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("countdown running "), "{file:?}");
+}
+
+/// Plan decision 4, F6: with the popup open and a countdown running the loop wakes each second;
+/// once the popup is closed (a second click on the chip: Escape's key-up and repeat make one
+/// unrelated wake-up of their own) it does not wake at all, the countdown's next chip change being
+/// a minute away; the window starts right after the close's own round trip (a barrier verb), so a
+/// one-second timer left armed by it shows.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_the_popups_second_tick_stops_at_close() {
+    // The whole test fits between two minute turns (the clock's redraw is a wake-up of its own).
+    while !(2..=35).contains(&alpheus_demon::clock::LocalTime::now().0.second) {
+        thread::sleep(Duration::from_millis(200));
+    }
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-tick", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: countdown started (10 min)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // Return's own key-up and repeat events settle
+    let before = d.main_thread_wakeups();
+    thread::sleep(Duration::from_secs(3));
+    let open = d.main_thread_wakeups().saturating_sub(before);
+    assert!(open >= 2, "open: the loop wakes each second, {open} in 3 s: {:?}", d.log());
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    // A barrier: a verb with nothing to act on is answered once the loop has handled everything the
+    // close queued before it (the buffer's release), so the window starts after the close's replies.
+    assert_eq!(timer_verb(&sway, &["--timer", "resume"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to resume", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(100)); // the verb's own hang-up
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(3));
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(3), "the loop thread");
+    let closed = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 3 s: {:?}", d.log());
+}
+
+const TIMER_END_MODULES: &str = "[\"timer\", \"notifications\", \"clock\"]";
+
+/// Timer spec § 5, § 7: `--timer start 2s` ends with the notification (a bubble) and the sound
+/// (the stub touches `<runtime>/rang`), and the state file is gone once it ended.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_a_short_countdown_ends_with_a_bubble_and_the_sound() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-end", TIMER_END_MODULES, "");
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (2 s)", DELAY), "{:?}", d.log());
+    assert!(sway.runtime.join("state/alpheus/timer").exists(), "saved while it runs");
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    wait_for_file(&sway.runtime.join("rang"), DELAY);
+    assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
+}
+
+/// Plan decision 8: under do-not-disturb the end goes to the history only (no bubble) and makes no sound.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_under_dnd_ends_without_bubble_or_sound() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-dnd", TIMER_END_MODULES, "");
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    // The bar's left part (the chip and the bell; the clock is further right): its pixels with the
+    // chip idle and no count, and again once the end is dismissed, the history holding the notice.
+    let left = |s: &Ppm| (2..20).flat_map(|y| (0..120).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect::<Vec<_>>();
+    let before = sway.screenshot("HEADLESS-1").map(|s| left(&s)).unwrap();
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert!(!d.log().iter().any(|l| l.contains("bubbles shown")), "no bubble: {:?}", d.log());
+    assert!(!sway.runtime.join("rang").exists(), "no sound");
+    // The positive side: the notice is in the history, so the bell counts it. Dismissing `done`
+    // (any verb sees it) puts the chip back to its idle glyph, so only the count differs.
+    assert_eq!(timer_verb(&sway, &["--timer", "stop"]), (EXIT_OK, String::new(), String::new()));
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| left(s) != before),
+        "the bell counts the notice kept under do-not-disturb: {:?}",
+        d.log()
+    );
+}
+
+/// Timer spec § 6: a running countdown is on file, and a daemon started on it restores it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_survives_a_daemon_restart() {
+    let (bus, sway, _hypr, mut d) = timer_daemon("timer-restart", TIMER_END_MODULES, "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "30m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("countdown running "), "{file:?}");
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let toml = timer_toml(&sway, TIMER_END_MODULES, "");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("timer: restored countdown", DELAY), "{:?}", d.log());
+}
+
+/// Without the module the verbs are an error (exit 2, named); with it, a verb with nothing to act
+/// on is Done and says so in the log.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_verbs_need_the_module() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-off", "[\"clock\"]", "");
+    ready(&d);
+    let (code, out, err) = timer_verb(&sway, &["--timer", "stop"]);
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("the timer module is not in modules"), "{err}");
+    drop(d);
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-nothing", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    // A `done` chip: the first verb dismisses it (Seen changed something, so no line), the next
+    // has nothing to act on.
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "1s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(d.count("timer: nothing to skip"), 0, "dismissing done is something: {:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to skip", DELAY), "{:?}", d.log());
+}
+
+/// Plan decision 17: `--timer popup` opens the popup under the chip (not the bar's right end: the
+/// drawn background fills the area under the chip's cell), a second within 250 ms is the press
+/// bind's refire and is ignored, a later one closes it.
+#[test]
+#[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
+fn timer_popup_verb_opens_and_closes_it() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-verb", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: popup debounced", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+}
+
+/// Ruling (final review M3): an end seen in the open popup is seen. The popup is open when a
+/// countdown ends and is closed afterwards; the next verb then finds nothing to dismiss (without
+/// the `Seen` at close, `skip` would have dismissed `done` and logged nothing).
+#[test]
+#[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
+fn timer_an_end_seen_in_the_open_popup_is_seen() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-seen", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // past the verb's own debounce
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to skip", DELAY), "the end was seen at close: {:?}", d.log());
+}
+
+/// A popup opened while idle follows a change made elsewhere: after `--timer start 5m` its first
+/// action is Pause, so Enter pauses and never restarts the countdown.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_the_open_popup_follows_a_change_made_outside() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-follow", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "5m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (5 min)", DELAY), "{:?}", d.log());
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: paused", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: countdown started"), 1, "Enter never restarted it: {:?}", d.log());
+}
+
 /// Each test gives its compositor a name, and the name picks its runtime directory
 /// (`alpheus-it-<pid>-<name>`): two tests sharing one would remove each other's directory and
 /// fight over the same sockets when run in parallel. Not ignored: it only reads this file.
@@ -6091,7 +6325,7 @@ fn hooks_say_what_never_fires() {
 fn every_test_compositor_has_its_own_name() {
     // Everything above this test: its own list of starters is not a test's name.
     let source = include_str!("headless_session.rs").split("fn every_test_compositor_has_its_own_name").next().unwrap_or("");
-    let starters = ["Sway::start(", "tray_bar(", "menu_bar(", "clock_bar(", "theme_bar(", "shape_bar(", "media_daemon("];
+    let starters = ["Sway::start(", "tray_bar(", "menu_bar(", "clock_bar(", "theme_bar(", "shape_bar(", "media_daemon(", "timer_daemon("];
     let mut names = Vec::new();
     for starter in starters {
         for (at, _) in source.match_indices(starter) {

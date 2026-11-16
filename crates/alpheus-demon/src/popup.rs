@@ -30,6 +30,7 @@ use crate::resources_popup::ResourcesPopup;
 use crate::session_bus::codec::Layout;
 use crate::session_bus::menu::{Menu, MenuAction};
 use crate::session_bus::menu_session::MenuSession;
+use crate::timer_popup::TimerPopup;
 use crate::wayland::{App, pick_buffer, position_by};
 use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
@@ -233,6 +234,8 @@ pub enum PopupBody {
     Privacy,
     /// The resources popup (resources popup spec § 2): figures and graphs per item, `Monitor…`.
     Resources(ResourcesPopup),
+    /// The timer popup (timer spec § 3).
+    Timer(TimerPopup),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -254,6 +257,8 @@ pub enum ModulePopup {
     Privacy,
     /// The resources popup: the resources module (resources popup spec § 1).
     Resources,
+    /// The timer chip's popup.
+    Timer,
 }
 
 impl ModulePopup {
@@ -294,7 +299,7 @@ pub(crate) struct PopupOps {
 /// The module popups, one row per `ModulePopup` variant, in variant order (a test checks it). A new
 /// popup: its variant, its body in `PopupBody` and `module_popup`, an `OPS` row in its `*_app.rs`,
 /// listed here, and the module's `popup` in `modules.rs`.
-static POPUPS: [PopupOps; 7] = [
+static POPUPS: [PopupOps; 8] = [
     crate::calendar_app::OPS,
     crate::media_app::OPS,
     crate::panel_app::OPS,
@@ -302,6 +307,7 @@ static POPUPS: [PopupOps; 7] = [
     crate::power_app::OPS,
     crate::privacy_app::OPS,
     crate::resources_app::OPS,
+    crate::timer_app::OPS,
 ];
 
 /// A row's hook for a popup with nothing to do there.
@@ -318,6 +324,7 @@ impl PopupBody {
             PopupBody::Power(_) => Some(ModulePopup::Power),
             PopupBody::Privacy => Some(ModulePopup::Privacy),
             PopupBody::Resources(_) => Some(ModulePopup::Resources),
+            PopupBody::Timer(_) => Some(ModulePopup::Timer),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -777,7 +784,8 @@ impl App {
             | PopupBody::Quick(_)
             | PopupBody::Power(_)
             | PopupBody::Privacy
-            | PopupBody::Resources(_) => {
+            | PopupBody::Resources(_)
+            | PopupBody::Timer(_) => {
                 if let Some(p) = body.module_popup() {
                     (p.ops().key)(self, k);
                 }
@@ -830,7 +838,8 @@ impl App {
             | PopupBody::Quick(_)
             | PopupBody::Power(_)
             | PopupBody::Privacy
-            | PopupBody::Resources(_) => {
+            | PopupBody::Resources(_)
+            | PopupBody::Timer(_) => {
                 if let Some(p) = body.module_popup() {
                     (p.ops().pointer)(self, cell, kind);
                 }
@@ -1109,6 +1118,7 @@ mod tests {
             (PopupBody::Power(Power::new(&config).unwrap()), Some(ModulePopup::Power)),
             (PopupBody::Privacy, Some(ModulePopup::Privacy)),
             (PopupBody::Resources(ResourcesPopup::default()), Some(ModulePopup::Resources)),
+            (PopupBody::Timer(TimerPopup::new(10, &crate::timer::Timer::Idle { done: false })), Some(ModulePopup::Timer)),
             (PopupBody::Menu(Menu::new()), None),
             (PopupBody::Tooltip("x".into()), None),
         ];
@@ -1188,6 +1198,21 @@ mod tests {
         assert_eq!(PopupBody::Privacy.module_popup(), Some(ModulePopup::Privacy), "a second press only closes it");
     }
 
+    /// Timer spec § 3: a left press on the timer chip toggles its popup, with or without the quick
+    /// module; the middle click is the chip's own (pause or resume), the others do nothing.
+    #[test]
+    fn a_left_press_on_the_timer_chip_toggles_its_popup() {
+        use crate::config::ModuleId;
+        use crate::grid::Target;
+        let timer = Target::Module(ModuleId::Timer);
+        for quick in [false, true] {
+            assert_eq!(ModulePopup::of(&timer, Button::Left, quick), Some(ModulePopup::Timer), "quick: {quick}");
+            for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                assert_eq!(ModulePopup::of(&timer, b, quick), None, "{b:?}");
+            }
+        }
+    }
+
     /// Every variant with the row it must have. The `match` is exhaustive: a variant added to
     /// `ModulePopup` stops this file compiling until it is listed here, and listed, its row must exist.
     macro_rules! rows {
@@ -1202,7 +1227,7 @@ mod tests {
         };
     }
 
-    rows! { Calendar => 0, Media => 1, Panel => 2, Quick => 3, Power => 4, Privacy => 5, Resources => 6 }
+    rows! { Calendar => 0, Media => 1, Panel => 2, Quick => 3, Power => 4, Privacy => 5, Resources => 6, Timer => 7 }
 
     /// `POPUPS` is indexed by `ModulePopup as usize`: one row per variant, in variant order.
     #[test]

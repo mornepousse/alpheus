@@ -188,6 +188,8 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 Route::Osd => reply_guarded(conn, &state.osd_verb(&request)),
                 // The quick panel's verb: answered here like the OSD's.
                 Route::Quick => reply_guarded(conn, &state.quick_verb(&request)),
+                // The timer's verb: answered here too, before the launcher's guard.
+                Route::Timer => reply_guarded(conn, &state.timer_verb(&request)),
                 // The displays verbs: answered from the output controller, a try once the
                 // compositor answered (its connection kept until then, `outputs_app.rs`).
                 Route::Displays => state.displays_verb(&request, conn),
@@ -251,6 +253,7 @@ enum Route {
     Notifications,
     Osd,
     Quick,
+    Timer,
     Displays,
     Launcher,
 }
@@ -260,6 +263,7 @@ fn route(request: &Request) -> Route {
         Request::Dnd(_) | Request::DndOn(_) | Request::ClearNotifications => Route::Notifications,
         Request::Osd(_) => Route::Osd,
         Request::Quick(_) => Route::Quick,
+        Request::Timer(_) => Route::Timer,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
         Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Dmenu { .. } => Route::Launcher,
     }

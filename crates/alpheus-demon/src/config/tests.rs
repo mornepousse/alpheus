@@ -258,7 +258,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 17);
+    assert_eq!(ModuleId::ALL.len(), 18);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -742,4 +742,40 @@ fn hooks_check_their_commands() {
     assert!(e.contains("hooks.vpn: an argument holds a NUL"), "{e}");
     assert!(BarConfig::from_text("[hooks]\nwifi = [\"x\"]").is_err(), "unknown field");
     assert!(BarConfig::from_text("[hooks]\ndnd = []").is_ok());
+}
+
+#[test]
+fn timer_defaults_and_bounds() {
+    let d = BarConfig::default().timer;
+    assert_eq!((d.countdown, d.work, d.short_break, d.long_break, d.rounds), (10, 25, 5, 15, 4));
+    assert!(d.sound.is_empty());
+    assert_eq!(d.idle, TimerIdle::Glyph);
+    let c = BarConfig::from_text("[timer]\nwork = 50\nidle = \"hidden\"\n").unwrap();
+    assert_eq!((c.timer.work, c.timer.idle), (50, TimerIdle::Hidden));
+    assert_eq!(c.timer.countdown, 10, "the rest keeps its default");
+    let ok = BarConfig::from_text("[timer]\ncountdown = 1\nwork = 180\nshort_break = 1\nlong_break = 180\nrounds = 12\n");
+    assert!(ok.is_ok(), "bounds included: {ok:?}");
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    for (text, key) in [
+        ("[timer]\ncountdown = 0", "timer.countdown"),
+        ("[timer]\nwork = 181", "timer.work"),
+        ("[timer]\nshort_break = 0", "timer.short_break"),
+        ("[timer]\nlong_break = 0", "timer.long_break"),
+        ("[timer]\nrounds = 13", "timer.rounds"),
+        ("[timer]\nrounds = 0", "timer.rounds"),
+        ("[timer]\nsound = [\"\"]", "timer.sound"),
+        ("[timer]\nsound = [\"a\\u0000b\"]", "timer.sound"),
+    ] {
+        assert!(err(text).contains(key), "{text}: {}", err(text));
+    }
+    assert!(err("[timer]\nidle = \"dim\"").contains("unknown variant"));
+    assert!(err("[timer]\nbeep = true").contains("beep"), "unknown key refused");
+}
+
+#[test]
+fn the_timer_module_sits_just_before_the_clock() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock));
+    assert_eq!(ModuleId::Timer.name(), "timer");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Timer));
 }

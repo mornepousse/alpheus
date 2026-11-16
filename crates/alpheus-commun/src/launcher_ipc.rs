@@ -123,6 +123,59 @@ impl QuickVerb {
     }
 }
 
+/// The shortest and the longest countdown `--timer start` asks for, in seconds.
+pub const TIMER_MIN_SECS: u32 = 1;
+pub const TIMER_MAX_SECS: u32 = 86_400;
+
+/// `--timer`'s verb (timer spec § 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerVerb {
+    /// A countdown of this many seconds (`TIMER_MIN_SECS..=TIMER_MAX_SECS`).
+    Start(u32),
+    Pomodoro,
+    Stopwatch,
+    Pause,
+    Resume,
+    Toggle,
+    Stop,
+    Skip,
+    /// Opens or closes the popup.
+    Popup,
+}
+
+impl TimerVerb {
+    /// The word after `timer` (wire) and `--timer` (command line); `start` for a countdown.
+    pub fn word(self) -> &'static str {
+        match self {
+            TimerVerb::Start(_) => "start",
+            TimerVerb::Pomodoro => "pomodoro",
+            TimerVerb::Stopwatch => "stopwatch",
+            TimerVerb::Pause => "pause",
+            TimerVerb::Resume => "resume",
+            TimerVerb::Toggle => "toggle",
+            TimerVerb::Stop => "stop",
+            TimerVerb::Skip => "skip",
+            TimerVerb::Popup => "popup",
+        }
+    }
+
+    /// Every word but `start`, which carries a duration.
+    pub fn parse_word(s: &str) -> Option<TimerVerb> {
+        [
+            TimerVerb::Pomodoro,
+            TimerVerb::Stopwatch,
+            TimerVerb::Pause,
+            TimerVerb::Resume,
+            TimerVerb::Toggle,
+            TimerVerb::Stop,
+            TimerVerb::Skip,
+            TimerVerb::Popup,
+        ]
+        .into_iter()
+        .find(|v| v.word() == s)
+    }
+}
+
 /// `--dmenu`'s options that change what the daemon does (the dmenu inventory, 2026-10-09):
 /// optional trailing words of the dmenu header, so a request without them reads as before.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -163,6 +216,9 @@ pub enum Request {
     /// The quick settings panel (quick spec § 1): toggled, at the volume row with `sound`. Answered
     /// Done, also with the module off (nothing opens).
     Quick(QuickVerb),
+    /// The focus timer (timer spec § 7): answered Done, or an error when the module is not in `modules`.
+    /// An older daemon refuses it as an unknown `timer` request.
+    Timer(TimerVerb),
     /// The Displays tab (displays protocol spec): the snapshot of the heads, answered
     /// `Reply::Outputs`.
     Outputs,
@@ -245,6 +301,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
+///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
 ///   "alpheus-launcher/1 outputs-try <body_len>\n" <body bytes>
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
@@ -274,6 +331,8 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
             Some(w) => format!("{MAGIC} quick {w}\n").into_bytes(),
             None => format!("{MAGIC} quick\n").into_bytes(),
         },
+        Request::Timer(TimerVerb::Start(secs)) => format!("{MAGIC} timer start {secs}\n").into_bytes(),
+        Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -310,6 +369,7 @@ enum Header {
     ClearNotifications,
     Osd(OsdVerb),
     Quick(QuickVerb),
+    Timer(TimerVerb),
     Outputs,
     OutputsTry { body: usize },
     OutputsKeep,
@@ -458,6 +518,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::ClearNotifications => Some(Request::ClearNotifications),
         Header::Osd(v) => Some(Request::Osd(v)),
         Header::Quick(v) => Some(Request::Quick(v)),
+        Header::Timer(v) => Some(Request::Timer(v)),
         Header::Outputs => Some(Request::Outputs),
         Header::OutputsKeep => Some(Request::OutputsKeep),
         Header::OutputsRevert => Some(Request::OutputsRevert),
@@ -492,6 +553,17 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["quick"] => Ok(Header::Quick(QuickVerb::Top)),
         ["quick", word] => {
             QuickVerb::parse(word).map(Header::Quick).ok_or_else(|| IpcError::Malformed(format!("unknown quick word {:?}", cut(word))))
+        }
+        ["timer", "start", secs] => {
+            let secs = number(secs, "timer seconds")?;
+            u32::try_from(secs)
+                .ok()
+                .filter(|s| (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(s))
+                .map(|s| Header::Timer(TimerVerb::Start(s)))
+                .ok_or_else(|| IpcError::Malformed(format!("timer seconds out of range: {secs}")))
+        }
+        ["timer", word] => {
+            TimerVerb::parse_word(word).map(Header::Timer).ok_or_else(|| IpcError::Malformed(format!("unknown timer word {:?}", cut(word))))
         }
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),

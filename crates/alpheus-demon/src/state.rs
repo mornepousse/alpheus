@@ -9,6 +9,7 @@ use crate::notify::NotifyView;
 use crate::privacy::Privacy;
 use crate::session_bus::icons::TrayIcon;
 use crate::system::{BtState, BtView, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
+use crate::timer::TimerChip;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,8 @@ pub enum Msg {
     /// What the bell shows (notifications spec § 4): the unread count, do-not-disturb, whether the
     /// name is ours. Sent by the wiring from the first word of the server on.
     Notifications(NotifyView),
+    /// What the timer's chip shows (timer spec § 2); None: hidden.
+    Timer(Option<TimerChip>),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +78,8 @@ pub struct Bar {
     pub media: Option<MediaView>,
     /// The bell; None until the notification server says anything (no bell drawn).
     pub notifications: Option<NotifyView>,
+    /// The timer's chip; None until the wiring sends one (and when `[timer] idle = "hidden"` at rest).
+    pub timer: Option<TimerChip>,
     /// The privacy indicators (privacy spec §§ 3 and 4), fed by `privacy_at`; empty without the module.
     pub privacy: Privacy,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
@@ -148,6 +153,7 @@ impl Bar {
             tray: Vec::new(),
             media: None,
             notifications: None,
+            timer: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
         }
@@ -208,6 +214,7 @@ impl Bar {
             Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
             Msg::Media(view) => set_if_changed(&mut self.media, view),
             Msg::Notifications(view) => set_if_changed(&mut self.notifications, Some(view)),
+            Msg::Timer(chip) => set_if_changed(&mut self.timer, chip),
         }
     }
 }
@@ -437,6 +444,23 @@ mod tests {
         assert_eq!(b.media, song(false));
         assert!(b.apply(Msg::Media(None)), "the last player left");
         assert_eq!(b.media, None);
+    }
+
+    #[test]
+    fn a_timer_message_redraws_only_on_change() {
+        use crate::timer::{ChipLook, DONE, TIMER, TimerChip};
+        let chip = |text: Option<&str>| Some(TimerChip { glyph: TIMER, text: text.map(str::to_string), look: ChipLook::Running });
+        let mut b = Bar::new(BarConfig::default());
+        assert_eq!(b.timer, None, "nothing at start");
+        assert!(!b.apply(Msg::Timer(None)), "still nothing: no redraw");
+        assert!(b.apply(Msg::Timer(chip(Some("25m")))));
+        assert!(!b.apply(Msg::Timer(chip(Some("25m")))), "the same chip: no redraw");
+        assert!(b.apply(Msg::Timer(chip(Some("24m")))), "a minute later");
+        assert_eq!(b.timer, chip(Some("24m")));
+        let done = Some(TimerChip { glyph: DONE, text: Some("done".into()), look: ChipLook::Done });
+        assert!(b.apply(Msg::Timer(done)));
+        assert!(b.apply(Msg::Timer(None)), "hidden");
+        assert_eq!(b.timer, None);
     }
 
     #[test]
