@@ -1058,6 +1058,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
+        // The clipboard history's read deadline, built in `ClipboardApp::bind`: armed only while a
+        // read is pending, disarmed by every way a read ends.
+        ("clipboard/app.rs", "Timer::", 1),
         // The pad's save, armed only while it is open and edited (quick notes), built in
         // `NotesApp::new`.
         ("notes/app.rs", "Timer::", 1),
@@ -2983,7 +2986,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The clipboard history's pure files run on each copy and must never panic (a boundary panic's
 /// message embeds the text), slice a string by range nor log (a copy is private). Production code
 /// only; Tasks 2 and 3 append theirs.
-const CLIPBOARD_PURE: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs"];
+const CLIPBOARD_PURE: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
 
 #[test]
 fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -3617,7 +3620,8 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
         if name.starts_with("notes/") {
             seen += 1;
         }
-        if name != "notes/paste.rs" {
+        // The clipboard history reads its offers through the same SCTK pipe, in its one protocol file.
+        if name != "notes/paste.rs" && name != "clipboard/control.rs" {
             assert!(
                 !((prod.contains("insert_source(") || prod.contains(".receive(")) && prod.contains("ReadPipe")),
                 "a ReadPipe source outside notes/paste.rs: {name}"
@@ -3834,4 +3838,93 @@ fn the_vpn_tap_follows_the_panel() {
     assert!(take.contains("Msg::Vpn { .. }"), "a VPN message refreshes the panel it shows: {take}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
+}
+
+/// Clipboard task 3: every data-control token is named in `clipboard/control.rs` only.
+#[test]
+fn data_control_only_in_control_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["data_control", "DataControl", "zwlr_data_control", "ext_data_control"] {
+            if t.contains(token) {
+                assert_eq!(name, "clipboard/control.rs", "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
+/// Off (the default): no manager is bound. The `clipboard` field's value is computed under
+/// `clipboard.enabled`.
+#[test]
+fn the_manager_is_bound_only_when_enabled() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let prod = production_code(wayland);
+    let at = prod.find("let clipboard =").expect("the clipboard binding in App::new");
+    let stmt = &prod[at..at + prod[at..].find(';').expect("end of the statement")];
+    let (gate, bind) = (stmt.find("clipboard.enabled"), stmt.find("ClipboardApp::bind("));
+    assert!(gate.is_some() && bind.is_some() && gate < bind, "bound only under clipboard.enabled: {stmt}");
+}
+
+/// The read deadline is armed by every function that starts or ends a read, and disarmed with it.
+#[test]
+fn every_clipboard_read_start_and_end_syncs_the_timer() {
+    let files = source_files();
+    let body = |file: &str, sig: &str| {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == file).unwrap_or_else(|| panic!("{file}")).1;
+        function_body(&production_code(t), sig).to_string()
+    };
+    for (file, sig) in [
+        ("clipboard/control.rs", "fn start_read("),
+        ("clipboard/app.rs", "fn clipboard_selection_inner("),
+        ("clipboard/app.rs", "fn clipboard_read_done("),
+        ("clipboard/app.rs", "fn clipboard_deadline("),
+    ] {
+        assert!(body(file, sig).contains("clipboard_timer_sync()"), "{sig} syncs the read deadline");
+    }
+    let deadline = body("clipboard/app.rs", "fn clipboard_deadline(");
+    let (fired, stop) = (deadline.find(".fired()"), deadline.find("clipboard_stop_read()"));
+    assert!(fired.is_some() && fired < stop, "the deadline drops its own timer first: {deadline}");
+    assert!(body("clipboard/control.rs", "fn start_read(").contains("clipboard_stop_read()"), "a new read drops the pending one");
+}
+
+/// The clipboard's log lines are the fixed words of the plan, never a text, a type or a count.
+#[test]
+fn clipboard_logs_only_fixed_words() {
+    const ALLOWED: [&str; 9] = [
+        "clipboard: ext-data-control-v1",
+        "clipboard: wlr-data-control-unstable-v1",
+        "clipboard: the compositor offers no data-control protocol; no history",
+        "clipboard: the data device finished",
+        "clipboard: a read timed out",
+        "clipboard: a read failed ({kind:?})",
+        "clipboard: history cleared (row)",
+        "clipboard error in {what}",
+        "clipboard: history cleared (verb)",
+    ];
+    let mut calls = 0;
+    for (p, t) in source_files() {
+        if !relative_path(&p).starts_with("clipboard/") {
+            continue;
+        }
+        let prod = production_code(&t);
+        let mut rest = prod.as_str();
+        while let Some(at) = rest.find("log(") {
+            let after = &rest[at + 4..];
+            // The call's first string literal is its template; no positional argument follows it
+            // (the names are captured inline, and the allowed ones are listed).
+            let open = after.find('"').expect("a log call has a literal") + 1;
+            let close = open + after[open..].find('"').expect("the literal ends");
+            let template = &after[open..close];
+            assert!(ALLOWED.contains(&template), "a log line outside the fixed words: {template}");
+            let next = after[close + 1..].trim_start().chars().next();
+            assert!(next == Some(')'), "an argument after the template of {template}");
+            calls += 1;
+            rest = &after[close..];
+        }
+    }
+    assert!(calls >= 6, "the log calls were found: {calls}");
 }
