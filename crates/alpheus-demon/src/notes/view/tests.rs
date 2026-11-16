@@ -45,10 +45,12 @@ fn render_shows_title_status_text_caret_and_help() {
 
     n.dirty = true;
     assert!(text_of(&render(&n, &b).rows[0]).contains("edited"));
-    let ro = Notes::new("x".into(), Some(Refusal::NotOurs));
+    let mut ro = Notes::new("x".into(), Some(Refusal::NotOurs));
     let r = render(&ro, &b);
     assert!(text_of(&r.rows[0]).contains("read only"));
-    assert_eq!(text_of(&r.rows[17]).trim(), "esc close · ctrl+c copy");
+    assert_eq!(text_of(&r.rows[17]).trim(), "read only: notes.txt is not ours", "the refusal shows at open");
+    ro.key(NoteKey::Move { to: Motion::Left, extend: false });
+    assert_eq!(text_of(&render(&ro, &b).rows[17]).trim(), "esc close · ctrl+c copy");
 }
 
 #[test]
@@ -75,6 +77,28 @@ fn an_empty_pad_shows_the_hint_after_the_caret() {
     assert_eq!(row.cells()[at].style, Style::MUTED);
     let (n, _) = notes("x");
     assert!(!text_of(&render(&n, &b).rows[2]).contains("Type here"));
+    // I1: an empty read-only pad (a file not ours) never invites typing.
+    let mut ro = Notes::new(String::new(), Some(Refusal::NotOurs));
+    ro.set_area(wrap_width(&b), usize::from(b.text_rows));
+    assert!(!text_of(&render(&ro, &b).rows[2]).contains("Type here"));
+}
+
+/// M6 (decision 4): `not saved` in the error style, `read only` in warn, the others muted.
+#[test]
+fn the_status_word_styles() {
+    let (mut n, b) = notes("x");
+    let style_of = |n: &Notes, word: &str| {
+        let row = &render(n, &b).rows[0];
+        let at = text_of(row).find(word).unwrap();
+        row.cells()[at].style
+    };
+    assert_eq!(style_of(&n, "saved"), Style::MUTED);
+    n.dirty = true;
+    assert_eq!(style_of(&n, "edited"), Style::MUTED);
+    n.save_failed = true;
+    assert_eq!(style_of(&n, "not saved"), Style::ERROR);
+    n.read_only = Some(Refusal::NotUtf8);
+    assert_eq!(style_of(&n, "read only"), Style::WARN);
 }
 
 #[test]

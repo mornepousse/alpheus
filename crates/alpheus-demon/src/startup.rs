@@ -359,6 +359,8 @@ fn exit_code(dispatch_failure: bool) -> i32 {
 }
 
 pub fn run() -> i32 {
+    // First: a panic anywhere, any thread, logs its place, never its message (private text).
+    crate::log::install_panic_hook();
     limit_malloc_arenas();
     // Block signals BEFORE any thread: all of them inherit the mask; only
     // the guard thread receives them (sigwait).

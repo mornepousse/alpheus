@@ -52,7 +52,14 @@ pub fn render(n: &Notes, b: &NotesLayout) -> Boxed {
     };
     // Title row: the name on the left, the status word flush right.
     let status = n.status();
-    let status_style = if n.read_only.is_some() || n.save_failed { Style::WARN } else { Style::MUTED };
+    // Decision 4: `read only` in warn, `not saved` in error, the others muted.
+    let status_style = if n.read_only.is_some() {
+        Style::WARN
+    } else if n.save_failed {
+        Style::ERROR
+    } else {
+        Style::MUTED
+    };
     set(1, &|g| {
         g.write(TEXT_LEFT, end, "Notes", Style::BOLD_ACCENT);
         let w = crate::grid::text_width(status);
@@ -107,7 +114,8 @@ pub fn render(n: &Notes, b: &NotesLayout) -> Boxed {
         };
         set(b.text_top + r as u16, &|g| {
             let x = g.write(TEXT_LEFT + col, text_end, shown, Style::ACTIVE);
-            if text.is_empty() {
+            // A read-only pad never invites typing.
+            if text.is_empty() && n.read_only.is_none() {
                 g.write(x + 1, text_end, &truncate(HINT, text_end.saturating_sub(x + 1)), Style::MUTED);
             }
         });

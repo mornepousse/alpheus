@@ -82,14 +82,15 @@ pub fn remove_private(dir: &Path, name: &str) -> io::Result<()> {
 pub enum PrivateRead {
     Absent,
     Bytes(Vec<u8>),
-    TooLarge,
+    /// More than the cap: its first `cap` bytes.
+    TooLarge(Vec<u8>),
     NotOurs,
     Failed,
 }
 
 /// `dir/name` read as bytes, at most `cap`: a regular file of ours (never a symlink, a directory or
 /// someone else's), in a directory that passes `dir_is_ours`, opened without following links and
-/// without blocking. More than `cap` bytes is `TooLarge`, a refused file or directory `NotOurs`, an
+/// without blocking. More than `cap` bytes is `TooLarge` with the first `cap`, a refused file or directory `NotOurs`, an
 /// I/O error `Failed`. Nothing is logged here.
 pub fn read_private(dir: &Path, name: &str, cap: u64) -> PrivateRead {
     use std::io::Read;
@@ -111,7 +112,10 @@ pub fn read_private(dir: &Path, name: &str, cap: u64) -> PrivateRead {
         .and_then(|f| f.take(cap.saturating_add(1)).read_to_end(&mut bytes));
     match read {
         Err(_) => PrivateRead::Failed,
-        Ok(_) if bytes.len() as u64 > cap => PrivateRead::TooLarge,
+        Ok(_) if bytes.len() as u64 > cap => {
+            bytes.truncate(cap as usize);
+            PrivateRead::TooLarge(bytes)
+        }
         Ok(_) => PrivateRead::Bytes(bytes),
     }
 }
@@ -374,7 +378,7 @@ mod tests {
         assert_eq!(read_private(&dir, "f", 8), PrivateRead::Bytes(b"abc".to_vec()));
         assert_eq!(read_private(&dir, "g", 8), PrivateRead::Absent);
         write_private(&dir, "f", b"123456789").unwrap();
-        assert_eq!(read_private(&dir, "f", 8), PrivateRead::TooLarge, "cap + 1 bytes");
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::TooLarge(b"12345678".to_vec()), "cap + 1 bytes: the first cap kept");
         write_private(&dir, "f", b"12345678").unwrap();
         assert_eq!(read_private(&dir, "f", 8), PrivateRead::Bytes(b"12345678".to_vec()), "exactly the cap");
         std::os::unix::fs::symlink(dir.join("f"), dir.join("link")).unwrap();

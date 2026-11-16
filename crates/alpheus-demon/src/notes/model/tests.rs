@@ -182,6 +182,15 @@ fn refusal_words() {
     assert_eq!(Refusal::NotUtf8.word(), "is not UTF-8");
     assert_eq!(Refusal::NotOurs.word(), "is not ours");
     assert_eq!(Refusal::Unreadable.word(), "could not be read");
+    assert_eq!(Refusal::NotClean.word(), "has tabs or control characters");
+}
+
+/// I1: a refused pad says why on the help row from its open, before any key.
+#[test]
+fn a_read_only_pad_says_why_at_open() {
+    let n = Notes::new("x".into(), Some(Refusal::NotClean));
+    assert_eq!(n.message(), Some("read only: notes.txt has tabs or control characters"));
+    assert_eq!(Notes::new("x".into(), None).message(), None);
 }
 
 #[test]

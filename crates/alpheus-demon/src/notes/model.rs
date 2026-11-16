@@ -14,6 +14,9 @@ pub enum Refusal {
     NotUtf8,
     NotOurs,
     Unreadable,
+    /// Text `clean` would change (CRLF, a tab, a control: edited outside the pad): shown cleaned,
+    /// never silently rewritten (M3).
+    NotClean,
 }
 
 impl Refusal {
@@ -23,7 +26,13 @@ impl Refusal {
             Refusal::NotUtf8 => "is not UTF-8",
             Refusal::NotOurs => "is not ours",
             Refusal::Unreadable => "could not be read",
+            Refusal::NotClean => "has tabs or control characters",
         }
+    }
+
+    /// The help row's message for a refused file.
+    fn message(self) -> String {
+        format!("read only: notes.txt {}", self.word())
     }
 }
 
@@ -60,7 +69,8 @@ pub struct Notes {
 }
 
 impl Notes {
-    /// A pad on `text`, the caret at its end and scrolled to it.
+    /// A pad on `text`, the caret at its end and scrolled to it; a refused file says why on the help
+    /// row from the start.
     pub fn new(text: String, read_only: Option<Refusal>) -> Notes {
         let mut n = Notes {
             pad: Pad::new(text),
@@ -69,7 +79,7 @@ impl Notes {
             dirty: false,
             read_only,
             save_failed: false,
-            message: None,
+            message: read_only.map(Refusal::message),
             width: DEFAULT_WIDTH,
             rows: DEFAULT_ROWS,
         };
@@ -124,8 +134,7 @@ impl Notes {
     }
 
     fn refuse(&mut self) -> NotesOutcome {
-        let word = self.read_only.map_or("", Refusal::word);
-        self.message = Some(format!("read only: notes.txt {word}"));
+        self.message = self.read_only.map(Refusal::message);
         NotesOutcome::Redraw
     }
 

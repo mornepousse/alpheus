@@ -18,8 +18,9 @@ use smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface;
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use std::io::{ErrorKind, Read};
 
-/// The text types asked for, best first.
-pub const MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING"];
+/// The text types asked for, best first: UTF-8 ones only (X11's `STRING` is Latin-1 and `TEXT` any
+/// encoding; read as UTF-8 they would turn accents into U+FFFD).
+pub const MIMES: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
 
 /// The first of `MIMES` the offer carries.
 pub fn pick_mime<'a>(offered: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
@@ -42,8 +43,9 @@ impl PasteBuffer {
         self.over = self.bytes.len() > CAP;
     }
 
-    /// The text (lossy UTF-8 of the first `CAP` bytes, cut on a scalar boundary) and whether more
-    /// came than fits.
+    /// The text and whether more came than fits: the first `CAP` bytes read (a scalar cut by the
+    /// cap dropped whole) as lossy UTF-8. Each invalid byte becomes U+FFFD (three bytes), so the
+    /// text can pass `CAP`; the pad's insert cuts it to the room left.
     pub fn finish(mut self) -> (String, bool) {
         self.bytes.truncate(CAP);
         if let Err(e) = std::str::from_utf8(&self.bytes) {
@@ -216,6 +218,7 @@ mod tests {
         assert_eq!(pick_mime(["STRING", "text/plain;charset=utf-8"]), Some("text/plain;charset=utf-8"));
         assert_eq!(pick_mime(["image/png"]), None);
         assert_eq!(pick_mime(["TEXT", "UTF8_STRING", "STRING"]), Some("UTF8_STRING"));
+        assert_eq!(pick_mime(["TEXT", "STRING"]), None, "not UTF-8: nothing to paste");
     }
 
     #[test]

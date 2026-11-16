@@ -11,7 +11,7 @@ use crate::launcher::surface::CloseReason;
 use crate::log::write as log;
 use crate::notes::keys::NoteKey;
 use crate::notes::model::{Notes, NotesOutcome};
-use crate::notes::store;
+use crate::notes::store::{self, Loaded};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{Reply, Request};
@@ -22,16 +22,18 @@ use std::time::{Duration, Instant};
 
 use super::surface::OpenNotes;
 
-/// The pad's state on the App: the pad while open (None at rest: nothing of it resident) and its
-/// save timer.
+/// The pad's state on the App: the pad while open (None at rest: nothing of it resident), its save
+/// timer, and the text a close could not write (I2), kept for the next open; lost if the daemon
+/// stops before then.
 pub struct NotesApp {
     pub(crate) open: Option<OpenNotes>,
     pub(crate) timer: DeadlineTimer,
+    pub(crate) unsaved: Option<String>,
 }
 
 impl NotesApp {
     pub fn new() -> NotesApp {
-        NotesApp { open: None, timer: DeadlineTimer::default() }
+        NotesApp { open: None, timer: DeadlineTimer::default(), unsaved: None }
     }
 }
 
@@ -94,6 +96,30 @@ pub(crate) fn after_save(model: &mut Notes, result: &std::io::Result<()>) {
     }
 }
 
+/// The pad an open shows: the text a failed close kept (`not saved`, still edited, so the next
+/// close or edit writes it) before the file, which is then not read; else the file, a refused one
+/// read only.
+pub(crate) fn opening_model(unsaved: Option<String>, load: impl FnOnce() -> Loaded) -> Notes {
+    if let Some(text) = unsaved {
+        let mut model = Notes::new(text, None);
+        model.dirty = true;
+        model.save_failed = true;
+        return model;
+    }
+    match load() {
+        Loaded::Text(t) => Notes::new(t, None),
+        Loaded::Refused(r, shown) => {
+            log(&format!("notes: read only ({})", r.word()));
+            Notes::new(shown, Some(r))
+        }
+    }
+}
+
+/// What a close keeps after its save: the text when it is still to be written (the save failed).
+pub(crate) fn kept_after_close(model: &Notes) -> Option<String> {
+    wants_save(model).then(|| model.pad.text().to_string())
+}
+
 /// A held key repeats moves and edits, never a copy, a cut, a paste or the close (P8): each repeat
 /// would start another copy program or reopen the clipboard.
 pub(crate) fn repeat_ignored(key: NoteKey) -> bool {
@@ -149,18 +175,22 @@ impl App {
         let open = self.notes.open.take();
         let was_open = open.is_some();
         if let Some(open) = open {
-            let _ = guarded_with(
+            let kept = guarded_with(
                 "close",
                 move || {
+                    let mut kept = None;
                     if wants_save(&open.model) {
                         if let Err(e) = store::save(&paths::state_dir(), open.model.pad.text()) {
                             log(&format!("notes: not saved ({:?})", e.kind()));
+                            kept = Some(open.model.pad.text().to_string());
                         }
                     }
                     drop(open);
+                    kept
                 },
                 &mut |m| log(m),
             );
+            self.notes.unsaved = kept.flatten();
         }
         self.notes_timer_sync();
         self.keyboard_release();
@@ -176,9 +206,11 @@ impl App {
         if self.notes.open.is_none() {
             return;
         }
-        // Before anything is dropped: every close saves.
+        // Before anything is dropped: every close saves; what it could not write waits for the next
+        // open (I2).
         self.notes_save();
         let open = self.notes.open.take();
+        self.notes.unsaved = open.as_ref().and_then(|o| kept_after_close(&o.model));
         drop(open);
         self.notes_timer_sync();
         self.keyboard_release();
@@ -323,6 +355,33 @@ mod tests {
         let mut ro = ro;
         ro.dirty = true;
         assert!(!wants_save(&ro), "an edited read-only pad is still never written");
+    }
+
+    /// I2: a close whose save failed keeps the text; the next open shows it (`not saved`, still
+    /// edited so the next close or edit writes it) before the file, and a refused file never wins
+    /// over it; a close that saved keeps nothing.
+    #[test]
+    fn a_failed_close_save_keeps_the_text_for_the_next_open() {
+        use crate::notes::model::Refusal;
+        use crate::notes::store::Loaded;
+        let mut n = Notes::new(String::new(), None);
+        n.key(NoteKey::Char('a'));
+        after_save(&mut n, &Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        let kept = kept_after_close(&n);
+        assert_eq!(kept.as_deref(), Some("a"));
+        let reopened = opening_model(kept, || panic!("the file is not read while text is kept"));
+        assert_eq!(reopened.pad.text(), "a");
+        assert_eq!(reopened.status(), "not saved");
+        assert!(wants_save(&reopened), "the next close writes it again");
+
+        after_save(&mut n, &Ok(()));
+        assert_eq!(kept_after_close(&n), None, "saved: nothing kept");
+        assert_eq!(kept_after_close(&Notes::new("x".into(), None)), None, "never edited: nothing kept");
+
+        let from_file = opening_model(None, || Loaded::Text("file".into()));
+        assert_eq!((from_file.pad.text(), from_file.status()), ("file", "saved"));
+        let refused = opening_model(None, || Loaded::Refused(Refusal::TooLarge, "start".into()));
+        assert_eq!((refused.pad.text(), refused.read_only), ("start", Some(Refusal::TooLarge)));
     }
 
     #[test]

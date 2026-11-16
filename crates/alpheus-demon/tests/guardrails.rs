@@ -2829,6 +2829,24 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
                 panic!("{why} in {name}'s production code");
             }
         }
+        // The `String` methods that panic off a scalar boundary (M2). One exemption: `Pad::splice`'s
+        // `replace_range`, after it checked both ends with `is_char_boundary`.
+        for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
+            let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(&production) } else { 0 };
+            assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked
+/// with `is_char_boundary`; else 0 (so the count check fails).
+fn checked_replace_range(production: &str) -> usize {
+    let splice = function_body(production, "fn splice(");
+    let call = splice.find(".replace_range(");
+    let checks = splice.find("is_char_boundary(range.start)").zip(splice.find("is_char_boundary(range.end)"));
+    match (call, checks) {
+        (Some(call), Some((a, b))) if a < call && b < call => 1,
+        _ => 0,
     }
 }
 
@@ -3266,17 +3284,21 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
 }
 
+/// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).
+const THIS_FILE: &str = "alpheus-demon/tests/guardrails.rs";
+const HARNESS: &str = "alpheus-demon/tests/common/mod.rs";
+
 /// The `wl-copy`/`wl-paste` spawns of the test files that are not the harness helper: a test that
 /// starts one outside `tests/common`'s `wl_copy` could reach the machine's own compositor (and its
 /// clipboard). Comments may name the programs.
 fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
     let mut found = Vec::new();
     for (name, text) in files {
-        if name == "guardrails.rs" {
+        if name == THIS_FILE {
             continue;
         }
         let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        if name == "common/mod.rs" {
+        if name == HARNESS {
             let body = function_body(&code, "pub fn wl_copy(").to_string();
             code = code.replace(&body, "");
         }
@@ -3293,45 +3315,79 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
 fn stray_clipboard_spawns_are_found() {
     let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
     let files = |a: &str, b: &str| {
-        vec![("common/mod.rs".to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
+        vec![(HARNESS.to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
     };
     assert!(stray_clipboard_spawns(&files("// wl-copy serves it\nfn t() {}\n", "fn t() {}\n")).is_empty());
     assert_eq!(
         stray_clipboard_spawns(&files("fn t() { Command::new(\"wl-copy\"); }\n", "fn t() { Command::new(\"wl-paste\"); }\n")),
         ["a.rs names wl-copy", "b.rs names wl-paste"]
     );
-    let outside = vec![("common/mod.rs".to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
-    assert_eq!(stray_clipboard_spawns(&outside), ["common/mod.rs names wl-copy"]);
+    let outside = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&outside), [format!("{HARNESS} names wl-copy")]);
+    // Another crate's harness or guardrails get no exemption.
+    let elsewhere = vec![
+        ("alpheus/tests/common/mod.rs".to_string(), helper.to_string()),
+        ("alpheus/tests/guardrails.rs".to_string(), "fn t() { Command::new(\"wl-paste\"); }\n".to_string()),
+    ];
+    assert_eq!(
+        stray_clipboard_spawns(&elsewhere),
+        ["alpheus/tests/common/mod.rs names wl-copy", "alpheus/tests/guardrails.rs names wl-paste"]
+    );
 }
 
-/// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which clears
-/// the environment, names this sway's runtime directory and display, stays in the foreground and
-/// holds a guard that kills it; no other test file names the program.
+/// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which checks
+/// that this sway's socket exists, clears the environment, names this sway's runtime directory and
+/// display, stays in the foreground and holds a guard that kills it; no other test file of any crate
+/// names the program.
 #[test]
 fn no_test_spawns_wl_copy_outside_the_harness_helper() {
-    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crates/").to_path_buf();
     let mut files = Vec::new();
-    let mut dirs = vec![tests.clone()];
+    let mut dirs: Vec<_> = std::fs::read_dir(&crates).unwrap().flatten().map(|e| e.path().join("tests")).filter(|p| p.is_dir()).collect();
+    assert!(dirs.len() >= 3, "every crate's tests: {dirs:?}");
     while let Some(d) = dirs.pop() {
         for e in std::fs::read_dir(&d).unwrap().flatten() {
             let path = e.path();
             if path.is_dir() {
                 dirs.push(path);
             } else if path.extension().is_some_and(|x| x == "rs") {
-                let name = path.strip_prefix(&tests).unwrap().to_string_lossy().into_owned();
+                let name = path.strip_prefix(&crates).unwrap().to_string_lossy().into_owned();
                 files.push((name, std::fs::read_to_string(&path).unwrap()));
             }
         }
     }
-    assert!(files.iter().any(|(n, _)| n == "common/mod.rs"), "the harness was found");
+    assert!(files.iter().any(|(n, _)| n == HARNESS), "the harness was found");
+    assert!(files.iter().any(|(n, _)| n.starts_with("alpheus-launch/tests/")), "another crate's tests were walked");
     let stray = stray_clipboard_spawns(&files);
     assert!(stray.is_empty(), "{stray:?}");
-    let common = &files.iter().find(|(n, _)| n == "common/mod.rs").unwrap().1;
+    let common = &files.iter().find(|(n, _)| n == HARNESS).unwrap().1;
     let helper = function_body(common, "pub fn wl_copy(");
+    let socket_check = helper.find("assert!(sway.runtime.join(&sway.wayland).exists()");
+    let spawn = helper.find(".spawn()");
+    assert!(
+        socket_check.is_some() && spawn.is_some() && socket_check < spawn,
+        "the wl-copy helper must assert this sway's socket exists before it spawns: {helper}"
+    );
     for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--foreground\""] {
         assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
     }
     assert!(!helper.contains("--primary"), "never the primary selection");
     let guard = function_body(common, "impl Drop for WlCopyChild");
     assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
+}
+
+/// Quick notes (M2): the daemon's panic hook (thread and place, never the message: it can quote
+/// private text) is installed first in `startup::run`, before any thread is started.
+#[test]
+fn the_panic_hook_is_installed_before_anything_else() {
+    let files = source_files();
+    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    let run = function_body(startup, "pub fn run() -> i32 {");
+    let first_call = run.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//") && l != &"{");
+    assert_eq!(first_call, Some("crate::log::install_panic_hook();"), "{run}");
+    let log = &files.iter().find(|(p, _)| relative_path(p) == "log.rs").expect("log.rs").1;
+    let hook = function_body(log, "pub fn install_panic_hook(");
+    for leak in ["payload", "info.to_string", "{info}", "{info:", "message()"] {
+        assert!(!hook.contains(leak), "the hook must never print the panic's message ({leak}): {hook}");
+    }
 }

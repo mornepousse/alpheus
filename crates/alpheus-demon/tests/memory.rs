@@ -2824,8 +2824,10 @@ fn notes_pss_open_and_closed() {
     let cold = read(&d);
     let first_open = notes_cycle(&sway, &d, 1);
     let closed = read(&d);
+    let (_, closed_pools) = d.pss_and_shm_kb();
     let open_pss = notes_cycle(&sway, &d, 2);
     let again = read(&d);
+    let (_, again_pools) = d.pss_and_shm_kb();
     eprintln!(
         "notes PSS (KB): cold {}, first open {first_open}, warmed closed {}, open with 2,000 characters {open_pss}, closed again {}",
         cold.0, closed.0, again.0
@@ -2848,11 +2850,17 @@ fn notes_pss_open_and_closed() {
     );
     assert!(open_pss <= closed.0 + 1536, "open costs {} KB PSS: more than 1.5 MB — report, never raise", open_pss.saturating_sub(closed.0));
     assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    // The shm pools alone (as for Wi-Fi and Bluetooth): the pad's own pool goes with it.
+    eprintln!("notes shm pools (KB): warmed closed {closed_pools}, closed again {again_pools}");
+    assert!(again_pools <= closed_pools + 64, "the pools closed again {again_pools} KB vs {closed_pools} KB: the pad's pool kept");
 }
 
 /// Quick notes: after a cycle, then with the pad open and saved: no timer, watch or repeat left
 /// (SCTK's key-repeat timer fires once about 0.6 s after a key press, so each rest window starts
 /// past it; the first still opens within 1.3 s of the close, so a stray save timer always shows).
+/// The open window is closed by the verb after it, never by a key: a typed Escape scheduled ahead
+/// landed inside the window whenever the minute check slept (final review), and the wtype process
+/// stays alive through it (its keyboard leaving would close the pad as `focus lost`).
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn at_rest_no_wakeups_after_notes() {
@@ -2876,7 +2884,7 @@ fn at_rest_no_wakeups_after_notes() {
     // Open, one key, the save fires 2 s later: the pad stays open and saved, still asleep.
     assert_eq!(launcher(&sway, &Request::Notes), Reply::Done);
     assert!(d.wait_for_count("notes shown on", 2, DELAY), "{:?}", d.log());
-    let typing = wtype_spawn(&sway, &["-s", "300", "x", "-s", "12000", "-k", "Escape"]);
+    let typing = wtype_spawn(&sway, &["-s", "300", "x", "-s", "120000"]);
     // The save has fired once the file holds the pad's text (a loaded machine delays the key and
     // the timer, so waiting a fixed time would put one of them inside the window); then past SCTK's
     // one repeat firing.
@@ -2895,8 +2903,9 @@ fn at_rest_no_wakeups_after_notes() {
     eprintln!("loop-thread wake-ups at rest with the pad open and saved (5 s): {open_delta}");
     assert_eq!(d.count("notes closed ("), 1, "still open: {:?}", d.log());
     assert_eq!(open_delta, 0, "{open_delta} loop-thread wake-ups in 5 s with the pad open and saved: {:?}", d.log());
-    assert!(typing.wait().unwrap().success());
-    assert!(d.wait_for_count("notes closed (escape)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Notes), Reply::Done);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+    drop(typing);
 }
 
 /// One prefix cycle: open (`--toggle`), `:face` typed, closed by a typed Escape; the n-th of each.

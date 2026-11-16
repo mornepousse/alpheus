@@ -5996,6 +5996,54 @@ fn a_refused_notes_file_opens_read_only() {
     assert_eq!(std::fs::read(&file).unwrap(), before, "never rewritten");
 }
 
+/// Final review (I2): a close whose save fails keeps the text in memory; the next open shows it
+/// instead of the file, and its close (no key typed) writes it once the directory accepts it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_a_failed_close_save_is_kept_for_the_next_open() {
+    let sway = Sway::start("notes-unsaved", 1);
+    let file = notes_file(&sway);
+    let dir = file.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    // Ours and closed to others (so not refused), but not writable: the save fails.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "kept qz", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notes: not saved (PermissionDenied)", DELAY), "{:?}", d.log());
+    assert!(!file.exists());
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(NOTES_SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("notes closed (escape)", 2, DELAY), "{:?}", d.log());
+    wait_for_text(&file, "kept qz");
+    assert!(d.log().iter().all(|l| !l.contains("qz")), "the text reached the log: {:?}", d.log());
+}
+
+/// Final review: a SIGTERM before the autosave (an edit younger than 2 s) still writes the pad: the
+/// daemon's shutdown closes it, and every close saves.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_sigterm_saves_an_edit_younger_than_the_autosave() {
+    let (sway, mut d) = notes_daemon("notes-sigterm");
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    // One wtype that stays: its keyboard leaving would close (and save) the pad as `focus lost`.
+    let keys = wtype_spawn(&sway, &["-s", "300", "late qz", "-s", "8000"]);
+    thread::sleep(Duration::from_millis(900));
+    assert!(!notes_file(&sway).exists(), "not autosaved yet (the edit is younger than 2 s)");
+    assert_eq!(d.count("notes closed"), 0, "still open: {:?}", d.log());
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(Duration::from_millis(1500)), Some(0), "clean exit: {:?}", d.log());
+    drop(keys);
+    assert_eq!(std::fs::read_to_string(notes_file(&sway)).unwrap_or_default(), "late qz", "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("qz")), "the text reached the log: {:?}", d.log());
+}
+
 /// Quick notes, task 6: Ctrl+V pastes the seat's selection (a fictional text served by `wl-copy` on
 /// THIS sway only, through the harness helper) and the log never holds it.
 #[test]

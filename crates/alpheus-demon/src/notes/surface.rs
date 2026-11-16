@@ -12,10 +12,10 @@ use crate::launcher::surface::{
 };
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::notes::app::repeat_ignored;
+use crate::notes::app::{opening_model, repeat_ignored};
 use crate::notes::keys;
 use crate::notes::model::{Notes, NotesOutcome};
-use crate::notes::store::{self, Loaded};
+use crate::notes::store;
 use crate::notes::view::{self, NotesLayout};
 use crate::painter::{self, Frame, FrameInk};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
@@ -141,6 +141,9 @@ impl Drop for OpenNotes {
     fn drop(&mut self) {
         self.stop_paste();
         // SCTK's `DataDevice::drop` only releases the device: the offers it still holds would leak.
+        // `release` exists from `wl_data_device` v2: on a compositor offering only v1 the device
+        // object stays on the server, one per open, until the daemon disconnects (wlroots
+        // compositors, Sway and Mango among them, offer v3).
         if let Some(device) = self.data_device.as_ref() {
             if let Some(offer) = device.data().selection_offer() {
                 offer.destroy();
@@ -214,13 +217,8 @@ impl App {
         };
         let copy = read_config(&paths::config_dir(), &mut |m| log(m)).copy;
         let path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
-        let model = match store::load(&paths::state_dir()) {
-            Loaded::Text(t) => Notes::new(t, None),
-            Loaded::Refused(r) => {
-                log(&format!("notes: read only ({})", r.word()));
-                Notes::new(String::new(), Some(r))
-            }
-        };
+        // The text a failed close kept comes first; the file is read only without it.
+        let model = opening_model(self.notes.unsaved.take(), || store::load(&paths::state_dir()));
         // Scrims BEFORE the box, on the box's own Overlay layer: created last, the box stacks above
         // them (the launcher's rule, launcher/surface.rs).
         let scrims = self.notes_scrims(qh);

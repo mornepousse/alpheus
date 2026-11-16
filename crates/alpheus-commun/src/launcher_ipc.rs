@@ -145,8 +145,8 @@ pub enum Request {
     Calc,
     /// Opens the window switcher (the previous window selected), or steps to the next one when it is open.
     Windows,
-    /// Toggles the quick notepad (quick notes spec): answered Done, also with the module off
-    /// (nothing opens). An older daemon refuses it as an unknown request.
+    /// Toggles the quick notepad (quick notes spec): answered Done (the pad is no module: it is
+    /// always available). An older daemon refuses it as an unknown request.
     Notes,
     Dmenu {
         prompt: Option<String>,

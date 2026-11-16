@@ -24,24 +24,48 @@ fn load_absent_is_an_empty_pad() {
 }
 
 #[test]
-fn load_reads_utf8_text_cleaned() {
+fn load_reads_plain_text_as_is() {
     let t = TempPath::dir("notes-read");
-    let dir = state_with(&t, "buy milk\r\n\tcafé\u{7}".as_bytes());
-    assert_eq!(load(&dir), Loaded::Text("buy milk\n    café".to_string()), "what Pad::new is fed is clean");
+    let dir = state_with(&t, "buy milk\n    café".as_bytes());
+    assert_eq!(load(&dir), Loaded::Text("buy milk\n    café".to_string()));
 }
 
+/// M3: a file `clean` would change (edited outside the pad: CRLF, a tab, a control) opens read only,
+/// shown cleaned, and is never silently rewritten.
 #[test]
-fn load_refuses_too_large_and_not_utf8() {
+fn a_file_with_tabs_or_controls_opens_read_only_cleaned() {
+    let t = TempPath::dir("notes-unclean");
+    let dir = state_with(&t, "buy milk\r\n\tcafé\u{7}".as_bytes());
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotClean, "buy milk\n    café".to_string()));
+    // Cleaning grows a tab to four spaces: what is shown is still capped.
+    let dir = state_with(&t, "\t".repeat(CAP / 2).as_bytes());
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotClean, " ".repeat(CAP)));
+}
+
+/// I1: a file too large or not UTF-8 shows its first CAP bytes read only (lossy, cleaned, a scalar
+/// cut by the cap dropped whole).
+#[test]
+fn load_refuses_too_large_and_not_utf8_showing_their_start() {
     let t = TempPath::dir("notes-refuse");
     let dir = state_with(&t, &vec![b'a'; CAP + 1]);
-    assert_eq!(load(&dir), Loaded::Refused(Refusal::TooLarge));
-    let dir = state_with(&t, &[0xff, 0xfe]);
-    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotUtf8));
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::TooLarge, "a".repeat(CAP)));
+    let dir = state_with(&t, &[0xff, b'x', 0xfe]);
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotUtf8, "\u{fffd}x\u{fffd}".to_string()));
     let dir = state_with(&t, &vec![b'a'; CAP]);
     assert_eq!(load(&dir), Loaded::Text("a".repeat(CAP)));
-    // Cleaning grows a tab to four spaces: a file that fits as bytes but not as a pad is refused.
-    let dir = state_with(&t, "\t".repeat(CAP / 2).as_bytes());
-    assert_eq!(load(&dir), Loaded::Refused(Refusal::TooLarge));
+    // A four-byte scalar straddles the cap (three of its bytes inside): dropped whole, never shown
+    // as U+FFFD (which would fit exactly).
+    let mut bytes = vec![b'a'; CAP - 3];
+    bytes.extend_from_slice("😀 and more".as_bytes());
+    let dir = state_with(&t, &bytes);
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::TooLarge, "a".repeat(CAP - 3)));
+    // A large file edited elsewhere: its start shown cleaned.
+    let mut bytes = b"x\r\ny\t".to_vec();
+    bytes.extend(vec![b'z'; CAP]);
+    let dir = state_with(&t, &bytes);
+    let Loaded::Refused(Refusal::TooLarge, shown) = load(&dir) else { panic!("too large") };
+    assert!(shown.starts_with("x\ny    zz"), "{:?}", shown.get(..12));
+    assert!(shown.len() <= CAP);
 }
 
 #[test]
@@ -50,16 +74,29 @@ fn load_maps_a_file_that_is_not_ours_or_unreadable() {
     let dir = state_with(&t, b"x");
     std::fs::remove_file(dir.join(FILE)).unwrap();
     std::fs::create_dir(dir.join(FILE)).unwrap();
-    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotOurs));
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotOurs, String::new()), "nothing behind a refused file is shown");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotOurs));
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotOurs, String::new()));
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::remove_dir(dir.join(FILE)).unwrap();
     std::fs::write(dir.join(FILE), b"x").unwrap();
     std::fs::set_permissions(dir.join(FILE), std::fs::Permissions::from_mode(0o000)).unwrap();
     let got = load(&dir);
     // A superuser reads it anyway: only the refusal's kind matters.
-    assert!(matches!(got, Loaded::Refused(Refusal::Unreadable) | Loaded::Text(_)), "{got:?}");
+    assert!(matches!(&got, Loaded::Refused(Refusal::Unreadable, t) if t.is_empty()) || matches!(got, Loaded::Text(_)), "{got:?}");
+}
+
+/// Nothing behind a symlink is ever shown: a link named `notes.txt` to a readable file of ours is
+/// refused with an empty pad.
+#[test]
+fn a_symlinked_file_shows_nothing() {
+    let t = TempPath::dir("notes-link-read");
+    let dir = state_with(&t, b"x");
+    let target = t.join("elsewhere");
+    std::fs::write(&target, b"private elsewhere").unwrap();
+    std::fs::remove_file(dir.join(FILE)).unwrap();
+    std::os::unix::fs::symlink(&target, dir.join(FILE)).unwrap();
+    assert_eq!(load(&dir), Loaded::Refused(Refusal::NotOurs, String::new()));
 }
 
 #[test]
@@ -99,8 +136,8 @@ fn a_refused_file_is_never_written() {
     let t = TempPath::dir("notes-refused");
     let bytes = vec![0xff_u8, 0xfe, b'x'];
     let dir = state_with(&t, &bytes);
-    let Loaded::Refused(why) = load(&dir) else { panic!("refused") };
-    let mut pad = Notes::new(String::new(), Some(why));
+    let Loaded::Refused(why, shown) = load(&dir) else { panic!("refused") };
+    let mut pad = Notes::new(shown, Some(why));
     for c in "typing".chars() {
         pad.key(NoteKey::Char(c));
     }
