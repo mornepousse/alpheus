@@ -26,6 +26,10 @@ impl<E: Executor> Executor for NonBlocking<E> {
         self.0.spawn_with_input(prog, args, input)
     }
 
+    fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {
+        self.0.spawn_with_env(prog, args, env, unset)
+    }
+
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
         self.0.stream(prog, args)
     }
@@ -79,5 +83,15 @@ mod tests {
         let e = NonBlocking(fake);
         assert_eq!(e.spawn_with_input("nmcli", &["--ask", "device", "wifi", "connect", "X"], &[b"fake-pass", b"\n"]), Ok(()));
         assert_eq!(e.0.inputs(), [("nmcli --ask device wifi connect X".to_string(), b"fake-pass\n".to_vec())]);
+    }
+
+    #[test]
+    fn spawn_with_env_is_delegated() {
+        let fake = FakeExecutor::new();
+        fake.ok("hook-x a", "");
+        let e = NonBlocking(fake);
+        assert_eq!(e.spawn_with_env("hook-x", &["a"], &[("ALPHEUS_EVENT", "dnd")], &["ALPHEUS_DND"]), Ok(()));
+        assert_eq!(e.0.unsets(), [vec!["ALPHEUS_DND".to_string()]]);
+        assert_eq!(e.0.envs(), [("hook-x a".to_string(), vec![("ALPHEUS_EVENT".to_string(), "dnd".to_string())])]);
     }
 }

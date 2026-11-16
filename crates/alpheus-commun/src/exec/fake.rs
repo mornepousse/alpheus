@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// A `spawn_with_env` as recorded: its line and its variables.
+pub type EnvCall = (String, Vec<(String, String)>);
+
 #[derive(Default)]
 pub struct FakeExecutor {
     responses: Mutex<HashMap<String, Result<Output, ExecError>>>,
@@ -13,6 +16,8 @@ pub struct FakeExecutor {
     captures: Mutex<HashMap<String, Result<Captured, ExecError>>>,
     calls: Mutex<Vec<String>>,
     inputs: Mutex<Vec<(String, Vec<u8>)>>,
+    envs: Mutex<Vec<EnvCall>>,
+    unsets: Mutex<Vec<Vec<String>>>,
     delay: Duration,
 }
 
@@ -44,6 +49,16 @@ impl FakeExecutor {
     /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only).
     pub fn inputs(&self) -> Vec<(String, Vec<u8>)> {
         self.inputs.lock().unwrap().clone()
+    }
+
+    /// Each `spawn_with_env`'s line and its variables, in order.
+    pub fn envs(&self) -> Vec<EnvCall> {
+        self.envs.lock().unwrap().clone()
+    }
+
+    /// Each `spawn_with_env`'s removed names, in order (parallel to `envs`).
+    pub fn unsets(&self) -> Vec<Vec<String>> {
+        self.unsets.lock().unwrap().clone()
     }
 
     /// Programs the output of the stream "prog arg1 arg2" (then its end).
@@ -95,6 +110,21 @@ impl Executor for FakeExecutor {
         let l = line(prog, args);
         self.calls.lock().unwrap().push(l.clone());
         self.inputs.lock().unwrap().push((l.clone(), input.concat()));
+        match self.responses.lock().unwrap().get(&l).cloned() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {
+        if !super::env_ok(env) || unset.iter().any(|k| k.is_empty() || k.contains(['=', '\0'])) {
+            return Err(ExecError::Io("invalid environment variable".into()));
+        }
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        self.unsets.lock().unwrap().push(unset.iter().map(|k| k.to_string()).collect());
+        self.envs.lock().unwrap().push((l.clone(), env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()));
         match self.responses.lock().unwrap().get(&l).cloned() {
             Some(Ok(_)) => Ok(()),
             Some(Err(e)) => Err(e),
@@ -183,6 +213,24 @@ mod tests {
         assert_eq!(f.capture("slow-menu", &[], l), Err(ExecError::Io("boom".into())));
         assert_eq!(f.capture("other", &[], l), Err(ExecError::NotFound));
         assert_eq!(f.calls(), ["tools-menu --list", "slow-menu", "other"]);
+    }
+
+    #[test]
+    fn spawn_with_env_records_the_line_and_the_variables() {
+        let f = FakeExecutor::new();
+        f.ok("hook-x a", "");
+        assert_eq!(f.spawn_with_env("hook-x", &["a"], &[("ALPHEUS_EVENT", "dnd")], &["ALPHEUS_X"]), Ok(()));
+        assert_eq!(f.spawn_with_env("hook-y", &[], &[("A", "1")], &[]), Err(ExecError::NotFound), "never a real tool");
+        assert!(matches!(f.spawn_with_env("hook-x", &["a"], &[("A=B", "x")], &[]), Err(ExecError::Io(_))));
+        assert_eq!(f.calls(), ["hook-x a", "hook-y"]);
+        assert_eq!(f.unsets(), [vec!["ALPHEUS_X".to_string()], Vec::<String>::new()]);
+        assert_eq!(
+            f.envs(),
+            [
+                ("hook-x a".to_string(), vec![("ALPHEUS_EVENT".to_string(), "dnd".to_string())]),
+                ("hook-y".to_string(), vec![("A".to_string(), "1".to_string())])
+            ]
+        );
     }
 
     #[test]

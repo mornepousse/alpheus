@@ -811,6 +811,25 @@ pub fn fake_recorder(sway: &Sway, name: &str) -> PathBuf {
     path
 }
 
+/// Like `fake_recorder`, and the `ALPHEUS_*` variables it was started with, sorted, each followed by
+/// a space: `<name> <arguments>|ALPHEUS_DND=off ALPHEUS_EVENT=dnd `, read back with `recorded`. Built
+/// in `sh` from `env` and `sort` only (no `grep` on the harness's PATH); the daemon's own
+/// `ALPHEUS_POLICES` is skipped, and a value keeps its spaces.
+pub fn fake_env_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the hooks tests: records its arguments and ALPHEUS_* variables, nothing else.\n\
+         env | sort | {{\n  line=\"{name} $*|\"\n  while IFS= read -r v; do\n    case \"$v\" in\n      ALPHEUS_POLICES=*) ;;\n      ALPHEUS_*) line=\"$line$v \" ;;\n    esac\n  done\n  printf '%s\\n' \"$line\" >> '{}'\n}}\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 /// What `fake_recorder`'s `name` recorded, in order.
 pub fn recorded(sway: &Sway, name: &str) -> Vec<String> {
     fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default().lines().map(String::from).collect()

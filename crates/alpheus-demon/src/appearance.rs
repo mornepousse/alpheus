@@ -240,6 +240,7 @@ impl App {
     /// the next change tries again.
     pub(crate) fn publish_mode(&mut self) {
         let now = effective_mode(self.theme.settings.mode, self.theme.portal_mode);
+        self.hooks_mode(now, self.theme.settings.mode != ModeSetting::Auto || self.theme.portal_mode.is_some());
         let t = &mut self.theme;
         publish(t.mode_runtime.as_deref(), &mut t.mode_written, &mut t.mode_error, now, write_mode, log);
     }

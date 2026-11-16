@@ -73,6 +73,9 @@
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
+//! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
+//! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
 //! ```
 
 use crate::clock;
@@ -428,6 +431,59 @@ impl Default for DisplaysConfig {
     }
 }
 
+/// `[hooks]` (hooks spec § 1): one argv per event, empty for none.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HooksConfig {
+    pub started: Vec<String>,
+    pub theme_mode: Vec<String>,
+    pub dnd: Vec<String>,
+    pub battery_charge: Vec<String>,
+    pub battery_level: Vec<String>,
+    pub power_profile: Vec<String>,
+    pub network: Vec<String>,
+    pub vpn: Vec<String>,
+    pub bluetooth: Vec<String>,
+    pub privacy: Vec<String>,
+    pub displays: Vec<String>,
+}
+
+impl HooksConfig {
+    /// Every hook with its TOML key, in field order.
+    pub fn commands(&self) -> [(&'static str, &[String]); 11] {
+        [
+            ("started", &self.started),
+            ("theme_mode", &self.theme_mode),
+            ("dnd", &self.dnd),
+            ("battery_charge", &self.battery_charge),
+            ("battery_level", &self.battery_level),
+            ("power_profile", &self.power_profile),
+            ("network", &self.network),
+            ("vpn", &self.vpn),
+            ("bluetooth", &self.bluetooth),
+            ("privacy", &self.privacy),
+            ("displays", &self.displays),
+        ]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commands().iter().all(|(_, c)| c.is_empty())
+    }
+}
+
+/// `[hooks]` checked: a non-empty command has a non-blank program and no NUL in an argument.
+fn check_hooks(h: &HooksConfig) -> Result<(), String> {
+    for (key, command) in h.commands() {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("hooks.{key}: the program is blank"));
+        }
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("hooks.{key}: an argument holds a NUL"));
+        }
+    }
+    Ok(())
+}
+
 /// The bounds of `[notifications]`.
 pub const NOTIFY_TIMEOUT_LIMIT: u32 = 600;
 pub const NOTIFY_VISIBLE_MAX: u8 = 8;
@@ -738,6 +794,7 @@ pub struct BarConfig {
     pub osd: OsdConfig,
     pub quick: QuickConfig,
     pub displays: DisplaysConfig,
+    pub hooks: HooksConfig,
 }
 
 impl Default for BarConfig {
@@ -758,6 +815,7 @@ impl Default for BarConfig {
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
             displays: DisplaysConfig::default(),
+            hooks: HooksConfig::default(),
         }
     }
 }
@@ -799,6 +857,8 @@ struct Raw {
     quick: QuickConfig,
     #[serde(default)]
     displays: DisplaysConfig,
+    #[serde(default)]
+    hooks: HooksConfig,
 }
 
 impl BarConfig {
@@ -924,6 +984,7 @@ impl BarConfig {
             return Err("displays.drm_dir must be an absolute path".into());
         }
         check_quick(&b.quick)?;
+        check_hooks(&b.hooks)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
             return Err(format!("battery.warn: {w} out of range 1 to 99"));
@@ -953,6 +1014,7 @@ impl BarConfig {
             osd: b.osd,
             quick: b.quick,
             displays: b.displays,
+            hooks: b.hooks,
         })
     }
 }

@@ -101,6 +101,10 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Calculator, after a cycle | 0 loop wake-ups in 5 s | `at_rest_no_wakeups_after_a_calc_cycle`, 3 runs: open with `--calc`, `6*7` typed, Escape |
 | Small features 2 (resources `net`, `disk`, `gpu`; do-not-disturb duration), linked in | −12…+112 KB vs. the delivery before this one (`everything`, 3 pairings; `+ resources` +332, −116, +332 KB: the base read 8,220, 8,656 and 8,220 against 8,540–8,552 on this side, harness spread, those cases leave the new items off) | binary 6.59 → 6.63 MiB (+40 KiB stripped); measured `1595029` vs this delivery, release, back to back, 3 runs each, separate target directories, on `startup_pss_per_source` (`everything` 9,199–9,311 → 9,275–9,311 KB): code linked in. The quick panel's figures did not move (module on 0–100 KB, open +338–342 KB over idle, closed +208–212 over idle against +268–272 on the base, 20 more cycles +36–40 KB); 0 wake-ups at rest with a timed do-not-disturb on both sides |
 | Resources with every item (`cpu`, `memory`, `temperature`, `net`, `disk`, `gpu`) | +140…+248 KB over the default three | `resources_pss_default_and_every_item`, 3 runs, 1 output, interval 1 (8.1–8.2 MB with the default items, 8.34 MB with all six; smaps splits the one-time part into the binary's code pages +64 KB, the font file's pages +64 KB for the new glyphs and the heap +16…+20 KB; the test bounds it at +384 KB, and bounds what ~60 more passes keep at +64 KB of the daemon's own memory, pools left out); same tick: 14, 15 and 17 loop wake-ups in 5 s at interval = 1 (`resources_every_item_ticks_at_the_same_rate`, bound 4..=20; halving the period reads 24), no timer, thread or watch added |
+| Event hooks, linked in (no `[hooks]` set) | −967…−188 KB vs. the delivery before this one (`everything`, 3 pairings: base 9,558, 8,759 and 8,827 against 8,591, 8,571 and 8,638 KB; the first base run read high, a boot shift, and the other machine sessions running tests at the same time widen the spread): nothing measurable | binary 6.71 → 6.77 MiB (+56 KiB stripped); measured `4bb311a` (the plan's commit, just before the code) vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (no `[hooks]`, so the model is `None` and every feed point is one `Option` check): code linked in, unused |
+| Every hook set (all eleven, one stub command) | +0…+64 KB of anonymous memory at start (PSS without the shm pools −15…+64 KB) | `hooks_pss_at_start_and_after_fires`, 3 runs (8.0–8.1 MB own memory, default modules, 1 output) against the same bar without `[hooks]` on the same build, one daemon at a time; the bound is on anonymous memory because the font file's and the binary's pages in the PSS moved ±200 KB between two identical daemons (a first run of the test on PSS read +289 KB after the burst, +163 KB of it the font file's) |
+| Hooks, after a burst of 25 do-not-disturb changes | +20…+32 KB of anonymous memory over start (PSS +45…+96 KB, file pages) | same test: five paced runs, then twenty back to back (some run, the rest throttled, one `hook: dnd throttled` line); the test bites (a 16 KB leak per event reads +416 KB) |
+| Hooks, at rest after a burst | 0 loop and 0 whole-daemon wake-ups in 5 s | `at_rest_no_wakeups_with_hooks`, 3 runs: no timer, watch or thread: the bucket and the quiet window are timestamps compared when an event comes, and a hook's process is the executor's detached child (a 1 s repeating timer in the event path reads 5 wake-ups: the test bites) |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -167,6 +171,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Timed do-not-disturb, and while sharing the screen | ✅ `alpheus-launch --dnd on --for 30m` or `--until 22:30`, or the quick panel's Do not disturb detail, kept across a restart; `[notifications] dnd_while_sharing` | ➖ | ✅ | ❌ | ❌ |
 | Per-app notification rules | ✅ `[[notifications.rules]]`: mute (kept in the history), drop, or change the urgency | ➖ | ✅ | ❌ | ➖ |
 | Low battery alerts | ✅ a notification at 20, 10 and 5 % while discharging (`[battery] warn`), the lowest one critical | ➖ | ✅ | ❌ | ➖ |
+| Event hooks | ✅ `[hooks]` in `bar.toml`: a command (an argv, run as given) per event — started, theme mode, do-not-disturb, battery charge and level, power profile, network, VPN, Bluetooth, privacy, displays — with the data in `ALPHEUS_*` variables, run in its own systemd scope, rate-limited, never logged | ➖ | ✅ | ❌ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is still invisible | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
@@ -354,6 +359,56 @@ empties the history; exit code 2 when the notifications module is not in `bar.to
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
 show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--windows` opens the window switcher (see [The launcher](#the-launcher)); a second `--windows` while it is open steps to the next window, and it replaces any other open launcher, cancelling a waiting `--dmenu` (a password prompt included); exit 3 when the bar is not running or older than `--windows`. `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
+
+### Event hooks
+
+`[hooks]` in `bar.toml` runs a command when something changes. Each key is an argv, run as given
+(no `~` or `$VAR` expansion: a hook that wants a shell says `["sh", "-c", "…"]`); absent or `[]`
+means no hook. Every hook gets `ALPHEUS_EVENT=<key>`, plus:
+
+| Key | Fires when | Variables | Needs in `modules` |
+|---|---|---|---|
+| `started` | once, when the daemon has started its sources | none | always |
+| `theme_mode` | the mode in effect changes (the portal's word in `auto`, or a `theme.toml` change) | `ALPHEUS_MODE` = `dark` \| `light` | always |
+| `dnd` | do-not-disturb turns on or off, by any path | `ALPHEUS_DND` = `on` \| `off` | `notifications` |
+| `battery_charge` | the laptop battery's charge state changes | `ALPHEUS_CHARGE` = `charging` \| `discharging` \| `full` \| `pending`, `ALPHEUS_PERCENT` | `battery` |
+| `battery_level` | the battery's whole percentage changes | the same (`ALPHEUS_CHARGE` may also read `unknown`) | `battery` |
+| `power_profile` | the power profile changes | `ALPHEUS_POWER_PROFILE` = `power-saver` \| `balanced` \| `performance` | `quick` |
+| `network` | the primary connection goes online or offline, or changes kind | `ALPHEUS_NETWORK` = `online` \| `offline`, `ALPHEUS_LINK` = `wifi` \| `ethernet` \| `vpn` \| `other` \| `none` | `network` or `quick` |
+| `vpn` | a VPN becomes active, or the last one goes | `ALPHEUS_VPN` = `on` \| `off` | `network` or `quick` |
+| `bluetooth` | the adapter powers on or off, or a device connects or disconnects | `ALPHEUS_BLUETOOTH` = `on` \| `off` \| `connected` \| `disconnected`, `ALPHEUS_DEVICE` (the device's name, the last two only; unset for a name that is a Bluetooth address) | `bluetooth` or `quick` |
+| `privacy` | the microphone, camera or screen indicator turns on or off | `ALPHEUS_CAPTURE` = `microphone` \| `camera` \| `screen`, `ALPHEUS_STATE` = `on` \| `off` | `privacy` |
+| `displays` | a `displays.toml` profile was applied on hotplug | `ALPHEUS_DISPLAY_PROFILE` (the profile's name) | `displays` |
+
+```toml
+[hooks]
+started = ["notify-send", "alpheus is up"]
+dnd = ["sh", "-c", "echo \"$ALPHEUS_DND\" > ~/.cache/dnd-led"]
+theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-scheme \"prefer-$ALPHEUS_MODE\""]
+```
+
+- **Edges only.** A hook fires on a change, never for the start-up state: each event's first value
+  is only a seed, and for the first 3 s after the daemon starts an edge only moves its seed (the
+  portal's first answer, the first `pw-dump` graph). `started` is the one exception.
+- **A hook never adds a source.** Events come from what the configured `modules` already read; one
+  whose module is off never fires, and the daemon says so once at start
+  (`hooks: power_profile never fires (needs quick)`). A source that is down is not a state: nothing
+  fires for it.
+- **Rate limit.** Per event, five runs at once, then one every 3 s; a run with no token is dropped,
+  with one log line per episode. A hook that re-triggers its own event settles at one run per 3 s.
+- **Finding the program.** The first word is an absolute path or a bare name looked up on the
+  daemon's own `$PATH` (not your shell's); relative paths (`./x`) and `~` are not expanded or found.
+  Quote variables in `sh -c` (`"$ALPHEUS_DEVICE"`): a name may hold spaces.
+- **A scope.** The command runs detached in its own `systemd-run --user --scope` when a user manager
+  runs (as the launcher's apps), so it never dies with the bar, and bare otherwise. The event's data
+  reaches it only through the environment, never as an argument; device and profile names are
+  cleaned and cut to 255 bytes. A hook variable the event does not set is removed from the
+  environment, so an inherited one never passes for the event's. A Bluetooth device whose name
+  is only its address gets no `ALPHEUS_DEVICE`; one that is renamed from an address-like alias to
+  its real name fires a disconnect and a connect (rename churn).
+- **Nothing logged but the event.** `hook: <key>`, `hook: <key> failed (program not found)`,
+  `throttled`; never the command, an argument or a value.
+- **A change takes effect after `shell-ctl reload-bar`** (bar.toml is read at start).
 
 ### The launcher
 
@@ -791,6 +846,10 @@ poweroff = ["systemctl", "poweroff"]
 wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent: launcher.toml's terminal, then nmtui; [] hides it
 mixer = ["foot", "-e", "wiremix"]          # Mixer… under the microphone; absent: launcher.toml's terminal, then wiremix; [] hides it
 dnd_until = "08:00"                         # the do-not-disturb detail's "Until" entry, HH:MM (local time, tomorrow if past)
+
+[hooks]            # a command per event, its data in ALPHEUS_* variables (see "Event hooks"); none set: nothing runs
+# started = ["notify-send", "alpheus up"]   # an argv, run as given (no ~ or $VAR expansion); [] or absent: no hook
+# theme_mode = []                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
 
 [actions]
 open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth or battery: {tab} becomes sound, network, bluetooth or home

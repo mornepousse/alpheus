@@ -216,7 +216,7 @@ fn our_own_apply_does_not_reevaluate() {
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DP-2").state, Some((0, 1920, 0, 1.0, 0)));
     // The compositor answers, then reports the new layout (either order).
-    assert!(c.on_event(ok(&c), t0 + ms(600)).is_empty());
+    assert_eq!(c.on_event(ok(&c), t0 + ms(600)), vec![Action::ProfileApplied("Desk".into())]);
     assert!(c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(610)).is_empty());
     assert!(c.tick(&profiles, t0 + ms(5000)).is_empty());
     assert_eq!(src.reads.get(), 1);
@@ -228,7 +228,7 @@ fn our_own_apply_does_not_reevaluate() {
     c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
     assert_eq!(sends(&c.tick(&profiles, t0 + DEBOUNCE)).len(), 1);
     assert!(c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(600)).is_empty());
-    assert!(c.on_event(ok(&c), t0 + ms(610)).is_empty());
+    assert_eq!(c.on_event(ok(&c), t0 + ms(610)), vec![Action::ProfileApplied("Desk".into())]);
     assert!(c.tick(&profiles, t0 + ms(5000)).is_empty());
     assert_eq!(src.reads.get(), 1);
     assert_eq!(c.next_deadline(), None);
@@ -1323,4 +1323,93 @@ fn a_profile_already_shown_is_not_counted() {
         let a = c.tick(&profiles, at + ms(1000) + DEBOUNCE);
         assert!(a.is_empty(), "cycle {i}: {a:?}");
     }
+}
+
+fn applied(actions: &[Action]) -> Vec<&str> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::ProfileApplied(n) => Some(n.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Bravo plugged left of Alpha: the profile "Desk" is sent; returns the controller in flight.
+fn desk_in_flight(t0: Instant) -> Controller {
+    let src = Source::new(SIDE_BY_SIDE);
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
+    assert_eq!(sends(&c.tick(&|| src.get(), t0 + DEBOUNCE)).len(), 1);
+    c
+}
+
+#[test]
+fn an_applied_profile_is_announced_once() {
+    let t0 = Instant::now();
+    let mut c = desk_in_flight(t0);
+    let a = c.on_event(ok(&c), t0 + ms(600));
+    assert_eq!(applied(&a), ["Desk"]);
+    let a = c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(610));
+    assert!(applied(&a).is_empty());
+    assert!(applied(&c.tick(&|| Vec::new(), t0 + ms(5000))).is_empty());
+}
+
+#[test]
+fn a_refused_profile_is_not_announced() {
+    let t0 = Instant::now();
+    let mut c = desk_in_flight(t0);
+    let a = c.on_event(failed(&c), t0 + ms(600));
+    assert!(applied(&a).is_empty() && !logs(&a).is_empty());
+    // Cancelled past its retries.
+    let mut c = desk_in_flight(t0);
+    for i in 0..=MAX_RESENDS {
+        let a = c.on_event(cancelled(&c), t0 + ms(600 + 10 * u64::from(i)));
+        assert!(applied(&a).is_empty());
+        if c.in_flight().is_some() {
+            c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0 + ms(605 + 10 * u64::from(i)));
+        }
+    }
+    assert!(c.in_flight().is_none(), "given up");
+    // The watchdog.
+    let mut c = desk_in_flight(t0);
+    let a = c.tick(&|| Vec::new(), t0 + DEBOUNCE + WATCHDOG);
+    assert_eq!(logs(&a), vec!["displays: no answer from the compositor"]);
+    assert!(applied(&a).is_empty());
+}
+
+#[test]
+fn a_try_a_revert_or_the_cap_is_never_announced() {
+    let t0 = Instant::now();
+    // A try, kept, then a trial reverted.
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    let a = c.on_event(ok(&c), t0 + ms(10));
+    assert!(applied(&a).is_empty());
+    assert!(applied(&c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(15))).is_empty());
+    assert!(applied(&c.keep(t0 + ms(100))).is_empty());
+    let mut c = trial_open(t0);
+    let a = c.revert(t0 + ms(1000));
+    assert_eq!(sends(&a).len(), 1);
+    assert!(applied(&a).is_empty());
+    assert!(applied(&c.on_event(ok(&c), t0 + ms(1100))).is_empty());
+    // A DisplayLink head lowered.
+    let none = Source::new("");
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0);
+    let a = c.tick(&|| none.get(), t0 + DEBOUNCE);
+    assert_eq!(sends(&a).len(), 1);
+    assert!(applied(&a).is_empty());
+    assert!(applied(&c.on_event(ok(&c), t0 + ms(700))).is_empty());
+}
+
+#[test]
+fn a_profile_already_shown_announces_nothing() {
+    let t0 = Instant::now();
+    let src = Source::new(SIDE_BY_SIDE);
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0);
+    let a = c.tick(&|| src.get(), t0 + DEBOUNCE);
+    assert!(sends(&a).is_empty());
+    assert!(applied(&a).is_empty(), "{a:?}");
 }

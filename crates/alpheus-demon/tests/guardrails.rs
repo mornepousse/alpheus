@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 51] = [
+const NO_THREAD_NOR_COMMAND: [&str; 52] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1424,6 +1424,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 51] = [
     "launcher/calc/units.rs",
     "dnd.rs",
     "battery_alert.rs",
+    "hooks.rs",
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
@@ -1899,6 +1900,9 @@ impl Executor for ArgvSpy {
         Err(self.record(prog, args))
     }
     fn spawn_with_input(&self, prog: &str, args: &[&str], _input: &[&[u8]]) -> Result<(), ExecError> {
+        Err(self.record(prog, args))
+    }
+    fn spawn_with_env(&self, prog: &str, args: &[&str], _env: &[(&str, &str)], _unset: &[&str]) -> Result<(), ExecError> {
         Err(self.record(prog, args))
     }
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
@@ -2703,7 +2707,7 @@ fn the_power_menu_has_no_panicking_path() {
 #[test]
 fn the_calculator_has_no_panicking_path() {
     let files = source_files();
-    for name in ["launcher/calc.rs", "launcher/calc/units.rs"] {
+    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks.rs", "hooks_app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -2969,4 +2973,134 @@ fn a_new_server_gets_the_last_battery_reading() {
     let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
+}
+
+/// Hooks spec § 3: `spawn_with_env(` starts a user's command with the event's variables; only the
+/// hooks' glue calls it (once), beside the executor's own wrapper. Production code only.
+#[test]
+fn spawn_with_env_only_runs_hooks() {
+    let mut seen = Vec::new();
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let n = production_code(&t).matches("spawn_with_env(").count();
+        if n > 0 {
+            seen.push((name, n));
+        }
+    }
+    seen.sort();
+    // nonblocking.rs declares and delegates it (twice); hooks_app.rs calls it once.
+    assert_eq!(seen.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["hooks_app.rs", "nonblocking.rs"]);
+    assert_eq!(seen[0].1, 1, "hooks_app.rs starts a hook in one place");
+}
+
+/// Hooks final review I1: the hooks see a sound or compositor message before the privacy indicators
+/// it clears reach `hooks_capture`, so a source going down fires nothing.
+#[test]
+fn hooks_read_a_message_before_the_privacy_feed() {
+    let files = source_files();
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let body = function_body(&t, "pub(crate) fn on_bar_message(");
+    let hooks = body.find("self.hooks_msg(&m)").expect("hooks_msg");
+    let privacy = body.find("self.privacy_feed(&m)").expect("privacy_feed");
+    assert!(hooks < privacy, "{body}");
+}
+
+/// Every `log(` call of `code`, from `log(` to its closing parenthesis (strings aware, so a `)` or
+/// a `;` inside a format string ends nothing), however many lines it spans.
+fn log_statements(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (at, _) in code.match_indices("log(") {
+        // Not `catalog(`, `dialog(`…: the call is a whole word.
+        if code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let (mut in_str, mut escaped, mut depth, mut end) = (false, false, 0usize, code.len());
+        for (i, c) in code[at..].char_indices() {
+            match (in_str, escaped, c) {
+                (true, true, _) => escaped = false,
+                (true, false, '\\') => escaped = true,
+                (true, false, '"') => in_str = false,
+                (false, _, '"') => in_str = true,
+                (false, _, '(') => depth += 1,
+                (false, _, ')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push(code[at..end].to_string());
+    }
+    out
+}
+
+#[test]
+fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
+    let code = "log(&format!(\n    \"hook: {key}; {}\",\n    argv\n));\nlet x = 1;\ncatalog(\"a\");\nlog(&line);";
+    let found = log_statements(code);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found[0].contains("argv") && found[0].ends_with("))"), "{found:?}");
+    assert_eq!(found[1], "log(&line)");
+}
+
+/// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
+/// Whole statements, so a `format!` split over several lines is read as one.
+#[test]
+fn hook_logs_carry_fixed_words_only() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks_app.rs").expect("hooks_app.rs").1;
+    let production = production_code(t);
+    let statements = log_statements(&production);
+    assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
+    for s in statements {
+        assert!(
+            s.contains("\"hook: {") || s.contains("\"hooks: {") || s.contains("log(&line)") || s == "log(\"hooks: quiet window over\")",
+            "{s}"
+        );
+        for never in ["argv", "env", ".env", "DEVICE", "PROFILE", "name", "value"] {
+            assert!(!s.contains(never), "{never} in a hook log statement: {s}");
+        }
+    }
+}
+
+/// Hooks spec § 3: `started` runs once the launcher's socket is watched, so a `started` hook can
+/// call `alpheus-launch`.
+#[test]
+fn hooks_start_after_the_launcher_socket_watch() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    let body = function_body(t, "pub fn run(");
+    let watch = body.find("watch_launcher_socket(").expect("the socket watch in run");
+    let started = body.find("hooks_started(").expect("hooks_started in run");
+    assert!(watch < started, "hooks_started() must come after the launcher socket watch");
+}
+
+/// Hooks spec § 2: each state change the hooks follow is handed to them where it happens, and each
+/// public entry point is a no-op without hooks.
+#[test]
+fn the_hooks_are_fed_where_state_changes() {
+    let files = source_files();
+    let text = |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone();
+    for (file, signature, call) in [
+        ("startup.rs", "fn on_bar_message(", "hooks_msg("),
+        ("notify_app.rs", "fn dnd_apply(", "hooks_dnd("),
+        ("appearance.rs", "fn publish_mode(", "hooks_mode("),
+        ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
+        ("startup.rs", "pub fn run(", "hooks_started("),
+    ] {
+        let t = text(file);
+        assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
+    }
+    let app = production_code(&text("hooks_app.rs"));
+    let mut checked = 0;
+    for (at, _) in app.match_indices("pub(crate) fn hooks_") {
+        let body = function_body(&app[at..], "pub(crate) fn hooks_");
+        let first = body.trim_start_matches('{').trim_start();
+        assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
+        checked += 1;
+    }
+    assert_eq!(checked, 6);
 }

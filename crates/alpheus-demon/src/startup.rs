@@ -260,6 +260,9 @@ impl App {
         if let Msg::Sound(s) = &m {
             self.osd_sound(s.as_ref());
         }
+        // Hooks first: a sound or compositor source going down must be known when the privacy
+        // indicators it clears reach `hooks_capture` (hooks spec § 2).
+        self.hooks_msg(&m);
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
@@ -402,6 +405,8 @@ pub fn run() -> i32 {
             Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
         }
     }
+    // After the socket watch: a `started` hook may call `alpheus-launch`.
+    core.state.hooks_started();
     if !start_guard(signals, core.tx.clone()) {
         return 1;
     }

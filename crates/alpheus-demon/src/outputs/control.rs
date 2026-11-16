@@ -43,6 +43,9 @@ pub enum Action {
     /// `displays: profile "<name>" does not resolve`.
     LogProfile(String),
     Reply(ReplyTo, Result<(), &'static str>),
+    /// The compositor accepted the configuration of this profile (applied on hotplug); never for a
+    /// profile already shown, a try, a revert or the cap.
+    ProfileApplied(String),
 }
 
 const LOG_REFUSED: &str = "displays: configuration refused by the compositor";
@@ -66,8 +69,8 @@ const MAX_AUTO_HISTORY: usize = 32;
 
 /// Why a configuration was sent: what its answer leads to.
 enum Purpose {
-    /// A profile applied on hotplug.
-    Auto,
+    /// The profile applied on hotplug.
+    Auto { profile: String },
     /// The DisplayLink 120 Hz rule.
     Cap,
     /// A trial asked by the TUI; `before` is what to restore. `asked`: a keep or a revert
@@ -114,6 +117,8 @@ struct Flight {
     own_done: bool,
     /// `cancelled`: send it again on the next `done`.
     resend: bool,
+    /// A configuration went to the compositor (not a no-op answered at once).
+    sent: bool,
 }
 
 struct Trial {
@@ -458,6 +463,7 @@ impl Controller {
             behind,
             own_done: false,
             resend: false,
+            sent: !noop,
         });
         if noop {
             return self.answer(Answer::Applied, true, now);
@@ -471,7 +477,7 @@ impl Controller {
         let Some(f) = self.flight.take() else { return Vec::new() };
         // A profile or a cap chosen for a set of screens that changed since: dropped, the new
         // set is evaluated after its debounce.
-        if self.changed && matches!(f.purpose, Purpose::Auto | Purpose::Cap) {
+        if self.changed && matches!(f.purpose, Purpose::Auto { .. } | Purpose::Cap) {
             return self.settle(false, true, now);
         }
         let targets = self.placed(&f.targets);
@@ -491,6 +497,7 @@ impl Controller {
         let Some(f) = self.flight.take() else { return Vec::new() };
         let mut out = Vec::new();
         let ok = answer == Answer::Applied;
+        let mut announced = None;
         let (log, reply) = if answer == Answer::Invalid { (LOG_INVALID, INVALID) } else { (LOG_REFUSED, REFUSED) };
         if !ok {
             out.push(Action::Log(log));
@@ -507,9 +514,11 @@ impl Controller {
             Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(reply))),
             // The screens did not come back: the TUI must not say they did.
             Purpose::Revert if !ok => self.ended = Some(TrialEnd::Refused),
+            Purpose::Auto { profile } if ok && f.sent => announced = Some(profile),
             _ => {}
         }
         out.extend(self.settle(false, fresh || f.own_done, now));
+        out.extend(announced.map(Action::ProfileApplied));
         out
     }
 
@@ -617,7 +626,9 @@ impl Controller {
                 ProfileMatch::Matches(p) => {
                     match plan_profile(p, &outs).ok().and_then(|pp| targets(&self.heads, &pp.plan.steps).ok()) {
                         // Already shown: nothing sent, nothing counted.
-                        Some(t) if is_noop(&self.heads, &t) => return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now),
+                        Some(t) if is_noop(&self.heads, &t) => {
+                            return self.send(t, Purpose::Auto { profile: p.name.clone() }, 0, now + WATCHDOG, now);
+                        }
                         Some(_) if self.too_many_applies(now) => {
                             if self.skip_line_due(now) {
                                 out.push(Action::Log(LOG_TOO_MANY));
@@ -627,7 +638,7 @@ impl Controller {
                         // A refusal is remembered: `evaluated` holds this set.
                         Some(t) => {
                             self.note_auto(true, now);
-                            return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now);
+                            return self.send(t, Purpose::Auto { profile: p.name.clone() }, 0, now + WATCHDOG, now);
                         }
                         None => out.push(Action::LogProfile(p.name.clone())),
                     }

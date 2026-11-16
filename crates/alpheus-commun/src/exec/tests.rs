@@ -566,3 +566,83 @@ fn the_cut_found_chunk_by_chunk_is_the_whole_buffer_s() {
         }
     }
 }
+
+/// Hooks spec § 3: the variables reach the program, added to the inherited environment.
+#[test]
+fn spawn_with_env_hands_the_variables_to_the_program() {
+    let dir = std::env::temp_dir().join(format!("alpheus-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (got, done) = (dir.join("got").display().to_string(), dir.join("done"));
+    let script = format!("printf '%s|%s' \"$ALPHEUS_TEST_A\" \"$ALPHEUS_TEST_B\" > '{got}' && mv '{got}' '{}'", done.display());
+    exec().spawn_with_env("sh", &["-c", &script], &[("ALPHEUS_TEST_A", "one two"), ("ALPHEUS_TEST_B", "é")], &[]).unwrap();
+    let t = Instant::now();
+    while !done.exists() && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(&done).unwrap(), "one two|é");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_with_env_inherits_the_environment() {
+    let dir = std::env::temp_dir().join(format!("alpheus-env-inh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (got, done) = (dir.join("got").display().to_string(), dir.join("done"));
+    let script = format!("printf %s \"$PATH\" > '{got}' && mv '{got}' '{}'", done.display());
+    exec().spawn_with_env("sh", &["-c", &script], &[("ALPHEUS_TEST_A", "x")], &[]).unwrap();
+    let t = Instant::now();
+    while !done.exists() && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!std::fs::read_to_string(&done).unwrap().is_empty(), "PATH inherited");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Hooks final review M5: a name in `unset` never reaches the program, `env` still wins.
+#[test]
+fn spawn_with_env_removes_the_unset_names() {
+    let dir = std::env::temp_dir().join(format!("alpheus-env-unset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (got, done) = (dir.join("got").display().to_string(), dir.join("done"));
+    let script = format!("printf '%s|%s' \"${{HOME-gone}}\" \"${{ALPHEUS_TEST_A-gone}}\" > '{got}' && mv '{got}' '{}'", done.display());
+    exec().spawn_with_env("sh", &["-c", &script], &[("ALPHEUS_TEST_A", "x")], &["HOME", "ALPHEUS_TEST_A"]).unwrap();
+    let t = Instant::now();
+    while !done.exists() && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read_to_string(&done).unwrap(), "gone|x");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_with_env_refuses_a_bad_variable_before_starting() {
+    let dir = std::env::temp_dir().join(format!("alpheus-env-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("started");
+    let touch = format!("touch '{}'", marker.display());
+    for env in [("", "x"), ("A=B", "x"), ("A\0", "x"), ("A", "x\0y")] {
+        assert!(matches!(exec().spawn_with_env("sh", &["-c", &touch], &[env], &[]), Err(ExecError::Io(_))), "{env:?}");
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "nothing started");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_with_env_of_a_missing_program_is_not_found() {
+    assert_eq!(exec().spawn_with_env("alpheus-nonexistent-program", &[], &[("A", "x")], &[]), Err(ExecError::NotFound));
+}
+
+#[test]
+fn env_ok_refuses_what_command_envs_cannot_carry() {
+    assert!(env_ok(&[("ALPHEUS_EVENT", "dnd"), ("ALPHEUS_X", "")]));
+    assert!(!env_ok(&[("A\0B", "v")]), "NUL in a name");
+    assert!(!env_ok(&[("A", "v\0w")]), "NUL in a value");
+    assert!(!env_ok(&[("", "v")]), "an empty name");
+    assert!(!env_ok(&[("A=B", "v")]), "a name holding =");
+    assert!(!env_ok(&[("A", "v"), ("B=", "v")]), "one bad pair among good ones");
+}

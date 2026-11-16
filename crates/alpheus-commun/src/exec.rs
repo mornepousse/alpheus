@@ -104,6 +104,13 @@ pub trait Executor: Send + Sync {
     /// input, before reading it all): the program was launched, so the caller never runs it again
     /// for that error.
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError>;
+
+    /// `spawn` (detached, double fork, own session, stdio nulled, never registered in `Running`), with
+    /// each `(name, value)` added to the inherited environment and each name of `unset` removed from
+    /// it first (so `env` wins for a name in both). Refused before anything starts
+    /// (`Io("invalid environment variable")`) when a name is empty or holds `=` or NUL, or a value
+    /// holds NUL.
+    fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError>;
     /// Launches `prog args…` for as long as its output is read: standard
     /// output piped, standard error discarded, its own process group, and
     /// killed (SIGTERM) if the THREAD that launched it ends (prctl
@@ -276,6 +283,26 @@ fn detach() -> std::io::Result<()> {
 /// restarting).
 fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
     let mut intermediate = detached_command(prog, args, Stdio::null()).spawn().map_err(io_err)?;
+    let pid = intermediate.id();
+    let _ = intermediate.wait();
+    Ok(pid)
+}
+
+/// An environment `Command::envs` can carry: names non-empty without `=` or NUL, values without NUL.
+pub(crate) fn env_ok(env: &[(&str, &str)]) -> bool {
+    env.iter().all(|(k, v)| !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0'))
+}
+
+/// `spawn_detached` with `env` added to the inherited environment.
+fn spawn_detached_with_env(prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<u32, ExecError> {
+    if !env_ok(env) || unset.iter().any(|k| k.is_empty() || k.contains(['=', '\0'])) {
+        return Err(ExecError::Io("invalid environment variable".into()));
+    }
+    let mut command = detached_command(prog, args, Stdio::null());
+    for k in unset {
+        command.env_remove(k);
+    }
+    let mut intermediate = command.envs(env.iter().copied()).spawn().map_err(io_err)?;
     let pid = intermediate.id();
     let _ = intermediate.wait();
     Ok(pid)
@@ -562,6 +589,10 @@ impl Executor for SystemExecutor {
 
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
         spawn_detached_with_input(prog, args, input).map(|_intermediate_pid| ())
+    }
+
+    fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {
+        spawn_detached_with_env(prog, args, env, unset).map(|_intermediate_pid| ())
     }
 
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
