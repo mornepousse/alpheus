@@ -2848,6 +2848,22 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
 }
 
+/// Timer spec § 3, § 8: whatever closes the timer popup, the one-second cadence goes (`timer_sync`
+/// sees the popup gone) and an end the popup showed is seen. No fake Wayland popup can be closed
+/// every way in a unit test: the wiring is checked in the source.
+#[test]
+fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let timer_app = src("timer_app.rs");
+    let row = popup_ops_row(&timer_app);
+    assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
+    let closed = function_body(&timer_app, "fn timer_closed(");
+    let (seen, sync) = (closed.find("seen_at_close("), closed.find("self.timer_sync()"));
+    assert!(closed.contains("self.timer_do("), "an end the popup showed is seen: {closed}");
+    assert!(matches!((seen, sync), (Some(a), Some(b)) if a < b), "seen first, then the deadline without the seconds: {closed}");
+}
+
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
 /// press: both repeat paths raise `keyboard.repeat` around `key_event`.
 #[test]

@@ -5848,7 +5848,8 @@ fn timer_a_click_opens_the_popup_and_enter_starts_a_countdown() {
 /// Plan decision 4, F6: with the popup open and a countdown running the loop wakes each second;
 /// once the popup is closed (a second click on the chip: Escape's key-up and repeat make one
 /// unrelated wake-up of their own) it does not wake at all, the countdown's next chip change being
-/// a minute away; the window starts at the close, so a one-second timer left armed by it shows.
+/// a minute away; the window starts right after the close's own round trip (a barrier verb), so a
+/// one-second timer left armed by it shows.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
 fn timer_the_popups_second_tick_stops_at_close() {
@@ -5869,6 +5870,11 @@ fn timer_the_popups_second_tick_stops_at_close() {
     assert!(open >= 2, "open: the loop wakes each second, {open} in 3 s: {:?}", d.log());
     sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    // A barrier: a verb with nothing to act on is answered once the loop has handled everything the
+    // close queued before it (the buffer's release), so the window starts after the close's replies.
+    assert_eq!(timer_verb(&sway, &["--timer", "resume"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to resume", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(100)); // the verb's own hang-up
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     thread::sleep(Duration::from_secs(3));
     assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(3), "the loop thread");
@@ -5904,11 +5910,23 @@ fn timer_under_dnd_ends_without_bubble_or_sound() {
     ready(&d);
     assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    // The bar's left part (the chip and the bell; the clock is further right): its pixels with the
+    // chip idle and no count, and again once the end is dismissed, the history holding the notice.
+    let left = |s: &Ppm| (2..20).flat_map(|y| (0..120).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect::<Vec<_>>();
+    let before = sway.screenshot("HEADLESS-1").map(|s| left(&s)).unwrap();
     assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_secs(1));
     assert!(!d.log().iter().any(|l| l.contains("bubbles shown")), "no bubble: {:?}", d.log());
     assert!(!sway.runtime.join("rang").exists(), "no sound");
+    // The positive side: the notice is in the history, so the bell counts it. Dismissing `done`
+    // (any verb sees it) puts the chip back to its idle glyph, so only the count differs.
+    assert_eq!(timer_verb(&sway, &["--timer", "stop"]), (EXIT_OK, String::new(), String::new()));
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| left(s) != before),
+        "the bell counts the notice kept under do-not-disturb: {:?}",
+        d.log()
+    );
 }
 
 /// Timer spec § 6: a running countdown is on file, and a daemon started on it restores it.
@@ -5967,6 +5985,25 @@ fn timer_popup_verb_opens_and_closes_it() {
     thread::sleep(Duration::from_millis(300));
     assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+}
+
+/// Ruling (final review M3): an end seen in the open popup is seen. The popup is open when a
+/// countdown ends and is closed afterwards; the next verb then finds nothing to dismiss (without
+/// the `Seen` at close, `skip` would have dismissed `done` and logged nothing).
+#[test]
+#[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
+fn timer_an_end_seen_in_the_open_popup_is_seen() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-seen", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // past the verb's own debounce
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to skip", DELAY), "the end was seen at close: {:?}", d.log());
 }
 
 /// A popup opened while idle follows a change made elsewhere: after `--timer start 5m` its first

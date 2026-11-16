@@ -2957,36 +2957,40 @@ fn timer_pss_idle_running_and_popup() {
     let (sway, _hypr, d) = start("timer-cost-b", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_anon = d.anon_kb();
     timer(&sway, TimerVerb::Start(1800));
     assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
     let (running, running_shm) = d.pss_and_shm_kb();
+    let running_anon = d.anon_kb();
     timer_popup_cycle(&sway, &d, 1); // the warm-up
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_anon = d.anon_kb();
     for n in 2..=21 {
         timer_popup_cycle(&sway, &d, n);
     }
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_anon = d.anon_kb();
     let (idle_own, running_own, closed_own, cycled_own) =
         (idle - idle_shm, running - running_shm, closed - closed_shm, cycled - cycled_shm);
     eprintln!(
         "timer PSS (KB): {without} without the module, {idle} with the idle chip (module cost {}), {running} running, {closed} \
          popup closed once, {cycled} after 20 more cycles; without the shm pools: {idle_own} idle, {running_own} running, \
-         {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm}, {running_shm}, {closed_shm}, {cycled_shm}",
+         {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm}, {running_shm}, {closed_shm}, {cycled_shm}; \
+         anonymous: {idle_anon} idle, {running_anon} running, {closed_anon} closed, {cycled_anon} cycled",
         idle.saturating_sub(without)
     );
     assert!(cycled < STARTUP_MAX_KB, "{cycled} KB >= 15 MB — report to Mae, never raise");
     assert!(idle <= without + 256, "the idle chip costs {} KB: a glyph and a cell, nothing resident", idle.saturating_sub(without));
+    // Anonymous memory only: the heap and stacks the daemon keeps. PSS also counts file pages (the
+    // first open's code and font warm-up) and the shm pools, which move with the compositor.
     assert!(
-        running_own <= idle_own + 64,
-        "running {running_own} KB vs {idle_own} KB idle (without the pools): a countdown keeps nothing but its state"
+        running_anon <= idle_anon + 64,
+        "running {running_anon} KB anonymous vs {idle_anon} KB idle: a countdown keeps nothing but its state"
     );
-    assert!(
-        cycled_own <= closed_own + 64,
-        "cycled {cycled_own} KB vs {closed_own} KB closed (without the pools): 20 cycles must keep nothing"
-    );
+    assert!(cycled_anon <= closed_anon + 64, "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 20 cycles must keep nothing");
 }
 
 /// Timer spec § 8: idle, then started and paused, the loop sleeps: no timer, no wake-up, no spin.
@@ -3061,14 +3065,20 @@ fn timer_popup_ticks_each_second_only_while_open() {
     std::thread::sleep(Duration::from_secs(5));
     let open = d.main_thread_wakeups().saturating_sub(before);
     eprintln!("loop-thread wake-ups with the popup open on a running countdown (5 s): {open}");
-    // Two a second, measured: the timer's fire, then the compositor's event for the repaint (the
-    // buffer's release) on the socket; the brief's guess of one a second ignored the second.
-    assert!((8..=12).contains(&open), "open: two wake-ups a second (the tick and the repaint's reply), {open} in 5 s: {:?}", d.log());
-    // Closed by a second click on the chip, not by the verb (which hands the keyboard back: the
-    // compositor's leave event is one unrelated wake-up) nor by Escape (SCTK's repeat timer).
+    // Two per repaint, traced: the one-second tick, then the compositor's release of the previous
+    // buffer on the socket; the brief's guess of one a second ignored the second.
+    assert!((8..=12).contains(&open), "open: two wake-ups per repaint (the tick and the buffer release), {open} in 5 s: {:?}", d.log());
+    // Closed by a second click on the chip, not by the verb (whose own close sends the buffer
+    // destroys and the keyboard release: the round trip's replies are wake-ups of their own) nor by
+    // Escape (SCTK's repeat timer).
     sway.click(TIMER_CHIP.0, TIMER_CHIP.1, "button1");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
-    // The window starts at the close: a one-second timer left armed by it would show.
+    // A barrier: a verb with nothing to act on is answered once the loop has handled everything
+    // the close queued before it, so the window starts after the close's own replies.
+    timer(&sway, TimerVerb::Resume);
+    assert!(d.wait_for("timer: nothing to resume", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(100)); // the verb's own hang-up
+    // The window starts right after the close: a one-second timer left armed by it would show.
     let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the loop after the timer popup");

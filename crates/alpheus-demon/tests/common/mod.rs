@@ -1016,6 +1016,14 @@ impl Daemon {
         t.lines().find_map(|l| l.strip_prefix("Pss:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
     }
 
+    /// Anonymous memory in KB (/proc/<pid>/smaps_rollup `Anonymous:`): the heap and stacks the
+    /// daemon itself keeps. Unlike PSS it counts no file page (code, fonts) and no shm pool (the
+    /// compositor's mapping moves those), so a leak shows and a first open's warm-up does not.
+    pub fn anon_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines().find_map(|l| l.strip_prefix("Anonymous:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
     /// PSS in KB, the whole daemon's then its shm pools' (memfd mappings), from one pass over
     /// /proc/<pid>/smaps so the two cannot skew. The compositor maps the pools too, so their PSS
     /// moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps leaves
