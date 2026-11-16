@@ -2983,7 +2983,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The clipboard history's pure files run on each copy and must never panic (a boundary panic's
 /// message embeds the text), slice a string by range nor log (a copy is private). Production code
 /// only; Tasks 2 and 3 append theirs.
-const CLIPBOARD_PURE: [&str; 1] = ["clipboard/history.rs"];
+const CLIPBOARD_PURE: [&str; 2] = ["clipboard/history.rs", "clipboard/offer.rs"];
 
 #[test]
 fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -3004,6 +3004,34 @@ fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
             }
         }
     }
+}
+
+/// The hint types that mark a password-manager copy are named in `clipboard/offer.rs`'s `SENSITIVE`
+/// and nowhere else: no code path can request such an offer's data.
+#[test]
+fn the_sensitive_hint_type_is_never_received() {
+    let hints = ["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type", "ExcludeClipboardContentFromMonitorProcessing"];
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let production = production_code(&t);
+        if name == "clipboard/offer.rs" {
+            let mut rest = production.clone();
+            let start = rest.find("pub const SENSITIVE").expect("SENSITIVE");
+            let end = start + rest[start..].find("];").expect("end of SENSITIVE") + 2;
+            rest.replace_range(start..end, "");
+            for h in hints {
+                assert!(!rest.contains(h), "{h} outside SENSITIVE in offer.rs");
+                assert!(production.contains(h), "{h} missing from SENSITIVE");
+            }
+            seen += 1;
+        } else {
+            for h in hints {
+                assert!(!production.contains(h), "{h} in {name}");
+            }
+        }
+    }
+    assert_eq!(seen, 1);
 }
 
 /// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked

@@ -82,6 +82,8 @@
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
+//! [clipboard]                                               # the text clipboard history (read at start)
+//! enabled = false                                           # true: follow the clipboard (data-control), 50 entries in memory, never on disk
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
 //! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
@@ -816,6 +818,13 @@ pub enum TimerIdle {
     Hidden,
 }
 
+/// `[clipboard]` (clipboard spec): off by default, read at start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClipboardConfig {
+    pub enabled: bool,
+}
+
 /// `[timer]` (timer spec § 7). Lengths are minutes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -880,6 +889,7 @@ pub struct BarConfig {
     pub osd: OsdConfig,
     pub quick: QuickConfig,
     pub timer: TimerConfig,
+    pub clipboard: ClipboardConfig,
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
 }
@@ -902,6 +912,7 @@ impl Default for BarConfig {
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
             timer: TimerConfig::default(),
+            clipboard: ClipboardConfig::default(),
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
         }
@@ -945,6 +956,8 @@ struct Raw {
     quick: QuickConfig,
     #[serde(default)]
     timer: TimerConfig,
+    #[serde(default)]
+    clipboard: ClipboardConfig,
     #[serde(default)]
     displays: DisplaysConfig,
     #[serde(default)]
@@ -1105,6 +1118,7 @@ impl BarConfig {
             osd: b.osd,
             quick: b.quick,
             timer: b.timer,
+            clipboard: b.clipboard,
             displays: b.displays,
             hooks: b.hooks,
         })
