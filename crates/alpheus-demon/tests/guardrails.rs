@@ -3391,3 +3391,18 @@ fn the_panic_hook_is_installed_before_anything_else() {
         assert!(!hook.contains(leak), "the hook must never print the panic's message ({leak}): {hook}");
     }
 }
+
+/// The launcher's guard logs the place only (as the pad's): a panic message can quote the query, a
+/// menu line or a password, which are never logged.
+#[test]
+fn the_launcher_guard_never_logs_a_panic_payload() {
+    let files = source_files();
+    let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
+    let prod = production_code(host);
+    let guard = function_body(&prod, "fn guarded_with<R>(");
+    assert!(guard.contains("Err(_) =>"), "the payload is not even bound: {guard}");
+    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)"] {
+        assert!(!guard.contains(leak), "the launcher's guard must never read the panic's message ({leak}): {guard}");
+    }
+    assert!(!prod.contains("panic_text"), "launcher/host.rs formats no panic payload");
+}
