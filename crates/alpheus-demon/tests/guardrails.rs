@@ -300,7 +300,9 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 /// The daemon only reads from the compositor, plus two writes: the workspace command, and output
 /// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
 /// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
-/// never output power management, never dpms (displays spec § 2, as amended).
+/// never output power management, never dpms (displays spec § 2, as amended). A third write is the
+/// clipboard's own selection, set in `clipboard/control.rs` only (clipboard spec decision 14): the
+/// daemon's re-copy of a history entry, never a primary selection.
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in all_source_files() {
@@ -796,6 +798,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Calc => "calc",
             Request::Windows => "windows",
             Request::Notes => "notes",
+            Request::Clipboard => "clipboard",
+            Request::ClipboardClear => "clipboard-clear",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -815,6 +819,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Calc,
         Request::Windows,
         Request::Notes,
+        Request::Clipboard,
+        Request::ClipboardClear,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -835,6 +841,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "calc",
             "windows",
             "notes",
+            "clipboard",
+            "clipboard-clear",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -2989,7 +2997,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 const CLIPBOARD_NO_PANIC_NO_LOG: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
 
 #[test]
-fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
+fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
     let files = source_files();
     for name in CLIPBOARD_NO_PANIC_NO_LOG.iter().copied() {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
@@ -3628,7 +3636,8 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
             );
         }
         for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
-            assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
+            let allowed = never == "set_selection" && name == "clipboard/control.rs";
+            assert!(allowed || !prod.contains(never), "{never} in {name}: the pad never owns a selection");
         }
     }
     assert!(seen >= 9, "the notes files were found: {seen}");
@@ -3649,6 +3658,30 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let notes_paste = function_body(&paste, "fn notes_paste(");
     let (ro, rx) = (notes_paste.find("read_only"), notes_paste.find(".receive("));
     assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
+}
+
+/// Clipboard task 4: the daemon sets a selection in one place only, `own_selection` of
+/// `clipboard/control.rs`, for a history entry's re-copy: never `None` (it would clear the user's
+/// clipboard), never the primary selection.
+#[test]
+fn the_clipboard_selection_is_set_only_by_the_own_source() {
+    let files = source_files();
+    for (p, t) in &files {
+        let name = relative_path(p);
+        let prod = production_code(t);
+        assert!(!prod.contains("set_primary_selection"), "the primary selection is never set: {name}");
+        if name != "clipboard/control.rs" {
+            assert!(!prod.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
+        }
+    }
+    let control = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/control.rs").expect("control.rs").1;
+    let prod = production_code(control);
+    assert_eq!(prod.matches("set_selection(").count(), 2, "one call per protocol, in the macro-free own_selection: {prod}");
+    assert!(!prod.contains("set_selection(None"), "the selection is never cleared");
+    let body = function_body(&prod, "fn own_selection(");
+    assert_eq!(body.matches("set_selection(").count(), 2, "both calls sit inside own_selection: {body}");
+    assert_eq!(body.matches("own_offer_types()").count(), 2, "each source offers the one list, marker included: {body}");
+    assert_eq!(body.matches("set_selection(Some(").count(), 2, "only ever a source: {body}");
 }
 
 /// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).

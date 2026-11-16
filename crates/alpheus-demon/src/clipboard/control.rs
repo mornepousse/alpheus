@@ -3,10 +3,13 @@
 //! the device, the offers and the one pending read on the loop. Never logs, and nothing here shows
 //! an offer's types or text.
 
-use crate::clipboard::offer::{ReadBuffer, Step, step};
+use crate::clipboard::offer::{ReadBuffer, Step, TEXT_TYPES, own_offer_types, step};
+use crate::sys::set_nonblocking;
 use crate::wayland::App;
+use alpheus_commun::launcher_ipc::wipe;
 use smithay_client_toolkit::data_device_manager::ReadPipe;
 use smithay_client_toolkit::reexports::calloop::{PostAction, RegistrationToken};
+use smithay_client_toolkit::reexports::client::backend::ObjectId;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat;
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
@@ -22,7 +25,7 @@ use smithay_client_toolkit::reexports::protocols_wlr::data_control::v1::client::
     zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
     zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
 };
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -127,6 +130,73 @@ impl Device {
     }
 }
 
+/// The daemon's own source, whichever protocol made it.
+enum SourceProxy {
+    Ext(ExtDataControlSourceV1),
+    Wlr(ZwlrDataControlSourceV1),
+}
+
+impl SourceProxy {
+    fn id(&self) -> ObjectId {
+        match self {
+            SourceProxy::Ext(s) => s.id(),
+            SourceProxy::Wlr(s) => s.id(),
+        }
+    }
+
+    fn offer(&self, mime: &str) {
+        match self {
+            SourceProxy::Ext(s) => s.offer(mime.to_string()),
+            SourceProxy::Wlr(s) => s.offer(mime.to_string()),
+        }
+    }
+
+    fn destroy(&self) {
+        match self {
+            SourceProxy::Ext(s) => s.destroy(),
+            SourceProxy::Wlr(s) => s.destroy(),
+        }
+    }
+}
+
+/// A history entry put back on the clipboard: the source and the text it serves. Dropping it
+/// destroys the source and wipes the text. No `Debug`: the text is never printed.
+pub(crate) struct OwnSource {
+    source: SourceProxy,
+    text: String,
+}
+
+impl OwnSource {
+    pub(crate) fn is(&self, id: &ObjectId) -> bool {
+        self.source.id() == *id
+    }
+
+    /// A paste asked for `mime`: the text goes out on `fd`, which is closed on return.
+    pub(crate) fn send(&self, mime: &str, fd: OwnedFd) {
+        if set_nonblocking(fd.as_fd()).is_err() {
+            return;
+        }
+        let mut file = std::fs::File::from(fd);
+        serve(mime, &self.text, &mut file);
+    }
+}
+
+impl Drop for OwnSource {
+    fn drop(&mut self) {
+        self.source.destroy();
+        wipe(&mut self.text);
+    }
+}
+
+/// What a paste of `mime` gets: the text in one write for a text type, nothing for the marker or
+/// any other type. A write that fails or stops short is never retried (a stalled reader must not
+/// hold the loop) and never logged.
+pub(crate) fn serve(mime: &str, text: &str, out: &mut impl Write) {
+    if TEXT_TYPES.contains(&mime) {
+        let _ = out.write(text.as_bytes());
+    }
+}
+
 /// The pending read: its loop source, what it has so far and when it started (the deadline).
 pub(crate) struct Reading {
     pub(crate) token: RegistrationToken,
@@ -141,6 +211,8 @@ pub(crate) struct Control {
     device: Option<Device>,
     pub(crate) reading: Slot<Reading>,
     next_generation: u64,
+    /// The entry last put back on the clipboard, while its source lives.
+    pub(crate) own: Option<OwnSource>,
 }
 
 pub(crate) const EXT_NAME: &str = "ext-data-control-v1";
@@ -154,7 +226,7 @@ pub(crate) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<(Contr
         let m = globals.bind::<ZwlrDataControlManagerV1, _, _>(qh, 1..=1, ()).ok()?;
         (Manager::Wlr(m), "wlr-data-control-unstable-v1")
     };
-    Some((Control { manager, device: None, reading: Slot::default(), next_generation: 0 }, name))
+    Some((Control { manager, device: None, reading: Slot::default(), next_generation: 0, own: None }, name))
 }
 
 impl Control {
@@ -172,9 +244,39 @@ impl Control {
     /// The seat is gone, or the compositor finished the device: it is destroyed (a finished
     /// device is inert, its destroy request is still due).
     pub(crate) fn detach(&mut self) {
+        // Its own source goes with the device (destroyed, its text wiped).
+        self.own = None;
         if let Some(device) = self.device.take() {
             device.destroy();
         }
+    }
+
+    /// Makes `text` the clipboard: a new source offering `own_offer_types()` (the marker last)
+    /// becomes the selection, the previous own source is destroyed and wiped. The only place the
+    /// daemon sets a selection, never the primary one, never to none. False without a device.
+    pub(crate) fn own_selection(&mut self, text: &str, qh: &QueueHandle<App>) -> bool {
+        let Some(device) = self.device.as_ref() else { return false };
+        let source = match (&self.manager, device) {
+            (Manager::Ext(m), Device::Ext(d)) => {
+                let source = SourceProxy::Ext(m.create_data_source(qh, ()));
+                own_offer_types().for_each(|mime| source.offer(mime));
+                if let SourceProxy::Ext(s) = &source {
+                    d.set_selection(Some(s));
+                }
+                source
+            }
+            (Manager::Wlr(m), Device::Wlr(d)) => {
+                let source = SourceProxy::Wlr(m.create_data_source(qh, ()));
+                own_offer_types().for_each(|mime| source.offer(mime));
+                if let SourceProxy::Wlr(s) = &source {
+                    d.set_selection(Some(s));
+                }
+                source
+            }
+            _ => return false,
+        };
+        self.own = Some(OwnSource { source, text: text.to_string() });
+        true
     }
 }
 
@@ -270,11 +372,18 @@ macro_rules! data_control_family {
             }
         }
 
-        // The source is the daemon's own (a later task offers it); a request for data is closed.
+        // The source is the daemon's own: a paste is served from it, a replaced one is dropped.
         impl Dispatch<$source, ()> for App {
-            fn event(_: &mut App, _: &$source, event: $source_mod::Event, _: &(), _: &Connection, _: &QueueHandle<App>) {
-                if let $source_mod::Event::Send { fd, .. } = event {
-                    drop(fd);
+            fn event(state: &mut App, source: &$source, event: $source_mod::Event, _: &(), _: &Connection, _: &QueueHandle<App>) {
+                let id = source.id();
+                match event {
+                    $source_mod::Event::Send { mime_type, fd } => {
+                        state.clipboard_guarded("send", |app| app.clipboard_source_send(&id, &mime_type, fd));
+                    }
+                    $source_mod::Event::Cancelled => {
+                        state.clipboard_guarded("cancelled", |app| app.clipboard_source_cancelled(&id));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -327,6 +436,47 @@ mod tests {
         replace_and_remove(&mut slot, 2, |old| removed.push(old));
         assert_eq!(removed, [1]);
         assert_eq!(slot.get(), Some(&2));
+    }
+
+    /// A writer that counts its calls and fails each one with `kind`.
+    struct Failing {
+        calls: u32,
+        kind: ErrorKind,
+    }
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            assert!(self.calls < 2, "a failed write was retried");
+            Err(self.kind.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn serve_writes_the_text_for_a_text_type_and_nothing_for_the_marker() {
+        for mime in TEXT_TYPES {
+            let mut out = Vec::new();
+            serve(mime, "héllo", &mut out);
+            assert_eq!(out, "héllo".as_bytes(), "{mime}");
+        }
+        let mut out = Vec::new();
+        serve(crate::clipboard::offer::MARKER, "héllo", &mut out);
+        serve("image/png", "héllo", &mut out);
+        assert!(out.is_empty(), "the marker and other types get nothing");
+    }
+
+    #[test]
+    fn serve_never_retries_a_blocked_write() {
+        let mut out = Failing { calls: 0, kind: ErrorKind::WouldBlock };
+        serve("text/plain", "x", &mut out);
+        assert_eq!(out.calls, 1, "one call, then it gives up");
+        let mut out = Failing { calls: 0, kind: ErrorKind::BrokenPipe };
+        serve("UTF8_STRING", "x", &mut out);
+        assert_eq!(out.calls, 1, "a closed reader is not retried either");
     }
 
     #[test]

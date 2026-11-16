@@ -14,6 +14,12 @@ pub const SENSITIVE: [&str; 3] =
     ["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type", "ExcludeClipboardContentFromMonitorProcessing"];
 /// Added by the daemon's own source, so its re-copy is never read back.
 pub const MARKER: &str = "application/x-alpheus-clipboard";
+/// What the daemon's own source offers: the text types, then the marker that makes its re-copy
+/// skipped when the compositor announces it back (one list for the source and for the verdict).
+pub fn own_offer_types() -> impl Iterator<Item = &'static str> {
+    TEXT_TYPES.into_iter().chain([MARKER])
+}
+
 /// A read that has not ended by then is skipped.
 pub const READ_DEADLINE: Duration = Duration::from_secs(1);
 /// Selections this soon after a `--password` prompt closed are skipped unread.

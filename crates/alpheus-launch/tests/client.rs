@@ -771,3 +771,30 @@ fn other_refusals_of_a_dmenu_stay_errors() {
         daemon.join().unwrap();
     }
 }
+
+/// Clipboard spec: both verbs send their request and exit 0 on Done; a daemon too old for one
+/// answers the unknown request: exit 3, one request; an error reply is exit 2 with its text.
+#[test]
+fn clipboard_clear_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("clipboard-clear", Reply::Done);
+    assert_eq!(launch(&["--clipboard-clear"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::ClipboardClear);
+    let (socket, daemon) = answering("clipboard", Reply::Done);
+    assert_eq!(launch(&["--clipboard"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Clipboard);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("clipboard-old", Reply::Error("malformed request: unknown request \"clipboard-clear\"".into()));
+    let (code, out, err) = launch(&["--clipboard-clear"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--clipboard-clear"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    let (socket, _connections, stop, daemon) =
+        replying_daemon("clipboard-off", Reply::Error("the clipboard history is off ([clipboard] enabled in bar.toml)".into()));
+    let (code, out, err) = launch(&["--clipboard"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("the clipboard history is off"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+}

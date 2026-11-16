@@ -148,6 +148,8 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Quick(_)
             | Request::Timer(_)
             | Request::Notes
+            | Request::Clipboard
+            | Request::ClipboardClear
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -603,6 +605,8 @@ mod tests {
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
             (Request::Notes, Some(Apps), not_ours(), refused()),
+            (Request::Clipboard, None, not_ours(), refused()),
+            (Request::ClipboardClear, Some(Apps), not_ours(), refused()),
             (Request::Calc, None, Action::OpenCalc, done()),
             (Request::Calc, Some(Apps), Action::Close(R::Toggle), done()),
             (Request::Calc, Some(Script), Action::Close(R::Toggle), done()),

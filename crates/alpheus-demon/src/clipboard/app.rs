@@ -7,10 +7,13 @@ use crate::clipboard::offer::{READ_DEADLINE, Step, Verdict, in_quiet_window, ver
 use crate::deadline::DeadlineTimer;
 use crate::log::write as log;
 use crate::wayland::App;
+use alpheus_commun::launcher_ipc::{Reply, Request};
 use smithay_client_toolkit::reexports::calloop::PostAction;
 use smithay_client_toolkit::reexports::client::QueueHandle;
+use smithay_client_toolkit::reexports::client::backend::ObjectId;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use std::io::{ErrorKind, Read};
+use std::os::fd::OwnedFd;
 use std::time::Instant;
 
 pub(crate) struct ClipboardApp {
@@ -30,6 +33,64 @@ pub(crate) struct ClipboardApp {
 /// The read's deadline, if a read started at `started`.
 pub(crate) fn read_deadline(started: Option<Instant>) -> Option<Instant> {
     started.map(|t| t + READ_DEADLINE)
+}
+
+/// Why a verb cannot be served: the history is off (`[clipboard] enabled`), or on without a
+/// data-control protocol. Nothing else tells the two apart: no extra field.
+pub(crate) fn availability(enabled: bool, bound: bool) -> Result<(), &'static str> {
+    match (enabled, bound) {
+        (false, _) => Err("the clipboard history is off ([clipboard] enabled in bar.toml)"),
+        (true, false) => Err("the compositor offers no clipboard protocol (data-control)"),
+        (true, true) => Ok(()),
+    }
+}
+
+/// The answer to a verb, and whether the history was cleared (the caller logs it, one fixed line).
+/// `history` is None when nothing is bound.
+fn verb_reply(enabled: bool, history: Option<&mut History>, request: &Request) -> (Reply, bool) {
+    if let Err(why) = availability(enabled, history.is_some()) {
+        return (Reply::Error(why.into()), false);
+    }
+    match (request, history) {
+        (Request::ClipboardClear, Some(history)) => {
+            history.clear();
+            (Reply::Done, true)
+        }
+        _ => (Reply::Error("not a clipboard request".into()), false),
+    }
+}
+
+/// Destroys what it holds when dropped, unless it was handed on: a panic between the moment an
+/// offer is taken and the moment it is read or skipped still destroys the offer.
+pub(crate) trait Destroy {
+    fn destroy(&self);
+}
+
+impl Destroy for Offer {
+    fn destroy(&self) {
+        Offer::destroy(self);
+    }
+}
+
+pub(crate) struct DestroyOnDrop<T: Destroy>(Option<T>);
+
+impl<T: Destroy> DestroyOnDrop<T> {
+    pub(crate) fn new(value: T) -> Self {
+        DestroyOnDrop(Some(value))
+    }
+
+    /// Hands the value on: it is no longer destroyed here.
+    pub(crate) fn consume(&mut self) -> Option<T> {
+        self.0.take()
+    }
+}
+
+impl<T: Destroy> Drop for DestroyOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            value.destroy();
+        }
+    }
 }
 
 impl ClipboardApp {
@@ -89,16 +150,18 @@ impl App {
         // No selection only clears the current one: a read in flight is kept (an app that copies
         // then quits sends it right after), and the deadline bounds it. Only a newer one drops it.
         let Some(offer) = slot.take() else { return };
+        // From here a panic still destroys the offer (the guard), unless it was handed on.
+        let mut guard = DestroyOnDrop::new(offer);
         self.clipboard_stop_read();
-        let Some(c) = self.clipboard.as_ref() else {
-            return offer.destroy();
-        };
+        let Some(c) = self.clipboard.as_ref() else { return };
         let quiet = in_quiet_window(c.password_open, c.password_closed_at, Instant::now());
-        let types = offer.mime_types();
-        match verdict(types.iter().map(String::as_str), quiet) {
-            Verdict::Read(mime) => control::start_read(self, offer, mime),
-            Verdict::Skip(_) => offer.destroy(),
+        let types = guard.0.as_ref().map(Offer::mime_types).unwrap_or_default();
+        if let Verdict::Read(mime) = verdict(types.iter().map(String::as_str), quiet) {
+            if let Some(offer) = guard.consume() {
+                control::start_read(self, offer, mime);
+            }
         }
+        // A skipped offer is destroyed as the guard goes.
         self.clipboard_timer_sync();
     }
 
@@ -187,6 +250,46 @@ impl App {
         });
     }
 
+    /// Enter on a history entry: it goes to the front and becomes the clipboard again, from the
+    /// daemon's own source (its marker keeps the copy from being read back).
+    #[allow(dead_code)] // the launcher's Enter reaches it in the wiring task
+    pub(crate) fn clipboard_copy(&mut self, qh: &QueueHandle<App>, id: u64) -> Result<(), String> {
+        let Some(c) = self.clipboard.as_mut() else { return Err("the clipboard is not available".into()) };
+        if !c.history.touch(id) {
+            return Err("the entry is gone".into());
+        }
+        let Some(text) = c.history.text_of(id) else { return Err("the entry is gone".into()) };
+        if c.control.own_selection(text, qh) { Ok(()) } else { Err("the clipboard is not available".into()) }
+    }
+
+    /// `alpheus-launch --clipboard-clear`, answered before the launcher's guard: off or unbound is
+    /// an error, else the unpinned entries go.
+    pub(crate) fn clipboard_verb(&mut self, request: &Request) -> Reply {
+        let enabled = self.bar.config.clipboard.enabled;
+        let (reply, cleared) = verb_reply(enabled, self.clipboard.as_mut().map(|c| &mut c.history), request);
+        if cleared {
+            log("clipboard: history cleared (verb)");
+        }
+        reply
+    }
+
+    /// A paste of the own source: its text goes out on `fd` (closed on return, or at once when the
+    /// source is not the current own one).
+    pub(crate) fn clipboard_source_send(&mut self, id: &ObjectId, mime: &str, fd: OwnedFd) {
+        if let Some(own) = self.clipboard.as_ref().and_then(|c| c.control.own.as_ref()).filter(|o| o.is(id)) {
+            own.send(mime, fd);
+        }
+    }
+
+    /// The compositor replaced our selection: the own source is destroyed and its text wiped.
+    pub(crate) fn clipboard_source_cancelled(&mut self, id: &ObjectId) {
+        if let Some(c) = self.clipboard.as_mut() {
+            if c.control.own.as_ref().is_some_and(|o| o.is(id)) {
+                c.control.own = None;
+            }
+        }
+    }
+
     /// The tracked seat appeared, or went: the device follows it.
     pub(crate) fn clipboard_seat(&mut self, qh: &QueueHandle<App>) {
         let seat = self.seat.clone();
@@ -237,6 +340,69 @@ mod tests {
         buffer: ReadBuffer,
         step: Option<Step>,
         wakes: u32,
+    }
+
+    #[test]
+    fn own_offer_is_never_read() {
+        use crate::clipboard::offer::{Skip, own_offer_types};
+        let types: Vec<&str> = own_offer_types().collect();
+        assert_eq!(verdict(types.iter().copied(), false), Verdict::Skip(Skip::Own));
+        assert_eq!(types.last().copied(), Some(crate::clipboard::offer::MARKER), "the marker is offered last");
+        assert!(types.contains(&"text/plain;charset=utf-8"), "the text types are offered");
+    }
+
+    #[test]
+    fn verbs_answer_by_availability() {
+        let clear = Request::ClipboardClear;
+        let off = "the clipboard history is off ([clipboard] enabled in bar.toml)";
+        assert_eq!(verb_reply(false, None, &clear), (Reply::Error(off.into()), false));
+        let mut history = History::default();
+        assert_eq!(verb_reply(false, Some(&mut history), &clear).0, Reply::Error(off.into()), "off wins");
+        let no_protocol = "the compositor offers no clipboard protocol (data-control)";
+        assert_eq!(verb_reply(true, None, &clear), (Reply::Error(no_protocol.into()), false));
+
+        history.push("one".into());
+        history.push("two".into());
+        let id = match history.push("kept".into()) {
+            crate::clipboard::history::Pushed::Added(id) => id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(history.toggle_pin(id), Ok(true));
+        assert_eq!(verb_reply(true, Some(&mut history), &clear), (Reply::Done, true));
+        assert_eq!(history.len(), 1, "the pinned entry stays");
+        assert_eq!(history.text_of(id), Some("kept"));
+    }
+
+    struct Counting(std::rc::Rc<std::cell::Cell<u32>>);
+
+    impl Destroy for Counting {
+        fn destroy(&self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn a_guarded_offer_is_destroyed_unless_consumed() {
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        drop(DestroyOnDrop::new(Counting(count.clone())));
+        assert_eq!(count.get(), 1, "dropped: destroyed");
+        let mut guard = DestroyOnDrop::new(Counting(count.clone()));
+        let handed = guard.consume();
+        drop(guard);
+        assert_eq!(count.get(), 1, "consumed: left to its new owner");
+        drop(handed);
+    }
+
+    #[test]
+    fn a_panic_destroys_the_guarded_offer() {
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let guard = DestroyOnDrop::new(Counting(count.clone()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            std::panic::resume_unwind(Box::new("boom"));
+        }));
+        assert!(result.is_err());
+        assert_eq!(count.get(), 1, "unwinding drops the guard");
     }
 
     #[test]
