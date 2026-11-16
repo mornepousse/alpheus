@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 52] = [
+const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
     "media.rs",
     "notify.rs",
