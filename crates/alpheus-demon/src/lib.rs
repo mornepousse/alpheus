@@ -39,6 +39,7 @@ pub mod memory;
 pub mod menu_app;
 pub mod modules;
 pub mod nonblocking;
+pub mod notes;
 pub mod notify;
 pub mod notify_app;
 pub mod osd;

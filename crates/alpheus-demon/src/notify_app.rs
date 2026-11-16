@@ -315,6 +315,7 @@ impl App {
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Timer(_)
+            | Request::Notes
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep

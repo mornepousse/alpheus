@@ -92,7 +92,7 @@ fn spawn(exec: &dyn Executor, argv: &[String]) -> Result<(), ExecError> {
     exec.spawn(prog, &args)
 }
 
-fn failure(program: &str, e: ExecError) -> String {
+pub(crate) fn failure(program: &str, e: ExecError) -> String {
     match e {
         ExecError::NotFound => format!("{program}: program not found"),
         ExecError::Timeout => format!("{program}: timed out"),

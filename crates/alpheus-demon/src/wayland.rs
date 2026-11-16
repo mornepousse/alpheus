@@ -39,8 +39,9 @@ use smithay_client_toolkit::shm::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
-    delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
+    data_device_manager::DataDeviceManagerState,
+    delegate_compositor, delegate_data_device, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -425,6 +426,9 @@ pub struct App {
     pending_restore: Vec<wl_output::WlOutput>,
     /// First seat announced: the launcher binds its keyboard on it while open.
     pub(crate) seat: Option<wl_seat::WlSeat>,
+    /// The data-device manager, bound once at start: the quick notepad's paste reads the selection
+    /// through it (`notes/paste.rs`). None when the compositor has none.
+    pub(crate) data_devices: Option<DataDeviceManagerState>,
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
@@ -472,6 +476,8 @@ pub struct App {
     pub(crate) launcher: Option<OpenLauncher>,
     /// Bumped at each open: a scan result from an older open is ignored.
     pub(crate) launcher_generation: u64,
+    /// The quick notepad: its pad while open (None at rest) and its save timer.
+    pub(crate) notes: crate::notes::app::NotesApp,
     /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
     /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
@@ -629,6 +635,7 @@ impl App {
             awaiting_configure: Vec::new(),
             pending_restore: Vec::new(),
             seat: None,
+            data_devices: DataDeviceManagerState::bind(globals, qh).ok(),
             viewporter,
             displays,
             loop_handle: None,
@@ -646,6 +653,7 @@ impl App {
             popup_press_time: 0,
             launcher: None,
             launcher_generation: 0,
+            notes: crate::notes::app::NotesApp::new(),
             mail: None,
             xdg,
             popup: None,
@@ -1015,6 +1023,10 @@ impl CompositorHandler for App {
             self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
             return;
         }
+        if self.notes_owns_box(surface) {
+            self.notes_guarded("scale", |app| app.notes_scale(surface, f));
+            return;
+        }
         if self.bubbles_scale(surface, f) {
             return;
         }
@@ -1056,6 +1068,7 @@ impl OutputHandler for App {
         // Hot-plugged while the launcher is open: it gets a scrim too, so a
         // click on it closes the launcher like any output already shown had.
         self.launcher_guarded("output added", |app| app.launcher_output_added(qh, output.clone()));
+        self.notes_guarded("output added", |app| app.notes_output_added(qh, output.clone()));
         self.place(qh, output);
     }
 
@@ -1073,6 +1086,7 @@ impl OutputHandler for App {
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
+        self.notes_guarded("output", |app| app.notes_output_gone(&output));
         self.bubbles_output_gone(&output);
         self.osd_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
@@ -1099,6 +1113,10 @@ impl LayerShellHandler for App {
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
             return; // a launcher surface: the bar's restore logic is not involved
+        }
+        if self.notes_owns_surface(layer.wl_surface()) {
+            self.notes_guarded("closed", |app| app.notes_layer_closed(layer.wl_surface()));
+            return; // the pad's surface: the bar's restore logic is not involved
         }
         if self.bubbles_owns(layer.wl_surface()) {
             self.bubbles_layer_closed();
@@ -1147,6 +1165,10 @@ impl LayerShellHandler for App {
         // Ownership decided first, outside any guard: same reasoning as `scale_factor_changed`.
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
+            return;
+        }
+        if self.notes_owns_surface(layer.wl_surface()) {
+            self.notes_guarded("configure", |app| app.notes_configured(layer.wl_surface(), c.new_size));
             return;
         }
         if self.bubbles_owns(layer.wl_surface()) {
@@ -1214,6 +1236,7 @@ impl SeatHandler for App {
         // session, only the seat the bar already tracks (`self.seat`) is
         // ours — a keyboard on another seat is not.
         if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
+            self.notes_attach_data_device(qh);
             self.keyboard_acquire(qh);
         }
     }
@@ -1245,6 +1268,9 @@ impl PointerHandler for App {
     fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
             if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.notes_guarded("pointer", |app| app.notes_pointer(conn, ev)).unwrap_or(true) {
                 continue;
             }
             if self.bubbles_pointer(conn, ev) {
@@ -1291,9 +1317,15 @@ impl PointerHandler for App {
                     // outside it: close first, then the bar's own action — but
                     // the same press must not then reopen it through the
                     // launcher button (`click`'s `launcher_was_open`).
-                    let was_open = self.launcher_is_open();
-                    if was_open {
+                    let launcher_was_open = self.launcher_is_open();
+                    if launcher_was_open {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
+                    }
+                    // The quick notepad too: a click on the bar is a click outside it. The launcher
+                    // button then opens the launcher (opening one closes the other): only the
+                    // launcher's own close swallows its button.
+                    if self.notes_is_open() {
+                        self.notes_guarded("click outside", |app| app.notes_close(CloseReason::ClickOutside));
                     }
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
                     // A press that hits no icon drops
@@ -1340,7 +1372,7 @@ impl PointerHandler for App {
                     }
                     if let Some(b) = b {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, was_open);
+                            self.click(qh, i, ev.position.0, b, launcher_was_open);
                         }
                     }
                 }
@@ -1399,6 +1431,7 @@ delegate_keyboard!(App);
 delegate_xdg_shell!(App);
 delegate_xdg_popup!(App);
 // wp_viewporter and wp_viewport have no events.
+delegate_data_device!(App);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
@@ -1407,7 +1440,7 @@ impl App {
     /// The pointer moved on bar `i` at `x`: over a tray icon, the tooltip's timer (only with tooltips on,
     /// and never while a grabbing popup or the launcher is open: no tooltip could show then).
     fn hover_moved(&mut self, i: usize, x: f64) {
-        let busy = self.popup.as_ref().is_some_and(|p| p.grab) || self.launcher_is_open();
+        let busy = self.popup.as_ref().is_some_and(|p| p.grab) || self.launcher_is_open() || self.notes_is_open();
         let tooltips = self.bar.config.tray.tooltips && !busy;
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
@@ -1483,7 +1516,7 @@ impl App {
     pub(crate) fn hover_fire(app: &mut App, now: Instant) {
         app.hover_timer.fired();
         let Some((key, anchor)) = app.hover.fire(now) else { return };
-        if app.popup.is_some() || app.launcher_is_open() {
+        if app.popup.is_some() || app.launcher_is_open() || app.notes_is_open() {
             return;
         }
         let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };

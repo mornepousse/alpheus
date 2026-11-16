@@ -13,7 +13,6 @@ use crate::launcher::socket::Conn;
 use crate::launcher::sources::Entries;
 use crate::launcher::surface::{CloseReason, history_path_for, reply_on_close};
 use crate::log::write as log;
-use crate::sources::panic_text;
 use crate::startup::Mail;
 use crate::state::Feed;
 use crate::wayland::App;
@@ -55,14 +54,16 @@ pub(crate) fn toggle_is_debounced(since_open: Duration) -> bool {
 fn guarded_with<R>(what: &str, f: impl FnOnce() -> R, log: &mut dyn FnMut(&str)) -> Option<R> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => Some(r),
-        Err(p) => {
-            log(&format!("launcher error in {what}: {}", panic_text(p.as_ref())));
+        Err(_) => {
+            log(&format!("launcher error in {what}"));
             None
         }
     }
 }
 
-/// Runs `f`, catching a panic: logs "launcher error in <what>: <message>" and returns None.
+/// Runs `f`, catching a panic: logs "launcher error in <what>" — never the panic's message, which
+/// can quote the query, a menu line or a password (the daemon's panic hook logs the place) — and
+/// returns None.
 pub fn guarded<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
     guarded_with(what, f, &mut |m| log(m))
 }
@@ -146,6 +147,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Timer(_)
+            | Request::Notes
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -600,6 +602,7 @@ mod tests {
             (Request::Dnd(DndVerb::Toggle), None, not_ours(), refused()),
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
+            (Request::Notes, Some(Apps), not_ours(), refused()),
             (Request::Calc, None, Action::OpenCalc, done()),
             (Request::Calc, Some(Apps), Action::Close(R::Toggle), done()),
             (Request::Calc, Some(Script), Action::Close(R::Toggle), done()),
@@ -773,9 +776,12 @@ mod tests {
     #[test]
     fn a_panic_inside_guarded_returns_none_and_is_logged() {
         let mut lines = Vec::new();
-        let r: Option<u8> = guarded_with("key", || panic!("boom"), &mut |m| lines.push(m.to_string()));
+        // A panic message can quote the query or a menu line (a slice's boundary panic does): the
+        // log names the place only.
+        let r: Option<u8> =
+            guarded_with("key", || panic!("byte index 2 is not a char boundary of `query qz`"), &mut |m| lines.push(m.to_string()));
         assert_eq!(r, None);
-        assert_eq!(lines, ["launcher error in key: boom"]);
+        assert_eq!(lines, ["launcher error in key"]);
         assert_eq!(guarded("value", || 5), Some(5), "no panic: the value goes through");
     }
 

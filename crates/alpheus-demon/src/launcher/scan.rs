@@ -8,7 +8,6 @@ use super::config::SourceConfig;
 use super::desktop::{DesktopEntry, Locale, ParseEnv, Verdict, desktop_id, parse};
 use super::sources::{self, Entries};
 use crate::log::write as log;
-use crate::sources::panic_text;
 use alpheus_commun::exec::Executor;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -289,8 +288,9 @@ fn read_sources_after(plan: &SourcePlan, run_sources: fn(&SourcePlan) -> Entries
         return;
     }
     let running = SourcesRunning;
-    let entries = catch_unwind(AssertUnwindSafe(|| run_sources(plan))).unwrap_or_else(|p| {
-        log(&format!("launcher sources failed: {}", panic_text(&*p)));
+    let entries = catch_unwind(AssertUnwindSafe(|| run_sources(plan))).unwrap_or_else(|_| {
+        // Fixed words: a payload can quote a source line.
+        log("launcher sources failed");
         Entries { sources: plan.sources.clone(), items: Vec::new() }
     });
     // Cleared before `deliver`, for SCAN_RUNNING's reason: a reopen racing this delivery.
@@ -326,8 +326,9 @@ fn spawn_with(
     }
     let running = Running;
     std::thread::Builder::new().name(SCAN_THREAD.into()).spawn(move || {
-        let catalog = catch_unwind(AssertUnwindSafe(|| run_scan(&env))).unwrap_or_else(|p| {
-            log(&format!("launcher scan failed: {}", panic_text(&*p)));
+        let catalog = catch_unwind(AssertUnwindSafe(|| run_scan(&env))).unwrap_or_else(|_| {
+            // Fixed words: a payload can quote a path or a .desktop line.
+            log("launcher scan failed");
             Catalog::default()
         });
         // Cleared BEFORE `deliver`, not after: `deliver` hands the catalog to the event loop (a channel

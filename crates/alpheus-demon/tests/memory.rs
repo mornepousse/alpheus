@@ -2912,6 +2912,137 @@ fn at_rest_no_wakeups_after_a_calc_cycle() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a calculator cycle");
 }
 
+/// Quick notes: a daemon on the headless sway (the backend the notes tests use), the bar reduced to
+/// the three base modules, the launcher socket ready; a private state directory (the harness's).
+fn notes_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(AT_REST_NO_RESOURCES), backend: Backend::Sway, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    (sway, d)
+}
+
+/// One `--notes` cycle: open, 2,000 characters typed, closed by a typed Escape; the n-th of each.
+/// The open reading is taken with the pad up and the text in it (one wtype process keeps its
+/// virtual keyboard through the Escape, as in `calc_cycle`). Returns the open reading.
+fn notes_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
+    assert_eq!(launcher(sway, &Request::Notes), Reply::Done);
+    assert!(d.wait_for_count("notes shown on", n, DELAY), "{:?}", d.log());
+    let text = "lorem ipsum ".repeat(2000 / 12 + 1);
+    let text = &text[..2000];
+    let typing = wtype_spawn(sway, &["-s", "300", text, "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(3500));
+    let open = d.pss_kb();
+    assert_eq!(d.count("notes closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    let status = typing.wait().unwrap();
+    assert!(status.success(), "wtype: {status:?}, {:?}", d.log());
+    assert!(d.wait_for_count("notes closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+/// Quick notes: the pad open with 2,000 characters typed, then closed. As for the calculator, the
+/// first open warms code and font pages once, so `closed` is read after one warm-up cycle. Total
+/// PSS moves with what other processes share and with the page cache's fault-around (a cold read
+/// varied 7.5-8.4 MB at the same closed figure on one boot), so the bounds are on the daemon's
+/// anonymous memory (heap, stacks), and PSS and its file-backed share are printed.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let (sway, d) = notes_daemon("notes-cost");
+    std::thread::sleep(Duration::from_secs(3));
+    let read = |d: &Daemon| (d.pss_kb(), d.anonymous_kb(), d.file_pss_kb());
+    let cold = read(&d);
+    let first_open = notes_cycle(&sway, &d, 1);
+    let closed = read(&d);
+    let (_, closed_pools) = d.pss_and_shm_kb();
+    let open_pss = notes_cycle(&sway, &d, 2);
+    let again = read(&d);
+    let (_, again_pools) = d.pss_and_shm_kb();
+    eprintln!(
+        "notes PSS (KB): cold {}, first open {first_open}, warmed closed {}, open with 2,000 characters {open_pss}, closed again {}",
+        cold.0, closed.0, again.0
+    );
+    eprintln!(
+        "notes anonymous (KB): cold {}, warmed closed {}, closed again {} ({:+}); file-backed PSS: cold {}, closed {}, again {}",
+        cold.1,
+        closed.1,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cold.2,
+        closed.2,
+        again.2
+    );
+    assert!(
+        closed.1 <= cold.1 + 768,
+        "closed after the warm-up {} KB anon vs cold {} KB: more than 768 KB — report, never raise",
+        closed.1,
+        cold.1
+    );
+    assert!(open_pss <= closed.0 + 1536, "open costs {} KB PSS: more than 1.5 MB — report, never raise", open_pss.saturating_sub(closed.0));
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    // The shm pools alone (as for Wi-Fi and Bluetooth): the pad's own pool goes with it.
+    eprintln!("notes shm pools (KB): warmed closed {closed_pools}, closed again {again_pools}");
+    assert!(again_pools <= closed_pools + 64, "the pools closed again {again_pools} KB vs {closed_pools} KB: the pad's pool kept");
+}
+
+/// Quick notes: after a cycle, then with the pad open and saved: no timer, watch or repeat left
+/// (SCTK's key-repeat timer fires once about 0.6 s after a key press, so each rest window starts
+/// past it; the first still opens within 1.3 s of the close, so a stray save timer always shows).
+/// The open window is closed by the verb after it, never by a key: a typed Escape scheduled ahead
+/// landed inside the window whenever the minute check slept (final review), and the wtype process
+/// stays alive through it (its keyboard leaving would close the pad as `focus lost`).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn at_rest_no_wakeups_after_notes() {
+    require_release(cfg!(debug_assertions));
+    let (sway, d) = notes_daemon("notes-rest");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(launcher(&sway, &Request::Notes), Reply::Done);
+    assert!(d.wait_for_count("notes shown on", 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "hello pad", "-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("notes closed (escape)", 1, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(1100));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a notes cycle");
+    let closed_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after a notes cycle (5 s): {closed_delta}");
+    assert_eq!(closed_delta, 0, "{closed_delta} loop-thread wake-ups in 5 s after a notes cycle");
+
+    // Open, one key, the save fires 2 s later: the pad stays open and saved, still asleep.
+    assert_eq!(launcher(&sway, &Request::Notes), Reply::Done);
+    assert!(d.wait_for_count("notes shown on", 2, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(&sway, &["-s", "300", "x", "-s", "120000"]);
+    // The save has fired once the file holds the pad's text (a loaded machine delays the key and
+    // the timer, so waiting a fixed time would put one of them inside the window); then past SCTK's
+    // one repeat firing.
+    let file = sway.runtime.join("state/alpheus/notes.txt");
+    let t = Instant::now();
+    while !std::fs::read_to_string(&file).unwrap_or_default().ends_with('x') {
+        assert!(t.elapsed() < Duration::from_secs(10), "no autosave: {:?}", d.log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "with the notes pad open and saved");
+    let open_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest with the pad open and saved (5 s): {open_delta}");
+    assert_eq!(d.count("notes closed ("), 1, "still open: {:?}", d.log());
+    assert_eq!(open_delta, 0, "{open_delta} loop-thread wake-ups in 5 s with the pad open and saved: {:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Notes), Reply::Done);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+    drop(typing);
+}
+
 /// One prefix cycle: open (`--toggle`), `:face` typed, closed by a typed Escape; the n-th of each.
 /// Returns the reading taken with the box open and the query typed (one wtype process, as in
 /// `calc_cycle`).

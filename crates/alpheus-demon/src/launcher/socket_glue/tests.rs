@@ -17,6 +17,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::Quick(QuickVerb::Top), Route::Quick),
         (Request::Timer(TimerVerb::Popup), Route::Timer),
         (Request::Timer(TimerVerb::Start(60)), Route::Timer),
+        (Request::Notes, Route::Notes),
         (Request::Toggle, Route::Launcher),
         (Request::Close, Route::Launcher),
         (Request::Calc, Route::Launcher),

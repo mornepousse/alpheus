@@ -80,6 +80,49 @@ pub fn remove_private(dir: &Path, name: &str) -> io::Result<()> {
     }
 }
 
+/// What `read_private` found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PrivateRead {
+    Absent,
+    Bytes(Vec<u8>),
+    /// More than the cap: its first `cap` bytes.
+    TooLarge(Vec<u8>),
+    NotOurs,
+    Failed,
+}
+
+/// `dir/name` read as bytes, at most `cap`: a regular file of ours (never a symlink, a directory or
+/// someone else's), in a directory that passes `dir_is_ours`, opened without following links and
+/// without blocking. More than `cap` bytes is `TooLarge` with the first `cap`, a refused file or directory `NotOurs`, an
+/// I/O error `Failed`. Nothing is logged here.
+pub fn read_private(dir: &Path, name: &str, cap: u64) -> PrivateRead {
+    use std::io::Read;
+    if plain(name).is_err() || dir_is_ours(dir).is_err() {
+        return PrivateRead::NotOurs;
+    }
+    let path = dir.join(name);
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return PrivateRead::Absent,
+        Err(_) => return PrivateRead::Failed,
+        Ok(m) if !m.file_type().is_file() || m.uid() != euid() => return PrivateRead::NotOurs,
+        Ok(_) => {}
+    }
+    let mut bytes = Vec::new();
+    let read = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .and_then(|f| f.take(cap.saturating_add(1)).read_to_end(&mut bytes));
+    match read {
+        Err(_) => PrivateRead::Failed,
+        Ok(_) if bytes.len() as u64 > cap => {
+            bytes.truncate(cap as usize);
+            PrivateRead::TooLarge(bytes)
+        }
+        Ok(_) => PrivateRead::Bytes(bytes),
+    }
+}
+
 /// Do-not-disturb as saved: its text (at most 64 bytes, lossy UTF-8) for a regular file of ours at
 /// `state_dir/dnd` (followed by nothing), in a directory that passes `dir_is_ours`, as for writing.
 /// Absent, a symlink, a directory, someone else's: None (off); a directory not ours is logged (read
@@ -392,6 +435,28 @@ mod tests {
         save_timer(&state, None).unwrap();
         std::os::unix::fs::symlink("/etc/hostname", state.join(TIMER_FILE)).unwrap();
         assert_eq!(read_timer(&state), None, "a symlink");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_private_reads_caps_and_refuses() {
+        let root = scratch("read");
+        let dir = root.join("alpheus");
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::Absent, "no directory");
+        write_private(&dir, "f", b"abc").unwrap();
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::Bytes(b"abc".to_vec()));
+        assert_eq!(read_private(&dir, "g", 8), PrivateRead::Absent);
+        write_private(&dir, "f", b"123456789").unwrap();
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::TooLarge(b"12345678".to_vec()), "cap + 1 bytes: the first cap kept");
+        write_private(&dir, "f", b"12345678").unwrap();
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::Bytes(b"12345678".to_vec()), "exactly the cap");
+        std::os::unix::fs::symlink(dir.join("f"), dir.join("link")).unwrap();
+        assert_eq!(read_private(&dir, "link", 8), PrivateRead::NotOurs, "a symlink");
+        std::fs::create_dir(dir.join("d")).unwrap();
+        assert_eq!(read_private(&dir, "d", 8), PrivateRead::NotOurs, "a directory named like the file");
+        assert_eq!(read_private(&dir, "../f", 8), PrivateRead::NotOurs, "not a plain name");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read_private(&dir, "f", 8), PrivateRead::NotOurs, "a directory open to others");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

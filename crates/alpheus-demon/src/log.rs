@@ -18,6 +18,27 @@ pub fn write(m: &str) {
     write_to(&mut io::stderr(), m);
 }
 
+/// A panic as the daemon logs it: the thread and the place, never the message.
+fn panic_line(thread: Option<&str>, file: &str, line: u32, column: u32) -> String {
+    format!("thread '{}' panicked at {file}:{line}:{column} (message not logged)", thread.unwrap_or("<unnamed>"))
+}
+
+/// Replaces the default panic hook, which prints the panic's message to standard error (this log):
+/// a message can quote private text, such as the string a failed slice was cutting (the quick
+/// notes, a password prompt). This one logs the thread and the place only, then the backtrace when
+/// `RUST_BACKTRACE` asks for one (frames, no message). Unwinding, `catch_unwind` and a panicking
+/// thread's end are unchanged: only the printed line differs.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let (file, line, column) = info.location().map_or(("<unknown>", 0, 0), |l| (l.file(), l.line(), l.column()));
+        write(&panic_line(std::thread::current().name(), file, line, column));
+        let trace = std::backtrace::Backtrace::capture();
+        if trace.status() == std::backtrace::BacktraceStatus::Captured {
+            write(&format!("backtrace:\n{trace}"));
+        }
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +63,16 @@ mod tests {
         write_to(&mut broken_pipe, "this message must never make the daemon panic");
         // Nothing more to check: if `write_to` had used `writeln!` directly
         // (without `let _ =`), the line above would already have panicked.
+    }
+
+    /// The hook's line: the thread and the place, never the payload, which can embed private text
+    /// (a boundary panic quotes the string it sliced).
+    #[test]
+    fn the_panic_line_names_the_thread_and_the_place() {
+        assert_eq!(
+            panic_line(Some("calloop"), "src/notes/text.rs", 12, 5),
+            "thread 'calloop' panicked at src/notes/text.rs:12:5 (message not logged)"
+        );
+        assert_eq!(panic_line(None, "src/a.rs", 1, 2), "thread '<unnamed>' panicked at src/a.rs:1:2 (message not logged)");
     }
 }

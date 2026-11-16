@@ -362,6 +362,8 @@ fn exit_code(dispatch_failure: bool) -> i32 {
 }
 
 pub fn run() -> i32 {
+    // First: a panic anywhere, any thread, logs its place, never its message (private text).
+    crate::log::install_panic_hook();
     limit_malloc_arenas();
     // Block signals BEFORE any thread: all of them inherit the mask; only
     // the guard thread receives them (sigwait).
@@ -719,6 +721,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         after_dispatch_windows(state);
         // A launcher draw that found both buffers busy, done now if one was released.
         state.launcher_guarded("deferred draw", |app| app.launcher_after_dispatch());
+        state.notes_guarded("deferred draw", |app| app.notes_after_dispatch());
         // Outside the dispatch: a released keyboard's last reference (`retired`).
         state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a
@@ -730,13 +733,15 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
     dispatch_failure
 }
 
-/// Closes the launcher, drops the app (its surfaces), the socket, flushes the connection and says
+/// Closes the launcher and the quick notepad (which saves), drops the app (its surfaces), the socket, flushes the connection and says
 /// the shutdown is over.
 fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A script still waiting gets "cancelled" (exit 1), not a cut connection.
     // Guarded like every launcher entry point: a launcher bug must not turn a
     // clean stop into a crash.
     core.state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
+    // The quick notepad saves what was typed (even after a failed autosave) and goes, guarded too.
+    core.state.notes_guarded("shutdown", |app| app.notes_close(CloseReason::Close));
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());

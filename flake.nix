@@ -113,6 +113,8 @@
             pkgs.wtype
             # grim (test-only): reads the headless sway's pixels (wlr-screencopy) for the theme tests.
             pkgs.grim
+            # wl-clipboard (test-only): `wl-copy` serves a fictional selection to the headless sway's seat for the notepad's paste test (through tests/common `wl_copy` only, never the session's compositor).
+            pkgs.wl-clipboard
           ];
           ALPHEUS_POLICES = fontDir pkgs;
         };

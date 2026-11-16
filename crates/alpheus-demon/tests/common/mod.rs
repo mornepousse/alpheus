@@ -780,6 +780,47 @@ impl Drop for WtypeChild {
     }
 }
 
+/// `wl-copy` serving `text` as the selection of THIS test's headless sway, and nowhere else: the
+/// one place a test starts `wl-copy` (a guardrail checks it). A bare `wayland-N` name would also
+/// open the machine's own compositor under an inherited `XDG_RUNTIME_DIR`, so the environment is
+/// cleared, the runtime directory and display are this sway's, and the socket must exist before
+/// the spawn. `mime` (`--type`): the one type offered, text by default. `--foreground` keeps the serving process the child itself (never a forked orphan),
+/// `--primary` is never passed, and the guard kills and reaps it on drop. Fictional text only.
+pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
+    assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-copy would reach another one");
+    let mut command = Command::new("wl-copy");
+    command.arg("--foreground");
+    if let Some(mime) = mime {
+        command.arg("--type").arg(mime);
+    }
+    let child = command
+        .arg("--")
+        .arg(text)
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("XDG_RUNTIME_DIR", &sway.runtime)
+        .env("WAYLAND_DISPLAY", &sway.wayland)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("wl-copy not found: run these tests inside `nix develop`");
+    WlCopyChild(Some(child))
+}
+
+/// The `wl-copy` serving a selection: killed and waited on drop, so a failed assertion never
+/// leaves it serving.
+pub struct WlCopyChild(Option<Child>);
+
+impl Drop for WlCopyChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// A program that writes its argv to <runtime>/launched-<name> and exits.
 pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
     let bin = sway.runtime.join("bin");
@@ -1041,6 +1082,20 @@ impl Daemon {
     pub fn anon_kb(&self) -> u64 {
         let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
         t.lines().find_map(|l| l.strip_prefix("Anonymous:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
+    /// Anonymous memory in KB (/proc/<pid>/smaps_rollup `Anonymous:`): heap, stacks, anonymous maps.
+    /// Neither the shm pools (shmem) nor the file-backed pages are in it, so it does not move with
+    /// what other processes share or with the page cache's fault-around: the figure leak bounds use.
+    pub fn anonymous_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines().find_map(|l| l.strip_prefix("Anonymous:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
+    /// File-backed PSS in KB (`Pss_File:`): code, read-only data and font pages, shared proportionally.
+    pub fn file_pss_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines().find_map(|l| l.strip_prefix("Pss_File:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
     }
 
     /// PSS in KB, the whole daemon's then its shm pools' (memfd mappings), from one pass over

@@ -435,6 +435,26 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
     let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
     assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
+    // Quick notes: the pad's box follows the same rule, its scrims under their own namespace.
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "pub(crate) fn notes_open(");
+    let scrims_at = body.find("self.notes_scrims(qh)").expect("the scrims are created in notes_open");
+    let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in notes_open");
+    assert!(scrims_at < box_at, "the pad's scrims must be created before its box, so it stacks above them");
+    assert!(prod.contains("const SCRIM_NAMESPACE: &str = \"alpheus-notes-scrim\";"), "the pad's scrims are alpheus-notes-scrim");
+}
+
+/// Quick notes: a daemon stopping saves the pad (an edit not yet autosaved, or after a failed
+/// autosave) through its close, guarded, before the surfaces go.
+#[test]
+fn shutting_down_closes_and_saves_the_pad() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "fn shut_down(");
+    let close = body.find("notes_guarded(\"shutdown\", |app| app.notes_close(").expect("shut_down closes the pad, guarded");
+    let drop_at = body.find("drop(core.state)").expect("shut_down drops the app");
+    assert!(close < drop_at, "the pad is saved before the app goes");
 }
 
 /// OSD spec § 1 and the bubbles' (notifications spec § 3): the pill and the bubbles live on the
@@ -470,7 +490,8 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
 /// including `update_modifiers`'s own `self.keyboard.mods` write, touches no
 /// launcher state and needs none either) dispatches to the launcher only
 /// for its `KeyTo::Launcher` branch, guarded there; `leave` still guards its
-/// direct `launcher_close` call. No fake Wayland seat or keyboard exists to
+/// direct `launcher_close` call. The quick notepad's pad gets the same treatment through
+/// `notes_guarded`: its `KeyTo::Notes` arm in `key_event`, and its own close in `leave`. No fake Wayland seat or keyboard exists to
 /// call these trait methods directly in a unit test, so this checks the one
 /// thing that would actually regress it: the guard call disappearing from
 /// the body that still reaches launcher code.
@@ -491,6 +512,11 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     assert!(key_event.contains("launcher_guarded("), "key_event must guard its launcher call: {key_event}");
     let leave = function_body(&popup_prod, "fn leave(");
     assert!(leave.contains("launcher_guarded("), "leave must guard its launcher call: {leave}");
+    // Quick notes: the pad's calls go through its own guard, beside the launcher's.
+    let notes_arm = key_event.find("KeyTo::Notes =>").map(|at| &key_event[at..]).expect("key_event has a KeyTo::Notes arm");
+    let notes_arm = &notes_arm[..notes_arm.find("KeyTo::Popup").unwrap_or(notes_arm.len())];
+    assert!(notes_arm.contains("notes_guarded("), "key_event's KeyTo::Notes arm must guard the pad: {notes_arm}");
+    assert!(leave.contains("notes_guarded("), "leave must guard its pad call: {leave}");
 }
 
 /// `press_key`/`repeat_key` (the `KeyboardHandler` trait methods)
@@ -769,6 +795,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Close => "close",
             Request::Calc => "calc",
             Request::Windows => "windows",
+            Request::Notes => "notes",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -787,6 +814,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Close,
         Request::Calc,
         Request::Windows,
+        Request::Notes,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -806,6 +834,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "close",
             "calc",
             "windows",
+            "notes",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -1029,6 +1058,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
+        // The pad's save, armed only while it is open and edited (quick notes), built in
+        // `NotesApp::new`.
+        ("notes/app.rs", "Timer::", 1),
         // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
         // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
         ("outputs_app.rs", "Generic::new", 1),
@@ -1437,6 +1469,14 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "resources_popup.rs",
     "timer.rs",
     "timer_popup.rs",
+    "notes/text.rs",
+    "notes/lines.rs",
+    "notes/keys.rs",
+    "notes/model.rs",
+    "notes/view.rs",
+    "notes/store.rs",
+    "notes/surface.rs",
+    "notes/paste.rs",
 ];
 
 #[test]
@@ -2817,6 +2857,111 @@ fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// Quick notes: the pad's pure files run on each key and must never panic, slice a string by range
+/// (a boundary panic's message embeds the text) nor log (the note is private). Production code only.
+const NOTES_PURE: [&str; 6] = ["notes/text.rs", "notes/lines.rs", "notes/keys.rs", "notes/model.rs", "notes/view.rs", "notes/store.rs"];
+
+/// What in `line` indexes by `[...]` in a way that can panic: a `..` between a `[` and its matching
+/// `]` (a range slice, `s[a..b]`, `s[a..=b]`), or a bare index (`x[i]`: a `[` right after an
+/// identifier character, `)`, `]`, `?`, `}` or a closing quote; attributes follow `#`, macros `!`,
+/// array types a space).
+fn panicking_index(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut open: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' => {
+                let prev = i.checked_sub(1).and_then(|p| bytes.get(p)).copied().unwrap_or(b' ');
+                if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b')' | b']' | b'?' | b'}' | b'"') {
+                    return Some(format!("bare index in `{}`", line.trim()));
+                }
+                open.push(i);
+            }
+            b']' => {
+                if let Some(start) = open.pop() {
+                    if line.get(start..i).is_some_and(|inner| inner.contains("..")) {
+                        return Some(format!("range inside brackets in `{}`", line.trim()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[test]
+fn the_index_ban_sees_ranges_and_bare_indexes() {
+    for bad in ["let x = &s[a..b];", "s[a..=b]", "let t = v[i];", "f(x)[0]", "f()?[0]", "m[i][j]", "&s[..n]", "&s[n..]", "w[..]"] {
+        assert!(panicking_index(bad).is_some(), "{bad}");
+    }
+    for good in
+        ["let a: [u8; 4] = [0; 4];", "#[derive(Debug)]", "let v = vec![1, 2];", "s.get(a..b)", "for i in 0..n {}", "fn f(x: &[u8]) {}"]
+    {
+        assert!(panicking_index(good).is_none(), "{good}");
+    }
+}
+
+#[test]
+fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in NOTES_PURE {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+        // The `String` methods that panic off a scalar boundary (M2). One exemption: `Pad::splice`'s
+        // `replace_range`, after it checked both ends with `is_char_boundary`.
+        for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
+            let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(&production) } else { 0 };
+            assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked
+/// with `is_char_boundary`; else 0 (so the count check fails).
+fn checked_replace_range(production: &str) -> usize {
+    let splice = function_body(production, "fn splice(");
+    let call = splice.find(".replace_range(");
+    let checks = splice.find("is_char_boundary(range.start)").zip(splice.find("is_char_boundary(range.end)"));
+    match (call, checks) {
+        (Some(call), Some((a, b))) if a < call && b < call => 1,
+        _ => 0,
+    }
+}
+
+/// Quick notes: the notes file is written only through `state_file` (atomic, private, never a
+/// followed link), and only `store.rs` calls its writers.
+#[test]
+fn notes_files_are_written_only_through_state_file() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("notes/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for never in ["File::create", "OpenOptions", "fs::write", "fs::rename"] {
+            assert!(!production.contains(never), "{never} in {name}");
+        }
+        if name != "notes/store.rs" {
+            for only_store in ["write_private", "remove_private"] {
+                assert!(!production.contains(only_store), "{only_store} in {name}");
+            }
+        }
+    }
+    assert!(seen >= 7, "the notes files were found: {seen}");
+}
+
 /// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus
 /// thread and the bar's loop; neither may panic (constraints: no panicking path).
 #[test]
@@ -3224,4 +3369,301 @@ fn the_hooks_are_fed_where_state_changes() {
         checked += 1;
     }
     assert_eq!(checked, 6);
+}
+
+/// Quick notes: nothing of the pad outlives it. `notes_close` takes the pad out before it syncs the
+/// timer (so it disarms) and releases the keyboard (wanted while the pad is `Some`); the save timer's
+/// callback marks it fired before anything else.
+#[test]
+fn the_notes_timer_and_pipe_live_only_while_open() {
+    let files = source_files();
+    let app = &files.iter().find(|(p, _)| relative_path(p) == "notes/app.rs").expect("notes/app.rs").1;
+    let prod = production_code(app);
+    let close = function_body(&prod, "pub(crate) fn notes_close(");
+    let take = close.find("self.notes.open.take()").expect("notes_close takes the pad out");
+    for later in ["notes_timer_sync()", "keyboard_release()"] {
+        let at = close.find(later).unwrap_or_else(|| panic!("notes_close calls {later}: {close}"));
+        assert!(take < at, "notes_close must take the pad before {later}: {close}");
+    }
+    let fire = function_body(&prod, "fn notes_save_fire(");
+    let first = fire.trim_start_matches('{').trim_start();
+    assert!(first.starts_with("app.notes.timer.fired()"), "notes_save_fire marks the timer fired first: {fire}");
+}
+
+/// Each `log(` call in `text`, whole: from `log(` to the end of its statement (its matching
+/// parenthesis, however many lines its arguments take).
+fn log_calls(text: &str) -> Vec<&str> {
+    let mut calls = Vec::new();
+    for (at, _) in text.match_indices("log(") {
+        let mut depth = 0u32;
+        let mut end = text.len();
+        for (j, c) in text[at + 3..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + 3 + j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        calls.push(&text[at..end]);
+    }
+    calls
+}
+
+#[test]
+fn log_calls_take_the_whole_statement() {
+    let text = "log(\"a\");\nlog(&format!(\n    \"b {}\",\n    pad.text().len()\n));\nother(x);";
+    assert_eq!(log_calls(text), ["log(\"a\")", "log(&format!(\n    \"b {}\",\n    pad.text().len()\n))"]);
+}
+
+/// Quick notes: the pad's glue never logs the note: no `log(` line names its text, its selection
+/// or its buffer.
+#[test]
+fn the_notes_glue_never_logs_the_text() {
+    let files = source_files();
+    for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let prod = production_code(t);
+        for call in log_calls(&prod) {
+            // A close reason's log word (`CloseReason::text`) is the one `text` allowed.
+            let call = call.replace("reason.text()", "reason");
+            for word in ["text", "selected", "pad.text", "model.pad"] {
+                assert!(!call.contains(word), "a log call in {name} names `{word}`: {call}");
+            }
+        }
+    }
+}
+
+/// Quick notes: the pad runs one command, the copy program, with the selection on its standard
+/// input; nothing else is started from `src/notes/`.
+#[test]
+fn the_notes_spawn_only_the_copy_command() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("notes/") {
+            continue;
+        }
+        seen += 1;
+        let prod = production_code(&t);
+        for never in [".spawn(", ".capture(", ".stream(", ".run("] {
+            assert!(!prod.contains(never), "{never} in {name}");
+        }
+        let n = prod.matches("spawn_with_input(").count();
+        if name == "notes/app.rs" {
+            assert_eq!(n, 1, "one spawn_with_input in notes/app.rs");
+            let body = function_body(&prod, "fn copy_call(");
+            assert!(body.contains("spawn_with_input("), "the one spawn is copy_call's: {body}");
+        } else {
+            assert_eq!(n, 0, "spawn_with_input in {name}");
+        }
+    }
+    assert!(seen >= 8, "the notes files were found: {seen}");
+}
+
+/// Quick notes (P9): the pad's glue never panics on its own either: no unwrap, expect, panic or
+/// panicking index (a boundary panic's message embeds the text, and the panic hook logs it).
+#[test]
+fn the_notes_glue_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// Quick notes (controller's ruling, fix round 1): a press on the bar while the pad is open closes
+/// it, and the launcher button then opens the launcher — opening one closes the other. Only the
+/// launcher's own close swallows its button (`click`'s `launcher_was_open`).
+#[test]
+fn a_bar_press_swallows_only_a_launcher_it_closed() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "fn pointer_frame(");
+    assert!(body.contains("self.click(qh, i, ev.position.0, b, launcher_was_open)"), "click gets the launcher's own state: {body}");
+    assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
+}
+
+/// Quick notes, task 6: the paste pipe is a source of the loop only inside `notes/paste.rs`, and
+/// goes with the pad; the pad never owns a selection nor starts a drag.
+#[test]
+fn the_paste_pipe_lives_only_while_the_pad_is_open() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if name.starts_with("notes/") {
+            seen += 1;
+        }
+        if name != "notes/paste.rs" {
+            assert!(
+                !((prod.contains("insert_source(") || prod.contains(".receive(")) && prod.contains("ReadPipe")),
+                "a ReadPipe source outside notes/paste.rs: {name}"
+            );
+        }
+        for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
+            assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
+        }
+    }
+    assert!(seen >= 9, "the notes files were found: {seen}");
+    let files = source_files();
+    let surface = &files.iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs").1;
+    let prod = production_code(surface);
+    let drop = function_body(&prod, "fn drop(&mut self)");
+    assert!(drop.contains("stop_paste()"), "OpenNotes's Drop removes the paste source: {drop}");
+    assert!(
+        drop.contains("selection_offer()") && drop.contains("drag_offer()") && drop.matches(".destroy()").count() == 2,
+        "OpenNotes's Drop destroys the selection and drag offers (SCTK's device drop does not): {drop}"
+    );
+    let stop = function_body(&prod, "fn stop_paste(");
+    assert!(stop.contains("paste.take()") && stop.contains(".remove("), "stop_paste takes the token and removes the source: {stop}");
+    let paste = &files.iter().find(|(p, _)| relative_path(p) == "notes/paste.rs").expect("notes/paste.rs").1;
+    let paste = production_code(paste);
+    assert_eq!(paste.matches("insert_source(").count(), 1, "one source, the pipe");
+    let notes_paste = function_body(&paste, "fn notes_paste(");
+    let (ro, rx) = (notes_paste.find("read_only"), notes_paste.find(".receive("));
+    assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
+}
+
+/// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).
+const THIS_FILE: &str = "alpheus-demon/tests/guardrails.rs";
+const HARNESS: &str = "alpheus-demon/tests/common/mod.rs";
+
+/// The `wl-copy`/`wl-paste` spawns of the test files that are not the harness helper: a test that
+/// starts one outside `tests/common`'s `wl_copy` could reach the machine's own compositor (and its
+/// clipboard). Comments may name the programs.
+fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (name, text) in files {
+        if name == THIS_FILE {
+            continue;
+        }
+        let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        if name == HARNESS {
+            let body = function_body(&code, "pub fn wl_copy(").to_string();
+            code = code.replace(&body, "");
+        }
+        for program in ["wl-copy", "wl-paste"] {
+            if code.contains(program) {
+                found.push(format!("{name} names {program}"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn stray_clipboard_spawns_are_found() {
+    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
+    let files = |a: &str, b: &str| {
+        vec![(HARNESS.to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
+    };
+    assert!(stray_clipboard_spawns(&files("// wl-copy serves it\nfn t() {}\n", "fn t() {}\n")).is_empty());
+    assert_eq!(
+        stray_clipboard_spawns(&files("fn t() { Command::new(\"wl-copy\"); }\n", "fn t() { Command::new(\"wl-paste\"); }\n")),
+        ["a.rs names wl-copy", "b.rs names wl-paste"]
+    );
+    let outside = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&outside), [format!("{HARNESS} names wl-copy")]);
+    // Another crate's harness or guardrails get no exemption.
+    let elsewhere = vec![
+        ("alpheus/tests/common/mod.rs".to_string(), helper.to_string()),
+        ("alpheus/tests/guardrails.rs".to_string(), "fn t() { Command::new(\"wl-paste\"); }\n".to_string()),
+    ];
+    assert_eq!(
+        stray_clipboard_spawns(&elsewhere),
+        ["alpheus/tests/common/mod.rs names wl-copy", "alpheus/tests/guardrails.rs names wl-paste"]
+    );
+}
+
+/// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which checks
+/// that this sway's socket exists, clears the environment, names this sway's runtime directory and
+/// display, stays in the foreground and holds a guard that kills it; no other test file of any crate
+/// names the program.
+#[test]
+fn no_test_spawns_wl_copy_outside_the_harness_helper() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("crates/").to_path_buf();
+    let mut files = Vec::new();
+    let mut dirs: Vec<_> = std::fs::read_dir(&crates).unwrap().flatten().map(|e| e.path().join("tests")).filter(|p| p.is_dir()).collect();
+    assert!(dirs.len() >= 3, "every crate's tests: {dirs:?}");
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                let name = path.strip_prefix(&crates).unwrap().to_string_lossy().into_owned();
+                files.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    assert!(files.iter().any(|(n, _)| n == HARNESS), "the harness was found");
+    assert!(files.iter().any(|(n, _)| n.starts_with("alpheus-launch/tests/")), "another crate's tests were walked");
+    let stray = stray_clipboard_spawns(&files);
+    assert!(stray.is_empty(), "{stray:?}");
+    let common = &files.iter().find(|(n, _)| n == HARNESS).unwrap().1;
+    let helper = function_body(common, "pub fn wl_copy(");
+    let socket_check = helper.find("assert!(sway.runtime.join(&sway.wayland).exists()");
+    let spawn = helper.find(".spawn()");
+    assert!(
+        socket_check.is_some() && spawn.is_some() && socket_check < spawn,
+        "the wl-copy helper must assert this sway's socket exists before it spawns: {helper}"
+    );
+    for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--foreground\""] {
+        assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
+    }
+    assert!(!helper.contains("--primary"), "never the primary selection");
+    let guard = function_body(common, "impl Drop for WlCopyChild");
+    assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
+}
+
+/// Quick notes (M2): the daemon's panic hook (thread and place, never the message: it can quote
+/// private text) is installed first in `startup::run`, before any thread is started.
+#[test]
+fn the_panic_hook_is_installed_before_anything_else() {
+    let files = source_files();
+    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    let run = function_body(startup, "pub fn run() -> i32 {");
+    let first_call = run.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//") && l != &"{");
+    assert_eq!(first_call, Some("crate::log::install_panic_hook();"), "{run}");
+    let log = &files.iter().find(|(p, _)| relative_path(p) == "log.rs").expect("log.rs").1;
+    let hook = function_body(log, "pub fn install_panic_hook(");
+    for leak in ["payload", "info.to_string", "{info}", "{info:", "message()"] {
+        assert!(!hook.contains(leak), "the hook must never print the panic's message ({leak}): {hook}");
+    }
+}
+
+/// The launcher's guard logs the place only (as the pad's): a panic message can quote the query, a
+/// menu line or a password, which are never logged.
+#[test]
+fn the_launcher_guard_never_logs_a_panic_payload() {
+    let files = source_files();
+    let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
+    let prod = production_code(host);
+    let guard = function_body(&prod, "fn guarded_with<R>(");
+    assert!(guard.contains("Err(_) =>"), "the payload is not even bound: {guard}");
+    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)"] {
+        assert!(!guard.contains(leak), "the launcher's guard must never read the panic's message ({leak}): {guard}");
+    }
+    assert!(!prod.contains("panic_text"), "launcher/host.rs formats no panic payload");
+    // The scan threads read .desktop files and source lines: a payload there can quote them.
+    let scan = &files.iter().find(|(p, _)| relative_path(p) == "launcher/scan.rs").expect("launcher/scan.rs").1;
+    let scan = production_code(scan);
+    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)", "|p|"] {
+        assert!(!scan.contains(leak), "launcher/scan.rs must never read a panic's message ({leak})");
+    }
 }
