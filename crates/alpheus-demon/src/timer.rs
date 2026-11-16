@@ -364,7 +364,7 @@ impl Timer {
 
     /// A state file's text read back, treated as hostile: exact fields, digits only, every bound
     /// of the spec (lengths one second to a day, a running end at most 25 hours ahead, a stopwatch
-    /// never started in the future, rounds 1 to 12). None for anything else.
+    /// started ahead of now is clamped to now, rounds 1 to 12). None for anything else.
     pub fn parse_saved(text: &str, now: u64) -> Option<Self> {
         let f: Vec<&str> = text.split_whitespace().collect();
         let ahead = |end: u64| (end <= now.saturating_add(SAVED_AHEAD_MS)).then_some(end);
@@ -393,7 +393,7 @@ impl Timer {
             }
             ["stopwatch", "running", start] => {
                 let start = num(start)?;
-                (start <= now).then_some(Self::Stopwatch { run: Run::Running(start) })
+                Some(Self::Stopwatch { run: Run::Running(start.min(now)) })
             }
             ["stopwatch", "paused", elapsed] => {
                 let elapsed = num(elapsed)?;

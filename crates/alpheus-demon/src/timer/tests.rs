@@ -316,7 +316,6 @@ fn parse_saved_refuses_what_is_out_of_bounds() {
         format!("pomodoro running {} work", T0 + 1000),
         format!("pomodoro running {} work 1", T0 + h25 + 1),
         format!("pomodoro paused {} work 1", MAX_MS + 1),
-        format!("stopwatch running {}", T0 + 1),
         format!("stopwatch paused {}", MAX_MS + 1),
         "stopwatch running 5 extra".to_string(),
         "".to_string(),
@@ -329,6 +328,14 @@ fn parse_saved_refuses_what_is_out_of_bounds() {
     ];
     for b in bad {
         assert_eq!(Timer::parse_saved(&b, T0), None, "{b}");
+    }
+    // A stopwatch started "in the future" (the clock stepped back) is clamped to now, not dropped.
+    for ahead in [T0 + 1, T0 + 3_600_000] {
+        assert_eq!(
+            Timer::parse_saved(&format!("stopwatch running {ahead}"), T0),
+            Some(Timer::Stopwatch { run: Run::Running(T0) }),
+            "{ahead}"
+        );
     }
     // The bounds themselves are accepted.
     let good = [

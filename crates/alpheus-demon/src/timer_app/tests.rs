@@ -143,3 +143,12 @@ fn a_due_end_is_applied_before_the_change() {
     let (due, end, after) = change_step(IDLE, Change::Seen, &L, T0);
     assert_eq!((due, end, after), (IDLE, None, IDLE));
 }
+
+/// An end seen in the open popup is seen: closing it dismisses `done`, and only `done`.
+#[test]
+fn closing_the_popup_dismisses_a_done_chip_only() {
+    assert_eq!(seen_at_close(&Model::Idle { done: true }), Some(Change::Seen));
+    assert_eq!(seen_at_close(&IDLE), None);
+    assert_eq!(seen_at_close(&pomo(T0 + 1000, Phase::Work, 1)), None);
+    assert_eq!(seen_at_close(&Model::Stopwatch { run: Run::Paused(5) }), None);
+}

@@ -65,8 +65,8 @@ pub(crate) const OPS: PopupOps = PopupOps {
     pointer: App::timer_pointer,
     // The countdown row's length outlives the popup.
     flush: App::timer_flush,
-    // The one-second cadence ends with the popup, whatever closed it.
-    closed: App::timer_sync,
+    // The one-second cadence ends with the popup, whatever closed it, and an end it showed is seen.
+    closed: App::timer_closed,
 };
 
 /// What an end does besides the log line.
@@ -80,6 +80,12 @@ pub(crate) struct Effects {
 /// bubble, the history and the bell keep it); the sound needs a command and no do-not-disturb.
 pub(crate) fn effects(serving: bool, dnd: bool, sound: &[String]) -> Effects {
     Effects { notify: serving, sound: !dnd && !sound.is_empty() }
+}
+
+/// An end shown in the popup is seen by the time it closes (ruling: the chip does not say `done`
+/// about something the popup already said).
+pub(crate) fn seen_at_close(m: &Model) -> Option<Change> {
+    matches!(m, Model::Idle { done: true }).then_some(Change::Seen)
 }
 
 /// The time a timer has in all, for the `added` line.
@@ -435,6 +441,15 @@ impl App {
             self.dirty = true;
         }
         self.timer_refresh();
+    }
+
+    /// The popup's `closed` hook: `Seen` for an end it showed, then the deadline without the
+    /// popup's seconds.
+    fn timer_closed(&mut self) {
+        if let Some(c) = seen_at_close(&self.timer.model) {
+            self.timer_do(c);
+        }
+        self.timer_sync();
     }
 
     /// The deadline: the next change of the chip (or the end) while a timer runs, none otherwise.
