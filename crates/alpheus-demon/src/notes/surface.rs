@@ -12,7 +12,7 @@ use crate::launcher::surface::{
 };
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::notes::app::{opening_model, repeat_ignored};
+use crate::notes::app::{Fingerprint, opening_model, repeat_ignored};
 use crate::notes::keys;
 use crate::notes::model::{Notes, NotesOutcome};
 use crate::notes::store;
@@ -103,6 +103,8 @@ pub struct OpenNotes {
     pub requested_at: Instant,
     /// The first unsaved edit: the save is due `SAVE_AFTER` later (`store::save_deadline`).
     pub dirty_since: Option<Instant>,
+    /// The file as last loaded or saved (`Fingerprint`), kept if a close cannot save.
+    pub(crate) seen: Fingerprint,
     /// launcher.toml's `copy`, read at open.
     pub copy: Vec<String>,
     /// `$PATH`, read at open: the copy program is looked up there.
@@ -217,8 +219,12 @@ impl App {
         };
         let copy = read_config(&paths::config_dir(), &mut |m| log(m)).copy;
         let path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
-        // The text a failed close kept comes first; the file is read only without it.
-        let model = opening_model(self.notes.unsaved.take(), || store::load(&paths::state_dir()));
+        // The text a failed close kept comes first while the file is as that pad last saw it (taken
+        // before the file is read: a change after it differs at the next compare); else the file.
+        // The kept text is released only at the end (`unsaved = None` below), so a failed open
+        // keeps it (M-2).
+        let seen = Fingerprint::of(&paths::state_dir());
+        let model = opening_model(self.notes.unsaved.as_ref(), seen, || store::load(&paths::state_dir()));
         // Scrims BEFORE the box, on the box's own Overlay layer: created last, the box stacks above
         // them (the launcher's rule, launcher/surface.rs).
         let scrims = self.notes_scrims(qh);
@@ -232,6 +238,7 @@ impl App {
             model,
             requested_at,
             dirty_since: None,
+            seen,
             copy,
             path_dirs,
             data_device,
@@ -253,6 +260,7 @@ impl App {
             waiting: false,
         };
         open.fit_model();
+        self.notes.unsaved = None;
         self.notes.open = Some(open);
         self.keyboard_acquire(qh);
     }

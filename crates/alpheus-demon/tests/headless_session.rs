@@ -6024,6 +6024,97 @@ fn notes_a_failed_close_save_is_kept_for_the_next_open() {
     assert!(d.log().iter().all(|l| !l.contains("qz")), "the text reached the log: {:?}", d.log());
 }
 
+/// A pad whose close save fails on `kept qz`: the directory is closed to writing, so the kept text
+/// waits in memory. Returns the sandbox, the daemon and the file's directory (still 0o500).
+fn notes_failed_close(name: &str, existing: Option<&[u8]>) -> (Sway, Daemon, PathBuf) {
+    let sway = Sway::start(name, 1);
+    let file = notes_file(&sway);
+    let dir = file.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if let Some(bytes) = existing {
+        std::fs::write(&file, bytes).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "kept qz", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notes: not saved (PermissionDenied)", DELAY), "{:?}", d.log());
+    (sway, d, dir)
+}
+
+/// Reopens the pad and closes it at once (no key typed); returns once it is closed again.
+fn notes_reopen_and_close(sway: &Sway, d: &Daemon) {
+    assert_eq!(script(sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(NOTES_SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("notes closed (escape)", 2, DELAY), "{:?}", d.log());
+}
+
+/// I-1: the file was written elsewhere after a failed close save: the reopen shows the file, the
+/// kept text is dropped unwritten (the file on disk wins), the log names no text.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_a_kept_text_never_overwrites_a_newer_file() {
+    let (sway, d, dir) = notes_failed_close("notes-kept-newer", None);
+    let file = notes_file(&sway);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(&file, "newer zq").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    notes_reopen_and_close(&sway, &d);
+    assert!(d.wait_for("notes: kept edit dropped (the file changed)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "newer zq", "never overwritten: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("qz") && !l.contains("zq")), "text in the log: {:?}", d.log());
+}
+
+/// I-1: a newer file the pad refuses (tabs) is shown read only and never rewritten by the kept text.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_a_kept_text_never_overwrites_a_newer_refused_file() {
+    let (sway, d, dir) = notes_failed_close("notes-kept-refused", None);
+    let file = notes_file(&sway);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let theirs = b"a\tb zq".to_vec();
+    std::fs::write(&file, &theirs).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    notes_reopen_and_close(&sway, &d);
+    assert!(d.wait_for("notes: read only (", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read(&file).unwrap(), theirs, "never rewritten: {:?}", d.log());
+}
+
+/// I-1, the other side: a file the pad itself saved earlier (the fingerprint follows a successful
+/// save) is not "changed": the later failed close's text is still the one reopened and written.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_a_kept_text_after_an_own_save_is_still_kept() {
+    let sway = Sway::start("notes-kept-own-save", 1);
+    let file = notes_file(&sway);
+    let dir = file.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    // "one" is autosaved 2 s after the edit; the directory closes in between, then "two" and Escape.
+    let keys = wtype_spawn(&sway, &["-s", "300", "one", "-s", "3500", "two", "-s", "300", "-k", "Escape"]);
+    wait_for_text(&file, "one");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert!(d.wait_for("notes closed (escape)", DELAY * 2), "{:?}", d.log());
+    assert!(d.wait_for("notes: not saved (PermissionDenied)", DELAY), "{:?}", d.log());
+    drop(keys);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    notes_reopen_and_close(&sway, &d);
+    wait_for_text(&file, "onetwo");
+    assert_eq!(d.count("kept edit dropped"), 0, "{:?}", d.log());
+}
+
 /// Final review: a SIGTERM before the autosave (an edit younger than 2 s) still writes the pad: the
 /// daemon's shutdown closes it, and every close saves.
 #[test]
@@ -6034,7 +6125,8 @@ fn notes_sigterm_saves_an_edit_younger_than_the_autosave() {
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
     // One wtype that stays: its keyboard leaving would close (and save) the pad as `focus lost`.
     let keys = wtype_spawn(&sway, &["-s", "300", "late qz", "-s", "8000"]);
-    thread::sleep(Duration::from_millis(900));
+    // Under the 2 s autosave (the edit starts ~0.3 s in), with room for a slow harness.
+    thread::sleep(Duration::from_millis(1500));
     assert!(!notes_file(&sway).exists(), "not autosaved yet (the edit is younger than 2 s)");
     assert_eq!(d.count("notes closed"), 0, "still open: {:?}", d.log());
     d.signal(libc::SIGTERM);

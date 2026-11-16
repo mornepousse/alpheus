@@ -28,8 +28,34 @@ use super::surface::OpenNotes;
 pub struct NotesApp {
     pub(crate) open: Option<OpenNotes>,
     pub(crate) timer: DeadlineTimer,
-    pub(crate) unsaved: Option<String>,
+    pub(crate) unsaved: Option<Kept>,
 }
+
+/// What a failed close keeps (I2, I-1): the text, and the file as it was when the pad last loaded
+/// or saved it, so a later open can tell the file moved on.
+pub(crate) struct Kept {
+    pub(crate) text: String,
+    pub(crate) seen: Fingerprint,
+}
+
+/// The notes file as the pad last saw it: device, inode, mtime (s, ns) and size, or absent. A
+/// symlink is not followed (the file is refused then, and never written).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Fingerprint(Option<(u64, u64, i64, i64, u64)>);
+
+impl Fingerprint {
+    pub(crate) fn of(state_dir: &std::path::Path) -> Fingerprint {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::symlink_metadata(state_dir.join(store::FILE)) {
+            Ok(m) => Fingerprint(Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec(), m.size()))),
+            // Absent, or unreadable: a file that later appears, or is readable, differs.
+            Err(_) => Fingerprint(None),
+        }
+    }
+}
+
+/// The help row's words when the kept text is not opened: fixed, never the text.
+pub(crate) const KEPT_DROPPED: &str = "earlier unsaved text not written: the file changed";
 
 impl NotesApp {
     pub fn new() -> NotesApp {
@@ -97,27 +123,34 @@ pub(crate) fn after_save(model: &mut Notes, result: &std::io::Result<()>) {
 }
 
 /// The pad an open shows: the text a failed close kept (`not saved`, still edited, so the next
-/// close or edit writes it) before the file, which is then not read; else the file, a refused one
-/// read only.
-pub(crate) fn opening_model(unsaved: Option<String>, load: impl FnOnce() -> Loaded) -> Notes {
-    if let Some(text) = unsaved {
-        let mut model = Notes::new(text, None);
+/// close or edit writes it) when the file is still as the pad last saw it (`now`); if the file
+/// changed meanwhile, the file as `load` reads it (a refused one read only) and the kept text is
+/// dropped unwritten, with a help-row message: the file on disk wins (I-1). Else the file.
+pub(crate) fn opening_model(kept: Option<&Kept>, now: Fingerprint, load: impl FnOnce() -> Loaded) -> Notes {
+    let stale = kept.is_some_and(|k| k.seen != now);
+    if let Some(k) = kept.filter(|k| k.seen == now) {
+        let mut model = Notes::new(k.text.clone(), None);
         model.dirty = true;
         model.save_failed = true;
         return model;
     }
-    match load() {
+    let mut model = match load() {
         Loaded::Text(t) => Notes::new(t, None),
         Loaded::Refused(r, shown) => {
             log(&format!("notes: read only ({})", r.word()));
             Notes::new(shown, Some(r))
         }
+    };
+    if stale {
+        log("notes: kept edit dropped (the file changed)");
+        model.show_message(KEPT_DROPPED.to_string());
     }
+    model
 }
 
 /// What a close keeps after its save: the text when it is still to be written (the save failed).
-pub(crate) fn kept_after_close(model: &Notes) -> Option<String> {
-    wants_save(model).then(|| model.pad.text().to_string())
+pub(crate) fn kept_after_close(model: &Notes, seen: Fingerprint) -> Option<Kept> {
+    wants_save(model).then(|| Kept { text: model.pad.text().to_string(), seen })
 }
 
 /// A held key repeats moves and edits, never a copy, a cut, a paste or the close (P8): each repeat
@@ -182,7 +215,7 @@ impl App {
                     if wants_save(&open.model) {
                         if let Err(e) = store::save(&paths::state_dir(), open.model.pad.text()) {
                             log(&format!("notes: not saved ({:?})", e.kind()));
-                            kept = Some(open.model.pad.text().to_string());
+                            kept = kept_after_close(&open.model, open.seen);
                         }
                     }
                     drop(open);
@@ -210,7 +243,7 @@ impl App {
         // open (I2).
         self.notes_save();
         let open = self.notes.open.take();
-        self.notes.unsaved = open.as_ref().and_then(|o| kept_after_close(&o.model));
+        self.notes.unsaved = open.as_ref().and_then(|o| kept_after_close(&o.model, o.seen));
         drop(open);
         self.notes_timer_sync();
         self.keyboard_release();
@@ -256,6 +289,9 @@ impl App {
             log(&format!("notes: not saved ({:?})", e.kind()));
         }
         after_save(&mut open.model, &result);
+        if result.is_ok() {
+            open.seen = Fingerprint::of(&paths::state_dir());
+        }
     }
 
     /// The save timer: armed `SAVE_AFTER` after the first unsaved edit, only while the pad is open.
@@ -357,31 +393,93 @@ mod tests {
         assert!(!wants_save(&ro), "an edited read-only pad is still never written");
     }
 
+    fn failed(text: &str) -> Notes {
+        let mut n = Notes::new(String::new(), None);
+        for c in text.chars() {
+            n.key(NoteKey::Char(c));
+        }
+        after_save(&mut n, &Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        n
+    }
+
     /// I2: a close whose save failed keeps the text; the next open shows it (`not saved`, still
-    /// edited so the next close or edit writes it) before the file, and a refused file never wins
-    /// over it; a close that saved keeps nothing.
+    /// edited so the next close or edit writes it) while the file is as the pad last saw it, without
+    /// reading the file; a close that saved keeps nothing.
     #[test]
     fn a_failed_close_save_keeps_the_text_for_the_next_open() {
         use crate::notes::model::Refusal;
-        use crate::notes::store::Loaded;
-        let mut n = Notes::new(String::new(), None);
-        n.key(NoteKey::Char('a'));
-        after_save(&mut n, &Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
-        let kept = kept_after_close(&n);
-        assert_eq!(kept.as_deref(), Some("a"));
-        let reopened = opening_model(kept, || panic!("the file is not read while text is kept"));
+        let seen = Fingerprint(Some((1, 2, 3, 4, 5)));
+        let mut n = failed("a");
+        let kept = kept_after_close(&n, seen).expect("kept");
+        assert_eq!(kept.text, "a");
+        let reopened = opening_model(Some(&kept), seen, || panic!("the file is not read while text is kept"));
         assert_eq!(reopened.pad.text(), "a");
         assert_eq!(reopened.status(), "not saved");
         assert!(wants_save(&reopened), "the next close writes it again");
+        assert_eq!(reopened.message(), None, "an unchanged file: nothing to say");
 
         after_save(&mut n, &Ok(()));
-        assert_eq!(kept_after_close(&n), None, "saved: nothing kept");
-        assert_eq!(kept_after_close(&Notes::new("x".into(), None)), None, "never edited: nothing kept");
+        assert!(kept_after_close(&n, seen).is_none(), "saved: nothing kept");
+        assert!(kept_after_close(&Notes::new("x".into(), None), seen).is_none(), "never edited: nothing kept");
 
-        let from_file = opening_model(None, || Loaded::Text("file".into()));
+        let from_file = opening_model(None, seen, || Loaded::Text("file".into()));
         assert_eq!((from_file.pad.text(), from_file.status()), ("file", "saved"));
-        let refused = opening_model(None, || Loaded::Refused(Refusal::TooLarge, "start".into()));
+        let refused = opening_model(None, seen, || Loaded::Refused(Refusal::TooLarge, "start".into()));
         assert_eq!((refused.pad.text(), refused.read_only), ("start", Some(Refusal::TooLarge)));
+    }
+
+    /// I-1: the file changed since the pad last saw it (written elsewhere, replaced, removed, now
+    /// refused): the file wins, the kept text is not opened (so never written over it) and the help
+    /// row says so in fixed words.
+    #[test]
+    fn a_file_that_changed_wins_over_the_kept_text() {
+        use crate::notes::model::Refusal;
+        let seen = Fingerprint(Some((1, 2, 3, 4, 5)));
+        let kept = kept_after_close(&failed("kept qz"), seen).unwrap();
+        for now in
+            [Fingerprint(Some((1, 2, 3, 4, 6))), Fingerprint(Some((1, 9, 3, 4, 5))), Fingerprint(Some((1, 2, 3, 5, 5))), Fingerprint(None)]
+        {
+            let m = opening_model(Some(&kept), now, || Loaded::Text("newer".into()));
+            assert_eq!((m.pad.text(), m.status()), ("newer", "saved"), "{now:?}");
+            assert!(!wants_save(&m), "the kept text is never written");
+            assert_eq!(m.message(), Some(KEPT_DROPPED));
+            assert!(!KEPT_DROPPED.contains("qz"));
+        }
+        let refused = opening_model(Some(&kept), Fingerprint(Some((9, 9, 9, 9, 9))), || Loaded::Refused(Refusal::NotClean, "shown".into()));
+        assert_eq!((refused.pad.text(), refused.read_only), ("shown", Some(Refusal::NotClean)));
+        assert!(!wants_save(&refused), "a refused newer file is never rewritten");
+        assert_eq!(refused.message(), Some(KEPT_DROPPED));
+        let large = opening_model(Some(&kept), Fingerprint(None), || Loaded::Refused(Refusal::TooLarge, "start".into()));
+        assert!(!wants_save(&large) && large.read_only == Some(Refusal::TooLarge));
+    }
+
+    #[test]
+    fn the_fingerprint_follows_the_file() {
+        let d = TempDir::new("notes-fingerprint");
+        let absent = Fingerprint::of(&d);
+        assert_eq!(absent, Fingerprint(None));
+        std::fs::write(d.join(store::FILE), "one").unwrap();
+        let one = Fingerprint::of(&d);
+        assert_ne!(one, absent);
+        assert_eq!(Fingerprint::of(&d), one, "stable while untouched");
+        std::fs::write(d.join(store::FILE), "three").unwrap();
+        assert_ne!(Fingerprint::of(&d), one, "size moved");
+        std::fs::remove_file(d.join(store::FILE)).unwrap();
+        assert_eq!(Fingerprint::of(&d), absent);
+    }
+
+    /// M-2: the kept text is released only once the pad is built, just before it is stored, so an
+    /// open that returns early or panics keeps it.
+    #[test]
+    fn the_kept_text_is_released_just_before_the_pad_is_stored() {
+        let src = include_str!("surface.rs");
+        let open = &src[src.find("fn notes_open").unwrap()..];
+        let open = &open[..open.find("\n    /// The seat's data device").unwrap()];
+        let release = open.find("self.notes.unsaved = None;").expect("released");
+        let store = open.find("self.notes.open = Some(open);").expect("stored");
+        assert!(open[release..store].lines().count() <= 2, "released right before the store");
+        assert!(open.rfind("return;").unwrap() < release, "no early return after the release");
+        assert!(!open.contains("unsaved.take()"), "never taken early");
     }
 
     #[test]
