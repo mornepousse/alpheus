@@ -204,6 +204,12 @@ pub enum Request {
     /// Toggles the quick notepad (quick notes spec): answered Done (the pad is no module: it is
     /// always available). An older daemon refuses it as an unknown request.
     Notes,
+    /// Opens the clipboard history in the launcher (clipboard spec). An older daemon refuses it as
+    /// an unknown request.
+    Clipboard,
+    /// Empties the clipboard history, pins kept (clipboard spec): answered Done, or an error when
+    /// the history is off.
+    ClipboardClear,
     Dmenu {
         prompt: Option<String>,
         lines: Vec<String>,
@@ -308,6 +314,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
 ///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
+///   "alpheus-launcher/1 clipboard\n" | "alpheus-launcher/1 clipboard-clear\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
 ///   "alpheus-launcher/1 outputs-try <body_len>\n" <body bytes>
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
@@ -329,6 +336,8 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Calc => format!("{MAGIC} calc\n").into_bytes(),
         Request::Windows => format!("{MAGIC} windows\n").into_bytes(),
         Request::Notes => format!("{MAGIC} notes\n").into_bytes(),
+        Request::Clipboard => format!("{MAGIC} clipboard\n").into_bytes(),
+        Request::ClipboardClear => format!("{MAGIC} clipboard-clear\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
         Request::DndOn(DndEnd::Until(at)) => format!("{MAGIC} dnd on until {at}\n").into_bytes(),
@@ -371,6 +380,8 @@ enum Header {
     Calc,
     Windows,
     Notes,
+    Clipboard,
+    ClipboardClear,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
     DndOn(DndEnd),
@@ -522,6 +533,8 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Calc => Some(Request::Calc),
         Header::Windows => Some(Request::Windows),
         Header::Notes => Some(Request::Notes),
+        Header::Clipboard => Some(Request::Clipboard),
+        Header::ClipboardClear => Some(Request::ClipboardClear),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::DndOn(end) => Some(Request::DndOn(end)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
@@ -547,6 +560,8 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["calc"] => Ok(Header::Calc),
         ["windows"] => Ok(Header::Windows),
         ["notes"] => Ok(Header::Notes),
+        ["clipboard"] => Ok(Header::Clipboard),
+        ["clipboard-clear"] => Ok(Header::ClipboardClear),
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
         }

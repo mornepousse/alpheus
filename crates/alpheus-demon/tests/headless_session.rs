@@ -25,7 +25,7 @@ use common::{
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
     capture_delta, capture_gone, default_sink_delta, fake_env_recorder, fake_program, fake_pw_dump_in, fake_recorder, fake_source,
     fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon,
-    start_daemon_with, volume_delta, wait_for_pid_file, wl_copy, write_atomically, wtype, wtype_spawn,
+    start_daemon_with, volume_delta, wait_for_pid_file, wl_copy, wl_paste, write_atomically, wtype, wtype_spawn,
 };
 use common::{FakeVpn, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
@@ -6694,7 +6694,7 @@ fn notes_sigterm_saves_an_edit_younger_than_the_autosave() {
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
 fn notes_paste_from_the_selection() {
     let (sway, d) = notes_daemon("notes-paste");
-    let _selection = wl_copy(&sway, "pasted zq", None);
+    let _selection = wl_copy(&sway, "pasted zq", None, false);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
@@ -6710,7 +6710,7 @@ fn notes_paste_from_the_selection() {
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
 fn notes_paste_ignores_a_selection_without_text() {
     let (sway, d) = notes_daemon("notes-paste-image");
-    let _selection = wl_copy(&sway, "not text 77", Some("image/png"));
+    let _selection = wl_copy(&sway, "not text 77", Some("image/png"), false);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
@@ -6807,4 +6807,240 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_secs(1)); // the close settles (wtype's keyboard going, the D-Bus thread's last word)
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
+}
+
+// ---- the clipboard history (clipboard spec, task 6) ----
+//
+// Fictional texts only, served by the harness `wl_copy` on THIS sway; `wl_paste` reads this sway's
+// selection back. Each copy waits for the selection, then 200 ms (no per-copy log line exists, by design), and the
+// `wl_copy` children are dropped before an Enter whose result `wl_paste` checks, so the only
+// possible owner of the selection is the daemon's own source.
+
+const CLIP_ON: &str = "[clipboard]\nenabled = true\n";
+const CLIP_TEXTS: &[&str] = &["alpha", "beta", "milk", "1234", "5678"];
+/// The history is drawn and the keys follow: `wtype`'s first key after its own start-up delay.
+const CLIP_KEY_DELAY: &str = "300";
+
+fn clip_daemon(name: &str, bar_toml: Option<&str>) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, bar_toml, ..DaemonOptions::default() });
+    ready(&d);
+    (sway, d)
+}
+
+/// One copy by an app: it lasts as long as the child lives. Waits (bounded) until the selection
+/// is this text, then a short settle lets the daemon read it.
+fn clip_copy(sway: &Sway, text: &str, sensitive: bool) -> common::WlCopyChild {
+    let child = wl_copy(sway, text, None, sensitive);
+    let start = Instant::now();
+    while wl_paste(sway).as_deref() != Some(text) {
+        assert!(start.elapsed() < Duration::from_secs(5), "the selection never became the copied text");
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(200));
+    child
+}
+
+/// `--clipboard`, the `n`th box of the test shown, then `keys` typed (wtype arguments).
+fn clip_open_and_type(sway: &Sway, d: &Daemon, n: usize, keys: &[&str]) {
+    assert_eq!(launcher(sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, n, DELAY), "{:?}", d.log());
+    let mut args = vec!["-s", CLIP_KEY_DELAY];
+    args.extend_from_slice(keys);
+    assert!(wtype(sway, &args).success());
+}
+
+/// The box closed by Enter (`launcher closed (activated)`, the `n`th time).
+fn clip_activated(d: &Daemon, n: usize) {
+    assert!(d.wait_for_count("launcher closed (activated)", n, DELAY), "{:?}", d.log());
+}
+
+fn clip_no_leak(d: &Daemon) {
+    let log = d.log();
+    for text in CLIP_TEXTS {
+        assert!(!log.iter().any(|l| l.contains(text)), "{text:?} reached the daemon's log: {log:?}");
+    }
+}
+
+/// The history holds exactly `expected` (newest first, no pin): Enter on each reads back through
+/// `wl_paste`, and one `Down` more lands on `Clear history`, whose Enter asks and copies nothing.
+/// Boxes already shown: `*shown`; `*activated` the same for Enter closes.
+fn clip_probe(sway: &Sway, d: &Daemon, expected: &[&str], shown: &mut usize, activated: &mut usize) {
+    for (i, want) in expected.iter().enumerate() {
+        let mut keys: Vec<&str> = Vec::new();
+        for _ in 0..i {
+            keys.extend(["-k", "Down"]);
+        }
+        keys.extend(["-k", "Return"]);
+        *shown += 1;
+        clip_open_and_type(sway, d, *shown, &keys);
+        *activated += 1;
+        clip_activated(d, *activated);
+        assert_eq!(wl_paste(sway).as_deref(), Some(*want), "entry {i}: {:?}", d.log());
+    }
+    let mut keys: Vec<&str> = Vec::new();
+    for _ in 0..expected.len() {
+        keys.extend(["-k", "Down"]);
+    }
+    keys.extend(["-k", "Return", "-s", "200", "-k", "Escape"]);
+    *shown += 1;
+    let before = wl_paste(sway);
+    clip_open_and_type(sway, d, *shown, &keys);
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(wl_paste(sway), before, "Clear history only asks: an extra entry would have been copied: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_start_line_names_the_protocol() {
+    let (_sway, d) = clip_daemon("clip-start", Some(CLIP_ON));
+    assert!(d.wait_for("clipboard: ext-data-control-v1", DELAY), "{:?}", d.log());
+    let (_off_sway, off) = clip_daemon("clip-start-off", None);
+    thread::sleep(Duration::from_millis(500));
+    assert!(off.log().iter().all(|l| !l.starts_with("clipboard:")), "{:?}", off.log());
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_enter_copies_back_without_a_new_entry() {
+    let (sway, d) = clip_daemon("clip-enter", Some(CLIP_ON));
+    let (first, second) = (clip_copy(&sway, "alpha", false), clip_copy(&sway, "beta", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(wl_paste(&sway), None, "no owner left");
+    // History: beta, alpha. Down, Enter: alpha, now the daemon's own.
+    clip_open_and_type(&sway, &d, 1, &["-k", "Down", "-k", "Return"]);
+    clip_activated(&d, 1);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("alpha"), "{:?}", d.log());
+    // alpha moved to the top: Enter again gives alpha.
+    clip_open_and_type(&sway, &d, 2, &["-k", "Return"]);
+    clip_activated(&d, 2);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("alpha"), "{:?}", d.log());
+    clip_open_and_type(&sway, &d, 3, &["-k", "Down", "-k", "Return"]);
+    clip_activated(&d, 3);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("beta"), "{:?}", d.log());
+    // Two entries only: the second Down lands on Clear history, whose Enter only asks.
+    clip_open_and_type(&sway, &d, 4, &["-k", "Down", "-k", "Down", "-k", "Return", "-s", "200", "-k", "Escape"]);
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(wl_paste(&sway).as_deref(), Some("beta"), "the re-copies added no entry: {:?}", d.log());
+    clip_no_leak(&d);
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_skips_sensitive_copies() {
+    let (sway, d) = clip_daemon("clip-sensitive", Some(CLIP_ON));
+    let (first, second) = (clip_copy(&sway, "token 1234", true), clip_copy(&sway, "buy milk", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    let (mut shown, mut activated) = (0, 0);
+    clip_probe(&sway, &d, &["buy milk"], &mut shown, &mut activated);
+    // Mod+Space's All mode: the `"` prefix finds nothing for the sensitive text.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, shown + 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", CLIP_KEY_DELAY, "\"token", "-k", "Return"]).success());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(wl_paste(&sway).as_deref(), Some("buy milk"), "nothing was copied: {:?}", d.log());
+    clip_no_leak(&d);
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_skips_copies_around_a_password_prompt() {
+    let (sway, d) = clip_daemon("clip-password", Some(CLIP_ON));
+    let menu = script(&sway, &["--dmenu", "--password", "-p", "Key"], "");
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    let during = clip_copy(&sway, "token 1234", false);
+    assert!(wtype(&sway, &["-s", CLIP_KEY_DELAY, "x", "-k", "Return"]).success());
+    let answered = Instant::now();
+    assert_eq!(menu.join().unwrap().0, EXIT_OK);
+    // Within 1 s of the answer: still quiet.
+    let after = clip_copy(&sway, "token 5678", false);
+    assert!(answered.elapsed() < Duration::from_secs(2), "the copy must land inside the quiet window");
+    thread::sleep(Duration::from_secs(6).saturating_sub(answered.elapsed()));
+    let later = clip_copy(&sway, "alpha", false);
+    drop((during, after, later));
+    thread::sleep(Duration::from_millis(300));
+    let (mut shown, mut activated) = (1, 1);
+    clip_probe(&sway, &d, &["alpha"], &mut shown, &mut activated);
+    clip_no_leak(&d);
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_skips_a_text_over_4_kib() {
+    let (sway, d) = clip_daemon("clip-over", Some(CLIP_ON));
+    let big = "a".repeat(5000);
+    let (first, second) = (clip_copy(&sway, &big, false), clip_copy(&sway, "beta", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    let (mut shown, mut activated) = (0, 0);
+    clip_probe(&sway, &d, &["beta"], &mut shown, &mut activated);
+    clip_no_leak(&d);
+}
+
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_clear_keeps_pins() {
+    let (sway, d) = clip_daemon("clip-clear", Some(CLIP_ON));
+    let (first, second) = (clip_copy(&sway, "alpha", false), clip_copy(&sway, "beta", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    // beta (newest, first row) pinned with Ctrl+Enter, the box stays open: Escape closes it.
+    clip_open_and_type(&sway, &d, 1, &["-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "200", "-k", "Escape"]);
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--clipboard-clear"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()), "{:?}", d.log());
+    // alpha is gone, so there is no unpinned entry and no Clear row: Down stays on beta.
+    clip_open_and_type(&sway, &d, 2, &["-k", "Down", "-k", "Return"]);
+    clip_activated(&d, 1);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("beta"), "{:?}", d.log());
+    clip_no_leak(&d);
+}
+
+/// Mod+Space's `"` prefix (an opening ruling): the history's rows through the all-modes launcher,
+/// Enter copies back with no new entry.
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_quote_prefix_in_the_all_launcher() {
+    let (sway, d) = clip_daemon("clip-quote", Some(CLIP_ON));
+    let (first, second) = (clip_copy(&sway, "alpha", false), clip_copy(&sway, "beta", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(wl_paste(&sway), None, "no owner left");
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", CLIP_KEY_DELAY, "\"alp", "-s", "200", "-k", "Return"]).success());
+    clip_activated(&d, 1);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("alpha"), "{:?}", d.log());
+    // A copy back adds no entry: the history is still alpha, beta.
+    let (mut shown, mut activated) = (1, 1);
+    clip_probe(&sway, &d, &["alpha", "beta"], &mut shown, &mut activated);
+    clip_no_leak(&d);
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn clipboard_verbs_when_off_exit_2() {
+    let (sway, d) = clip_daemon("clip-off", None);
+    for verb in ["--clipboard", "--clipboard-clear"] {
+        let (code, out, err) = script(&sway, &[verb], "").join().unwrap();
+        assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{verb}");
+        assert!(err.contains("the clipboard history is off ([clipboard] enabled in bar.toml)"), "{verb}: {err:?}");
+    }
+    assert_eq!(d.count(SHOWN), 0, "nothing opened: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn clipboard_replaces_another_launcher_mode() {
+    let (sway, d) = clip_daemon("clip-replace", Some(CLIP_ON));
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
 }

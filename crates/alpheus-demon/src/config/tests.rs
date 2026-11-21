@@ -805,3 +805,15 @@ fn the_timer_module_sits_just_before_the_clock() {
     assert_eq!(ModuleId::Timer.name(), "timer");
     assert!(BarConfig::default().modules.contains(&ModuleId::Timer));
 }
+
+#[test]
+fn clipboard_is_off_by_default() {
+    let d = BarConfig::default();
+    assert!(!d.clipboard.enabled);
+    assert!(!BarConfig::from_text("").unwrap().clipboard.enabled);
+    assert!(!BarConfig::from_text("[clipboard]\n").unwrap().clipboard.enabled);
+    assert_eq!(d.modules, ModuleId::ALL.to_vec());
+    assert!(BarConfig::from_text("[clipboard]\nenabled = true\n").unwrap().clipboard.enabled);
+    let e = BarConfig::from_text("[clipboard]\nenabeld = true\n").unwrap_err();
+    assert!(e.contains("enabeld"), "{e}");
+}
