@@ -71,6 +71,7 @@ pub mod retired;
 pub mod segments;
 pub mod session;
 pub mod session_bus;
+pub mod shield_usb;
 pub mod sources;
 pub mod startup;
 pub mod state;

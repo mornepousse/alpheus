@@ -79,7 +79,31 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_vpn_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_mixer(&mut config.quick, &launcher.terminal);
-    (config, warning.into_iter().collect())
+    let mut warnings: Vec<String> = warning.into_iter().collect();
+    warnings.extend(resolve_shield(&mut config.shield, directory));
+    (config, warnings)
+}
+
+/// `[shield]` once the config directory is known (shield plan, decisions 8 and 9): a partial table
+/// or a flag whose watch would share a descriptor with the theme's turns Shield mode off, with the
+/// warning to log. The flag's directory and its parent may equal neither the config directory nor
+/// its parent (compared as written: an alias the paths do not show is caught when the watch arms).
+pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &Path) -> Option<String> {
+    if *s == crate::config::ShieldConfig::default() {
+        return None;
+    }
+    let warning = if !s.configured() {
+        Some("shield: needs flag, on and off; Shield mode off")
+    } else {
+        let flag_dir = Path::new(&s.flag).parent();
+        let mine = [flag_dir, flag_dir.and_then(Path::parent)];
+        let theirs = [Some(config_dir), config_dir.parent()];
+        let shared = mine.iter().flatten().any(|m| theirs.iter().flatten().any(|t| m == t));
+        shared.then_some("shield.flag: must not share a directory with alpheus's config; Shield mode off")
+    };
+    let warning = warning?;
+    *s = crate::config::ShieldConfig::default();
+    Some(warning.to_string())
 }
 
 /// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode

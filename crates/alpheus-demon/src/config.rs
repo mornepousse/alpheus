@@ -84,6 +84,14 @@
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
 //! [clipboard]                                               # the text clipboard history (read at start)
 //! enabled = false                                           # true: follow the clipboard (data-control), 50 entries in memory, never on disk
+//! [shield]                                                  # Shield mode for public networks (none set: no Shield anywhere); read at start
+//! flag = "/var/lib/shield/on"                               # absolute; the mode is on while this file exists (not in alpheus's config directory)
+//! on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
+//! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
+//! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
+//! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
+//! # on_text = "Protections for public networks are on."     # the notices' bodies, one line, at most 256 bytes
+//! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
 //! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
@@ -428,6 +436,88 @@ impl Default for PrivacyConfig {
     fn default() -> Self {
         PrivacyConfig { ignore: Vec::new(), dev_dir: PathBuf::from("/dev"), proc_dir: PathBuf::from("/proc") }
     }
+}
+
+/// The longest `[shield] on_text` or `off_text`, in bytes.
+pub const SHIELD_TEXT_MAX: usize = 256;
+
+/// `[shield]` (shield spec § 2): empty by default, no Shield anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShieldConfig {
+    /// Absolute path; the mode is on while this file exists.
+    pub flag: String,
+    pub on: Vec<String>,
+    pub off: Vec<String>,
+    /// `{id}` as one whole element; empty: the blocked devices cannot be allowed from alpheus.
+    pub allow: Vec<String>,
+    /// None: USBGuard's own command; `[]`: no device list.
+    pub blocked: Option<Vec<String>>,
+    pub on_text: Option<String>,
+    pub off_text: Option<String>,
+}
+
+impl ShieldConfig {
+    /// `flag`, `on` and `off` all set.
+    pub fn configured(&self) -> bool {
+        !self.flag.is_empty() && !self.on.is_empty() && !self.off.is_empty()
+    }
+
+    /// The command printing the blocked devices; empty: none.
+    pub fn blocked_argv(&self) -> &[String] {
+        const DEFAULT: &[&str] = &["usbguard", "list-devices", "--blocked"];
+        match &self.blocked {
+            Some(v) => v,
+            None => {
+                static OWNED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+                OWNED.get_or_init(|| DEFAULT.iter().map(|s| s.to_string()).collect())
+            }
+        }
+    }
+
+    pub fn on_body(&self) -> &str {
+        self.on_text.as_deref().unwrap_or("Protections for public networks are on.")
+    }
+
+    pub fn off_body(&self) -> &str {
+        self.off_text.as_deref().unwrap_or("Back to the usual settings.")
+    }
+}
+
+/// `[shield]` checked (decision 8 of the plan): the hard errors of the file.
+fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
+    if !sh.flag.is_empty() {
+        let p = Path::new(&sh.flag);
+        if !p.is_absolute() || p.file_name().is_none() || sh.flag.contains('\0') {
+            return Err("shield.flag: must be an absolute path to a file".into());
+        }
+    }
+    for (key, command) in [
+        ("shield.on", sh.on.as_slice()),
+        ("shield.off", sh.off.as_slice()),
+        ("shield.allow", sh.allow.as_slice()),
+        ("shield.blocked", sh.blocked.as_deref().unwrap_or(&[])),
+    ] {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("{key}: the program is blank"));
+        }
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("{key}: an argument holds a NUL"));
+        }
+    }
+    if !sh.allow.is_empty() {
+        let whole = sh.allow.iter().filter(|a| a.as_str() == "{id}").count();
+        let any = sh.allow.iter().filter(|a| a.contains("{id}")).count();
+        if whole != 1 || any != 1 {
+            return Err("shield.allow: {id} must be a whole element, once".into());
+        }
+    }
+    for (key, t) in [("shield.on_text", &sh.on_text), ("shield.off_text", &sh.off_text)] {
+        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.contains(['\n', '\r'])) {
+            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, one line"));
+        }
+    }
+    Ok(())
 }
 
 /// `[displays]` (displays spec § 1).
@@ -892,6 +982,7 @@ pub struct BarConfig {
     pub clipboard: ClipboardConfig,
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
+    pub shield: ShieldConfig,
 }
 
 impl Default for BarConfig {
@@ -915,6 +1006,7 @@ impl Default for BarConfig {
             clipboard: ClipboardConfig::default(),
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
+            shield: ShieldConfig::default(),
         }
     }
 }
@@ -962,6 +1054,8 @@ struct Raw {
     displays: DisplaysConfig,
     #[serde(default)]
     hooks: HooksConfig,
+    #[serde(default)]
+    shield: ShieldConfig,
 }
 
 impl BarConfig {
@@ -1088,6 +1182,7 @@ impl BarConfig {
         }
         check_quick(&b.quick)?;
         check_hooks(&b.hooks)?;
+        check_shield(&b.shield)?;
         check_timer(&b.timer)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
@@ -1121,6 +1216,7 @@ impl BarConfig {
             clipboard: b.clipboard,
             displays: b.displays,
             hooks: b.hooks,
+            shield: b.shield,
         })
     }
 }

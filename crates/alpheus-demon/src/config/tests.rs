@@ -817,3 +817,57 @@ fn clipboard_is_off_by_default() {
     let e = BarConfig::from_text("[clipboard]\nenabeld = true\n").unwrap_err();
     assert!(e.contains("enabeld"), "{e}");
 }
+
+fn shield_text() -> &'static str {
+    r#"
+[shield]
+flag = "/var/lib/test-shield/on"
+on = ["pkexec", "/x/helper", "on"]
+off = ["pkexec", "/x/helper", "off"]
+allow = ["pkexec", "/x/helper", "allow", "{id}"]
+"#
+}
+
+#[test]
+fn shield_is_empty_by_default() {
+    let d = BarConfig::default();
+    assert_eq!(d.shield, ShieldConfig::default());
+    assert!(!d.shield.configured());
+    assert!(!BarConfig::from_text("").unwrap().shield.configured());
+}
+
+#[test]
+fn shield_reads() {
+    let c = BarConfig::from_text(shield_text()).unwrap();
+    assert!(c.shield.configured());
+    assert_eq!(c.shield.flag, "/var/lib/test-shield/on");
+    assert_eq!(c.shield.blocked_argv(), ["usbguard", "list-devices", "--blocked"]);
+    assert_eq!(c.shield.on_body(), "Protections for public networks are on.");
+    assert_eq!(c.shield.off_body(), "Back to the usual settings.");
+    let c = BarConfig::from_text(&format!("{}blocked = []\non_text = \"Up\"\n", shield_text())).unwrap();
+    assert!(c.shield.blocked_argv().is_empty());
+    assert_eq!(c.shield.on_body(), "Up");
+    // Only some of the three: not configured (startup warns).
+    let c = BarConfig::from_text("[shield]\nflag = \"/a/b\"\n").unwrap();
+    assert!(!c.shield.configured());
+    assert!(BarConfig::from_text("[shield]\nbogus = 1\n").is_err(), "unknown keys refused");
+}
+
+#[test]
+fn shield_hard_checks_refuse_the_file() {
+    let with = |extra: &str| format!("{}{extra}", shield_text().replace("allow = [\"pkexec\", \"/x/helper\", \"allow\", \"{id}\"]\n", ""));
+    let err = |t: String| BarConfig::from_text(&t).unwrap_err();
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "relative/flag")).contains("shield.flag"));
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/")).contains("shield.flag"), "no file name");
+    assert!(err(with("allow = [\"x\", \"--id={id}\"]\n")).contains("shield.allow"), "allow_with_a_partial_placeholder_is_refused");
+    assert!(err(with("allow = [\"x\", \"{id}\", \"{id}\"]\n")).contains("shield.allow"));
+    assert!(err(with("allow = [\"x\"]\n")).contains("shield.allow"), "absent {{id}}");
+    assert!(BarConfig::from_text(&with("allow = []\n")).is_ok(), "no allow: list only");
+    assert!(err(with(&format!("on_text = \"{}\"\n", "a".repeat(300)))).contains("shield.on_text"));
+    assert!(err(with("off_text = \"a\\nb\"\n")).contains("shield.off_text"));
+    assert!(
+        err(shield_text().replace("\"/x/helper\", \"on\"", "\"\", \"on\"").replace("\"pkexec\", \"\"", "\" \", \"\""))
+            .contains("shield.on")
+    );
+    assert!(err(shield_text().replace("\"off\"]", "\"o\\u0000ff\"]")).contains("shield.off"), "NUL");
+}
