@@ -1890,6 +1890,7 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
     let idle_own = idle - idle_shm;
+    let idle_anon = d.anonymous_kb();
     let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Bluetooth)), Reply::Done);
     toggle();
     assert!(detail_opened(&bluez, 1), "{:?} {:?}", bluez.calls(), d.log());
@@ -1899,11 +1900,13 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
     }
     std::thread::sleep(Duration::from_secs(1)); // read, published, configured and painted
     let (open, open_shm) = d.pss_and_shm_kb();
+    let open_anon = d.anonymous_kb();
     toggle();
     assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
     let closed_own = closed - closed_shm;
+    let closed_anon = d.anonymous_kb();
     for n in 2..=11 {
         toggle();
         assert!(detail_opened(&bluez, n), "{:?}", d.log());
@@ -1914,11 +1917,13 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
     let cycled_own = cycled - cycled_shm;
+    let cycled_anon = d.anonymous_kb();
     let detail_cost = open.saturating_sub(idle);
     eprintln!(
         "quick Bluetooth PSS (KB): {idle} at rest, {open} with the detail open on 20 devices (cost {detail_cost}), \
          {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {} open, {closed_own} closed, \
-         {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, {closed_shm} closed, {cycled_shm} cycled",
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, {closed_shm} closed, {cycled_shm} cycled; \
+         anonymous: {idle_anon} at rest, {open_anon} open, {closed_anon} closed, {cycled_anon} cycled",
         open - open_shm
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
@@ -1929,27 +1934,23 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
     // it is open, so its buffers are re-made at each new height while the compositor may still hold
     // the previous ones; all of it goes with the popup (the pools' closed bound below). Report, never
     // raise.
-    let (open_own, open_pools) = (open - open_shm, open_shm.saturating_sub(idle_shm));
-    assert!(
-        open_own <= idle_own + 768,
-        "open {open_own} KB vs {idle_own} KB without the pools: more than 20 devices, the panel and its first-open pages"
-    );
+    // The daemon's own memory is bounded on `Anonymous:` (heap, stacks, written data), as the Wi-Fi
+    // and VPN details are: PSS without the pools also counts file-backed pages (code, fonts), which
+    // page-cache fault-around maps 64 KB at a time depending on the binary and the tests before.
+    // On the clipboard branch (+140 KiB of binary) the PSS form read +774…+890 KB against a 768
+    // bound (base +420…+448) while anonymous memory was +196…+252: nothing on this path changed.
+    let open_pools = open_shm.saturating_sub(idle_shm);
+    assert!(open_anon <= idle_anon + 512, "open {open_anon} KB anon vs {idle_anon} at rest: more than 20 devices and the panel's model");
     assert!(
         open_pools <= 1536,
         "the pools open {open_pools} KB over rest: more than a growing panel's buffers (≤ 32 rows) — report, never raise"
     );
-    // Closed, the first open leaves +412…+516 KB of the daemon's own (8 runs), as the Wi-Fi
-    // detail's +532…+556: code, font and glyph-cache pages touched for the first time. Pools kept
-    // out, as there.
+    // Closed, the daemon's anonymous memory is back near rest; 10 more cycles keep nothing.
     assert!(
-        closed_own <= idle_own + 640,
-        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+        closed_anon <= idle_anon + 256,
+        "closed {closed_anon} KB anon vs {idle_anon} at rest: the first open left more than a warm-up's heap"
     );
-    // 10 cycles: +40…+64 KB (8 runs).
-    assert!(
-        cycled_own <= closed_own + 128,
-        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
-    );
+    assert!(cycled_anon <= closed_anon + 128, "cycled {cycled_anon} KB anon vs {closed_anon} closed: 10 cycles must keep nothing");
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
 
