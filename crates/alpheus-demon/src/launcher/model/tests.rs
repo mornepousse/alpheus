@@ -1087,12 +1087,36 @@ fn ctrl_enter_pins_and_stays_open() {
     let mut l = clipboard_box();
     l.selected = 1;
     assert_eq!(l.key(Key::CtrlEnter), Outcome::Edit(ClipEdit::Pin(11)));
-    assert!(l.clips[1].pinned);
+    assert!(pinned_by_id(&l, 11));
     assert_eq!(l.key(Key::CtrlEnter), Outcome::Edit(ClipEdit::Pin(11)), "again: unpinned");
-    assert!(!l.clips[1].pinned);
+    assert!(!pinned_by_id(&l, 11));
     // A right click is the same gesture.
-    assert_eq!(l.click(2, true), Outcome::Edit(ClipEdit::Pin(12)));
-    assert!(l.clips[2].pinned);
+    let at = l.clips.iter().position(|c| c.id == 12).unwrap();
+    assert_eq!(l.click(at, true), Outcome::Edit(ClipEdit::Pin(12)));
+    assert!(pinned_by_id(&l, 12));
+}
+
+fn pinned_by_id(l: &Launcher, id: u64) -> bool {
+    l.clips.iter().find(|c| c.id == id).unwrap().pinned
+}
+
+fn ids(l: &Launcher) -> Vec<u64> {
+    l.clips.iter().map(|c| c.id).collect()
+}
+
+#[test]
+fn a_new_pin_goes_to_the_head_of_the_pinned_group_and_keeps_the_selection() {
+    let mut l = clipboard_box(); // [alpha(pinned), beta, gamma]
+    l.selected = 2;
+    l.key(Key::CtrlEnter);
+    assert_eq!(ids(&l), [12, 10, 11], "most recently pinned first, as the history orders it");
+    assert_eq!(l.selected, 0);
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Clip(0)));
+    // Unpinning drops it behind the pinned group, the selection following it.
+    l.key(Key::CtrlEnter);
+    assert_eq!(ids(&l), [10, 12, 11]);
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Clip(1)));
+    assert!(!l.clips[1].pinned);
 }
 
 #[test]
@@ -1158,15 +1182,27 @@ fn clear_asks_then_needs_a_second_enter_after_0_4_s() {
 }
 
 #[test]
-fn clear_confirmation_expires_after_3_s_and_asks_again() {
+fn clear_confirmation_never_expires() {
     let t = Instant::now();
     let mut l = clipboard_box();
     l.selected = 3;
     l.set_now(t);
     l.key(Key::Enter);
-    l.set_now(t + Duration::from_secs(4));
-    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "expired: it asks again");
-    assert_eq!(l.clips.len(), 3);
+    l.set_now(t + Duration::from_secs(10));
+    assert_eq!(l.key(Key::Enter), Outcome::Edit(ClipEdit::Clear), "no 3 s expiry: no timer to redraw it");
+}
+
+#[test]
+fn the_instant_is_single_use() {
+    let t = Instant::now();
+    let mut l = clipboard_box();
+    // A key that never reads the instant must not leave it for the next event.
+    l.set_now(t + Duration::from_secs(1000));
+    l.key(Key::Home);
+    l.selected = 3;
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "asks at the real clock, not at a stale instant");
+    l.set_now(Instant::now() + Duration::from_millis(500));
+    assert_eq!(l.key(Key::Enter), Outcome::Edit(ClipEdit::Clear));
 }
 
 #[test]

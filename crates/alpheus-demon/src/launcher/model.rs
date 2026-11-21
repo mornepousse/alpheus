@@ -152,9 +152,10 @@ pub struct Launcher {
     pub clips: Vec<ClipRow>,
     /// The `"` prefix is claimed in All (the history is on and a protocol bound).
     pub clipboard: bool,
-    /// The Clear row's question (`Clear? ⏎`), asked until its instant (`session::ask`).
-    clear_asked: Option<((), Instant)>,
-    /// The instant of the key being handled, set by the host before each one: the model reads no clock.
+    /// When the Clear row asked `Clear? ⏎`: it never expires (no timer), only another key or click cancels it.
+    clear_asked: Option<Instant>,
+    /// The instant of the key or click being handled: the host sets it before each one and the
+    /// event uses it once (reset after it, so a stale instant never answers a later event).
     at: Option<Instant>,
     ranker: Ranker,
     /// The current mode was entered by typing its prefix: Backspace on the
@@ -368,6 +369,7 @@ impl Launcher {
         // Any key but Enter cancels the Clear question; its row is redrawn.
         let cancelled = k != Key::Enter && self.clear_asked.take().is_some();
         let o = self.apply(k);
+        self.at = None;
         if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
@@ -682,18 +684,22 @@ impl Launcher {
         }
     }
 
-    /// The Clear row's Enter: the first asks `Clear? ⏎`, a second from 0.4 s to 3 s later clears
-    /// (the rows the history keeps, pins, stay).
+    /// The Clear row's Enter: the first asks `Clear? ⏎`, a second from 0.4 s on (never too late)
+    /// clears (the rows the history keeps, pins, stay).
     fn clear(&mut self) -> Outcome {
         let now = self.at.unwrap_or_else(Instant::now);
-        match session::ask(&mut self.clear_asked, (), now) {
-            session::Activation::Ask => Outcome::Redraw,
-            session::Activation::Wait => Outcome::Nothing,
-            session::Activation::Run => {
+        match self.clear_asked {
+            None => {
+                self.clear_asked = Some(now);
+                Outcome::Redraw
+            }
+            Some(asked) if now.saturating_duration_since(asked) >= session::CONFIRM_AFTER => {
+                self.clear_asked = None;
                 self.clips.retain(|c| c.pinned);
                 self.refilter();
                 Outcome::Edit(ClipEdit::Clear)
             }
+            Some(_) => Outcome::Nothing,
         }
     }
 
@@ -708,7 +714,14 @@ impl Launcher {
         }
         row.pinned = !row.pinned;
         let id = row.id;
-        self.reshape();
+        // The history's order: a new pin heads the pinned group (most recently pinned first), an
+        // unpinned row goes right behind it. The selection follows the row.
+        let row = self.clips.remove(i);
+        let to = if row.pinned { 0 } else { self.clips.iter().filter(|c| c.pinned).count() };
+        self.clips.insert(to, row);
+        self.rank();
+        self.selected = self.results.iter().position(|h| h.source == Source::Clip(to)).unwrap_or(0);
+        self.keep_visible();
         Outcome::Edit(ClipEdit::Pin(id))
     }
 
@@ -778,6 +791,7 @@ impl Launcher {
         self.selected = index;
         self.keep_visible();
         let o = if secondary { self.secondary() } else { self.primary() };
+        self.at = None;
         if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 

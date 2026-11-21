@@ -55,7 +55,7 @@ pub fn hint(p: Prefix) -> &'static str {
         Prefix::Search => "type to search the web",
         Prefix::Emoji => "type an emoji name",
         Prefix::Shell => "type a command to run in a shell",
-        Prefix::Clipboard => "nothing copied yet",
+        Prefix::Clipboard => "the clipboard history is empty",
     }
 }
 
@@ -105,6 +105,6 @@ mod tests {
         assert_eq!(hint(Prefix::Search), "type to search the web");
         assert_eq!(hint(Prefix::Emoji), "type an emoji name");
         assert_eq!(hint(Prefix::Shell), "type a command to run in a shell");
-        assert_eq!(hint(Prefix::Clipboard), "nothing copied yet");
+        assert_eq!(hint(Prefix::Clipboard), "the clipboard history is empty");
     }
 }

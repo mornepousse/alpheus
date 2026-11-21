@@ -725,7 +725,7 @@ fn result_text(rows: &Boxed, b: &BoxLayout, i: u16) -> String {
 fn the_empty_history_shows_its_hint() {
     let mut l = clip_box(vec![]);
     let (b, rows) = draw(&mut l, 100);
-    assert!(result_text(&rows, &b, 0).contains("nothing copied yet"), "{}", snapshot(&rows));
+    assert!(result_text(&rows, &b, 0).contains("the clipboard history is empty"), "{}", snapshot(&rows));
     assert_eq!(b.preview_columns, 0, "no panel for the history alone");
     assert_eq!(help_text(&l), "esc close", "nothing to act on");
     let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
@@ -753,7 +753,9 @@ fn a_multi_line_row_shows_its_first_line_and_more_lines_and_a_pinned_one_its_gly
 fn the_clear_row_reads_its_question() {
     let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
     let (b, rows) = draw(&mut l, 100);
-    assert!(result_text(&rows, &b, 1).contains("Clear history"), "{}", snapshot(&rows));
+    let clear = result_text(&rows, &b, 1);
+    assert!(clear.contains("Clear history") && clear.contains("pins kept"), "{}", snapshot(&rows));
+    assert!(clear.trim_end().ends_with("pins kept"), "dim, on the right: {clear}");
     l.selected = 1;
     l.key(Key::Enter);
     let (b, rows) = draw(&mut l, 100);
@@ -787,4 +789,24 @@ fn the_prefix_in_all_fills_the_panel_with_the_whole_preview() {
     l.selected = 1;
     let (b, rows) = draw(&mut l, 120);
     assert!(panel(&rows, &b).iter().any(|t| t.contains("enter  clear")), "{:?}", panel(&rows, &b));
+}
+
+#[test]
+fn the_clipboard_mode_has_its_placeholder_until_something_is_typed() {
+    let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
+    let (b, rows) = draw(&mut l, 100);
+    let input = rows.rows[usize::from(b.list_top) - 2].text();
+    assert!(input.contains("type to filter the clipboard history"), "{input}");
+    typed(&mut l, "m");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(!rows.rows[usize::from(b.list_top) - 2].text().contains("type to filter"));
+}
+
+#[test]
+fn the_panel_wipes_its_text_temporaries_and_the_row_text_is_borrowed() {
+    let src = include_str!("../view.rs");
+    let render = src.split("pub fn render(").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+    assert!(render.contains("wipe(&mut cut)") && render.contains("wipe(text)"), "render must wipe the panel's temporaries");
+    let describe = src.split("fn describe(").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+    assert!(describe.contains("Cow::Borrowed(c.first.as_str())"), "a history row's text is borrowed, never cloned");
 }
