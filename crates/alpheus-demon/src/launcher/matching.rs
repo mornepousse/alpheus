@@ -4,6 +4,7 @@
 //! `Ranker` owns the matcher's scratch memory: built when the launcher
 //! opens, dropped when it closes (nothing kept at rest).
 
+use crate::clipboard::history::ClipRow;
 use crate::compositor::Toplevel;
 use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
@@ -26,6 +27,8 @@ pub enum Mode {
     Script,
     /// The calculator alone (`alpheus-launch --calc`): no list, no modes row, not in `CYCLE`.
     Calc,
+    /// The clipboard history alone (`alpheus-launch --clipboard`): no modes row, not in `CYCLE`.
+    Clipboard,
 }
 
 impl Mode {
@@ -40,6 +43,7 @@ impl Mode {
             Mode::Commands => "Commands",
             Mode::Script => "Script",
             Mode::Calc => "Calculator",
+            Mode::Clipboard => "Clipboard",
         }
     }
 
@@ -77,6 +81,10 @@ pub enum Source {
     Emoji(usize),
     /// The `$` prefix's one row: run the text in a shell.
     Shell,
+    /// A clipboard history row (`"`): an index into the model's `clips`.
+    Clip(usize),
+    /// The history's last row: forget everything unpinned (asks first).
+    ClipClear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,14 +344,20 @@ fn kind(s: Source) -> u8 {
         Source::Command(_) => 3,
         Source::Line(_) => 4,
         Source::Calc => 5,
-        Source::Search | Source::Emoji(_) | Source::Shell => 6,
+        Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 6,
     }
 }
 
 fn index(s: Source) -> usize {
     match s {
-        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) | Source::Emoji(i) => i,
-        Source::Calc | Source::Search | Source::Shell => 0,
+        Source::App(i)
+        | Source::Window(i)
+        | Source::Command(i)
+        | Source::Line(i)
+        | Source::Entry(i)
+        | Source::Emoji(i)
+        | Source::Clip(i) => i,
+        Source::Calc | Source::Search | Source::Shell | Source::ClipClear => 0,
     }
 }
 
@@ -360,7 +374,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
-        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => "",
+        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => "",
     }
 }
 
@@ -432,9 +446,27 @@ impl Ranker {
         hits
     }
 
+    /// The `"` prefix and the clipboard mode: `rows` in their order (pinned first) for a blank
+    /// `text`, else the rows whose whole folded preview matches (fuzzy, smart case), best score
+    /// first, ties in row order. A blank `text` with an unpinned row ends with `ClipClear`.
+    pub fn rank_clips(&mut self, text: &str, rows: &[ClipRow]) -> Vec<Hit> {
+        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
+        let hit = |i, score| Hit { source: Source::Clip(i), score, frecency: 0 };
+        if pattern.atoms.is_empty() {
+            let mut hits: Vec<Hit> = (0..rows.len()).map(|i| hit(i, 0)).collect();
+            if rows.iter().any(|r| !r.pinned) {
+                hits.push(Hit { source: Source::ClipClear, score: 0, frecency: 0 });
+            }
+            return hits;
+        }
+        let mut hits: Vec<Hit> = rows.iter().enumerate().filter_map(|(i, r)| Some(hit(i, self.score(&pattern, &r.preview)?))).collect();
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then(index(a.source).cmp(&index(b.source))));
+        hits
+    }
+
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
-        // The calculator mode lists nothing of the catalog: its one row is the model's.
-        if q.mode == Mode::Calc {
+        // The calculator and clipboard modes list nothing of the catalog: their rows are the model's.
+        if matches!(q.mode, Mode::Calc | Mode::Clipboard) {
             return Vec::new();
         }
         let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now);
@@ -518,7 +550,7 @@ impl Ranker {
                 let remaining = MAX_RESULTS.saturating_sub(hits.len());
                 hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 }));
             }
-            Mode::All | Mode::Apps | Mode::Windows | Mode::Calc => {}
+            Mode::All | Mode::Apps | Mode::Windows | Mode::Calc | Mode::Clipboard => {}
         }
         hits
     }
@@ -602,7 +634,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
             Source::Entry(i) => pr.entry_name_rank[i],
-            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => 0,
+            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 0,
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {
