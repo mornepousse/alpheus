@@ -3745,11 +3745,18 @@ fn clip_text(i: usize) -> String {
     text
 }
 
-/// `n` copies from `first` on, each held 300 ms (the daemon reads it) before its child goes.
+/// `n` copies from `first` on, each held until the selection is its text, plus 200 ms (the daemon
+/// reads it), before its child goes.
 fn clip_copies(sway: &Sway, first: usize, n: usize) {
     for i in first..first + n {
-        let child = common::wl_copy(sway, &clip_text(i), None, false);
-        std::thread::sleep(Duration::from_millis(300));
+        let text = clip_text(i);
+        let child = common::wl_copy(sway, &text, None, false);
+        let start = std::time::Instant::now();
+        while common::wl_paste(sway).as_deref() != Some(text.as_str()) {
+            assert!(start.elapsed() < Duration::from_secs(5), "the selection never became copy {i}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(200));
         drop(child);
     }
 }
@@ -3800,7 +3807,13 @@ fn clipboard_full_history() {
     );
     assert!(full.0 <= rest.0 + 384, "full history {} KB anon vs rest {}: more than 384 KB — report, never raise", full.0, rest.0);
     assert!(cycled.0 <= full.0 + 64, "100 more copies {} KB anon vs {}: more than 64 KB kept", cycled.0, full.0);
-    assert!(cleared.0 <= full.0, "cleared {} KB anon vs full {}: the clear freed nothing", cleared.0, full.0);
+    assert!(
+        full.0 >= rest.0 + 100,
+        "full history {} KB anon vs rest {}: fewer than 100 KB, the copies were not stored (measured +164…+196)",
+        full.0,
+        rest.0
+    );
+    assert!(cleared.0 + 64 <= full.0, "cleared {} KB anon vs full {}: the clear freed less than 64 KB", cleared.0, full.0);
 }
 
 /// Clipboard history: the launcher on a full history, open and closed. Two warm-up cycles first:
@@ -3830,6 +3843,12 @@ fn clipboard_launcher_open_and_closed() {
         closed.1,
         again.1
     );
+    // The rows are really there: Enter on the first reads back the newest copy (the 50th).
+    assert_eq!(launcher(&sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 7, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    assert_eq!(common::wl_paste(&sway).as_deref(), Some(clip_text(49).as_str()), "the 50 entries are not in the box: {:?}", d.log());
     assert!(again.0 <= closed.0 + 128, "closed again {} KB anon vs {} KB before: more than 128 KB kept over 4 cycles", again.0, closed.0);
 }
 
@@ -3842,10 +3861,12 @@ fn at_rest_no_wakeups_after_copies() {
     require_release(cfg!(debug_assertions));
     let (sway, d) = clipboard_mem_daemon("clip-rest");
     std::thread::sleep(Duration::from_secs(2));
+    const REST: Duration = Duration::from_secs(5);
+    // Before the copies, over their whole span (5 × ≈ 0.3 s) and the rest window: the minute tick
+    // never lands inside it, and a stray one-second read timer always does.
+    away_from_the_minute(REST + Duration::from_secs(4));
     clip_copies(&sway, 0, 5);
     std::thread::sleep(Duration::from_millis(300));
-    const REST: Duration = Duration::from_secs(5);
-    away_from_the_minute(REST);
     let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
     std::thread::sleep(REST);
     assert_no_spin(d.cpu_ticks() - ticks, REST, "after copies");

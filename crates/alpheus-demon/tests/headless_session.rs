@@ -6812,7 +6812,7 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
 // ---- the clipboard history (clipboard spec, task 6) ----
 //
 // Fictional texts only, served by the harness `wl_copy` on THIS sway; `wl_paste` reads this sway's
-// selection back. Each copy is followed by 300 ms (no per-copy log line exists, by design), and the
+// selection back. Each copy waits for the selection, then 200 ms (no per-copy log line exists, by design), and the
 // `wl_copy` children are dropped before an Enter whose result `wl_paste` checks, so the only
 // possible owner of the selection is the daemon's own source.
 
@@ -6828,10 +6828,16 @@ fn clip_daemon(name: &str, bar_toml: Option<&str>) -> (Sway, Daemon) {
     (sway, d)
 }
 
-/// One copy by an app: it lasts as long as the child lives; the pause lets the daemon read it.
+/// One copy by an app: it lasts as long as the child lives. Waits (bounded) until the selection
+/// is this text, then a short settle lets the daemon read it.
 fn clip_copy(sway: &Sway, text: &str, sensitive: bool) -> common::WlCopyChild {
     let child = wl_copy(sway, text, None, sensitive);
-    thread::sleep(Duration::from_millis(300));
+    let start = Instant::now();
+    while wl_paste(sway).as_deref() != Some(text) {
+        assert!(start.elapsed() < Duration::from_secs(5), "the selection never became the copied text");
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(200));
     child
 }
 
@@ -6988,6 +6994,27 @@ fn clipboard_clear_keeps_pins() {
     clip_open_and_type(&sway, &d, 2, &["-k", "Down", "-k", "Return"]);
     clip_activated(&d, 1);
     assert_eq!(wl_paste(&sway).as_deref(), Some("beta"), "{:?}", d.log());
+    clip_no_leak(&d);
+}
+
+/// Mod+Space's `"` prefix (an opening ruling): the history's rows through the all-modes launcher,
+/// Enter copies back with no new entry.
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_quote_prefix_in_the_all_launcher() {
+    let (sway, d) = clip_daemon("clip-quote", Some(CLIP_ON));
+    let (first, second) = (clip_copy(&sway, "alpha", false), clip_copy(&sway, "beta", false));
+    drop((first, second));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(wl_paste(&sway), None, "no owner left");
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", CLIP_KEY_DELAY, "\"alp", "-s", "200", "-k", "Return"]).success());
+    clip_activated(&d, 1);
+    assert_eq!(wl_paste(&sway).as_deref(), Some("alpha"), "{:?}", d.log());
+    // A copy back adds no entry: the history is still alpha, beta.
+    let (mut shown, mut activated) = (1, 1);
+    clip_probe(&sway, &d, &["alpha", "beta"], &mut shown, &mut activated);
     clip_no_leak(&d);
 }
 
