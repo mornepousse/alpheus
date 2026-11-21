@@ -740,7 +740,7 @@ impl App {
         let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) else { return };
         // The Clear question's clock: read once, by this key only (the model resets it).
         open.model.set_now(Instant::now());
-        let outcome = open.model.key(key);
+        let outcome = open.model.key_repeat(key, self.keyboard.repeat);
         self.launcher_outcome(outcome);
     }
 

@@ -365,6 +365,23 @@ impl Launcher {
     }
 
     pub fn key(&mut self, k: Key) -> Outcome {
+        self.key_repeat(k, false)
+    }
+
+    /// `key`, told whether it is an auto-repeat. On a history row a held Enter (Clear), Ctrl+Enter
+    /// (pin) or Delete does nothing: like the power menu, a held key repeats only to move.
+    pub fn key_repeat(&mut self, k: Key, repeat: bool) -> Outcome {
+        if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
+            let hit = self.selected_hit().map(|h| h.source);
+            let guarded = match k {
+                Key::Enter => matches!(hit, Some(Source::ClipClear)),
+                _ => matches!(hit, Some(Source::Clip(_) | Source::ClipClear)),
+            };
+            if guarded {
+                self.at = None;
+                return Outcome::Nothing;
+            }
+        }
         let had_message = self.message.take().is_some();
         // Any key but Enter cancels the Clear question; its row is redrawn.
         let cancelled = k != Key::Enter && self.clear_asked.take().is_some();
@@ -417,9 +434,7 @@ impl Launcher {
             Key::BackTab if self.is_switcher() => self.step(-1),
             Key::Tab => self.switch_mode(self.mode.next()),
             Key::BackTab => self.switch_mode(self.mode.previous()),
-            // No binding: the preview panel they used to toggle always shows now (view.rs,
-            // 2026-10-05) — ignored rather than removed from `Key`, so a future rebind needs
-            // no change to `keys.rs`.
+            // Forgets the selected history row (nothing on any other row).
             Key::Delete => self.delete(),
             Key::Left | Key::Right => Outcome::Nothing,
             Key::Escape => Outcome::Close,
@@ -804,7 +819,10 @@ impl Launcher {
 
     /// Wheel: moves the selection by `rows`, clamped.
     pub fn scroll(&mut self, rows: i32) -> Outcome {
-        self.move_by(rows)
+        // Any other input cancels the Clear question.
+        let cancelled = self.clear_asked.take().is_some();
+        let o = self.move_by(rows);
+        if cancelled && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     pub fn selected_hit(&self) -> Option<Hit> {

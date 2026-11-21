@@ -1275,3 +1275,60 @@ fn dropping_the_model_wipes_the_previews() {
     let drop_impl = src.split("impl Drop for Launcher").nth(1).unwrap();
     assert!(drop_impl.contains("wipe_clips(&mut self.clips)"), "Drop must call wipe_clips");
 }
+
+#[test]
+fn a_held_enter_on_clear_neither_asks_nor_confirms() {
+    let t = Instant::now();
+    let mut l = clipboard_box();
+    l.selected = 3;
+    l.set_now(t);
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing);
+    assert!(!l.clear_question(), "a repeat never asks");
+    l.key(Key::Enter);
+    l.set_now(t + Duration::from_millis(700));
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing, "the auto-repeat never confirms");
+    assert!(l.clear_question(), "and leaves the question standing");
+    l.set_now(t + Duration::from_millis(800));
+    assert_eq!(l.key(Key::Enter), Outcome::Edit(ClipEdit::Clear), "a fresh press does");
+}
+
+#[test]
+fn held_ctrl_enter_and_delete_do_nothing_on_a_history_row_but_arrows_repeat() {
+    let mut l = clipboard_box();
+    l.selected = 1;
+    assert_eq!(l.key_repeat(Key::CtrlEnter, true), Outcome::Nothing);
+    assert_eq!(l.key_repeat(Key::Delete, true), Outcome::Nothing);
+    assert_eq!(l.clips.len(), 3);
+    assert!(!l.clips[1].pinned);
+    assert_eq!(l.key_repeat(Key::Down, true), Outcome::Redraw, "movement still repeats");
+    assert!(matches!(l.key_repeat(Key::Delete, false), Outcome::Edit(ClipEdit::Delete(_))));
+}
+
+#[test]
+fn the_wheel_cancels_the_clear_question() {
+    let mut l = clipboard_box();
+    l.selected = 3;
+    l.set_now(Instant::now());
+    l.key(Key::Enter);
+    assert!(l.clear_question());
+    assert_ne!(l.scroll(-1), Outcome::Nothing);
+    assert!(!l.clear_question());
+    l.selected = 3;
+    l.set_now(Instant::now());
+    l.key(Key::Enter);
+    assert_eq!(l.scroll(1), Outcome::Redraw, "clamped at the end, yet the cancelled question is redrawn");
+    assert!(!l.clear_question());
+}
+
+#[test]
+fn unpinning_puts_the_row_where_the_history_lists_it() {
+    let mut l = clipboard_box();
+    // alpha pinned; 11, 12 not. Pin 12 then unpin it: the history lists it first among the rest.
+    l.selected = 2;
+    l.key(Key::CtrlEnter);
+    assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [12, 10, 11]);
+    let i = l.clips.iter().position(|c| c.id == 12).unwrap();
+    l.selected = l.results.iter().position(|h| h.source == Source::Clip(i)).unwrap();
+    l.key(Key::CtrlEnter);
+    assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [10, 12, 11], "pinned first, then the unpinned head");
+}

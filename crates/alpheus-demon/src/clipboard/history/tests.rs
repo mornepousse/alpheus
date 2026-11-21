@@ -160,3 +160,21 @@ fn a_row_wipes_its_first_line_too() {
     let drop_impl = src.split("impl Drop for ClipRow").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
     assert!(drop_impl.contains("wipe(&mut self.preview)") && drop_impl.contains("wipe(&mut self.first)"), "{drop_impl}");
 }
+
+#[test]
+fn an_unpinned_entry_heads_the_unpinned_ones_as_the_launcher_box_lists_it() {
+    let mut h = History::default();
+    for t in ["a", "b", "c", "d"] {
+        h.push(t.into());
+    }
+    // Newest first: d c b a. Pin then unpin the oldest.
+    let a = id_of(&h, "a");
+    assert_eq!(h.toggle_pin(a), Ok(true));
+    assert_eq!(texts(&h), ["a", "d", "c", "b"]);
+    assert_eq!(h.toggle_pin(a), Ok(false));
+    assert_eq!(texts(&h), ["a", "d", "c", "b"], "right behind the (now empty) pinned group");
+    let c = id_of(&h, "c");
+    h.toggle_pin(c).unwrap();
+    h.toggle_pin(c).unwrap();
+    assert_eq!(texts(&h), ["c", "a", "d", "b"]);
+}

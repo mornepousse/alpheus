@@ -154,7 +154,9 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, Cow<'_, str>, String) {
         }
         Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)).into(), "shell".into()),
         Source::Clip(i) => match l.clips.get(i) {
-            // Borrowed: the row's text is never copied for the drawing.
+            // Borrowed here; the list's `truncate` and the grid cells then make per-frame copies of
+            // the visible rows' first lines that are freed unwiped — out of scope ("where practical",
+            // clipboard spec § wiping): the model's own rows (`ClipRow`) are the ones wiped.
             Some(c) => (Some(if c.pinned { PIN_ICON } else { ' ' }), Cow::Borrowed(c.first.as_str()), more_lines(c.more_lines)),
             None => (None, Cow::Borrowed(""), String::new()),
         },

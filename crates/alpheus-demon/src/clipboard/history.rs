@@ -141,6 +141,11 @@ impl History {
         let e = self.entries.iter_mut().find(|e| e.id == id).ok_or(PinError::Gone)?;
         if e.pinned.is_some() {
             e.pinned = None;
+            // The launcher's box puts an unpinned row right behind the pinned group: here it
+            // heads the unpinned ones, so the next open lists the same order.
+            let i = self.entries.iter().position(|e| e.id == id).unwrap_or(0);
+            let e = self.entries.remove(i);
+            self.entries.insert(0, e);
             return Ok(false);
         }
         if pinned >= MAX_PINS {
