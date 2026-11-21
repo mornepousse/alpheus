@@ -1264,6 +1264,7 @@ impl SeatHandler for App {
         if tracks_seat(&self.seat, &seat) {
             self.seat = None;
             self.clipboard_seat(qh);
+            self.clipboard_seat_removed(&seat);
             // The seat itself is gone, not just one of its capabilities: any
             // keyboard bound through it (the launcher's, a grabbing popup's,
             // while open) goes with it — `remove_capability` alone never

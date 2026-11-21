@@ -3040,6 +3040,102 @@ fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// `clipboard/app.rs` logs, with fixed words only: no panicking path, and every `log(` call is a
+/// plain literal or interpolates only the entry point's name or an error kind.
+const CLIPBOARD_FIXED_LOG_PLACEHOLDERS: [&str; 2] = ["{what}", "{kind:?}"];
+
+/// The first `log(` call in `code` that is not fixed words, if any.
+fn clipboard_unfixed_log(code: &str) -> Option<String> {
+    let mut rest = code;
+    while let Some(i) = rest.find("log(") {
+        let call = &rest[i..];
+        // To the parenthesis that closes `log(`.
+        let mut depth = 0usize;
+        let mut end = call.len();
+        for (j, c) in call.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = call[..end].to_string();
+        for ok in CLIPBOARD_FIXED_LOG_PLACEHOLDERS {
+            text = text.replace(ok, "");
+        }
+        if text.contains('{') || text.contains("+ ") {
+            return Some(call[..end].to_string());
+        }
+        rest = &call[end..];
+    }
+    None
+}
+
+/// A print or debug macro in `code` (clipboard text must reach no stream but the log's words).
+fn clipboard_print_macro(code: &str) -> Option<&'static str> {
+    ["eprintln!", "println!", "eprint!", "print!", "dbg!"]
+        .into_iter()
+        .find(|m| code.match_indices(m).any(|(i, _)| !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')))
+}
+
+#[test]
+fn clipboard_app_never_panics_and_logs_fixed_words() {
+    let files = source_files();
+    let name = "clipboard/app.rs";
+    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
+    }
+    for line in production.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in {name}'s production code");
+        }
+    }
+    let code: String = production.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    assert_eq!(clipboard_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+}
+
+#[test]
+fn nothing_under_clipboard_prints() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("clipboard/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(m) = clipboard_print_macro(code) {
+                panic!("{m} in {name}'s production code");
+            }
+        }
+    }
+    assert!(seen >= 5, "the clipboard files were found: {seen}");
+}
+
+#[test]
+fn the_clipboard_guardrail_helpers_bite() {
+    assert_eq!(clipboard_unfixed_log("log(\"clipboard: a fixed word\");"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"clipboard error in {what}\"));"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"read failed ({kind:?})\"));"), None);
+    assert!(clipboard_unfixed_log("log(&format!(\"copied {text}\"));").is_some());
+    assert!(clipboard_unfixed_log("log(\"a\"); log(&format!(\"{text:?}\"));").is_some());
+    for m in ["eprintln!(\"x\")", "println!(\"x\")", "print!(\"x\")", "eprint!(\"x\")", "dbg!(x)"] {
+        assert!(clipboard_print_macro(m).is_some(), "{m}");
+    }
+    assert_eq!(clipboard_print_macro("fn pprintln!() {}"), None, "a longer identifier is not the macro");
+}
+
 /// The hint types that mark a password-manager copy are named in `clipboard/offer.rs`'s `SENSITIVE`
 /// and nowhere else: no code path can request such an offer's data.
 #[test]

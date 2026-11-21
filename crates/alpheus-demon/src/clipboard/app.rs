@@ -13,6 +13,7 @@ use smithay_client_toolkit::reexports::calloop::PostAction;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use smithay_client_toolkit::reexports::client::backend::ObjectId;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
+use smithay_client_toolkit::reexports::client::protocol::wl_seat::WlSeat;
 use std::io::{ErrorKind, Read};
 use std::os::fd::OwnedFd;
 use std::time::Instant;
@@ -26,8 +27,25 @@ pub(crate) struct ClipboardApp {
     protocol: &'static str,
     timed_out_logged: bool,
     failed_logged: bool,
+    /// The device was re-made once after a `finished` with no seat event since (see `refinish`).
+    refinished: bool,
     /// Nothing is stored while an alpheus `--password` prompt is open, or for 5 s after it.
     quiet: PasswordQuiet,
+}
+
+/// A `finished` device is made again once, then only after a seat event: a compositor that
+/// finishes each new device cannot loop us. True when this `finished` may re-attach.
+pub(crate) fn refinish(refinished: &mut bool) -> bool {
+    !std::mem::replace(refinished, true)
+}
+
+/// A read stored a text: the error episodes end. A refused read (oversize, blank, not UTF-8)
+/// proves nothing about the pipe, so it leaves them standing.
+pub(crate) fn episodes_end(stored: bool, timed_out_logged: &mut bool, failed_logged: &mut bool) {
+    if stored {
+        *timed_out_logged = false;
+        *failed_logged = false;
+    }
 }
 
 /// The read's deadline, if a read started at `started`.
@@ -136,6 +154,7 @@ impl ClipboardApp {
             protocol,
             timed_out_logged: false,
             failed_logged: false,
+            refinished: false,
             quiet: PasswordQuiet::default(),
         })
     }
@@ -233,8 +252,7 @@ impl App {
         if let Some(c) = self.clipboard.as_mut() {
             match outcome {
                 Ok(text) => {
-                    c.timed_out_logged = false;
-                    c.failed_logged = false;
+                    episodes_end(text.is_some(), &mut c.timed_out_logged, &mut c.failed_logged);
                     if let Some(text) = text {
                         c.history.push(text);
                     }
@@ -362,6 +380,7 @@ impl App {
     pub(crate) fn clipboard_seat(&mut self, qh: &QueueHandle<App>) {
         let seat = self.seat.clone();
         let Some(c) = self.clipboard.as_mut() else { return };
+        c.refinished = false;
         match seat {
             Some(seat) => c.control.attach(&seat, qh),
             None => {
@@ -376,8 +395,16 @@ impl App {
     /// compositor with no input device announces none), as data-control needs no focus nor
     /// capability. `new_seat` and `new_capability` follow it later as before.
     pub(crate) fn clipboard_attach_at_start(&mut self) {
-        let Some(seat) = self.seat.clone().or_else(|| self.seats.seats().next()) else { return };
-        // `remove_seat` compares against `self.seat`: record the seat attached to, as `new_seat` does.
+        self.clipboard_attach_any(None);
+    }
+
+    /// Attaches to the tracked seat, else to any seat but `gone`, recording it as `new_seat`
+    /// does (`remove_seat` compares against `self.seat`). Nothing happens with the history off.
+    fn clipboard_attach_any(&mut self, gone: Option<&WlSeat>) {
+        if self.clipboard.is_none() {
+            return;
+        }
+        let Some(seat) = self.seat.clone().or_else(|| self.seats.seats().find(|s| Some(s) != gone)) else { return };
         if self.seat.is_none() {
             self.seat = Some(seat.clone());
         }
@@ -386,12 +413,23 @@ impl App {
         c.control.attach(&seat, &qh);
     }
 
-    /// The compositor finished the device: one line, a later seat event makes a new one.
+    /// The tracked seat `gone` was removed: the device follows another seat if one is left.
+    pub(crate) fn clipboard_seat_removed(&mut self, gone: &WlSeat) {
+        self.clipboard_attach_any(Some(gone));
+    }
+
+    /// The compositor finished the device: one line, then one new device (not a loop if it keeps
+    /// finishing: the next one waits for a seat event).
     pub(crate) fn clipboard_device_finished(&mut self) {
         self.clipboard_stop_read();
+        let mut again = false;
         if let Some(c) = self.clipboard.as_mut() {
             c.control.detach();
             log("clipboard: the data device finished");
+            again = refinish(&mut c.refinished);
+        }
+        if again {
+            self.clipboard_attach_any(None);
         }
         self.clipboard_timer_sync();
     }
@@ -422,6 +460,24 @@ mod tests {
         buffer: ReadBuffer,
         step: Option<Step>,
         wakes: u32,
+    }
+
+    #[test]
+    fn a_finished_device_is_remade_once_until_a_seat_event() {
+        let mut refinished = false;
+        assert!(refinish(&mut refinished), "the first finish re-attaches");
+        assert!(!refinish(&mut refinished), "a second one with no seat event in between does not");
+        refinished = false; // what `clipboard_seat` does
+        assert!(refinish(&mut refinished));
+    }
+
+    #[test]
+    fn a_refused_read_does_not_end_the_error_episodes() {
+        let (mut t, mut f) = (true, true);
+        episodes_end(false, &mut t, &mut f);
+        assert!(t && f, "a blank or oversize text proves nothing");
+        episodes_end(true, &mut t, &mut f);
+        assert!(!t && !f);
     }
 
     #[test]

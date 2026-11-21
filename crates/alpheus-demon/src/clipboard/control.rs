@@ -3,7 +3,7 @@
 //! the device, the offers and the one pending read on the loop. Never logs, and nothing here shows
 //! an offer's types or text.
 
-use crate::clipboard::offer::{ReadBuffer, Step, TEXT_TYPES, own_offer_types, step};
+use crate::clipboard::offer::{MARKER, ReadBuffer, SENSITIVE, Step, TEXT_TYPES, own_offer_types, step};
 use crate::sys::set_nonblocking;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::wipe;
@@ -37,18 +37,40 @@ const MAX_TYPES: usize = 64;
 /// The types an offer announced so far, kept on its proxy as they arrive. No `Debug`: a type list
 /// is never printed.
 #[derive(Default)]
-pub(crate) struct OfferData(Mutex<Vec<String>>);
+pub(crate) struct OfferData(Mutex<Announced>);
+
+/// The kept types (at most `MAX_TYPES`) and, apart from that cap, the first password hint and
+/// whether the own marker came: a hint announced late is never lost to the cap.
+#[derive(Default)]
+struct Announced {
+    types: Vec<String>,
+    hint: Option<&'static str>,
+    own: bool,
+}
 
 impl OfferData {
     fn push(&self, mime: String) {
-        let mut types = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if types.len() < MAX_TYPES {
-            types.push(mime);
+        let mut a = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if a.hint.is_none() {
+            a.hint = SENSITIVE.into_iter().find(|s| *s == mime);
+        }
+        a.own |= mime == MARKER;
+        if a.types.len() < MAX_TYPES {
+            a.types.push(mime);
         }
     }
 
+    /// The kept types, plus the hint and the marker when the cap dropped them.
     fn types(&self) -> Vec<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let a = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut types = a.types.clone();
+        if let Some(h) = a.hint.filter(|h| !types.iter().any(|t| t == h)) {
+            types.push(h.to_string());
+        }
+        if a.own && !types.iter().any(|t| t == MARKER) {
+            types.push(MARKER.to_string());
+        }
+        types
     }
 }
 
@@ -477,6 +499,27 @@ mod tests {
         let mut out = Failing { calls: 0, kind: ErrorKind::BrokenPipe };
         serve("UTF8_STRING", "x", &mut out);
         assert_eq!(out.calls, 1, "a closed reader is not retried either");
+    }
+
+    #[test]
+    fn a_password_hint_past_the_type_cap_is_still_seen() {
+        use crate::clipboard::offer::{Skip, Verdict, verdict};
+        let data = OfferData::default();
+        for i in 0..MAX_TYPES {
+            data.push(format!("application/x-filler-{i}"));
+        }
+        data.push("text/plain".to_string());
+        data.push("x-kde-passwordManagerHint".to_string());
+        let types = data.types();
+        assert!(types.len() <= MAX_TYPES + 2, "still bounded");
+        assert_eq!(verdict(types.iter().map(String::as_str), false), Verdict::Skip(Skip::Sensitive));
+        let data = OfferData::default();
+        for i in 0..MAX_TYPES {
+            data.push(format!("application/x-filler-{i}"));
+        }
+        data.push(MARKER.to_string());
+        let types = data.types();
+        assert_eq!(verdict(types.iter().map(String::as_str), false), Verdict::Skip(Skip::Own));
     }
 
     #[test]
