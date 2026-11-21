@@ -3738,8 +3738,10 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
         }
         let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         if name == HARNESS {
-            let body = function_body(&code, "pub fn wl_copy(").to_string();
-            code = code.replace(&body, "");
+            for helper in ["pub fn wl_copy(", "pub fn wl_paste("] {
+                let body = function_body(&code, helper).to_string();
+                code = code.replace(&body, "");
+            }
         }
         for program in ["wl-copy", "wl-paste"] {
             if code.contains(program) {
@@ -3752,7 +3754,7 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
 
 #[test]
 fn stray_clipboard_spawns_are_found() {
-    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
+    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\npub fn wl_paste(s: &Sway) -> C {\n    Command::new(\"wl-paste\")\n}\n";
     let files = |a: &str, b: &str| {
         vec![(HARNESS.to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
     };
@@ -3763,6 +3765,9 @@ fn stray_clipboard_spawns_are_found() {
     );
     let outside = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
     assert_eq!(stray_clipboard_spawns(&outside), [format!("{HARNESS} names wl-copy")]);
+    // A second harness function naming wl-paste is still found next to the two helpers.
+    let second = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-paste\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&second), [format!("{HARNESS} names wl-paste")]);
     // Another crate's harness or guardrails get no exemption.
     let elsewhere = vec![
         ("alpheus/tests/common/mod.rs".to_string(), helper.to_string()),
@@ -3770,7 +3775,11 @@ fn stray_clipboard_spawns_are_found() {
     ];
     assert_eq!(
         stray_clipboard_spawns(&elsewhere),
-        ["alpheus/tests/common/mod.rs names wl-copy", "alpheus/tests/guardrails.rs names wl-paste"]
+        [
+            "alpheus/tests/common/mod.rs names wl-copy",
+            "alpheus/tests/common/mod.rs names wl-paste",
+            "alpheus/tests/guardrails.rs names wl-paste"
+        ]
     );
 }
 
@@ -3811,6 +3820,16 @@ fn no_test_spawns_wl_copy_outside_the_harness_helper() {
         assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
     }
     assert!(!helper.contains("--primary"), "never the primary selection");
+    let paste = function_body(common, "pub fn wl_paste(");
+    let socket_check = paste.find("assert!(sway.runtime.join(&sway.wayland).exists()");
+    assert!(
+        socket_check.is_some() && socket_check < paste.find(".spawn()"),
+        "the wl-paste helper must assert this sway's socket exists before it spawns: {paste}"
+    );
+    for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--no-newline\""] {
+        assert!(paste.contains(need), "the wl-paste helper lacks {need}: {paste}");
+    }
+    assert!(!paste.contains("--primary"), "never the primary selection");
     let guard = function_body(common, "impl Drop for WlCopyChild");
     assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
 }

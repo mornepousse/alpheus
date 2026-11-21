@@ -3,8 +3,9 @@
 
 use crate::clipboard::control::{self, Control, Offer, Reading, is_current, read_once};
 use crate::clipboard::history::History;
-use crate::clipboard::offer::{READ_DEADLINE, Step, Verdict, in_quiet_window, verdict};
+use crate::clipboard::offer::{PasswordQuiet, READ_DEADLINE, Step, Verdict, verdict};
 use crate::deadline::DeadlineTimer;
+use crate::launcher::model::ClipEdit;
 use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{Reply, Request};
@@ -25,9 +26,8 @@ pub(crate) struct ClipboardApp {
     protocol: &'static str,
     timed_out_logged: bool,
     failed_logged: bool,
-    /// An alpheus `--password` prompt is open, or closed at `password_closed_at` (wired later).
-    password_open: bool,
-    password_closed_at: Option<Instant>,
+    /// Nothing is stored while an alpheus `--password` prompt is open, or for 5 s after it.
+    quiet: PasswordQuiet,
 }
 
 /// The read's deadline, if a read started at `started`.
@@ -42,6 +42,25 @@ pub(crate) fn availability(enabled: bool, bound: bool) -> Result<(), &'static st
         (false, _) => Err("the clipboard history is off ([clipboard] enabled in bar.toml)"),
         (true, false) => Err("the compositor offers no clipboard protocol (data-control)"),
         (true, true) => Ok(()),
+    }
+}
+
+/// The launcher's edit applied to the real history: ids only. Whether the history was cleared.
+fn apply_edit(history: &mut History, edit: &ClipEdit) -> bool {
+    match edit {
+        ClipEdit::Pin(id) => {
+            // The model refused an eleventh pin itself; a row gone meanwhile changes nothing.
+            let _ = history.toggle_pin(*id);
+            false
+        }
+        ClipEdit::Delete(id) => {
+            history.delete(*id);
+            false
+        }
+        ClipEdit::Clear => {
+            history.clear();
+            true
+        }
     }
 }
 
@@ -117,8 +136,7 @@ impl ClipboardApp {
             protocol,
             timed_out_logged: false,
             failed_logged: false,
-            password_open: false,
-            password_closed_at: None,
+            quiet: PasswordQuiet::default(),
         })
     }
 }
@@ -167,7 +185,7 @@ impl App {
         let mut guard = DestroyOnDrop::new(offer);
         self.clipboard_stop_read();
         let Some(c) = self.clipboard.as_ref() else { return };
-        let quiet = in_quiet_window(c.password_open, c.password_closed_at, Instant::now());
+        let quiet = c.quiet.active(Instant::now());
         let types = guard.0.as_ref().map(Offer::mime_types).unwrap_or_default();
         if let Verdict::Read(mime) = verdict(types.iter().map(String::as_str), quiet) {
             if let Some(offer) = guard.consume() {
@@ -265,14 +283,39 @@ impl App {
 
     /// Enter on a history entry: it goes to the front and becomes the clipboard again, from the
     /// daemon's own source (its marker keeps the copy from being read back).
-    #[allow(dead_code)] // the launcher's Enter reaches it in the wiring task
     pub(crate) fn clipboard_copy(&mut self, qh: &QueueHandle<App>, id: u64) -> Result<(), String> {
         let Some(c) = self.clipboard.as_mut() else { return Err(NOT_AVAILABLE.into()) };
         copy_entry(&mut c.history, id, |text| c.control.own_selection(text, qh))
     }
 
+    /// The launcher's pin, delete or clear, applied to the history (ids only, nothing logged but a
+    /// fixed word for a clear).
+    pub(crate) fn clipboard_edit(&mut self, edit: &ClipEdit) {
+        let Some(c) = self.clipboard.as_mut() else { return };
+        if apply_edit(&mut c.history, edit) {
+            log("clipboard: history cleared (row)");
+        }
+    }
+
+    /// An alpheus `--password` prompt opened: nothing is stored until 5 s after it closes.
+    pub(crate) fn clipboard_password_opened(&mut self) {
+        if let Some(c) = self.clipboard.as_mut() {
+            c.quiet.opened();
+        }
+    }
+
+    pub(crate) fn clipboard_password_closed(&mut self) {
+        if let Some(c) = self.clipboard.as_mut() {
+            c.quiet.closed(Instant::now());
+        }
+    }
+
+    /// The history's rows for a launcher open: a snapshot (previews only).
+    pub(crate) fn clipboard_rows(&self) -> Vec<crate::clipboard::history::ClipRow> {
+        self.clipboard.as_ref().map(|c| c.history.rows()).unwrap_or_default()
+    }
+
     /// Why the verbs and the launcher's `"` rows cannot be served (the history off, or no protocol).
-    #[allow(dead_code)] // the launcher's open reaches it in the wiring task
     pub(crate) fn clipboard_availability(&self) -> Result<(), &'static str> {
         availability(self.bar.config.clipboard.enabled, self.clipboard.is_some())
     }
@@ -317,6 +360,16 @@ impl App {
                 self.clipboard_timer_sync();
             }
         }
+    }
+
+    /// At start: a seat that exists already gets the device even if it has no capability yet (a
+    /// compositor with no input device announces none), as data-control needs no focus nor
+    /// capability. `new_seat` and `new_capability` follow it later as before.
+    pub(crate) fn clipboard_attach_at_start(&mut self) {
+        let Some(seat) = self.seat.clone().or_else(|| self.seats.seats().next()) else { return };
+        let qh = self.qh.clone();
+        let Some(c) = self.clipboard.as_mut() else { return };
+        c.control.attach(&seat, &qh);
     }
 
     /// The compositor finished the device: one line, a later seat event makes a new one.
@@ -364,6 +417,30 @@ mod tests {
         assert_eq!(verdict(types.iter().copied(), false), Verdict::Skip(Skip::Own));
         assert_eq!(types.last().copied(), Some(crate::clipboard::offer::MARKER), "the marker is offered last");
         assert!(types.contains(&"text/plain;charset=utf-8"), "the text types are offered");
+    }
+
+    #[test]
+    fn clipboard_edit_applies_pin_delete_clear() {
+        use crate::clipboard::history::Pushed;
+        let mut h = History::default();
+        let id = |p: Pushed| match p {
+            Pushed::Added(id) => id,
+            other => panic!("{other:?}"),
+        };
+        let a = id(h.push("one".into()));
+        let b = id(h.push("two".into()));
+        let c = id(h.push("three".into()));
+        assert!(!apply_edit(&mut h, &ClipEdit::Pin(a)));
+        assert!(h.rows().iter().find(|r| r.id == a).unwrap().pinned, "pinned");
+        assert!(!apply_edit(&mut h, &ClipEdit::Delete(b)));
+        assert_eq!(h.text_of(b), None, "deleted");
+        assert!(apply_edit(&mut h, &ClipEdit::Clear), "a clear says so");
+        assert_eq!(h.text_of(c), None, "the unpinned one went");
+        assert_eq!(h.text_of(a), Some("one"), "the pin stays");
+        assert!(!apply_edit(&mut h, &ClipEdit::Delete(999)), "a row already gone changes nothing");
+        assert!(!apply_edit(&mut h, &ClipEdit::Pin(999)));
+        assert!(!apply_edit(&mut h, &ClipEdit::Pin(a)));
+        assert!(!h.rows()[0].pinned, "the second Pin unpins");
     }
 
     #[test]

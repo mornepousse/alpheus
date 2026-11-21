@@ -550,6 +550,7 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
     state.loop_handle = Some(handle.clone());
     state.displays_sync();
     state.clipboard_start_line();
+    state.clipboard_attach_at_start();
     if WaylandSource::new(conn.clone(), file).insert(handle.clone()).is_err() {
         log("Wayland source: could not insert");
         return None;

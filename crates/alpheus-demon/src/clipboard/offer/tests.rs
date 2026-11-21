@@ -30,6 +30,24 @@ fn text_order_prefers_utf8() {
 }
 
 #[test]
+fn the_password_quiet_state_follows_the_prompt() {
+    let t = Instant::now();
+    let mut q = PasswordQuiet::default();
+    assert!(!q.active(t));
+    q.opened();
+    assert!(q.active(t + Duration::from_secs(60)), "open: quiet however long");
+    q.closed(t);
+    assert!(q.active(t + Duration::from_millis(4900)), "5 s after the close");
+    assert!(!q.active(t + PASSWORD_QUIET));
+    // A second prompt opened inside the window: quiet again until it closes.
+    q.opened();
+    assert!(q.active(t + Duration::from_secs(60)));
+    q.closed(t + Duration::from_secs(60));
+    assert!(q.active(t + Duration::from_secs(62)));
+    assert!(!q.active(t + Duration::from_secs(66)));
+}
+
+#[test]
 fn quiet_window_rules() {
     let now = Instant::now();
     let ago = |ms| now.checked_sub(Duration::from_millis(ms));

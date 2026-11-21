@@ -1206,6 +1206,17 @@ fn the_instant_is_single_use() {
 }
 
 #[test]
+fn the_instant_is_single_use_after_a_click_too() {
+    let mut l = clipboard_box();
+    // A click that never reads the instant (a pin) must not leave it for the next click.
+    l.set_now(Instant::now() + Duration::from_secs(3600));
+    l.click(1, true);
+    assert_eq!(l.click(3, false), Outcome::Redraw, "the question is asked at the real clock");
+    l.set_now(Instant::now() + Duration::from_secs(10));
+    assert_eq!(l.click(3, false), Outcome::Edit(ClipEdit::Clear), "a stale instant would still be in the future");
+}
+
+#[test]
 fn any_other_key_or_click_cancels_the_clear_question() {
     let t = Instant::now();
     for cancel in [Key::Up, Key::Char('x'), Key::CtrlEnter, Key::Delete, Key::Home] {

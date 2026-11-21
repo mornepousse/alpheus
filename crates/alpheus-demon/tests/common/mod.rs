@@ -786,10 +786,13 @@ impl Drop for WtypeChild {
 /// cleared, the runtime directory and display are this sway's, and the socket must exist before
 /// the spawn. `mime` (`--type`): the one type offered, text by default. `--foreground` keeps the serving process the child itself (never a forked orphan),
 /// `--primary` is never passed, and the guard kills and reaps it on drop. Fictional text only.
-pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
+pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>, sensitive: bool) -> WlCopyChild {
     assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-copy would reach another one");
     let mut command = Command::new("wl-copy");
     command.arg("--foreground");
+    if sensitive {
+        command.arg("--sensitive");
+    }
     if let Some(mime) = mime {
         command.arg("--type").arg(mime);
     }
@@ -806,6 +809,45 @@ pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
         .spawn()
         .expect("wl-copy not found: run these tests inside `nix develop`");
     WlCopyChild(Some(child))
+}
+
+/// The text of THIS sway's clipboard (`wl-paste --no-newline --type text/plain`), None when there
+/// is no selection or it is no text (a non-zero exit). Same guard as `wl_copy`: the socket must
+/// exist, the environment is cleared, the runtime directory and display are this sway's, stdin is
+/// null, and a read that is not over in 2 s is killed (None). Never the primary selection.
+pub fn wl_paste(sway: &Sway) -> Option<String> {
+    assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-paste would reach another one");
+    let mut child = Command::new("wl-paste")
+        .args(["--no-newline", "--type", "text/plain"])
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("XDG_RUNTIME_DIR", &sway.runtime)
+        .env("WAYLAND_DISPLAY", &sway.wayland)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("wl-paste not found: run these tests inside `nix develop`");
+    let mut out = child.stdout.take().expect("piped");
+    let reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        text
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait().expect("wait") {
+            Some(status) => break Some(status),
+            None if start.elapsed() > Duration::from_secs(2) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let text = reader.join().unwrap_or_default();
+    status.filter(|s| s.success()).map(|_| text)
 }
 
 /// The `wl-copy` serving a selection: killed and waited on drop, so a failed assertion never

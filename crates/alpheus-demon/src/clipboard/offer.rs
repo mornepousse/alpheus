@@ -62,6 +62,29 @@ pub fn in_quiet_window(prompt_open: bool, closed_at: Option<Instant>, now: Insta
     prompt_open || closed_at.is_some_and(|t| now.saturating_duration_since(t) < PASSWORD_QUIET)
 }
 
+/// Whether an alpheus `--password` prompt is open, or closed at some instant: the quiet window's
+/// inputs (the launcher stamps them, the verdict asks).
+#[derive(Debug, Default)]
+pub struct PasswordQuiet {
+    open: bool,
+    closed_at: Option<Instant>,
+}
+
+impl PasswordQuiet {
+    pub fn opened(&mut self) {
+        self.open = true;
+    }
+
+    pub fn closed(&mut self, now: Instant) {
+        self.open = false;
+        self.closed_at = Some(now);
+    }
+
+    pub fn active(&self, now: Instant) -> bool {
+        in_quiet_window(self.open, self.closed_at, now)
+    }
+}
+
 /// What a read has so far: at most `MAX_BYTES + 1` bytes (one past the cap tells "too much").
 #[derive(Default)]
 pub struct ReadBuffer {
