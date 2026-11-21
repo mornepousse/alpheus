@@ -143,7 +143,21 @@ enum Device {
     Wlr(ZwlrDataControlDeviceV1),
 }
 
+/// Whether an event's proxy is the live device. wayland-client still delivers the queued events
+/// of a proxy destroyed afterwards (a seat removed, a device finished), so a handler acts only
+/// on the current device's.
+pub(crate) fn same_device<T: PartialEq>(current: Option<T>, event: &T) -> bool {
+    current.is_some_and(|c| c == *event)
+}
+
 impl Device {
+    fn id(&self) -> ObjectId {
+        match self {
+            Device::Ext(d) => d.id(),
+            Device::Wlr(d) => d.id(),
+        }
+    }
+
     fn destroy(&self) {
         match self {
             Device::Ext(d) => d.destroy(),
@@ -263,6 +277,11 @@ impl Control {
         });
     }
 
+    /// Whether `id` is the live device's.
+    pub(crate) fn is_device(&self, id: &ObjectId) -> bool {
+        same_device(self.device.as_ref().map(Device::id), id)
+    }
+
     /// The seat is gone, or the compositor finished the device: it is destroyed (a finished
     /// device is inert, its destroy request is still due).
     pub(crate) fn detach(&mut self) {
@@ -370,8 +389,16 @@ macro_rules! data_control_family {
         }
 
         impl Dispatch<$device, ()> for App {
-            fn event(state: &mut App, _: &$device, event: $device_mod::Event, _: &(), _: &Connection, _: &QueueHandle<App>) {
+            fn event(state: &mut App, device: &$device, event: $device_mod::Event, _: &(), _: &Connection, _: &QueueHandle<App>) {
                 use $device_mod::Event as E;
+                // A queued event of a device already replaced or removed: its offers go, nothing else.
+                if !state.clipboard.as_ref().is_some_and(|c| c.control.is_device(&device.id())) {
+                    match event {
+                        E::DataOffer { id } | E::Selection { id: Some(id) } | E::PrimarySelection { id: Some(id) } => id.destroy(),
+                        _ => {}
+                    }
+                    return;
+                }
                 match event {
                     E::Selection { id } => state.clipboard_selection(id.map($wrap)),
                     // The primary selection is never read: its offer goes at once.
@@ -438,6 +465,13 @@ data_control_family!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_live_devices_events_count() {
+        assert!(same_device(Some(7), &7));
+        assert!(!same_device(Some(8), &7), "a queued event of the device replaced by another");
+        assert!(!same_device(None, &7), "no device at all (detached): everything is stale");
+    }
 
     #[test]
     fn a_new_read_replaces_the_pending_one() {

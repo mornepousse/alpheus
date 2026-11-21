@@ -3069,7 +3069,11 @@ fn clipboard_unfixed_log(code: &str) -> Option<String> {
         for ok in CLIPBOARD_FIXED_LOG_PLACEHOLDERS {
             text = text.replace(ok, "");
         }
-        if text.contains('{') || text.contains("+ ") {
+        // The argument is a string literal or `&format!("…")` of one: never a variable.
+        let arg = call["log(".len()..end.saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2;
+        if !literal || text.contains('{') || text.contains("+ ") {
             return Some(call[..end].to_string());
         }
         rest = &call[end..];
@@ -3129,6 +3133,8 @@ fn the_clipboard_guardrail_helpers_bite() {
     assert_eq!(clipboard_unfixed_log("log(&format!(\"clipboard error in {what}\"));"), None);
     assert_eq!(clipboard_unfixed_log("log(&format!(\"read failed ({kind:?})\"));"), None);
     assert!(clipboard_unfixed_log("log(&format!(\"copied {text}\"));").is_some());
+    assert!(clipboard_unfixed_log("log(&text);").is_some(), "a variable is not fixed words");
+    assert!(clipboard_unfixed_log("log(text);").is_some());
     assert!(clipboard_unfixed_log("log(\"a\"); log(&format!(\"{text:?}\"));").is_some());
     for m in ["eprintln!(\"x\")", "println!(\"x\")", "print!(\"x\")", "eprint!(\"x\")", "dbg!(x)"] {
         assert!(clipboard_print_macro(m).is_some(), "{m}");
