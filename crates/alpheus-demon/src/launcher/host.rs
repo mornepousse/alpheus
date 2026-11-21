@@ -7,7 +7,7 @@
 use crate::compositor::Toplevel;
 use crate::launcher::config::{LauncherConfig, config_path};
 use crate::launcher::history::History;
-use crate::launcher::model::{Launcher, Outcome};
+use crate::launcher::model::{Launcher, Origin, Outcome};
 use crate::launcher::scan::{self, Catalog, ScanEnv, SourcePlan};
 use crate::launcher::socket::Conn;
 use crate::launcher::sources::Entries;
@@ -236,16 +236,17 @@ pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> Launc
     config
 }
 
-/// Whether a scan's deliveries (catalog, entries) are for this model: an app launcher only, never
-/// a script menu or the calculator.
+/// Whether a scan's deliveries (catalog, entries) are for this model: by how the open began, not
+/// by its current mode, so a `/` jump into the Tools menu and back keeps them (tools plan,
+/// decision 2); a `--tools` open, a script menu, the calculator or the switcher take none.
 pub(crate) fn takes_scan_deliveries(model: &Launcher) -> bool {
-    !model.is_bare() && !model.is_switcher()
+    model.origin == Origin::Apps
 }
 
-/// Only an app launcher is fed the compositor's windows: a script menu's
-/// model has nothing to rank them against (`Launcher::is_script`).
+/// Only an app launcher (and the switcher) is fed the compositor's windows: the other menus have
+/// nothing to rank them against.
 pub(crate) fn feeds_windows(open: Option<&Launcher>) -> bool {
-    open.is_some_and(|m| !m.is_bare())
+    open.is_some_and(|m| m.origin == Origin::Apps || m.is_switcher())
 }
 
 /// Whether `Launcher::set_windows` is worth calling: it rebuilds the
@@ -909,6 +910,25 @@ mod tests {
 
     fn script_model() -> Launcher {
         Launcher::for_script(LauncherConfig::default(), None, vec!["a".into()])
+    }
+
+    /// Tools plan, decision 2: deliveries follow how the open began, not its mode. A Mod+Space
+    /// open that jumped into the Tools menu keeps the catalog, the source entries and the windows
+    /// for the way back; a `--tools` open takes none.
+    #[test]
+    fn an_apps_open_keeps_its_deliveries_in_tools() {
+        use crate::launcher::tools::catalog::{Catalog, Context};
+        let config = LauncherConfig::default();
+        let catalog = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+        let mut m = Launcher::for_apps(config.clone(), Vec::new(), History::empty(200), 0);
+        m.set_tools(Catalog::build(&config.tools, &Context::default(), &mut |_| {}));
+        m.key(crate::keys::Key::Char('/'));
+        assert_eq!(m.mode, crate::launcher::matching::Mode::Tools);
+        assert!(takes_scan_deliveries(&m), "the jump keeps them");
+        assert!(feeds_windows(Some(&m)));
+        let only = Launcher::for_tools(config, catalog, History::empty(200), 0);
+        assert!(!takes_scan_deliveries(&only), "a --tools open takes none");
+        assert!(!feeds_windows(Some(&only)));
     }
 
     #[test]

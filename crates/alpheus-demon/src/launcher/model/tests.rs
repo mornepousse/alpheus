@@ -1332,3 +1332,25 @@ fn unpinning_puts_the_row_where_the_history_lists_it() {
     l.key(Key::CtrlEnter);
     assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [10, 12, 11], "pinned first, then the unpinned head");
 }
+
+/// Tools spec § 1: a new Tools catalog forgets what the ranker had prepared, or its frecency and
+/// name ranks would index the old rows.
+#[test]
+fn set_tools_forgets_the_prepared_catalog() {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let build = |text: &str| {
+        let config = LauncherConfig::from_text(text).unwrap();
+        ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {})
+    };
+    let one = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Alpha\"\nrun = [\"x\"]\n";
+    let other = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Omega\"\nrun = [\"x\"]\n";
+    let mut l = launcher();
+    l.set_tools(build(one));
+    typed(&mut l, "a");
+    let after_first = l.ranker.preparations();
+    typed(&mut l, "l");
+    assert_eq!(l.ranker.preparations(), after_first, "a keystroke prepares nothing again");
+    l.set_tools(build(other));
+    assert_eq!(l.ranker.preparations(), after_first + 1, "the new catalog is prepared once");
+    assert!(sources(&l).iter().all(|s| !matches!(s, Source::Tool(_))), "Omega does not match \"al\": no stale row from Alpha");
+}

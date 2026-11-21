@@ -504,3 +504,133 @@ fn the_dollar_text_never_reaches_history_or_log() {
     assert_eq!(f.calls(), [format!("{SCOPE} sh -c -- ls -la $HOME"), format!("{SCOPE} foot --hold -e sh -c -- ls -la $HOME")]);
     assert!(!h.exists(), "the typed text is never recorded");
 }
+
+// -- The Tools menu's entries (tools spec § 5) --
+
+fn tools_launcher(text: &str) -> Launcher {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context { quick: true, ..Context::default() }, &mut |_| {});
+    Launcher::for_tools(config, catalog, History::empty(200), NOW)
+}
+
+fn tool_entry(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+fn user(entry: usize, choice: Option<&str>) -> Activation {
+    Activation::Tool(ToolAction::User { entry, choice: choice.map(String::from) })
+}
+
+const TOOLS: &str = r#"
+[[tools.category]]
+name = "Nix"
+[[tools.entry]]
+name = "Update"
+category = "Nix"
+run = ["atool", "update", "--all"]
+[[tools.entry]]
+name = "Hold"
+run = ["atool", "hold"]
+hold = true
+[[tools.entry]]
+name = "Term"
+run = ["atool", "term"]
+terminal = true
+[[tools.entry]]
+name = "Gen"
+category = "Nix"
+run = ["atool", "{choice}", "--"]
+choices = ["50%", "a b", "it's", "{choice}", "-rf", "--flag=\"x\""]
+[[tools.entry]]
+name = "Pick"
+run = ["atool", "pick", "{choice}"]
+choices_cmd = ["lines"]
+"#;
+
+#[test]
+fn tool_argv_keeps_the_choice_whole() {
+    let config = LauncherConfig::from_text(TOOLS).unwrap();
+    let e = |i: usize| &config.tools.entries[i];
+    assert_eq!(tool_argv(e(0), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])), v(&["atool", "update", "--all"]));
+    assert_eq!(
+        tool_argv(e(1), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
+        v(&["foot", "--hold", "-e", "atool", "hold"]),
+        "hold: terminal_hold"
+    );
+    assert_eq!(
+        tool_argv(e(2), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
+        v(&["foot", "-e", "atool", "term"]),
+        "terminal: the plain one"
+    );
+    for choice in ["50%", "a b", "it's", "{choice}", "-rf", "--flag=\"x\"", "x;rm -rf ~", "$(id)", "two\tcells"] {
+        assert_eq!(
+            tool_argv(e(3), Some(choice), &[], &[]),
+            vec!["atool".to_string(), choice.to_string(), "--".to_string()],
+            "{choice:?} stays one argument, replaced as it is"
+        );
+    }
+    // A terminal in front never splits it either.
+    let held = tool_argv(e(4), Some("a b"), &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"]));
+    assert_eq!(held, v(&["atool", "pick", "a b"]));
+}
+
+#[test]
+fn perform_runs_through_the_scope_and_records() {
+    let d = TempDir::new("run-tools");
+    let h = d.join("launcher-history");
+    let bin = stubs("tools", &["atool", "foot"]);
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    f.ok(&format!("{SCOPE} atool update --all"), "");
+    f.ok(&format!("{SCOPE} atool 50% --"), "");
+    f.ok(&format!("{SCOPE} foot --hold -e atool hold"), "");
+    f.ok(&format!("{SCOPE} atool pick a b"), "");
+    let mut l = tools_launcher(TOOLS);
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
+    let at = |l: &Launcher, n: &str| tool_entry(l, n);
+    let (update, generation, hold, pick) = (at(&l, "Update"), at(&l, "Gen"), at(&l, "Hold"), at(&l, "Pick"));
+    assert_eq!(perform(&mut l, user(update, None), &c), Ok(Done::Close));
+    assert_eq!(perform(&mut l, user(generation, Some("50%")), &c), Ok(Done::Close));
+    assert_eq!(perform(&mut l, user(hold, None), &c), Ok(Done::Close));
+    // A line read at drill-in is run whole but never kept.
+    assert_eq!(perform(&mut l, user(pick, Some("a b")), &c), Ok(Done::Close));
+    assert_eq!(
+        f.calls(),
+        [
+            format!("{SCOPE} atool update --all"),
+            format!("{SCOPE} atool 50% --"),
+            format!("{SCOPE} foot --hold -e atool hold"),
+            format!("{SCOPE} atool pick a b"),
+        ]
+    );
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:user:Nix/Update", "tool:user:Nix/Gen/50%", "tool:user:/Hold"], "no dynamic line, no typed text");
+    // A built-in is recorded and handed back for the glue.
+    let notes = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "notes").unwrap();
+    assert_eq!(perform(&mut l, Activation::Tool(ToolAction::Builtin(notes)), &c), Ok(Done::Builtin(notes)));
+    assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:notes"));
+    assert!(std::fs::read_to_string(&h).unwrap().contains("tool:builtin:notes"), "saved");
+    assert_eq!(f.calls().len(), 4, "a built-in runs nothing here");
+}
+
+#[test]
+fn a_missing_program_is_said_and_the_box_stays() {
+    let d = TempDir::new("run-tools-missing");
+    let h = d.join("launcher-history");
+    let bin = stubs("tools-missing", &["foot"]);
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    let mut l = tools_launcher(TOOLS);
+    let (update, hold) = (tool_entry(&l, "Update"), tool_entry(&l, "Hold"));
+    let r = perform(&mut l, user(update, None), &ctx(&f, Spawner::SystemdScope, Some(&h), &dirs));
+    assert_eq!(r, Err("atool: program not found".to_string()));
+    assert!(f.calls().is_empty() && l.history.entries().is_empty() && !h.exists(), "nothing ran, nothing recorded");
+    // The terminal's program is the one looked up when it wraps.
+    let bin = stubs("tools-missing-terminal", &["atool"]);
+    let dirs = [bin.to_path_buf()];
+    let r = perform(&mut l, user(hold, None), &ctx(&f, Spawner::SystemdScope, None, &dirs));
+    assert_eq!(r, Err("foot: program not found".to_string()));
+    // An entry that went with a reloaded catalog is "gone", never a panic.
+    assert!(perform(&mut l, user(99, None), &ctx(&f, Spawner::Detached, None, &dirs)).is_err());
+}

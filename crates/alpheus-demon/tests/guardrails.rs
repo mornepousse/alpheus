@@ -1493,6 +1493,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "clipboard/",
     "launcher/tools/config.rs",
     "launcher/tools/catalog.rs",
+    "launcher/tools/nav.rs",
 ];
 
 #[test]
@@ -3020,7 +3021,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
 /// range. Production code only; Task 3 appends `nav.rs`.
-const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs"];
+const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs"];
 
 #[test]
 fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -4209,4 +4210,124 @@ fn the_clipboard_shutdown_wipes_pins_too() {
     let prod = production_code(t);
     let body = function_body(&prod, "fn clipboard_shutdown(");
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
+}
+
+/// Tools spec § 9, plan Task 4: every command a Tools row starts is one the user configured
+/// (`[[tools.entry]]`: its `run`, `terminal` or `terminal_hold` in front), the chosen line one
+/// whole element — from the Tools box and from Mod+Space's search alike, in a scope or detached —
+/// never through a shell alpheus builds; and each shape is reached.
+#[test]
+fn every_tool_run_is_a_configured_argv_with_the_choice_whole() {
+    use alpheus_demon::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let text = r#"
+[[tools.category]]
+name = "Nix"
+[[tools.entry]]
+name = "Update"
+category = "Nix"
+run = ["atool", "update"]
+[[tools.entry]]
+name = "Held"
+run = ["atool", "held"]
+hold = true
+[[tools.entry]]
+name = "Termed"
+run = ["atool", "termed"]
+terminal = true
+[[tools.entry]]
+name = "Gen"
+category = "Nix"
+run = ["atool", "gen", "{choice}"]
+choices = ["a b", "$(id); rm -rf ~", "it's", "{choice}", "-rf"]
+[tools]
+builtins = false
+"#;
+    let config = LauncherConfig::from_text(text).unwrap();
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-tools-bin", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    let _guard = RemoveOnDrop(bin.clone());
+    for p in ["atool", "foot"] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path_dirs = [bin.clone()];
+    let configured = |argv: &[String]| -> Option<&'static str> {
+        let a: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match a.as_slice() {
+            ["atool", "update"] => Some("plain"),
+            ["foot", "--hold", "-e", "atool", "held"] => Some("hold"),
+            ["foot", "-e", "atool", "termed"] => Some("terminal"),
+            ["atool", "gen", c] if ["a b", "$(id); rm -rf ~", "it's", "{choice}", "-rf"].contains(c) => Some("choice"),
+            _ => None,
+        }
+    };
+    let mut seen = Vec::new();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        let catalog = || ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+        // The Tools box: every row of every level, by click.
+        let mut outcomes = Vec::new();
+        let open = || Launcher::for_tools(config.clone(), catalog(), History::empty(200), 1_800_000_000);
+        let rows_at = |keys: &[Key]| {
+            let mut l = open();
+            for k in keys {
+                l.key(*k);
+            }
+            l.results.len()
+        };
+        // Root: categories and root entries; into "Nix" (after the root entries: Held, Nix, Termed).
+        let nix = (0..rows_at(&[])).find(|&i| {
+            let mut l = open();
+            l.click(i, false);
+            l.tools().is_some_and(|t| t.breadcrumb() == "Tools › Nix")
+        });
+        for i in 0..rows_at(&[]) {
+            outcomes.push(open().click(i, false));
+        }
+        let nix = nix.expect("the Nix category is a root row");
+        let in_nix = || {
+            let mut l = open();
+            l.click(nix, false);
+            l
+        };
+        for i in 0..in_nix().results.len() {
+            let mut l = in_nix();
+            let o = l.click(i, false);
+            outcomes.push(o);
+            // Drilled into Gen: its choices.
+            for j in 0..l.results.len() {
+                let mut c = in_nix();
+                c.click(i, false);
+                outcomes.push(c.click(j, false));
+            }
+        }
+        // Mod+Space's typed search reaches the same entries and the fixed choices.
+        for q in ["update", "held", "termed", "gen", "gen a b", "gen -rf", "gen it", "gen {choice}", "gen $(id)"] {
+            let mut l = Launcher::for_apps(config.clone(), vec![], History::empty(200), 1_800_000_000);
+            l.set_tools(catalog());
+            for c in q.chars() {
+                l.key(Key::Char(c));
+            }
+            outcomes.push(l.key(Key::Enter));
+            outcomes.push(l.key(Key::CtrlEnter));
+        }
+        for o in outcomes {
+            let Outcome::Activate(a) = o else { continue };
+            let spy = ArgvSpy::default();
+            let mut l = open();
+            let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &path_dirs });
+            let calls = spy.0.lock().unwrap().clone();
+            let argv = calls.first().expect("a tool ran nothing");
+            let scoped: Vec<String> = SYSTEMD_RUN.iter().map(|s| s.to_string()).collect();
+            let argv = if spawner == Spawner::SystemdScope { argv.strip_prefix(&scoped[..]).expect("not in its scope") } else { &argv[..] };
+            let shape = configured(argv).unwrap_or_else(|| panic!("a tool started something nobody configured: {argv:?}"));
+            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell alpheus builds: {argv:?}");
+            seen.push((shape, spawner));
+        }
+    }
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for shape in ["plain", "hold", "terminal", "choice"] {
+            assert!(seen.contains(&(shape, spawner)), "{shape} never reached under {spawner:?}: {seen:?}");
+        }
+    }
 }
