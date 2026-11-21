@@ -3,7 +3,17 @@
 //! is returned as soon as it's read; a burst of slider changes is coalesced
 //! (only the last one counts).
 
-use crate::backends::{AudioStatus, BResult, BackendError, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
+use crate::app::diagnostics::{HealthRead, health};
+use crate::backends::{
+    AudioStatus, BResult, BackendError, Backends, BtStatus, CheckResult, JournalRead, NetStatus, NodeRef, PokeAnswer, PowerAction,
+    Profiles, UnitAction, Volume,
+};
+use crate::config::Check;
+use crate::diagnostics::analyze::Blame;
+use crate::diagnostics::crashes::Crash;
+use crate::diagnostics::query::{JournalQuery, Scope};
+use crate::diagnostics::show::Restarts;
+use crate::diagnostics::units::FailedUnit;
 use crate::displays::Plan;
 use crate::displays::wire::Snapshot;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,10 +29,14 @@ pub enum Domain {
     Bluetooth,
     Audio,
     Displays,
+    /// The failed units of both managers.
+    Failed,
+    /// The session health checks that are cheap enough to repeat.
+    Health,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 9] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Volume,
         Domain::Brightness,
         Domain::Dnd,
@@ -32,6 +46,8 @@ impl Domain {
         Domain::Bluetooth,
         Domain::Audio,
         Domain::Displays,
+        Domain::Failed,
+        Domain::Health,
     ];
 }
 
@@ -58,12 +74,44 @@ pub enum Op {
     KeepDisplays,
     /// Reverts the daemon's trial.
     RevertDisplays,
+    /// Restarts or clears a user unit (never a system one: those run in the TUI's own window).
+    UnitUser(UnitAction, String),
+    /// Asks the alpheus daemon to re-read its failed-units count; answered by `Update::Poke`.
+    FailedRefresh,
+}
+
+/// A read of the Diag tab that is not one of the repeated domains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagRead {
+    /// Services restarted at least this many times, of both managers.
+    Restarts(u32),
+    Crashes,
+    BootTime,
+    /// The declared health checks.
+    Checks(Vec<Check>),
+    /// The loaded service units of both managers (the journal's picker).
+    ServiceUnits,
+    Journal(JournalQuery),
+    /// `systemd-analyze blame` and `critical-chain`.
+    BootReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagResult {
+    Restarts { system: BResult<Vec<Restarts>>, user: BResult<Vec<Restarts>> },
+    Crashes(BResult<Vec<Crash>>),
+    BootTime(BResult<String>),
+    Checks(Vec<CheckResult>),
+    ServiceUnits(BResult<Vec<(Scope, String)>>),
+    Journal(BResult<JournalRead>),
+    BootReport { blame: BResult<Vec<Blame>>, chain: BResult<Vec<String>> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Refresh(Vec<Domain>),
     Do(Op),
+    Diag(DiagRead),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +125,11 @@ pub enum Update {
     Profiles(BResult<Profiles>),
     Audio(BResult<AudioStatus>),
     Displays(BResult<Snapshot>),
+    Failed(Scope, BResult<Vec<FailedUnit>>),
+    Health(HealthRead),
+    Diag(DiagRead, DiagResult),
+    /// The daemon's answer to `Op::FailedRefresh` (which has no `Done`: it can answer "older").
+    Poke(PokeAnswer),
     Done(Op, BResult<()>),
     /// A setting dropped by coalescing a burst (a more recent change to the
     /// same slider replaced it): each `Request::Do` thus gets exactly one
@@ -99,10 +152,22 @@ impl Op {
             Op::SetProfile(_) => &[Domain::Profiles],
             Op::Power(_) => &[],
             Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => &[Domain::Displays],
+            Op::UnitUser(..) => &[Domain::Failed],
+            Op::FailedRefresh => &[],
         }
     }
 }
 
+/// What reading `d` gives: one update, two for the failed units (one per manager).
+pub fn fetch_all(b: &Backends, d: Domain) -> Vec<Update> {
+    match d {
+        Domain::Failed => [Scope::System, Scope::User].into_iter().map(|s| Update::Failed(s, b.diagnostics.failed(s))).collect(),
+        d => vec![fetch(b, d)],
+    }
+}
+
+/// One update for a domain that gives one (the failed units' first manager for `Failed`; the
+/// worker uses `fetch_all`).
 pub fn fetch(b: &Backends, d: Domain) -> Update {
     match d {
         Domain::Volume => Update::Volume(b.sound.volume()),
@@ -114,6 +179,44 @@ pub fn fetch(b: &Backends, d: Domain) -> Update {
         Domain::Bluetooth => Update::Bluetooth(b.bluetooth.status()),
         Domain::Audio => Update::Audio(b.sound.status()),
         Domain::Displays => Update::Displays(b.displays.snapshot().map_err(BackendError::Daemon)),
+        Domain::Failed => Update::Failed(Scope::System, b.diagnostics.failed(Scope::System)),
+        Domain::Health => Update::Health(health(b, &|k| std::env::var_os(k))),
+    }
+}
+
+/// A Diag read, done.
+pub fn diag_fetch(b: &Backends, read: &DiagRead) -> DiagResult {
+    let d = &*b.diagnostics;
+    match read {
+        DiagRead::Restarts(t) => DiagResult::Restarts { system: d.restarts(Scope::System, *t), user: d.restarts(Scope::User, *t) },
+        DiagRead::Crashes => DiagResult::Crashes(d.crashes()),
+        DiagRead::BootTime => DiagResult::BootTime(d.boot_time()),
+        DiagRead::Checks(checks) => DiagResult::Checks(checks.iter().map(|c| d.check(c)).collect()),
+        DiagRead::ServiceUnits => {
+            let both = [Scope::System, Scope::User].map(|s| d.service_units(s).map(|v| v.into_iter().map(|u| (s, u)).collect::<Vec<_>>()));
+            let [system, user] = both;
+            DiagResult::ServiceUnits(match (system, user) {
+                (Ok(mut a), Ok(b)) => {
+                    a.extend(b);
+                    Ok(a)
+                }
+                (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
+                (Err(e), Err(_)) => Err(e),
+            })
+        }
+        DiagRead::Journal(q) => DiagResult::Journal(d.journal(q)),
+        DiagRead::BootReport => DiagResult::BootReport { blame: d.blame(15), chain: d.critical_chain(60) },
+    }
+}
+
+/// The worker's answer to an action: `Done`, except the daemon poke, which says more.
+pub fn respond(b: &Backends, op: Op) -> Update {
+    match op {
+        Op::FailedRefresh => Update::Poke(b.poke.failed_refresh()),
+        op => {
+            let r = perform(b, &op);
+            Update::Done(op, r)
+        }
     }
 }
 
@@ -131,6 +234,11 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::TryDisplays(plan) => b.displays.try_(&plan.steps).map_err(BackendError::Daemon),
         Op::KeepDisplays => b.displays.keep().map_err(BackendError::Daemon),
         Op::RevertDisplays => b.displays.revert().map_err(BackendError::Daemon),
+        Op::UnitUser(a, unit) => b.diagnostics.user_action(*a, unit),
+        Op::FailedRefresh => match b.poke.failed_refresh() {
+            PokeAnswer::Done | PokeAnswer::Older => Ok(()),
+            PokeAnswer::Unreachable(why) => Err(BackendError::Daemon(why)),
+        },
     }
 }
 
@@ -141,8 +249,15 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     let mut superseded: Vec<Op> = Vec::new();
     let mut ops: Vec<Op> = Vec::new();
     let mut refresh: Vec<Domain> = Vec::new();
+    let mut diag: Vec<Request> = Vec::new();
     for r in reqs {
         match r {
+            // The same read asked twice (F5 pressed twice) is made once.
+            Request::Diag(_) => {
+                if !diag.contains(&r) {
+                    diag.push(r);
+                }
+            }
             Request::Refresh(ds) => {
                 for d in ds {
                     if !refresh.contains(&d) {
@@ -164,6 +279,7 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
         }
     }
     let mut out: Vec<Request> = ops.into_iter().map(Request::Do).collect();
+    out.extend(diag);
     if !refresh.is_empty() {
         out.push(Request::Refresh(refresh));
     }
@@ -190,10 +306,11 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
             }
             for req in reqs {
                 let sent = match req {
-                    Request::Refresh(ds) => ds.into_iter().all(|d| tx_up.send(fetch(&b, d)).is_ok()),
-                    Request::Do(op) => {
-                        let r = perform(&b, &op);
-                        tx_up.send(Update::Done(op, r)).is_ok()
+                    Request::Refresh(ds) => ds.into_iter().flat_map(|d| fetch_all(&b, d)).all(|u| tx_up.send(u).is_ok()),
+                    Request::Do(op) => tx_up.send(respond(&b, op)).is_ok(),
+                    Request::Diag(read) => {
+                        let result = diag_fetch(&b, &read);
+                        tx_up.send(Update::Diag(read, result)).is_ok()
                     }
                 };
                 if !sent {
@@ -222,6 +339,7 @@ mod tests {
         assert_eq!(Tab::Home.domains().len(), 7);
         assert_eq!(Tab::Sound.domains(), &[Domain::Audio]);
         assert_eq!(Tab::Displays.domains(), &[Domain::Displays]);
+        assert_eq!(Tab::Diagnostics.domains(), &[Domain::Failed, Domain::Health]);
         assert!(Tab::Power.domains().is_empty());
         assert!(Tab::Appearance.domains().is_empty());
     }
@@ -291,6 +409,58 @@ mod tests {
         let rollback = Op::RevertDisplays;
         let (r, dropped) = coalesce(vec![Request::Do(trial.clone()), Request::Do(rollback.clone())]);
         assert_eq!(r, vec![Request::Do(trial), Request::Do(rollback)]);
+        assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn the_failed_units_of_both_managers_and_the_diag_reads_go_through_the_backend() {
+        use crate::exec::{CaptureEnd, Captured};
+        let f = Arc::new(FakeExecutor::new());
+        let done = |s: &str| Captured { stdout: s.as_bytes().to_vec(), end: CaptureEnd::Exited(Some(0)) };
+        f.capture_ok("systemctl list-units --failed --output=json --no-pager", done("[]"));
+        f.capture_ok("systemctl --user list-units --failed --output=json --no-pager", done("[]"));
+        f.capture_ok("systemd-analyze time --no-pager", done("Startup finished in 42.9s\n"));
+        let b = backends(&f);
+        assert_eq!(
+            fetch_all(&b, Domain::Failed),
+            vec![Update::Failed(Scope::System, Ok(vec![])), Update::Failed(Scope::User, Ok(vec![]))],
+            "one update per manager"
+        );
+        assert_eq!(diag_fetch(&b, &DiagRead::BootTime), DiagResult::BootTime(Ok("Startup finished in 42.9s".into())));
+        // A read nobody programmed is an error shown in its section, never a panic.
+        assert!(matches!(diag_fetch(&b, &DiagRead::Crashes), DiagResult::Crashes(Err(_))));
+        assert_eq!(f.calls().len(), 4);
+    }
+
+    #[test]
+    fn a_user_unit_action_goes_through_the_backend_and_a_poke_answers_by_itself() {
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("systemctl --user --no-block restart -- example-sync.service", "");
+        let b = backends(&f);
+        let op = Op::UnitUser(UnitAction::Restart, "example-sync.service".into());
+        assert_eq!(respond(&b, op.clone()), Update::Done(op, Ok(())));
+        assert_eq!(f.calls(), vec!["systemctl --user --no-block restart -- example-sync.service"]);
+        assert!(matches!(respond(&b, Op::FailedRefresh), Update::Poke(PokeAnswer::Unreachable(_))), "no daemon wired: unreachable");
+    }
+
+    #[test]
+    fn a_repeated_diag_read_is_made_once_and_the_order_is_kept() {
+        let (r, dropped) = coalesce(vec![
+            Request::Diag(DiagRead::Crashes),
+            Request::Refresh(vec![Domain::Failed]),
+            Request::Diag(DiagRead::BootTime),
+            Request::Diag(DiagRead::Crashes),
+            Request::Do(Op::FailedRefresh),
+        ]);
+        assert_eq!(
+            r,
+            vec![
+                Request::Do(Op::FailedRefresh),
+                Request::Diag(DiagRead::Crashes),
+                Request::Diag(DiagRead::BootTime),
+                Request::Refresh(vec![Domain::Failed]),
+            ]
+        );
         assert!(dropped.is_empty());
     }
 

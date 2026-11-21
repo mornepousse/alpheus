@@ -35,7 +35,9 @@ fn tabs() {
     press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
     press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
     press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-    assert_eq!(a.tab, Tab::Appearance, "Shift+Tab from Home: the last tab");
+    assert_eq!(a.tab, Tab::Diagnostics, "Shift+Tab from Home: the last tab");
+    press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(a.tab, Tab::Appearance);
     press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(a.tab, Tab::Displays, "on Appearance too, Shift+Tab changes tab");
     c(&mut a, '5');

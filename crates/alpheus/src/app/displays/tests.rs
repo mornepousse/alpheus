@@ -30,7 +30,7 @@ fn sent(a: &mut App) -> Vec<Op> {
         .into_iter()
         .filter_map(|r| match r {
             Request::Do(op) => Some(op),
-            Request::Refresh(_) => None,
+            Request::Refresh(_) | Request::Diag(_) => None,
         })
         .collect()
 }

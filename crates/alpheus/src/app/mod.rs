@@ -5,6 +5,7 @@
 
 pub mod action;
 pub mod appearance;
+pub mod diagnostics;
 pub mod displays;
 mod input;
 pub mod keymap;
@@ -13,13 +14,17 @@ pub mod run;
 pub mod tab;
 pub mod worker;
 
-use crate::backends::{AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume, brightness};
+use crate::backends::{
+    AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, UnitAction, Volume, brightness,
+};
 use crate::config::Config;
+use crate::diagnostics::query::Scope;
 use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{Command, External, Tab, palette_entries, profile_label};
 pub use appearance::AppearanceTab;
+pub use diagnostics::DiagnosticsTab;
 pub use displays::{DisplaysTab, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
 use keymap::Keymap;
 use ratatui::layout::Rect;
@@ -183,6 +188,9 @@ fn op_label(op: &Op) -> String {
         Op::SetProfile(_) => "Energy profile".into(),
         Op::Power(a) => a.label().into(),
         Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => "Displays".into(),
+        Op::UnitUser(UnitAction::Restart, _) => "Restart".into(),
+        Op::UnitUser(UnitAction::ResetFailed, _) => "Reset failed".into(),
+        Op::FailedRefresh => "Failed units".into(),
     }
 }
 
@@ -198,7 +206,9 @@ fn update_domain(u: &Update) -> Option<Domain> {
         Update::Profiles(_) => Domain::Profiles,
         Update::Audio(_) => Domain::Audio,
         Update::Displays(_) => Domain::Displays,
-        Update::Done(..) | Update::Superseded(_) => return None,
+        Update::Failed(..) => Domain::Failed,
+        Update::Health(_) => Domain::Health,
+        Update::Done(..) | Update::Superseded(_) | Update::Diag(..) | Update::Poke(_) => return None,
     })
 }
 
@@ -216,6 +226,7 @@ pub struct App {
     pub should_quit: bool,
     pub displays: DisplaysTab,
     pub appearance: AppearanceTab,
+    pub diag: DiagnosticsTab,
     /// Slider currently being dragged with the mouse, and its bar.
     pub(crate) dragging: Option<(SliderId, Rect)>,
     last_refresh: Instant,
@@ -253,6 +264,7 @@ impl App {
             should_quit: false,
             displays: DisplaysTab::default(),
             appearance: AppearanceTab::default(),
+            diag: DiagnosticsTab::default(),
             dragging: None,
             last_refresh: now,
             requests: Vec::new(),
@@ -261,6 +273,9 @@ impl App {
             last_read: HashMap::new(),
         };
         app.refresh_tab(now);
+        if tab == Tab::Diagnostics {
+            app.diagnostics_reads();
+        }
         app
     }
 
@@ -347,6 +362,11 @@ impl App {
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
             Update::Displays(r) => self.displays_read(r, now),
+            Update::Failed(Scope::System, r) => self.diag.failed_system.set(r),
+            Update::Failed(Scope::User, r) => self.diag.failed_user.set(r),
+            Update::Health(h) => self.diag.health = Some(h),
+            Update::Diag(_, result) => self.diag.apply(result),
+            Update::Poke(answer) => self.diag.daemon = Some(answer),
             Update::Done(op @ (Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays), r) => {
                 self.op_answered(&op);
                 self.displays_done(op, r, now);
@@ -401,6 +421,9 @@ impl App {
             Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
             Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => return None,
+            Op::UnitUser(UnitAction::Restart, unit) => format!("Restart queued: {unit}"),
+            Op::UnitUser(UnitAction::ResetFailed, unit) => format!("Cleared: {unit}"),
+            Op::FailedRefresh => return None,
         })
     }
 
@@ -416,6 +439,9 @@ impl App {
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
+        if self.diagnostics_refresh_held() {
+            return;
+        }
         let Some(period) = self.tab.refresh() else { return };
         let due = now.duration_since(self.last_refresh) >= period;
         // A failed domain is not probed on the normal tick: a broken tool
@@ -459,6 +485,8 @@ impl App {
             Domain::Bluetooth => self.data.bluetooth.is_failed(),
             Domain::Audio => self.data.audio.is_failed(),
             Domain::Displays => self.data.displays.is_failed(),
+            Domain::Failed => self.domain_diag_failing(d),
+            Domain::Health => false,
         }
     }
 
@@ -480,6 +508,9 @@ impl App {
             self.search = Search::default();
             if t == Tab::Appearance {
                 self.appearance_open();
+            }
+            if t == Tab::Diagnostics {
+                self.diagnostics_reads();
             }
         }
         self.refresh_tab(now);
@@ -507,7 +538,7 @@ impl App {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
             Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
-            Tab::Appearance => Vec::new(),
+            Tab::Appearance | Tab::Diagnostics => Vec::new(),
             Tab::Displays => {
                 std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
             }

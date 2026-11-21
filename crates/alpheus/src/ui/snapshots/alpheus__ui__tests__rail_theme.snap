@@ -21,7 +21,7 @@ expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
                       Ember                                                                                             
  ▌󰏘 Theme    7        Glacier                                                                                           
                       Ink                                                                                               
-                      High contrast                                                                                     
+  󰃤 Diag     8        High contrast                                                                                     
                       Sorbet                                                                                            
                       Phosphor      dark only                                                                           
                                                                                                                         

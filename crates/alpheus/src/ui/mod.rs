@@ -79,7 +79,7 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let mut x = r.x + 1;
     let labels: Vec<String> = Tab::ALL.iter().enumerate().map(|(i, t)| format!(" {} {} ", i + 1, t.title())).collect();
-    // The brand ("alpheus" and two spaces) goes first when the seven tabs would not fit beside it.
+    // The brand ("alpheus" and two spaces) goes first when the eight tabs would not fit beside it.
     let tabs_w: usize = labels.iter().map(|l| l.chars().count()).sum();
     if tabs_w + BRAND_W < usize::from(r.width) {
         x += put(buf, r, x, r.y, "alpheus", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)) + 2;
@@ -89,7 +89,7 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         let w = put(buf, r, x, r.y, label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
         // Glued together: each label already carries its own spaces, so
-        // the seven tabs fit in 80 columns this way (brand included).
+        // the eight tabs fit in 80 columns this way (the brand dropped).
         x = x.saturating_add(w);
     }
 }
@@ -131,6 +131,7 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
+            Tab::Diagnostics => pairs.push((km.label(Action::Activate), "Open")),
             Tab::Appearance if app.appearance.focus != Focus::List => {
                 pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));

@@ -384,7 +384,7 @@ fn the_keys_of_the_tab() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\nmode = \"dark\"\n");
     key(&mut a, KeyCode::Tab);
-    assert_eq!(a.tab, Tab::Home, "Tab leaves the tab, as everywhere");
+    assert_eq!(a.tab, Tab::Diagnostics, "Tab leaves the tab, as everywhere");
     key(&mut a, KeyCode::Char('7'));
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.tab, Tab::Home, "Esc as in the other tabs");

@@ -152,7 +152,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
             rows.push(Row::Blank);
             rows.push(Row::Item(1));
         }
-        Tab::Appearance => {}
+        Tab::Appearance | Tab::Diagnostics => {}
         Tab::Displays => {
             rows.push(Row::Item(0));
             rows.push(Row::Blank);

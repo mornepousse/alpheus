@@ -237,6 +237,8 @@ mod tests {
         assert_eq!(parse_options(&args(&["--tab", "sound"])), Ok(Options { tab: Tab::Sound }));
         assert_eq!(parse_options(&args(&["--tab=Network"])), Ok(Options { tab: Tab::Network }));
         assert_eq!(parse_options(&args(&["--tab", "displays"])), Ok(Options { tab: Tab::Displays }));
+        assert_eq!(parse_options(&args(&["--tab", "diagnostics"])), Ok(Options { tab: Tab::Diagnostics }));
+        assert_eq!(parse_options(&args(&["--tab=diag"])), Ok(Options { tab: Tab::Diagnostics }));
         let e = parse_options(&args(&["--tab", "weather"])).unwrap_err();
         assert!(e.contains("weather") && e.contains("home, sound"), "{e}");
         assert!(parse_options(&args(&["--tab"])).unwrap_err().contains("expects"));

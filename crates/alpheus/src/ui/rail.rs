@@ -29,6 +29,7 @@ pub fn tab_hue(th: &Theme, t: Tab) -> Color {
         Tab::Power => th.red,
         Tab::Displays => th.green,
         Tab::Appearance => th.orange,
+        Tab::Diagnostics => th.yellow,
     }
 }
 
@@ -41,6 +42,7 @@ pub fn icon(t: Tab) -> &'static str {
         Tab::Power => "󰐥",
         Tab::Displays => "󰍹",
         Tab::Appearance => "󰏘",
+        Tab::Diagnostics => "󰃤",
     }
 }
 
@@ -84,6 +86,7 @@ pub fn subtitle(app: &App) -> String {
             None => "Screens and profiles".into(),
         },
         Tab::Appearance => "Theme, mode, bar style and module colours".into(),
+        Tab::Diagnostics => "Session health, failed units and the journal".into(),
     }
 }
 

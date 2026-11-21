@@ -28,7 +28,7 @@ pub struct TabSpec {
 }
 
 /// One row per tab, in tab order.
-pub const TABS: [TabSpec; 7] = [
+pub const TABS: [TabSpec; 8] = [
     TabSpec {
         tab: Tab::Home,
         title: "Home",
@@ -108,6 +108,16 @@ pub const TABS: [TabSpec; 7] = [
         domains: &[],
         label_width: 20,
     },
+    TabSpec {
+        tab: Tab::Diagnostics,
+        title: "Diag",
+        slug: "diagnostics",
+        aliases: &["diag"],
+        searchable: false,
+        refresh: Some(Duration::from_secs(5)),
+        domains: &[Domain::Failed, Domain::Health],
+        label_width: 20,
+    },
 ];
 
 /// Key name bound to tab number `index + 1` by default: "1" to "9". A tenth
@@ -134,7 +144,7 @@ mod tests {
     #[test]
     fn digits_for_the_first_nine_tabs_only() {
         for i in 0..TABS.len() {
-            assert_eq!(digit(i), Some(["1", "2", "3", "4", "5", "6", "7"][i]));
+            assert_eq!(digit(i), Some(["1", "2", "3", "4", "5", "6", "7", "8"][i]));
         }
         assert_eq!(digit(8), Some("9"));
         assert_eq!(digit(9), None);
