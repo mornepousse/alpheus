@@ -513,17 +513,18 @@ fn startup_pss_per_source() {
     let _workstation = Workstation::serve(&bus);
     let cases = [
         // The case names are what CLAUDE.md and the README cite next to their figures: keep them.
-        ("plan 1", "\"workspaces\", \"window\", \"clock\""),
-        ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
-        ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
-        ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
-        ("+ launcher", "\"launcher\", \"workspaces\", \"window\", \"clock\""),
-        ("everything", every_module!()),
-        ("+ privacy", concat!(every_module!(), ", \"privacy\"")),
+        ("plan 1", "\"workspaces\", \"window\", \"clock\"", ""),
+        ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\"", ""),
+        ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"", ""),
+        ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\"", ""),
+        ("+ launcher", "\"launcher\", \"workspaces\", \"window\", \"clock\"", ""),
+        ("everything", every_module!(), ""),
+        ("+ privacy", concat!(every_module!(), ", \"privacy\""), ""),
+        ("+ clipboard", every_module!(), "[clipboard]\nenabled = true\n"),
     ];
     let mut report = Vec::new();
-    for (i, (what, modules)) in cases.iter().enumerate() {
-        let toml = format!("modules = [{modules}]\n");
+    for (i, (what, modules, extra)) in cases.iter().enumerate() {
+        let toml = format!("modules = [{modules}]\n{extra}");
         let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, None, Some(&toml), PwDump::Silent);
         std::thread::sleep(Duration::from_secs(3)); // as in pss_under_30mb_and_stable
         report.push((*what, d.pss_kb()));
@@ -536,6 +537,9 @@ fn startup_pss_per_source() {
     let kb = |w: &str| report.iter().find(|(what, _)| *what == w).map(|(_, kb)| *kb).unwrap();
     let (everything, privacy) = (kb("everything"), kb("+ privacy"));
     assert!(privacy <= everything + 256, "+ privacy {privacy} KB vs everything {everything} KB: more than 256 KB at rest");
+    // Clipboard history spec: the history on, nothing copied yet, reports a small step (report, never raise).
+    let clipboard = kb("+ clipboard");
+    assert!(clipboard <= everything + 256, "+ clipboard {clipboard} KB vs everything {everything} KB: more than 256 KB at rest");
 }
 
 /// DejaVu Sans Mono (the default `[font] fallback`): printed for the task
@@ -3721,4 +3725,144 @@ fn timer_popup_ticks_each_second_only_while_open() {
     let closed = d.main_thread_wakeups().saturating_sub(before);
     eprintln!("loop-thread wake-ups right after the close (5 s): {closed}");
     assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 5 s: {:?}", d.log());
+}
+
+/// Clipboard history: a daemon on the headless sway with the history on and the three base modules.
+fn clipboard_mem_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let toml = format!("{AT_REST_NO_RESOURCES}[clipboard]\nenabled = true\n");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("clipboard: ext-data-control-v1", DELAY), "{:?}", d.log());
+    (sway, d)
+}
+
+/// The i-th distinct 4,000-byte text (fictional filler: a copy is never real data).
+fn clip_text(i: usize) -> String {
+    let mut text = format!("{i:05} {}", "clipboard filler ".repeat(240));
+    text.truncate(4000);
+    text
+}
+
+/// `n` copies from `first` on, each held 300 ms (the daemon reads it) before its child goes.
+fn clip_copies(sway: &Sway, first: usize, n: usize) {
+    for i in first..first + n {
+        let child = common::wl_copy(sway, &clip_text(i), None, false);
+        std::thread::sleep(Duration::from_millis(300));
+        drop(child);
+    }
+}
+
+/// One `--clipboard` cycle: open, an Escape typed after the reading, closed; the n-th of each.
+/// Returns the reading with the box open.
+fn clip_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
+    assert_eq!(launcher(sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    let open = d.pss_kb();
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+/// Clipboard history spec § 8: a full history (50 entries of 4,000 bytes), then 100 more copies
+/// through it, then cleared. Bounds on `Anonymous:` (PSS moves with the page cache); both printed.
+#[test]
+#[ignore = "headless sway and wl-clipboard (nix develop)"]
+fn clipboard_full_history() {
+    require_release(cfg!(debug_assertions));
+    let (sway, d) = clipboard_mem_daemon("clip-full");
+    std::thread::sleep(Duration::from_secs(3));
+    let rest = (d.anonymous_kb(), d.pss_kb());
+    clip_copies(&sway, 0, 50);
+    let full = (d.anonymous_kb(), d.pss_kb());
+    clip_copies(&sway, 50, 100);
+    let cycled = (d.anonymous_kb(), d.pss_kb());
+    assert_eq!(launcher(&sway, &Request::ClipboardClear), Reply::Done);
+    std::thread::sleep(Duration::from_secs(1));
+    let cleared = (d.anonymous_kb(), d.pss_kb());
+    eprintln!(
+        "clipboard anonymous (KB): rest {}, full {} ({:+}), after 100 more {} ({:+}), cleared {}; PSS: rest {}, full {}, cycled {}, cleared {}",
+        rest.0,
+        full.0,
+        full.0 as i64 - rest.0 as i64,
+        cycled.0,
+        cycled.0 as i64 - full.0 as i64,
+        cleared.0,
+        rest.1,
+        full.1,
+        cycled.1,
+        cleared.1
+    );
+    assert!(full.0 <= rest.0 + 384, "full history {} KB anon vs rest {}: more than 384 KB — report, never raise", full.0, rest.0);
+    assert!(cycled.0 <= full.0 + 64, "100 more copies {} KB anon vs {}: more than 64 KB kept", cycled.0, full.0);
+    assert!(cleared.0 <= full.0, "cleared {} KB anon vs full {}: the clear freed nothing", cleared.0, full.0);
+}
+
+/// Clipboard history: the launcher on a full history, open and closed. Two warm-up cycles first:
+/// the first open's code and font pages, and a one-off ±130 KB step of the heap's state that the
+/// first cycle leaves either way (readings after cycle 1 were 1,708 and 1,840 KB at the same
+/// steady state of ≈ 1,730 KB; cycles 3 to 6 moved +16 KB in all). Four more cycles are measured.
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn clipboard_launcher_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let (sway, d) = clipboard_mem_daemon("clip-open");
+    clip_copies(&sway, 0, 50);
+    std::thread::sleep(Duration::from_secs(1));
+    clip_cycle(&sway, &d, 1);
+    clip_cycle(&sway, &d, 2);
+    let closed = (d.anonymous_kb(), d.pss_kb());
+    let mut open_pss = 0;
+    for n in 3..=6 {
+        open_pss = clip_cycle(&sway, &d, n);
+    }
+    let again = (d.anonymous_kb(), d.pss_kb());
+    eprintln!(
+        "clipboard launcher anonymous (KB): warmed closed {}, closed again {} ({:+}) after 4 cycles; PSS: closed {}, open on 50 entries {open_pss}, again {}",
+        closed.0,
+        again.0,
+        again.0 as i64 - closed.0 as i64,
+        closed.1,
+        again.1
+    );
+    assert!(again.0 <= closed.0 + 128, "closed again {} KB anon vs {} KB before: more than 128 KB kept over 4 cycles", again.0, closed.0);
+}
+
+/// Clipboard history: after copies and after a `--clipboard` cycle the loop sleeps: a read timer
+/// left armed (its deadline is inside the window) shows at once. Each window starts past SCTK's
+/// key repeat (the cycle is closed by a typed Escape, then 1.6 s).
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn at_rest_no_wakeups_after_copies() {
+    require_release(cfg!(debug_assertions));
+    let (sway, d) = clipboard_mem_daemon("clip-rest");
+    std::thread::sleep(Duration::from_secs(2));
+    clip_copies(&sway, 0, 5);
+    std::thread::sleep(Duration::from_millis(300));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after copies");
+    let after_copies = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after copies (5 s): {after_copies}");
+    assert_eq!(after_copies, 0, "{after_copies} loop-thread wake-ups in 5 s after copies: {:?}", d.log());
+
+    assert_eq!(launcher(&sway, &Request::Clipboard), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(1600));
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a clipboard cycle");
+    let after_cycle = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after a clipboard cycle (5 s): {after_cycle}");
+    assert_eq!(after_cycle, 0, "{after_cycle} loop-thread wake-ups in 5 s after a clipboard cycle: {:?}", d.log());
 }

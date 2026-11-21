@@ -294,6 +294,8 @@ impl App {
         let Some(c) = self.clipboard.as_mut() else { return };
         if apply_edit(&mut c.history, edit) {
             log("clipboard: history cleared (row)");
+            // The cleared entries' pages go back to the system (glibc keeps freed ones otherwise).
+            crate::memory::release_memory();
         }
     }
 
@@ -334,6 +336,7 @@ impl App {
         let (reply, cleared) = verb_reply(enabled, self.clipboard.as_mut().map(|c| &mut c.history), request);
         if cleared {
             log("clipboard: history cleared (verb)");
+            crate::memory::release_memory();
         }
         reply
     }
