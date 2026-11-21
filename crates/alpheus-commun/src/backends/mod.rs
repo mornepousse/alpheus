@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub mod bluetooth;
 pub mod brightness;
+pub mod diagnostics;
 pub mod displays;
 pub mod energy;
 pub mod network;
@@ -18,6 +19,7 @@ pub mod sound;
 
 pub use bluetooth::{Bluetooth, BluetoothCtl, BtDevice, BtStatus};
 pub use brightness::{Brightness, BrightnessCtl};
+pub use diagnostics::{CheckResult, DaemonPoke, Diagnostics, JournalRead, NoPoke, PokeAnswer, SystemdTools, UnitAction};
 pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
@@ -109,6 +111,8 @@ pub struct Backends {
     pub notifications: Arc<dyn Notifications>,
     pub power: Arc<dyn Power>,
     pub displays: Arc<dyn Displays>,
+    pub diagnostics: Arc<dyn Diagnostics>,
+    pub poke: Arc<dyn DaemonPoke>,
 }
 
 impl Backends {
@@ -122,8 +126,10 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir.clone())),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec)),
+            power: Arc::new(SessionPower::new(exec.clone())),
             displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
+            diagnostics: Arc::new(SystemdTools::new(exec)),
+            poke: Arc::new(NoPoke),
         }
     }
 }

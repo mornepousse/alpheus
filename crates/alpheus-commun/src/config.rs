@@ -11,6 +11,7 @@ use std::path::Path;
 pub struct Config {
     pub keys: KeysConfig,
     pub commands: CommandsConfig,
+    pub diagnostics: DiagnosticsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -43,6 +44,74 @@ impl Default for CommandsConfig {
     }
 }
 
+/// The Diag tab (`[diagnostics]`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsConfig {
+    /// The bug report's clipboard program (argv; the report goes on its standard input); `[]`
+    /// disables Copy.
+    pub copy: Vec<String>,
+    /// Restart and reset-failed on system units, in the TUI's own window (polkit asks there).
+    pub system_actions: bool,
+    /// `NRestarts` at or above this is "restarting in a loop" (1..=1000).
+    pub restart_loop: u32,
+    /// Entries read when the journal view opens (1..=5000).
+    pub journal_lines: u32,
+    /// Declared health checks (at most 8).
+    pub checks: Vec<Check>,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        DiagnosticsConfig { copy: vec!["wl-copy".into()], system_actions: true, restart_loop: 3, journal_lines: 500, checks: Vec::new() }
+    }
+}
+
+/// A check the user declared: `run` an argv, exit 0 is fine; `fix` is shown, never run.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Check {
+    /// 1 to 40 characters, no control character.
+    pub name: String,
+    pub run: Vec<String>,
+    /// At most 200 characters.
+    pub fix: Option<String>,
+}
+
+impl DiagnosticsConfig {
+    /// Puts an out-of-range value back to its default and drops a bad or surplus check, one
+    /// sentence each.
+    fn normalise(&mut self) -> Vec<String> {
+        let default = DiagnosticsConfig::default();
+        let mut warnings = Vec::new();
+        if !(1..=1000).contains(&self.restart_loop) {
+            warnings.push(format!("[diagnostics] restart_loop {} is outside 1-1000: using {}", self.restart_loop, default.restart_loop));
+            self.restart_loop = default.restart_loop;
+        }
+        if !(1..=5000).contains(&self.journal_lines) {
+            warnings.push(format!("[diagnostics] journal_lines {} is outside 1-5000: using {}", self.journal_lines, default.journal_lines));
+            self.journal_lines = default.journal_lines;
+        }
+        let ok = |c: &Check| {
+            let n = c.name.chars().count();
+            (1..=40).contains(&n)
+                && !c.name.chars().any(char::is_control)
+                && !c.run.is_empty()
+                && c.fix.as_ref().is_none_or(|f| f.chars().count() <= 200)
+        };
+        let before = self.checks.len();
+        self.checks.retain(ok);
+        if self.checks.len() < before {
+            warnings.push("[diagnostics] a check with a bad name, an empty run or a fix over 200 characters was ignored".into());
+        }
+        if self.checks.len() > 8 {
+            self.checks.truncate(8);
+            warnings.push("[diagnostics] more than 8 checks: the first 8 are kept".into());
+        }
+        warnings
+    }
+}
+
 impl Config {
     /// Absent → defaults with no message; unreadable or invalid → defaults + a message.
     pub fn load(path: &Path) -> (Config, Option<String>) {
@@ -50,7 +119,10 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Config::default(), None),
             Err(e) => (Config::default(), Some(format!("config.toml unreadable: {e}"))),
             Ok(s) => match toml::from_str::<Config>(&s) {
-                Ok(c) => (c, None),
+                Ok(mut c) => {
+                    let warnings = c.diagnostics.normalise();
+                    (c, (!warnings.is_empty()).then(|| warnings.join("; ")))
+                }
                 Err(e) => (Config::default(), Some(format!("invalid config.toml: {}", e.message()))),
             },
         }
@@ -98,6 +170,66 @@ mod tests {
         let w = w.unwrap();
         assert!(w.starts_with("invalid config.toml"), "{w}");
         assert!(w.contains("expected"), "{w}");
+    }
+
+    #[test]
+    fn diagnostics_defaults_and_bounds() {
+        let (c, w) = Config::load(Path::new("/nonexistent/alpheus/config.toml"));
+        assert_eq!(w, None);
+        assert_eq!(c.diagnostics.copy, vec!["wl-copy"]);
+        assert!(c.diagnostics.system_actions);
+        assert_eq!((c.diagnostics.restart_loop, c.diagnostics.journal_lines), (3, 500));
+        assert!(c.diagnostics.checks.is_empty());
+
+        let (c, w) = Config::load(&file(
+            "diag-ok",
+            "[diagnostics]\ncopy = []\nsystem_actions = false\nrestart_loop = 1000\njournal_lines = 5000\n\n[[diagnostics.checks]]\nname = \"One hypridle\"\nrun = [\"true\"]\nfix = \"pkill -x hypridle\"\n\n[[diagnostics.checks]]\nname = \"No fix\"\nrun = [\"true\"]\n",
+        ));
+        assert_eq!(w, None);
+        assert!(c.diagnostics.copy.is_empty() && !c.diagnostics.system_actions);
+        assert_eq!((c.diagnostics.restart_loop, c.diagnostics.journal_lines), (1000, 5000));
+        assert_eq!(c.diagnostics.checks.len(), 2);
+        assert_eq!(c.diagnostics.checks[1].fix, None);
+
+        for bad in ["restart_loop = 0", "restart_loop = 1001", "journal_lines = 0", "journal_lines = 5001"] {
+            let (c, w) = Config::load(&file("diag-range", &format!("[diagnostics]\n{bad}\n")));
+            assert_eq!((c.diagnostics.restart_loop, c.diagnostics.journal_lines), (3, 500), "{bad}");
+            assert!(w.unwrap().contains("[diagnostics]"), "{bad}");
+        }
+        // One bad value does not reset the others.
+        let (c, w) = Config::load(&file("diag-one", "[diagnostics]\nrestart_loop = 0\njournal_lines = 20\n"));
+        assert_eq!((c.diagnostics.restart_loop, c.diagnostics.journal_lines), (3, 20));
+        assert!(w.is_some());
+    }
+
+    #[test]
+    fn bad_and_surplus_checks_are_dropped_with_a_warning() {
+        let one = |name: &str, run: &str| format!("[[diagnostics.checks]]\nname = {name}\nrun = {run}\n\n");
+        let long = format!("\"{}\"", "n".repeat(41));
+        let text = [
+            one("\"\"", "[\"x\"]"),
+            one(&long, "[\"x\"]"),
+            one("\"tab\\there\"", "[\"x\"]"),
+            one("\"empty run\"", "[]"),
+            one("\"fine\"", "[\"x\"]"),
+        ]
+        .concat();
+        let (c, w) = Config::load(&file("diag-checks", &text));
+        assert_eq!(c.diagnostics.checks.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["fine"]);
+        assert!(w.is_some());
+        let nine: String = (0..9).map(|i| one(&format!("\"c{i}\""), "[\"x\"]")).collect();
+        let (c, w) = Config::load(&file("diag-nine", &nine));
+        assert_eq!(c.diagnostics.checks.len(), 8);
+        assert!(w.unwrap().contains("8"));
+        let fix = format!("[[diagnostics.checks]]\nname = \"a\"\nrun = [\"x\"]\nfix = \"{}\"\n", "f".repeat(201));
+        assert!(Config::load(&file("diag-fix", &fix)).0.diagnostics.checks.is_empty());
+    }
+
+    #[test]
+    fn unknown_diagnostics_keys_are_rejected() {
+        let (c, w) = Config::load(&file("diag-unknown", "[diagnostics]\ncpoy = []\n"));
+        assert_eq!(c, Config::default());
+        assert!(w.unwrap().contains("cpoy"));
     }
 
     #[test]

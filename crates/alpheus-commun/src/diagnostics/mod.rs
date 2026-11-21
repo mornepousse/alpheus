@@ -8,5 +8,6 @@ pub mod crashes;
 pub mod env;
 pub mod journal;
 pub mod names;
+pub mod query;
 pub mod show;
 pub mod units;

@@ -15,9 +15,14 @@ pub struct FailedUnit {
 /// The most units kept.
 pub const MAX_UNITS: usize = 256;
 
-/// The units of `list-units --output=json`, at most MAX_UNITS; a unit whose name fails `valid_unit`
-/// is dropped, every text cleaned to 200 characters.
+/// The failed units of `list-units --failed --output=json`, at most MAX_UNITS (see `parse_units`).
 pub fn parse_failed(json: &[u8]) -> Result<Vec<FailedUnit>, String> {
+    parse_units(json, MAX_UNITS)
+}
+
+/// The units of `list-units --output=json`, at most `max`; a unit whose name fails `valid_unit`
+/// is dropped, every text cleaned to 200 characters.
+pub fn parse_units(json: &[u8], max: usize) -> Result<Vec<FailedUnit>, String> {
     let list: Vec<serde_json::Value> = serde_json::from_slice(json).map_err(|e| e.to_string())?;
     let text = |v: &serde_json::Value, key: &str| clean_line(v.get(key).and_then(|x| x.as_str()).unwrap_or(""), 200);
     Ok(list
@@ -32,7 +37,7 @@ pub fn parse_failed(json: &[u8]) -> Result<Vec<FailedUnit>, String> {
                 description: text(v, "description"),
             })
         })
-        .take(MAX_UNITS)
+        .take(max)
         .collect())
 }
 
