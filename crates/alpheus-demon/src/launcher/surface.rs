@@ -553,13 +553,13 @@ impl App {
     /// Drops everything; a waiting dmenu client gets Reply::Cancelled (unless already answered).
     pub fn launcher_close(&mut self, reason: CloseReason) {
         let Some(mut open) = self.launcher.take() else { return };
-        let password = open.model.password;
-        reply_on_close(open.reply.take(), reason);
-        drop(open);
-        // Nothing is stored from the clipboard for 5 s after a password prompt.
-        if password {
+        // Nothing is stored from the clipboard for 5 s after a password prompt: stamped before
+        // anything that could panic.
+        if open.model.password {
             self.clipboard_password_closed();
         }
+        reply_on_close(open.reply.take(), reason);
+        drop(open);
         self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
         // The catalog, the matcher's matrices, the box's pool: give the
@@ -687,7 +687,7 @@ impl App {
                 let qh = self.qh.clone();
                 let result = self
                     .clipboard_guarded("copy", |app| app.clipboard_copy(&qh, id))
-                    .unwrap_or_else(|| Err("the clipboard is not available".into()));
+                    .unwrap_or_else(|| Err(crate::clipboard::app::NOT_AVAILABLE.into()));
                 match result {
                     Ok(()) => self.launcher_close(CloseReason::Activated),
                     Err(m) => {

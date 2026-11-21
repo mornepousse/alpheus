@@ -292,9 +292,8 @@ impl App {
         // that panicked) defers the release to a key-up or leave that its dead surface never sends.
         let open = self.launcher.take();
         let was_open = open.is_some();
-        if open.as_ref().is_some_and(|o| o.model.password) {
-            self.clipboard_password_closed();
-        }
+        // Only one launcher exists: any open prompt is this one, and its model is not read after a panic.
+        self.clipboard_password_closed_if_open();
         if let Some(open) = open {
             let _ = guarded("close", move || {
                 let mut open = open;

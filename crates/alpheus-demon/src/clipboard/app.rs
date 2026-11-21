@@ -64,7 +64,7 @@ fn apply_edit(history: &mut History, edit: &ClipEdit) -> bool {
     }
 }
 
-const NOT_AVAILABLE: &str = "the clipboard is not available";
+pub(crate) const NOT_AVAILABLE: &str = "the clipboard is not available";
 
 /// Enter on entry `id`: `own` makes its text the selection; only a copy that succeeded moves the
 /// entry to the front (a failed one must not reorder the history).
@@ -310,6 +310,13 @@ impl App {
         }
     }
 
+    /// After a panic the model is never read again: close the quiet state if any prompt was open.
+    pub(crate) fn clipboard_password_closed_if_open(&mut self) {
+        if let Some(c) = self.clipboard.as_mut() {
+            c.quiet.closed_if_open(Instant::now());
+        }
+    }
+
     /// The history's rows for a launcher open: a snapshot (previews only).
     pub(crate) fn clipboard_rows(&self) -> Vec<crate::clipboard::history::ClipRow> {
         self.clipboard.as_ref().map(|c| c.history.rows()).unwrap_or_default()
@@ -367,6 +374,10 @@ impl App {
     /// capability. `new_seat` and `new_capability` follow it later as before.
     pub(crate) fn clipboard_attach_at_start(&mut self) {
         let Some(seat) = self.seat.clone().or_else(|| self.seats.seats().next()) else { return };
+        // `remove_seat` compares against `self.seat`: record the seat attached to, as `new_seat` does.
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
         let qh = self.qh.clone();
         let Some(c) = self.clipboard.as_mut() else { return };
         c.control.attach(&seat, &qh);

@@ -80,6 +80,14 @@ impl PasswordQuiet {
         self.closed_at = Some(now);
     }
 
+    /// A close whose prompt kind is unknown (after a panic): stamped only if one was open, so
+    /// a launcher that was never a password prompt starts no window.
+    pub fn closed_if_open(&mut self, now: Instant) {
+        if self.open {
+            self.closed(now);
+        }
+    }
+
     pub fn active(&self, now: Instant) -> bool {
         in_quiet_window(self.open, self.closed_at, now)
     }

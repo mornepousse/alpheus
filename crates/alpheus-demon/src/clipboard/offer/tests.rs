@@ -48,6 +48,20 @@ fn the_password_quiet_state_follows_the_prompt() {
 }
 
 #[test]
+fn closed_if_open_stamps_only_an_open_prompt() {
+    let t = Instant::now();
+    let mut q = PasswordQuiet::default();
+    q.closed_if_open(t);
+    assert!(!q.active(t), "nothing was open: no window starts");
+    q.opened();
+    q.closed_if_open(t);
+    assert!(q.active(t + Duration::from_millis(4900)));
+    // A later call with nothing open does not move the stamp.
+    q.closed_if_open(t + Duration::from_secs(4));
+    assert!(!q.active(t + PASSWORD_QUIET), "the first close's window still ends at 5 s");
+}
+
+#[test]
 fn quiet_window_rules() {
     let now = Instant::now();
     let ago = |ms| now.checked_sub(Duration::from_millis(ms));

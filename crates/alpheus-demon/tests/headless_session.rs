@@ -6896,7 +6896,7 @@ fn clipboard_start_line_names_the_protocol() {
 
 #[test]
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
-fn enter_copies_back_without_a_new_entry() {
+fn clipboard_enter_copies_back_without_a_new_entry() {
     let (sway, d) = clip_daemon("clip-enter", Some(CLIP_ON));
     let (first, second) = (clip_copy(&sway, "alpha", false), clip_copy(&sway, "beta", false));
     drop((first, second));
