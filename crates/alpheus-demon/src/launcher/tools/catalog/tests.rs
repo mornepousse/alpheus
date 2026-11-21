@@ -324,16 +324,17 @@ fn an_empty_category_is_not_listed() {
     assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Session]".to_string()));
 }
 
+/// Controller's ruling (tools plan, decisions): an entry of a category cut by the 16-category
+/// bound is dropped, never moved to the root (the config counts it in its note).
 #[test]
-fn an_entry_naming_a_cut_category_goes_to_the_root() {
+fn an_entry_naming_a_cut_category_is_dropped() {
     let mut text = String::new();
     for i in 0..17 {
         text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
     }
     text.push_str("[[tools.entry]]\nname = \"Lost\"\ncategory = \"c16\"\nrun = [\"x\"]\n");
     let (cat, _) = build(&text, &all());
-    assert!(category_names(&cat, &cat.root_rows()).contains(&"Lost".to_string()), "never silently dropped");
-    assert!(cat.entries.iter().any(|e| e.name == "Lost" && e.category.is_none()));
+    assert!(!cat.entries.iter().any(|e| e.name == "Lost"), "not at the root, not anywhere");
 }
 
 #[test]
@@ -392,9 +393,9 @@ fn history_keys() {
     let key = |name: &str| cat.entries.iter().find(|e| e.name == name).unwrap().key.clone();
     assert_eq!(key("Notes"), "tool:builtin:notes");
     assert_eq!(key("Wi-Fi"), "tool:builtin:quick.wifi");
-    let long_name = "é".repeat(48);
-    let long_category = "ü".repeat(48);
-    let long_choice = "ß".repeat(64);
+    let long_name = "😀".repeat(48);
+    let long_category = "😀".repeat(48);
+    let long_choice = "😀".repeat(64);
     let text = format!(
         "[[tools.category]]\nname = {long_category:?}\n\
          [[tools.entry]]\nname = \"Update\"\nrun = [\"x\"]\n\

@@ -80,19 +80,19 @@ pub const BUILTINS: [Builtin; 23] = [
     b("night_light", "Night light", QUICK, '\u{F0594}', BuiltinAction::Toggle(Toggle::NightLight)),
     b("tab.home", "Home", CONTROL, '\u{F02DC}', BuiltinAction::Tab),
     b("tab.sound", "Sound", CONTROL, '\u{F057E}', BuiltinAction::Tab),
-    b("tab.network", "Network", CONTROL, '\u{F08F3}', BuiltinAction::Tab),
+    b("tab.network", "Network", CONTROL, '\u{F06F3}', BuiltinAction::Tab),
     b("tab.bluetooth", "Bluetooth", CONTROL, '\u{F00AF}', BuiltinAction::Tab),
     b("tab.power", "Power", CONTROL, '\u{F0079}', BuiltinAction::Tab),
     b("tab.displays", "Displays", CONTROL, '\u{F0379}', BuiltinAction::Tab),
     b("tab.appearance", "Theme", CONTROL, '\u{F03D8}', BuiltinAction::Tab),
-    b("tab.diagnostics", "Diagnostics", CONTROL, '\u{F02FC}', BuiltinAction::Tab),
+    b("tab.diagnostics", "Diagnostics", CONTROL, '\u{F04D9}', BuiltinAction::Tab),
     b("notes", "Notes", UTILITIES, '\u{F039E}', BuiltinAction::Notes),
     b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
-    b("emoji", "Emoji", UTILITIES, '\u{F0785}', BuiltinAction::Emoji),
+    b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
-    b("reload", "Reload the bar", SESSION, '\u{F0709}', BuiltinAction::Reload),
+    b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
 ];
 
 /// What decides which built-ins show (spec § 3's "Shown when" column): plain booleans, so the
@@ -243,7 +243,7 @@ impl Catalog {
                 }),
             }
         }
-        // A category name no longer in the list (cut past the bound) leaves its entries at the root.
+        // An entry of a category cut past the bound never gets here (`config::bounded` drops it).
         let category_of = |name: &str| categories.iter().position(|k| k.name == name);
         let mut entries = Vec::new();
         if t.builtins {

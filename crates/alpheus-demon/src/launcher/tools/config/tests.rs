@@ -176,6 +176,8 @@ fn invalid_rules_make_the_file_invalid() {
         (entry("state = [\" \"]\n"), "tools.entry 1", "state empty"),
         (entry("choices_cmd = [\" \"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"), "tools.entry 1", "choices_cmd empty"),
         (cat(""), "tools.category 1", "name must be 1 to 48 characters"),
+        (cat("Ze/ta"), "tools.category 1", "name must not hold \"/\""),
+        ("[[tools.entry]]\nname = \"Ze/ta\"\nrun = [\"x\"]\n".into(), "tools.entry 1", "name must not hold \"/\""),
         (cat("Zeta\t"), "tools.category 1", "control character or U+FFFD"),
         (format!("{}{}", cat("Zeta"), cat("Zeta")), "tools.category 2", "used twice"),
         ("[[tools.category]]\nname = \"Zeta\"\nicon = \"ab\"\n".into(), "tools.category 1", "icon must be one character"),
@@ -217,7 +219,7 @@ fn the_same_name_in_two_categories_is_fine() {
 
 #[test]
 fn the_limits_themselves_are_accepted() {
-    let long = "é".repeat(NAME_MAX); // 48 characters, 96 bytes: characters, not bytes
+    let long = "é".repeat(TOOL_NAME_MAX); // 48 characters, 96 bytes: characters, not bytes
     let text = format!("[[tools.entry]]\nname = {long:?}\nrun = [\"x\", \"{{choice}}\"]\nchoices = [{:?}]\n", "é".repeat(CHOICE_MAX));
     assert!(parse(&text).is_ok());
     assert!(parse(&entry("order = 1000\n")).is_ok());
@@ -249,7 +251,7 @@ fn bounds_cut_and_note_once() {
         [
             "tools: 17 categories in launcher.toml, the first 16 kept",
             "tools: 130 entries in launcher.toml, the first 128 kept",
-            "tools: entry 1: 40 choices, the first 32 kept",
+            "tools: 1 entries past 32 choices, the first 32 kept",
             "tools: 18 entries with a state, the first 16 read",
         ]
     );
@@ -296,14 +298,7 @@ fn a_cut_entry_leaves_the_later_positions_alone() {
     let cfg = ToolsConfig { entries, ..ToolsConfig::default() };
     let mut notes = Vec::new();
     let out = bounded(cfg, &mut |n| notes.push(n.to_string()));
-    assert_eq!(
-        notes,
-        [
-            "tools: entry 1: 40 choices, the first 32 kept",
-            "tools: entry 2: 40 choices, the first 32 kept",
-            "tools: entry 3: 40 choices, the first 32 kept"
-        ]
-    );
+    assert_eq!(notes, ["tools: 3 entries past 32 choices, the first 32 kept"]);
     assert!(out.entries.iter().all(|e| e.choices.len() == 32));
 }
 
@@ -339,4 +334,47 @@ fn the_three_prefixes() {
     // An empty one is exempt from the pair rules: `commands = "/"` is then fine.
     assert!(parse("[prefixes]\ntools = \"\"\ncommands = \"/\"").is_ok());
     assert!(parse("[prefixes]\ntools = \"t \"\ncommands = \"!\"\nwindows = \"w \"").is_ok());
+}
+
+#[test]
+fn an_entry_of_a_category_cut_by_the_bound_is_dropped_and_counted() {
+    let mut text = String::new();
+    for i in 0..18 {
+        text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
+    }
+    // Two entries in the cut categories, one in a kept one, one at the root, one in a built-in category.
+    for cat in ["category = \"c16\"\n", "category = \"c17\"\n", "category = \"c15\"\n", "", "category = \"Session\"\n"] {
+        text.push_str(&format!("[[tools.entry]]\nname = \"e{}\"\nrun = [\"x\"]\n{cat}", text.len()));
+    }
+    let c = parse(&text).unwrap();
+    assert_eq!(c.notes, ["tools: 18 categories in launcher.toml, the first 16 kept, 2 entries of the others dropped"]);
+    let kept: Vec<Option<&str>> = c.tools.entries.iter().map(|e| e.category.as_deref()).collect();
+    assert_eq!(kept, [Some("c15"), None, Some("Session")], "not moved to the root");
+    // No entry of a cut category and no bound crossed: nothing to note.
+    assert!(parse(&entry("category = \"Session\"\n")).unwrap().notes.is_empty());
+}
+
+#[test]
+fn an_unknown_category_still_fails_when_categories_were_cut() {
+    let mut text = String::new();
+    for i in 0..17 {
+        text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
+    }
+    text.push_str(&entry("category = \"Nowhere\"\n"));
+    assert!(parse(&text).unwrap_err().contains("category names no category"));
+}
+
+#[test]
+fn a_file_past_the_bounds_is_cut_before_it_is_checked() {
+    // The 129th entry and the 17th category are invalid (blank names) but never looked at.
+    let mut text = String::new();
+    for i in 0..16 {
+        text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
+    }
+    text.push_str("[[tools.category]]\nname = \" \"\n");
+    for i in 0..128 {
+        text.push_str(&format!("[[tools.entry]]\nname = \"e{i}\"\nrun = [\"x\"]\n"));
+    }
+    text.push_str("[[tools.entry]]\nname = \" \"\nrun = [\"x\"]\n");
+    assert!(parse(&text).is_ok());
 }

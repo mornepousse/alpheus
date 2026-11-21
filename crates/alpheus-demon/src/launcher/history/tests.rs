@@ -34,10 +34,26 @@ fn a_source_key_holds_a_whole_line_at_its_limits() {
     assert_eq!(line.len(), LINE_MAX);
     let name = "𝄞".repeat(NAME_MAX);
     let key = source_key(&name, &line);
-    assert_eq!(key.len(), ID_MAX, "the longest id there can be");
+    assert_eq!(key.len(), "source:".len() + 4 * NAME_MAX + 1 + LINE_MAX, "the longest source id");
+    assert!(key.len() <= ID_MAX);
     let mut h = History::empty(10);
     h.record(&key, NOW);
     assert_eq!(ids(&h), [key.as_str()], "a source key is a valid id");
+    assert_eq!(ids(&History::parse(&h.to_text(), 10, NOW)), [key.as_str()], "and survives the file");
+}
+
+/// Tools spec § 5: a user entry's key at its limits, four-byte characters throughout (48-character
+/// category and entry names, a 64-character fixed choice), is a valid id: recorded, saved, read back.
+#[test]
+fn a_tool_key_holds_its_longest_form() {
+    use crate::launcher::tools::config::{CHOICE_MAX, TOOL_NAME_MAX};
+    let (name, choice) = ("😀".repeat(TOOL_NAME_MAX), "😀".repeat(CHOICE_MAX));
+    let key = format!("tool:user:{name}/{name}/{choice}");
+    assert_eq!(key.len(), "tool:user:".len() + 4 * TOOL_NAME_MAX + 1 + 4 * TOOL_NAME_MAX + 1 + 4 * CHOICE_MAX);
+    assert!(ID_MAX >= key.len(), "ID_MAX {ID_MAX} < {}", key.len());
+    let mut h = History::empty(10);
+    h.record(&key, NOW);
+    assert_eq!(ids(&h), [key.as_str()]);
     assert_eq!(ids(&History::parse(&h.to_text(), 10, NOW)), [key.as_str()], "and survives the file");
 }
 

@@ -3,6 +3,7 @@
 //! notes go through a callback the caller logs).
 
 use serde::Deserialize;
+use std::collections::HashSet;
 
 /// At most this many `[[tools.category]]`; the first ones are kept.
 pub const MAX_CATEGORIES: usize = 16;
@@ -12,8 +13,8 @@ pub const MAX_ENTRIES: usize = 128;
 pub const MAX_CHOICES: usize = 32;
 /// Entries whose `state` is read; past it an entry shows with no state.
 pub const MAX_STATES: usize = 16;
-/// A category's or an entry's name: 1 to NAME_MAX characters (not bytes).
-pub const NAME_MAX: usize = 48;
+/// A category's or an entry's name: 1 to TOOL_NAME_MAX characters (not bytes).
+pub const TOOL_NAME_MAX: usize = 48;
 /// A fixed choice: 1 to CHOICE_MAX characters.
 pub const CHOICE_MAX: usize = 64;
 /// `order` is 0 to ORDER_MAX.
@@ -114,6 +115,15 @@ fn check_text(at: &str, what: &str, s: &str, max: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// A name: `check_text`, and no `/` (it separates the parts of a history key: spec § 5).
+fn check_name(at: &str, s: &str) -> Result<(), String> {
+    check_text(at, "name", s, TOOL_NAME_MAX)?;
+    if s.contains('/') {
+        return Err(format!("{at}: name must not hold \"/\""));
+    }
+    Ok(())
+}
+
 fn check_icon(at: &str, icon: &Option<String>) -> Result<(), String> {
     match icon {
         Some(i) if i.chars().count() != 1 => Err(format!("{at}: icon must be one character")),
@@ -143,25 +153,28 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         check_argv("tools.reload", "reload", &t.reload)
             .map_err(|_| "tools.reload: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
     }
+    // Called on a bounded config (at most 16 and 128): the sets keep it linear all the same.
+    let mut category_names = HashSet::new();
     for (i, c) in t.categories.iter().enumerate() {
         let at = format!("tools.category {}", i + 1);
-        check_text(&at, "name", &c.name, NAME_MAX)?;
-        if t.categories.iter().take(i).any(|o| o.name == c.name) {
+        check_name(&at, &c.name)?;
+        if !category_names.insert(c.name.as_str()) {
             return Err(format!("{at}: name used twice"));
         }
         check_icon(&at, &c.icon)?;
         check_order(&at, c.order)?;
     }
+    let mut entry_names = HashSet::new();
     for (i, e) in t.entries.iter().enumerate() {
         let at = format!("tools.entry {}", i + 1);
-        check_text(&at, "name", &e.name, NAME_MAX)?;
+        check_name(&at, &e.name)?;
         if let Some(cat) = &e.category
-            && !t.categories.iter().any(|c| &c.name == cat)
+            && !category_names.contains(cat.as_str())
             && !BUILTIN_CATEGORIES.contains(&cat.as_str())
         {
             return Err(format!("{at}: category names no category"));
         }
-        if t.entries.iter().take(i).any(|o| o.name == e.name && o.category == e.category) {
+        if !entry_names.insert((e.category.as_deref(), e.name.as_str())) {
             return Err(format!("{at}: name used twice in its category"));
         }
         check_icon(&at, &e.icon)?;
@@ -201,20 +214,35 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Cuts what is past a bound, with one `note` per bound (counts only, spec § 4): categories,
-/// entries, each entry's fixed choices, and the `state` past the 16th entry that has one.
+/// Cuts what is past a bound, with one `note` per bound (counts only, spec § 4): categories
+/// (an entry of a category cut is dropped, not moved to the root, and counted in the same
+/// note), entries, the fixed choices past `MAX_CHOICES` (one note for all the entries), and the
+/// `state` past the 16th entry that has one. Run before `validate`: what is cut is never checked.
 pub fn bounded(mut t: ToolsConfig, note: &mut dyn FnMut(&str)) -> ToolsConfig {
     if t.categories.len() > MAX_CATEGORIES {
-        note(&format!("tools: {} categories in launcher.toml, the first {MAX_CATEGORIES} kept", t.categories.len()));
+        let cut: HashSet<String> = t.categories[MAX_CATEGORIES..].iter().map(|c| c.name.clone()).collect();
+        let total = t.categories.len();
         t.categories.truncate(MAX_CATEGORIES);
+        let kept: HashSet<&str> = t.categories.iter().map(|c| c.name.as_str()).collect();
+        let before = t.entries.len();
+        t.entries.retain(|e| {
+            e.category.as_ref().is_none_or(|c| !cut.contains(c) || kept.contains(c.as_str()) || BUILTIN_CATEGORIES.contains(&c.as_str()))
+        });
+        let dropped = before - t.entries.len();
+        let mut line = format!("tools: {total} categories in launcher.toml, the first {MAX_CATEGORIES} kept");
+        if dropped > 0 {
+            line.push_str(&format!(", {dropped} entries of the others dropped"));
+        }
+        note(&line);
     }
     if t.entries.len() > MAX_ENTRIES {
         note(&format!("tools: {} entries in launcher.toml, the first {MAX_ENTRIES} kept", t.entries.len()));
         t.entries.truncate(MAX_ENTRIES);
     }
-    for e in &mut t.entries {
-        if e.choices.len() > MAX_CHOICES {
-            note(&format!("tools: entry {}: {} choices, the first {MAX_CHOICES} kept", e.position, e.choices.len()));
+    let long = t.entries.iter().filter(|e| e.choices.len() > MAX_CHOICES).count();
+    if long > 0 {
+        note(&format!("tools: {long} entries past {MAX_CHOICES} choices, the first {MAX_CHOICES} kept"));
+        for e in &mut t.entries {
             e.choices.truncate(MAX_CHOICES);
         }
     }

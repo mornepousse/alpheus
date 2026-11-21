@@ -25,13 +25,13 @@
 //! tools = "/"                                      # jumps into the Tools menu; "" turns it off
 //! [tools]                                          # the Tools menu (`alpheus-launch --tools`), see tools::config
 //! builtins = true
-//! reload = ["shell-ctl", "reload-bar"]
+//! reload = ["my-reload"]                           # what "Reload the bar" runs; [] hides it
 //! [[tools.category]]                               # at most 16
 //! name = "Nix"
 //! [[tools.entry]]                                  # at most 128
 //! name = "Update"
 //! category = "Nix"
-//! run = ["atya", "update"]                         # also: terminal, hold, confirm, state, choices, choices_cmd
+//! run = ["my-update", "--all"]                       # also: terminal, hold, confirm, state, choices, choices_cmd
 //! ```
 
 use super::tools::config::{self as tools_config, ToolsConfig};
@@ -186,9 +186,9 @@ impl LauncherConfig {
     /// - prefixes non-empty (`tools` may be empty: off), not starting with whitespace, none a
     ///   prefix of another (equal included);
     /// - sources: `check_sources`;
-    /// - tools: `tools_config::validate`, then `tools_config::bounded` (its notes go to `notes`).
+    /// - tools: `tools_config::bounded` (its notes go to `notes`), then `tools_config::validate`.
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
-        let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
+        let r: Raw = toml::from_str(s).map_err(|e| unquoted(e.message()))?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
@@ -249,9 +249,9 @@ impl LauncherConfig {
         check_sources(&r.sources)?;
         let mut tools = r.tools;
         tools_config::number(&mut tools);
-        tools_config::validate(&tools)?;
         let mut notes = Vec::new();
         let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
+        tools_config::validate(&tools)?;
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
@@ -267,6 +267,31 @@ impl LauncherConfig {
             notes,
         })
     }
+}
+
+/// `message` with every double-quoted run (backslash escapes honoured) replaced by `"…"`: toml
+/// quotes the offending value in a type error (`invalid type: string "…"`), and a `run` written as
+/// one string can hold a secret the log must not get. The error kind and the key names stay.
+fn unquoted(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            out.push(c);
+            continue;
+        }
+        out.push_str("\"…\"");
+        while let Some(q) = chars.next() {
+            match q {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => break,
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Whether `url` starts with RFC 3986's `<scheme>://` (a letter, then letters, digits, `+`, `-`, `.`).
@@ -332,6 +357,25 @@ mod tests {
         let p = config_path(&d);
         std::fs::write(&p, content).unwrap();
         (d, p)
+    }
+
+    /// toml quotes the offending value in a type error: a `run` written as one string would put
+    /// a secret in the log.
+    #[test]
+    fn a_type_error_never_quotes_the_value() {
+        for text in [
+            "[[sources]]\nname = \"a\"\nlist = [\"x\"]\nrun = \"secret --token x\"\n",
+            "[[tools.entry]]\nname = \"a\"\nrun = \"secret --token x\"\n",
+            "[[tools.entry]]\nname = \"a\"\nrun = [\"x\"]\nstate = \"se\\\"cret --token x\"\n",
+            "terminal = \"secret --token x\"\n",
+        ] {
+            let e = LauncherConfig::from_text(text).unwrap_err();
+            assert!(!e.contains("secret") && !e.contains("token"), "{text:?}: {e}");
+            assert!(e.contains("invalid type"), "the error kind stays: {e}");
+        }
+        let (_dir, path) = file("launcher.toml", "[[tools.entry]]\nname = \"a\"\nrun = \"secret --token x\"\n");
+        let (_, message) = LauncherConfig::load(&path);
+        assert!(!message.unwrap().contains("secret"));
     }
 
     #[test]

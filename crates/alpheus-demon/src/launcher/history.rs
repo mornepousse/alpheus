@@ -5,6 +5,7 @@
 //! "<last>\t<count>\t<id>", bounded, written atomically.
 
 use super::config::{HISTORY_MAX, LINE_MAX, NAME_MAX};
+use super::tools::config::{CHOICE_MAX, TOOL_NAME_MAX};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -15,9 +16,16 @@ pub const FILE_NAME: &str = "launcher-history";
 const COUNT_MAX: u32 = 10_000;
 /// A source entry's id starts so (sources spec § 3).
 const SOURCE_PREFIX: &str = "source:";
-/// Longer ids are refused (and skipped when read): the longest is a source key, "source:" + a name
-/// of NAME_MAX four-byte characters + ':' + a line of LINE_MAX bytes (648).
-pub(crate) const ID_MAX: usize = SOURCE_PREFIX.len() + 4 * NAME_MAX + 1 + LINE_MAX;
+/// A tool entry's id starts so (tools spec § 5): "tool:user:<category>/<name>[/<choice>]".
+const TOOL_USER_PREFIX: &str = "tool:user:";
+/// The longest source key: "source:" + a name of NAME_MAX four-byte characters + ':' + a line of
+/// LINE_MAX bytes (648).
+const SOURCE_ID_MAX: usize = SOURCE_PREFIX.len() + 4 * NAME_MAX + 1 + LINE_MAX;
+/// The longest tool key: "tool:user:" + a category and an entry name of TOOL_NAME_MAX four-byte
+/// characters each, + a fixed choice of CHOICE_MAX four-byte characters, two '/' between.
+const TOOL_ID_MAX: usize = TOOL_USER_PREFIX.len() + 4 * TOOL_NAME_MAX + 1 + 4 * TOOL_NAME_MAX + 1 + 4 * CHOICE_MAX;
+/// Longer ids are refused (and skipped when read): the longer of the two forms above.
+pub(crate) const ID_MAX: usize = if SOURCE_ID_MAX > TOOL_ID_MAX { SOURCE_ID_MAX } else { TOOL_ID_MAX };
 /// What `load` reads at most: the largest valid file, HISTORY_MAX lines of
 /// "<last: 20 digits>\t<count: 5 digits>\t<id>\n" (≈ 660 KiB; 200 typical entries ≈ 12 KiB).
 const READ_MAX: u64 = (HISTORY_MAX * (20 + 1 + 5 + 1 + ID_MAX + 1)) as u64;
