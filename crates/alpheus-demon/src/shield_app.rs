@@ -22,9 +22,6 @@ pub(crate) enum ListFor {
 pub(crate) struct ShieldApp {
     pub(crate) model: Shield,
     pub(crate) config: ShieldConfig,
-    /// The flag's directory is watched (the watch armed). Not: the flag is re-read after each
-    /// command alpheus runs and at each panel open, never on a timer.
-    pub(crate) watched: bool,
     /// Armed only while a switch waits for its flag: the 5 s grace or the 60 s bound.
     timer: DeadlineTimer,
     /// Who waits for the read in flight.
@@ -40,7 +37,6 @@ impl ShieldApp {
         config.configured().then(|| ShieldApp {
             model: Shield::default(),
             config: config.clone(),
-            watched: false,
             timer: DeadlineTimer::new(),
             askers: Vec::new(),
             listing: None,
@@ -72,6 +68,14 @@ pub(crate) fn incoming(kind: &NoticeKind, config: &ShieldConfig) -> crate::notif
 }
 
 impl App {
+    /// The flag's directory is watched, now: derived from the live watch, so a rearm that failed or a
+    /// descriptor shared with the theme's (the target dropped) makes the degraded re-reads happen.
+    /// Without a watch the flag is re-read after each command alpheus runs, at each panel open and at
+    /// a switch's deadline, never on a timer.
+    pub(crate) fn shield_watched(&self) -> bool {
+        self.theme.watch.as_ref().is_some_and(crate::watch::Watches::shield_armed)
+    }
+
     /// Reads the flag once and seeds the model (no notice, no hook), once the watch is armed.
     pub(crate) fn shield_start(&mut self) {
         let Some(sh) = self.shield.as_mut() else { return };
@@ -133,7 +137,9 @@ impl App {
     pub(crate) fn shield_allow(&mut self, id: u32) -> Result<(), &'static str> {
         let sh = self.shield.as_mut().ok_or("shield is not configured in bar.toml")?;
         let argv = allow_argv(&sh.config.allow, id).ok_or("allow is not configured")?;
-        let generation = sh.model.begin_allow(id, Instant::now()).ok_or("a shield command is already running")?;
+        let name = sh.listing.as_ref().and_then(|l| l.as_ref().ok()).and_then(|p| p.devices.iter().find(|d| d.id == id));
+        let name = name.map_or_else(|| "?".to_string(), |d| d.name.clone());
+        let generation = sh.model.begin_allow(id, name, Instant::now()).ok_or("a shield command is already running")?;
         log("shield: allow");
         self.shield_spawn(Job::Allow(id), generation, argv);
         self.shield_publish();
@@ -174,11 +180,12 @@ impl App {
     /// A worker's report (the loop's mail): its slot freed, the live attempt's result handled, and in
     /// the degraded mode (no watch) the flag read again after a command.
     pub(crate) fn shield_mail(&mut self, m: ShieldMail) {
+        let watched = self.shield_watched();
         let Some(sh) = self.shield.as_mut() else { return };
         let ShieldMail::Done { job, .. } = &m;
         let acted = *job != Job::List;
         let finish = sh.model.done(m, Instant::now());
-        let degraded = acted && !sh.watched;
+        let degraded = acted && !watched;
         if let Some(f) = finish {
             self.shield_finish(f);
         }
@@ -191,8 +198,15 @@ impl App {
 
     /// The timer fired: calloop dropped it, then the model decides.
     fn shield_tick(app: &mut App, now: Instant) {
+        let watched = app.shield_watched();
         let Some(sh) = app.shield.as_mut() else { return };
         sh.timer.fired();
+        if !watched {
+            // No watch: the deadline is the one moment the flag is read again (once, never polled), so a
+            // change nobody told us about ends the attempt as a success, not as "unchanged".
+            app.shield_readable();
+        }
+        let Some(sh) = app.shield.as_mut() else { return };
         if let Some(f) = sh.model.expired(now) {
             app.shield_finish(f);
         }
@@ -216,9 +230,7 @@ impl App {
                 log(&format!("shield: switching {} failed ({})", if target { "on" } else { "off" }, why.text()));
                 self.shield_notice(NoticeKind::SwitchFailed);
             }
-            Finish::Allowed(id) => {
-                let name = sh.listing.as_ref().and_then(|l| l.as_ref().ok()).and_then(|p| p.devices.iter().find(|d| d.id == id));
-                let name = name.map_or_else(|| "?".to_string(), |d| d.name.clone());
+            Finish::Allowed(_, name) => {
                 self.shield_notice(NoticeKind::Allowed(name));
             }
             Finish::AllowFailed(_, why) => {

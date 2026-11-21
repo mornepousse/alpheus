@@ -90,7 +90,7 @@ impl Reason {
 pub enum Finish {
     Switched(bool),
     SwitchFailed(bool, Reason),
-    Allowed(u32),
+    Allowed(u32, String),
     AllowFailed(u32, Reason),
     Listed(Parsed),
     ListFailed(Reason),
@@ -167,7 +167,13 @@ enum AttemptKind {
 /// The flag's existence: `Some(true)` while it exists, `Some(false)` when it does not, None when it
 /// cannot be told (any error but "not found": never "off" on a guess).
 pub fn read_flag(flag: &Path) -> Option<bool> {
-    flag.try_exists().ok()
+    // `metadata` follows a link: a regular file (or a link to one) is on; nothing there, or a dangling
+    // link, is off; a directory or anything else there, or an error, is unknown (never "on" by a guess).
+    match std::fs::metadata(flag) {
+        Ok(m) => m.is_file().then_some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
 }
 
 /// A change between the two known states.
@@ -200,6 +206,8 @@ pub struct Shield {
     read_held: bool,
     next_generation: u64,
     attempt: Option<Attempt>,
+    /// The name of the device the live allow targets, taken when it began (the listing may be gone by its end).
+    allow_name: Option<String>,
     failed_until: Option<Instant>,
     /// The unknown spell already logged.
     unknown_noted: bool,
@@ -265,12 +273,13 @@ impl Shield {
         Some((target, generation))
     }
 
-    pub fn begin_allow(&mut self, id: u32, now: Instant) -> Option<u64> {
+    pub fn begin_allow(&mut self, id: u32, name: String, now: Instant) -> Option<u64> {
         if self.action_held {
             return None;
         }
         let generation = self.take_generation();
         self.action_held = true;
+        self.allow_name = Some(name);
         self.attempt = Some(Attempt { kind: AttemptKind::Allow(id), generation, started: now, grace_end: None, capped: false });
         Some(generation)
     }
@@ -311,8 +320,9 @@ impl Shield {
         match attempt.kind {
             AttemptKind::Allow(id) => {
                 self.attempt = None;
+                let name = self.allow_name.take().unwrap_or_else(|| "?".into());
                 Some(match outcome {
-                    RunOutcome::Exited(Some(0)) => Finish::Allowed(id),
+                    RunOutcome::Exited(Some(0)) => Finish::Allowed(id, name),
                     other => Finish::AllowFailed(id, reason_of(other, false)),
                 })
             }

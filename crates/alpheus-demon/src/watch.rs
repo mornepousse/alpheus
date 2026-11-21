@@ -196,7 +196,7 @@ impl Watches {
             match arm(&fd, dir, FLAG_DIR_MASK) {
                 Ok(on) => Some(ShieldTarget { target: Target { dir: dir.to_path_buf(), on }, flag_name: name.as_bytes().to_vec() }),
                 Err(e) => {
-                    log(&format!("shield: flag not watched ({e})"));
+                    log(&shield_unwatched_line(&e));
                     None
                 }
             }
@@ -218,12 +218,17 @@ impl Watches {
             return;
         }
         self.shield = None;
-        if let Some(t) = &self.theme {
+        let restored = self.theme.as_ref().map(|t| {
             let (path, mask) = match t.on {
                 On::Parent(_) => (t.dir.parent().unwrap_or(&t.dir), PARENT_MASK),
                 _ => (t.dir.as_path(), DIR_MASK),
             };
-            let _ = self.fd.add(path, mask);
+            self.fd.add(path, mask).is_ok()
+        });
+        if restored == Some(false) {
+            // The theme's directory went in between: wait for it again as at any loss.
+            log("theme: mask not restored; watching again");
+            self.rearm_theme();
         }
         log("shield: flag not watched (shares the config directory's watch)");
     }
@@ -302,7 +307,7 @@ impl Watches {
         s.target.on = match arm(&self.fd, &s.target.dir, FLAG_DIR_MASK) {
             Ok(on) => on,
             Err(e) => {
-                log(&format!("shield: flag not watched ({e})"));
+                log(&shield_unwatched_line(&e));
                 On::Nothing
             }
         };
@@ -319,16 +324,47 @@ fn symlink_line(dir: &Path) -> Option<String> {
     is_symlink(dir).then(|| format!("theme: {} is a symlink; replacing it is not seen until restart", dir.display()))
 }
 
+/// Why a target could not be armed: `text` names the path (the theme's lines keep it), `reason`
+/// is the OS reason alone (the Shield's line never carries a path: the flag's can name the user).
+#[derive(Debug)]
+struct ArmError {
+    text: String,
+    reason: String,
+}
+
+impl std::fmt::Display for ArmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+/// The Shield's log line for a flag that cannot be watched: the reason, never a path.
+fn shield_unwatched_line(e: &ArmError) -> String {
+    format!("shield: flag not watched ({})", e.reason)
+}
+
 /// The directory (with `mask`), or its parent when the directory does not exist.
-fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, String> {
+fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, ArmError> {
     match fd.add(dir, mask) {
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let parent = dir.parent().ok_or_else(|| format!("{} has no parent to wait in", dir.display()))?;
-            fd.add(parent, PARENT_MASK).map(On::Parent).map_err(|e| format!("cannot watch {} ({e})", parent.display()))
+            let Some(parent) = dir.parent() else {
+                return Err(ArmError {
+                    text: format!("{} has no parent to wait in", dir.display()),
+                    reason: "no parent directory to wait in".into(),
+                });
+            };
+            fd.add(parent, PARENT_MASK)
+                .map(On::Parent)
+                .map_err(|e| ArmError { text: format!("cannot watch {} ({e})", parent.display()), reason: e.kind().to_string() })
         }
-        Err(e) => Err(format!("cannot watch {} ({e})", dir.display())),
+        Err(e) => Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() }),
     }
+}
+
+/// The flag to watch: the configured one, when Shield mode is on.
+fn flag_to_watch(shield: Option<&crate::shield_app::ShieldApp>) -> Option<PathBuf> {
+    shield.map(|s| s.flag().to_path_buf())
 }
 
 /// Starts watching (`startup::run`, once the loop exists). Any failure: one line, the theme files
@@ -340,7 +376,7 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     if let Some(line) = symlink_line(&dir) {
         log(&line);
     }
-    let flag = state.shield.as_ref().map(|s| s.flag().to_path_buf());
+    let flag = flag_to_watch(state.shield.as_ref());
     let watch = match Watches::start(&dir, flag.as_deref()) {
         Ok(w) => Some(w),
         Err(e) => {
@@ -352,9 +388,6 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
         }
     };
     let watch = watch.and_then(|w| attach(handle, w));
-    if let Some(sh) = state.shield.as_mut() {
-        sh.watched = watch.as_ref().is_some_and(Watches::shield_armed);
-    }
     state.theme.watch = watch;
     state.shield_start();
 }
@@ -801,8 +834,50 @@ mod tests {
         assert!(
             arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK)
                 .unwrap_err()
+                .text
                 .starts_with("cannot watch /nonexistent-alpheus-parent")
         );
+    }
+
+    #[test]
+    fn the_shield_line_carries_a_reason_never_a_path() {
+        let e = arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/state"), FLAG_DIR_MASK).unwrap_err();
+        let line = shield_unwatched_line(&e);
+        assert!(line.starts_with("shield: flag not watched ("), "{line}");
+        assert!(!line.contains("nonexistent-alpheus-parent") && !line.contains('/'), "{line}");
+        assert!(line.contains("not found"), "{line}");
+        // The theme's own line keeps its path.
+        assert!(e.text.contains("nonexistent-alpheus-parent"));
+    }
+
+    #[test]
+    fn a_failed_restore_of_the_themes_mask_rearms_the_theme() {
+        let cfg = temp("restore-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let state = temp("restore-state");
+        std::fs::create_dir_all(&state).unwrap();
+        let mut w = Watches::start(&cfg, Some(&state.join("on"))).unwrap();
+        // Force the shared-descriptor case by hand, then lose the theme's directory before the restore.
+        let theme_on = w.theme_on();
+        w.shield.as_mut().unwrap().target.on = theme_on;
+        std::fs::remove_dir_all(&cfg).unwrap();
+        w.settle();
+        assert!(w.shield.is_none(), "the shield target gave way");
+        assert!(matches!(w.theme_on(), On::Parent(_) | On::Nothing), "{:?}: re-armed, not left on a dead descriptor", w.theme_on());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn no_flag_is_watched_without_a_shield_app() {
+        assert_eq!(flag_to_watch(None), None);
+        let c = crate::config::ShieldConfig {
+            flag: "/var/lib/test-shield/on".into(),
+            on: vec!["x".into()],
+            off: vec!["x".into()],
+            ..Default::default()
+        };
+        let app = crate::shield_app::ShieldApp::new(&c).unwrap();
+        assert_eq!(flag_to_watch(Some(&app)), Some(PathBuf::from("/var/lib/test-shield/on")));
     }
 
     #[test]

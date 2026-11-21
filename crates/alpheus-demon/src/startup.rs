@@ -97,15 +97,37 @@ pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &P
     let warning = if !s.configured() {
         Some("shield: needs flag, on and off; Shield mode off")
     } else {
-        let flag_dir = Path::new(&s.flag).parent();
+        // Compared lexically normalised (`..` and `.` resolved as written).
+        let flag = normalise(Path::new(&s.flag));
+        let config_dir = &normalise(config_dir);
+        let flag_dir = flag.parent();
         let mine = [flag_dir, flag_dir.and_then(Path::parent)];
-        let theirs = [Some(config_dir), config_dir.parent()];
+        let theirs = [Some(config_dir.as_path()), config_dir.parent()];
         let shared = mine.iter().flatten().any(|m| theirs.iter().flatten().any(|t| m == t));
         shared.then_some("shield.flag: must not share a directory with alpheus's config; Shield mode off")
     };
     let warning = warning?;
     *s = crate::config::ShieldConfig::default();
     Some(warning.to_string())
+}
+
+/// `path` with its `.` and `..` components resolved lexically (no file system access; a `..` at
+/// the root stays at the root).
+fn normalise(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() && !path.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode

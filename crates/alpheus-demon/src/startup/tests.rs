@@ -446,6 +446,24 @@ fn a_flag_sharing_the_config_directory_is_refused() {
 }
 
 #[test]
+fn the_flag_location_is_compared_after_lexical_normalisation() {
+    let cfg = Path::new("/home/test/.config/alpheus");
+    for flag in [
+        "/home/test/.config/alpheus/../alpheus/on",
+        "/home/test/x/../.config/alpheus/on",
+        "/home/test/./.config/alpheus/./on",
+        "/home/test/.config/alpheus/sub/../../on",
+    ] {
+        let mut s = shield_in(flag);
+        assert!(resolve_shield(&mut s, cfg).is_some(), "{flag} accepted");
+        assert!(!s.configured(), "{flag}");
+    }
+    let mut s = shield_in("/var/lib/a/../test-shield/on");
+    assert_eq!(resolve_shield(&mut s, cfg), None);
+    assert!(s.configured());
+}
+
+#[test]
 fn settings_carries_the_shield_warning() {
     let d = std::env::temp_dir().join(format!("alpheus-shield-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

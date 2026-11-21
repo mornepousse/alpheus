@@ -60,6 +60,21 @@ fn read_flag_tells_missing_from_unreadable() {
 }
 
 #[test]
+fn a_directory_at_the_flag_path_is_not_on() {
+    let d = TempPath::dir("shield-flag-kinds");
+    let d = d.as_ref();
+    std::fs::create_dir(d.join("dir")).unwrap();
+    assert_eq!(read_flag(&d.join("dir")), None, "a directory is neither on nor off");
+    std::fs::write(d.join("file"), "").unwrap();
+    std::os::unix::fs::symlink(d.join("file"), d.join("to-file")).unwrap();
+    assert_eq!(read_flag(&d.join("to-file")), Some(true), "a link to a regular file counts");
+    std::os::unix::fs::symlink(d.join("dir"), d.join("to-dir")).unwrap();
+    assert_eq!(read_flag(&d.join("to-dir")), None);
+    std::os::unix::fs::symlink(d.join("absent"), d.join("dangling")).unwrap();
+    assert_eq!(read_flag(&d.join("dangling")), Some(false), "a dangling link is nothing there");
+}
+
+#[test]
 fn the_view_follows_the_config() {
     let mut c = ShieldConfig::default();
     let s = Shield::default();
@@ -170,15 +185,15 @@ fn one_action_slot_until_done() {
     let (mut s, g) = switching_on(now);
     assert!(s.action_busy());
     assert_eq!(s.begin_switch(now), None);
-    assert_eq!(s.begin_allow(7, now), None);
+    assert_eq!(s.begin_allow(7, "Test Stick".into(), now), None);
     // The bound passes, the attempt fails, the slot is still held (a setuid helper the deadline cannot kill).
     assert!(s.expired(secs(now, 60)).is_some());
     assert!(s.action_busy(), "held until its worker reports");
     assert_eq!(s.begin_switch(secs(now, 61)), None);
-    assert_eq!(s.begin_allow(7, secs(now, 61)), None);
+    assert_eq!(s.begin_allow(7, "x".into(), secs(now, 61)), None);
     assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 70)), None);
     assert!(!s.action_busy());
-    assert!(s.begin_allow(7, secs(now, 71)).is_some());
+    assert!(s.begin_allow(7, "x".into(), secs(now, 71)).is_some());
 }
 
 #[test]
@@ -266,7 +281,7 @@ fn the_deadline_follows_the_grace() {
     assert_eq!(s2.deadline(), None, "none after a success");
     // An allow never arms the shield's timer.
     s.observe(Some(true));
-    s.begin_allow(7, now);
+    s.begin_allow(7, "Test Stick".into(), now);
     assert_eq!(s.deadline(), None);
     // A failure leaves none either.
     let (mut s3, g) = switching_on(now);
@@ -279,14 +294,14 @@ fn an_allow_ends_on_its_exit() {
     let now = t0();
     let mut s = Shield::default();
     s.observe(Some(true));
-    let g = s.begin_allow(7, now).unwrap();
-    assert_eq!(s.done(done(Job::Allow(7), g, RunOutcome::Exited(Some(0))), now), Some(Finish::Allowed(7)));
-    let g = s.begin_allow(8, now).unwrap();
+    let g = s.begin_allow(7, "Test Stick".into(), now).unwrap();
+    assert_eq!(s.done(done(Job::Allow(7), g, RunOutcome::Exited(Some(0))), now), Some(Finish::Allowed(7, "Test Stick".into())));
+    let g = s.begin_allow(8, "Other".into(), now).unwrap();
     assert_eq!(s.done(done(Job::Allow(8), g, RunOutcome::Exited(Some(1))), now), Some(Finish::AllowFailed(8, Reason::Exit(1))));
     for (o, r) in
         [(RunOutcome::Capped, Reason::OutputTooLong), (RunOutcome::TimedOut, Reason::TimedOut), (RunOutcome::NotFound, Reason::NotFound)]
     {
-        let g = s.begin_allow(9, now).unwrap();
+        let g = s.begin_allow(9, "Other".into(), now).unwrap();
         assert_eq!(s.done(done(Job::Allow(9), g, o), now), Some(Finish::AllowFailed(9, r)));
     }
 }
