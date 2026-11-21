@@ -28,6 +28,8 @@ pub const COMMAND_ICON: char = '\u{f018d}';
 pub const CALC_ICON: char = '\u{f00ec}';
 /// Glyph for the web search row (md-magnify).
 pub const SEARCH_ICON: char = '\u{f0349}';
+/// Glyph for a pinned history row (md-pin).
+pub const PIN_ICON: char = '\u{f0403}';
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,10 +146,24 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
             (None, format!("{emoji}  {name}"), "emoji".into())
         }
         Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)), "shell".into()),
+        Source::Clip(i) => match l.clips.get(i) {
+            Some(c) => (Some(if c.pinned { PIN_ICON } else { ' ' }), c.first.clone(), more_lines(c.more_lines)),
+            None => (None, String::new(), String::new()),
+        },
+        Source::ClipClear => (None, "Clear history".into(), String::new()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
         }
+    }
+}
+
+/// A history row's dim tail: how many lines its first line leaves out.
+fn more_lines(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "+1 line".into(),
+        n => format!("+{n} lines"),
     }
 }
 
@@ -169,6 +185,11 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         return;
     }
     let (icon, name, kind) = describe(l, l.results[index].source);
+    if matches!(l.results[index].source, Source::ClipClear) && l.clear_question() {
+        let row = Row { icon: None, icon_style: Style::ACCENT, text: "Clear? ⏎", right: "", style: Style::WARN, selected };
+        list::row(g, 1, b.pane_end(), &row);
+        return;
+    }
     let failed = matches!(l.results[index].source, Source::Calc) && matches!(l.calc, Some(Err(_)));
     let row = Row {
         icon,
@@ -200,12 +221,17 @@ fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>
     }
 }
 
+fn clips_help(l: &Launcher) -> &'static str {
+    if l.clips.is_empty() { "esc close" } else { "enter copy · ctrl+enter pin · del forget · esc close" }
+}
+
 fn help_text(l: &Launcher) -> &'static str {
     match l.prefixed() {
         Some((Prefix::Search, _)) => return "enter search · esc close",
         Some((Prefix::Emoji, _)) if l.config.copy.is_empty() => return "esc close",
         Some((Prefix::Emoji, _)) => return "enter copy · ctrl+enter copy name · esc close",
         Some((Prefix::Shell, _)) => return "enter run · ctrl+enter run in terminal · esc close",
+        Some((Prefix::Clipboard, _)) => return clips_help(l),
         None => {}
     }
     if l.is_switcher() {
@@ -213,6 +239,7 @@ fn help_text(l: &Launcher) -> &'static str {
     }
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
+        Mode::Clipboard => clips_help(l),
         Mode::Calc if l.config.copy.is_empty() => "esc close",
         Mode::Calc => "enter copy · ctrl+enter copy expression · esc close",
         Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
@@ -331,6 +358,25 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 }
             }
         }
+        Source::Clip(i) => {
+            if let Some(c) = l.clips.get(i) {
+                let tail = [
+                    (String::new(), Style::NORMAL),
+                    ("enter  copy".to_string(), Style::NORMAL),
+                    ("ctrl+enter  pin".to_string(), Style::NORMAL),
+                    ("delete  forget".to_string(), Style::NORMAL),
+                ];
+                let room = budget.saturating_sub(tail.len());
+                out.extend(capped_wrap(&c.preview, width, room).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+                out.extend(tail);
+            }
+        }
+        Source::ClipClear => {
+            out.push(("Forget every copy".to_string(), Style::BOLD_ACCENT));
+            out.push(("pinned ones stay".to_string(), Style::MUTED));
+            out.push((String::new(), Style::NORMAL));
+            out.push(("enter  clear".to_string(), Style::NORMAL));
+        }
         Source::Shell => {
             let text = l.prefixed().map_or("", |(_, t)| t);
             let tail = [
@@ -395,6 +441,8 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                     }
                 }
                 Mode::Calc => "type an expression",
+                Mode::Clipboard if l.query.trim().is_empty() => prefix::hint(Prefix::Clipboard),
+                Mode::Clipboard => "no match",
                 _ if l.is_switcher() => "no window open",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",

@@ -132,3 +132,31 @@ fn rows_preview_drops_invisible_characters() {
     h.push("pay\u{202e}me\u{2066}now\u{2069} \u{200b}ok".into());
     assert_eq!(h.rows()[0].preview, "paymenow ok");
 }
+
+#[test]
+fn rows_show_the_first_line_and_count_the_lines_not_shown() {
+    let mut h = History::default();
+    h.push("\n  first\tline \nsecond\nthird\n\n".into());
+    let r = &h.rows()[0];
+    assert_eq!(r.first, "first line", "the first non-blank line, folded");
+    assert_eq!(r.more_lines, 2, "second and third: trailing blank lines are not lines");
+    assert_eq!(r.preview, "first line second third", "matching sees every line");
+
+    let mut h = History::default();
+    h.push("one line".into());
+    let r = &h.rows()[0];
+    assert_eq!((r.first.as_str(), r.more_lines), ("one line", 0));
+
+    let mut h = History::default();
+    h.push(format!("{}\nnext", "a".repeat(3000)));
+    let r = &h.rows()[0];
+    assert!(r.first.len() <= PREVIEW_BYTES);
+    assert_eq!(r.more_lines, 1);
+}
+
+#[test]
+fn a_row_wipes_its_first_line_too() {
+    let src = include_str!("../history.rs");
+    let drop_impl = src.split("impl Drop for ClipRow").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+    assert!(drop_impl.contains("wipe(&mut self.preview)") && drop_impl.contains("wipe(&mut self.first)"), "{drop_impl}");
+}

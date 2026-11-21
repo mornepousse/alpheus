@@ -1594,6 +1594,29 @@ fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&s
     }
 }
 
+/// A clipboard history row spawns nothing from the launcher: `perform` refuses it (the app copies
+/// from its own history first), and no key or click on the rows reaches an executor.
+#[test]
+fn a_clipboard_row_spawns_nothing_from_the_launcher() {
+    use alpheus_demon::clipboard::history::ClipRow;
+    let rows = || {
+        (0..3).map(|i| ClipRow { id: i, preview: format!("row {i}"), first: format!("row {i}"), more_lines: 0, pinned: i == 0 }).collect()
+    };
+    let fake = FakeExecutor::new();
+    let ctx = RunContext { exec: &fake, spawner: Spawner::Detached, history_path: None, path_dirs: &[] };
+    for secondary in [false, true] {
+        for i in 0..4 {
+            let mut l = Launcher::for_clipboard(LauncherConfig::default(), rows());
+            let o = l.click(i, secondary);
+            if let Outcome::Activate(a) = o {
+                assert!(matches!(a, Activation::Clip { .. }), "{a:?}");
+                assert!(perform(&mut l, a, &ctx).is_err(), "perform refuses a history row");
+            }
+        }
+    }
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+}
+
 /// Every activation the launcher can produce — every result of every mode,
 /// Enter and Ctrl+Enter, typed shell text, under both spawners — only runs
 /// the shapes of the allowlist (Global Constraints): an app's argv, alone
@@ -3682,6 +3705,22 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
     assert_eq!(body.matches("set_selection(").count(), 2, "both calls sit inside own_selection: {body}");
     assert_eq!(body.matches("own_offer_types()").count(), 2, "each source offers the one list, marker included: {body}");
     assert_eq!(body.matches("set_selection(Some(").count(), 2, "only ever a source: {body}");
+}
+
+/// An offer taken in `clipboard_selection_inner` sits in a `DestroyOnDrop` before anything can
+/// panic: a panic between taking it and reading it still destroys it (Task 3 review).
+#[test]
+fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
+    let files = source_files();
+    let app = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("clipboard/app.rs").1;
+    let prod = production_code(app);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let take = body.find("slot.take()").expect("the offer is taken out of its slot");
+    let guard = body.find("DestroyOnDrop::new(offer)").expect("the offer is wrapped in DestroyOnDrop");
+    assert!(take < guard, "wrapped right after it is taken: {body}");
+    // Nothing that can panic or call out sits between the take and the guard.
+    let between = &body[take..guard];
+    assert!(!between.contains("self.") && !between.contains("unwrap") && !between.contains("expect"), "{between}");
 }
 
 /// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).

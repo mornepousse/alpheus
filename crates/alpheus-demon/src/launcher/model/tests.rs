@@ -992,3 +992,239 @@ fn a_typed_query_filters_then_steps() {
     assert_eq!(l.results.len(), 1);
     assert_eq!(l.step(1), Outcome::Nothing);
 }
+
+// ---- the clipboard history (clipboard spec, task 5) ----
+
+use crate::clipboard::history::{ClipRow, MAX_PINS};
+use std::time::{Duration, Instant};
+
+fn clip(id: u64, text: &str, pinned: bool) -> ClipRow {
+    ClipRow { id, preview: text.into(), first: text.lines().next().unwrap_or_default().into(), more_lines: 0, pinned }
+}
+
+fn rows3() -> Vec<ClipRow> {
+    vec![clip(10, "alpha", true), clip(11, "buy milk", false), clip(12, "token 1234", false)]
+}
+
+fn clipboard_box() -> Launcher {
+    Launcher::for_clipboard(LauncherConfig::default(), rows3())
+}
+
+/// The All launcher with the history on and `rows3`, the query a bare `"`.
+fn clip_prefix_box() -> Launcher {
+    let mut l = launcher();
+    l.clipboard = true;
+    l.set_clips(rows3());
+    typed(&mut l, "\"");
+    l
+}
+
+#[test]
+fn a_bare_quote_lists_everything_pinned_first_then_clear() {
+    for l in [clipboard_box(), clip_prefix_box()] {
+        assert_eq!(sources(&l), [Source::Clip(0), Source::Clip(1), Source::Clip(2), Source::ClipClear]);
+    }
+}
+
+#[test]
+fn clear_is_offered_only_with_an_unpinned_row_and_no_filter() {
+    let l = Launcher::for_clipboard(LauncherConfig::default(), vec![clip(1, "a", true)]);
+    assert_eq!(sources(&l), [Source::Clip(0)], "only pins: nothing to clear");
+    let l = Launcher::for_clipboard(LauncherConfig::default(), vec![]);
+    assert!(l.results.is_empty());
+}
+
+#[test]
+fn typing_filters_by_preview() {
+    let mut l = clipboard_box();
+    typed(&mut l, "milk");
+    assert_eq!(sources(&l), [Source::Clip(1)], "no Clear row with a filter");
+    let mut l = clip_prefix_box();
+    typed(&mut l, "tok");
+    assert_eq!(sources(&l), [Source::Clip(2)]);
+}
+
+#[test]
+fn matching_sees_the_whole_preview_not_only_the_shown_line() {
+    let mut row = clip(1, "first second line", false);
+    row.first = "first".into();
+    row.more_lines = 1;
+    let mut l = Launcher::for_clipboard(LauncherConfig::default(), vec![row]);
+    typed(&mut l, "second");
+    assert_eq!(sources(&l), [Source::Clip(0)]);
+}
+
+#[test]
+fn the_quote_is_plain_text_without_the_history() {
+    let mut l = launcher();
+    typed(&mut l, "\"");
+    assert_eq!(l.prefixed(), None);
+    l.clipboard = true;
+    assert_eq!(l.prefixed().map(|p| p.0), Some(Prefix::Clipboard));
+}
+
+#[test]
+fn a_configured_mode_prefix_wins_over_the_quote() {
+    let mut config = LauncherConfig::default();
+    config.prefixes.commands = "\"".into();
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.clipboard = true;
+    typed(&mut l, "\"");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::Commands, ""));
+}
+
+#[test]
+fn enter_activates_clip_with_its_id() {
+    let mut l = clipboard_box();
+    l.selected = 1;
+    assert_eq!(l.key(Key::Enter), activate(Activation::Clip { id: 11 }));
+    let mut l = clip_prefix_box();
+    assert_eq!(l.key(Key::Enter), activate(Activation::Clip { id: 10 }));
+}
+
+#[test]
+fn ctrl_enter_pins_and_stays_open() {
+    let mut l = clipboard_box();
+    l.selected = 1;
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Edit(ClipEdit::Pin(11)));
+    assert!(l.clips[1].pinned);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Edit(ClipEdit::Pin(11)), "again: unpinned");
+    assert!(!l.clips[1].pinned);
+    // A right click is the same gesture.
+    assert_eq!(l.click(2, true), Outcome::Edit(ClipEdit::Pin(12)));
+    assert!(l.clips[2].pinned);
+}
+
+#[test]
+fn an_eleventh_pin_is_refused_with_a_message() {
+    let mut rows: Vec<ClipRow> = (0..MAX_PINS as u64).map(|i| clip(i, &format!("pinned {i}"), true)).collect();
+    rows.push(clip(99, "loose", false));
+    let mut l = Launcher::for_clipboard(LauncherConfig::default(), rows);
+    l.selected = MAX_PINS;
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Redraw);
+    assert_eq!(l.message.as_deref(), Some("at most 10 pins"));
+    assert!(!l.clips[MAX_PINS].pinned);
+    // Unpinning one still works at the limit.
+    l.selected = 0;
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Edit(ClipEdit::Pin(0)));
+}
+
+#[test]
+fn delete_removes_the_row_and_stays_open() {
+    let mut l = clipboard_box();
+    l.selected = 1;
+    assert_eq!(l.key(Key::Delete), Outcome::Edit(ClipEdit::Delete(11)));
+    assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [10, 12]);
+    assert_eq!(sources(&l), [Source::Clip(0), Source::Clip(1), Source::ClipClear]);
+    assert_eq!(l.selected, 1, "the next row takes the place");
+    // The last row deleted: the selection stays in range.
+    l.selected = 1;
+    assert_eq!(l.key(Key::Delete), Outcome::Edit(ClipEdit::Delete(12)));
+    assert!(l.selected < l.results.len());
+    // The Clear row and a row-less box: nothing to delete.
+    let mut l = clipboard_box();
+    l.selected = 3;
+    assert_eq!(l.key(Key::Delete), Outcome::Nothing);
+    let mut l = launcher();
+    assert_eq!(l.key(Key::Delete), Outcome::Nothing);
+}
+
+#[test]
+fn deleting_a_pinned_row_is_allowed_and_the_last_unpinned_takes_clear_with_it() {
+    let mut l = clipboard_box();
+    assert_eq!(l.key(Key::Delete), Outcome::Edit(ClipEdit::Delete(10)));
+    l.selected = 0;
+    l.key(Key::Delete);
+    l.key(Key::Delete);
+    assert!(l.results.is_empty(), "no row, no Clear row");
+    assert_eq!(l.key(Key::Delete), Outcome::Nothing);
+}
+
+#[test]
+fn clear_asks_then_needs_a_second_enter_after_0_4_s() {
+    let t = Instant::now();
+    let mut l = clipboard_box();
+    l.selected = 3;
+    l.set_now(t);
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert!(l.clear_question());
+    l.set_now(t + Duration::from_millis(200));
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "a double Enter never confirms");
+    l.set_now(t + Duration::from_millis(500));
+    assert_eq!(l.key(Key::Enter), Outcome::Edit(ClipEdit::Clear));
+    assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [10], "only the pinned row stays");
+    assert_eq!(sources(&l), [Source::Clip(0)]);
+    assert!(!l.clear_question());
+}
+
+#[test]
+fn clear_confirmation_expires_after_3_s_and_asks_again() {
+    let t = Instant::now();
+    let mut l = clipboard_box();
+    l.selected = 3;
+    l.set_now(t);
+    l.key(Key::Enter);
+    l.set_now(t + Duration::from_secs(4));
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "expired: it asks again");
+    assert_eq!(l.clips.len(), 3);
+}
+
+#[test]
+fn any_other_key_or_click_cancels_the_clear_question() {
+    let t = Instant::now();
+    for cancel in [Key::Up, Key::Char('x'), Key::CtrlEnter, Key::Delete, Key::Home] {
+        let mut l = clipboard_box();
+        l.selected = 3;
+        l.set_now(t);
+        l.key(Key::Enter);
+        assert!(l.clear_question());
+        let o = l.key(cancel);
+        assert_ne!(o, Outcome::Nothing, "{cancel:?}: the cancelled question is redrawn");
+        assert!(!l.clear_question(), "{cancel:?}");
+    }
+    let mut l = clipboard_box();
+    l.selected = 3;
+    l.set_now(t);
+    l.key(Key::Enter);
+    l.set_now(t + Duration::from_millis(500));
+    l.key(Key::Up);
+    l.key(Key::Down);
+    assert_ne!(l.key(Key::Enter), Outcome::Edit(ClipEdit::Clear), "a key between the two cancelled it");
+    // A click on another row cancels too.
+    let mut l = clipboard_box();
+    l.set_now(t);
+    l.click(3, false);
+    assert!(l.clear_question());
+    l.click(0, true);
+    assert!(!l.clear_question());
+}
+
+#[test]
+fn clipboard_mode_has_no_modes_row_and_tab_does_nothing() {
+    let mut l = clipboard_box();
+    assert!(!l.has_modes());
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing);
+    assert_eq!(l.key(Key::BackTab), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Clipboard);
+    assert!(!Mode::CYCLE.contains(&Mode::Clipboard));
+    assert_eq!(l.click_mode(Mode::All), Outcome::Nothing);
+}
+
+#[test]
+fn clipboard_mode_ignores_the_quote_prefix_and_reads_the_query_as_the_filter() {
+    let mut l = clipboard_box();
+    l.clipboard = true;
+    typed(&mut l, "milk");
+    assert_eq!(l.prefixed(), None);
+    assert_eq!(sources(&l), [Source::Clip(1)]);
+}
+
+#[test]
+fn dropping_the_model_wipes_the_previews() {
+    let mut rows = rows3();
+    wipe_clips(&mut rows);
+    assert!(rows.iter().all(|r| r.preview.is_empty() && r.first.is_empty()));
+    let src = include_str!("../model.rs");
+    let drop_impl = src.split("impl Drop for Launcher").nth(1).unwrap();
+    assert!(drop_impl.contains("wipe_clips(&mut self.clips)"), "Drop must call wipe_clips");
+}

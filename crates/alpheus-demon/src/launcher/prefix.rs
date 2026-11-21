@@ -9,17 +9,20 @@ pub enum Prefix {
     Search,
     Emoji,
     Shell,
+    /// `"`: the clipboard history (clipboard spec), only while it is available.
+    Clipboard,
 }
 
 /// The prefix a query starts with, and the rest of it trimmed at both ends. Only the query's very
-/// first character counts (` ?x` is plain text). `?` counts only when `search` is on: otherwise
-/// the query is plain text.
-pub fn split(query: &str, search: bool) -> Option<(Prefix, &str)> {
+/// first character counts (` ?x` is plain text). `?` counts only when `search` is on, `"` only
+/// when `clipboard` is (the history is on and a protocol bound): otherwise the query is plain text.
+pub fn split(query: &str, search: bool, clipboard: bool) -> Option<(Prefix, &str)> {
     let mut chars = query.chars();
     let prefix = match chars.next()? {
         '?' if search => Prefix::Search,
         ':' => Prefix::Emoji,
         '$' => Prefix::Shell,
+        '"' if clipboard => Prefix::Clipboard,
         _ => return None,
     };
     Some((prefix, chars.as_str().trim()))
@@ -52,6 +55,7 @@ pub fn hint(p: Prefix) -> &'static str {
         Prefix::Search => "type to search the web",
         Prefix::Emoji => "type an emoji name",
         Prefix::Shell => "type a command to run in a shell",
+        Prefix::Clipboard => "nothing copied yet",
     }
 }
 
@@ -61,16 +65,25 @@ mod tests {
 
     #[test]
     fn split_reads_the_first_character() {
-        assert_eq!(split("? rust ratatui", true), Some((Prefix::Search, "rust ratatui")));
-        assert_eq!(split("?rust", true), Some((Prefix::Search, "rust")));
-        assert_eq!(split(":heart ", true), Some((Prefix::Emoji, "heart")));
-        assert_eq!(split("$ ls -la", true), Some((Prefix::Shell, "ls -la")));
-        assert_eq!(split("?", true), Some((Prefix::Search, "")));
-        assert_eq!(split("? rust", false), None);
-        assert_eq!(split("firefox", true), None);
-        assert_eq!(split(" ?x", true), None);
-        assert_eq!(split("", true), None);
-        assert_eq!(split(":x", false), Some((Prefix::Emoji, "x")));
+        assert_eq!(split("? rust ratatui", true, false), Some((Prefix::Search, "rust ratatui")));
+        assert_eq!(split("?rust", true, false), Some((Prefix::Search, "rust")));
+        assert_eq!(split(":heart ", true, false), Some((Prefix::Emoji, "heart")));
+        assert_eq!(split("$ ls -la", true, false), Some((Prefix::Shell, "ls -la")));
+        assert_eq!(split("?", true, false), Some((Prefix::Search, "")));
+        assert_eq!(split("? rust", false, false), None);
+        assert_eq!(split("firefox", true, false), None);
+        assert_eq!(split(" ?x", true, false), None);
+        assert_eq!(split("", true, false), None);
+        assert_eq!(split(":x", false, false), Some((Prefix::Emoji, "x")));
+    }
+
+    #[test]
+    fn quote_prefix_is_claimed_only_with_the_history() {
+        assert_eq!(split("\"milk", true, true), Some((Prefix::Clipboard, "milk")));
+        assert_eq!(split("\" milk ", true, true), Some((Prefix::Clipboard, "milk")));
+        assert_eq!(split("\"", false, true), Some((Prefix::Clipboard, "")));
+        assert_eq!(split("\"milk", true, false), None, "no history: plain text");
+        assert_eq!(split("x\"milk", true, true), None);
     }
 
     #[test]
@@ -92,5 +105,6 @@ mod tests {
         assert_eq!(hint(Prefix::Search), "type to search the web");
         assert_eq!(hint(Prefix::Emoji), "type an emoji name");
         assert_eq!(hint(Prefix::Shell), "type a command to run in a shell");
+        assert_eq!(hint(Prefix::Clipboard), "nothing copied yet");
     }
 }

@@ -667,6 +667,8 @@ impl App {
             Outcome::Nothing => {}
             Outcome::Redraw => self.launcher_redraw(),
             Outcome::Close => self.launcher_close(CloseReason::Escape),
+            // The history's edits (Task 6 applies them to the real one).
+            Outcome::Edit(_) => self.launcher_redraw(),
             Outcome::Activate(a) => {
                 let App { launcher, exec, .. } = self;
                 let Some(open) = launcher.as_mut() else { return };

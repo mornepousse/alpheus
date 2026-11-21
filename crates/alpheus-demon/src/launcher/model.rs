@@ -4,6 +4,7 @@
 //! Wayland feeds it keys and clicks and applies the `Outcome`;
 //! nothing here touches the session.
 
+use crate::clipboard::history::{ClipRow, MAX_PINS};
 use crate::compositor::Toplevel;
 use crate::keys::Key;
 use crate::launcher::calc::{Calc, evaluate, looks_like_math};
@@ -15,8 +16,10 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::list;
+use crate::session;
 use alpheus_commun::launcher_ipc::{DmenuFlags, wipe};
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Bytes reserved for a password's query at open (`for_dmenu`).
 const PASSWORD_ROOM: usize = 256;
@@ -58,6 +61,22 @@ pub enum Activation {
     Open {
         url: String,
     },
+    /// A clipboard history row's Enter: the history's entry (by id, never its text) goes back to
+    /// the selection. Never performed by `run::perform`: the app handles it first.
+    Clip {
+        id: u64,
+    },
+}
+
+/// A change to the clipboard history the launcher asks for: ids only, never text. The model has
+/// already applied it to its own rows; the app applies it to the real history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipEdit {
+    /// Toggle the entry's pin.
+    Pin(u64),
+    Delete(u64),
+    /// Forget every unpinned entry.
+    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +85,8 @@ pub enum Outcome {
     Redraw,
     Close,
     Activate(Activation),
+    /// The history changed (pin, delete, clear): the box stays open.
+    Edit(ClipEdit),
 }
 
 /// A `Source`'s stable identity (`Launcher::identity`), private: how the selection survives a
@@ -83,6 +104,8 @@ enum Identity {
     Search,
     Emoji(usize),
     Shell,
+    /// A history row by its entry's id: the row's place changes when rows go.
+    Clip(u64),
 }
 
 pub struct Launcher {
@@ -124,6 +147,15 @@ pub struct Launcher {
     /// `Mode::Calc`, for a query that is no expression, or in All for one that does not look like
     /// math. Set by `rank`, with the row it makes.
     pub calc: Option<Calc>,
+    /// The clipboard history's rows, a snapshot at open (clipboard spec): empty unless the history
+    /// is on. Changed through `set_clips` and the keys only; wiped when the box drops.
+    pub clips: Vec<ClipRow>,
+    /// The `"` prefix is claimed in All (the history is on and a protocol bound).
+    pub clipboard: bool,
+    /// The Clear row's question (`Clear? ⏎`), asked until its instant (`session::ask`).
+    clear_asked: Option<((), Instant)>,
+    /// The instant of the key being handled, set by the host before each one: the model reads no clock.
+    at: Option<Instant>,
     ranker: Ranker,
     /// The current mode was entered by typing its prefix: Backspace on the
     /// empty query goes back to All.
@@ -167,6 +199,10 @@ impl Launcher {
             now: 0,
             results: Vec::new(),
             calc: None,
+            clips: Vec::new(),
+            clipboard: false,
+            clear_asked: None,
+            at: None,
             ranker: Ranker::new(),
             by_prefix: false,
             list_rows,
@@ -226,6 +262,32 @@ impl Launcher {
         l
     }
 
+    /// The history alone (`alpheus-launch --clipboard`): its rows, no modes row, no catalog.
+    pub fn for_clipboard(config: LauncherConfig, rows: Vec<ClipRow>) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Clipboard);
+        l.clips = rows;
+        l.refilter();
+        l
+    }
+
+    /// The history's rows for All's `"` prefix (the open's snapshot): refilters, keeping the
+    /// selection by identity like `set_entries`. The old rows are wiped as they drop.
+    pub fn set_clips(&mut self, rows: Vec<ClipRow>) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
+        self.clips = rows;
+        self.refilter_keeping(kept);
+    }
+
+    /// The instant of the next key or click (the Clear question's clock).
+    pub fn set_now(&mut self, at: Instant) {
+        self.at = Some(at);
+    }
+
+    /// Whether the Clear row asks `Clear? ⏎` (the view draws it).
+    pub fn clear_question(&self) -> bool {
+        self.clear_asked.is_some()
+    }
+
     pub fn is_switcher(&self) -> bool {
         self.switcher && self.mode == Mode::Windows
     }
@@ -239,9 +301,9 @@ impl Launcher {
         !self.is_bare() && !self.is_switcher()
     }
 
-    /// A menu with no modes row and no preview: a script's, or the calculator's.
+    /// A menu with no modes row and no preview: a script's, the calculator's or the history's.
     pub fn is_bare(&self) -> bool {
-        matches!(self.mode, Mode::Script | Mode::Calc)
+        matches!(self.mode, Mode::Script | Mode::Calc | Mode::Clipboard)
     }
 
     /// Refilters; keeps the selection on the same item if it is still present (by identity,
@@ -285,6 +347,8 @@ impl Launcher {
             Source::Search => Identity::Search,
             Source::Emoji(i) => Identity::Emoji(i),
             Source::Shell => Identity::Shell,
+            Source::Clip(i) => Identity::Clip(self.clips.get(i)?.id),
+            Source::ClipClear => return None,
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
                 let item = e.items.get(i)?;
@@ -301,8 +365,10 @@ impl Launcher {
 
     pub fn key(&mut self, k: Key) -> Outcome {
         let had_message = self.message.take().is_some();
+        // Any key but Enter cancels the Clear question; its row is redrawn.
+        let cancelled = k != Key::Enter && self.clear_asked.take().is_some();
         let o = self.apply(k);
-        if had_message && o == Outcome::Nothing { Outcome::Redraw } else { o }
+        if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     fn apply(&mut self, k: Key) -> Outcome {
@@ -352,7 +418,8 @@ impl Launcher {
             // No binding: the preview panel they used to toggle always shows now (view.rs,
             // 2026-10-05) — ignored rather than removed from `Key`, so a future rebind needs
             // no change to `keys.rs`.
-            Key::Left | Key::Right | Key::Delete => Outcome::Nothing,
+            Key::Delete => self.delete(),
+            Key::Left | Key::Right => Outcome::Nothing,
             Key::Escape => Outcome::Close,
             Key::Enter => self.primary(),
             Key::CtrlEnter => self.secondary(),
@@ -390,7 +457,7 @@ impl Launcher {
     /// The query's prefix (`?`, `:`, `$`) and its text: only in All (`--password` is a dmenu, so
     /// Script: the secret is never parsed). A configured mode prefix is taken before, by `take_prefix`.
     pub fn prefixed(&self) -> Option<(Prefix, &str)> {
-        split_query(self.mode, &self.query, &self.config)
+        split_query(self.mode, &self.query, &self.config, self.clipboard)
     }
 
     fn query_changed(&mut self) -> Outcome {
@@ -407,10 +474,17 @@ impl Launcher {
             self.calc = None;
             return;
         }
+        // The history alone: the query filters its rows.
+        if self.mode == Mode::Clipboard {
+            self.results = self.ranker.rank_clips(&self.query, &self.clips);
+            self.calc = None;
+            return;
+        }
         // A prefix lists only its own rows: no catalog ranking, no calculator.
         // Field by field, not `prefixed()`: the ranker is borrowed mutably below.
-        if let Some((p, text)) = split_query(self.mode, &self.query, &self.config) {
+        if let Some((p, text)) = split_query(self.mode, &self.query, &self.config, self.clipboard) {
             self.results = match p {
+                Prefix::Clipboard => self.ranker.rank_clips(text, &self.clips),
                 Prefix::Search if !text.is_empty() => vec![Hit { source: Source::Search, score: u32::MAX, frecency: 0 }],
                 Prefix::Emoji => self.ranker.rank_emoji(text, usize::from(self.config.rows)),
                 Prefix::Shell if !text.is_empty() => vec![Hit { source: Source::Shell, score: u32::MAX, frecency: 0 }],
@@ -542,7 +616,7 @@ impl Launcher {
     /// Enter: opens an app, focuses a window, picks a dmenu line — and, for a command or typed
     /// shell text, runs it held open in the configured terminal (`terminal_hold`, Mae
     /// 2026-10-05: the command's output stays on screen after it exits).
-    fn primary(&self) -> Outcome {
+    fn primary(&mut self) -> Outcome {
         let hit = self.selected_hit();
         match self.mode {
             Mode::Script => match hit {
@@ -561,6 +635,8 @@ impl Launcher {
                 Some(Source::Search) => self.search(),
                 Some(Source::Emoji(offset)) => self.emoji(offset, false),
                 Some(Source::Shell) => self.dollar(false),
+                Some(Source::Clip(i)) => self.clips.get(i).map_or(Outcome::Nothing, |c| Outcome::Activate(Activation::Clip { id: c.id })),
+                Some(Source::ClipClear) => self.clear(),
                 None => Outcome::Nothing,
             },
         }
@@ -606,6 +682,54 @@ impl Launcher {
         }
     }
 
+    /// The Clear row's Enter: the first asks `Clear? ⏎`, a second from 0.4 s to 3 s later clears
+    /// (the rows the history keeps, pins, stay).
+    fn clear(&mut self) -> Outcome {
+        let now = self.at.unwrap_or_else(Instant::now);
+        match session::ask(&mut self.clear_asked, (), now) {
+            session::Activation::Ask => Outcome::Redraw,
+            session::Activation::Wait => Outcome::Nothing,
+            session::Activation::Run => {
+                self.clips.retain(|c| c.pinned);
+                self.refilter();
+                Outcome::Edit(ClipEdit::Clear)
+            }
+        }
+    }
+
+    /// Ctrl+Enter or a right click on row `i`: its pin flips here and in the history. The box
+    /// stays open; an eleventh pin is refused.
+    fn pin(&mut self, i: usize) -> Outcome {
+        let pinned = self.clips.iter().filter(|c| c.pinned).count();
+        let Some(row) = self.clips.get_mut(i) else { return Outcome::Nothing };
+        if !row.pinned && pinned >= MAX_PINS {
+            self.message = Some(format!("at most {MAX_PINS} pins"));
+            return Outcome::Redraw;
+        }
+        row.pinned = !row.pinned;
+        let id = row.id;
+        self.reshape();
+        Outcome::Edit(ClipEdit::Pin(id))
+    }
+
+    /// Delete on a history row: the row goes here and in the history; the box stays open.
+    fn delete(&mut self) -> Outcome {
+        let Some(Source::Clip(i)) = self.selected_hit().map(|h| h.source) else { return Outcome::Nothing };
+        if i >= self.clips.len() {
+            return Outcome::Nothing;
+        }
+        let id = self.clips.remove(i).id;
+        self.reshape();
+        Outcome::Edit(ClipEdit::Delete(id))
+    }
+
+    /// Re-ranks after the rows changed under the selection, which stays at its place (clamped).
+    fn reshape(&mut self) {
+        self.rank();
+        self.selected = self.selected.min(self.results.len().saturating_sub(1));
+        self.keep_visible();
+    }
+
     /// Line `i` of the client's (its position on stdin, whatever the ranking did).
     fn choose_line(&self, i: usize) -> Outcome {
         match self.lines.get(i) {
@@ -617,7 +741,7 @@ impl Launcher {
     /// Ctrl+Enter: an app's first `.desktop` action (or its main Exec without one), a window as
     /// Enter — and, for a command or typed shell text, runs it detached with no terminal at all
     /// (Mae 2026-10-05).
-    fn secondary(&self) -> Outcome {
+    fn secondary(&mut self) -> Outcome {
         let hit = self.selected_hit().map(|h| h.source);
         match (self.mode, hit) {
             (Mode::Commands, Some(Source::Command(index))) if !self.query.contains(char::is_whitespace) => {
@@ -627,6 +751,9 @@ impl Launcher {
             (_, Some(Source::Shell)) => self.dollar(true),
             (_, Some(Source::Calc)) => self.copy(true),
             (_, Some(Source::Emoji(offset))) => self.emoji(offset, true),
+            (_, Some(Source::Clip(i))) => self.pin(i),
+            // Ctrl+Enter or a right click never confirms the question.
+            (_, Some(Source::ClipClear)) => Outcome::Nothing,
             (_, Some(Source::App(index))) => {
                 let action = self.app_has_actions(index).then_some(0);
                 Outcome::Activate(Activation::App { index, action })
@@ -645,11 +772,13 @@ impl Launcher {
             return Outcome::Nothing;
         }
         let had_message = self.message.take().is_some();
+        let on_clear = matches!(self.results[index].source, Source::ClipClear);
+        let cancelled = !on_clear && self.clear_asked.take().is_some();
         self.moved = true;
         self.selected = index;
         self.keep_visible();
         let o = if secondary { self.secondary() } else { self.primary() };
-        if had_message && o == Outcome::Nothing { Outcome::Redraw } else { o }
+        if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     pub fn click_mode(&mut self, m: Mode) -> Outcome {
@@ -674,11 +803,19 @@ impl Launcher {
 }
 
 /// `Launcher::prefixed`'s rule on loose fields.
-fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig) -> Option<(Prefix, &'a str)> {
+fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig, clipboard: bool) -> Option<(Prefix, &'a str)> {
     if mode != Mode::All {
         return None;
     }
-    prefix::split(query, config.search_enabled())
+    prefix::split(query, config.search_enabled(), clipboard)
+}
+
+/// The history rows' text is overwritten before it is freed (clipboard spec decision 18).
+fn wipe_clips(clips: &mut [ClipRow]) {
+    for c in clips {
+        wipe(&mut c.preview);
+        wipe(&mut c.first);
+    }
 }
 
 /// `--password`: the typed text is overwritten before it is freed (where practical: the copies
@@ -688,6 +825,7 @@ impl Drop for Launcher {
         if self.password {
             wipe(&mut self.query);
         }
+        wipe_clips(&mut self.clips);
     }
 }
 

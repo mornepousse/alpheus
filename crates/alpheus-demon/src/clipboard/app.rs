@@ -45,6 +45,19 @@ pub(crate) fn availability(enabled: bool, bound: bool) -> Result<(), &'static st
     }
 }
 
+const NOT_AVAILABLE: &str = "the clipboard is not available";
+
+/// Enter on entry `id`: `own` makes its text the selection; only a copy that succeeded moves the
+/// entry to the front (a failed one must not reorder the history).
+fn copy_entry(history: &mut History, id: u64, own: impl FnOnce(&str) -> bool) -> Result<(), String> {
+    let Some(text) = history.text_of(id) else { return Err("the entry is gone".into()) };
+    if !own(text) {
+        return Err(NOT_AVAILABLE.into());
+    }
+    history.touch(id);
+    Ok(())
+}
+
 /// The answer to a verb, and whether the history was cleared (the caller logs it, one fixed line).
 /// `history` is None when nothing is bound.
 fn verb_reply(enabled: bool, history: Option<&mut History>, request: &Request) -> (Reply, bool) {
@@ -254,12 +267,14 @@ impl App {
     /// daemon's own source (its marker keeps the copy from being read back).
     #[allow(dead_code)] // the launcher's Enter reaches it in the wiring task
     pub(crate) fn clipboard_copy(&mut self, qh: &QueueHandle<App>, id: u64) -> Result<(), String> {
-        let Some(c) = self.clipboard.as_mut() else { return Err("the clipboard is not available".into()) };
-        if !c.history.touch(id) {
-            return Err("the entry is gone".into());
-        }
-        let Some(text) = c.history.text_of(id) else { return Err("the entry is gone".into()) };
-        if c.control.own_selection(text, qh) { Ok(()) } else { Err("the clipboard is not available".into()) }
+        let Some(c) = self.clipboard.as_mut() else { return Err(NOT_AVAILABLE.into()) };
+        copy_entry(&mut c.history, id, |text| c.control.own_selection(text, qh))
+    }
+
+    /// Why the verbs and the launcher's `"` rows cannot be served (the history off, or no protocol).
+    #[allow(dead_code)] // the launcher's open reaches it in the wiring task
+    pub(crate) fn clipboard_availability(&self) -> Result<(), &'static str> {
+        availability(self.bar.config.clipboard.enabled, self.clipboard.is_some())
     }
 
     /// `alpheus-launch --clipboard-clear`, answered before the launcher's guard: off or unbound is
@@ -349,6 +364,29 @@ mod tests {
         assert_eq!(verdict(types.iter().copied(), false), Verdict::Skip(Skip::Own));
         assert_eq!(types.last().copied(), Some(crate::clipboard::offer::MARKER), "the marker is offered last");
         assert!(types.contains(&"text/plain;charset=utf-8"), "the text types are offered");
+    }
+
+    #[test]
+    fn a_failed_copy_does_not_reorder_the_history() {
+        use crate::clipboard::history::Pushed;
+        let mut h = History::default();
+        let Pushed::Added(old) = h.push("old".into()) else { panic!() };
+        h.push("new".into());
+        let order = |h: &History| h.rows().into_iter().map(|r| r.id).collect::<Vec<_>>();
+        let before = order(&h);
+        assert_eq!(copy_entry(&mut h, old, |_| false), Err(NOT_AVAILABLE.to_string()));
+        assert_eq!(order(&h), before, "a failed copy leaves the order alone");
+        let mut seen = String::new();
+        assert_eq!(
+            copy_entry(&mut h, old, |t| {
+                seen = t.into();
+                true
+            }),
+            Ok(())
+        );
+        assert_eq!(seen, "old");
+        assert_eq!(order(&h)[0], old, "a successful one moves it to the front");
+        assert_eq!(copy_entry(&mut h, 999, |_| panic!("no text, no copy")), Err("the entry is gone".to_string()));
     }
 
     #[test]

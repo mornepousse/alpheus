@@ -62,6 +62,9 @@ pub enum PinError {
 pub struct ClipRow {
     pub id: u64,
     pub preview: String,
+    /// The first non-blank line, folded: what the row shows (the launcher's row).
+    pub first: String,
+    /// The lines after `first` (trailing blank ones not counted): the row's dim `+N lines`.
     pub more_lines: usize,
     pub pinned: bool,
 }
@@ -75,6 +78,7 @@ impl fmt::Debug for ClipRow {
 impl Drop for ClipRow {
     fn drop(&mut self) {
         wipe(&mut self.preview);
+        wipe(&mut self.first);
     }
 }
 
@@ -189,29 +193,39 @@ impl History {
     }
 }
 
-fn row(e: &Entry) -> ClipRow {
-    let text = e.text();
-    let mut cut = text.len().min(PREVIEW_BYTES);
-    while !text.is_char_boundary(cut) {
+/// `s` cut at `PREVIEW_BYTES` on a character boundary.
+fn cap(s: &str) -> &str {
+    let mut cut = s.len().min(PREVIEW_BYTES);
+    while !s.is_char_boundary(cut) {
         cut -= 1;
     }
-    let head = text.get(..cut).unwrap_or_default();
-    let mut preview = String::with_capacity(head.len());
+    s.get(..cut).unwrap_or_default()
+}
+
+/// Whitespace runs folded to one space, controls and invisible characters dropped.
+fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
     let mut space = false;
-    for c in head.chars() {
+    for c in s.chars() {
         if c.is_whitespace() {
             space = true;
         } else if !c.is_control() && !crate::text::invisible(c) {
-            if space && !preview.is_empty() {
-                preview.push(' ');
+            if space && !out.is_empty() {
+                out.push(' ');
             }
             space = false;
-            preview.push(c);
+            out.push(c);
         }
     }
-    let lines = text.matches('\n').count();
-    let more_lines = if text.ends_with('\n') { lines.saturating_sub(1) } else { lines };
-    ClipRow { id: e.id, preview, more_lines, pinned: e.is_pinned() }
+    out
+}
+
+fn row(e: &Entry) -> ClipRow {
+    let text = e.text();
+    let mut lines = text.lines();
+    let first = fold(cap(lines.by_ref().find(|l| !l.trim().is_empty()).unwrap_or_default()));
+    let more_lines = lines.rev().skip_while(|l| l.trim().is_empty()).count();
+    ClipRow { id: e.id, preview: fold(cap(text)), first, more_lines, pinned: e.is_pinned() }
 }
 
 #[cfg(test)]
