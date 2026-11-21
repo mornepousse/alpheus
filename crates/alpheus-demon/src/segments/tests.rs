@@ -974,3 +974,15 @@ fn the_timer_chip_by_look() {
         assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
     }
 }
+
+/// Shield spec § 4: the glyph only while on, always green whatever `module_colors` says.
+#[test]
+fn the_shield_glyph_shows_only_while_on() {
+    for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        let s = super::shield(Some(true)).unwrap_or_else(|| panic!("{mc:?}"));
+        assert_eq!(draw(&s), ("\u{f0498}".into(), "g".into()), "{mc:?}");
+        assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Shield, &Some(Target::Module(ModuleId::Shield)), true));
+    }
+    assert!(super::shield(Some(false)).is_none(), "off: nothing");
+    assert!(super::shield(None).is_none(), "unknown: nothing");
+}

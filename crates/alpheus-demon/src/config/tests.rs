@@ -258,12 +258,22 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 18);
+    assert_eq!(ModuleId::ALL.len(), 19);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
     let c = BarConfig::from_text("modules = [\"privacy\", \"clock\"]").unwrap();
     assert_eq!(c.modules, vec![ModuleId::Privacy, ModuleId::Clock]);
+}
+
+#[test]
+fn shield_sits_right_after_privacy_and_is_on_by_default() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Shield), at(ModuleId::Privacy) + 1, "right after privacy");
+    assert_eq!(ModuleId::Shield.name(), "shield");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Shield), "on by default");
+    let c = BarConfig::from_text("modules = [\"shield\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Shield, ModuleId::Clock]);
 }
 
 #[test]

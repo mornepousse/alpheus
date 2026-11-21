@@ -1909,3 +1909,8 @@ fn the_window_follows_the_selection_in_the_vpn_detail() {
     assert_eq!(q.top, all.len() - 6, "More… at the bottom of the window");
     assert_eq!(texts(&rows(&l, &q)).last().map(|s| s.trim()), Some("More…"));
 }
+
+#[test]
+fn a_click_on_the_shield_module_asks_for_the_shield_focus() {
+    assert_eq!(Focus::of(&Target::Module(ModuleId::Shield)), Focus::Shield);
+}

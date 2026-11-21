@@ -116,6 +116,9 @@ pub enum ModuleId {
     Media,
     /// The privacy indicators (privacy spec § 1): who holds the microphone, the camera or the screen.
     Privacy,
+    /// Shield mode (shield spec § 4): a green glyph drawn only while the mode is on; its row and
+    /// detail live in the quick panel.
+    Shield,
     Volume,
     Network,
     Bluetooth,

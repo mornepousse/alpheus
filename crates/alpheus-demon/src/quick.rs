@@ -88,6 +88,8 @@ pub enum Focus {
     /// The VPN row, its detail opened once the VPN state arrives (quick VPN spec): `--quick vpn`.
     /// Without a VPN row, the first row.
     Vpn,
+    /// The Shield row (shield spec § 4): a click on the `shield` glyph. Nothing opens.
+    Shield,
 }
 
 impl Focus {
@@ -97,6 +99,7 @@ impl Focus {
             Target::Module(ModuleId::Volume) => Focus::Sound,
             Target::Module(ModuleId::Network) => Focus::Wifi,
             Target::Module(ModuleId::Bluetooth) => Focus::Bluetooth,
+            Target::Module(ModuleId::Shield) => Focus::Shield,
             _ => Focus::Top,
         }
     }
