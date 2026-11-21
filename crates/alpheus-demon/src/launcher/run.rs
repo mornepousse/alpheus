@@ -13,6 +13,9 @@ use crate::launcher::history::{app_key, command_key, source_key};
 use crate::launcher::model::{Activation, Launcher};
 use crate::launcher::scan::has_program;
 use crate::launcher::sources::run_argv;
+use crate::launcher::tools::catalog::{BUILTINS, Choices, EntryKind};
+use crate::launcher::tools::config::{CHOICE_PLACEHOLDER, EntryConfig};
+use crate::launcher::tools::nav::ToolAction;
 use crate::log::write as log;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{Reply, wipe};
@@ -66,6 +69,24 @@ pub fn shell_argv(text: &str, terminal: Option<&[String]>) -> Vec<String> {
     terminal.unwrap_or(&[]).iter().cloned().chain(shell).collect()
 }
 
+/// A user entry's argv (tools spec § 5): `run` with `terminal` or `terminal_hold` in front, and the
+/// one element that is exactly `{choice}` replaced by the chosen line, whole: a space, a quote, `-rf`
+/// or `{choice}` in the line stays inside that one argument.
+pub fn tool_argv(e: &EntryConfig, choice: Option<&str>, terminal: &[String], terminal_hold: &[String]) -> Vec<String> {
+    let front: &[String] = if e.hold {
+        terminal_hold
+    } else if e.terminal {
+        terminal
+    } else {
+        &[]
+    };
+    let run = e.run.iter().map(|a| match choice {
+        Some(c) if a == CHOICE_PLACEHOLDER => c.to_string(),
+        _ => a.clone(),
+    });
+    front.iter().cloned().chain(run).collect()
+}
+
 pub struct RunContext<'a> {
     pub exec: &'a dyn Executor,
     pub spawner: Spawner,
@@ -84,6 +105,9 @@ pub enum Done {
     /// Script mode: send this (Reply::Chosen, or Reply::Index under `--index`) to the waiting
     /// client, then close.
     Reply(Reply),
+    /// A built-in of the Tools menu (an index into `BUILTINS`): the box closes, then the glue
+    /// replays its verb.
+    Builtin(usize),
 }
 
 fn spawn(exec: &dyn Executor, argv: &[String]) -> Result<(), ExecError> {
@@ -131,6 +155,41 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
     l.history.record(key, l.now);
     if let Err(e) = l.history.save(path) {
         log(&format!("launcher history not saved ({}): {e}", path.display()));
+    }
+}
+
+/// A Tools menu row (tools spec § 5). A built-in is recorded under `tool:builtin:<id>` and handed
+/// back for the glue to replay; a user entry is launched through the scope, recorded under its
+/// key (a fixed choice under its own; a `choices_cmd` line never), and logged by position only.
+fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Result<Done, String> {
+    let gone = || "the list changed: try again".to_string();
+    match action {
+        ToolAction::Builtin(i) => {
+            let id = BUILTINS.get(i).ok_or_else(gone)?.id;
+            remember(l, ctx, &format!("tool:builtin:{id}"));
+            Ok(Done::Builtin(i))
+        }
+        ToolAction::User { entry, choice } => {
+            let catalog = &l.tools().ok_or_else(gone)?.catalog;
+            let e = catalog.entries.get(entry).ok_or_else(gone)?;
+            let EntryKind::User(at) = e.kind else { return Err(gone()) };
+            let config = l.config.tools.entries.get(at).ok_or_else(gone)?;
+            let argv = tool_argv(config, choice.as_deref(), &l.config.terminal, &l.config.terminal_hold);
+            let key = match (&e.choices, &choice) {
+                (Choices::Fixed(_), Some(c)) => Some(catalog.choice_key(entry, c)),
+                // A process list or a file name is never kept.
+                (Choices::Command, _) => None,
+                (_, None) => Some(e.key.clone()),
+                (Choices::None, Some(_)) => None,
+            };
+            let position = config.position;
+            launch(ctx, argv)?;
+            log(&format!("tools: entry {position} run"));
+            if let Some(key) = key {
+                remember(l, ctx, &key);
+            }
+            Ok(Done::Close)
+        }
     }
 }
 
@@ -194,6 +253,7 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
         }
         // A history row never runs here: the app copies it from its own history first.
         Activation::Clip { .. } => return Err("not a launcher action".to_string()),
+        Activation::Tool(action) => return perform_tool(l, action, ctx),
         Activation::Window(i) => {
             let selector = &l.windows.get(i).ok_or_else(gone)?.selector;
             let argv = focus_argv(&l.config.focus, selector);

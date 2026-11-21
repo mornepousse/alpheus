@@ -50,6 +50,7 @@ struct Lists {
     lines: Vec<String>,
     entries: Vec<SourceEntry>,
     entry_sources: Vec<SourceConfig>,
+    tools: Vec<ToolHitRow>,
     history: History,
 }
 
@@ -62,6 +63,7 @@ impl Lists {
             lines: vec![],
             entries: vec![],
             entry_sources: vec![],
+            tools: vec![],
             history: History::empty(200),
         }
     }
@@ -76,6 +78,7 @@ impl Lists {
             lines: &self.lines,
             entries: &self.entries,
             entry_sources: &self.entry_sources,
+            tools: &self.tools,
             history: &self.history,
             now: NOW,
         }
@@ -111,11 +114,11 @@ fn each_mode_lists_only_its_sources() {
     l.entry_sources = vec![outils()];
     l.entries = vec![SourceEntry::new(0, "Alarme · fire drill")];
     let kinds = |m: Mode| l.rank(m, "fire").iter().map(|h| kind(h.source)).collect::<Vec<_>>();
-    assert_eq!(kinds(Mode::All), [0, 1, 2], "All: windows, apps, then source entries");
+    assert_eq!(kinds(Mode::All), [0, 1, 3], "All: windows, apps, then source entries (kind 2 is the tools')");
     assert_eq!(kinds(Mode::Apps), [1]);
     assert_eq!(kinds(Mode::Windows), [0]);
-    assert_eq!(kinds(Mode::Commands), [3]);
-    assert_eq!(kinds(Mode::Script), [4]);
+    assert_eq!(kinds(Mode::Commands), [4]);
+    assert_eq!(kinds(Mode::Script), [5]);
 }
 
 fn outils() -> SourceConfig {
@@ -559,6 +562,7 @@ fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
         lines: &[],
         entries: &[],
         entry_sources: &[],
+        tools: &[],
         history: &history,
         now: 0,
     };
@@ -609,6 +613,7 @@ fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
         lines: &[],
         entries: &[],
         entry_sources: &[],
+        tools: &[],
         history: &empty_history,
         now: NOW,
     };
@@ -639,6 +644,7 @@ fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
         lines: &[],
         entries: &[],
         entry_sources: &[],
+        tools: &[],
         history: &empty_history,
         now: NOW,
     };
@@ -694,4 +700,64 @@ fn rank_emoji_matches_non_ascii_names() {
     assert_eq!(names("côte")[0], "flag: Côte d’Ivoire");
     assert!(names("cote").contains(&"flag: Côte d’Ivoire"), "typed without the accent: folded");
     assert!(names("aland").contains(&"flag: Åland Islands"), "folded");
+}
+
+fn tool_row(name: &str, path: &str) -> ToolHitRow {
+    ToolHitRow { name: name.into(), path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") }, key: String::new() }
+}
+
+/// Tools spec § 1: tool rows join All on a typed query only, never the other modes.
+#[test]
+fn tool_rows_join_a_typed_all_query_only() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    l.commands = vec!["fire".into()];
+    l.lines = vec!["fire".into()];
+    l.windows = vec![window("id:1", "fire", "fire")];
+    l.tools = vec![tool_row("Fire it", "")];
+    let tool = |m: Mode, text: &str| l.sources(m, text).contains(&Source::Tool(0));
+    assert!(tool(Mode::All, "fire"));
+    for m in [Mode::Apps, Mode::Windows, Mode::Commands, Mode::Script, Mode::Calc, Mode::Clipboard] {
+        assert!(!tool(m, "fire"), "{m:?}");
+    }
+    assert!(!tool(Mode::All, ""), "an empty All shows what it shows today");
+    assert!(tool(Mode::Tools, "fire") && tool(Mode::Tools, ""), "the Tools mode lists them, ranked or not");
+}
+
+/// Window, App, Tool, Source entry, Command, Line: the order between kinds at equal score.
+#[test]
+fn the_kind_order_puts_tools_between_apps_and_source_entries() {
+    let mut l = Lists::new();
+    // Every kind matches "fire" with the same score: the apps by a search term of theirs (no name bonus), the rest by "Fire it".
+    l.apps = vec![app("z.desktop", "Zzz", None, &["fire it"], "zzz")];
+    l.windows = vec![window("id:1", "zzz", "Fire it")];
+    l.entry_sources = vec![outils()];
+    l.entries = vec![SourceEntry::new(0, "Fire it")];
+    l.tools = vec![tool_row("Fire it", "")];
+    let order: Vec<Source> = l.sources(Mode::All, "fire");
+    assert_eq!(order, [Source::Window(0), Source::App(0), Source::Tool(0), Source::Entry(0)]);
+}
+
+#[test]
+fn a_tool_that_needs_its_category_ranks_below_every_name_hit() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    l.tools = vec![tool_row("Update", "Nix"), tool_row("Nixify", "Zed")];
+    assert_eq!(l.sources(Mode::All, "nix"), [Source::Tool(1), Source::Tool(0)]);
+}
+
+#[test]
+fn tool_frecency_orders_equal_hits_and_the_tools_mode_keeps_the_level_order_otherwise() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let key = |n: &str| ToolHitRow { key: format!("tool:user:/{n}"), ..tool_row(n, "") };
+    l.tools = vec![key("Alpha one"), key("Beta one")];
+    l.history = History::empty(10);
+    l.history.record("tool:user:/Beta one", NOW);
+    assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(0)], "frecency first, in All");
+    assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(1), Source::Tool(0)], "and in the Tools mode");
+    l.history = History::empty(10);
+    l.tools = vec![key("Zed one"), key("Beta one")];
+    assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(0)], "All: by name between equals");
+    assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(0), Source::Tool(1)], "the Tools mode: the level's order");
 }

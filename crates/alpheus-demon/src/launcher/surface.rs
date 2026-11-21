@@ -674,7 +674,10 @@ impl App {
     pub fn launcher_outcome(&mut self, o: Outcome) {
         match o {
             Outcome::Nothing => {}
-            Outcome::Redraw => self.launcher_redraw(),
+            // The Tools mode's reads and its question are the glue's (Task 7): the box redraws.
+            Outcome::Redraw | Outcome::BackToAll | Outcome::Asked | Outcome::ReadStates(_) | Outcome::ReadChoices(_) => {
+                self.launcher_redraw()
+            }
             Outcome::Close => self.launcher_close(CloseReason::Escape),
             // The history's pin, delete or clear: applied to the real one, the box stays open.
             Outcome::Edit(edit) => {
@@ -727,7 +730,8 @@ impl App {
                         }
                         self.launcher_close(CloseReason::Activated);
                     }
-                    Ok(Done::Close) => self.launcher_close(CloseReason::Activated),
+                    // The built-in's verb is replayed by the glue (Task 7).
+                    Ok(Done::Close | Done::Builtin(_)) => self.launcher_close(CloseReason::Activated),
                 }
             }
         }

@@ -11,10 +11,12 @@ use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
-use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
+use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
+use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
+use crate::launcher::tools::nav::{Job, RowId, Step, ToolAction, ToolRow, ToolsState};
 use crate::list;
 use crate::session;
 use alpheus_commun::launcher_ipc::{DmenuFlags, wipe};
@@ -66,6 +68,8 @@ pub enum Activation {
     Clip {
         id: u64,
     },
+    /// A Tools menu row (tools spec § 5): what the glue runs after the box closed.
+    Tool(ToolAction),
 }
 
 /// A change to the clipboard history the launcher asks for: ids only, never text. The model has
@@ -87,6 +91,25 @@ pub enum Outcome {
     Activate(Activation),
     /// The history changed (pin, delete, clear): the box stays open.
     Edit(ClipEdit),
+    /// The Tools mode was entered (the `/` prefix, a drill from All): the reader reads these states.
+    ReadStates(Job),
+    /// A `choices_cmd` level was opened: the reader reads its lines.
+    ReadChoices(Job),
+    /// Backspace at the Tools root of a Mod+Space open: the model is back in All.
+    BackToAll,
+    /// A confirmation question was asked: the host syncs its timer.
+    Asked,
+}
+
+/// How the launcher was opened: what scan deliveries and window lists it takes (tools spec § 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Mod+Space: the apps, the windows, the sources' entries, the catalog; the Tools mode is a jump.
+    Apps,
+    /// `alpheus-launch --tools`: the Tools mode alone.
+    Tools,
+    /// A script menu, the calculator, the history, the window switcher.
+    Other,
 }
 
 /// A `Source`'s stable identity (`Launcher::identity`), private: how the selection survives a
@@ -106,6 +129,8 @@ enum Identity {
     Shell,
     /// A history row by its entry's id: the row's place changes when rows go.
     Clip(u64),
+    /// A tool row by its identity in the catalog.
+    Tool(RowId),
 }
 
 pub struct Launcher {
@@ -152,6 +177,16 @@ pub struct Launcher {
     pub clips: Vec<ClipRow>,
     /// The `"` prefix is claimed in All (the history is on and a protocol bound).
     pub clipboard: bool,
+    /// How this open began (`for_apps`, `for_tools`, the others).
+    pub origin: Origin,
+    /// The Tools menu's state: the catalog, the level, the states read. None until `set_tools` or
+    /// `for_tools`; dropped with the launcher.
+    tools: Option<ToolsState>,
+    /// The Tools mode's rows of the open level (the flat search's are the state's own).
+    tool_level: Vec<ToolRow>,
+    tool_level_hits: Vec<ToolHitRow>,
+    /// Whether `Source::Tool` hits index the flat search's rows (All, and a typed root query).
+    tool_flat_shown: bool,
     /// When the Clear row asked `Clear? ⏎`: it never expires (no timer), only another key or click cancels it.
     clear_asked: Option<Instant>,
     /// The instant of the key or click being handled: the host sets it before each one and the
@@ -202,6 +237,11 @@ impl Launcher {
             calc: None,
             clips: Vec::new(),
             clipboard: false,
+            origin: Origin::Other,
+            tools: None,
+            tool_level: Vec::new(),
+            tool_level_hits: Vec::new(),
+            tool_flat_shown: true,
             clear_asked: None,
             at: None,
             ranker: Ranker::new(),
@@ -216,6 +256,7 @@ impl Launcher {
     /// delivers its catalog (`set_catalog`).
     pub fn for_apps(config: LauncherConfig, windows: Vec<Toplevel>, history: History, now: u64) -> Launcher {
         let mut l = Launcher::new(config, Mode::All);
+        l.origin = Origin::Apps;
         l.windows = windows;
         l.history = history;
         l.now = now;
@@ -271,6 +312,71 @@ impl Launcher {
         l
     }
 
+    /// The Tools menu alone (`alpheus-launch --tools`): the root of its catalog, no modes row, no
+    /// apps, no windows.
+    pub fn for_tools(config: LauncherConfig, catalog: ToolsCatalog, history: History, now: u64) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Tools);
+        l.origin = Origin::Tools;
+        l.history = history;
+        l.now = now;
+        l.tools = Some(ToolsState::new(catalog));
+        l.refilter();
+        l
+    }
+
+    /// The Tools catalog of a Mod+Space open (its typed search ranks the entries, the `/` prefix
+    /// jumps in): refilters, keeping the selection by identity like `set_entries`.
+    pub fn set_tools(&mut self, catalog: ToolsCatalog) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
+        self.tools = Some(ToolsState::new(catalog));
+        self.ranker.forget();
+        self.refilter_keeping(kept);
+    }
+
+    pub fn tools(&self) -> Option<&ToolsState> {
+        self.tools.as_ref()
+    }
+
+    /// The rows the `Source::Tool` hits index.
+    pub fn tool_rows(&self) -> &[ToolRow] {
+        match &self.tools {
+            Some(t) if self.tool_flat_shown => t.flat().0,
+            Some(_) => &self.tool_level,
+            None => &[],
+        }
+    }
+
+    /// A state the reader read: the row's switch.
+    pub fn adopt_state(&mut self, entry: usize, on: Option<bool>) {
+        let Some(t) = self.tools.as_mut() else { return };
+        t.adopt_state(entry, on);
+        self.reshape();
+    }
+
+    /// A `choices_cmd` delivery: false when stale. A failed read leaves the level empty and says so.
+    pub fn adopt_choices(&mut self, entry: usize, token: u64, lines: Vec<String>, failed: bool) -> bool {
+        let Some(t) = self.tools.as_mut() else { return false };
+        if !t.adopt_choices(entry, token, lines, failed) {
+            return false;
+        }
+        if failed {
+            self.message = Some("could not read the choices".into());
+        }
+        self.ranker.forget();
+        self.refilter();
+        true
+    }
+
+    /// The question's instant, while one is pending (the host's one timer).
+    pub fn tools_deadline(&self) -> Option<Instant> {
+        self.tools.as_ref().and_then(ToolsState::next_deadline)
+    }
+
+    /// True when the question expired at `now`: its row is redrawn.
+    pub fn tools_expire(&mut self, now: Instant) -> bool {
+        self.tools.as_mut().is_some_and(|t| t.expire(now))
+    }
+
     /// The history's rows for All's `"` prefix (the open's snapshot): refilters, keeping the
     /// selection by identity like `set_entries`. The old rows are wiped as they drop.
     pub fn set_clips(&mut self, rows: Vec<ClipRow>) {
@@ -298,8 +404,10 @@ impl Launcher {
     }
 
     /// Whether the box draws the modes row: not a script menu, the calculator or the switcher.
+    /// The Tools menu of a `--tools` open has none; one entered from Mod+Space keeps the row it
+    /// was laid out with (the layout is decided once per open).
     pub fn has_modes(&self) -> bool {
-        !self.is_bare() && !self.is_switcher()
+        !self.is_bare() && !self.is_switcher() && self.origin != Origin::Tools
     }
 
     /// A menu with no modes row and no preview: a script's, the calculator's or the history's.
@@ -350,6 +458,7 @@ impl Launcher {
             Source::Shell => Identity::Shell,
             Source::Clip(i) => Identity::Clip(self.clips.get(i)?.id),
             Source::ClipClear => return None,
+            Source::Tool(i) => Identity::Tool(self.tool_rows().get(i)?.id),
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
                 let item = e.items.get(i)?;
@@ -371,6 +480,12 @@ impl Launcher {
     /// `key`, told whether it is an auto-repeat. On a history row a held Enter (Clear), Ctrl+Enter
     /// (pin) or Delete does nothing: like the power menu, a held key repeats only to move.
     pub fn key_repeat(&mut self, k: Key, repeat: bool) -> Outcome {
+        // A held Enter in the Tools menu does nothing (tools spec § 2): it neither drills, runs
+        // nor asks, so a key held past the box's closing never acts in what it opened.
+        if repeat && k == Key::Enter && self.mode == Mode::Tools {
+            self.at = None;
+            return Outcome::Nothing;
+        }
         if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
             let hit = self.selected_hit().map(|h| h.source);
             let guarded = match k {
@@ -385,18 +500,26 @@ impl Launcher {
         let had_message = self.message.take().is_some();
         // Any key but Enter cancels the Clear question; its row is redrawn.
         let cancelled = k != Key::Enter && self.clear_asked.take().is_some();
+        // The same for a Tools question.
+        let cancelled_tool = k != Key::Enter && self.tools.as_mut().is_some_and(ToolsState::cancel);
         let o = self.apply(k);
         self.at = None;
-        if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
+        if (had_message || cancelled || cancelled_tool) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     fn apply(&mut self, k: Key) -> Outcome {
+        if self.mode == Mode::Tools
+            && let Some(o) = self.apply_tools(k)
+        {
+            return o;
+        }
         let page = i32::try_from(self.list_rows).unwrap_or(i32::MAX);
         match k {
             Key::Char(c) => {
                 self.query.push(c);
-                self.take_prefix();
-                self.query_changed()
+                let job = self.take_prefix();
+                let o = self.query_changed();
+                job.map_or(o, Outcome::ReadStates)
             }
             Key::Backspace => {
                 if self.query.pop().is_some() {
@@ -445,21 +568,193 @@ impl Launcher {
 
     /// In All mode (not already entered by a prefix), a query equal to a
     /// configured prefix switches to that mode and is consumed.
-    fn take_prefix(&mut self) {
+    /// The `/` prefix jumps into the Tools menu at its root (only with a catalog to show), and
+    /// returns the read of its states.
+    fn take_prefix(&mut self) -> Option<Job> {
         if self.mode != Mode::All || self.by_prefix {
-            return;
+            return None;
         }
         let p = &self.config.prefixes;
         let mode = if self.query == p.commands {
             Mode::Commands
         } else if self.query == p.windows {
             Mode::Windows
+        } else if !p.tools.is_empty() && self.query == p.tools && self.tools.is_some() {
+            Mode::Tools
         } else {
-            return;
+            return None;
         };
         self.mode = mode;
         self.query.clear();
         self.by_prefix = true;
+        if mode != Mode::Tools {
+            return None;
+        }
+        let t = self.tools.as_mut()?;
+        t.reset();
+        self.ranker.forget();
+        t.state_job(&self.config.tools)
+    }
+
+    /// The keys that mean something else in the Tools mode (spec § 2); the rest (editing, moving)
+    /// is the common handling.
+    fn apply_tools(&mut self, k: Key) -> Option<Outcome> {
+        Some(match k {
+            Key::Backspace if self.query.is_empty() => {
+                if self.tools_up() {
+                    Outcome::Redraw
+                } else if self.origin == Origin::Apps {
+                    self.back_to_all()
+                } else {
+                    Outcome::Nothing
+                }
+            }
+            Key::Left if self.query.is_empty() => {
+                if self.tools_up() {
+                    Outcome::Redraw
+                } else {
+                    Outcome::Nothing
+                }
+            }
+            Key::Left => Outcome::Nothing,
+            Key::Right => self.tools_drill(),
+            Key::Escape => {
+                if self.tools_up() {
+                    Outcome::Redraw
+                } else {
+                    Outcome::Close
+                }
+            }
+            Key::Enter => self.tools_enter(),
+            Key::Tab | Key::BackTab | Key::CtrlEnter | Key::Delete => Outcome::Nothing,
+            _ => return None,
+        })
+    }
+
+    /// Up one level (the query dropped, the parent's selection back): false at the root.
+    fn tools_up(&mut self) -> bool {
+        let Some(selected) = self.tools.as_mut().and_then(ToolsState::up) else { return false };
+        self.query.clear();
+        self.message = None;
+        self.refilter();
+        self.selected = selected.min(self.results.len().saturating_sub(1));
+        self.keep_visible();
+        true
+    }
+
+    fn back_to_all(&mut self) -> Outcome {
+        self.mode = Mode::All;
+        self.by_prefix = false;
+        self.query.clear();
+        self.ranker.forget();
+        self.refilter();
+        Outcome::BackToAll
+    }
+
+    /// The selected Tools row's identity.
+    fn selected_tool(&self) -> Option<RowId> {
+        match self.selected_hit()?.source {
+            Source::Tool(i) => self.tool_rows().get(i).map(|r| r.id),
+            _ => None,
+        }
+    }
+
+    /// → on a category or an entry with choices opens it like Enter; elsewhere nothing.
+    fn tools_drill(&mut self) -> Outcome {
+        let drills = match (self.selected_tool(), &self.tools) {
+            (Some(RowId::Category(_)), _) => true,
+            (Some(RowId::Entry(e)), Some(t)) => {
+                t.catalog.entries.get(e).is_some_and(|e| !matches!(e.choices, crate::launcher::tools::catalog::Choices::None))
+            }
+            _ => false,
+        };
+        if drills { self.tools_enter() } else { Outcome::Nothing }
+    }
+
+    fn tools_enter(&mut self) -> Outcome {
+        match self.selected_tool() {
+            Some(row) => self.tools_activate(row),
+            None => Outcome::Nothing,
+        }
+    }
+
+    /// Enter on `row` of the open level (or of the flat search): opens, asks, or hands the action out.
+    fn tools_activate(&mut self, row: RowId) -> Outcome {
+        let now = self.at.unwrap_or_else(Instant::now);
+        // The flat search's index means nothing in the level it drills into: restore the top.
+        let selected = if self.query.is_empty() { self.selected } else { 0 };
+        let Some(step) = self.tools.as_mut().map(|t| t.enter(&self.config.tools, row, selected, now)) else { return Outcome::Nothing };
+        match step {
+            Step::Drill(job) => {
+                self.level_changed();
+                job.map_or(Outcome::Redraw, Outcome::ReadChoices)
+            }
+            Step::Ask => Outcome::Asked,
+            Step::Wait => Outcome::Nothing,
+            Step::Run(action) => Outcome::Activate(Activation::Tool(action)),
+        }
+    }
+
+    /// The open level changed (a drill, a jump): a fresh query and rows, the first selected.
+    fn level_changed(&mut self) {
+        self.query.clear();
+        self.message = None;
+        self.ranker.forget();
+        self.refilter();
+    }
+
+    /// A Mod+Space hit on a tool (tools spec § 1): runs it as the Tools box would; one that
+    /// drills or must ask switches the box to the Tools mode, at its level.
+    fn tool_from_all(&mut self, i: usize) -> Outcome {
+        use crate::launcher::tools::catalog::Choices;
+        let Some(row) = self.tool_rows().get(i).map(|r| r.id) else { return Outcome::Nothing };
+        let Some(t) = self.tools.as_mut() else { return Outcome::Nothing };
+        let (entry, choice) = match row {
+            RowId::Entry(e) => (e, None),
+            RowId::Choice(e, k) => (e, Some(k)),
+            RowId::Category(_) => return Outcome::Nothing,
+        };
+        let Some(e) = t.catalog.entries.get(entry) else { return Outcome::Nothing };
+        let (confirm, with_choices) = (e.confirm, !matches!(e.choices, Choices::None));
+        if choice.is_none() && with_choices {
+            let step = t.goto_choices(&self.config.tools, entry);
+            self.enter_tools_mode();
+            return match step {
+                Step::Drill(Some(job)) => Outcome::ReadChoices(job),
+                _ => Outcome::Redraw,
+            };
+        }
+        if !confirm {
+            // Nothing to ask: the action itself, as `ToolsState::enter` would hand it out.
+            let now = self.at.unwrap_or_else(Instant::now);
+            return match t.enter(&self.config.tools, row, 0, now) {
+                Step::Run(action) => Outcome::Activate(Activation::Tool(action)),
+                _ => Outcome::Nothing,
+            };
+        }
+        // A confirm entry or choice: the box goes to its level with its question asked, so the
+        // question, its expiry and its timer are the Tools mode's only (spec decision 20).
+        match choice {
+            Some(_) => {
+                t.goto_choices(&self.config.tools, entry);
+            }
+            None => t.goto_entry(entry),
+        }
+        self.enter_tools_mode();
+        let at =
+            self.results.iter().position(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)));
+        if let Some(at) = at {
+            self.selected = at;
+            self.keep_visible();
+        }
+        self.tools_activate(row)
+    }
+
+    /// The box becomes the Tools mode at the level the state is already on.
+    fn enter_tools_mode(&mut self) {
+        self.mode = Mode::Tools;
+        self.by_prefix = false;
+        self.level_changed();
     }
 
     fn switch_mode(&mut self, m: Mode) -> Outcome {
@@ -497,6 +792,10 @@ impl Launcher {
             self.calc = None;
             return;
         }
+        if self.mode == Mode::Tools {
+            self.rank_tools();
+            return;
+        }
         // A prefix lists only its own rows: no catalog ranking, no calculator.
         // Field by field, not `prefixed()`: the ranker is borrowed mutably below.
         if let Some((p, text)) = split_query(self.mode, &self.query, &self.config, self.clipboard) {
@@ -518,6 +817,12 @@ impl Launcher {
             Some(e) => (&e.items[..], &e.sources[..]),
             None => (&[][..], &[][..]),
         };
+        // Mod+Space's typed search ranks the flat rows (tools spec § 1).
+        self.tool_flat_shown = true;
+        let tools = match &self.tools {
+            Some(t) => t.flat().1,
+            None => &[],
+        };
         let q = Query {
             text: &self.query,
             mode: self.mode,
@@ -527,6 +832,7 @@ impl Launcher {
             lines: &self.lines,
             entries,
             entry_sources,
+            tools,
             history: &self.history,
             now: self.now,
         };
@@ -547,6 +853,42 @@ impl Launcher {
         if self.calc.is_some() {
             self.results.insert(0, Hit { source: Source::Calc, score: u32::MAX, frecency: 0 });
         }
+    }
+
+    /// The Tools mode: the open level's rows (or, at the root, the flat search of a typed query),
+    /// in the level's order, ranked by what is typed.
+    fn rank_tools(&mut self) {
+        self.calc = None;
+        let Some(t) = &self.tools else {
+            self.results.clear();
+            return;
+        };
+        let flat = t.at_root() && !self.query.trim().is_empty();
+        if flat != self.tool_flat_shown {
+            // The prepared facts are per list: another list, another facts.
+            self.ranker.forget();
+        }
+        self.tool_flat_shown = flat;
+        if !flat {
+            let rows = t.rows();
+            self.tool_level_hits = rows.iter().map(|r| t.hit_row(r)).collect();
+            self.tool_level = rows;
+        }
+        let tools = if flat { t.flat().1 } else { &self.tool_level_hits[..] };
+        let q = Query {
+            text: &self.query,
+            mode: Mode::Tools,
+            apps: &[],
+            commands: &[],
+            windows: &[],
+            lines: &[],
+            entries: &[],
+            entry_sources: &[],
+            tools,
+            history: &self.history,
+            now: self.now,
+        };
+        self.results = self.ranker.rank(&q);
     }
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
@@ -636,6 +978,7 @@ impl Launcher {
     fn primary(&mut self) -> Outcome {
         let hit = self.selected_hit();
         match self.mode {
+            Mode::Tools => self.tools_enter(),
             Mode::Script => match hit {
                 Some(Hit { source: Source::Line(i), .. }) => self.choose_line(i),
                 _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose { text: self.query.clone(), line: None }),
@@ -648,6 +991,7 @@ impl Launcher {
                 Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: true }),
                 Some(Source::Line(i)) => self.choose_line(i),
                 Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
+                Some(Source::Tool(i)) => self.tool_from_all(i),
                 Some(Source::Calc) => self.copy(false),
                 Some(Source::Search) => self.search(),
                 Some(Source::Emoji(offset)) => self.emoji(offset, false),
@@ -772,6 +1116,8 @@ impl Launcher {
     fn secondary(&mut self) -> Outcome {
         let hit = self.selected_hit().map(|h| h.source);
         match (self.mode, hit) {
+            // Ctrl+Enter and a right click do nothing in the Tools mode.
+            (Mode::Tools, _) => Outcome::Nothing,
             (Mode::Commands, Some(Source::Command(index))) if !self.query.contains(char::is_whitespace) => {
                 Outcome::Activate(Activation::Command { index, terminal: false })
             }
@@ -801,6 +1147,7 @@ impl Launcher {
         }
         let had_message = self.message.take().is_some();
         let on_clear = matches!(self.results[index].source, Source::ClipClear);
+        // Another row's click cancels a Tools question; the same row's is its answer (`ask`).
         let cancelled = !on_clear && self.clear_asked.take().is_some();
         self.moved = true;
         self.selected = index;
@@ -820,7 +1167,7 @@ impl Launcher {
     /// Wheel: moves the selection by `rows`, clamped.
     pub fn scroll(&mut self, rows: i32) -> Outcome {
         // Any other input cancels the Clear question.
-        let cancelled = self.clear_asked.take().is_some();
+        let cancelled = self.clear_asked.take().is_some() | self.tools.as_mut().is_some_and(ToolsState::cancel);
         let o = self.move_by(rows);
         if cancelled && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }

@@ -810,3 +810,174 @@ fn the_panel_wipes_its_text_temporaries_and_the_row_text_is_borrowed() {
     let describe = src.split("fn describe(").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
     assert!(describe.contains("Cow::Borrowed(c.first.as_str())"), "a history row's text is borrowed, never cloned");
 }
+
+// -- The Tools menu (tools spec § 2) --
+
+const TOOLS_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Nix"
+icon = "N"
+[[tools.entry]]
+name = "Update"
+category = "Nix"
+icon = "U"
+run = ["x", "update"]
+state = ["s"]
+[[tools.entry]]
+name = "Collect garbage"
+category = "Nix"
+run = ["x", "gc"]
+confirm = true
+[[tools.entry]]
+name = "Generation"
+category = "Nix"
+run = ["x", "{choice}"]
+choices = ["list", "diff"]
+[[tools.entry]]
+name = "Pick"
+category = "Nix"
+run = ["x", "{choice}"]
+choices_cmd = ["lines"]
+[[tools.entry]]
+name = "Lock now"
+icon = "L"
+run = ["x", "lock"]
+"#;
+
+fn tools_box(text: &str) -> Launcher {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    Launcher::for_tools(config, catalog, History::empty(200), NOW)
+}
+
+fn tool_text(rows: &Boxed) -> Vec<String> {
+    rows.rows.iter().map(Grid::text).collect()
+}
+
+#[test]
+fn tools_root_snapshot() {
+    let mut l = tools_box(TOOLS_CFG);
+    let (b, rows) = draw(&mut l, 100);
+    assert_eq!(b.list_top, 2, "no modes row");
+    assert!(rows.rows[0].text().contains("Tools"), "the breadcrumb is the prompt");
+    insta::assert_snapshot!("tools_root", snapshot(&rows));
+}
+
+#[test]
+fn tools_category_snapshot_with_switch_and_chevron() {
+    let mut l = tools_box(TOOLS_CFG);
+    l.key(Key::Down); // Nix (after "Lock now")
+    l.key(Key::Enter);
+    let update = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Update").unwrap();
+    l.adopt_state(update, Some(true));
+    let (_, rows) = draw(&mut l, 100);
+    insta::assert_snapshot!("tools_category", snapshot(&rows));
+    l.adopt_state(update, Some(false));
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("Update") && t.contains("○ off")), "{}", snapshot(&rows));
+    l.adopt_state(update, None);
+    let (_, rows) = draw(&mut l, 100);
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("off ") || t.contains("ON")), "an unknown state shows no switch");
+}
+
+#[test]
+fn tools_flat_search_snapshot() {
+    let mut l = tools_box(TOOLS_CFG);
+    typed(&mut l, "gen");
+    let (_, rows) = draw(&mut l, 100);
+    insta::assert_snapshot!("tools_flat", snapshot(&rows));
+    // The category is dimmed after the entry, two cells on; a root entry has none.
+    let text = tool_text(&rows);
+    assert!(text.iter().any(|t| t.contains("Generation  Nix")), "{text:?}");
+    assert!(text.iter().any(|t| t.contains("Generation · list  Nix")), "{text:?}");
+}
+
+#[test]
+fn tools_breadcrumb_is_cut_from_the_left() {
+    let long = "Category with a rather long name indeed";
+    let text = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = {long:?}\n[[tools.entry]]\nname = \"An entry with a long name too\"\ncategory = {long:?}\nrun = [\"x\", \"{{choice}}\"]\nchoices = [\"a\"]\n"
+    );
+    let mut l = tools_box(&text);
+    keys(&mut l, &[Key::Enter, Key::Enter]);
+    let (b, rows) = draw(&mut l, 100);
+    let input = rows.rows[usize::from(b.list_top) - 2].text();
+    assert!(input.contains("…") && input.contains("entry with a long name too"), "{input:?}");
+    assert!(!input.contains("Tools ›"), "cut from the left, the end kept: {input:?}");
+    insta::assert_snapshot!("tools_breadcrumb_cut", snapshot(&rows));
+    // And short breadcrumbs are whole.
+    let mut l = tools_box(TOOLS_CFG);
+    keys(&mut l, &[Key::Down, Key::Enter]);
+    let (b, rows) = draw(&mut l, 100);
+    assert!(rows.rows[usize::from(b.list_top) - 2].text().contains("Tools › Nix"));
+}
+
+#[test]
+fn tools_question_snapshot() {
+    let mut l = tools_box(TOOLS_CFG);
+    keys(&mut l, &[Key::Down, Key::Enter, Key::Down]); // Collect garbage
+    l.set_now(std::time::Instant::now());
+    assert_eq!(l.key(Key::Enter), crate::launcher::model::Outcome::Asked);
+    let (_, rows) = draw(&mut l, 100);
+    insta::assert_snapshot!("tools_question", snapshot(&rows));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("Collect garbage? ⏎")));
+}
+
+#[test]
+fn tools_reading_snapshot() {
+    let mut l = tools_box(TOOLS_CFG);
+    keys(&mut l, &[Key::Down, Key::Enter]);
+    select_row(&mut l, "Pick");
+    l.key(Key::Enter);
+    let (b, rows) = draw(&mut l, 100);
+    assert!(l.results.is_empty(), "not selectable");
+    assert!(tool_text(&rows).iter().any(|t| t.contains("reading…")));
+    insta::assert_snapshot!("tools_reading", snapshot(&rows));
+    // Done and empty: "nothing here"; a typed query with no hit: "no match".
+    let Some(t) = l.tools() else { panic!() };
+    let _ = (t, b);
+}
+
+#[test]
+fn tools_empty_level_says_nothing_here_and_a_missed_search_no_match() {
+    let mut l = tools_box("[tools]\nbuiltins = false\n");
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("nothing here")), "{}", snapshot(&rows));
+    let mut l = tools_box(TOOLS_CFG);
+    typed(&mut l, "zzzz");
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("no match")), "{}", snapshot(&rows));
+}
+
+#[test]
+fn tools_help_rows() {
+    let mut l = tools_box(TOOLS_CFG);
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ← back · esc close")));
+    keys(&mut l, &[Key::Down, Key::Enter]);
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · esc back")));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("esc close")));
+}
+
+#[test]
+fn a_click_on_a_tools_row_maps_to_it() {
+    let mut l = tools_box(TOOLS_CFG);
+    let (b, _) = draw(&mut l, 100);
+    assert_eq!(hit(&l, &b, 5, b.list_top + 1), Some(Click::Result(1)));
+    assert_eq!(hit(&l, &b, 5, b.list_top + 9), Some(Click::Inside), "below the last row");
+}
+
+/// Selects the row named `name` (the model's keys only).
+fn select_row(l: &mut Launcher, name: &str) {
+    let at = (0..l.results.len())
+        .find(|&i| matches!(l.results[i].source, Source::Tool(r) if l.tool_rows()[r].text == name))
+        .unwrap_or_else(|| panic!("{name}"));
+    l.key(Key::Home);
+    for _ in 0..at {
+        l.key(Key::Down);
+    }
+}

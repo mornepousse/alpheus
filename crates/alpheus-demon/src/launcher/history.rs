@@ -16,7 +16,9 @@ pub const FILE_NAME: &str = "launcher-history";
 const COUNT_MAX: u32 = 10_000;
 /// A source entry's id starts so (sources spec § 3).
 const SOURCE_PREFIX: &str = "source:";
-/// A tool entry's id starts so (tools spec § 5): "tool:user:<category>/<name>[/<choice>]".
+/// A tool's id starts so (tools spec § 5): "tool:builtin:<id>" or "tool:user:<category>/<name>[/<choice>]".
+const TOOL_PREFIX: &str = "tool:";
+/// A user entry's id starts so: "tool:user:<category>/<name>[/<choice>]".
 const TOOL_USER_PREFIX: &str = "tool:user:";
 /// The longest source key: "source:" + a name of NAME_MAX four-byte characters + ':' + a line of
 /// LINE_MAX bytes (648).
@@ -164,6 +166,13 @@ impl History {
     /// entries, only when there are entries to rank (matching.rs).
     pub fn source_frecency(&self, now: u64) -> HashMap<&str, u32> {
         self.entries.iter().filter_map(|u| u.id.strip_prefix(SOURCE_PREFIX).map(|id| (id, frecency_of(u, now)))).collect()
+    }
+
+    /// Frecency of every "tool:" entry, keyed by its whole id (`tool:builtin:<id>`,
+    /// `tool:user:<category>/<name>[/<choice>]`), borrowed from the entry. Built once per
+    /// catalog of tool rows, only when there are rows to rank (matching.rs).
+    pub fn tool_frecency(&self, now: u64) -> HashMap<&str, u32> {
+        self.entries.iter().filter(|u| u.id.starts_with(TOOL_PREFIX)).map(|u| (u.id.as_str(), frecency_of(u, now))).collect()
     }
 
     pub fn entries(&self) -> &[Use] {

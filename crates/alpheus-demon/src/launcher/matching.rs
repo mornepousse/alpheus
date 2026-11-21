@@ -29,6 +29,8 @@ pub enum Mode {
     Calc,
     /// The clipboard history alone (`alpheus-launch --clipboard`): no modes row, not in `CYCLE`.
     Clipboard,
+    /// The Tools menu (`alpheus-launch --tools`, or the `/` prefix): not in `CYCLE`.
+    Tools,
 }
 
 impl Mode {
@@ -44,6 +46,7 @@ impl Mode {
             Mode::Script => "Script",
             Mode::Calc => "Calculator",
             Mode::Clipboard => "Clipboard",
+            Mode::Tools => "Tools",
         }
     }
 
@@ -85,6 +88,8 @@ pub enum Source {
     Clip(usize),
     /// The history's last row: forget everything unpinned (asks first).
     ClipClear,
+    /// A tool row (tools spec § 1, § 2): an index into `Query::tools`.
+    Tool(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +108,16 @@ pub const NAME_BONUS: u32 = 2 * SCORE_BUCKET;
 /// Most hits returned (the event loop never sorts more for the view).
 pub const MAX_RESULTS: usize = 500;
 
+/// One candidate of the Tools search: an entry (or `Entry · Choice`), the text its category adds,
+/// and its history key (empty: nothing to rank by frecency, a category or a dynamic choice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolHitRow {
+    pub name: String,
+    /// `<category> <name>`, or empty without a category: scored only when the name itself missed.
+    pub path_text: String,
+    pub key: String,
+}
+
 pub struct Query<'a> {
     /// Prefix already stripped.
     pub text: &'a str,
@@ -115,6 +130,8 @@ pub struct Query<'a> {
     pub entries: &'a [SourceEntry],
     /// Their sources (`SourceEntry::source` indexes it): the names key the frecency.
     pub entry_sources: &'a [SourceConfig],
+    /// Tool rows: matched in All on a typed query, and alone in the Tools mode.
+    pub tools: &'a [ToolHitRow],
     pub history: &'a History,
     pub now: u64,
 }
@@ -143,7 +160,7 @@ pub struct Ranker {
 struct Prepared {
     /// Lengths of apps, commands, lines and entries, and `now`: a mismatch recomputes the
     /// catalog (a stale fact never indexes out of range).
-    catalog_key: (usize, usize, usize, usize, u64),
+    catalog_key: (usize, usize, usize, usize, usize, u64),
     /// Last length the window facts were built for; a mismatch refreshes them even without
     /// an explicit `forget_windows` (the same "never a stale index" guarantee as the catalog).
     windows_len: usize,
@@ -161,6 +178,8 @@ struct Prepared {
     line_name_rank: Vec<u32>,
     entry_frecency: Vec<u32>,
     entry_name_rank: Vec<u32>,
+    tool_frecency: Vec<u32>,
+    tool_name_rank: Vec<u32>,
     /// Apps, then commands, in empty-query order (frecency desc, name, index): built once per
     /// catalog so an empty query is a slice of this, not a fresh sort.
     apps_empty_order: Vec<u32>,
@@ -185,13 +204,15 @@ impl Prepared {
         let line_name_rank = name_ranks(q.lines.len(), |i| q.lines[i].as_str());
         let entry_frecency = entry_frecency(q);
         let entry_name_rank = name_ranks(q.entries.len(), |i| q.entries[i].entry.as_str());
+        let tool_frecency = tool_frecency(q);
+        let tool_name_rank = name_ranks(q.tools.len(), |i| q.tools[i].name.as_str());
         let apps_empty_order = order_by_frecency(q.apps.len(), &app_frecency, &app_name_rank);
         let commands_empty_order = order_by_frecency(q.commands.len(), &command_frecency, &command_name_rank);
         let class_index = build_class_index(q.apps, &programs);
         let window_apps: Vec<Option<usize>> = q.windows.iter().map(|w| lookup_class(&class_index, &w.class)).collect();
         let window_name_rank = name_ranks(q.windows.len(), |i| q.windows[i].title.as_str());
         Prepared {
-            catalog_key: (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now),
+            catalog_key: (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.tools.len(), q.now),
             windows_len: q.windows.len(),
             windows_stale: false,
             app_frecency,
@@ -202,6 +223,8 @@ impl Prepared {
             line_name_rank,
             entry_frecency,
             entry_name_rank,
+            tool_frecency,
+            tool_name_rank,
             apps_empty_order,
             commands_empty_order,
             class_index,
@@ -239,6 +262,16 @@ fn entry_frecency(q: &Query) -> Vec<u32> {
         .iter()
         .map(|e| q.entry_sources.get(e.source).and_then(|s| map.get(source_id(&s.name, &e.line).as_str()).copied()).unwrap_or(0))
         .collect()
+}
+
+/// Each tool row's frecency, from the history's "tool:" ids: the map is built only when there are
+/// rows, and a key looked up only for a row that has one.
+fn tool_frecency(q: &Query) -> Vec<u32> {
+    if q.tools.is_empty() {
+        return Vec::new();
+    }
+    let map = q.history.tool_frecency(q.now);
+    q.tools.iter().map(|t| if t.key.is_empty() { 0 } else { map.get(t.key.as_str()).copied().unwrap_or(0) }).collect()
 }
 
 /// Position of each of the `len` items (named by `name`) in case-insensitive name order,
@@ -334,17 +367,18 @@ impl Default for Ranker {
     }
 }
 
-/// Window, App, Entry, Command, Line: the order between kinds at equal score and frecency
-/// (sources spec § 3: Window, App, Source, Command).
+/// Window, App, Tool, Entry, Command, Line: the order between kinds at equal score and frecency
+/// (sources spec § 3: Window, App, Source, Command; tools spec § 1 puts Tool before Source).
 fn kind(s: Source) -> u8 {
     match s {
         Source::Window(_) => 0,
         Source::App(_) => 1,
-        Source::Entry(_) => 2,
-        Source::Command(_) => 3,
-        Source::Line(_) => 4,
-        Source::Calc => 5,
-        Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 6,
+        Source::Tool(_) => 2,
+        Source::Entry(_) => 3,
+        Source::Command(_) => 4,
+        Source::Line(_) => 5,
+        Source::Calc => 6,
+        Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 7,
     }
 }
 
@@ -355,6 +389,7 @@ fn index(s: Source) -> usize {
         | Source::Command(i)
         | Source::Line(i)
         | Source::Entry(i)
+        | Source::Tool(i)
         | Source::Emoji(i)
         | Source::Clip(i) => i,
         Source::Calc | Source::Search | Source::Shell | Source::ClipClear => 0,
@@ -374,6 +409,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
+        Source::Tool(i) => &q.tools[i].name,
         Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => "",
     }
 }
@@ -469,7 +505,7 @@ impl Ranker {
         if matches!(q.mode, Mode::Calc | Mode::Clipboard) {
             return Vec::new();
         }
-        let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now);
+        let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.tools.len(), q.now);
         let mut prepared = match self.prepared.take() {
             Some(p) if p.catalog_key == catalog_key => p,
             _ => {
@@ -550,6 +586,10 @@ impl Ranker {
                 let remaining = MAX_RESULTS.saturating_sub(hits.len());
                 hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 }));
             }
+            // The Tools mode lists its level in the level's order: nothing is ranked on an empty query.
+            Mode::Tools => {
+                hits.extend((0..q.tools.len()).take(MAX_RESULTS).map(|i| Hit { source: Source::Tool(i), score: 0, frecency: 0 }))
+            }
             Mode::All | Mode::Apps | Mode::Windows | Mode::Calc | Mode::Clipboard => {}
         }
         hits
@@ -594,6 +634,20 @@ impl Ranker {
                 }
             }
         }
+        // Tool rows (tools spec § 1): in All on a typed query, and alone in the Tools mode. A hit on the
+        // name ranks as is; one that needs the category ranks below every other hit.
+        if matches!(q.mode, Mode::All | Mode::Tools) {
+            for (i, t) in q.tools.iter().enumerate() {
+                let frecency = pr.tool_frecency[i];
+                if let Some(score) = self.score(p, &t.name) {
+                    hits.push(Hit { source: Source::Tool(i), score, frecency });
+                } else if !t.path_text.is_empty()
+                    && let Some(score) = self.score(p, &t.path_text)
+                {
+                    path_hits.push(Hit { source: Source::Tool(i), score, frecency });
+                }
+            }
+        }
         if q.mode == Mode::Commands {
             for (i, c) in q.commands.iter().enumerate() {
                 if let Some(score) = self.score(p, c) {
@@ -634,6 +688,9 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
             Source::Entry(i) => pr.entry_name_rank[i],
+            // The Tools mode keeps the level's order between equal hits (the index decides).
+            Source::Tool(_) if q.mode == Mode::Tools => 0,
+            Source::Tool(i) => pr.tool_name_rank[i],
             Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 0,
         }
     };

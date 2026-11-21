@@ -17,7 +17,10 @@ use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
 use crate::launcher::prefix::{self, Prefix, search_url};
+use crate::launcher::tools::catalog::Choices;
+use crate::launcher::tools::nav::{RowId, Trail};
 use crate::list::{self, Boxed, Row, tail, wrap};
+use crate::quick;
 use alpheus_commun::launcher_ipc::wipe;
 use std::borrow::Cow;
 
@@ -106,6 +109,8 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     let end = b.pane_end();
     let prompt = match (&l.prompt, l.is_script()) {
         (Some(p), true) => truncate(p, end.saturating_sub(1) / 2),
+        // The Tools menu's prompt is its breadcrumb, cut from the left when too long.
+        _ if l.mode == Mode::Tools => l.tools().map_or_else(|| PROMPT.to_string(), |t| tail(&t.breadcrumb(), end.saturating_sub(1) / 2)),
         _ => PROMPT.to_string(),
     };
     let mut x = g.write(2, end, &prompt, Style::BOLD_ACCENT);
@@ -161,6 +166,8 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, Cow<'_, str>, String) {
             None => (None, Cow::Borrowed(""), String::new()),
         },
         Source::ClipClear => (None, "Clear history".into(), "pins kept".into()),
+        // Reached only if the row vanished: `result_row` draws the real row.
+        Source::Tool(i) => (None, l.tool_rows().get(i).map_or("", |r| r.text.as_str()).into(), String::new()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or("", |e| e.entry.as_str()).into(), String::new()),
     }
@@ -192,6 +199,12 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         entry_row(g, 1, b.pane_end(), &e.entry, e.path.as_deref(), selected);
         return;
     }
+    if let Source::Tool(i) = l.results[index].source
+        && l.tool_rows().get(i).is_some()
+    {
+        tool_row(l, b, g, i, selected);
+        return;
+    }
     let (icon, name, kind) = describe(l, l.results[index].source);
     if matches!(l.results[index].source, Source::ClipClear) && l.clear_question() {
         let row = Row { icon: None, icon_style: Style::ACCENT, text: "Clear? ⏎", right: "", style: Style::WARN, selected };
@@ -208,6 +221,35 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         selected,
     };
     list::row(g, 1, b.pane_end(), &row);
+}
+
+/// A Tools row (tools spec § 2): `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
+/// panel's switch, or, in a flat search, the category dimmed after the entry (`entry_row`, no glyph).
+/// A pending question replaces the text with `<name>? ⏎` in warn.
+fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
+    let (Some(t), Some(row)) = (l.tools(), l.tool_rows().get(i)) else { return };
+    let end = b.pane_end();
+    if t.asking(row.id) {
+        let text = t.question_text(row);
+        list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
+        return;
+    }
+    match &row.trail {
+        Trail::Category(category) => entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected),
+        Trail::None | Trail::Chevron | Trail::Switch(_) => {
+            let right = if row.trail == Trail::Chevron { "›" } else { "" };
+            list::row(
+                g,
+                1,
+                end,
+                &Row { icon: row.icon, icon_style: Style::ACCENT, text: &row.text, right, style: Style::NORMAL, selected },
+            );
+            if let Trail::Switch(on) = row.trail {
+                let (text, style) = quick::switch(Some(on));
+                g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
+            }
+        }
+    }
 }
 
 /// A command-source entry (sources spec § 3): the entry, then its path dimmed two cells after it,
@@ -246,6 +288,8 @@ fn help_text(l: &Launcher) -> &'static str {
         return "enter focus · tab next · esc close";
     }
     match l.mode {
+        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · ← back · esc close",
+        Mode::Tools => "⏎ open/run · esc back",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
         Mode::Calc if l.config.copy.is_empty() => "esc close",
@@ -411,6 +455,25 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 None => {}
             }
         }
+        Source::Tool(i) => {
+            if let Some(row) = l.tool_rows().get(i) {
+                out.extend(capped_wrap(&row.text, width, budget.saturating_sub(4)).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+                if let Trail::Category(c) = &row.trail
+                    && !c.is_empty()
+                {
+                    out.push((c.clone(), Style::MUTED));
+                }
+                out.push((String::new(), Style::NORMAL));
+                let opens = match row.id {
+                    RowId::Category(_) => true,
+                    RowId::Entry(e) => {
+                        l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(|e| !matches!(e.choices, Choices::None))
+                    }
+                    RowId::Choice(..) => false,
+                };
+                out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
+            }
+        }
         // Unreachable in practice: a `Source::Line` hit only exists in Script mode, where
         // `layout()` never reserves a preview panel (`preview` is always `!script`, see
         // `layout`'s doc comment) — this function is never even called with one. Kept empty,
@@ -451,6 +514,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                 Mode::Calc => "type an expression",
                 Mode::Clipboard if l.query.trim().is_empty() => prefix::hint(Prefix::Clipboard),
                 Mode::Clipboard => "no match",
+                Mode::Tools if l.tools().is_some_and(|t| t.reading) => "reading…",
+                Mode::Tools if l.query.trim().is_empty() => "nothing here",
+                Mode::Tools => "no match",
                 _ if l.is_switcher() => "no window open",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",
