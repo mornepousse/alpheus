@@ -96,6 +96,8 @@ pub struct FakeBus {
     /// The VPN reading's, the same way.
     pub vpn_tap: Arc<VpnTap>,
     pub script: VecDeque<Step>,
+    /// UPower can be D-Bus-activated: `start_upower` then gives it its owner.
+    pub upower_activatable: bool,
     pub calls: Vec<String>,
 }
 
@@ -121,6 +123,7 @@ impl FakeBus {
             bt_tap: Arc::default(),
             vpn_tap: Arc::default(),
             script: VecDeque::new(),
+            upower_activatable: false,
             calls: Vec::new(),
         }
     }
@@ -254,6 +257,15 @@ impl Bus for FakeBus {
     fn owner(&mut self, service: &str) -> io::Result<Option<String>> {
         self.calls.push(format!("GetNameOwner {service}"));
         Ok(self.owners.get(service).map(|o| o.to_string()))
+    }
+
+    fn start_upower(&mut self) -> io::Result<()> {
+        self.calls.push(format!("StartServiceByName {UPOWER}"));
+        if !self.upower_activatable {
+            return Err(service_gone(format!("org.freedesktop.DBus.Error.ServiceUnknown: {UPOWER}")));
+        }
+        self.owners.insert(UPOWER, UPOWER_OWNER);
+        Ok(())
     }
 
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props> {

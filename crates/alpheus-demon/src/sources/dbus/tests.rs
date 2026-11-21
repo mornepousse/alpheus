@@ -61,7 +61,10 @@ fn run(bus: &mut FakeBus) -> (Vec<SystemState>, io::Result<()>) {
 fn assert_unique_destinations(calls: &[String]) {
     for c in calls {
         let destination = c.split(' ').nth(1).unwrap_or("");
-        assert!(c.starts_with("GetNameOwner ") || destination.starts_with(':'), "{c}: a well-known name could be activated");
+        assert!(
+            c.starts_with("GetNameOwner ") || *c == format!("StartServiceByName {UPOWER}") || destination.starts_with(':'),
+            "{c}: a well-known name could be activated"
+        );
     }
 }
 
@@ -1355,4 +1358,83 @@ fn a_network_signal_after_the_vpn_row_closed_calls_no_vpn() {
         let reads = bus.calls.iter().filter(|c| c.starts_with("GetAll ") && c.contains(&path)).count();
         assert_eq!(reads, 1, "active connection {n}: {:?}", bus.calls);
     }
+}
+
+fn starts(bus: &FakeBus) -> Vec<&String> {
+    bus.calls.iter().filter(|c| c.starts_with("StartServiceByName")).collect()
+}
+
+/// Mae's ruling, 2026-11-21: UPower absent and the battery wanted, one activation of UPower and
+/// nothing else, then the owner appearing brings the battery in.
+#[test]
+fn upower_absent_and_the_battery_wanted_is_asked_for_once_and_its_appearance_is_followed() {
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    bus.upower_activatable = true;
+    let steps: [Step; 1] = [(signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(UPOWER)), nothing)];
+    bus.script = VecDeque::from(steps);
+    let (seen, _) = run(&mut bus);
+    assert_eq!(starts(&bus), ["StartServiceByName org.freedesktop.UPower"], "{:?}", bus.calls);
+    assert_eq!(seen[0].battery, Some(PowerState::default()), "nothing to show before UPower is there");
+    assert_eq!(seen.last().unwrap().battery, Some(workstation_battery()), "read when the name appears");
+    assert_unique_destinations(&bus.calls);
+}
+
+#[test]
+fn the_activation_comes_after_the_first_publication() {
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    let (tap, bt, vpn) = (bus.tap.clone(), bus.bt_tap.clone(), bus.vpn_tap.clone());
+    // The session stopped at its first publication: the bus shows the activation was not reached.
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &tap, &bt, &vpn, &mut |_| false);
+    assert!(r.is_ok());
+    assert!(starts(&bus).is_empty(), "a session stopped at its first publication asked for nothing");
+}
+
+#[test]
+fn no_battery_wanted_no_activation() {
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    bus.upower_activatable = true;
+    let _ = run_over(&mut bus, &[Domain::Network, Domain::Bluetooth, Domain::Power]);
+    assert!(starts(&bus).is_empty(), "{:?}", bus.calls);
+    assert!(!bus.owners.contains_key(UPOWER));
+}
+
+#[test]
+fn upower_already_running_is_not_activated() {
+    let mut bus = FakeBus::workstation();
+    let _ = run(&mut bus);
+    assert!(starts(&bus).is_empty(), "{:?}", bus.calls);
+}
+
+#[test]
+fn a_refused_activation_is_not_retried_and_leaves_the_session_alone() {
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    let steps: [Step; 2] = [
+        (signal(network::PATH, PROPERTIES, "PropertiesChanged", None), wifi_primary),
+        (signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing),
+    ];
+    bus.script = VecDeque::from(steps);
+    let (seen, r) = run(&mut bus);
+    assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "ended by the script, not by the activation");
+    assert_eq!(starts(&bus).len(), 1);
+    assert!(seen.len() >= 2);
+}
+
+#[test]
+fn the_activation_is_logged_with_fixed_words() {
+    use super::upower::activate_if_absent;
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    let mut lines = Vec::new();
+    activate_if_absent(&mut bus, &mut |m| lines.push(m.to_string()));
+    assert_eq!(lines, ["upower: activation failed (org.freedesktop.DBus.Error.ServiceUnknown)"]);
+    let mut bus = FakeBus::workstation();
+    bus.owners.remove(UPOWER);
+    bus.upower_activatable = true;
+    lines.clear();
+    activate_if_absent(&mut bus, &mut |m| lines.push(m.to_string()));
+    assert_eq!(lines, ["upower: activation asked"]);
 }
