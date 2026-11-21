@@ -2,10 +2,23 @@
 //! cell: no control character, no escape sequence, no bidirectional override gets through.
 
 /// Zero-width and bidirectional formatting characters: drawn as nothing, they could hide or
-/// reorder what a cell shows. U+200C and U+200D stay out of this list on purpose (ordinary text
+/// reorder what a cell shows (soft hyphen, line and paragraph separators, word joiners, tag
+/// characters, the byte-order mark). U+200C and U+200D stay out of this list on purpose (ordinary text
 /// shaping: ligatures, emoji sequences).
-fn invisible(c: char) -> bool {
-    matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+pub fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{200b}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
 }
 
 /// One line of text that is safe to draw: C0 and C1 controls dropped (tab, CR and LF become one
@@ -81,6 +94,8 @@ mod tests {
         assert_eq!(clean_line("x\u{1b}]0;owned\u{1b}\\y", 100), "xy", "OSC ended by ST");
         assert_eq!(clean_line("a\u{85}b\u{9b}c\u{200f}\u{feff}d\u{2066}e", 100), "abcde", "C1 and bidi controls");
         assert_eq!(clean_line("a\u{1b}[31;1mred\u{1b}[0m", 100), "ared");
+        assert_eq!(clean_line("a\u{2028}b\u{2029}c\u{ad}d\u{2060}e\u{2064}f\u{e0041}g\u{e007f}h", 100), "abcdefgh");
+        assert_eq!(clean_line("a\u{200c}b\u{200d}c", 100), "a\u{200c}b\u{200d}c", "ZWNJ and ZWJ stay");
         let long = "é".repeat(300);
         let cut = clean_line(&long, 200);
         assert_eq!(cut.chars().count(), 200);

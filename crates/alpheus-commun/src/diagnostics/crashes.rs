@@ -25,6 +25,8 @@ pub fn parse_crashes(json: &[u8]) -> Result<Vec<Crash>, String> {
         .take(MAX_CRASHES)
         .map(|v| {
             let exe = v.get("exe").and_then(|x| x.as_str()).unwrap_or("");
+            // Cleaned first: a control character must not hide a `/` from the split.
+            let exe = clean_line(exe, 4096);
             let base = exe.rsplit('/').next().unwrap_or("");
             Crash {
                 time_us: v.get("time").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -79,6 +81,12 @@ pub fn signal_name(n: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_basename_is_taken_after_cleaning() {
+        let json = r#"[{"time":1,"pid":1,"sig":11,"corefile":"present","exe":"/bin/a\u001b]0;x/y\u0007b"}]"#;
+        assert_eq!(parse_crashes(json.as_bytes()).unwrap()[0].exe_name, "ab", "a `/` inside an escape sequence is not a separator");
+    }
 
     #[test]
     fn crashes_from_recorded_json() {

@@ -21,16 +21,18 @@ pub fn parse_failed(json: &[u8]) -> Result<Vec<FailedUnit>, String> {
 }
 
 /// The units of `list-units --output=json`, at most `max`; a unit whose name fails `valid_unit`
-/// is dropped, every text cleaned to 200 characters.
+/// is dropped, every other text cleaned to 200 characters.
 pub fn parse_units(json: &[u8], max: usize) -> Result<Vec<FailedUnit>, String> {
     let list: Vec<serde_json::Value> = serde_json::from_slice(json).map_err(|e| e.to_string())?;
     let text = |v: &serde_json::Value, key: &str| clean_line(v.get(key).and_then(|x| x.as_str()).unwrap_or(""), 200);
     Ok(list
         .iter()
         .filter_map(|v| {
-            let unit = text(v, "unit");
-            valid_unit(&unit).then(|| FailedUnit {
-                unit,
+            // The raw name is checked, not a cleaned (cut) one: a valid name is plain ASCII, so there
+            // is nothing to clean, and a 201..=256 byte unit must not vanish.
+            let unit = v.get("unit").and_then(|x| x.as_str()).unwrap_or("");
+            valid_unit(unit).then(|| FailedUnit {
+                unit: unit.to_string(),
                 load: text(v, "load"),
                 active: text(v, "active"),
                 sub: text(v, "sub"),
@@ -44,6 +46,15 @@ pub fn parse_units(json: &[u8], max: usize) -> Result<Vec<FailedUnit>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_valid_unit_name_is_kept_whole() {
+        let name = format!("{}.service", "a".repeat(240));
+        let json = format!(r#"[{{"unit":"{name}","load":"loaded","active":"failed","sub":"failed","description":"d"}}]"#);
+        let units = parse_failed(json.as_bytes()).unwrap();
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].unit, name);
+    }
 
     #[test]
     fn failed_units_from_recorded_json() {

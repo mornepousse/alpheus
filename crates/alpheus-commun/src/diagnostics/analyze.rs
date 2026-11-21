@@ -22,7 +22,7 @@ pub fn parse_blame(text: &str, max: usize) -> Vec<Blame> {
         while let Some(&word) = words.peek() {
             match component(word) {
                 Some(ms) => {
-                    total += ms;
+                    total = total.saturating_add(ms);
                     seen = true;
                     words.next();
                 }
@@ -61,7 +61,7 @@ fn component(word: &str) -> Option<u64> {
 pub fn parse_timespan(s: &str) -> Option<u64> {
     let mut words = s.split_whitespace().peekable();
     words.peek()?;
-    words.map(component).sum::<Option<u64>>()
+    words.map(component).try_fold(0u64, |acc, ms| ms.map(|ms| acc.saturating_add(ms)))
 }
 
 #[cfg(test)]
@@ -95,6 +95,14 @@ mod tests {
             "the garbage line is skipped"
         );
         assert_eq!(parse_blame(include_str!("../../tests/fixtures/diag-blame.txt"), 2).len(), 2);
+    }
+
+    #[test]
+    fn hostile_spans_saturate_instead_of_overflowing() {
+        let huge = "9999999999999999y ".repeat(40);
+        assert_eq!(parse_timespan(&huge), Some(u64::MAX));
+        let blame = parse_blame(&format!("{huge}example.service\n"), 10);
+        assert_eq!(blame[0].duration_ms, u64::MAX);
     }
 
     #[test]
