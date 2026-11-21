@@ -35,17 +35,16 @@ pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Compositor {
-    Sway { socket: PathBuf },
-    Hyprland { directory: PathBuf },
-    Mango { socket: PathBuf },
-    Niri { socket: PathBuf },
+pub use alpheus_commun::compositor::{Compositor, VARIABLES, detect, mango_socket};
+
+/// The daemon's start line naming a compositor (`Compositor` itself lives in alpheus-commun).
+pub trait CompositorName {
+    /// Its name and the variable that named it, for the start line (`describe`).
+    fn name(&self) -> (&'static str, &'static str);
 }
 
-impl Compositor {
-    /// Its name and the variable that named it, for the start line (`describe`).
-    pub fn name(&self) -> (&'static str, &'static str) {
+impl CompositorName for Compositor {
+    fn name(&self) -> (&'static str, &'static str) {
         match self {
             Compositor::Sway { .. } => ("Sway", "SWAYSOCK"),
             Compositor::Hyprland { .. } => ("Hyprland", "HYPRLAND_INSTANCE_SIGNATURE"),
@@ -53,39 +52,6 @@ impl Compositor {
             Compositor::Niri { .. } => ("niri", "NIRI_SOCKET"),
         }
     }
-}
-
-/// The four variables, in detection order (Mango and Sway spec § 1).
-pub const VARIABLES: [&str; 4] = ["SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "MANGO_INSTANCE_SIGNATURE", "NIRI_SOCKET"];
-
-/// Same rule as nixos-config's `compositor()` (home/scripts/lib.sh), with niri last: SWAYSOCK,
-/// then HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET. An empty
-/// variable counts as unset; the first one set decides, and an unusable value gives no compositor
-/// rather than the next variable's (a nested session inherits several of them).
-pub fn detect(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositor> {
-    let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
-    if let Some(socket) = non_empty("SWAYSOCK") {
-        return Some(Compositor::Sway { socket: socket.into() });
-    }
-    if let Some(sig) = non_empty("HYPRLAND_INSTANCE_SIGNATURE") {
-        // The signature is a directory name: "/" or ".." would escape it.
-        if sig == ".." || sig.as_encoded_bytes().contains(&b'/') {
-            return None;
-        }
-        let runtime = non_empty("XDG_RUNTIME_DIR")?;
-        return Some(Compositor::Hyprland { directory: PathBuf::from(runtime).join("hypr").join(sig) });
-    }
-    if non_empty("MANGO_INSTANCE_SIGNATURE").is_some() {
-        return mango_socket(&var).map(|socket| Compositor::Mango { socket });
-    }
-    non_empty("NIRI_SOCKET").map(|socket| Compositor::Niri { socket: socket.into() })
-}
-
-/// `$MANGO_INSTANCE_SIGNATURE` is the socket's own path (`/run/user/1000/mango-<pid>.sock`),
-/// absolute only. Read at detection, and again at each session start (spec § 2: the path embeds
-/// the compositor's pid).
-pub(crate) fn mango_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    var("MANGO_INSTANCE_SIGNATURE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// The socket a Mango session opens: `$MANGO_INSTANCE_SIGNATURE` read again (spec § 2, the path

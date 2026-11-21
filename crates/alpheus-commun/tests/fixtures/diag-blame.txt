@@ -1,0 +1,6 @@
+1min 2.345s example-sync.service
+     44.764s example-app.service
+       812ms mnt-data.mount
+        15us  example-fast.service
+garbage line without a time
+  1h 2min 3s example-long.service

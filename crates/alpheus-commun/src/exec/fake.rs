@@ -19,6 +19,7 @@ pub struct FakeExecutor {
     envs: Mutex<Vec<EnvCall>>,
     unsets: Mutex<Vec<Vec<String>>>,
     delay: Duration,
+    limits: Mutex<Vec<(String, CaptureLimits)>>,
 }
 
 impl FakeExecutor {
@@ -26,7 +27,7 @@ impl FakeExecutor {
         Self::default()
     }
 
-    /// Every `run` call takes `delay` (simulates a slow tool).
+    /// Every `run` and `capture` call takes `delay` (simulates a slow tool).
     pub fn with_delay(delay: Duration) -> Self {
         FakeExecutor { delay, ..Self::default() }
     }
@@ -59,6 +60,11 @@ impl FakeExecutor {
     /// Each `spawn_with_env`'s removed names, in order (parallel to `envs`).
     pub fn unsets(&self) -> Vec<Vec<String>> {
         self.unsets.lock().unwrap().clone()
+    }
+
+    /// Each `capture`'s line and the limits it was given, in order.
+    pub fn limits(&self) -> Vec<(String, CaptureLimits)> {
+        self.limits.lock().unwrap().clone()
     }
 
     /// Programs the output of the stream "prog arg1 arg2" (then its end).
@@ -142,9 +148,13 @@ impl Executor for FakeExecutor {
         }
     }
 
-    fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
+    fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError> {
         let l = line(prog, args);
         self.calls.lock().unwrap().push(l.clone());
+        self.limits.lock().unwrap().push((l.clone(), limits));
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
         self.captures.lock().unwrap().get(&l).cloned().unwrap_or(Err(ExecError::NotFound))
     }
 }
@@ -186,6 +196,25 @@ mod tests {
         let t = Instant::now();
         let _ = f.run("wpctl", &["status"]);
         assert!(t.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn fake_capture_honours_the_delay() {
+        let f = FakeExecutor::with_delay(Duration::from_millis(200));
+        let l = CaptureLimits { deadline: Duration::from_secs(1), max_bytes: 10, max_lines: 10 };
+        let t = Instant::now();
+        let _ = f.capture("journalctl", &[], l);
+        assert!(t.elapsed() >= Duration::from_millis(200));
+    }
+
+    #[test]
+    fn fake_records_capture_limits() {
+        let f = FakeExecutor::new();
+        let a = CaptureLimits { deadline: Duration::from_secs(2), max_bytes: 1 << 20, max_lines: 1001 };
+        let b = CaptureLimits { deadline: Duration::from_secs(5), max_bytes: 4 << 20, max_lines: 501 };
+        let _ = f.capture("journalctl", &["-n", "1"], a);
+        let _ = f.capture("coredumpctl", &[], b);
+        assert_eq!(f.limits(), [("journalctl -n 1".to_string(), a), ("coredumpctl".to_string(), b)]);
     }
 
     #[test]
