@@ -14,6 +14,7 @@ pub struct FakeExecutor {
     responses: Mutex<HashMap<String, Result<Output, ExecError>>>,
     streams: Mutex<HashMap<String, Result<Vec<u8>, ExecError>>>,
     captures: Mutex<HashMap<String, Result<Captured, ExecError>>>,
+    limits: Mutex<Vec<CaptureLimits>>,
     calls: Mutex<Vec<String>>,
     inputs: Mutex<Vec<(String, Vec<u8>)>>,
     envs: Mutex<Vec<EnvCall>>,
@@ -59,6 +60,11 @@ impl FakeExecutor {
     /// Each `spawn_with_env`'s removed names, in order (parallel to `envs`).
     pub fn unsets(&self) -> Vec<Vec<String>> {
         self.unsets.lock().unwrap().clone()
+    }
+
+    /// The limits each `capture` was given, in order.
+    pub fn capture_limits(&self) -> Vec<CaptureLimits> {
+        self.limits.lock().unwrap().clone()
     }
 
     /// Programs the output of the stream "prog arg1 arg2" (then its end).
@@ -142,8 +148,9 @@ impl Executor for FakeExecutor {
         }
     }
 
-    fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
+    fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError> {
         let l = line(prog, args);
+        self.limits.lock().unwrap().push(limits);
         self.calls.lock().unwrap().push(l.clone());
         self.captures.lock().unwrap().get(&l).cloned().unwrap_or(Err(ExecError::NotFound))
     }

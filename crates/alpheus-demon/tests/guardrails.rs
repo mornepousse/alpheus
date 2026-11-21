@@ -756,26 +756,37 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
-/// Launcher sources (sources spec § 6): `Executor::capture` blocks for up to its deadline, so only
-/// the source runner calls it, on the scan thread (`NonBlocking` delegates it); and the runner never
-/// builds a shell command from a line — the line is one argv element.
+/// Launcher sources (sources spec § 6) and Shield (shield spec § 7): `Executor::capture` blocks for
+/// up to its deadline, so only the source runner (on the scan thread) and the Shield runner (on its
+/// own worker thread) call it (`NonBlocking` delegates it); and neither builds a shell command from
+/// a line — the line is one argv element.
 #[test]
-fn only_the_source_runner_captures_and_never_through_a_shell() {
+fn only_the_runners_capture_and_never_through_a_shell() {
     let mut runner = None;
+    let mut shield = None;
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         if prod.contains(".capture(") {
-            assert!(matches!(name.as_str(), "launcher/sources.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+            assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield_run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
         }
         if name == "launcher/sources.rs" {
             runner = Some(prod);
+        } else if name == "shield_run.rs" {
+            shield = Some(prod);
         }
     }
     let runner = runner.expect("launcher/sources.rs");
     assert!(runner.contains(".capture("), "the runner reads through the executor");
     for never in ["shell_argv", "\"sh\"", "\"-c\"", "spawn("] {
         assert!(!runner.contains(never), "{never} in launcher/sources.rs");
+    }
+    // The Shield runner (shield spec § 7): a configured argv through `capture`, on its own worker
+    // thread (`thread::Builder` is its one way to start it), never a shell and never a detached spawn.
+    let shield = shield.expect("shield_run.rs");
+    assert!(shield.contains(".capture("), "the Shield runner reads through the executor");
+    for never in ["spawn_with_", ".run(", "exec.spawn(", "executor.spawn(", "\"sh\"", "\"-c\"", "shell_argv", "Command::new"] {
+        assert!(!shield.contains(never), "{never} in shield_run.rs");
     }
 }
 
@@ -1097,6 +1108,12 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
+        // The Shield command or read (shield spec § 7): one worker thread, alive only while that
+        // command or read runs (one action slot and one read slot, each held until the worker's
+        // report), and its one DeadlineTimer, built in `ShieldApp::new`: armed only while a
+        // switch waits for its flag (the 5 s grace or the 60 s bound).
+        ("shield_run.rs", "thread::Builder", 1),
+        ("shield_app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),

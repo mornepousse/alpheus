@@ -68,6 +68,8 @@ pub enum Mail {
         generation: u64,
         entries: Entries,
     },
+    /// A Shield worker's report (shield spec § 7).
+    Shield(crate::shield::ShieldMail),
     Stop,
 }
 
@@ -598,6 +600,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
+        channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
