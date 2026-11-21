@@ -220,7 +220,7 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
 /// `state` past the 16th entry that has one. Run before `validate`: what is cut is never checked.
 pub fn bounded(mut t: ToolsConfig, note: &mut dyn FnMut(&str)) -> ToolsConfig {
     if t.categories.len() > MAX_CATEGORIES {
-        let cut: HashSet<String> = t.categories[MAX_CATEGORIES..].iter().map(|c| c.name.clone()).collect();
+        let cut: HashSet<String> = t.categories.iter().skip(MAX_CATEGORIES).map(|c| c.name.clone()).collect();
         let total = t.categories.len();
         t.categories.truncate(MAX_CATEGORIES);
         let kept: HashSet<&str> = t.categories.iter().map(|c| c.name.as_str()).collect();
