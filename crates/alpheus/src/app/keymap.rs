@@ -151,6 +151,9 @@ fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
         Action::Activate => vec!["enter"],
         Action::Decrease => vec!["-"],
         Action::Increase => vec!["+"],
+        Action::UnitRestart => vec!["r"],
+        Action::UnitReset => vec!["c"],
+        Action::Refresh => vec!["f5"],
     };
     if dvorak {
         match a {
@@ -254,6 +257,9 @@ mod tests {
         assert_eq!(k.lookup(&ev(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Activate));
         assert_eq!(k.lookup(&ch('-')), Some(Action::Decrease));
         assert_eq!(k.lookup(&ch('/')), Some(Action::Search));
+        assert_eq!(k.lookup(&ch('r')), Some(Action::UnitRestart));
+        assert_eq!(k.lookup(&ch('c')), Some(Action::UnitReset));
+        assert_eq!(k.lookup(&ev(KeyCode::F(5), KeyModifiers::NONE)), Some(Action::Refresh));
         assert_eq!(k.lookup(&ev(KeyCode::Char('f'), KeyModifiers::CONTROL)), Some(Action::Search));
     }
 

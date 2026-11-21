@@ -1,0 +1,30 @@
+---
+source: crates/alpheus/src/ui/diagnostics/tests.rs
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    SESSION HEALTH ────────────────────────────────────────  ✓ all good  
+                    ✓ Mango answers                                                    
+  󰕾 Sound    2      ✓ WAYLAND_DISPLAY wayland-1 reachable                              
+                    ✓ systemd --user environment matches this session                  
+  󰖩 Network  3      ✓ no failed user unit                                              
+                    ✓ the alpheus daemon answers                                       
+  󰂯 BT       4                                                                         
+                  FAILED UNITS ────────────────────────────────────────                
+  󰐥 Power    5      no failed unit                                                     
+                                                                                       
+  󰍹 Displays 6    RESTARTING IN A LOOP ────────────────────────────────────────        
+                    none                                                               
+  󰏘 Theme    7                                                                         
+                  CRASHES (7 DAYS) ────────────────────────────────────────            
+ ▌󰃤 Diag     8      no crash in 7 days                                                 
+                                                                                       
+                  ▌ Boot   Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.…  
+                                                                                       
+  ● ready         JOURNAL ────────────────────────────────────────                     
+                     Errors this boot   USB   Suspend and resume                       
+                   Enter  Open    F5  Refresh    q  Quit    F1  Help    Ctrl+P  Palette

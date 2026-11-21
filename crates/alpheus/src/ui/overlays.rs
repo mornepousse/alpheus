@@ -1,9 +1,9 @@
 //! Overlays: help, command palette, confirmation; and the ephemeral corner
 //! messages. Drawn last: their regions win on click.
 
-use super::displays;
 use super::draw::{centered, clear, put, truncate};
 use super::hit::{HitMap, Target};
+use super::{diagnostics, displays};
 use crate::app::action::{Action, Tab};
 use crate::app::{App, Confirm, Overlay, Palette};
 use ratatui::buffer::Buffer;
@@ -24,6 +24,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         Overlay::Keep(k) => displays::keep(buf, area, app, k, hits),
         Overlay::Panel(p) => displays::panel(buf, area, app, p, hits),
         Overlay::SaveProfile(d) => displays::save(buf, area, app, d, hits),
+        Overlay::UnitConfirm { scope, unit, action, yes_focused } => {
+            diagnostics::unit_confirm(buf, area, app, *scope, unit, *action, *yes_focused, hits)
+        }
     }
 }
 

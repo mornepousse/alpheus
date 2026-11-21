@@ -3,11 +3,12 @@
 //! those reads into rows. Nothing here runs a tool: the worker does, the tab only queues the reads.
 
 use super::worker::{DiagRead, DiagResult, Domain, Op, Request};
-use super::{App, Loadable};
-use crate::backends::{BResult, BackendError, CheckResult, PokeAnswer};
+use super::{App, Item, Loadable, Overlay, TOAST_TTL, Toast};
+use crate::backends::{BResult, BackendError, CheckResult, PokeAnswer, UnitAction};
 use crate::config::Check;
 use crate::diagnostics::crashes::Crash;
-use crate::diagnostics::query::JournalQuery;
+use crate::diagnostics::names::valid_unit;
+use crate::diagnostics::query::{JournalQuery, Preset, Scope};
 use crate::diagnostics::show::Restarts;
 use crate::diagnostics::units::FailedUnit;
 use alpheus_commun::compositor::{self, Compositor};
@@ -100,6 +101,33 @@ pub struct DiagnosticsTab {
     pub view: View,
     /// The overview's selection, kept while a view covers it.
     pub saved_focus: usize,
+}
+
+/// One focusable row of the overview, in display order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagItem {
+    /// A failing Session health row (index into `App::health_rows`): focusable to read its fix.
+    HealthRow(usize),
+    Failed(Scope, String),
+    Loop(Scope, String),
+    /// Index into the crashes.
+    Crash(usize),
+    Boot,
+    Preset(Preset),
+    Report,
+}
+
+/// "Restart mnt-data.mount (system)?": what the unit confirmation asks.
+pub fn unit_question(scope: Scope, unit: &str, action: UnitAction) -> String {
+    let verb = match action {
+        UnitAction::Restart => "Restart",
+        UnitAction::ResetFailed => "Clear the failed state of",
+    };
+    let unit = clean_line(unit, 80);
+    match scope {
+        Scope::User => format!("{verb} {unit} (user)?"),
+        Scope::System => format!("{verb} {unit} (system)? systemd will ask for your password in this window."),
+    }
 }
 
 impl DiagnosticsTab {
@@ -333,6 +361,193 @@ impl App {
     /// worker thread is never queued behind more than one of them.
     pub(crate) fn diagnostics_refresh_held(&self) -> bool {
         self.tab == super::Tab::Diagnostics && matches!(self.diag.view, View::Journal(_))
+    }
+
+    /// The overview's focusable rows, in the order the view draws them. A section whose tool is
+    /// missing has none.
+    pub(crate) fn diag_items(&self) -> Vec<Item> {
+        if self.diag.view != View::Overview {
+            return Vec::new();
+        }
+        let d = &self.diag;
+        let mut v: Vec<DiagItem> = Vec::new();
+        v.extend(self.health_rows().iter().enumerate().filter(|(_, r)| !r.ok).map(|(i, _)| DiagItem::HealthRow(i)));
+        for (scope, section) in [(Scope::System, &d.failed_system), (Scope::User, &d.failed_user)] {
+            if !section.missing() {
+                v.extend(section.list().iter().map(|u| DiagItem::Failed(scope, u.unit.clone())));
+            }
+        }
+        for (scope, section) in [(Scope::System, &d.loops_system), (Scope::User, &d.loops_user)] {
+            if !section.missing() {
+                v.extend(section.list().iter().map(|l| DiagItem::Loop(scope, l.unit.clone())));
+            }
+        }
+        if !d.crashes.missing() {
+            v.extend((0..d.crashes.list().len()).map(DiagItem::Crash));
+        }
+        if !d.boot.is_failed() {
+            v.push(DiagItem::Boot);
+        }
+        v.extend(Preset::ALL.map(DiagItem::Preset));
+        v.push(DiagItem::Report);
+        v.into_iter().map(Item::Diag).collect()
+    }
+
+    fn open_diag_view(&mut self, view: View) {
+        self.diag.saved_focus = self.focus;
+        self.focus = 0;
+        self.diag.view = view;
+    }
+
+    /// Esc in a view: back to the overview, its selection where it was.
+    fn close_diag_view(&mut self) {
+        self.diag.view = View::Overview;
+        self.focus = self.diag.saved_focus;
+        self.clamp_focus();
+    }
+
+    /// Enter on an overview row.
+    pub(crate) fn diag_activate(&mut self, item: DiagItem) {
+        let lines = self.config.diagnostics.journal_lines;
+        let journal = |query: JournalQuery| View::Journal(JournalView { query });
+        let view = match item {
+            DiagItem::HealthRow(_) => return,
+            DiagItem::Failed(scope, unit) | DiagItem::Loop(scope, unit) => {
+                journal(JournalQuery { unit: Some((scope, unit)), ..JournalQuery::new(Preset::ServiceLogs, lines) })
+            }
+            DiagItem::Crash(i) => {
+                let Some(c) = self.diag.crashes.list().get(i) else { return };
+                let secs = c.time_us / 1_000_000;
+                journal(JournalQuery {
+                    since_until: Some((secs.saturating_sub(60), secs.saturating_add(5))),
+                    ..JournalQuery::new(Preset::ServiceLogs, lines)
+                })
+            }
+            DiagItem::Boot => View::Boot(BootView),
+            DiagItem::Preset(p) => journal(JournalQuery::new(p, lines)),
+            DiagItem::Report => View::Report(ReportView),
+        };
+        self.open_diag_view(view);
+    }
+
+    /// A click on an overview row. A unit is selected first (its keys then apply), and a second
+    /// click opens its journal; the other rows act at once. True when it was handled here.
+    pub(crate) fn diag_click(&mut self, i: usize) -> bool {
+        let was = self.focus == i;
+        self.focus = i;
+        match self.focused() {
+            Some(Item::Diag(DiagItem::HealthRow(_))) => {}
+            Some(Item::Diag(item @ (DiagItem::Failed(..) | DiagItem::Loop(..)))) => {
+                if was {
+                    self.diag_activate(item);
+                }
+            }
+            Some(Item::Diag(item)) => self.diag_activate(item),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The unit under the cursor, when it is a failed or looping one.
+    fn diag_unit(&self) -> Option<(Scope, String)> {
+        match self.focused()? {
+            Item::Diag(DiagItem::Failed(s, u) | DiagItem::Loop(s, u)) => Some((s, u)),
+            _ => None,
+        }
+    }
+
+    /// Whether `r` and `c` do something on the row under the cursor (the key hints follow).
+    pub fn unit_keys_apply(&self) -> bool {
+        self.diag_unit().is_some_and(|(scope, _)| scope == Scope::User || self.config.diagnostics.system_actions)
+    }
+
+    /// `r` and `c` on a unit. Restarts ask first, a user unit's reset does not; a system unit's
+    /// actions run in the TUI's own window (systemd asks for the password there).
+    fn unit_action(&mut self, action: UnitAction) {
+        let Some((scope, unit)) = self.diag_unit() else { return };
+        if !self.unit_keys_apply() {
+            return;
+        }
+        match (scope, action) {
+            (Scope::User, UnitAction::ResetFailed) => self.send_op(Op::UnitUser(action, unit)),
+            _ => self.overlay = Overlay::UnitConfirm { scope, unit, action, yes_focused: false },
+        }
+    }
+
+    /// The unit confirmation answered yes: a user unit goes to the worker, a system one waits for
+    /// the loop to run it in the TUI's window.
+    pub(crate) fn run_unit(&mut self, scope: Scope, unit: String, action: UnitAction) {
+        match scope {
+            Scope::User => self.send_op(Op::UnitUser(action, unit)),
+            Scope::System if !valid_unit(&unit) => {
+                // A name from a list is checked again before it can become an argument.
+                self.status.error = Some("not a unit name".into());
+            }
+            Scope::System => self.system_unit = Some((action, unit)),
+        }
+    }
+
+    /// The system-unit action to run in the TUI's own window (empties the slot).
+    pub fn take_system_unit(&mut self) -> Option<(UnitAction, String)> {
+        self.system_unit.take()
+    }
+
+    /// The command line of a system-unit action. It never goes through the executor: systemd asks
+    /// for authorisation on the terminal it is given.
+    pub fn system_unit_argv(job: &(UnitAction, String)) -> Vec<String> {
+        let verb = match job.0 {
+            UnitAction::Restart => "restart",
+            UnitAction::ResetFailed => "reset-failed",
+        };
+        ["systemctl", verb, "--", job.1.as_str()].map(String::from).to_vec()
+    }
+
+    /// The window's command ended.
+    pub fn system_unit_done(&mut self, job: &(UnitAction, String), r: Result<(), String>, now: Instant) {
+        let unit = clean_line(&job.1, 80);
+        let (text, error) = match r {
+            Ok(()) => (
+                match job.0 {
+                    UnitAction::Restart => format!("Restarted: {unit}"),
+                    UnitAction::ResetFailed => format!("Cleared: {unit}"),
+                },
+                false,
+            ),
+            Err(e) => (format!("{unit}: {}", clean_line(&e, 120)), true),
+        };
+        if error {
+            self.status.error = Some(text.clone());
+        } else {
+            self.status.error = None;
+            self.status.last = Some(text.clone());
+        }
+        self.toasts.push(Toast { text, error, until: now + TOAST_TTL });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+        self.after_unit_action(now);
+    }
+
+    /// Whatever the outcome, the bar's count and the list are read again.
+    pub(crate) fn after_unit_action(&mut self, now: Instant) {
+        self.requests.push(Request::Do(Op::FailedRefresh));
+        self.refresh_tab(now);
+    }
+
+    /// The Diag tab's own keys; true when it took the action.
+    pub(crate) fn diagnostics_action(&mut self, a: super::action::Action, now: Instant) -> bool {
+        use super::action::Action;
+        if self.tab != super::Tab::Diagnostics {
+            return false;
+        }
+        match a {
+            Action::Back if self.diag.view != View::Overview => self.close_diag_view(),
+            Action::UnitRestart => self.unit_action(UnitAction::Restart),
+            Action::UnitReset => self.unit_action(UnitAction::ResetFailed),
+            Action::Refresh => self.diagnostics_refresh(now),
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn domain_diag_failing(&self, d: Domain) -> bool {

@@ -152,12 +152,18 @@ pub enum Action {
     Activate,
     Decrease,
     Increase,
+    /// Diag tab: restart the failed or looping unit under the cursor.
+    UnitRestart,
+    /// Diag tab: clear the failed state of the unit under the cursor.
+    UnitReset,
+    /// Read the tab again, now.
+    Refresh,
 }
 
 impl Action {
     /// Every action. One `GoTab` per tab, right after `PrevTab`, in tab
     /// order (a test checks the list against `Tab::ALL`).
-    pub const ALL: [Action; 27] = [
+    pub const ALL: [Action; 30] = [
         Action::Quit,
         Action::Back,
         Action::Help,
@@ -185,6 +191,9 @@ impl Action {
         Action::Activate,
         Action::Decrease,
         Action::Increase,
+        Action::UnitRestart,
+        Action::UnitReset,
+        Action::Refresh,
     ];
 
     pub fn name(self) -> String {
@@ -209,6 +218,9 @@ impl Action {
             Action::Activate => "activate".into(),
             Action::Decrease => "decrease".into(),
             Action::Increase => "increase".into(),
+            Action::UnitRestart => "unit_restart".into(),
+            Action::UnitReset => "unit_reset".into(),
+            Action::Refresh => "refresh".into(),
         }
     }
 
@@ -239,6 +251,9 @@ impl Action {
             Action::Activate => "Activate".into(),
             Action::Decrease => "Decrease".into(),
             Action::Increase => "Increase".into(),
+            Action::UnitRestart => "Restart unit".into(),
+            Action::UnitReset => "Clear failed state".into(),
+            Action::Refresh => "Refresh".into(),
         }
     }
 }
@@ -310,6 +325,9 @@ mod tests {
         assert_eq!(Action::GoTab(Tab::Appearance).name(), "tab_7");
         assert_eq!(Action::GoTab(Tab::Diagnostics).name(), "tab_8");
         assert_eq!(Action::PageUp.name(), "page_up");
+        assert_eq!(Action::from_name("unit_restart"), Some(Action::UnitRestart));
+        assert_eq!(Action::from_name("unit_reset"), Some(Action::UnitReset));
+        assert_eq!(Action::from_name("refresh"), Some(Action::Refresh));
         assert_eq!(Action::from_name("fly"), None);
     }
 

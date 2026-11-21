@@ -203,6 +203,14 @@ fn event_loop(
             app.external_done(ext, r, Instant::now());
             continue;
         }
+        if let Some(job) = app.take_system_unit() {
+            // In the TUI's own window, never through the executor: systemd asks for the password
+            // on the terminal it is given.
+            let r = external_tools::open(&mut CrosstermScreen, &mut ProcessLauncher, &App::system_unit_argv(&job));
+            terminal.clear()?;
+            app.system_unit_done(&job, r, Instant::now());
+            continue;
+        }
         if event::poll(Duration::from_millis(100))? {
             let now = Instant::now();
             match event::read()? {

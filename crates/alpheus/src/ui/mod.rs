@@ -3,6 +3,7 @@
 
 mod appearance;
 mod controls;
+mod diagnostics;
 mod digits;
 mod displays;
 pub mod draw;
@@ -131,7 +132,14 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
-            Tab::Diagnostics => pairs.push((km.label(Action::Activate), "Open")),
+            Tab::Diagnostics => {
+                pairs.push((km.label(Action::Activate), "Open"));
+                if app.unit_keys_apply() {
+                    pairs.push((km.label(Action::UnitRestart), "Restart"));
+                    pairs.push((km.label(Action::UnitReset), "Clear"));
+                }
+                pairs.push((km.label(Action::Refresh), "Refresh"));
+            }
             Tab::Appearance if app.appearance.focus != Focus::List => {
                 pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));

@@ -15,7 +15,7 @@ pub mod tab;
 pub mod worker;
 
 use crate::backends::{
-    AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, UnitAction, Volume, brightness,
+    AudioNode, AudioStatus, BResult, BackendError, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, UnitAction, Volume, brightness,
 };
 use crate::config::Config;
 use crate::diagnostics::query::Scope;
@@ -24,7 +24,7 @@ use crate::fuzzy;
 use crate::theme::Theme;
 use action::{Command, External, Tab, palette_entries, profile_label};
 pub use appearance::AppearanceTab;
-pub use diagnostics::DiagnosticsTab;
+pub use diagnostics::{DiagItem, DiagnosticsTab};
 pub use displays::{DisplaysTab, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
 use keymap::Keymap;
 use ratatui::layout::Rect;
@@ -116,6 +116,8 @@ pub enum Item {
     DisplayProfiles,
     /// A display output, by connector.
     Output(String),
+    /// A row of the Diag tab's overview.
+    Diag(DiagItem),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -143,6 +145,13 @@ pub enum Overlay {
     Panel(Panel),
     /// "Save current": display profile name.
     SaveProfile(SaveDialog),
+    /// "Restart this unit?": a failed or looping unit's action. Focus starts on "Cancel".
+    UnitConfirm {
+        scope: Scope,
+        unit: String,
+        action: UnitAction,
+        yes_focused: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -232,6 +241,8 @@ pub struct App {
     last_refresh: Instant,
     requests: Vec<Request>,
     external: Option<External>,
+    /// A system unit's action waiting to run in the TUI's own window (see `take_system_unit`).
+    system_unit: Option<(UnitAction, String)>,
     /// Actions sent and still unanswered, by domain touched. As long as a
     /// domain has one, its reads are ignored: if launched before the
     /// action, they would bring back the old state over the optimistic
@@ -269,6 +280,7 @@ impl App {
             last_refresh: now,
             requests: Vec::new(),
             external: None,
+            system_unit: None,
             pending: HashMap::new(),
             last_read: HashMap::new(),
         };
@@ -395,11 +407,20 @@ impl App {
                 }
             }
             Err(e) => {
-                let msg = format!("{}: {e}", op_label(&op));
+                // A queued restart that outlived the 2 s limit may well have worked.
+                let msg = match (&op, &e) {
+                    (Op::UnitUser(..), BackendError::Timeout { .. }) => {
+                        "systemctl is not responding; the list will show the result".to_string()
+                    }
+                    _ => format!("{}: {e}", op_label(&op)),
+                };
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
                 self.refresh_tab(now); // cancels the optimistic display
             }
+        }
+        if matches!(op, Op::UnitUser(..)) {
+            self.requests.push(Request::Do(Op::FailedRefresh)); // the bar's count follows at once
         }
     }
 
@@ -503,6 +524,9 @@ impl App {
                 // Mae moved on: a profile still waiting is not applied behind her back.
                 self.displays.queued_profile = None;
             }
+            if self.tab == Tab::Diagnostics {
+                self.diag.view = diagnostics::View::Overview; // a view does not wait behind another tab
+            }
             self.tab = t;
             self.focus = 0;
             self.search = Search::default();
@@ -538,7 +562,8 @@ impl App {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
             Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
-            Tab::Appearance | Tab::Diagnostics => Vec::new(),
+            Tab::Appearance => Vec::new(),
+            Tab::Diagnostics => self.diag_items(),
             Tab::Displays => {
                 std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
             }
@@ -643,6 +668,7 @@ impl App {
             Some(Item::Slider(SliderId::Node(id))) => self.set_default(id),
             Some(Item::DisplayProfiles) => self.profile_bar_activate(now),
             Some(Item::Output(name)) => self.open_panel(&name, now),
+            Some(Item::Diag(item)) => self.diag_activate(item),
             _ => {}
         }
     }
@@ -725,11 +751,18 @@ impl App {
     }
 
     pub(crate) fn close_confirm(&mut self, yes: bool) {
-        if let Overlay::Confirm(c) = self.overlay {
-            self.overlay = Overlay::None;
-            if yes {
-                self.send_op(Op::Power(c.action));
+        match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Confirm(c) => {
+                if yes {
+                    self.send_op(Op::Power(c.action));
+                }
             }
+            Overlay::UnitConfirm { scope, unit, action, .. } => {
+                if yes {
+                    self.run_unit(scope, unit, action);
+                }
+            }
+            other => self.overlay = other,
         }
     }
 
@@ -908,6 +941,71 @@ pub(crate) mod testing {
             displays: Loadable::Ready(crate::displays::testing::machine()),
         };
         a.displays.profiles = crate::displays::profiles::parse(PROFILES).unwrap();
+        a
+    }
+
+    /// The Diag tab filled with anonymised data: all good, or with problems (a stale environment,
+    /// failed units of both managers, a loop, a crash). Its reads are taken.
+    pub fn diag_app(problems: bool) -> App {
+        use crate::app::diagnostics::{CompositorHealth, HealthRead, WaylandHealth};
+        use crate::app::worker::{DiagRead, DiagResult};
+        use crate::backends::PokeAnswer;
+        use crate::diagnostics::crashes::Crash;
+        use crate::diagnostics::query::Scope;
+        use crate::diagnostics::show::Restarts;
+        use crate::diagnostics::units::FailedUnit;
+        let t = Instant::now();
+        let mut a = ready_app();
+        a.go_tab(Tab::Diagnostics, t);
+        let sock = "/run/user/1000/mango-1.sock";
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let theirs = if problems { "wayland-0" } else { "wayland-1" };
+        a.on_update(
+            Update::Health(HealthRead {
+                compositor: Some(CompositorHealth { name: "Mango", var: "MANGO_INSTANCE_SIGNATURE", answers: true }),
+                wayland: WaylandHealth::Reachable("wayland-1".into()),
+                systemd_env: Ok(vec![pair("WAYLAND_DISPLAY", theirs), pair("MANGO_INSTANCE_SIGNATURE", sock)]),
+                own_env: vec![pair("WAYLAND_DISPLAY", "wayland-1"), pair("MANGO_INSTANCE_SIGNATURE", sock)],
+            }),
+            t,
+        );
+        a.on_update(Update::Poke(PokeAnswer::Done), t);
+        let unit = |n: &str, d: &str| FailedUnit {
+            unit: n.into(),
+            load: "loaded".into(),
+            active: "failed".into(),
+            sub: "failed".into(),
+            description: d.into(),
+        };
+        let (system, user) = if problems {
+            (
+                vec![unit("mnt-data.mount", "/mnt/data"), unit("example-sync.service", "Example sync job")],
+                vec![unit("example-app.service", "Example app")],
+            )
+        } else {
+            (vec![], vec![])
+        };
+        a.on_update(Update::Failed(Scope::System, Ok(system)), t);
+        a.on_update(Update::Failed(Scope::User, Ok(user)), t);
+        let loops = if problems {
+            vec![Restarts { unit: "example-sync.service".into(), restarts: 7, active: "activating".into(), sub: "auto-restart".into() }]
+        } else {
+            vec![]
+        };
+        let crashes = if problems {
+            vec![Crash { time_us: 1_795_183_320_000_000, pid: 4242, signal: 11, core_present: true, exe_name: "example-app".into() }]
+        } else {
+            vec![]
+        };
+        let boot = "Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.9s (kernel) + 10.8s (initrd) + 9.8s (userspace) = 42.9s";
+        for (read, result) in [
+            (DiagRead::Restarts(3), DiagResult::Restarts { system: Ok(vec![]), user: Ok(loops) }),
+            (DiagRead::Crashes, DiagResult::Crashes(Ok(crashes))),
+            (DiagRead::BootTime, DiagResult::BootTime(Ok(boot.into()))),
+        ] {
+            a.on_update(Update::Diag(read, result), t);
+        }
+        a.take_requests();
         a
     }
 

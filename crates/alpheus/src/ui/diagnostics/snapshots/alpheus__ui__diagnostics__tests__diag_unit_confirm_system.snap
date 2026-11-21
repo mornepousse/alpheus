@@ -1,0 +1,30 @@
+---
+source: crates/alpheus/src/ui/diagnostics/tests.rs
+expression: all
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    SESSION HEALTH ────────────────────────────────────────✗ 2 problems  
+                    ✓ Mango answers                                                    
+  󰕾 Sound    2      ✓ WAYLAND_DISPLAY wayland-1 reachable                              
+                  ▌ ✗ systemd --user has WAYLAND_DISPLAY=wayland-0 (this session: wa…  
+  󰖩 Network  3          fix: systemctl --user import-environment WAYLAND_DISPLAY       
+             ┌ Confirmation ────────────────────────────────────────────┐              
+  󰂯 BT       │ Restart mnt-data.mount (system)? systemd will ask for    │              
+             │ your password in this window.                            │              
+  󰐥 Power    │                                                          │──            
+             │ [ Cancel ]  [ Confirm ]                                  │              
+  󰍹 Displays └──────────────────────────────────────────────────────────┘c job         
+                    ● example-app.service             user    Example app              
+  󰏘 Theme    7                                                                         
+                  RESTARTING IN A LOOP ────────────────────────────────────────        
+ ▌󰃤 Diag     8      ↻ example-sync.service            user    7 restarts, activating   
+                                                                                       
+                  CRASHES (7 DAYS) ────────────────────────────────────────            
+                    ✗ Nov 20 14:02  example-app       SIGSEGV core present             
+  ● ready                                                                              
+                    Boot   Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.…  
+                   Enter  Open    F5  Refresh    q  Quit    F1  Help    Ctrl+P  Palette
