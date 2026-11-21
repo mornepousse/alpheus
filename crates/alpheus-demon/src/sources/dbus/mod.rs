@@ -3,7 +3,14 @@
 //! signal re-reads the domain it concerns. `Bus` only has reads (checked by
 //! tests/guardrails.rs), and a service is only ever called through the
 //! unique name of the process that owns it: never through its well-known
-//! name, which D-Bus activation would use to start it.
+//! name, which D-Bus activation would use to start it. One narrow exception
+//! (Mae's ruling, 2026-11-21): UPower is D-Bus-activated only on some systems
+//! (NixOS), so nothing may have started it when the daemon comes up, and the battery
+//! would stay missing. When the battery is wanted and UPower has no owner at a
+//! session's start, the session sends one `StartServiceByName("org.freedesktop.UPower", 0)`
+//! to the bus driver (never retried; a reconnection asks once more), after the session's first successful publish;
+//! the name appearing then brings the battery in through `NameOwnerChanged`. No other
+//! service is ever activated: `dbusrs_bus::message` refuses any other name.
 
 pub mod bluez;
 pub mod bt;
@@ -76,6 +83,9 @@ pub trait Bus {
     /// activation); a call to a unique name never does — if that process is
     /// gone, the call fails with NotFound.
     fn owner(&mut self, service: &str) -> io::Result<Option<String>>;
+    /// `StartServiceByName("org.freedesktop.UPower", 0)` on the bus driver: the one activation
+    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the activation fails; blocks at most `TIMEOUT`.
+    fn start_upower(&mut self) -> io::Result<()>;
     /// `org.freedesktop.DBus.Properties.GetAll`, to `destination` (a unique name).
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props>;
     /// `org.freedesktop.DBus.ObjectManager.GetManagedObjects` at `/`.

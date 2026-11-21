@@ -194,6 +194,37 @@ fn a_call_to_the_bar_is_refused_never_queued() {
     assert_eq!(e.name(), Some("org.freedesktop.DBus.Error.UnknownMethod"), "{e:?}");
 }
 
+/// Mae's ruling, 2026-11-21: the start call is well-formed on the wire (the daemon answers
+/// ServiceUnknown, not InvalidArgs: nothing is activatable on this bus), and UPower appearing
+/// afterwards brings the battery in through NameOwnerChanged.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn upower_absent_is_asked_for_once_and_the_battery_comes_in_when_it_appears() {
+    let b = PrivateBus::start("upower-late");
+    let mut probe = DbusRsBus::at(&b.address, &[Domain::Battery]).unwrap();
+    let e = probe.start_upower().unwrap_err();
+    assert!(e.to_string().contains("ServiceUnknown"), "{e}");
+    drop(probe);
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Battery]).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = session(
+            &mut bus,
+            &[Domain::Battery],
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &mut |s| tx.send(s.battery).is_ok(),
+        );
+    });
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
+    assert_eq!(next(), Some(PowerState::default()), "nothing before UPower is there");
+    let _workstation = Workstation::serve(&b);
+    let laptop = (0..4).find_map(|_| next().and_then(|p| p.laptop));
+    assert!(laptop.is_some(), "the battery appears with UPower");
+}
+
 /// The recorded workstation, over the wire: the same state as the unit
 /// tests' `FakeBus::workstation()` (mod.rs, `workstation_network` and
 /// `workstation_battery`), read through the real connection.

@@ -180,6 +180,10 @@ pub fn session(
     if let Some(e) = failed {
         return Err(e);
     }
+    // The one activation (module doc): after the publish, so its wait never delays the others.
+    if domains.contains(&Domain::Battery) {
+        upower::activate_if_absent(bus, &mut |m| log(m));
+    }
     // A second, equally cheap call once the first signal's own read off the
     // socket (inside `next_signal`) has had its chance to grow a buffer of
     // its own — kept alongside the one above rather than instead of it.

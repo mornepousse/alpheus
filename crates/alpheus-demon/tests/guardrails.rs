@@ -1145,6 +1145,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         names,
         [
             "GetNameOwner",
+            "StartServiceByName",
             "AddMatch",
             "RemoveMatch",
             "GetAll",

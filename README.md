@@ -357,7 +357,7 @@ of memory at start (≈ 8.4–8.5 MB with a tray of 10 items, launcher module of
 on three outputs. The
 compositor is only **read** (Hyprland's or niri's event stream, Sway's i3 IPC, Mango's watch sockets); switching
 workspace goes through a configurable command. Sound comes from
-`pw-dump`, network, battery and Bluetooth from D-Bus (read-only; the quick panel's Bluetooth acts through a second system-bus connection (BlueZ's own calls and its pairing agent), open only while its detail is open or a call is in flight),
+`pw-dump`, network, battery and Bluetooth from D-Bus (read-only, and no service is ever D-Bus-activated, with one exception: when the battery is wanted and UPower has no owner — it is activated only on demand on some systems, NixOS among them — the daemon asks the bus for UPower once per session start, so the battery shows without another client starting it first; the quick panel's Bluetooth acts through a second system-bus connection (BlueZ's own calls and its pairing agent), open only while its detail is open or a call is in flight),
 resources from `/proc`. The tray talks to the session bus
 (StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
 thread. The media module speaks MPRIS on that same connection (or on one of its own when the tray is off,

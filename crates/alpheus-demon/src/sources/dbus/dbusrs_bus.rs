@@ -33,6 +33,10 @@ pub const MAX_DICTS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     GetNameOwner,
+    /// The one activation the daemon ever asks for, and of UPower alone (`message` refuses any
+    /// other name): the battery is only wanted when it is there, and UPower is only
+    /// D-Bus-activated on some systems.
+    StartServiceByName,
     AddMatch,
     RemoveMatch,
     GetAll,
@@ -44,8 +48,9 @@ pub enum Method {
 }
 
 impl Method {
-    pub const ALL: [Method; 9] = [
+    pub const ALL: [Method; 10] = [
         Method::GetNameOwner,
+        Method::StartServiceByName,
         Method::AddMatch,
         Method::RemoveMatch,
         Method::GetAll,
@@ -59,6 +64,7 @@ impl Method {
     pub fn name(self) -> &'static str {
         match self {
             Method::GetNameOwner => "GetNameOwner",
+            Method::StartServiceByName => "StartServiceByName",
             Method::AddMatch => "AddMatch",
             Method::RemoveMatch => "RemoveMatch",
             Method::GetAll => "GetAll",
@@ -72,7 +78,7 @@ impl Method {
 
     fn interface(self) -> &'static str {
         match self {
-            Method::GetNameOwner | Method::AddMatch | Method::RemoveMatch => BUS_DRIVER,
+            Method::GetNameOwner | Method::StartServiceByName | Method::AddMatch | Method::RemoveMatch => BUS_DRIVER,
             Method::GetAll => PROPERTIES,
             Method::GetManagedObjects => OBJECT_MANAGER,
             Method::EnumerateDevices => UPOWER,
@@ -489,9 +495,12 @@ pub fn message(destination: &str, path: &str, m: Method, arg: Option<&str>) -> i
     let interface = Interface::new(m.interface()).map_err(io::Error::other)?;
     let mut msg = Message::new_method_call(destination, path, interface, m.name()).map_err(io::Error::other)?;
     msg.set_auto_start(false);
-    Ok(match arg {
-        Some(a) => msg.append1(a),
-        None => msg,
+    Ok(match (m, arg) {
+        // Flags 0; UPower is the only service this call may name.
+        (Method::StartServiceByName, Some(a)) if a == UPOWER => msg.append2(a, 0u32),
+        (Method::StartServiceByName, _) => return Err(io::Error::other("StartServiceByName: UPower only")),
+        (_, Some(a)) => msg.append1(a),
+        (_, None) => msg,
     })
 }
 
@@ -587,6 +596,10 @@ impl Bus for DbusRsBus {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    fn start_upower(&mut self) -> io::Result<()> {
+        self.call(BUS_DRIVER, BUS_DRIVER_PATH, Method::StartServiceByName, Some(UPOWER)).map(|_| ())
     }
 
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props> {
@@ -921,9 +934,28 @@ mod tests {
     }
 
     #[test]
+    fn start_service_by_name_names_upower_alone() {
+        let m = message(BUS_DRIVER, BUS_DRIVER_PATH, Method::StartServiceByName, Some(UPOWER)).unwrap();
+        let (name, flags): (&str, u32) = m.read2().unwrap();
+        assert_eq!((name, flags), (UPOWER, 0));
+        for other in [
+            "org.freedesktop.NetworkManager",
+            "org.bluez",
+            "net.hadess.PowerProfiles",
+            "org.freedesktop.login1",
+            "org.freedesktop.UPower2",
+            "",
+        ] {
+            assert!(message(BUS_DRIVER, BUS_DRIVER_PATH, Method::StartServiceByName, Some(other)).is_err(), "{other}");
+        }
+        assert!(message(BUS_DRIVER, BUS_DRIVER_PATH, Method::StartServiceByName, None).is_err());
+    }
+
+    #[test]
     fn every_call_is_flagged_no_auto_start() {
         for m in Method::ALL {
-            assert!(!message(":1.10", "/", m, None).unwrap().get_auto_start(), "{m:?}");
+            let arg = (m == Method::StartServiceByName).then_some(UPOWER);
+            assert!(!message(":1.10", "/", m, arg).unwrap().get_auto_start(), "{m:?}");
         }
     }
 

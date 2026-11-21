@@ -70,6 +70,29 @@ fn kind(t: i64) -> PeripheralKind {
     }
 }
 
+/// The one activation (module doc of `dbus`): UPower has no owner and the battery is wanted, so it is
+/// asked for once. Logged with fixed words only; the name appearing is what brings the battery in.
+pub fn activate_if_absent(bus: &mut dyn Bus, log: &mut dyn FnMut(&str)) {
+    if !matches!(bus.owner(UPOWER), Ok(None)) {
+        return;
+    }
+    match bus.start_upower() {
+        Ok(()) => log("upower: activation asked"),
+        Err(e) => log(&format!("upower: activation failed ({})", error_name(&e))),
+    }
+}
+
+/// A call's error as a fixed word: its D-Bus error name, `timeout`, or `error`; never its message.
+fn error_name(e: &io::Error) -> String {
+    if e.kind() == io::ErrorKind::TimedOut {
+        return "timeout".into();
+    }
+    let text = e.to_string();
+    let name = text.split(':').next().unwrap_or("");
+    let plain = name.contains('.') && name.len() <= 96 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+    if plain { name.to_string() } else { "error".into() }
+}
+
 pub fn read(bus: &mut dyn Bus) -> io::Result<PowerState> {
     // Every call below goes to UPower's unique name: never an activation.
     let Some(up) = bus.owner(UPOWER)? else { return Ok(PowerState::default()) };
