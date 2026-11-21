@@ -1491,6 +1491,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/surface.rs",
     "notes/paste.rs",
     "clipboard/",
+    "launcher/tools/config.rs",
 ];
 
 #[test]
@@ -3011,6 +3012,29 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
             let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(&production) } else { 0 };
             assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
+/// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
+/// range. Production code only; Tasks 2 and 3 append `catalog.rs` and `nav.rs`.
+const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs"];
+
+#[test]
+fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in TOOLS_PURE.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
         }
     }
 }

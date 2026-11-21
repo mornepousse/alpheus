@@ -22,8 +22,19 @@
 //! [prefixes]
 //! commands = ">"
 //! windows = "w "
+//! tools = "/"                                      # jumps into the Tools menu; "" turns it off
+//! [tools]                                          # the Tools menu (`alpheus-launch --tools`), see tools::config
+//! builtins = true
+//! reload = ["shell-ctl", "reload-bar"]
+//! [[tools.category]]                               # at most 16
+//! name = "Nix"
+//! [[tools.entry]]                                  # at most 128
+//! name = "Update"
+//! category = "Nix"
+//! run = ["atya", "update"]                         # also: terminal, hold, confirm, state, choices, choices_cmd
 //! ```
 
+use super::tools::config::{self as tools_config, ToolsConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -56,11 +67,13 @@ pub struct SourceConfig {
 pub struct Prefixes {
     pub commands: String,
     pub windows: String,
+    /// The Tools menu's jump (tools spec § 1); empty turns it off and exempts it from the rules.
+    pub tools: String,
 }
 
 impl Default for Prefixes {
     fn default() -> Self {
-        Prefixes { commands: ">".into(), windows: "w ".into() }
+        Prefixes { commands: ">".into(), windows: "w ".into(), tools: "/".into() }
     }
 }
 
@@ -86,6 +99,10 @@ pub struct LauncherConfig {
     pub focus: Vec<String>,
     /// Command sources (sources spec § 1): none by default.
     pub sources: Vec<SourceConfig>,
+    /// The Tools menu's entries and categories (tools spec § 4), bounded.
+    pub tools: ToolsConfig,
+    /// What this read cut past a bound (one line each, counts only): the caller logs them.
+    pub notes: Vec<String>,
 }
 
 impl Default for LauncherConfig {
@@ -101,6 +118,8 @@ impl Default for LauncherConfig {
             prefixes: Prefixes::default(),
             focus: vec!["wm-set".into(), "focus-window".into(), "{window}".into()],
             sources: Vec::new(),
+            tools: ToolsConfig::default(),
+            notes: Vec::new(),
         }
     }
 }
@@ -118,6 +137,7 @@ struct Raw {
     prefixes: Prefixes,
     focus: Vec<String>,
     sources: Vec<SourceConfig>,
+    tools: ToolsConfig,
 }
 
 impl Default for Raw {
@@ -134,6 +154,7 @@ impl Default for Raw {
             prefixes: d.prefixes,
             focus: d.focus,
             sources: d.sources,
+            tools: d.tools,
         }
     }
 }
@@ -162,9 +183,10 @@ impl LauncherConfig {
     /// - search empty, or a `<scheme>://` URL holding "{query}"; open may be empty, otherwise the same rule as copy;
     /// - focus contains "{window}";
     /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
-    /// - prefixes non-empty, not starting with whitespace, neither one a prefix of the other
-    ///   (equal included);
-    /// - sources: `check_sources`.
+    /// - prefixes non-empty (`tools` may be empty: off), not starting with whitespace, none a
+    ///   prefix of another (equal included);
+    /// - sources: `check_sources`;
+    /// - tools: `tools_config::validate`, then `tools_config::bounded` (its notes go to `notes`).
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
@@ -203,17 +225,33 @@ impl LauncherConfig {
             if prefix.is_empty() {
                 return Err(format!("{key} empty"));
             }
-            if prefix.starts_with(char::is_whitespace) {
-                return Err(format!("{key} starts with a space"));
+        }
+        if r.prefixes.tools.starts_with(char::is_whitespace)
+            || r.prefixes.commands.starts_with(char::is_whitespace)
+            || r.prefixes.windows.starts_with(char::is_whitespace)
+        {
+            let key = [("commands", &r.prefixes.commands), ("windows", &r.prefixes.windows), ("tools", &r.prefixes.tools)]
+                .into_iter()
+                .find(|(_, p)| p.starts_with(char::is_whitespace))
+                .map_or("commands", |(k, _)| k);
+            return Err(format!("prefixes.{key} starts with a space"));
+        }
+        // One a prefix of another ("w" and "w "): a query starting with the longer one
+        // would match both modes. An empty `tools` is off and takes part in no pair.
+        let named = [("commands", &r.prefixes.commands), ("windows", &r.prefixes.windows), ("tools", &r.prefixes.tools)];
+        for (i, (a, x)) in named.iter().enumerate() {
+            for (b, y) in &named[i + 1..] {
+                if !x.is_empty() && !y.is_empty() && (x.starts_with(y.as_str()) || y.starts_with(x.as_str())) {
+                    return Err(format!("prefixes.{a} {x:?} and prefixes.{b} {y:?}: a query starting with both is ambiguous"));
+                }
             }
         }
-        // One a prefix of the other ("w" and "w "): a query starting with the longer one
-        // would match both modes.
-        let (c, w) = (&r.prefixes.commands, &r.prefixes.windows);
-        if c.starts_with(w.as_str()) || w.starts_with(c.as_str()) {
-            return Err(format!("prefixes.commands {c:?} and prefixes.windows {w:?}: a query starting with both is ambiguous"));
-        }
         check_sources(&r.sources)?;
+        let mut tools = r.tools;
+        tools_config::number(&mut tools);
+        tools_config::validate(&tools)?;
+        let mut notes = Vec::new();
+        let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
@@ -225,6 +263,8 @@ impl LauncherConfig {
             prefixes: r.prefixes,
             focus: r.focus,
             sources: r.sources,
+            tools,
+            notes,
         })
     }
 }
@@ -321,9 +361,11 @@ mod tests {
             open: vec!["xdg-open".into()],
             rows: 6,
             history: 0,
-            prefixes: Prefixes { commands: "!".into(), windows: "win:".into() },
+            prefixes: Prefixes { commands: "!".into(), windows: "win:".into(), tools: "/".into() },
             focus: vec!["my-wm".into(), "focus".into(), "--window={window}".into()],
             sources: vec![],
+            tools: ToolsConfig::default(),
+            notes: vec![],
         };
         assert_eq!(c, expected);
     }

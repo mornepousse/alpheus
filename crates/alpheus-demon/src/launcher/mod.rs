@@ -18,6 +18,7 @@ pub mod socket;
 pub(crate) mod socket_glue;
 pub mod sources;
 pub mod surface;
+pub mod tools;
 pub mod view;
 
 /// Test helpers shared by the launcher's modules.

@@ -223,11 +223,15 @@ pub(crate) fn scan_refusal_is_an_error(kind: io::ErrorKind, running_for: Option<
     kind != io::ErrorKind::WouldBlock || running_for.is_some_and(|d| d >= SCAN_STUCK_AFTER)
 }
 
-/// launcher.toml from `config_dir`: absent → defaults silently, invalid → defaults + one `log` call.
+/// launcher.toml from `config_dir`: absent → defaults silently, invalid → defaults + one `log` call;
+/// each bound a valid file went past (`LauncherConfig::notes`) is logged too, at each open.
 pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> LauncherConfig {
     let (config, warning) = LauncherConfig::load(&config_path(config_dir));
     if let Some(w) = warning {
         log(&w);
+    }
+    for note in &config.notes {
+        log(note);
     }
     config
 }
@@ -880,6 +884,22 @@ mod tests {
         assert!(lines.iter().all(|l| l.contains("launcher.toml")), "{lines:?}");
         std::fs::write(dir.join("launcher.toml"), "rows = 5\n").unwrap();
         assert_eq!(read_config(&dir, &mut |_| {}).rows, 5, "changes apply at the next open");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_config_logs_the_notes() {
+        let dir = std::env::temp_dir().join(format!("alpheus-host-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text: String = (0..17).map(|i| format!("[[tools.category]]\nname = \"c{i}\"\n")).collect();
+        std::fs::write(dir.join("launcher.toml"), text).unwrap();
+        for _ in 0..2 {
+            let mut lines = Vec::new();
+            let config = read_config(&dir, &mut |m| lines.push(m.to_string()));
+            assert_eq!(config.tools.categories.len(), 16);
+            assert_eq!(lines, ["tools: 17 categories in launcher.toml, the first 16 kept"], "once per open, counts only");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
