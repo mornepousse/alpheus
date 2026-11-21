@@ -411,7 +411,7 @@ impl App {
     }
 
     /// `--clipboard`: the history alone. No scan, no `$PATH`; the rows are a snapshot of the history.
-    fn launcher_open_clipboard(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+    pub(crate) fn launcher_open_clipboard(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         let config = read_config(&paths::config_dir(), &mut |m| log(m));
         let model = Launcher::for_clipboard(config, self.clipboard_rows());
         self.launcher_open(qh, model, None, requested_at);

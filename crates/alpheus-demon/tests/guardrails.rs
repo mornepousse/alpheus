@@ -1492,6 +1492,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/paste.rs",
     "clipboard/",
     "launcher/tools/config.rs",
+    "launcher/tools/catalog.rs",
 ];
 
 #[test]
@@ -3018,8 +3019,8 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 
 /// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
-/// range. Production code only; Tasks 2 and 3 append `catalog.rs` and `nav.rs`.
-const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs"];
+/// range. Production code only; Task 3 appends `nav.rs`.
+const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs"];
 
 #[test]
 fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -3037,6 +3038,40 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
             }
         }
     }
+}
+
+/// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
+/// `tools_join.rs` alone (tools spec § 8): no other production file of the menu names their items.
+/// A plain word search for the shield would hit the emoji table and the VPN model, so the
+/// searched words are the hook points' own names; `"diagnostics"` quoted is the tab's slug (the
+/// table's `tab.diagnostics` id is another literal).
+#[test]
+fn the_parallel_branches_are_named_only_in_tools_join() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !(name.starts_with("launcher/tools/") || name == "tools_app.rs") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for word in ["clipboard_availability", "launcher_open_clipboard", "shield_open_detail", "ShieldConfig", "\"diagnostics\""] {
+            assert!(!production.contains(word), "{word} in {name}: name the parallel branches in tools_join.rs only");
+        }
+    }
+    assert!(seen >= 3, "the tools files were not found");
+}
+
+/// Until `feat/shield` and `feat/diagnostics` merge, their hook points answer "not shown": the
+/// shield is never available and there is no diagnostics tab. The merge that fills them updates
+/// this test with them.
+#[test]
+fn the_stub_hooks_answer_not_shown() {
+    let files = source_files();
+    let join = &files.iter().find(|(p, _)| relative_path(p) == "tools_join.rs").expect("tools_join.rs").1;
+    let body = function_body(join, "pub fn shield_available");
+    assert_eq!(body.trim_start_matches('{').trim_end_matches('}').trim(), "false", "shield_available is a stub");
+    assert!(join.contains("pub const DIAGNOSTICS_TAB: Option<&str> = None;"), "DIAGNOSTICS_TAB is None");
 }
 
 /// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's
