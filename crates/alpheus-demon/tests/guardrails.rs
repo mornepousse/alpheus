@@ -1474,6 +1474,9 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "quick_bt.rs",
     "quick_vpn.rs",
     "quick_dnd.rs",
+    "quick_shield.rs",
+    "shield.rs",
+    "shield_usb.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -2216,7 +2219,9 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs", "quick_shield.rs"]
+            .contains(&name.as_str())
+        {
             continue;
         }
         checked += 1;
@@ -2237,7 +2242,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 6, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs and quick_dnd.rs");
+    assert_eq!(checked, 7, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs, quick_dnd.rs and quick_shield.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2564,6 +2569,7 @@ fn the_quick_panel_has_no_panicking_path() {
         "quick_bt.rs",
         "quick_vpn.rs",
         "quick_dnd.rs",
+        "quick_shield.rs",
         "session.rs",
         "bt_app.rs",
     ] {

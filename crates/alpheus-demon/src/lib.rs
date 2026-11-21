@@ -62,6 +62,7 @@ pub mod quick_app;
 pub mod quick_bt;
 pub mod quick_dnd;
 pub mod quick_secret;
+pub mod quick_shield;
 pub mod quick_state;
 pub mod quick_vpn;
 pub mod quick_wifi;
