@@ -194,10 +194,7 @@ fn a_call_to_the_bar_is_refused_never_queued() {
     assert_eq!(e.name(), Some("org.freedesktop.DBus.Error.UnknownMethod"), "{e:?}");
 }
 
-/// The recorded workstation, over the wire: the same state as the unit
-/// tests' `FakeBus::workstation()` (mod.rs, `workstation_network` and
-/// `workstation_battery`), read through the real connection.
-/// Mae's ruling, 2026-11-21: the one activation is well-formed on the wire (the daemon answers
+/// Mae's ruling, 2026-11-21: the start call is well-formed on the wire (the daemon answers
 /// ServiceUnknown, not InvalidArgs: nothing is activatable on this bus), and UPower appearing
 /// afterwards brings the battery in through NameOwnerChanged.
 #[test]
@@ -228,6 +225,9 @@ fn upower_absent_is_asked_for_once_and_the_battery_comes_in_when_it_appears() {
     assert!(laptop.is_some(), "the battery appears with UPower");
 }
 
+/// The recorded workstation, over the wire: the same state as the unit
+/// tests' `FakeBus::workstation()` (mod.rs, `workstation_network` and
+/// `workstation_battery`), read through the real connection.
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
 fn the_recorded_workstation_reads_the_same_over_the_wire() {

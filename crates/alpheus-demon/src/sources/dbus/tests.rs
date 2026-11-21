@@ -1382,13 +1382,22 @@ fn upower_absent_and_the_battery_wanted_is_asked_for_once_and_its_appearance_is_
 
 #[test]
 fn the_activation_comes_after_the_first_publication() {
+    use std::sync::atomic::Ordering;
     let mut bus = FakeBus::workstation();
     bus.owners.remove(UPOWER);
+    bus.upower_activatable = true;
+    let steps: [Step; 1] = [(signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(UPOWER)), nothing)];
+    bus.script = VecDeque::from(steps);
+    let starts = bus.starts.clone();
     let (tap, bt, vpn) = (bus.tap.clone(), bus.bt_tap.clone(), bus.vpn_tap.clone());
-    // The session stopped at its first publication: the bus shows the activation was not reached.
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &tap, &bt, &vpn, &mut |_| false);
-    assert!(r.is_ok());
-    assert!(starts(&bus).is_empty(), "a session stopped at its first publication asked for nothing");
+    let mut seen = Vec::new();
+    let _ = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &tap, &bt, &vpn, &mut |_| {
+        seen.push(starts.load(Ordering::SeqCst));
+        true
+    });
+    assert_eq!(seen.first(), Some(&0), "nothing asked when the first state is published");
+    assert_eq!(seen.last(), Some(&1), "asked before the owner's appearance is read");
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
 
 #[test]

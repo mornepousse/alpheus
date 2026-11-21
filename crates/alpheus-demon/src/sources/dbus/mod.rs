@@ -8,7 +8,7 @@
 //! (NixOS), so nothing may have started it when the daemon comes up, and the battery
 //! would stay missing. When the battery is wanted and UPower has no owner at a
 //! session's start, the session sends one `StartServiceByName("org.freedesktop.UPower", 0)`
-//! to the bus driver (never retried; a reconnection asks once more), after its first publish;
+//! to the bus driver (never retried; a reconnection asks once more), after the session's first successful publish;
 //! the name appearing then brings the battery in through `NameOwnerChanged`. No other
 //! service is ever activated: `dbusrs_bus::message` refuses any other name.
 
@@ -84,7 +84,7 @@ pub trait Bus {
     /// gone, the call fails with NotFound.
     fn owner(&mut self, service: &str) -> io::Result<Option<String>>;
     /// `StartServiceByName("org.freedesktop.UPower", 0)` on the bus driver: the one activation
-    /// (module doc), with no name to give. Blocks until UPower answers or `TIMEOUT`.
+    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the activation fails; blocks at most `TIMEOUT`.
     fn start_upower(&mut self) -> io::Result<()>;
     /// `org.freedesktop.DBus.Properties.GetAll`, to `destination` (a unique name).
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props>;

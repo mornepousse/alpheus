@@ -98,6 +98,8 @@ pub struct FakeBus {
     pub script: VecDeque<Step>,
     /// UPower can be D-Bus-activated: `start_upower` then gives it its owner.
     pub upower_activatable: bool,
+    /// `start_upower` calls so far (readable from a publish closure).
+    pub starts: Arc<std::sync::atomic::AtomicU32>,
     pub calls: Vec<String>,
 }
 
@@ -124,6 +126,7 @@ impl FakeBus {
             vpn_tap: Arc::default(),
             script: VecDeque::new(),
             upower_activatable: false,
+            starts: Arc::default(),
             calls: Vec::new(),
         }
     }
@@ -261,6 +264,7 @@ impl Bus for FakeBus {
 
     fn start_upower(&mut self) -> io::Result<()> {
         self.calls.push(format!("StartServiceByName {UPOWER}"));
+        self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !self.upower_activatable {
             return Err(service_gone(format!("org.freedesktop.DBus.Error.ServiceUnknown: {UPOWER}")));
         }
