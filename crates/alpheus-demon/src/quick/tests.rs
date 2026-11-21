@@ -58,6 +58,7 @@ impl World {
             profile: Some(&self.profile),
             config: &self.config,
             bluetooth: self.bluetooth.as_ref(),
+            shield: None,
         }
     }
 }
@@ -341,7 +342,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
 #[test]
 fn with_nothing_to_show_the_panel_is_empty() {
     let c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
-    let l = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &c, bluetooth: None };
+    let l = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &c, bluetooth: None, shield: None };
     let q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 40);
     assert!(q.is_empty(&l), "nothing to open: the wiring logs it and opens nothing");
     assert!(lines(&l, &q).is_empty());

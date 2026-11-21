@@ -239,6 +239,8 @@ pub struct Live<'a> {
     pub config: &'a QuickConfig,
     /// The bar's Bluetooth state; None while it is not read (no row).
     pub bluetooth: Option<&'a BtState>,
+    /// Shield mode's view; None without `[shield]` (no row).
+    pub shield: Option<crate::shield::ShieldView>,
 }
 
 /// The bar's state as the panel reads it.
@@ -265,6 +267,7 @@ pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
             Feed::Ready(s) => Some(s),
             _ => None,
         },
+        shield: bar.shield,
     }
 }
 

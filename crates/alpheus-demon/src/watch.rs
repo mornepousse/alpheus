@@ -37,6 +37,15 @@ const DIR_MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_ONLYDIR;
 /// On its parent, while it does not exist: it being created or moved in.
 const PARENT_MASK: u32 = libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ONLYDIR;
+/// On the Shield flag's directory (shield spec § 3): the flag's name appearing, going or being
+/// renamed, and the directory itself going away.
+const FLAG_DIR_MASK: u32 = libc::IN_CREATE
+    | libc::IN_DELETE
+    | libc::IN_MOVED_TO
+    | libc::IN_MOVED_FROM
+    | libc::IN_DELETE_SELF
+    | libc::IN_MOVE_SELF
+    | libc::IN_ONLYDIR;
 /// What the one watch descriptor is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum On {
@@ -47,6 +56,15 @@ pub(crate) enum On {
     Nothing,
 }
 
+impl On {
+    fn wd(self) -> Option<i32> {
+        match self {
+            On::Dir(wd) | On::Parent(wd) => Some(wd),
+            On::Nothing => None,
+        }
+    }
+}
+
 /// What a drained batch of records means.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Batch {
@@ -54,6 +72,11 @@ pub(crate) struct Batch {
     pub theme: bool,
     /// The directory appeared (the parent was watched) or went (it was watched): watch anew.
     pub rearm: bool,
+    /// Re-read the Shield flag: its name changed in its directory, the directory came or went, or
+    /// records were lost.
+    pub shield: bool,
+    /// The flag's directory appeared or went: watch it anew.
+    pub shield_rearm: bool,
 }
 
 /// Whether one record of the directory touches a theme file. A regular file just created is still
@@ -66,16 +89,31 @@ pub(crate) fn touches_theme(mask: u32, name: &[u8], is_link: &dyn Fn(&[u8]) -> b
     mask & (libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_DELETE) != 0 || (mask & libc::IN_CREATE != 0 && is_link(name))
 }
 
-/// Every record of `buf` folded into one batch: a burst is one re-resolve.
-pub(crate) fn scan(buf: &[u8], on: On, dir_name: &[u8], is_link: &dyn Fn(&[u8]) -> bool) -> Batch {
+/// Whether one record of the flag's directory is about the flag's name: any creation, removal or
+/// rename of it (its content never matters, only its existence).
+pub(crate) fn touches_flag(mask: u32, name: &[u8], flag_name: &[u8]) -> bool {
+    mask & libc::IN_ISDIR == 0
+        && name == flag_name
+        && mask & (libc::IN_CREATE | libc::IN_DELETE | libc::IN_MOVED_TO | libc::IN_MOVED_FROM) != 0
+}
+
+/// The theme target of a scan: what it is on and the directory's own name.
+pub(crate) type ThemeScan<'a> = (On, &'a [u8]);
+/// The shield target of a scan: what it is on, the directory's name and the flag's name.
+pub(crate) type ShieldScan<'a> = (On, &'a [u8], &'a [u8]);
+
+/// Every record of `buf` folded into one batch: a burst is one re-resolve and one re-read.
+pub(crate) fn scan(buf: &[u8], theme: Option<ThemeScan>, shield: Option<ShieldScan>, is_link: &dyn Fn(&[u8]) -> bool) -> Batch {
     let mut b = Batch::default();
     for e in Events(buf) {
         if e.mask & libc::IN_Q_OVERFLOW != 0 {
-            b.theme = true; // records were lost: re-read to be sure
+            // records were lost: re-read to be sure
+            b.theme |= theme.is_some();
+            b.shield |= shield.is_some();
             continue;
         }
-        match on {
-            On::Dir(wd) if e.wd == wd => {
+        match theme {
+            Some((On::Dir(wd), _)) if e.wd == wd => {
                 if e.mask & (libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_IGNORED) != 0 {
                     b.theme = true;
                     b.rearm = true;
@@ -83,9 +121,24 @@ pub(crate) fn scan(buf: &[u8], on: On, dir_name: &[u8], is_link: &dyn Fn(&[u8]) 
                     b.theme = true;
                 }
             }
-            On::Parent(wd) if e.wd == wd && e.mask & libc::IN_ISDIR != 0 && e.name == dir_name => {
+            Some((On::Parent(wd), dir_name)) if e.wd == wd && e.mask & libc::IN_ISDIR != 0 && e.name == dir_name => {
                 b.theme = true;
                 b.rearm = true;
+            }
+            _ => {}
+        }
+        match shield {
+            Some((On::Dir(wd), _, flag_name)) if e.wd == wd => {
+                if e.mask & (libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_IGNORED) != 0 {
+                    b.shield = true;
+                    b.shield_rearm = true;
+                } else if touches_flag(e.mask, e.name, flag_name) {
+                    b.shield = true;
+                }
+            }
+            Some((On::Parent(wd), dir_name, _)) if e.wd == wd && e.mask & libc::IN_ISDIR != 0 && e.name == dir_name => {
+                b.shield = true;
+                b.shield_rearm = true;
             }
             _ => {}
         }
@@ -98,19 +151,99 @@ pub(crate) fn fresh<'a>(before: &'a [String], now: &'a [String]) -> impl Iterato
     now.iter().filter(move |w| !before.contains(w))
 }
 
-/// The inotify instance and its one watch.
-pub(crate) struct ThemeWatch {
-    fd: Inotify,
+/// One watched directory: what its descriptor is on.
+struct Target {
     dir: PathBuf,
     on: On,
 }
 
-impl ThemeWatch {
-    /// inotify on `dir`, or on its parent while `dir` does not exist. Err: one line for the log.
-    pub(crate) fn start(dir: &Path) -> Result<ThemeWatch, String> {
+impl Target {
+    fn dir_name(&self) -> Vec<u8> {
+        self.dir.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default()
+    }
+}
+
+/// The Shield flag's directory and the flag's name in it.
+struct ShieldTarget {
+    target: Target,
+    flag_name: Vec<u8>,
+}
+
+/// The one inotify instance and its watches: the config directory (the theme files) and, with
+/// `[shield]` configured, the Shield flag's directory (shield spec § 3). Each target arms and
+/// fails on its own.
+pub(crate) struct Watches {
+    fd: Inotify,
+    theme: Option<Target>,
+    shield: Option<ShieldTarget>,
+}
+
+impl Watches {
+    /// inotify on `theme_dir` (or on its parent while it does not exist) and, with a `flag`, on the
+    /// flag's directory. Err only when inotify itself is unavailable; a target that cannot be
+    /// armed logs its own line and is left out, the other unaffected.
+    pub(crate) fn start(theme_dir: &Path, flag: Option<&Path>) -> Result<Watches, String> {
         let fd = Inotify::new()?;
-        let on = arm(&fd, dir)?;
-        Ok(ThemeWatch { fd, dir: dir.to_path_buf(), on })
+        let theme = match arm(&fd, theme_dir, DIR_MASK) {
+            Ok(on) => Some(Target { dir: theme_dir.to_path_buf(), on }),
+            Err(e) => {
+                log(&format!("theme: {e}; theme files read at startup only"));
+                None
+            }
+        };
+        let shield = flag.and_then(|flag| {
+            let (dir, name) = (flag.parent()?, flag.file_name()?);
+            match arm(&fd, dir, FLAG_DIR_MASK) {
+                Ok(on) => Some(ShieldTarget { target: Target { dir: dir.to_path_buf(), on }, flag_name: name.as_bytes().to_vec() }),
+                Err(e) => {
+                    log(&format!("shield: flag not watched ({e})"));
+                    None
+                }
+            }
+        });
+        let mut w = Watches { fd, theme, shield };
+        w.settle();
+        Ok(w)
+    }
+
+    /// Two descriptors that are one (an alias the paths do not show): inotify keeps one watch per
+    /// inode, so the second `add` replaced the first one's mask. The shield target is dropped, the
+    /// theme's mask put back, and the degraded mode applies.
+    fn settle(&mut self) {
+        let shared = match (&self.theme, &self.shield) {
+            (Some(t), Some(s)) => t.on.wd().is_some() && t.on.wd() == s.target.on.wd(),
+            _ => false,
+        };
+        if !shared {
+            return;
+        }
+        self.shield = None;
+        if let Some(t) = &self.theme {
+            let (path, mask) = match t.on {
+                On::Parent(_) => (t.dir.parent().unwrap_or(&t.dir), PARENT_MASK),
+                _ => (t.dir.as_path(), DIR_MASK),
+            };
+            let _ = self.fd.add(path, mask);
+        }
+        log("shield: flag not watched (shares the config directory's watch)");
+    }
+
+    pub(crate) fn shield_armed(&self) -> bool {
+        self.shield.as_ref().is_some_and(|s| s.target.on != On::Nothing)
+    }
+
+    #[cfg(test)]
+    fn theme_on(&self) -> On {
+        self.theme.as_ref().map_or(On::Nothing, |t| t.on)
+    }
+
+    #[cfg(test)]
+    fn shield_on(&self) -> On {
+        self.shield.as_ref().map_or(On::Nothing, |t| t.target.on)
+    }
+
+    pub(crate) fn theme_armed(&self) -> bool {
+        self.theme.as_ref().is_some_and(|t| t.on != On::Nothing)
     }
 
     /// A duplicate of the inotify fd for the event loop (the same instance: reading either drains both).
@@ -118,32 +251,58 @@ impl ThemeWatch {
         self.fd.watch_fd()
     }
 
-    /// Reads every queued record (until EAGAIN) and folds them into one batch; watches anew when
-    /// the directory came or went.
+    /// Reads every queued record (until EAGAIN) and folds them into one batch; watches anew the
+    /// directory that came or went.
     pub(crate) fn drain(&mut self) -> Batch {
         let mut batch = Batch::default();
-        let name = self.dir.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
-        let dir = self.dir.clone();
-        let is_link = move |f: &[u8]| is_symlink(&dir.join(OsStr::from_bytes(f)));
+        let theme_name = self.theme.as_ref().map(Target::dir_name);
+        let theme_dir = self.theme.as_ref().map(|t| t.dir.clone());
+        let is_link = move |f: &[u8]| theme_dir.as_ref().is_some_and(|d| is_symlink(&d.join(OsStr::from_bytes(f))));
+        let theme_scan = self.theme.as_ref().zip(theme_name.as_deref()).map(|(t, n)| (t.on, n));
+        let shield_name = self.shield.as_ref().map(|s| s.target.dir_name());
+        let shield_scan = self.shield.as_ref().zip(shield_name.as_deref()).map(|(s, n)| (s.target.on, n, s.flag_name.as_slice()));
         self.fd.drain(|chunk| {
-            let b = scan(chunk, self.on, &name, &is_link);
+            let b = scan(chunk, theme_scan, shield_scan, &is_link);
             batch.theme |= b.theme;
             batch.rearm |= b.rearm;
+            batch.shield |= b.shield;
+            batch.shield_rearm |= b.shield_rearm;
         });
         if batch.rearm {
-            self.rearm();
+            self.rearm_theme();
+        }
+        if batch.shield_rearm {
+            self.rearm_shield();
+        }
+        if batch.rearm || batch.shield_rearm {
+            self.settle();
         }
         batch
     }
 
-    fn rearm(&mut self) {
-        if let On::Dir(wd) | On::Parent(wd) = self.on {
+    fn rearm_theme(&mut self) {
+        let Some(t) = self.theme.as_mut() else { return };
+        if let Some(wd) = t.on.wd() {
             self.fd.rm(wd);
         }
-        self.on = match arm(&self.fd, &self.dir) {
+        t.on = match arm(&self.fd, &t.dir, DIR_MASK) {
             Ok(on) => on,
             Err(e) => {
                 log(&format!("theme: {e}; theme files no longer watched"));
+                On::Nothing
+            }
+        };
+    }
+
+    fn rearm_shield(&mut self) {
+        let Some(s) = self.shield.as_mut() else { return };
+        if let Some(wd) = s.target.on.wd() {
+            self.fd.rm(wd);
+        }
+        s.target.on = match arm(&self.fd, &s.target.dir, FLAG_DIR_MASK) {
+            Ok(on) => on,
+            Err(e) => {
+                log(&format!("shield: flag not watched ({e})"));
                 On::Nothing
             }
         };
@@ -160,9 +319,9 @@ fn symlink_line(dir: &Path) -> Option<String> {
     is_symlink(dir).then(|| format!("theme: {} is a symlink; replacing it is not seen until restart", dir.display()))
 }
 
-/// The directory, or its parent when the directory does not exist.
-fn arm(fd: &Inotify, dir: &Path) -> Result<On, String> {
-    match fd.add(dir, DIR_MASK) {
+/// The directory (with `mask`), or its parent when the directory does not exist.
+fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, String> {
+    match fd.add(dir, mask) {
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let parent = dir.parent().ok_or_else(|| format!("{} has no parent to wait in", dir.display()))?;
@@ -172,37 +331,56 @@ fn arm(fd: &Inotify, dir: &Path) -> Result<On, String> {
     }
 }
 
-/// Starts watching (`startup::run`, once the loop exists). Any failure: one line, the theme files read
-/// at startup only, the bar unaffected.
+/// Starts watching (`startup::run`, once the loop exists). Any failure: one line, the theme files
+/// read at startup only (or the flag re-read in the degraded mode), the bar unaffected. The Shield
+/// flag, when configured, is read once the watch is armed (nothing between the read and the arm
+/// is missed).
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     let dir = paths::config_dir();
     if let Some(line) = symlink_line(&dir) {
         log(&line);
     }
-    let watch = match ThemeWatch::start(&dir) {
-        Ok(w) => w,
+    let flag = state.shield.as_ref().map(|s| s.flag().to_path_buf());
+    let watch = match Watches::start(&dir, flag.as_deref()) {
+        Ok(w) => Some(w),
         Err(e) => {
             log(&format!("theme: {e}; theme files read at startup only"));
-            return;
+            if flag.is_some() {
+                log(&format!("shield: flag not watched ({e})"));
+            }
+            None
         }
     };
-    let fd = match watch.watch_fd() {
+    let watch = watch.and_then(|w| attach(handle, w));
+    if let Some(sh) = state.shield.as_mut() {
+        sh.watched = watch.as_ref().is_some_and(Watches::shield_armed);
+    }
+    state.theme.watch = watch;
+    state.shield_start();
+}
+
+/// The loop source for the instance, when either target is armed.
+fn attach(handle: &LoopHandle<'static, App>, w: Watches) -> Option<Watches> {
+    if !w.theme_armed() && !w.shield_armed() {
+        return None;
+    }
+    let fd = match w.watch_fd() {
         Ok(fd) => fd,
         Err(e) => {
             log(&format!("theme: could not watch the inotify fd ({e}); theme files read at startup only"));
-            return;
+            return None;
         }
     };
     // Level-triggered: `drain` reads to EAGAIN, so the fd is never left readable at rest.
     let inserted = handle.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
-        app.theme_readable();
+        app.watch_readable();
         Ok(PostAction::Continue)
     });
     if inserted.is_err() {
         log("theme: event loop refused the inotify source; theme files read at startup only");
-        return;
+        return None;
     }
-    state.theme.watch = Some(watch);
+    Some(w)
 }
 
 /// A reload repaints when the roles changed or the bar's shape did (module colours, style, opacity):
@@ -277,11 +455,16 @@ pub(crate) fn reload_settings(dir: &Path, previous: &ThemeSettings, portal: impl
 }
 
 impl App {
-    /// The inotify fd is readable (calloop callback): every queued record drained, one re-resolve at most.
-    pub(crate) fn theme_readable(&mut self) {
+    /// The inotify fd is readable (calloop callback): every queued record drained once, then one
+    /// re-resolve of the theme and one re-read of the Shield flag at most.
+    pub(crate) fn watch_readable(&mut self) {
         let Some(watch) = self.theme.watch.as_mut() else { return };
-        if watch.drain().theme {
+        let batch = watch.drain();
+        if batch.theme {
             self.theme_changed();
+        }
+        if batch.shield {
+            self.shield_readable();
         }
     }
 
@@ -538,24 +721,28 @@ mod tests {
             buf.extend(record(3, libc::IN_CLOSE_WRITE, THEME_FILES[i % 3]));
             buf.extend(record(3, libc::IN_CLOSE_WRITE, "bar.toml"));
         }
-        assert_eq!(scan(&buf, On::Dir(3), b"alpheus", &no_link), Batch { theme: true, rearm: false });
+        assert_eq!(scan(&buf, Some((On::Dir(3), b"alpheus")), None, &no_link), Batch { theme: true, ..Batch::default() });
         let unrelated: Vec<u8> = (0..20).flat_map(|_| record(3, libc::IN_CLOSE_WRITE, "launcher.toml")).collect();
-        assert_eq!(scan(&unrelated, On::Dir(3), b"alpheus", &no_link), Batch::default());
+        assert_eq!(scan(&unrelated, Some((On::Dir(3), b"alpheus")), None, &no_link), Batch::default());
         let other_watch = record(9, libc::IN_CLOSE_WRITE, "theme.toml");
-        assert_eq!(scan(&other_watch, On::Dir(3), b"alpheus", &no_link), Batch::default(), "another watch's record");
-        assert!(scan(&record(-1, libc::IN_Q_OVERFLOW, ""), On::Dir(3), b"alpheus", &no_link).theme, "records lost: re-read");
+        assert_eq!(scan(&other_watch, Some((On::Dir(3), b"alpheus")), None, &no_link), Batch::default(), "another watch's record");
+        assert!(scan(&record(-1, libc::IN_Q_OVERFLOW, ""), Some((On::Dir(3), b"alpheus")), None, &no_link).theme, "records lost: re-read");
     }
 
     #[test]
     fn the_directory_appearing_or_going_rearms() {
         let p = On::Parent(2);
-        let both = Batch { theme: true, rearm: true };
-        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "alpheus"), p, b"alpheus", &no_link), both);
-        assert_eq!(scan(&record(2, libc::IN_MOVED_TO | libc::IN_ISDIR, "alpheus"), p, b"alpheus", &no_link), both);
-        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "other"), p, b"alpheus", &no_link), Batch::default());
-        assert_eq!(scan(&record(2, libc::IN_CREATE, "alpheus"), p, b"alpheus", &no_link), Batch::default(), "a file named alpheus");
+        let both = Batch { theme: true, rearm: true, ..Batch::default() };
+        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "alpheus"), Some((p, b"alpheus")), None, &no_link), both);
+        assert_eq!(scan(&record(2, libc::IN_MOVED_TO | libc::IN_ISDIR, "alpheus"), Some((p, b"alpheus")), None, &no_link), both);
+        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "other"), Some((p, b"alpheus")), None, &no_link), Batch::default());
+        assert_eq!(
+            scan(&record(2, libc::IN_CREATE, "alpheus"), Some((p, b"alpheus")), None, &no_link),
+            Batch::default(),
+            "a file named alpheus"
+        );
         for gone in [libc::IN_DELETE_SELF, libc::IN_MOVE_SELF, libc::IN_IGNORED] {
-            assert_eq!(scan(&record(4, gone, ""), On::Dir(4), b"alpheus", &no_link), both, "{gone:#x}");
+            assert_eq!(scan(&record(4, gone, ""), Some((On::Dir(4), b"alpheus")), None, &no_link), both, "{gone:#x}");
         }
     }
 
@@ -573,8 +760,8 @@ mod tests {
     fn a_burst_bigger_than_one_read_drains_in_one_call() {
         let d = temp("burst");
         std::fs::create_dir_all(&d).unwrap();
-        let mut w = ThemeWatch::start(&d).unwrap();
-        assert!(matches!(w.on, On::Dir(_)), "{:?}", w.on);
+        let mut w = Watches::start(&d, None).unwrap();
+        assert!(matches!(w.theme_on(), On::Dir(_)), "{:?}", w.theme_on());
         assert_eq!(w.drain(), Batch::default(), "nothing yet");
         for i in 0..200 {
             std::fs::write(d.join(THEME_FILES[i % 3]), format!("# {i}\n")).unwrap();
@@ -589,29 +776,33 @@ mod tests {
         let parent = temp("parent");
         std::fs::create_dir_all(&parent).unwrap();
         let d = parent.join("alpheus");
-        let mut w = ThemeWatch::start(&d).unwrap();
-        assert!(matches!(w.on, On::Parent(_)), "{:?}", w.on);
+        let mut w = Watches::start(&d, None).unwrap();
+        assert!(matches!(w.theme_on(), On::Parent(_)), "{:?}", w.theme_on());
         std::fs::create_dir(parent.join("other")).unwrap();
         assert_eq!(w.drain(), Batch::default(), "another directory: nothing");
         std::fs::create_dir(&d).unwrap();
-        assert_eq!(w.drain(), Batch { theme: true, rearm: true }, "it appeared");
-        assert!(matches!(w.on, On::Dir(_)), "{:?}", w.on);
+        assert_eq!(w.drain(), Batch { theme: true, rearm: true, ..Batch::default() }, "it appeared");
+        assert!(matches!(w.theme_on(), On::Dir(_)), "{:?}", w.theme_on());
         std::fs::write(d.join("theme.toml.tmp"), "theme = \"nord\"\n").unwrap();
         std::fs::rename(d.join("theme.toml.tmp"), d.join(THEME_FILE)).unwrap();
         assert!(w.drain().theme, "renamed into place");
         std::fs::remove_file(d.join(THEME_FILE)).unwrap();
         std::fs::remove_dir(&d).unwrap();
-        assert_eq!(w.drain(), Batch { theme: true, rearm: true }, "it went");
-        assert!(matches!(w.on, On::Parent(_)), "back to waiting in the parent: {:?}", w.on);
+        assert_eq!(w.drain(), Batch { theme: true, rearm: true, ..Batch::default() }, "it went");
+        assert!(matches!(w.theme_on(), On::Parent(_)), "back to waiting in the parent: {:?}", w.theme_on());
         let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn an_unwatchable_directory_is_one_line_never_a_panic() {
-        let Err(e) = ThemeWatch::start(Path::new("/nonexistent-alpheus-parent/alpheus")) else {
-            panic!("neither the directory nor its parent exists")
-        };
-        assert!(e.starts_with("cannot watch /nonexistent-alpheus-parent"), "{e}");
+        let w = Watches::start(Path::new("/nonexistent-alpheus-parent/alpheus"), None).unwrap();
+        assert!(!w.theme_armed(), "neither the directory nor its parent exists: no theme target, no panic");
+        assert!(!w.shield_armed());
+        assert!(
+            arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK)
+                .unwrap_err()
+                .starts_with("cannot watch /nonexistent-alpheus-parent")
+        );
     }
 
     #[test]
@@ -626,5 +817,122 @@ mod tests {
         assert_eq!(symlink_line(&temp("link-absent")), None, "an absent one: silent");
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_dir_all(&real);
+    }
+
+    fn shield_scan<'a>(on: On) -> Option<ShieldScan<'a>> {
+        Some((on, b"state", b"on"))
+    }
+
+    #[test]
+    fn the_flag_records_count_only_for_its_name() {
+        for mask in [libc::IN_CREATE, libc::IN_DELETE, libc::IN_MOVED_TO, libc::IN_MOVED_FROM] {
+            let r = record(5, mask, "on");
+            let b = scan(&r, None, shield_scan(On::Dir(5)), &no_link);
+            assert_eq!(b, Batch { shield: true, ..Batch::default() }, "{mask:#x}");
+        }
+        for other in ["on.tmp", "other", "", "ON"] {
+            let r = record(5, libc::IN_CREATE, other);
+            assert_eq!(scan(&r, None, shield_scan(On::Dir(5)), &no_link), Batch::default(), "{other}");
+        }
+        let dir_named_on = record(5, libc::IN_CREATE | libc::IN_ISDIR, "on");
+        assert_eq!(scan(&dir_named_on, None, shield_scan(On::Dir(5)), &no_link), Batch::default());
+        let other_wd = record(6, libc::IN_CREATE, "on");
+        assert_eq!(scan(&other_wd, None, shield_scan(On::Dir(5)), &no_link), Batch::default());
+        // Its content never matters: a write to the flag is not a trigger.
+        let written = record(5, libc::IN_CLOSE_WRITE | libc::IN_MODIFY, "on");
+        assert_eq!(scan(&written, None, shield_scan(On::Dir(5)), &no_link), Batch::default());
+    }
+
+    #[test]
+    fn the_flag_directory_appearing_or_going_rearms_the_shield_target_only() {
+        let both = Batch { shield: true, shield_rearm: true, ..Batch::default() };
+        let p = On::Parent(2);
+        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "state"), None, shield_scan(p), &no_link), both);
+        assert_eq!(scan(&record(2, libc::IN_MOVED_TO | libc::IN_ISDIR, "state"), None, shield_scan(p), &no_link), both);
+        assert_eq!(scan(&record(2, libc::IN_CREATE | libc::IN_ISDIR, "other"), None, shield_scan(p), &no_link), Batch::default());
+        for gone in [libc::IN_DELETE_SELF, libc::IN_MOVE_SELF, libc::IN_IGNORED] {
+            assert_eq!(scan(&record(4, gone, ""), None, shield_scan(On::Dir(4)), &no_link), both, "{gone:#x}");
+        }
+        // With both targets armed, the theme's directory going leaves the shield alone, and back.
+        let theme = Some((On::Dir(3), &b"alpheus"[..]));
+        let b = scan(&record(3, libc::IN_DELETE_SELF, ""), theme, shield_scan(On::Dir(4)), &no_link);
+        assert_eq!(b, Batch { theme: true, rearm: true, ..Batch::default() });
+        let b = scan(&record(4, libc::IN_DELETE_SELF, ""), theme, shield_scan(On::Dir(4)), &no_link);
+        assert_eq!(b, both);
+    }
+
+    #[test]
+    fn an_overflow_rereads_both() {
+        let r = record(-1, libc::IN_Q_OVERFLOW, "");
+        let theme = Some((On::Dir(3), &b"alpheus"[..]));
+        let b = scan(&r, theme, shield_scan(On::Dir(4)), &no_link);
+        assert_eq!(b, Batch { theme: true, shield: true, ..Batch::default() });
+        assert_eq!(scan(&r, None, None, &no_link), Batch::default(), "no target, nothing to re-read");
+    }
+
+    #[test]
+    fn a_failed_theme_target_leaves_the_shield_target_and_the_converse() {
+        let state = temp("both-state");
+        std::fs::create_dir_all(&state).unwrap();
+        let w = Watches::start(Path::new("/nonexistent-alpheus-parent/alpheus"), Some(&state.join("on"))).unwrap();
+        assert!(!w.theme_armed() && w.shield_armed(), "the theme target failed, the flag's armed");
+        let cfg = temp("both-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let w = Watches::start(&cfg, Some(Path::new("/nonexistent-alpheus-parent/state/on"))).unwrap();
+        assert!(w.theme_armed() && !w.shield_armed(), "the flag's directory cannot be watched: the theme's armed");
+        // And a working pair: the theme still sees its file, the shield the flag.
+        let mut w = Watches::start(&cfg, Some(&state.join("on"))).unwrap();
+        assert!(w.theme_armed() && w.shield_armed());
+        std::fs::write(cfg.join(THEME_FILE), "x\n").unwrap();
+        assert_eq!(w.drain(), Batch { theme: true, ..Batch::default() });
+        std::fs::write(state.join("on"), "").unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, ..Batch::default() });
+        std::fs::remove_file(state.join("on")).unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, ..Batch::default() });
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn a_shared_descriptor_drops_the_shield_target() {
+        let cfg = temp("shared-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let alias = temp("shared-alias");
+        std::os::unix::fs::symlink(&cfg, &alias).unwrap();
+        let mut w = Watches::start(&cfg, Some(&alias.join("on"))).unwrap();
+        assert!(w.theme_armed());
+        assert!(!w.shield_armed(), "one inode, one descriptor: the shield target gives way");
+        // The theme's own mask came back: a close-write of a theme file is still seen.
+        std::fs::write(cfg.join(THEME_FILE), "x\n").unwrap();
+        assert_eq!(w.drain(), Batch { theme: true, ..Batch::default() });
+        let _ = std::fs::remove_file(&alias);
+        let _ = std::fs::remove_dir_all(&cfg);
+    }
+
+    #[test]
+    fn a_missing_flag_directory_is_awaited_in_its_parent() {
+        let cfg = temp("missing-cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let parent = temp("missing-parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        let state = parent.join("state");
+        let flag = state.join("on");
+        let mut w = Watches::start(&cfg, Some(&flag)).unwrap();
+        assert!(matches!(w.shield_on(), On::Parent(_)), "{:?}", w.shield_on());
+        std::fs::create_dir(parent.join("other")).unwrap();
+        assert_eq!(w.drain(), Batch::default(), "another directory: nothing");
+        std::fs::create_dir(&state).unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, shield_rearm: true, ..Batch::default() }, "it appeared");
+        assert!(matches!(w.shield_on(), On::Dir(_)), "{:?}", w.shield_on());
+        std::fs::write(&flag, "").unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, ..Batch::default() }, "the flag created");
+        std::fs::rename(&flag, state.join("gone")).unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, ..Batch::default() }, "the flag renamed away");
+        std::fs::remove_file(state.join("gone")).unwrap();
+        std::fs::remove_dir(&state).unwrap();
+        assert_eq!(w.drain(), Batch { shield: true, shield_rearm: true, ..Batch::default() }, "it went");
+        assert!(matches!(w.shield_on(), On::Parent(_)), "back to waiting: {:?}", w.shield_on());
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&cfg);
     }
 }

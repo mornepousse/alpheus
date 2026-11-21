@@ -2244,7 +2244,15 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), dnd_end: None, profile: Some(&profile), config: &config, bluetooth: None };
+    let live = Live {
+        sound: Some(&sound),
+        dnd: Some(false),
+        dnd_end: None,
+        profile: Some(&profile),
+        config: &config,
+        bluetooth: None,
+        shield: None,
+    };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || {
