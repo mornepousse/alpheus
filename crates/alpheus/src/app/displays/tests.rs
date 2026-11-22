@@ -877,7 +877,7 @@ fn a_queued_profile_expires() {
     assert!(matches!(sent(&mut a).as_slice(), [Op::TryDisplays(_)]));
 }
 
-/// Fix round 2: leaving the Displays tab drops a queued profile (no word: Mae moved on).
+/// Fix round 2: leaving the Displays tab drops a queued profile (no word: the user moved on).
 #[test]
 fn leaving_the_tab_drops_a_queued_profile() {
     let t0 = Instant::now();
@@ -978,4 +978,18 @@ fn the_reference_field_wraps_round_the_other_screens() {
     assert_eq!(panel(&a).reference.as_deref(), Some(ALPHA), "after the last reference, the first");
     a.panel_step(-1);
     assert_eq!(panel(&a).reference.as_deref(), Some(BRAVO), "and back");
+}
+
+/// The anchor of `kept_in_place` is the first enabled screen that was not adjusted and does not
+/// follow the adjusted one; a later screen that is off must not discard it.
+#[test]
+fn an_off_output_after_the_anchor_does_not_move_the_layout() {
+    // A at 0,0 and B at 1920,0, both 1920 wide; B is adjusted to sit left of A; C is off.
+    let outs = vec![on("A-1", ALPHA, 1920, 1080, 0, 0), on("B-1", BRAVO, 1920, 1080, 1920, 0), off("C-1", INTERNAL)];
+    let labels = short_names(&outs);
+    let mut screens = screens_as_is(&outs, &labels);
+    screens[1].placement = Placement::Relative { relation: Relation::LeftOf, reference: outs[0].description.clone(), align: Align::Start };
+    let pos = resolve(&screens).unwrap();
+    // A keeps its place (0,0) as the anchor, so B lands where A was and A is pushed right by B's width.
+    assert_eq!(kept_in_place(&outs, &screens, pos, 1), vec![Some((1920, 0)), Some((0, 0)), None]);
 }
