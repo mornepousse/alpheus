@@ -2900,7 +2900,7 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
     assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
     assert!(!body.contains(".spawn("), "never an argument: {body}");
-    for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "popup.rs"] {
+    for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "quick/draw.rs", "popup.rs"] {
         let prod = src(name);
         for leak in
             ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
