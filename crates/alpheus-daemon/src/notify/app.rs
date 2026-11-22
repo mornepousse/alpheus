@@ -77,7 +77,7 @@ pub fn sharing_edge(seen: bool, now: bool) -> Option<bool> {
 }
 
 /// The wall clock in Unix seconds; 0 if the clock reads before 1970 (the only way `duration_since`
-/// fails). (Kept as `map_or`: it reads the clock, so no test can reach the failing arm.)
+/// fails).
 pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -117,7 +117,7 @@ pub fn bell_lines(before: Option<NotifyView>, after: NotifyView) -> Vec<&'static
 impl App {
     /// The notifications server, once, at startup (`wanted`: in `modules`). It goes on the tray's
     /// connection when the tray runs; otherwise on the bar's link, opened here or joined. Without the
-    /// module: nothing, no RequestName (the name is never requested; spec § 6).
+    /// module: nothing, no RequestName (spec § 6).
     pub(crate) fn start_notifications(&mut self, wanted: bool) {
         match host(wanted, self.buses()) {
             Host::Nothing => {}
@@ -263,7 +263,7 @@ impl App {
         let now = unix_now();
         // The end is a Unix time; it becomes an `Instant` (the event loop's own clock) by adding
         // the wait to the current instant. `and_then` skips the step when there is no end, and
-        // `checked_add` gives None instead of overflowing. (Kept as a chain: this needs a whole `App`.)
+        // `checked_add` gives None instead of overflowing.
         let at = self.dnd_timed.model.until.and_then(|u| Instant::now().checked_add(dnd_wait(u, now)));
         self.dnd_timed.timer.sync_opt(self.loop_handle.as_ref(), at, App::dnd_tick);
     }
@@ -304,7 +304,7 @@ impl App {
     fn battery_deliver(&mut self, reading: Option<Option<Battery>>) {
         let serving = self.notifications().is_some_and(|n| n.held());
         let Some(alerts) = self.battery_alerts.as_mut() else { return };
-        // No new reading (the outer None): the last one again. (Kept as a closure: this needs a whole `App`.)
+        // No new reading (the outer None): the last one again.
         let laptop = reading.unwrap_or_else(|| alerts.last());
         let Some(alert) = alerts.feed(laptop, serving) else { return };
         let n = incoming(alert);

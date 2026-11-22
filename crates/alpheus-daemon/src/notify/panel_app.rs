@@ -12,11 +12,12 @@
 //! - leave the card's Seeked rule and one-second tick running once the panel has closed (a
 //!   guardrail, `the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it`, reads the
 //!   `closed` entry of `OPS`);
+//! - panic: the guardrail `the_notification_server_has_no_panicking_path` reads this file's
+//!   production code for the three forms that stop the program on a bad value;
 //! - start a thread or run a command: this file only asks the notification server and the players,
 //!   through `notify_act` and `mpris_do`.
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4, docs/features/notifications.md, and
-//! docs/decisions.md ("Opening the panel marks everything read, once it shows").
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4 and docs/features/notifications.md.
 
 use crate::keys::Key;
 use crate::log::write as log;

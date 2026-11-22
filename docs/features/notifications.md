@@ -14,15 +14,15 @@ D-Bus service apps use to send "notify" messages), so apps such as Firefox, Chro
 6.7 MB PSS on one session. Without the module the name is never requested.
 
 **The server.** It asks for the name with flags 0: while another server owns it (mako, for example),
-alpheus waits in the queue and takes over when that server lets go; a server started later is refused
-(see "The notification server queues behind another server and never replaces it" in
-[decisions.md](../decisions.md)). It answers `Notify`, `CloseNotification`, `GetCapabilities` and
+alpheus waits in the queue and takes over when that server lets go; a server started later cannot take
+the name over (mako, which asks with `DO_NOT_QUEUE`, exits). See "The notification server queues behind
+another server and never replaces it" in [decisions.md](../decisions.md). It answers `Notify`, `CloseNotification`, `GetCapabilities` and
 `GetServerInformation`, and broadcasts `NotificationClosed` and `ActionInvoked`. It decodes calls raw:
 `image-data` and the other image and sound hints are stepped over, never read.
 
 **What it keeps of a notification.** The app name is cut to 64 bytes, the summary to 256, the body to
-1 KiB, labels to 64 bytes, at most 6 actions. Markup is removed (the five XML entities are decoded,
-`<br>` is a line break), control and invisible characters are removed. The identity of a notification is
+1 KiB, labels to 64 bytes, at most 6 actions. In the summary and the body, markup is removed (the five
+XML entities are decoded; in the body `<br>` is a line break), control and invisible characters are removed. The identity of a notification is
 its desktop entry, else its app name; it keys the spam guards, the tags and the glyph. The glyph comes
 from the bar's icon table, then the category (`email.*`, `im.*`, `network.*`, `device.*`,
 `transfer.complete`), then the first letter, then a generic one.
@@ -45,8 +45,8 @@ everything read.
 be untimed or timed, and it is kept in a file across restarts.
 
 **Rules and alerts.** `[[notifications.rules]]` mute or drop an app, or change its urgency. Low-battery
-alerts (`[battery] warn`) and the failed-units notice (`[failed] notify`) and the Shield notices go
-through this server too, and wait while it does not serve.
+alerts (`[battery] warn`) and the failed-units notice (`[failed] notify`) go through this server too, and
+wait while it does not serve; a Shield notice is dropped while it does not serve (one log line).
 
 ## Using it
 
@@ -95,7 +95,7 @@ refused.
 
 | Key | What it does |
 | --- | --- |
-| `app` | The whole app name or desktop entry, any case; not empty, at most 64 bytes, no control character |
+| `app` | The whole app name or desktop entry, any case; trimmed, not empty, at most 64 bytes, no control or invisible character |
 | `action` | `"mute"`: no bubble, kept in the history and counted unread; `"drop"`: answered and forgotten |
 | `urgency` | `"low"`, `"normal"` or `"critical"`: replaces the app's own (not with `drop`) |
 
@@ -139,8 +139,8 @@ Files in `crates/alpheus-daemon/src/notify/`, and the parts of other files that 
   bell), `quick/dnd.rs` (the duration detail), `tray/bridge.rs` (`notify_do`, the one way the daemon
   reaches the server), `startup.rs` (the clock tick that re-checks a timed end).
 
-**Where the server lives.** On the tray's session connection when the tray runs, else on the bar's own
-link (the one the media module and the portal share). It adds no connection and no thread.
+**Where the server lives.** It uses the tray's connection or the bar's link (opened for it if nothing
+else has), so it adds no connection of its own, and no thread.
 
 **One path each.** Every change the daemon makes to the server goes through `notify_do` (and, with the
 bubbles and the panel following, `notify_act`); every do-not-disturb change goes through `dnd_apply`; the
@@ -165,17 +165,22 @@ on or off changed, repaints the quick panel's row and moves the timer. A state r
 
 ## Rules it keeps
 
-- `the_notification_server_has_no_panicking_path`: the model, the consumer, the bubbles, the panel, the
-  do-not-disturb model, the state files and the signal builders hold no `.unwrap()`, `.expect(` or
-  `panic!(` in their production code (everything but the items after `#[cfg(test)]`).
+- `the_notification_server_has_no_panicking_path`: `notify/mod.rs` (the model), the server's consumer
+  (`session_bus/notifications.rs`), `notify/app.rs`, `notify/dnd.rs`, `notify/bubbles.rs`,
+  `notify/bubbles_surface.rs`, `notify/panel.rs`, `notify/panel_app.rs`, `state_file.rs`,
+  `session_bus/codec.rs` and the signal builders of `session_bus/bus.rs` hold no `.unwrap()`, `.expect(`
+  or `panic!(` in their production code (everything but the items after `#[cfg(test)]`).
 - `the_notification_rules_log_nothing`: `notify/mod.rs` writes no log line, so a rule never names an app
   or a text.
-- `the_tray_spawns_no_thread`: the notify files start no thread and run no command.
+- `the_tray_spawns_no_thread`: `notify/mod.rs`, `app.rs`, `dnd.rs`, `battery_alert.rs`, `bubbles.rs`,
+  `bubbles_surface.rs` and `panel.rs` start no thread and run no command (`panel_app.rs` is not on its
+  list).
 - `every_dnd_change_goes_through_dnd_apply`, `the_dnd_tick_fires_before_checking` and
   `the_clock_rechecks_a_timed_dnd`: one path for the flag, a timer's callback clears its own record before
   anything arms it again, and the clock's tick calls `dnd_check_clock`.
 - `the_osd_and_the_bubbles_are_created_on_the_overlay_layer`: the bubbles' surface is on `Overlay`.
-- `the_panel_marks_read_only_after_it_opened`: the panel marks the history read only once its popup opened.
+- `the_panel_marks_read_only_after_it_opened`: the panel marks the history read only once its popup opened
+  (spec § 4, "State"; a refused open leaves the count on the bell).
 - `on_bar_message_feeds_the_battery_alerts` and `a_new_server_gets_the_last_battery_reading`: the alerts
   are fed before the bar keeps a message, and a server that starts serving gets the last reading again.
 - `nothing_resident_while_the_launcher_is_closed`: counts the timers the daemon builds, one in
@@ -192,26 +197,26 @@ on or off changed, repaints the quick panel's row and moves the timer. A state r
   `mako_holding_the_name_dims_the_bell_until_it_stops`) run against a private bus and a headless
   compositor; no test uses the real session or system bus.
 - The reasons are in [decisions.md](../decisions.md): "The notification server queues behind another
-  server and never replaces it", "A bubble's timeout follows its urgency", "A notification gets a bubble
-  only when all three guards allow it", "A critical bubble always shows, and the criticals are capped",
-  "A bubble's timeout starts when it first shows", "An identical notification within one second is
+  server and never replaces it", "A bubble's timeout follows its urgency", "A bubble is given by guards in a
+  fixed order, and a critical one always shows", "A bubble's timeout starts when it first shows", "An identical notification within one second is
   merged, unless it would add a bubble", "A notification's text is cleaned in one linear pass", "An
   unknown `replaces_id` is accepted as that id", "A rule is matched on the whole app name, any case",
   "The do-not-disturb file holds one of three forms", "The user's choice wins over a capture", "A timed
   do-not-disturb ends on the wall clock", "A battery alert is given only while the server serves", "The
-  bubbles are an Overlay surface, opened again once per stack", "The bubbles move to the focused output
-  only when the stack changes" and "Opening the panel marks everything read, once it shows".
+  bubbles are an Overlay surface, opened again once per stack" and "The bubbles move to the focused
+  output only when the stack changes".
 
 ## What it costs
 
 Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
 
 - **Linked in:** +122 to +248 KB at start over the build before the notifications; binary +140 KiB
-  stripped (5.34 to 5.47 MiB). The rules, four battery thresholds and `dnd_while_sharing` add +4 to
-  +116 KB at start (bound 128 KB, `small_features_cost_nothing_at_start`).
+  stripped (5.34 to 5.47 MiB). The rules, four battery thresholds and `dnd_while_sharing` configured
+  read −420 to +64 KB at start (one base run read high; −56 to +64 KB in the other two; bound 128 KB,
+  `small_features_cost_nothing_at_start`).
 - **Module on, serving:** 0 to 4 KB in mode `auto`, where the portal's link is already open. A 50-entry
-  history 192 to 198 KB; four bubbles 326 to 774 KB, and −84 to +76 KB over rest once they are closed
+  history 192 to 198 KB; four bubbles 326 to 774 KB, and −84 to +76 KB over the history before them once they are closed
   (`notifications_pss_idle_history_and_bubbles`).
-- **At rest:** 0 loop wake-ups with a sticky bubble and after a bubble expires
+- **At rest:** 0 loop wake-ups with a sticky bubble shown and once every bubble is gone
   (`at_rest_no_wakeups_with_notifications`), and with a timed do-not-disturb running
   (`at_rest_no_wakeups_with_a_timed_dnd`, 10 s); no thread is added.

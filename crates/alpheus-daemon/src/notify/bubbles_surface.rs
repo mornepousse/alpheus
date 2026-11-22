@@ -198,7 +198,7 @@ impl App {
             .as_deref()
             .and_then(|n| self.outputs.outputs().find(|o| self.outputs.info(o).and_then(|i| i.name).as_deref() == Some(n)));
         // `and` gives `wanted` only when `named` is Some: a name that matches no output of the bar
-        // is no name. (Kept as `and`: this needs a whole `App`, which only the headless tests have.)
+        // is no name.
         let name = named.as_ref().and(wanted);
         (named, name)
     }

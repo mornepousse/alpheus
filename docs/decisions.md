@@ -977,40 +977,35 @@ Date: 2026-10-09 · Source: notifications spec § 1, "Name"
 
 A critical notification has no timeout (its bubble stays until clicked). For any other, an `expire_ms`
 of -1 (or any negative number) means `[notifications] timeout` (5 s), 0 means `timeout_max` (20 s), and
-any other value is clamped to `timeout_min..=timeout_max` (2 to 20 s). The clamp is written
-`.max(min).min(max)`, so it cannot panic even if the bounds were reversed. The reason for these
-numbers is not recorded.
+any other value is clamped to `timeout_min..=timeout_max` (2 to 20 s). The reason for these numbers is
+not recorded.
 
 Date: 2026-10-09 · Source: notifications spec § 2, "Timeout"; notifications plan 1, Task 1, "Decisions written down" (Timeouts)
 
-### A notification gets a bubble only when all three guards allow it
+### A bubble is given by guards in a fixed order, and a critical one always shows
 
-A notification gets a bubble when (1) do-not-disturb is off or it is critical, (2) fewer than 32
-notifications are live or it replaces a live one, and (3) it replaces a live one, or is critical, or its
-app's token bucket gives a token (10 tokens, one more per second). The guards run in that order, so that
-do-not-disturb and a full screen spend no token. A notification with no bubble is history only: it is
-not live, has no timer, sends no signal, and is still answered with its id.
+A notification that no mute rule matches gets a bubble when (a) it replaces a live bubble (also under
+do-not-disturb), or (b) it is critical, or (c) do-not-disturb is off, fewer than 32 notifications are
+live and its app's token bucket gives a token (10 tokens, one more per second). Under (c) the checks run
+in that order, so that do-not-disturb and a full screen spend no token. A critical one always gets a
+bubble: at the live cap of 32 the oldest bubble that is not critical goes to the history, closed as
+expired, and at most `max_visible` × 2 critical bubbles stay live, the oldest going to the history past
+that, so that a flood never hides a real one. A notification with no bubble is history only: it is not
+live, has no timer, sends no signal, and is still answered with its id. A mute that replaces a live
+bubble ends it, sending `NotificationClosed` with reason 1.
 
-Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Bubbles, the bucket and `MAX_LIVE`); notifications spec § 2, "Spam"
-
-### A critical bubble always shows, and the criticals are capped
-
-A critical notification always gets a bubble: at the live cap of 32, the oldest bubble that is not
-critical goes to the history, closed as expired, to make room. At most `max_visible` × 2 critical
-bubbles stay live; past that the oldest goes to the history, closed as expired. The spec gives the
-reason for the second rule: a flood must never hide a real one.
-
-Date: 2026-10-09 · Source: notifications spec § 3, "Look"
+Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Bubbles, the bucket and `MAX_LIVE`); notifications spec § 2, "Spam", and § 3, "Look"; commits 9e9cf74 (a replaced live bubble stays live under do-not-disturb), 49342ff (a critical one at the live cap), 53a68a8 (the cap on criticals)
 
 ### A bubble's timeout starts when it first shows
 
 A bubble beyond `max_visible` waits with no timer and gets its whole timeout when it first shows. One
-that the host has drawn keeps its expiry when newer bubbles push it back, so a steady flow of
-notifications never stops the bubbles from expiring (the comment on `Center::arm`). Under
+that the host has drawn keeps its expiry when newer bubbles push it back: a steady flow of notifications
+used to push every shown bubble back before it expired, so nothing expired (commit 49342ff). Under
 do-not-disturb a live bubble that is hidden still has its timer and closes on time. Notifications plan
-1's Task 1 text says that waiting bubbles count down too; the code and the spec follow the rule above.
+1, Task 1 (Timeouts) had waiting bubbles count down too; commit 53a68a8 changed that, and the spec was
+amended to match.
 
-Date: 2026-10-09 · Source: notifications spec § 3, "Look" and "Do-not-disturb"; `Center::arm`
+Date: 2026-10-09 · Source: notifications spec § 3, "Look" (amended) and "Do-not-disturb"; commits 53a68a8 and 49342ff
 
 ### An identical notification within one second is merged, unless it would add a bubble
 
@@ -1018,28 +1013,24 @@ With no `replaces_id` and no tag match, a notification with the same identity, s
 urgency as an entry that arrived less than 1 s before is the same notification: its id is returned and
 nothing else changes, and each merge slides the window (so an app looping on one text stays one entry).
 A merge spends no token. It does not swallow a bubble the first one never got (do-not-disturb, an empty
-bucket) when this one would get one; the reason beyond that sentence of the code is not recorded.
+bucket) when this one would get one.
 
-Date: 2026-10-09 · Source: notifications spec § 2, "Spam"; notifications plan 1, Task 1, "Decisions written down" (Merge); `Center::notify`
+Date: 2026-10-09 · Source: notifications spec § 2, "Spam" (same identity, summary and body); notifications plan 1, Task 1, "Decisions written down" (Merge); commit 9e9cf74 (the same urgency, and a merge never swallows a bubble)
 
 ### A notification's text is cleaned in one linear pass
 
-Every raw field is first cut to 16 KiB, so the rest of a hostile body is never looked at. Markup is
-stripped in one pass: a tag is `<` followed by an ASCII letter, `/`, `!` or `?`, up to the next `>`
-outside quotes; its content stays; a tag left unclosed is text and so is every `<` after it ("no second
-scan is ever made"); the five XML entities are decoded once and anything else after `&` stays as sent;
-`<br>` becomes a line break. Control characters and invisible or bidi formatting characters are removed.
-Notifications plan 1's list says `<br>` is not turned into a line break; the code and its tests
-(`a_br_with_spaces_or_attributes_is_a_line_break`) do.
+Every raw field is first cut to 16 KiB, so the rest of a hostile body is never looked at, and markup is
+stripped in one pass: a tag left unclosed is text and so is every `<` after it, so no second scan is
+ever made. Notifications plan 1's list said `<br>` is not a line break; commit 9e9cf74 changed that
+(test `a_br_with_spaces_or_attributes_is_a_line_break`). Only the summary and the body are stripped;
+`<br>` is a line break in the body only (in the summary, a space).
 
-Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Cleaning, `strip_markup`); notifications spec § 2
+Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Cleaning, `strip_markup`); notifications spec § 2; commit 9e9cf74
 
 ### An unknown `replaces_id` is accepted as that id
 
-A non-zero `replaces_id` that matches no entry is taken as the new notification's id, and the id counter
-jumps past it if it is ahead, never back. The spec says Electron's tag ids rely on this. A known one
-updates that entry in place, with its revision raised by one so that a late click on the replaced bubble
-does nothing. The counter never yields 0 and wraps from `u32::MAX` to 1, skipping ids still held.
+A non-zero `replaces_id` that matches no entry is taken as the new notification's id, because Electron's
+tag ids rely on it.
 
 Date: 2026-10-09 · Source: notifications spec § 1, "Ids"; notifications plan 1, Task 1, "Decisions written down" (Ids)
 
@@ -1048,8 +1039,7 @@ Date: 2026-10-09 · Source: notifications spec § 1, "Ids"; notifications plan 1
 A `[[notifications.rules]]` entry matches when its `app` equals, in full and ignoring case, the sender's
 app name or its desktop entry. `drop` answers the sender (with its `replaces_id` when non-zero, else a
 fresh id) and stores nothing; `mute` with any urgency still means no bubble. Battery alerts go through
-the same path, so a rule on `alpheus` applies to them. The plan notes that alpheus plays no sound, so
-"no sound hint honoured" needs no code.
+the same path, so a rule on `alpheus` applies to them.
 
 Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 9
 
@@ -1069,12 +1059,13 @@ Status: awaiting confirmation at the trial (small features plan 1, "Decisions wr
 
 ### The user's choice wins over a capture
 
-Every user path (the bell's middle click, the panel, the quick row, `--dnd on|off|toggle`) sets an
-untimed state and clears "by sharing". `--dnd on` on a timed state makes it untimed; `--dnd on --for`
-on an untimed one makes it timed; `toggle` on a timed one turns it off. `dnd_while_sharing` reacts to
-edges only (a capture starts, a capture ends) and only with the `privacy` module. A timed end reached
-while a capture is shown and the option is on hands over to "by sharing", so the capture's end turns
-it off as usual; this was settled at the final review of that delivery (it used to turn off).
+Every user path clears "by sharing". The bell's middle click, the panel's row and the quick row's Space
+set an untimed state; `--dnd on` on a timed state makes it untimed; `--dnd on --for`, `--dnd on --until`
+and the quick panel's duration detail make it timed; `toggle` on a timed one turns it off.
+`dnd_while_sharing` reacts to edges only (a capture starts, a capture ends) and only with the `privacy`
+module. A timed end reached while a capture is shown and the option is on hands over to "by sharing", so
+the capture's end turns it off as usual; this was settled at the final review of that delivery (it used
+to turn off).
 
 Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 7
 
@@ -1093,10 +1084,7 @@ Status: awaiting confirmation at the trial (small features plan 1, "Decisions wr
 ### A battery alert is given only while the server serves
 
 An alert is sent only while alpheus's own server holds the name; before that nothing is logged and the
-threshold stays armed, so the alert is offered again, with the last reading, when the server starts. A
-threshold is crossed at `percent <= threshold` while discharging; charging, full and pending charge
-re-arm every threshold, an unknown state changes nothing. The category is `device.warning`, for the
-device glyph. The lowest threshold's alert is critical.
+threshold stays armed, so the alert is offered again, with the last reading, when the server starts.
 
 Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 10; `BatteryAlerts::feed`
 
@@ -1108,9 +1096,9 @@ The bubbles are one `Overlay` layer surface, not `Top`, because Hyprland draws `
 window (spec § 3). When the compositor closes the surface it is opened again once for that stack of
 bubbles (their ids and revisions); closed again for the same stack, it stays closed until the stack
 changes, so there is never a create-and-close loop. A close followed in the same dispatch batch by an
-output going is that output's loss (an unplug) and does not spend the one reopen.
+output going is that output's loss (an unplug) and does not spend the one reopen (commit 4c1e923).
 
-Date: 2026-10-09 · Source: notifications spec § 3, "Placement"; notifications plan 1, task table row 6 ("reopen once per stack"); `Closes` in `notify/bubbles_surface.rs`
+Date: 2026-10-09 · Source: notifications spec § 3, "Placement"; notifications plan 1, task table row 6 ("reopen once per stack"); commit 4c1e923
 
 ### The bubbles move to the focused output only when the stack changes
 
@@ -1120,11 +1108,3 @@ that output is known by name and is not the one they are on. The code gives the 
 never jump under the pointer because the focus followed the mouse.
 
 Date: 2026-10-09 · Source: notifications plan 1, Task 6; `bubbles::moves`
-
-### Opening the panel marks everything read, once it shows
-
-Opening the panel marks every history entry read, and so does anything that arrives while it shows. The
-mark is made only after the popup has opened: a refused open (no shared buffer, no positioner) leaves
-the count on the bell.
-
-Date: 2026-10-09 · Source: notifications spec § 4, "State"; the guardrail `the_panel_marks_read_only_after_it_opened`

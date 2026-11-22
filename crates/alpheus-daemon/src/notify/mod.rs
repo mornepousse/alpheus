@@ -19,9 +19,8 @@
 //! - hold more than `history + MAX_LIVE` entries, each field capped.
 //!
 //! See: docs/specs/2026-10-09-alpheus-notifications-design.md, docs/features/notifications.md, and
-//! docs/decisions.md ("A bubble's timeout follows its urgency", "A notification gets a bubble only
-//! when all three guards allow it", "A critical bubble always shows, and the criticals are capped",
-//! "A bubble's timeout starts when it first shows", "An identical notification within one second is
+//! docs/decisions.md ("A bubble's timeout follows its urgency", "A bubble is given by guards in a
+//! fixed order, and a critical one always shows", "A bubble's timeout starts when it first shows", "An identical notification within one second is
 //! merged, unless it would add a bubble", "A notification's text is cleaned in one linear pass",
 //! "An unknown `replaces_id` is accepted as that id", "A rule is matched on the whole app name, any
 //! case").
@@ -164,9 +163,9 @@ impl Timeouts {
 }
 
 /// How long a bubble stays: None (sticky) when critical; a negative `expire_ms` is the default, 0
-/// is `max`, any other is clamped to `min..=max`, whatever the bounds hold, even `min` above `max`
-/// (the config bounds are not compared), so this never panics. See docs/decisions.md, "A bubble's
-/// timeout follows its urgency".
+/// is `max`, any other is clamped to `min..=max`. The config refuses a `min` above `max`, but this
+/// function does not rely on it (`Center::new` takes any config without checking it), so it never
+/// panics. See docs/decisions.md, "A bubble's timeout follows its urgency".
 pub fn timeout(urgency: Urgency, expire_ms: i32, t: &Timeouts) -> Option<Duration> {
     if urgency == Urgency::Critical {
         return None;
@@ -648,10 +647,10 @@ impl Center {
         // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
         // recomputed); it only shows once do-not-disturb is off, unless critical.
         let had_bubble = target.is_some_and(|i| self.slots[i].entry.live);
-        // The three guards run in this order, so that do-not-disturb and a full screen spend no
-        // token (docs/decisions.md, "A notification gets a bubble only when all three guards
-        // allow it"). The live cap never blocks a critical one: the oldest live normal bubble
-        // makes room (docs/decisions.md, "A critical bubble always shows, and the criticals are capped").
+        // The guards run in this order, so that do-not-disturb and a full screen spend no token. The
+        // live cap never blocks a critical one: the oldest live normal bubble makes room (both:
+        // docs/decisions.md, "A bubble is given by guards in a fixed order, and a critical one always
+        // shows").
         let bubble = !muted && (had_bubble || critical || (!self.dnd && self.live_count() < MAX_LIVE && self.take_token(&identity, now)));
         if critical && bubble && !had_bubble && self.live_count() >= MAX_LIVE {
             self.demote_oldest_normal();
