@@ -4498,3 +4498,34 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     }
     assert!(spawned >= 5, "the spawning built-ins were reached: {spawned}");
 }
+
+/// Review I1, I2, M1, M5: what a Mod+Space open leaves alone, and what a closed menu stops.
+#[test]
+fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
+    let files = source_files();
+    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let host = text("launcher/host.rs");
+    let apps = function_body(&host, "pub(crate) fn launcher_open_apps(");
+    for word in ["tools_builtin_states", "tools_adopt_builtin_states", "tools_known_states"] {
+        assert!(!apps.contains(word), "{word}: a plain Mod+Space open reads no built-in state (a /proc scan)");
+    }
+    assert!(apps.contains("tools_catalog(&config, false)"), "a Mod+Space open logs no catalog note");
+    assert!(text("tools_join.rs").contains("clipboard_availability()"), "the clipboard row follows the protocol too");
+    let tools = text("tools_app.rs");
+    assert!(function_body(&tools, "pub(crate) fn launcher_open_tools(").contains("tools_catalog(&config, true)"));
+    let surface = text("launcher/surface.rs");
+    let outcome = function_body(&surface, "fn launcher_outcome_inner(");
+    assert!(
+        outcome.contains("Outcome::EnterTools(") && outcome.contains("tools_adopt_builtin_states()"),
+        "the jump reads the built-ins' states"
+    );
+    assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_reads_stop()"), "launcher_close");
+    assert!(function_body(&host, "fn launcher_fail(").contains("tools_reads_stop()"), "launcher_fail");
+    assert!(function_body(&tools, "pub(crate) fn run_builtin(").contains("is_refusal"), "a refused verb is logged");
+    assert!(
+        function_body(&tools, "fn tools_spawn(").contains("spawn_builtin(")
+            && !function_body(&tools, "fn tools_spawn(").contains("Spawner::")
+    );
+    let tick = function_body(&tools, "pub(crate) fn tools_tick(");
+    assert!(tick.contains("launcher_guarded(\"tools timer\""), "the timer's tick runs guarded");
+}

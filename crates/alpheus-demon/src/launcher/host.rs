@@ -335,6 +335,7 @@ impl App {
         }
         self.keyboard_release();
         self.tools_timer_sync();
+        self.tools_reads_stop();
         if !was_open {
             return;
         }
@@ -474,12 +475,11 @@ impl App {
         // the environment a second time, inside `launcher_open`, only to
         // overwrite it with the same value right back here).
         let env = ScanEnv::from_env(|k| std::env::var_os(k));
-        let tools = self.tools_catalog(&config);
+        let tools = self.tools_catalog(&config, false);
         let mut model = Launcher::for_apps(config, self.launcher_toplevels(), history, now);
         model.path_dirs = env.path_dirs.clone();
         // The Tools entries rank in the typed search and the `/` prefix jumps in (rebuilt at each open).
         model.set_tools(tools);
-        self.tools_builtin_states(&mut model);
         // The `"` prefix only with the history on and bound.
         if self.clipboard_availability().is_ok() {
             model.clipboard = true;

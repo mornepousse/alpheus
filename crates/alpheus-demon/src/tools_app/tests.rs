@@ -244,3 +244,65 @@ fn an_unread_remainder_of_a_closed_open_is_dropped() {
     s.resume(1, Vec::new(), Counts::default(), Some(1));
     assert!(s.finished(Some(1)).is_none(), "nothing unread, nothing queued");
 }
+
+/// Review I2: the menu closing (or failing) raises the flag, so a running states read stops after
+/// its current entry instead of running the user's `state` commands for a dead menu.
+#[test]
+fn a_closed_menu_stops_the_running_states_read_after_its_entry() {
+    let fake = FakeExecutor::new();
+    fake.capture_ok("s", Captured { stdout: Vec::new(), end: CaptureEnd::Exited(Some(0)) });
+    let mut s = Scheduler::new();
+    let first = s.offer(1, states(4), Some(1)).unwrap();
+    assert!(!s.preempt.load(Ordering::Acquire));
+    s.stop();
+    let JobEvent::StatesDone { unread, counts } = run_job(first.1, &fake, &s.preempt, &mut |_| {}, &mut |_| {}) else { panic!() };
+    assert_eq!((unread.len(), counts.on), (3, 1), "one entry read, the rest left");
+    s.resume(1, unread, counts, None);
+    assert!(s.finished(None).is_none(), "and never started again");
+}
+
+/// Review M3: the spawn the glue really makes is wrapped when the runtime dir has systemd's
+/// private socket, bare when it has none.
+#[test]
+fn the_glues_spawn_follows_the_runtime_dirs_systemd() {
+    let bin = Bin::new("spawn", &["shell-ctl"]);
+    let dirs = [bin.0.clone()];
+    let argv = v(&["shell-ctl", "reload-bar"]);
+    let with_systemd = bin.0.join("rt-systemd");
+    std::fs::create_dir_all(with_systemd.join("systemd")).unwrap();
+    std::fs::write(with_systemd.join("systemd/private"), "").unwrap();
+    let fake = FakeExecutor::new();
+    fake.ok(&run::wrap(Spawner::SystemdScope, argv.clone()).join(" "), "");
+    spawn_builtin(&fake, &with_systemd, &dirs, argv.clone()).unwrap();
+    assert!(fake.calls()[0].starts_with("systemd-run --user --scope"), "{:?}", fake.calls());
+    let bare = bin.0.join("rt-bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let fake = FakeExecutor::new();
+    fake.ok("shell-ctl reload-bar", "");
+    spawn_builtin(&fake, &bare, &dirs, argv).unwrap();
+    assert_eq!(fake.calls(), ["shell-ctl reload-bar"]);
+}
+
+/// Review M4: a replayed verb that was refused is logged (by id); one that was done is not.
+#[test]
+fn a_refused_verb_reply_is_a_refusal() {
+    use alpheus_commun::launcher_ipc::Reply;
+    assert!(is_refusal(&Reply::Error("no".into())) && is_refusal(&Reply::Busy));
+    assert!(!is_refusal(&Reply::Done) && !is_refusal(&Reply::Cancelled));
+}
+
+/// The clipboard built-in shows only when the history is on AND a protocol is bound.
+#[test]
+fn the_clipboard_builtin_needs_the_history_on_and_bound() {
+    use crate::clipboard::app::availability;
+    use crate::launcher::tools::catalog::{Catalog, EntryKind};
+    let shows = |enabled, bound| {
+        let ctx =
+            context(&BarConfig::default(), &LauncherConfig::default(), false, join(false, availability(enabled, bound).is_ok(), false));
+        let cat = Catalog::build(&LauncherConfig::default().tools, &ctx, &mut |_| {});
+        cat.entries.iter().any(|e| matches!(e.kind, EntryKind::Builtin(i) if BUILTINS[i].id == "clipboard"))
+    };
+    assert!(shows(true, true));
+    assert!(!shows(true, false), "enabled with no protocol bound");
+    assert!(!shows(false, true) && !shows(false, false));
+}

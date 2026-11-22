@@ -449,7 +449,7 @@ fn tool_rows_join_a_typed_all_query_only() {
 fn the_slash_prefix_jumps_into_tools_and_backspace_returns() {
     let mut l = apps(CFG);
     let o = l.key(Key::Char('/'));
-    let Outcome::ReadStates(Job::States(jobs, _)) = o else { panic!("{o:?}") };
+    let Outcome::EnterTools(Some(Job::States(jobs, _))) = o else { panic!("{o:?}") };
     assert_eq!(jobs.len(), 1);
     assert_eq!((jobs[0].position, jobs[0].argv.clone()), (5, vec!["s".to_string()]), "Home thing, the entry that has a state");
     assert_eq!((l.mode, l.query.as_str()), (Mode::Tools, ""));
@@ -468,7 +468,23 @@ fn the_slash_prefix_jumps_into_tools_and_backspace_returns() {
 #[test]
 fn a_prefix_jump_without_a_state_reads_nothing() {
     let mut l = apps("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    assert_eq!(l.key(Key::Char('/')), Outcome::EnterTools(None), "the host still reads the built-ins' states");
+}
+
+#[test]
+fn an_empty_catalog_installs_nothing_and_the_slash_stays_text() {
+    let mut l = apps("[tools]\nbuiltins = false\n");
+    assert!(l.tools().is_none(), "no rows, no Tools state");
     assert_eq!(l.key(Key::Char('/')), Outcome::Redraw);
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, "/"), "the query is kept");
+}
+
+#[test]
+fn the_query_setter_never_jumps_by_prefix() {
+    let mut l = apps("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    l.config.prefixes.tools = ":".into();
+    l.set_query(":");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, ":"));
 }
 
 #[test]

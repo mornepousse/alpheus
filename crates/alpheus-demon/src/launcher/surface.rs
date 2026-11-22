@@ -563,6 +563,7 @@ impl App {
         drop(open);
         // The Tools question's timer goes with the box (nothing is armed at rest).
         self.tools_timer_sync();
+        self.tools_reads_stop();
         self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
         // The catalog, the matcher's matrices, the box's pool: give the
@@ -684,8 +685,17 @@ impl App {
         match o {
             Outcome::Nothing => {}
             Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
-            // The Tools mode's reads: the reader starts or queues the job (tools_app.rs).
-            Outcome::ReadStates(job) | Outcome::ReadChoices(job) => {
+            // The `/` jump into the Tools mode: the daemon's own states are read now (never at a
+            // plain Mod+Space open), the reader starts the entries' (tools_app.rs).
+            Outcome::EnterTools(job) => {
+                self.tools_adopt_builtin_states();
+                if let Some(job) = job {
+                    self.tools_offer(job);
+                }
+                self.launcher_redraw();
+            }
+            // A choices level: the reader starts or queues the job.
+            Outcome::ReadChoices(job) => {
                 self.tools_offer(job);
                 self.launcher_redraw();
             }

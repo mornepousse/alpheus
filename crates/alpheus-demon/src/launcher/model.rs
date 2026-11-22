@@ -91,9 +91,10 @@ pub enum Outcome {
     Activate(Activation),
     /// The history changed (pin, delete, clear): the box stays open.
     Edit(ClipEdit),
-    /// The Tools mode was entered by the `/` prefix: the reader reads these states. A drill or a
-    /// confirm from a Mod+Space hit reads none (the rows show no switch there; spec § 1 allows it).
-    ReadStates(Job),
+    /// The Tools mode was entered by the `/` prefix: the host reads the built-ins' states and the
+    /// reader reads the entries' (the job, when any has a `state`). A drill or a confirm from a
+    /// Mod+Space hit reads none (the rows show no switch there; spec § 1 allows it).
+    EnterTools(Option<Job>),
     /// A `choices_cmd` level was opened: the reader reads its lines.
     ReadChoices(Job),
     /// Backspace at the Tools root of a Mod+Space open: the model is back in All.
@@ -326,8 +327,12 @@ impl Launcher {
     }
 
     /// The Tools catalog of a Mod+Space open (its typed search ranks the entries, the `/` prefix
-    /// jumps in): refilters, keeping the selection by identity like `set_entries`.
+    /// jumps in): refilters, keeping the selection by identity like `set_entries`. A catalog with
+    /// no entry installs nothing (the `/` stays text).
     pub fn set_tools(&mut self, catalog: ToolsCatalog) {
+        if catalog.entries.is_empty() {
+            return;
+        }
         let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.tools = Some(ToolsState::new(catalog));
         self.ranker.forget();
@@ -518,9 +523,9 @@ impl Launcher {
         match k {
             Key::Char(c) => {
                 self.query.push(c);
-                let job = self.take_prefix();
+                let entered = self.take_prefix();
                 let o = self.query_changed();
-                job.map_or(o, Outcome::ReadStates)
+                entered.map_or(o, Outcome::EnterTools)
             }
             Key::Backspace => {
                 if self.query.pop().is_some() {
@@ -571,7 +576,7 @@ impl Launcher {
     /// configured prefix switches to that mode and is consumed.
     /// The `/` prefix jumps into the Tools menu at its root (only with a catalog to show), and
     /// returns the read of its states.
-    fn take_prefix(&mut self) -> Option<Job> {
+    fn take_prefix(&mut self) -> Option<Option<Job>> {
         if self.mode != Mode::All || self.by_prefix {
             return None;
         }
@@ -594,7 +599,14 @@ impl Launcher {
         let t = self.tools.as_mut()?;
         t.reset();
         self.ranker.forget();
-        t.state_job(&self.config.tools)
+        Some(t.state_job(&self.config.tools))
+    }
+
+    /// The query set as is, with no prefix jump (a built-in that types its own query: the emoji
+    /// picker's `:` must stay the emoji prefix whatever the modes' prefixes are).
+    pub fn set_query(&mut self, text: &str) {
+        self.query = text.into();
+        self.query_changed();
     }
 
     /// The keys that mean something else in the Tools mode (spec § 2); the rest (editing, moving)

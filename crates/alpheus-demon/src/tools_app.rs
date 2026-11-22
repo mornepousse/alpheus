@@ -19,7 +19,7 @@ use crate::quick::Toggle;
 use crate::startup::Mail;
 use crate::tools_join;
 use crate::wayland::App;
-use alpheus_commun::launcher_ipc::{DndVerb, Request, TimerVerb};
+use alpheus_commun::launcher_ipc::{DndVerb, Reply, Request, TimerVerb};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::PathBuf;
@@ -64,6 +64,11 @@ pub fn tab_argv(open_tab: &[String], slug: &str, terminal: &[String], path_dirs:
         return Some(terminal.iter().cloned().chain(["alpheus".into(), "--tab".into(), slug.into()]).collect());
     }
     None
+}
+
+/// A replayed verb's answer that says it did nothing.
+pub fn is_refusal(reply: &Reply) -> bool {
+    matches!(reply, Reply::Error(_) | Reply::Busy)
 }
 
 /// What a built-in that spawns runs.
@@ -114,6 +119,18 @@ fn not_found() -> alpheus_commun::exec::ExecError {
     alpheus_commun::exec::ExecError::NotFound
 }
 
+/// Starts `argv` for a built-in in its own scope when `runtime_dir` has systemd's private socket
+/// (decision 10), bare otherwise; the program is looked up on `path_dirs` first.
+pub fn spawn_builtin(
+    exec: &dyn alpheus_commun::exec::Executor,
+    runtime_dir: &std::path::Path,
+    path_dirs: &[PathBuf],
+    argv: Vec<String>,
+) -> Result<(), String> {
+    let ctx = RunContext { exec, spawner: run::spawner(runtime_dir), history_path: None, path_dirs };
+    run::launch(&ctx, argv)
+}
+
 /// The reader's schedule: one job at a time, a waiting choices read first (it is what the person
 /// is looking at), the unread states behind it. A job belongs to an open (`generation`); one whose
 /// open is gone is never started (a state command is the user's), and any last delivery, stale
@@ -144,6 +161,12 @@ impl Scheduler {
             Job::States(..) => self.states = Some((generation, job)),
         }
         self.next(current)
+    }
+
+    /// The open is gone (closed or failed): a running states read stops after its current entry,
+    /// so a dead menu's user `state` commands do not go on.
+    pub fn stop(&self) {
+        self.preempt.store(true, Ordering::Release);
     }
 
     /// The states a preempted read left, behind whatever waits (nothing when the open is gone).
@@ -214,15 +237,22 @@ impl App {
         context(&self.bar.config, launcher, self.timer.enabled, join)
     }
 
-    /// The catalog of this open (rebuilt at each open, dropped at close), its notes logged.
-    pub(crate) fn tools_catalog(&self, config: &LauncherConfig) -> Catalog {
-        Catalog::build(&config.tools, &self.tools_context(config), &mut |m| log(m))
+    /// The catalog of this open (rebuilt at each open, dropped at close); its notes are logged
+    /// only when `notes` (a Tools open: a Mod+Space open says nothing about it).
+    pub(crate) fn tools_catalog(&self, config: &LauncherConfig, notes: bool) -> Catalog {
+        let mut note: Box<dyn FnMut(&str)> = if notes { Box::new(log) } else { Box::new(|_| {}) };
+        Catalog::build(&config.tools, &self.tools_context(config), &mut *note)
     }
 
-    /// The states the daemon knows itself (do-not-disturb, the `[quick]` toggles), set on a model
-    /// that has a Tools state.
-    pub(crate) fn tools_builtin_states(&self, model: &mut Launcher) {
-        let known: Vec<(usize, bool)> = model
+    /// The menu is gone: a running states read stops after its entry.
+    pub(crate) fn tools_reads_stop(&self) {
+        self.tools.scheduler.stop();
+    }
+
+    /// The states the daemon knows itself (do-not-disturb, the `[quick]` toggles), of the entries
+    /// of `model`'s catalog (may scan `/proc`: read only when the Tools mode is entered).
+    pub(crate) fn tools_known_states(&self, model: &Launcher) -> Vec<(usize, bool)> {
+        model
             .tools()
             .map(|t| {
                 t.catalog
@@ -239,9 +269,23 @@ impl App {
                     })
                     .collect()
             })
-            .unwrap_or_default();
-        for (entry, on) in known {
+            .unwrap_or_default()
+    }
+
+    /// Those states, set on a model that has a Tools state (a `--tools` open).
+    pub(crate) fn tools_builtin_states(&self, model: &mut Launcher) {
+        for (entry, on) in self.tools_known_states(model) {
             model.adopt_state(entry, Some(on));
+        }
+    }
+
+    /// Those states, set on the open launcher: its Tools mode was just entered by the `/` jump.
+    pub(crate) fn tools_adopt_builtin_states(&mut self) {
+        let known = self.launcher.as_ref().map(|o| self.tools_known_states(&o.model)).unwrap_or_default();
+        if let Some(open) = self.launcher.as_mut() {
+            for (entry, on) in known {
+                open.model.adopt_state(entry, Some(on));
+            }
         }
     }
 
@@ -250,7 +294,7 @@ impl App {
         let config = crate::launcher::host::read_config(&paths::config_dir(), &mut |m| log(m));
         let now = crate::launcher::host::unix_now();
         let history = crate::launcher::host::load_history(&config, now);
-        let catalog = self.tools_catalog(&config);
+        let catalog = self.tools_catalog(&config, true);
         let mut model = Launcher::for_tools(config, catalog, history, now);
         model.path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
         self.tools_builtin_states(&mut model);
@@ -352,10 +396,12 @@ impl App {
     /// The timer fired (its source is dropped): the question's 3 s are up, or no launcher is left.
     pub(crate) fn tools_tick(app: &mut App, now: Instant) {
         app.tools.timer.fired();
-        let expired = app.launcher.as_mut().is_some_and(|o| o.model.tools_expire(now));
-        if expired {
-            app.launcher_redraw();
-        }
+        app.launcher_guarded("tools timer", move |app| {
+            let expired = app.launcher.as_mut().is_some_and(|o| o.model.tools_expire(now));
+            if expired {
+                app.launcher_redraw();
+            }
+        });
         app.tools_timer_sync();
     }
 
@@ -379,43 +425,40 @@ impl App {
         let Some(b) = BUILTINS.get(i) else { return };
         let id = b.id;
         log(&format!("tools: built-in {id}"));
-        match b.action {
-            BuiltinAction::Quick(verb) => {
-                self.quick_verb(&Request::Quick(verb));
-            }
-            BuiltinAction::Dnd => {
-                self.notifications_verb(&Request::Dnd(DndVerb::Toggle));
-            }
+        let reply = match b.action {
+            BuiltinAction::Quick(verb) => Some(self.quick_verb(&Request::Quick(verb))),
+            BuiltinAction::Dnd => Some(self.notifications_verb(&Request::Dnd(DndVerb::Toggle))),
             BuiltinAction::Toggle(_) | BuiltinAction::Lock | BuiltinAction::Reload | BuiltinAction::Tab => {
                 if let Some(argv) = argv {
                     self.tools_spawn(id, argv);
                 }
+                None
             }
-            BuiltinAction::Notes => {
-                self.notes_verb(qh, &Request::Notes);
+            BuiltinAction::Notes => Some(self.notes_verb(qh, &Request::Notes)),
+            BuiltinAction::Timer => Some(self.timer_verb(&Request::Timer(TimerVerb::Popup))),
+            BuiltinAction::Clipboard => {
+                tools_join::open_clipboard(self, qh);
+                None
             }
-            BuiltinAction::Timer => {
-                self.timer_verb(&Request::Timer(TimerVerb::Popup));
+            BuiltinAction::Emoji => {
+                self.tools_open_emoji(qh);
+                None
             }
-            BuiltinAction::Clipboard => tools_join::open_clipboard(self, qh),
-            BuiltinAction::Emoji => self.tools_open_emoji(qh),
-            BuiltinAction::Power => {
-                self.power_verb(qh, &Request::Power);
+            BuiltinAction::Power => Some(self.power_verb(qh, &Request::Power)),
+            BuiltinAction::Shield => {
+                tools_join::open_shield(self);
+                None
             }
-            BuiltinAction::Shield => tools_join::open_shield(self),
+        };
+        if reply.as_ref().is_some_and(is_refusal) {
+            log(&format!("tools: built-in {id} refused"));
         }
     }
 
     /// `argv` in its own scope (decision 10), looked up on the daemon's own `$PATH`.
     fn tools_spawn(&mut self, id: &str, argv: Vec<String>) {
         let path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
-        let ctx = RunContext {
-            exec: self.exec.as_ref(),
-            spawner: run::spawner(&paths::runtime_dir()),
-            history_path: None,
-            path_dirs: &path_dirs,
-        };
-        if run::launch(&ctx, argv).is_err() {
+        if spawn_builtin(self.exec.as_ref(), &paths::runtime_dir(), &path_dirs, argv).is_err() {
             log(&format!("tools: built-in {id} could not start"));
         }
     }
@@ -424,7 +467,7 @@ impl App {
     fn tools_open_emoji(&mut self, qh: &QueueHandle<App>) {
         self.launcher_open_apps(qh, Instant::now());
         if let Some(open) = self.launcher.as_mut() {
-            open.model.key(crate::keys::Key::Char(':'));
+            open.model.set_query(":");
         }
         self.launcher_redraw();
     }
