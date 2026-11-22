@@ -1,7 +1,22 @@
-//! Worker thread: queries the backends outside the render loop. A slow tool
-//! (killed after up to 2 s) therefore never freezes the screen. Each domain
-//! is returned as soon as it's read; a burst of slider changes is coalesced
-//! (only the last one counts).
+//! The worker thread: the one place that runs the backends (`wpctl`, `nmcli`, the daemon's socket,
+//! `systemctl` and the rest).
+//!
+//! The `App` sends `Request`s (read these domains, do this action, make this Diag read) down a
+//! channel and gets `Update`s back on another. The thread takes what has piled up, merges it
+//! (`coalesce`), runs each request in turn and answers each one as soon as it is done. A slow tool
+//! (killed after up to 2 s, `run.rs`'s `TOOL_TIMEOUT`) therefore never freezes the screen. The
+//! functions that do the reading and the acting (`fetch_with`, `diag_fetch`, `perform`) are plain
+//! functions over `Backends`, so the tests call them with fake backends and no thread.
+//!
+//! Never:
+//! - touch the `App`: it only sends `Update`s, so the `App` stays a plain value;
+//! - read the process's environment on its own: the health checks read the `Env` they are given
+//!   (`run.rs` gives the process's own; everywhere else it is empty, so a test never finds the
+//!   session's compositor);
+//! - leave an action without an answer: each `Request::Do` gets exactly one `Update::Done` or
+//!   `Update::Superseded`, so the `App`'s count of actions in flight always returns to zero.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3), docs/features/control-center.md.
 
 use crate::app::diagnostics::{HealthRead, health};
 use crate::backends::{
@@ -20,6 +35,8 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
+/// A group of values the worker reads together. A tab lists the domains it shows (`TabSpec::domains`)
+/// and only those are read while it is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Domain {
     Volume,
@@ -38,6 +55,7 @@ pub enum Domain {
 }
 
 impl Domain {
+    /// Every domain.
     pub const ALL: [Domain; 11] = [
         Domain::Volume,
         Domain::Brightness,
@@ -53,6 +71,8 @@ impl Domain {
     ];
 }
 
+/// An action that changes something outside alpheus. The worker runs it; `Op::domains` says which
+/// reads it makes stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     SetVolume(NodeRef, u8),
@@ -110,6 +130,7 @@ pub enum DiagRead {
     },
 }
 
+/// The answer to a `DiagRead`, of the same shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagResult {
     Restarts { system: BResult<Vec<Restarts>>, user: BResult<Vec<Restarts>> },
@@ -123,6 +144,7 @@ pub enum DiagResult {
     Report(String),
 }
 
+/// What the `App` asks of the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Refresh(Vec<Domain>),
@@ -130,6 +152,7 @@ pub enum Request {
     Diag(DiagRead),
 }
 
+/// What the worker answers: a read, or the end of an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Update {
     Volume(BResult<Volume>),
@@ -214,6 +237,14 @@ pub fn fetch_with(b: &Backends, d: Domain, var: &dyn Fn(&str) -> Option<OsString
     }
 }
 
+/// A manager's unit names, each tagged with that manager.
+fn scoped(scope: Scope, names: BResult<Vec<String>>) -> BResult<Vec<(Scope, String)>> {
+    match names {
+        Ok(names) => Ok(names.into_iter().map(|name| (scope, name)).collect()),
+        Err(e) => Err(e),
+    }
+}
+
 /// A Diag read, done.
 pub fn diag_fetch(b: &Backends, read: &DiagRead) -> DiagResult {
     let d = &*b.diagnostics;
@@ -223,8 +254,10 @@ pub fn diag_fetch(b: &Backends, read: &DiagRead) -> DiagResult {
         DiagRead::BootTime => DiagResult::BootTime(d.boot_time()),
         DiagRead::Checks(checks) => DiagResult::Checks(checks.iter().map(|c| d.check(c)).collect()),
         DiagRead::ServiceUnits => {
-            let both = [Scope::System, Scope::User].map(|s| d.service_units(s).map(|v| v.into_iter().map(|u| (s, u)).collect::<Vec<_>>()));
-            let [system, user] = both;
+            let system = scoped(Scope::System, d.service_units(Scope::System));
+            let user = scoped(Scope::User, d.service_units(Scope::User));
+            // One manager failing is not an error while the other answers; both failing gives the
+            // system manager's error.
             DiagResult::ServiceUnits(match (system, user) {
                 (Ok(mut a), Ok(b)) => {
                     a.extend(b);
@@ -252,6 +285,7 @@ pub fn respond(b: &Backends, op: Op) -> Update {
     }
 }
 
+/// Runs an action through the backends. The answer is what the tool said, as a `BResult`.
 pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
     match op {
         Op::SetVolume(n, v) => b.sound.set_volume(*n, *v),
@@ -275,9 +309,11 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
     }
 }
 
-/// Coalesces a burst: last setting per slider, a single refresh (union of
-/// domains) placed after the actions, then the Diag once-reads. Also returns the dropped settings, to
-/// be announced as `Update::Superseded`.
+/// Merges the requests that piled up while the worker was busy: the last setting per slider (a
+/// volume per node, one brightness), a single refresh (the union of the domains) placed after the
+/// actions, then the Diag reads, each made once. Also returns the dropped settings, to be
+/// announced as `Update::Superseded`. Every other action is kept, in order, and none is merged
+/// with another: a toggle pressed twice runs twice.
 pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     let mut superseded: Vec<Op> = Vec::new();
     let mut ops: Vec<Op> = Vec::new();
@@ -310,12 +346,20 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
                 }
             }
             Request::Do(op) => {
-                let replaced = |o: &Op| match (&op, o) {
-                    (Op::SetVolume(n, _), Op::SetVolume(m, _)) => m == n,
-                    (Op::SetBrightness(_), Op::SetBrightness(_)) => true,
-                    _ => false,
-                };
-                if let Some(i) = ops.iter().position(replaced) {
+                // An earlier setting of the same slider is replaced by this one.
+                let mut replaced_at = None;
+                for (i, earlier) in ops.iter().enumerate() {
+                    let same_slider = match (&op, earlier) {
+                        (Op::SetVolume(n, _), Op::SetVolume(m, _)) => m == n,
+                        (Op::SetBrightness(_), Op::SetBrightness(_)) => true,
+                        _ => false,
+                    };
+                    if same_slider {
+                        replaced_at = Some(i);
+                        break;
+                    }
+                }
+                if let Some(i) = replaced_at {
                     superseded.push(ops.remove(i)); // at most one: the previous one was already removed
                 }
                 ops.push(op);
@@ -335,7 +379,9 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
     spawn_with(b, empty_env())
 }
 
-/// Starts the thread; `env` is what its health checks read.
+/// Starts the thread; `env` is what its health checks read. The thread answers each request in
+/// the order `coalesce` gives, and ends when the request sender is dropped or the `App` stops
+/// listening (a failed send).
 pub fn spawn_with(b: Backends, env: Env) -> (Sender<Request>, Receiver<Update>) {
     let (tx_req, rx_req) = mpsc::channel::<Request>();
     let (tx_up, rx_up) = mpsc::channel::<Update>();
@@ -373,6 +419,9 @@ pub fn spawn_with(b: Backends, env: Env) -> (Sender<Request>, Receiver<Update>) 
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the worker (`worker.rs`): what each domain reads, what each action runs, how a burst
+    //! is merged, and that the spawned thread answers every request. Fake backends, no real tool.
+
     use super::*;
     use crate::app::action::Tab;
     use crate::exec::fake::FakeExecutor;
@@ -510,6 +559,47 @@ mod tests {
         // A read nobody programmed is an error shown in its section, never a panic.
         assert!(matches!(diag_fetch(&b, &DiagRead::Crashes), DiagResult::Crashes(Err(_))));
         assert_eq!(f.calls().len(), 4);
+    }
+
+    /// The journal's unit list tags each unit with its manager, keeps one manager's list when the
+    /// other fails, and fails only when both do.
+    #[test]
+    fn the_unit_list_tags_each_unit_with_its_manager_and_survives_one_failing() {
+        use crate::exec::{CaptureEnd, Captured, ExecError};
+        let system_cmd = "systemctl list-units --type=service --all --output=json --no-pager";
+        let user_cmd = "systemctl --user list-units --type=service --all --output=json --no-pager";
+        let one = |name: &str| Captured {
+            stdout: format!(r#"[{{"unit":"{name}","load":"loaded","active":"active","sub":"running","description":"x"}}]"#).into_bytes(),
+            end: CaptureEnd::Exited(Some(0)),
+        };
+        let f = Arc::new(FakeExecutor::new());
+        f.capture_ok(system_cmd, one("system-one.service"));
+        f.capture_ok(user_cmd, one("user-one.service"));
+        let b = backends(&f);
+        assert_eq!(
+            diag_fetch(&b, &DiagRead::ServiceUnits),
+            DiagResult::ServiceUnits(Ok(vec![(Scope::System, "system-one.service".into()), (Scope::User, "user-one.service".into())]))
+        );
+        let f = Arc::new(FakeExecutor::new());
+        f.capture_ok(system_cmd, one("system-one.service"));
+        f.capture_err(user_cmd, ExecError::Io("boom".into()));
+        assert_eq!(
+            diag_fetch(&backends(&f), &DiagRead::ServiceUnits),
+            DiagResult::ServiceUnits(Ok(vec![(Scope::System, "system-one.service".into())])),
+            "the user manager failing leaves the system list"
+        );
+        let f = Arc::new(FakeExecutor::new());
+        f.capture_err(system_cmd, ExecError::Io("boom".into()));
+        f.capture_ok(user_cmd, one("user-one.service"));
+        assert_eq!(
+            diag_fetch(&backends(&f), &DiagRead::ServiceUnits),
+            DiagResult::ServiceUnits(Ok(vec![(Scope::User, "user-one.service".into())])),
+            "the system manager failing leaves the user list"
+        );
+        let f = Arc::new(FakeExecutor::new());
+        f.capture_err(system_cmd, ExecError::Io("boom".into()));
+        f.capture_err(user_cmd, ExecError::Io("boom".into()));
+        assert!(matches!(diag_fetch(&backends(&f), &DiagRead::ServiceUnits), DiagResult::ServiceUnits(Err(_))));
     }
 
     #[test]
