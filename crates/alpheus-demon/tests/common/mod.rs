@@ -994,14 +994,23 @@ pub const SHIELD_DEVICES: [&str; 2] = [
 /// `<runtime>/bin/fake-shield`, paths baked in (the daemon's environment is cleared). With no
 /// argument it does nothing and exits 0 (the executable probe has no side effect). `on` creates
 /// `flag`, `slow` exits 0 at once and creates it a second later (the grace's case: `timeout` moves it to its own process group, which the runner's group kill at the exit then leaves, given the 0.3 s the stub waits for that), `off` removes it, `fail` exits 126, `list`
-/// appends `list` to `record` and prints the first `devices` of `SHIELD_DEVICES`, `allow <id>` appends
+/// appends `list` to `record` and prints `devices` blocked devices (`SHIELD_DEVICES`, then synthetic ones), `allow <id>` appends
 /// `allow <id>`. Every invocation with an argument is appended to `record` as well, as
 /// `run <arguments>` for `on`, `off` and `fail`.
 pub fn shield_stub(sway: &Sway, flag: &Path, record: &Path, devices: usize, list_secs: u32) -> PathBuf {
     let bin = sway.runtime.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(flag.parent().unwrap()).unwrap();
-    let lines: String = SHIELD_DEVICES.iter().take(devices).map(|l| format!("printf '%s\\n' '{l}'\n")).collect();
+    // The two fixtures, then synthetic ones (ids from 100) up to `devices`: the memory tests list ten.
+    let synthetic = (SHIELD_DEVICES.len()..devices).map(|n| {
+        format!(
+            "{}: block id 1234:{:04x} serial \"\" name \"Test Device {n}\" hash \"h{n}\" parent-hash \"p{n}\" via-port \"1-{n}\" with-interface 08:06:50 with-connect-type \"hotplug\"",
+            100 + n,
+            n
+        )
+    });
+    let lines: String =
+        SHIELD_DEVICES.iter().map(|l| l.to_string()).chain(synthetic).take(devices).map(|l| format!("printf '%s\\n' '{l}'\n")).collect();
     let script = format!(
         "#!/bin/sh\n# Fake privileged command of Shield mode's tests: touches or removes the flag, records, nothing else.\n\
          [ $# -eq 0 ] && exit 0\n\
