@@ -1,9 +1,30 @@
-//! The notification server's model (notifications spec docs/specs/2026-10-09-alpheus-notifications-design.md):
-//! what came in, cleaned and capped; ids, tags and revisions; the timeouts; the spam guards (a 1 s
-//! merge window, a token bucket per application, a cap on live bubbles); the history, do-not-disturb
-//! and the unread count; which bubbles show. Pure: it never names D-Bus (session_bus/codec.rs decodes the
-//! calls and calls the `*_text` cleaners here), starts nothing and never reads the clock (its callers
-//! pass the `Instant` and the local time, `clock::local_minutes`). Bounded: `history + MAX_LIVE` entries, each capped.
+//! The notification server's model: what a client sent, cleaned and capped, and which of it shows.
+//!
+//! This is the pure half of the notification server. The cleaners (`app_text`, `summary_text`,
+//! `body_text`, `hint_text`, `action`) turn a client's raw fields into capped plain text, and
+//! `Center` holds everything after that: ids, tags and revisions, the timeouts, the spam guards
+//! (a 1 s merge window, a token bucket per application, a cap on live bubbles), the history,
+//! do-not-disturb, the unread count, the rules of `[[notifications.rules]]`, and which bubbles
+//! show. The D-Bus side decodes a call in `session_bus/codec.rs` and calls the cleaners here;
+//! `app.rs` is the daemon's side (the bell, do-not-disturb, Clear all, the `alpheus-launch`
+//! verbs), `bubbles.rs` and `bubbles_surface.rs` the bubbles, `panel.rs` and `panel_app.rs` the
+//! panel, `dnd.rs` and `battery_alert.rs` two small models.
+//!
+//! Never:
+//! - name D-Bus, or start anything (a thread, a process, a timer);
+//! - read the clock: the callers pass `now` (an `Instant`) and `at` (the local time in minutes,
+//!   `clock::local_minutes`);
+//! - write a log line (a guardrail, `the_notification_rules_log_nothing`, reads this file);
+//! - panic (a guardrail, `the_notification_server_has_no_panicking_path`);
+//! - hold more than `history + MAX_LIVE` entries, each field capped.
+//!
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md, docs/features/notifications.md, and
+//! docs/decisions.md ("A bubble's timeout follows its urgency", "A notification gets a bubble only
+//! when all three guards allow it", "A critical bubble always shows, and the criticals are capped",
+//! "A bubble's timeout starts when it first shows", "An identical notification within one second is
+//! merged, unless it would add a bubble", "A notification's text is cleaned in one linear pass",
+//! "An unknown `replaces_id` is accepted as that id", "A rule is matched on the whole app name, any
+//! case").
 
 use crate::config::{NotificationsConfig, NotifyRule, RuleAction, RuleUrgency};
 use crate::grid::text_width;
@@ -142,8 +163,10 @@ impl Timeouts {
     }
 }
 
-/// How long a bubble stays (Mae's ruling): None (sticky) when critical; a negative `expire_ms` is
-/// the default, 0 is `max`, any other is clamped to `min..=max` (never a panic, whatever they hold).
+/// How long a bubble stays: None (sticky) when critical; a negative `expire_ms` is the default, 0
+/// is `max`, any other is clamped to `min..=max`, whatever the bounds hold, even `min` above `max`
+/// (the config bounds are not compared), so this never panics. See docs/decisions.md, "A bubble's
+/// timeout follows its urgency".
 pub fn timeout(urgency: Urgency, expire_ms: i32, t: &Timeouts) -> Option<Duration> {
     if urgency == Urgency::Critical {
         return None;
@@ -151,6 +174,7 @@ pub fn timeout(urgency: Urgency, expire_ms: i32, t: &Timeouts) -> Option<Duratio
     Some(match expire_ms {
         ..0 => t.default,
         0 => t.max,
+        // `.max(t.min).min(t.max)` rather than `clamp`: `clamp` panics when min is above max.
         ms => Duration::from_millis(u64::from(ms.unsigned_abs())).max(t.min).min(t.max),
     })
 }
@@ -160,6 +184,7 @@ fn cut(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
+    // Step back from `max` to the start of the character that holds it, so no character is split.
     let mut end = max;
     while !s.is_char_boundary(end) {
         end -= 1;
@@ -208,6 +233,8 @@ fn is_br(tag: &str) -> bool {
     name.eq_ignore_ascii_case("br")
 }
 
+/// Where the tag that starts at the beginning of `at` ends. A quote opens a quoted part in which
+/// `>` and `<` are plain characters, until the same quote closes it.
 fn tag_end(at: &str) -> TagEnd {
     let mut quote = None;
     for (i, c) in at.char_indices().skip(1) {
@@ -270,6 +297,9 @@ pub fn strip_markup(s: &str) -> String {
 }
 
 /// An app name: one cleaned line, trimmed, at most MAX_APP bytes (never parsed as markup).
+///
+/// `cut(s, RAW_MAX)` comes first in every cleaner below: the rest of a hostile field is never
+/// looked at.
 pub fn app_text(s: &str) -> String {
     fit(&clean(cut(s, RAW_MAX), false), MAX_APP)
 }
@@ -288,30 +318,51 @@ pub fn body_text(s: &str) -> String {
 /// MAX_HINT bytes; None when blank.
 pub fn hint_text(s: &str) -> Option<String> {
     let t = fit(&clean(cut(s, RAW_MAX), false), MAX_HINT);
-    (!t.is_empty()).then_some(t)
+    if t.is_empty() { None } else { Some(t) }
 }
 
 /// An action: its key as sent (1 to MAX_KEY bytes, no control character: it goes back over D-Bus
 /// unchanged, so it is refused rather than cut), its label one cleaned line of at most MAX_LABEL bytes.
 pub fn action(key: &str, label: &str) -> Option<Action> {
     let sane = !key.is_empty() && key.len() <= MAX_KEY && !key.chars().any(char::is_control);
-    sane.then(|| Action { key: key.to_string(), label: fit(&clean(cut(label, RAW_MAX), false), MAX_LABEL) })
+    if !sane {
+        return None;
+    }
+    Some(Action { key: key.to_string(), label: fit(&clean(cut(label, RAW_MAX), false), MAX_LABEL) })
 }
 
 /// The first alphanumeric character of `s` that takes exactly one cell (never a lone combining
 /// mark, never a wide one such as '微': the glyph has one cell), upper-cased.
 fn first_letter(s: &str) -> Option<char> {
-    s.chars().find(|c| c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) == 1).and_then(|c| c.to_uppercase().next())
+    for c in s.chars() {
+        // `encode_utf8` needs a buffer to write the character into; `text_width` measures it in cells.
+        if c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) == 1 {
+            return c.to_uppercase().next();
+        }
+    }
+    None
 }
 
 /// A notification's glyph (spec § 2): the bar's table by identity, then the category's glyph, then
 /// the identity's first letter (a reverse-DNS identity's last label first), then GENERIC.
 pub fn glyph_for(identity: &str, category: Option<&str>) -> char {
-    icons::find(identity)
-        .or_else(|| category.and_then(|c| CATEGORIES.iter().find(|(p, _)| c.starts_with(*p)).map(|(_, g)| *g)))
-        .or_else(|| first_letter(app_label(identity)))
-        .or_else(|| first_letter(identity))
-        .unwrap_or(icons::GENERIC)
+    if let Some(glyph) = icons::find(identity) {
+        return glyph;
+    }
+    if let Some(category) = category {
+        for (prefix, glyph) in CATEGORIES {
+            if category.starts_with(prefix) {
+                return glyph;
+            }
+        }
+    }
+    if let Some(letter) = first_letter(app_label(identity)) {
+        return letter;
+    }
+    if let Some(letter) = first_letter(identity) {
+        return letter;
+    }
+    icons::GENERIC
 }
 
 /// The name shown for `identity` when the app sent none (the portal's): a reverse-DNS desktop
@@ -339,7 +390,8 @@ pub struct Shown<'a> {
     pub critical: bool,
 }
 
-/// An entry and what only the model needs about it.
+/// An entry and what only the model needs about it (the `Entry` is what the bubbles and the panel
+/// get to see).
 #[derive(Debug, Clone)]
 struct Slot {
     entry: Entry,
@@ -367,6 +419,7 @@ struct Bucket {
 
 impl Bucket {
     /// The tokens it holds at `now`: one more per whole second since `since`, up to BUCKET.
+    /// `saturating_add` stops at the largest number instead of wrapping round.
     fn tokens_at(&self, now: Instant) -> u32 {
         let secs = now.saturating_duration_since(self.since).as_secs();
         self.tokens.saturating_add(u32::try_from(secs).unwrap_or(u32::MAX)).min(BUCKET)
@@ -382,6 +435,7 @@ impl Bucket {
         self.since = if self.tokens == BUCKET { now } else { self.since + Duration::from_secs(secs) };
     }
 
+    /// Spends one token (after a refill) and says whether there was one.
     fn take(&mut self, now: Instant) -> bool {
         self.refill(now);
         let some = self.tokens > 0;
@@ -451,11 +505,15 @@ impl Center {
 
     /// The first rule whose app is the whole name of the sender or its desktop entry, any case.
     fn rule_for(&self, n: &Incoming) -> Option<&Rule> {
+        // With no rule, nothing is lowercased.
         if self.rules.is_empty() {
             return None;
         }
-        let entry = n.desktop_entry.as_deref().filter(|d| !d.is_empty());
-        let (name, entry) = (n.app_name.to_lowercase(), entry.map(str::to_lowercase));
+        let entry = match n.desktop_entry.as_deref() {
+            Some(d) if !d.is_empty() => Some(d.to_lowercase()),
+            _ => None,
+        };
+        let name = n.app_name.to_lowercase();
         self.rules.iter().find(|r| r.app == name || entry.as_deref() == Some(r.app.as_str()))
     }
 
@@ -536,7 +594,10 @@ impl Center {
     pub fn notify(&mut self, mut n: Incoming, now: Instant, at: u32) -> u32 {
         // The rules come first: a drop is answered and forgotten, an urgency replaces the sender's,
         // a mute leaves the bubble out of everything below (the merge included).
-        let (action, urgency) = self.rule_for(&n).map_or((None, None), |r| (r.action, r.urgency));
+        let (action, urgency) = match self.rule_for(&n) {
+            Some(r) => (r.action, r.urgency),
+            None => (None, None),
+        };
         if action == Some(RuleAction::Drop) {
             return if n.replaces_id != 0 { n.replaces_id } else { self.fresh_id() };
         }
@@ -544,15 +605,23 @@ impl Center {
         if let Some(u) = urgency {
             n.urgency = u;
         }
-        let identity = n.desktop_entry.as_deref().filter(|d| !d.is_empty()).unwrap_or(&n.app_name).to_string();
+        let identity = match n.desktop_entry.as_deref() {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => n.app_name.clone(),
+        };
         let critical = n.urgency == Urgency::Critical;
         let target = if n.replaces_id != 0 {
             self.position(n.replaces_id)
         } else {
-            n.tag.as_deref().and_then(|tag| self.slots.iter().position(|s| s.tag.as_deref() == Some(tag) && s.entry.identity == identity))
+            match n.tag.as_deref() {
+                Some(tag) => self.slots.iter().position(|s| s.tag.as_deref() == Some(tag) && s.entry.identity == identity),
+                None => None,
+            }
         };
         // A merge never swallows a higher urgency, nor a bubble the first one never got (do-not-
-        // disturb, the bucket) while this one would.
+        // disturb, the bucket) while this one would. The condition below is a chain: every line
+        // must hold, and `let Some(i) = ...` in the middle names the entry this one merges into,
+        // for the lines after it and for the body.
         if n.replaces_id == 0
             && target.is_none()
             && let Some(i) = self.slots.iter().position(|s| {
@@ -579,12 +648,20 @@ impl Center {
         // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
         // recomputed); it only shows once do-not-disturb is off, unless critical.
         let had_bubble = target.is_some_and(|i| self.slots[i].entry.live);
-        // The live cap never blocks a critical one: the oldest live normal bubble makes room.
+        // The three guards run in this order, so that do-not-disturb and a full screen spend no
+        // token (docs/decisions.md, "A notification gets a bubble only when all three guards
+        // allow it"). The live cap never blocks a critical one: the oldest live normal bubble
+        // makes room (docs/decisions.md, "A critical bubble always shows, and the criticals are capped").
         let bubble = !muted && (had_bubble || critical || (!self.dnd && self.live_count() < MAX_LIVE && self.take_token(&identity, now)));
         if critical && bubble && !had_bubble && self.live_count() >= MAX_LIVE {
             self.demote_oldest_normal();
         }
-        let (id, revision) = match target.and_then(|i| self.slots.remove(i)) {
+        // `remove` gives the old entry back, so its id is kept and its revision goes up by one.
+        let replaced = match target {
+            Some(i) => self.slots.remove(i),
+            None => None,
+        };
+        let (id, revision) = match replaced {
             Some(old) => (old.entry.id, old.entry.revision.wrapping_add(1)),
             None if n.replaces_id != 0 => {
                 self.reserve(n.replaces_id);
@@ -658,7 +735,8 @@ impl Center {
         live(true).chain(live(false))
     }
 
-    /// The expiries after a change to the bubbles, from `now` (spec § 3, extras wait): each bubble
+    /// The expiries after a change to the bubbles, from `now` (spec § 3, extras wait; docs/decisions.md,
+    /// "A bubble's timeout starts when it first shows"): each bubble
     /// that shows, do-not-disturb aside (a bubble it hides keeps its timer), is armed when it has no
     /// expiry yet. One pushed back beyond `max_visible` before the host drew it (`seen`: six at
     /// once in one batch) waits again, disarmed, and gets its whole timeout when it shows; one the
@@ -674,7 +752,11 @@ impl Center {
                 } else {
                     room -= 1;
                     if s.expiry.is_none() {
-                        s.expiry = s.life.and_then(|d| now.checked_add(d));
+                        // `checked_add` gives None instead of overflowing an `Instant`.
+                        s.expiry = match s.life {
+                            Some(d) => now.checked_add(d),
+                            None => None,
+                        };
                     }
                 }
             }
@@ -694,6 +776,7 @@ impl Center {
     pub fn close(&mut self, id: u32, reason: CloseReason, now: Instant) -> Vec<Effect> {
         let Some(i) = self.position(id) else { return Vec::new() };
         let s = &mut self.slots[i];
+        // `replace` sets `live` to false and gives back what it was.
         let was_live = std::mem::replace(&mut s.entry.live, false);
         s.expiry = None;
         if reason == CloseReason::Dismissed {
@@ -819,6 +902,8 @@ impl Center {
     /// The bell: unread entries of the history, do-not-disturb, and whether the name is ours.
     pub fn view(&self, serving: bool) -> NotifyView {
         let unread = self.slots.iter().filter(|s| s.kept && !s.entry.read).count();
+        // `try_from` fails only above `u16::MAX`, which the history (200 entries at most) cannot
+        // reach; the count would then saturate.
         NotifyView { unread: u16::try_from(unread).unwrap_or(u16::MAX), dnd: self.dnd, serving }
     }
 }

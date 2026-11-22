@@ -1,8 +1,19 @@
-//! The notification bubbles' layout (notifications spec § 3), pure: each shown notification as a
-//! boxed set of rows (the glyph, the app name and the time; the summary in bold; up to three body
-//! lines, newlines kept), where each bubble sits in the stack (logical px, a gap between two), which
-//! bubble a pointer falls on, the input region, and what a left click does. The surface is
-//! `bubbles_surface.rs`'s: nothing here talks to Wayland or a bus, starts a thread or runs a command.
+//! The notification bubbles' layout: each shown notification as a boxed set of rows, where it sits in
+//! the stack, and what a click on it does.
+//!
+//! This is the pure half of the bubbles. A bubble is the glyph, the app name and the time, then the
+//! summary in bold, then up to three body lines with their newlines kept. This file also places the
+//! bubbles in the stack (logical pixels, a gap between two), says which bubble a pointer falls on,
+//! gives the input region, and says what a left click does. The other half, `bubbles_surface.rs`,
+//! owns the Wayland surface, draws what this file lays out and handles the pointer.
+//!
+//! Never:
+//! - talk to Wayland or a bus, start a thread or run a command;
+//! - read the clock: the time a bubble shows is passed in (`now`, local minutes since 1970);
+//! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
+//!
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 3, docs/features/notifications.md, and
+//! docs/decisions.md ("The bubbles move to the focused output only when the stack changes").
 
 use crate::clock::{DAY_MINUTES, SHORT_MONTHS, civil_from_days};
 use crate::grid::{Grid, Style, text_width};
@@ -32,6 +43,7 @@ pub struct BubbleBox {
 pub fn clock(at: u32, now: u32) -> String {
     if at / DAY_MINUTES != now / DAY_MINUTES {
         let (_, month, day) = civil_from_days(i64::from(at / DAY_MINUTES));
+        // `clamp(1, 12)` keeps the index inside the table of twelve names, whatever the date.
         return format!("{} {day}", SHORT_MONTHS[usize::from(month.clamp(1, 12)) - 1]);
     }
     let minute = at % DAY_MINUTES;
@@ -43,6 +55,8 @@ pub fn clock(at: u32, now: u32) -> String {
 pub fn body_lines(body: &str, width: u16) -> Vec<String> {
     let lines: Vec<&str> = body.split('\n').map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     let mut out: Vec<String> = lines.iter().take(BODY_LINES).map(|l| truncate_title(l, width)).collect();
+    // More lines than fit: the last one shown ends with "…". The condition is a chain: every line
+    // must hold, and `let (Some(last), Some(line))` names the last shown line and its source text.
     if lines.len() > BODY_LINES
         && let (Some(last), Some(line)) = (out.last_mut(), lines.get(BODY_LINES - 1))
         && !last.ends_with('…')
@@ -102,7 +116,10 @@ pub fn spans(heights: &[u32], gap: u32) -> Vec<(u32, u32)> {
 
 /// The surface's logical height: the last bubble's bottom.
 pub fn total_height(spans: &[(u32, u32)]) -> u32 {
-    spans.last().map_or(0, |&(top, h)| top.saturating_add(h))
+    match spans.last() {
+        Some(&(top, h)) => top.saturating_add(h),
+        None => 0,
+    }
 }
 
 /// The bubble under a pointer `y` logical px from the surface's top; None in a gap or past the last.
@@ -113,6 +130,7 @@ pub fn hit(spans: &[(u32, u32)], y: f64) -> Option<usize> {
     spans.iter().position(|&(top, h)| y >= f64::from(top) && y < f64::from(top) + f64::from(h))
 }
 
+/// A logical size as the `i32` Wayland takes; one too large for it stops at the largest.
 fn px(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
 }
@@ -164,7 +182,7 @@ pub fn moves(stack_changed: bool, focused: Option<&str>, on: Option<&str>) -> bo
 /// The scale a new bubbles surface starts at: its output's (`target`, the focused one) when known;
 /// on the compositor's choice of output, 1, never a guess from another output: the compositor's
 /// `preferred_buffer_scale` (or the surface entering its output) corrects it before the first frame
-/// that matters.
+/// that matters. Never below 1.
 pub fn start_scale(target: Option<i32>) -> i32 {
     target.unwrap_or(1).max(1)
 }
@@ -177,6 +195,8 @@ pub fn holds<T: PartialEq>(on: Option<&T>, gone: &T) -> bool {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the bubbles' layout: the rows, the stack, the hit map, the click rule and the
+    //! output rules. No Wayland and no bus: each test passes the time it wants.
     use super::*;
     use crate::config::NotificationsConfig;
     use crate::grid::text_width;

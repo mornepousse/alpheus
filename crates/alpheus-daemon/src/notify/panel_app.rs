@@ -1,5 +1,22 @@
-//! The notification panel's wiring: a left press on the bell toggles it, its actions (the card's
-//! controls, invoking, removing, do-not-disturb, clearing) and its refresh after each change.
+//! The notification panel's wiring: opening it from the bell, carrying out what a key or a press
+//! asks for, and repainting it after each change.
+//!
+//! This is the wiring half of the panel. A left press on the bell toggles the popup; the actions
+//! are the card's controls, invoking a notification, removing one, do-not-disturb and clearing;
+//! `panel_refresh` repaints the panel after anything that may change what it shows. The pure half,
+//! `panel.rs`, holds the selection and says what each key or press asks for.
+//!
+//! Never:
+//! - mark the history read before the popup has opened (a guardrail,
+//!   `the_panel_marks_read_only_after_it_opened`, reads `panel_toggle`);
+//! - leave the card's Seeked rule and one-second tick running once the panel has closed (a
+//!   guardrail, `the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it`, reads the
+//!   `closed` entry of `OPS`);
+//! - start a thread or run a command: this file only asks the notification server and the players,
+//!   through `notify_act` and `mpris_do`.
+//!
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4, docs/features/notifications.md, and
+//! docs/decisions.md ("Opening the panel marks everything read, once it shows").
 
 use crate::keys::Key;
 use crate::log::write as log;
@@ -14,7 +31,7 @@ use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
 
-/// The notification panel's row of `popup::POPUPS`.
+/// The notification panel's row of `popup::POPUPS`: the table of what each module's popup does.
 pub(crate) const OPS: PopupOps = PopupOps {
     kind: ModulePopup::Panel,
     toggle: |app, qh, anchor, _| app.panel_toggle(qh, anchor),
@@ -27,7 +44,8 @@ pub(crate) const OPS: PopupOps = PopupOps {
 
 impl App {
     /// Left press on the bell: toggles the panel under it (a second click closes it). Opening marks
-    /// everything read (spec § 4); the card's Seeked rule and tick start as the media popup's do.
+    /// everything read (spec § 4), once the popup is up; the card's Seeked rule and tick start as the
+    /// media popup's do.
     pub(crate) fn panel_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
         if self.panel_shown() {
             self.popup_close(PopupClose::OutsideClick);

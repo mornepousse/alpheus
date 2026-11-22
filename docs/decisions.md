@@ -962,3 +962,169 @@ behind it; a delivery for a closed open still frees the slot.
 Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", items 9 and 22; tools menu plan 1, "Decisions written down", item 4
 
 Status: awaiting confirmation at the trial (tools menu spec and plan 1, "Decisions written down": to be confirmed at the trial)
+
+### The notification server queues behind another server and never replaces it
+
+alpheus asks for the name `org.freedesktop.Notifications` with flags 0: it waits in the queue while
+another server (mako, in the spec) owns the name, and it is neither allowed to replace that server nor
+replaceable by one. While the name is not held, alpheus answers no call and shows no bubble; the bell
+shows only the history it already has. The spec says that if alpheus exits, mako's D-Bus activation
+brings mako back on the next `Notify`, and that this fallback is intended.
+
+Date: 2026-10-09 · Source: notifications spec § 1, "Name"
+
+### A bubble's timeout follows its urgency
+
+A critical notification has no timeout (its bubble stays until clicked). For any other, an `expire_ms`
+of -1 (or any negative number) means `[notifications] timeout` (5 s), 0 means `timeout_max` (20 s), and
+any other value is clamped to `timeout_min..=timeout_max` (2 to 20 s). The clamp is written
+`.max(min).min(max)`, so it cannot panic even if the bounds were reversed. The reason for these
+numbers is not recorded.
+
+Date: 2026-10-09 · Source: notifications spec § 2, "Timeout"; notifications plan 1, Task 1, "Decisions written down" (Timeouts)
+
+### A notification gets a bubble only when all three guards allow it
+
+A notification gets a bubble when (1) do-not-disturb is off or it is critical, (2) fewer than 32
+notifications are live or it replaces a live one, and (3) it replaces a live one, or is critical, or its
+app's token bucket gives a token (10 tokens, one more per second). The guards run in that order, so that
+do-not-disturb and a full screen spend no token. A notification with no bubble is history only: it is
+not live, has no timer, sends no signal, and is still answered with its id.
+
+Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Bubbles, the bucket and `MAX_LIVE`); notifications spec § 2, "Spam"
+
+### A critical bubble always shows, and the criticals are capped
+
+A critical notification always gets a bubble: at the live cap of 32, the oldest bubble that is not
+critical goes to the history, closed as expired, to make room. At most `max_visible` × 2 critical
+bubbles stay live; past that the oldest goes to the history, closed as expired. The spec gives the
+reason for the second rule: a flood must never hide a real one.
+
+Date: 2026-10-09 · Source: notifications spec § 3, "Look"
+
+### A bubble's timeout starts when it first shows
+
+A bubble beyond `max_visible` waits with no timer and gets its whole timeout when it first shows. One
+that the host has drawn keeps its expiry when newer bubbles push it back, so a steady flow of
+notifications never stops the bubbles from expiring (the comment on `Center::arm`). Under
+do-not-disturb a live bubble that is hidden still has its timer and closes on time. Notifications plan
+1's Task 1 text says that waiting bubbles count down too; the code and the spec follow the rule above.
+
+Date: 2026-10-09 · Source: notifications spec § 3, "Look" and "Do-not-disturb"; `Center::arm`
+
+### An identical notification within one second is merged, unless it would add a bubble
+
+With no `replaces_id` and no tag match, a notification with the same identity, summary, body and
+urgency as an entry that arrived less than 1 s before is the same notification: its id is returned and
+nothing else changes, and each merge slides the window (so an app looping on one text stays one entry).
+A merge spends no token. It does not swallow a bubble the first one never got (do-not-disturb, an empty
+bucket) when this one would get one; the reason beyond that sentence of the code is not recorded.
+
+Date: 2026-10-09 · Source: notifications spec § 2, "Spam"; notifications plan 1, Task 1, "Decisions written down" (Merge); `Center::notify`
+
+### A notification's text is cleaned in one linear pass
+
+Every raw field is first cut to 16 KiB, so the rest of a hostile body is never looked at. Markup is
+stripped in one pass: a tag is `<` followed by an ASCII letter, `/`, `!` or `?`, up to the next `>`
+outside quotes; its content stays; a tag left unclosed is text and so is every `<` after it ("no second
+scan is ever made"); the five XML entities are decoded once and anything else after `&` stays as sent;
+`<br>` becomes a line break. Control characters and invisible or bidi formatting characters are removed.
+Notifications plan 1's list says `<br>` is not turned into a line break; the code and its tests
+(`a_br_with_spaces_or_attributes_is_a_line_break`) do.
+
+Date: 2026-10-09 · Source: notifications plan 1, Task 1, "Decisions written down" (Cleaning, `strip_markup`); notifications spec § 2
+
+### An unknown `replaces_id` is accepted as that id
+
+A non-zero `replaces_id` that matches no entry is taken as the new notification's id, and the id counter
+jumps past it if it is ahead, never back. The spec says Electron's tag ids rely on this. A known one
+updates that entry in place, with its revision raised by one so that a late click on the replaced bubble
+does nothing. The counter never yields 0 and wraps from `u32::MAX` to 1, skipping ids still held.
+
+Date: 2026-10-09 · Source: notifications spec § 1, "Ids"; notifications plan 1, Task 1, "Decisions written down" (Ids)
+
+### A rule is matched on the whole app name, any case
+
+A `[[notifications.rules]]` entry matches when its `app` equals, in full and ignoring case, the sender's
+app name or its desktop entry. `drop` answers the sender (with its `replaces_id` when non-zero, else a
+fresh id) and stores nothing; `mute` with any urgency still means no bubble. Battery alerts go through
+the same path, so a rule on `alpheus` applies to them. The plan notes that alpheus plays no sound, so
+"no sound hint honoured" needs no code.
+
+Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 9
+
+Status: awaiting confirmation at the trial (small features plan 1, "Decisions written down": to be confirmed at the trial)
+
+### The do-not-disturb file holds one of three forms
+
+`$XDG_STATE_HOME/alpheus/dnd` is empty (on, untimed), `until <unix seconds>` or `sharing`. Any file still
+means "on" to the shell scripts that read only whether it exists. At start, an end already passed reads
+as off, `sharing` reads as off (a capture still running turns it back on when evaluated again), and
+contents that cannot be read read as on, because an existing file was always "on". When what was read
+differs from what is saved, the file is rewritten or removed at once.
+
+Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 6
+
+Status: awaiting confirmation at the trial (small features plan 1, "Decisions written down": to be confirmed at the trial)
+
+### The user's choice wins over a capture
+
+Every user path (the bell's middle click, the panel, the quick row, `--dnd on|off|toggle`) sets an
+untimed state and clears "by sharing". `--dnd on` on a timed state makes it untimed; `--dnd on --for`
+on an untimed one makes it timed; `toggle` on a timed one turns it off. `dnd_while_sharing` reacts to
+edges only (a capture starts, a capture ends) and only with the `privacy` module. A timed end reached
+while a capture is shown and the option is on hands over to "by sharing", so the capture's end turns
+it off as usual; this was settled at the final review of that delivery (it used to turn off).
+
+Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 7
+
+Status: awaiting confirmation at the trial (small features plan 1, "Decisions written down": to be confirmed at the trial)
+
+### A timed do-not-disturb ends on the wall clock
+
+The end's timer is monotonic and does not count the time a machine is suspended, so the clock's minute
+tick also checks the wall-clock end: after a resume, do-not-disturb ends at most one clock tick late. When
+the timer fires and the wall clock says the end is not reached yet, the timer is armed again for the rest.
+
+Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 8
+
+Status: awaiting confirmation at the trial (small features plan 1, "Decisions written down": to be confirmed at the trial)
+
+### A battery alert is given only while the server serves
+
+An alert is sent only while alpheus's own server holds the name; before that nothing is logged and the
+threshold stays armed, so the alert is offered again, with the last reading, when the server starts. A
+threshold is crossed at `percent <= threshold` while discharging; charging, full and pending charge
+re-arm every threshold, an unknown state changes nothing. The category is `device.warning`, for the
+device glyph. The lowest threshold's alert is critical.
+
+Date: 2026-11-15 · Source: small features plan 1, "Decisions written down" 10; `BatteryAlerts::feed`
+
+Status: awaiting confirmation at the trial (small features plan 1, "Decisions written down": to be confirmed at the trial)
+
+### The bubbles are an Overlay surface, opened again once per stack
+
+The bubbles are one `Overlay` layer surface, not `Top`, because Hyprland draws `Top` under a fullscreen
+window (spec § 3). When the compositor closes the surface it is opened again once for that stack of
+bubbles (their ids and revisions); closed again for the same stack, it stays closed until the stack
+changes, so there is never a create-and-close loop. A close followed in the same dispatch batch by an
+output going is that output's loss (an unplug) and does not spend the one reopen.
+
+Date: 2026-10-09 · Source: notifications spec § 3, "Placement"; notifications plan 1, task table row 6 ("reopen once per stack"); `Closes` in `notify/bubbles_surface.rs`
+
+### The bubbles move to the focused output only when the stack changes
+
+When the focus moves to another output, the bubbles stay where they are until the stack itself changes
+(a bubble arrives, expires or is replaced); only then are they placed on the focused output, and only if
+that output is known by name and is not the one they are on. The code gives the reason: a bubble must
+never jump under the pointer because the focus followed the mouse.
+
+Date: 2026-10-09 · Source: notifications plan 1, Task 6; `bubbles::moves`
+
+### Opening the panel marks everything read, once it shows
+
+Opening the panel marks every history entry read, and so does anything that arrives while it shows. The
+mark is made only after the popup has opened: a refused open (no shared buffer, no positioner) leaves
+the count on the bell.
+
+Date: 2026-10-09 · Source: notifications spec § 4, "State"; the guardrail `the_panel_marks_read_only_after_it_opened`

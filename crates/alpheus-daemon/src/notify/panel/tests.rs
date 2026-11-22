@@ -1,3 +1,6 @@
+//! Tests of the notification panel (`panel.rs`): its rows, its selection and its keys and presses,
+//! on a fake history and a fake player. No bus and no daemon.
+
 use super::*;
 use crate::config::NotificationsConfig;
 use crate::media::{Control, PositionSync, Value};
@@ -262,6 +265,19 @@ fn the_selection_follows_its_entry_when_one_arrives_above() {
     let _ = c.notify(incoming("Mailer", "Receipt", &[], Urgency::Normal), t0 + Duration::from_secs(42), 14 * 60 + 7);
     scroll_into_view(&mut p, &c, None);
     assert_eq!(items(&c, None)[p.selected], Item::Clear);
+}
+
+#[test]
+fn the_selection_stays_on_do_not_disturb_when_an_entry_arrives_above() {
+    let t0 = Instant::now();
+    let (mut c, _, _) = center(t0);
+    let mut p = Panel::new(&c, None, 40);
+    key(&mut p, &c, None, Key::End);
+    key(&mut p, &c, None, Key::Up);
+    assert_eq!(items(&c, None)[p.selected], Item::Dnd, "Up from the last row is Do not disturb");
+    let _ = c.notify(incoming("Mailer", "Receipt", &[], Urgency::Normal), t0 + Duration::from_secs(42), 14 * 60 + 7);
+    scroll_into_view(&mut p, &c, None);
+    assert_eq!(items(&c, None)[p.selected], Item::Dnd);
 }
 
 /// What a press selected is followed as a key's choice is.
