@@ -221,9 +221,11 @@ fn items_per_tab() {
         ]
     );
     a.go_tab(Tab::Power, Instant::now());
-    assert_eq!(a.items().len(), 5);
+    assert_eq!(a.items(), PowerAction::ALL.iter().map(|p| Item::Button(Command::Power(*p))).collect::<Vec<_>>());
     a.go_tab(Tab::Network, Instant::now());
     assert_eq!(a.items(), vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))]);
+    a.go_tab(Tab::Bluetooth, Instant::now());
+    assert_eq!(a.items(), vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]);
 }
 
 #[test]
