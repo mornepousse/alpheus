@@ -192,6 +192,8 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
         Activation::Open { url } => {
             launch(ctx, l.config.open.iter().cloned().chain([url]).collect())?;
         }
+        // A history row never runs here: the app copies it from its own history first.
+        Activation::Clip { .. } => return Err("not a launcher action".to_string()),
         Activation::Window(i) => {
             let selector = &l.windows.get(i).ok_or_else(gone)?.selector;
             let argv = focus_argv(&l.config.focus, selector);

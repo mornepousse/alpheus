@@ -301,7 +301,9 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 /// The daemon only reads from the compositor, plus two writes: the workspace command, and output
 /// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
 /// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
-/// never output power management, never dpms (displays spec § 2, as amended).
+/// never output power management, never dpms (displays spec § 2, as amended). A third write is the
+/// clipboard's own selection, set in `clipboard/control.rs` only (clipboard spec decision 14): the
+/// daemon's re-copy of a history entry, never a primary selection.
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in all_source_files() {
@@ -816,26 +818,41 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
-/// Launcher sources (sources spec § 6): `Executor::capture` blocks for up to its deadline, so only
-/// the source runner calls it, on the scan thread (`NonBlocking` delegates it); and the runner never
-/// builds a shell command from a line — the line is one argv element.
+/// Launcher sources (sources spec § 6) and Shield (shield spec § 7): `Executor::capture` blocks for
+/// up to its deadline, so only the source runner (on the scan thread) and the Shield runner (on its
+/// own worker thread) call it (`NonBlocking` delegates it); and neither builds a shell command from
+/// a line — the line is one argv element.
 #[test]
-fn only_the_source_runner_captures_and_never_through_a_shell() {
+fn only_the_runners_capture_and_never_through_a_shell() {
     let mut runner = None;
+    let mut shield = None;
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         if prod.contains(".capture(") {
-            assert!(matches!(name.as_str(), "launcher/sources.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+            assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield_run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+        }
+        // `run_silent` waits with no bound of its own: the Shield worker's thread alone (and the delegate).
+        if prod.contains(".run_silent(") {
+            assert!(matches!(name.as_str(), "shield_run.rs" | "nonblocking.rs"), ".run_silent( in {name}: it blocks");
         }
         if name == "launcher/sources.rs" {
             runner = Some(prod);
+        } else if name == "shield_run.rs" {
+            shield = Some(prod);
         }
     }
     let runner = runner.expect("launcher/sources.rs");
     assert!(runner.contains(".capture("), "the runner reads through the executor");
     for never in ["shell_argv", "\"sh\"", "\"-c\"", "spawn("] {
         assert!(!runner.contains(never), "{never} in launcher/sources.rs");
+    }
+    // The Shield runner (shield spec § 7): a configured argv through `capture`, on its own worker
+    // thread (`thread::Builder` is its one way to start it), never a shell and never a detached spawn.
+    let shield = shield.expect("shield_run.rs");
+    assert!(shield.contains(".capture("), "the Shield runner reads through the executor");
+    for never in ["spawn_with_", ".run(", "exec.spawn(", "executor.spawn(", "\"sh\"", "\"-c\"", "shell_argv", "Command::new"] {
+        assert!(!shield.contains(never), "{never} in shield_run.rs");
     }
 }
 
@@ -850,7 +867,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, TimerVerb};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -858,6 +875,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Calc => "calc",
             Request::Windows => "windows",
             Request::Notes => "notes",
+            Request::Clipboard => "clipboard",
+            Request::ClipboardClear => "clipboard-clear",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -870,6 +889,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsTry(_) => "outputs-try",
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
+            Request::Shield(_) => "shield",
         }
     }
     let all = [
@@ -878,6 +898,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Calc,
         Request::Windows,
         Request::Notes,
+        Request::Clipboard,
+        Request::ClipboardClear,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -890,6 +912,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsTry(String::new()),
         Request::OutputsKeep,
         Request::OutputsRevert,
+        Request::Shield(ShieldVerb::Status),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -899,6 +922,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "calc",
             "windows",
             "notes",
+            "clipboard",
+            "clipboard-clear",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -910,7 +935,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs",
             "outputs-try",
             "outputs-keep",
-            "outputs-revert"
+            "outputs-revert",
+            "shield"
         ]
     );
 }
@@ -1123,6 +1149,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
+        // The clipboard history's read deadline, built in `ClipboardApp::bind`: armed only while a
+        // read is pending, disarmed by every way a read ends.
+        ("clipboard/app.rs", "Timer::", 1),
         // The pad's save, armed only while it is open and edited (quick notes), built in
         // `NotesApp::new`.
         ("notes/app.rs", "Timer::", 1),
@@ -1151,6 +1180,12 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
+        // The Shield command or read (shield spec § 7): one worker thread, alive only while that
+        // command or read runs (one action slot and one read slot, each held until the worker's
+        // report), and its one DeadlineTimer, built in `ShieldApp::new`: armed only while a
+        // switch waits for its flag (the 5 s grace or the 60 s bound).
+        ("shield_run.rs", "thread::Builder", 1),
+        ("shield_app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -1555,6 +1590,9 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "quick_bt.rs",
     "quick_vpn.rs",
     "quick_dnd.rs",
+    "quick_shield.rs",
+    "shield.rs",
+    "shield_usb.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -1588,6 +1626,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/store.rs",
     "notes/surface.rs",
     "notes/paste.rs",
+    "clipboard/",
 ];
 
 #[test]
@@ -1690,6 +1729,29 @@ fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&s
         startup_wm_class: None,
         actions: actions.iter().map(|(n, e)| DesktopAction { key: n.to_lowercase(), name: n.to_string(), exec: e.to_string() }).collect(),
     }
+}
+
+/// A clipboard history row spawns nothing from the launcher: `perform` refuses it (the app copies
+/// from its own history first), and no key or click on the rows reaches an executor.
+#[test]
+fn a_clipboard_row_spawns_nothing_from_the_launcher() {
+    use alpheus_demon::clipboard::history::ClipRow;
+    let rows = || {
+        (0..3).map(|i| ClipRow { id: i, preview: format!("row {i}"), first: format!("row {i}"), more_lines: 0, pinned: i == 0 }).collect()
+    };
+    let fake = FakeExecutor::new();
+    let ctx = RunContext { exec: &fake, spawner: Spawner::Detached, history_path: None, path_dirs: &[] };
+    for secondary in [false, true] {
+        for i in 0..4 {
+            let mut l = Launcher::for_clipboard(LauncherConfig::default(), rows());
+            let o = l.click(i, secondary);
+            if let Outcome::Activate(a) = o {
+                assert!(matches!(a, Activation::Clip { .. }), "{a:?}");
+                assert!(perform(&mut l, a, &ctx).is_err(), "perform refuses a history row");
+            }
+        }
+    }
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
 }
 
 /// Every activation the launcher can produce — every result of every mode,
@@ -2071,6 +2133,9 @@ impl Executor for ArgvSpy {
     fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
         Err(self.record(prog, args))
     }
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        Err(self.record(prog, args))
+    }
 }
 
 /// The daemon paints with the 16 roles only. The old 7-colour
@@ -2273,7 +2338,9 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs", "quick_shield.rs"]
+            .contains(&name.as_str())
+        {
             continue;
         }
         checked += 1;
@@ -2294,7 +2361,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 6, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs and quick_dnd.rs");
+    assert_eq!(checked, 7, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs, quick_dnd.rs and quick_shield.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2318,7 +2385,15 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), dnd_end: None, profile: Some(&profile), config: &config, bluetooth: None };
+    let live = Live {
+        sound: Some(&sound),
+        dnd: Some(false),
+        dnd_end: None,
+        profile: Some(&profile),
+        config: &config,
+        bluetooth: None,
+        shield: None,
+    };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || {
@@ -2613,6 +2688,7 @@ fn the_quick_panel_has_no_panicking_path() {
         "quick_bt.rs",
         "quick_vpn.rs",
         "quick_dnd.rs",
+        "quick_shield.rs",
         "session.rs",
         "bt_app.rs",
     ] {
@@ -3089,6 +3165,162 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's
+/// message embeds the text), slice a string by range nor log (a copy is private). Production code
+/// only; Tasks 2 and 3 append theirs.
+const CLIPBOARD_NO_PANIC_NO_LOG: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
+
+#[test]
+fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in CLIPBOARD_NO_PANIC_NO_LOG.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+            for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
+                assert!(!code.contains(p) || code.contains("is_char_boundary"), "{p} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// `clipboard/app.rs` logs, with fixed words only: no panicking path, and every `log(` call is a
+/// plain literal or interpolates only the entry point's name or an error kind.
+const CLIPBOARD_FIXED_LOG_PLACEHOLDERS: [&str; 2] = ["{what}", "{kind:?}"];
+
+/// The first `log(` call in `code` that is not fixed words, if any.
+fn clipboard_unfixed_log(code: &str) -> Option<String> {
+    let mut rest = code;
+    while let Some(i) = rest.find("log(") {
+        let call = &rest[i..];
+        // To the parenthesis that closes `log(`.
+        let mut depth = 0usize;
+        let mut end = call.len();
+        for (j, c) in call.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = call[..end].to_string();
+        for ok in CLIPBOARD_FIXED_LOG_PLACEHOLDERS {
+            text = text.replace(ok, "");
+        }
+        // The argument is a string literal or `&format!("…")` of one: never a variable.
+        let arg = call["log(".len()..end.saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2;
+        if !literal || text.contains('{') || text.contains("+ ") {
+            return Some(call[..end].to_string());
+        }
+        rest = &call[end..];
+    }
+    None
+}
+
+/// A print or debug macro in `code` (clipboard text must reach no stream but the log's words).
+fn clipboard_print_macro(code: &str) -> Option<&'static str> {
+    ["eprintln!", "println!", "eprint!", "print!", "dbg!"]
+        .into_iter()
+        .find(|m| code.match_indices(m).any(|(i, _)| !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')))
+}
+
+#[test]
+fn clipboard_app_never_panics_and_logs_fixed_words() {
+    let files = source_files();
+    let name = "clipboard/app.rs";
+    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
+    }
+    for line in production.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in {name}'s production code");
+        }
+    }
+    let code: String = production.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    assert_eq!(clipboard_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+}
+
+#[test]
+fn nothing_under_clipboard_prints() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("clipboard/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(m) = clipboard_print_macro(code) {
+                panic!("{m} in {name}'s production code");
+            }
+        }
+    }
+    assert!(seen >= 5, "the clipboard files were found: {seen}");
+}
+
+#[test]
+fn the_clipboard_guardrail_helpers_bite() {
+    assert_eq!(clipboard_unfixed_log("log(\"clipboard: a fixed word\");"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"clipboard error in {what}\"));"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"read failed ({kind:?})\"));"), None);
+    assert!(clipboard_unfixed_log("log(&format!(\"copied {text}\"));").is_some());
+    assert!(clipboard_unfixed_log("log(&text);").is_some(), "a variable is not fixed words");
+    assert!(clipboard_unfixed_log("log(text);").is_some());
+    assert!(clipboard_unfixed_log("log(\"a\"); log(&format!(\"{text:?}\"));").is_some());
+    for m in ["eprintln!(\"x\")", "println!(\"x\")", "print!(\"x\")", "eprint!(\"x\")", "dbg!(x)"] {
+        assert!(clipboard_print_macro(m).is_some(), "{m}");
+    }
+    assert_eq!(clipboard_print_macro("fn pprintln!() {}"), None, "a longer identifier is not the macro");
+}
+
+/// The hint types that mark a password-manager copy are named in `clipboard/offer.rs`'s `SENSITIVE`
+/// and nowhere else: no code path can request such an offer's data.
+#[test]
+fn the_clipboard_sensitive_hint_type_is_never_received() {
+    let hints = ["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type", "ExcludeClipboardContentFromMonitorProcessing"];
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let production = production_code(&t);
+        if name == "clipboard/offer.rs" {
+            let mut rest = production.clone();
+            let start = rest.find("pub const SENSITIVE").expect("SENSITIVE");
+            let end = start + rest[start..].find("];").expect("end of SENSITIVE") + 2;
+            rest.replace_range(start..end, "");
+            for h in hints {
+                assert!(!rest.contains(h), "{h} outside SENSITIVE in offer.rs");
+                assert!(production.contains(h), "{h} missing from SENSITIVE");
+            }
+            seen += 1;
+        } else {
+            for h in hints {
+                assert!(!production.contains(h), "{h} in {name}");
+            }
+        }
+    }
+    assert_eq!(seen, 1);
+}
+
 /// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked
 /// with `is_char_boundary`; else 0 (so the count check fails).
 fn checked_replace_range(production: &str) -> usize {
@@ -3519,6 +3751,7 @@ fn the_hooks_are_fed_where_state_changes() {
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
         ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
+        ("shield_app.rs", "fn shield_readable(", "hooks_shield("),
     ] {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
@@ -3531,7 +3764,7 @@ fn the_hooks_are_fed_where_state_changes() {
         assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
         checked += 1;
     }
-    assert_eq!(checked, 6);
+    assert_eq!(checked, 7);
 }
 
 /// Quick notes: nothing of the pad outlives it. `notes_close` takes the pad out before it syncs the
@@ -3614,7 +3847,7 @@ fn the_notes_spawn_only_the_copy_command() {
         }
         seen += 1;
         let prod = production_code(&t);
-        for never in [".spawn(", ".capture(", ".stream(", ".run("] {
+        for never in [".spawn(", ".capture(", ".stream(", ".run(", ".run_silent("] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         let n = prod.matches("spawn_with_input(").count();
@@ -3672,14 +3905,16 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
         if name.starts_with("notes/") {
             seen += 1;
         }
-        if name != "notes/paste.rs" {
+        // The clipboard history reads its offers through the same SCTK pipe, in its one protocol file.
+        if name != "notes/paste.rs" && name != "clipboard/control.rs" {
             assert!(
                 !((prod.contains("insert_source(") || prod.contains(".receive(")) && prod.contains("ReadPipe")),
                 "a ReadPipe source outside notes/paste.rs: {name}"
             );
         }
         for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
-            assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
+            let allowed = never == "set_selection" && name == "clipboard/control.rs";
+            assert!(allowed || !prod.contains(never), "{never} in {name}: the pad never owns a selection");
         }
     }
     assert!(seen >= 9, "the notes files were found: {seen}");
@@ -3702,6 +3937,46 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
 }
 
+/// Clipboard task 4: the daemon sets a selection in one place only, `own_selection` of
+/// `clipboard/control.rs`, for a history entry's re-copy: never `None` (it would clear the user's
+/// clipboard), never the primary selection.
+#[test]
+fn the_clipboard_selection_is_set_only_by_the_own_source() {
+    let files = source_files();
+    for (p, t) in &files {
+        let name = relative_path(p);
+        let prod = production_code(t);
+        assert!(!prod.contains("set_primary_selection"), "the primary selection is never set: {name}");
+        if name != "clipboard/control.rs" {
+            assert!(!prod.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
+        }
+    }
+    let control = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/control.rs").expect("control.rs").1;
+    let prod = production_code(control);
+    assert_eq!(prod.matches("set_selection(").count(), 2, "one call per protocol, in the macro-free own_selection: {prod}");
+    assert!(!prod.contains("set_selection(None"), "the selection is never cleared");
+    let body = function_body(&prod, "fn own_selection(");
+    assert_eq!(body.matches("set_selection(").count(), 2, "both calls sit inside own_selection: {body}");
+    assert_eq!(body.matches("own_offer_types()").count(), 2, "each source offers the one list, marker included: {body}");
+    assert_eq!(body.matches("set_selection(Some(").count(), 2, "only ever a source: {body}");
+}
+
+/// An offer taken in `clipboard_selection_inner` sits in a `DestroyOnDrop` before anything can
+/// panic: a panic between taking it and reading it still destroys it (Task 3 review).
+#[test]
+fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
+    let files = source_files();
+    let app = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("clipboard/app.rs").1;
+    let prod = production_code(app);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let take = body.find("slot.take()").expect("the offer is taken out of its slot");
+    let guard = body.find("DestroyOnDrop::new(offer)").expect("the offer is wrapped in DestroyOnDrop");
+    assert!(take < guard, "wrapped right after it is taken: {body}");
+    // Nothing that can panic or call out sits between the take and the guard.
+    let between = &body[take..guard];
+    assert!(!between.contains("self.") && !between.contains("unwrap") && !between.contains("expect"), "{between}");
+}
+
 /// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).
 const THIS_FILE: &str = "alpheus-demon/tests/guardrails.rs";
 const HARNESS: &str = "alpheus-demon/tests/common/mod.rs";
@@ -3717,8 +3992,10 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
         }
         let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         if name == HARNESS {
-            let body = function_body(&code, "pub fn wl_copy(").to_string();
-            code = code.replace(&body, "");
+            for helper in ["pub fn wl_copy(", "pub fn wl_paste("] {
+                let body = function_body(&code, helper).to_string();
+                code = code.replace(&body, "");
+            }
         }
         for program in ["wl-copy", "wl-paste"] {
             if code.contains(program) {
@@ -3731,7 +4008,7 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
 
 #[test]
 fn stray_clipboard_spawns_are_found() {
-    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
+    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\npub fn wl_paste(s: &Sway) -> C {\n    Command::new(\"wl-paste\")\n}\n";
     let files = |a: &str, b: &str| {
         vec![(HARNESS.to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
     };
@@ -3742,6 +4019,9 @@ fn stray_clipboard_spawns_are_found() {
     );
     let outside = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
     assert_eq!(stray_clipboard_spawns(&outside), [format!("{HARNESS} names wl-copy")]);
+    // A second harness function naming wl-paste is still found next to the two helpers.
+    let second = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-paste\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&second), [format!("{HARNESS} names wl-paste")]);
     // Another crate's harness or guardrails get no exemption.
     let elsewhere = vec![
         ("alpheus/tests/common/mod.rs".to_string(), helper.to_string()),
@@ -3749,7 +4029,11 @@ fn stray_clipboard_spawns_are_found() {
     ];
     assert_eq!(
         stray_clipboard_spawns(&elsewhere),
-        ["alpheus/tests/common/mod.rs names wl-copy", "alpheus/tests/guardrails.rs names wl-paste"]
+        [
+            "alpheus/tests/common/mod.rs names wl-copy",
+            "alpheus/tests/common/mod.rs names wl-paste",
+            "alpheus/tests/guardrails.rs names wl-paste"
+        ]
     );
 }
 
@@ -3790,6 +4074,16 @@ fn no_test_spawns_wl_copy_outside_the_harness_helper() {
         assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
     }
     assert!(!helper.contains("--primary"), "never the primary selection");
+    let paste = function_body(common, "pub fn wl_paste(");
+    let socket_check = paste.find("assert!(sway.runtime.join(&sway.wayland).exists()");
+    assert!(
+        socket_check.is_some() && socket_check < paste.find(".spawn()"),
+        "the wl-paste helper must assert this sway's socket exists before it spawns: {paste}"
+    );
+    for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--no-newline\""] {
+        assert!(paste.contains(need), "the wl-paste helper lacks {need}: {paste}");
+    }
+    assert!(!paste.contains("--primary"), "never the primary selection");
     let guard = function_body(common, "impl Drop for WlCopyChild");
     assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
 }
@@ -3889,4 +4183,292 @@ fn the_vpn_tap_follows_the_panel() {
     assert!(take.contains("Msg::Vpn { .. }"), "a VPN message refreshes the panel it shows: {take}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
+}
+
+/// Clipboard task 3: every data-control token is named in `clipboard/control.rs` only.
+#[test]
+fn data_control_only_in_control_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["data_control", "DataControl", "zwlr_data_control", "ext_data_control"] {
+            if t.contains(token) {
+                assert_eq!(name, "clipboard/control.rs", "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
+/// Off (the default): no manager is bound. The `clipboard` field's value is computed under
+/// `clipboard.enabled`.
+#[test]
+fn the_manager_is_bound_only_when_enabled() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let prod = production_code(wayland);
+    let at = prod.find("let clipboard =").expect("the clipboard binding in App::new");
+    let stmt = &prod[at..at + prod[at..].find(';').expect("end of the statement")];
+    let (gate, bind) = (stmt.find("clipboard.enabled"), stmt.find("ClipboardApp::bind("));
+    assert!(gate.is_some() && bind.is_some() && gate < bind, "bound only under clipboard.enabled: {stmt}");
+}
+
+/// The read deadline is armed by every function that starts or ends a read, and disarmed with it.
+#[test]
+fn every_clipboard_read_start_and_end_syncs_the_timer() {
+    let files = source_files();
+    let body = |file: &str, sig: &str| {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == file).unwrap_or_else(|| panic!("{file}")).1;
+        function_body(&production_code(t), sig).to_string()
+    };
+    for (file, sig) in [
+        ("clipboard/control.rs", "fn start_read("),
+        ("clipboard/app.rs", "fn clipboard_selection_inner("),
+        ("clipboard/app.rs", "fn clipboard_read_done("),
+        ("clipboard/app.rs", "fn clipboard_deadline("),
+    ] {
+        assert!(body(file, sig).contains("clipboard_timer_sync()"), "{sig} syncs the read deadline");
+    }
+    let deadline = body("clipboard/app.rs", "fn clipboard_deadline(");
+    let (fired, stop) = (deadline.find(".fired()"), deadline.find("clipboard_stop_read()"));
+    assert!(fired.is_some() && fired < stop, "the deadline drops its own timer first: {deadline}");
+    assert!(body("clipboard/control.rs", "fn start_read(").contains("clipboard_stop_read()"), "a new read drops the pending one");
+}
+
+/// The clipboard's log lines are the fixed words of the plan, never a text, a type or a count.
+#[test]
+fn clipboard_logs_only_fixed_words() {
+    const ALLOWED: [&str; 9] = [
+        "clipboard: ext-data-control-v1",
+        "clipboard: wlr-data-control-unstable-v1",
+        "clipboard: the compositor offers no data-control protocol; no history",
+        "clipboard: the data device finished",
+        "clipboard: a read timed out",
+        "clipboard: a read failed ({kind:?})",
+        "clipboard: history cleared (row)",
+        "clipboard error in {what}",
+        "clipboard: history cleared (verb)",
+    ];
+    let mut calls = 0;
+    for (p, t) in source_files() {
+        if !relative_path(&p).starts_with("clipboard/") {
+            continue;
+        }
+        let prod = production_code(&t);
+        for token in ["log(", "log::write("] {
+            let mut rest = prod.as_str();
+            while let Some(at) = rest.find(token) {
+                let after = &rest[at + token.len()..];
+                // Only a literal (or a `format!` of one) is logged, and nothing follows it.
+                let trimmed = after.trim_start();
+                let body = trimmed.strip_prefix("&format!(").unwrap_or(trimmed).trim_start();
+                assert!(body.starts_with('"'), "a log call that is not a literal: {}", &after[..after.len().min(40)]);
+                let inner = &body[1..];
+                let close = inner.find('"').expect("the literal ends");
+                let template = &inner[..close];
+                assert!(ALLOWED.contains(&template), "a log line outside the fixed words: {template}");
+                for word in ["text", "mime", "buffer", "bytes", "len"] {
+                    assert!(!template.contains(word), "{word} in the log line {template}");
+                }
+                let next = inner[close + 1..].trim_start().chars().next();
+                assert!(next == Some(')'), "an argument after the template of {template}");
+                calls += 1;
+                rest = &inner[close..];
+            }
+        }
+    }
+    assert!(calls >= 6, "the log calls were found: {calls}");
+}
+
+/// A `selection(None)` leaves a read in flight alone (an app that copies then quits sends it right
+/// after): the read is dropped only once a real offer is taken, never before.
+#[test]
+fn a_cleared_selection_does_not_drop_a_read() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let (take, stop) = (body.find("let Some(offer) = slot.take() else { return }"), body.find("clipboard_stop_read()"));
+    assert!(take.is_some() && take < stop, "returns on None before any read is stopped: {body}");
+}
+
+/// Shutdown wipes the whole history, pins included (`clear` keeps the pinned ones).
+#[test]
+fn the_clipboard_shutdown_wipes_pins_too() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_shutdown(");
+    assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
+}
+
+/// The string literals of `call` (escapes skipped) and what is left of it once they are removed.
+fn literals_and_rest(call: &str) -> (Vec<String>, String) {
+    let (mut lits, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
+    for c in call.chars() {
+        if inside {
+            if escaped {
+                cur.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                cur.push(c);
+                escaped = true;
+            } else if c == '"' {
+                inside = false;
+                lits.push(std::mem::take(&mut cur));
+                rest.push('"');
+            } else {
+                cur.push(c);
+            }
+        } else {
+            if c == '"' {
+                inside = true;
+            }
+            rest.push(c);
+        }
+    }
+    (lits, rest)
+}
+
+/// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
+/// command, argument or path: what is left of each whole `log(` call once its literals are removed
+/// names none of them, and every literal is one of the list's (a `<reason>` slot is filled by
+/// `Reason::text` alone).
+#[test]
+fn the_shield_logs_name_nothing() {
+    const CLOSED: [&str; 19] = [
+        "shield: on",
+        "shield: off",
+        "shield: allow",
+        "shield: now on",
+        "shield: now off",
+        "shield: switching {} failed ({})",
+        "shield: allow failed ({})",
+        "shield: listing failed ({})",
+        "shield: more than 64 blocked devices; the rest not listed",
+        "shield: the flag cannot be read",
+        "shield: flag not watched ({})",
+        "shield: flag not watched ({e})",
+        "shield: flag not watched (shares the config directory's watch)",
+        "shield: no notification (not serving)",
+        "shield: worker failed",
+        "shield: not started ({why})",
+        "theme: mask not restored; watching again",
+        "on",
+        "off",
+    ];
+    const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    // Every log call of the Shield's own files, and the Shield's lines of the others.
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
+    }
+    for name in
+        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks_app.rs", "watch.rs"]
+    {
+        calls.extend(
+            log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
+        );
+    }
+    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same way.
+    let watch = src("watch.rs");
+    calls.push(("watch.rs".into(), function_body(&watch, "fn shield_unwatched_line(").to_string()));
+    // The theme watch's own line for the flag's rearm.
+    calls
+        .extend(log_calls(&watch).into_iter().filter(|c| c.contains("mask not restored")).map(|c| ("watch.rs".to_string(), c.to_string())));
+    calls.sort();
+    calls.dedup();
+    assert!(calls.len() >= 10, "the Shield's log calls were found: {}", calls.len());
+    for (name, call) in &calls {
+        let (lits, rest) = literals_and_rest(call);
+        for l in &lits {
+            assert!(CLOSED.contains(&l.as_str()), "a literal outside the closed list in {name}: {l:?} in {call}");
+        }
+        for word in rest.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            assert!(!FORBIDDEN.contains(&word), "a log call in {name} names `{word}`: {call}");
+        }
+    }
+    // The `<reason>` slot of the failure lines is `Reason::text`.
+    for call in calls.iter().map(|(_, c)| c).filter(|c| c.contains("failed ({})")) {
+        assert!(call.contains("why.text()"), "{call}");
+    }
+}
+
+/// Shield spec § 3 and decision 4: the flag is watched in the theme watch's one inotify instance; the
+/// Shield's own files create none.
+#[test]
+fn the_shield_watch_is_the_theme_watchs_instance() {
+    let files = source_files();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for never in ["Inotify::new", "inotify_", "inotify::"] {
+            assert!(!t.contains(never), "{never} in {name}");
+        }
+    }
+    let watch = production_code(&files.iter().find(|(p, _)| relative_path(p) == "watch.rs").expect("watch.rs").1);
+    assert_eq!(watch.matches("Inotify::new()").count(), 1, "one inotify instance, the theme watch's, carries both targets");
+}
+
+/// Shield spec § 12 and the plan's constraints: the pure model, the parser, the runner and the panel
+/// detail have no panicking path (a USB name is hostile text).
+#[test]
+fn the_shield_files_have_no_panicking_path() {
+    let files = source_files();
+    for name in ["shield.rs", "shield_usb.rs", "shield_run.rs", "quick_shield.rs"] {
+        let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// Shield spec § 7 (final fix wave I1): an action (on, off, allow) never goes through a pipe it could
+/// be cut by (`capture` drops its read end at a deadline: a privileged helper we cannot kill would die
+/// of SIGPIPE half way through its work); only the listing does. And the daemon's shutdown stops what
+/// it can still reach.
+#[test]
+fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
+    let files = source_files();
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_run.rs").expect("shield_run.rs").1);
+    let body = function_body(&t, "pub fn run_job(");
+    let list_at = body.find("exec.capture(").expect("the listing's capture");
+    let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
+    assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
+    assert_eq!(body.matches("exec.capture(").count(), 1);
+    // Final fix wave M1: a failed switch and a deadline are judged after one look at the flag.
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_app.rs").expect("shield_app.rs").1);
+    let mail = function_body(&app, "fn shield_mail(");
+    assert!(
+        mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),
+        "shield_mail reads the flag before it judges a failed switch"
+    );
+    let tick = function_body(&app, "fn shield_tick(");
+    assert!(
+        tick.find("shield_readable()").expect("a read in shield_tick") < tick.find("model.expired(").expect("expired"),
+        "shield_tick reads the flag before it judges the deadline, watched or not"
+    );
+    assert!(!tick.contains("shield_watched"), "the deadline's read does not depend on the watch");
+    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    assert!(function_body(startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
+}
+
+/// Shield spec § 5 (I1 of the Task 4-5 review): the panel's timer follows its view from the open, so a
+/// `failed` shown at open (a switch that failed a moment before the panel was reopened) clears at its
+/// 4 s: `quick_toggle` syncs it itself, whatever refresh happens to follow.
+#[test]
+fn the_quick_panels_timer_follows_the_view_from_the_open() {
+    let files = source_files();
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
+    }
 }

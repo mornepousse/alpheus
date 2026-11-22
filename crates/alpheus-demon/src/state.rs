@@ -107,6 +107,8 @@ pub struct Bar {
     /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
     /// by the wiring like `module_colors`; `Flat` until then.
     pub style: BarStyle,
+    /// Shield mode's view (shield spec); None without `[shield]`. Set by `ShieldApp`, never by a message.
+    pub shield: Option<crate::shield::ShieldView>,
 }
 
 /// The failed units of each manager: None when that count is unknown (a source that is down is not
@@ -186,6 +188,7 @@ impl Bar {
             timer: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
+            shield: None,
         }
     }
 

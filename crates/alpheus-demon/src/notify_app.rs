@@ -311,6 +311,23 @@ impl App {
         log("failed: notice");
     }
 
+    /// A Shield notice (shield spec § 8), through the server only while it serves: app `alpheus`,
+    /// normal urgency; under do-not-disturb it goes to the history like every notice.
+    pub(crate) fn shield_notice(&mut self, kind: crate::shield::NoticeKind) {
+        let Some(sh) = self.shield.as_ref() else { return };
+        if !self.notifications().is_some_and(|n| n.held()) {
+            log("shield: no notification (not serving)");
+            return;
+        }
+        let n = crate::shield_app::incoming(&kind, &sh.config);
+        self.notify_act(move |s| {
+            s.act(|c| {
+                c.notify(n, Instant::now(), minute_now());
+                c.take_effects()
+            })
+        });
+    }
+
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).
     pub(crate) fn clear_notifications(&mut self) {
         self.notify_act(|n| n.act(Center::clear));
@@ -341,10 +358,13 @@ impl App {
             | Request::Quick(_)
             | Request::Timer(_)
             | Request::Notes
+            | Request::Clipboard
+            | Request::ClipboardClear
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
-            | Request::OutputsRevert => {}
+            | Request::OutputsRevert
+            | Request::Shield(_) => {}
         }
         Reply::Done
     }

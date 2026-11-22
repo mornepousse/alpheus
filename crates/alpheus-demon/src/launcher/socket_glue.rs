@@ -194,7 +194,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 Route::Notes => reply_guarded(conn, &state.notes_verb(&q, &request)),
                 // The displays verbs: answered from the output controller, a try once the
                 // compositor answered (its connection kept until then, `outputs_app.rs`).
+                // The clipboard history's clear: answered here, never the launcher's.
+                Route::Clipboard => reply_guarded(conn, &state.clipboard_verb(&request)),
                 Route::Displays => state.displays_verb(&request, conn),
+                // Shield mode's verbs: answered here; `status` and `allow` keep the connection while
+                // the blocked devices are read (`shield_app.rs`).
+                Route::Shield => state.shield_verb(&request, conn),
                 // The failed-units count's verb: answered here, nothing of the launcher's.
                 Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),
                 Route::Launcher => {
@@ -259,7 +264,9 @@ enum Route {
     Quick,
     Timer,
     Notes,
+    Clipboard,
     Displays,
+    Shield,
     Failed,
     Launcher,
 }
@@ -271,9 +278,11 @@ fn route(request: &Request) -> Route {
         Request::Quick(_) => Route::Quick,
         Request::Timer(_) => Route::Timer,
         Request::Notes => Route::Notes,
+        Request::ClipboardClear => Route::Clipboard,
         Request::FailedRefresh => Route::Failed,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
-        Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Dmenu { .. } => Route::Launcher,
+        Request::Shield(_) => Route::Shield,
+        Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Clipboard | Request::Dmenu { .. } => Route::Launcher,
     }
 }
 

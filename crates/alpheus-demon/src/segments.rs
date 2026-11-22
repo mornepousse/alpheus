@@ -41,6 +41,8 @@ pub const PLAY: char = '\u{f040a}'; // md-play
 pub const PAUSE: char = '\u{f03e4}'; // md-pause
 pub const SKIP_PREVIOUS: char = '\u{f04ae}'; // md-skip_previous
 pub const SKIP_NEXT: char = '\u{f04ad}'; // md-skip_next
+/// The Shield module's glyph (shield spec § 4): on while the mode is on, nothing drawn off.
+pub const SHIELD: char = '\u{f0498}'; // md-shield
 /// The notifications bell (notifications spec § 4), checked in the 3.4.0 post table.
 pub const BELL: char = '\u{f009a}'; // md-bell
 pub const BELL_OFF: char = '\u{f009b}'; // md-bell_off (crossed)
@@ -150,6 +152,16 @@ pub(crate) fn privacy(p: &Privacy) -> Option<Segment> {
 pub(crate) fn failed(f: &Failed) -> Option<Segment> {
     let n = crate::failed::total(f).filter(|n| *n > 0)?;
     Some(module_segment(ModuleId::Failed, vec![piece(format!("{FAILED} {n}"), Style::ERROR)]))
+}
+
+/// The Shield glyph (shield spec § 4): only while the mode is on, always green (the one fixed hue
+/// of its block, whatever `module_colors` says), a mode that must not be forgotten. One click zone.
+pub(crate) fn shield(state: Option<bool>) -> Option<Segment> {
+    (state == Some(true)).then(|| {
+        let mut segment = module_segment(ModuleId::Shield, vec![piece(SHIELD.to_string(), Style::hue(Hue::Green))]);
+        segment.withhold_hue = true;
+        segment
+    })
 }
 
 /// The timer's chip (timer spec § 2): the glyph then the text, in the yellow (the glyph under

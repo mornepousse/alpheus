@@ -3,8 +3,8 @@
 //! reply. Never the session's real socket.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, TimerVerb, encode_reply,
-    socket_path,
+    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, ShieldVerb, TimerVerb,
+    encode_reply, socket_path,
 };
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
@@ -773,4 +773,66 @@ fn other_refusals_of_a_dmenu_stay_errors() {
         assert_eq!(code, EXIT_ERROR, "{args:?} / {error}: {err}");
         daemon.join().unwrap();
     }
+}
+
+/// Clipboard spec: both verbs send their request and exit 0 on Done; a daemon too old for one
+/// answers the unknown request: exit 3, one request; an error reply is exit 2 with its text.
+#[test]
+fn clipboard_clear_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("clipboard-clear", Reply::Done);
+    assert_eq!(launch(&["--clipboard-clear"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::ClipboardClear);
+    let (socket, daemon) = answering("clipboard", Reply::Done);
+    assert_eq!(launch(&["--clipboard"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Clipboard);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("clipboard-old", Reply::Error("malformed request: unknown request \"clipboard-clear\"".into()));
+    let (code, out, err) = launch(&["--clipboard-clear"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--clipboard-clear"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    let (socket, _connections, stop, daemon) =
+        replying_daemon("clipboard-off", Reply::Error("the clipboard history is off ([clipboard] enabled in bar.toml)".into()));
+    let (code, out, err) = launch(&["--clipboard"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("the clipboard history is off"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+}
+
+/// Shield spec § 9: every word sends its request; `status` prints the body (exit 0, 2 when the
+/// state is unknown); `allow` exits 1 when the picker is escaped; an old daemon exits 3, an
+/// unconfigured one 2 with its text.
+#[test]
+fn shield_verbs_send_their_request_and_map_the_answers() {
+    for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Allow] {
+        let (socket, daemon) = answering("shield-done", Reply::Done);
+        assert_eq!(launch(&["--shield", v.word()], &socket, b""), (EXIT_OK, String::new(), String::new()), "{v:?}");
+        assert_eq!(daemon.join().unwrap(), Request::Shield(v));
+    }
+    let body = "Shield: on\nBlocked USB devices:\n  Test Stick (1234:5678)";
+    let (socket, daemon) = answering("shield-status", Reply::Shield(body.into()));
+    assert_eq!(launch(&["--shield", "status"], &socket, b""), (EXIT_OK, format!("{body}\n"), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Shield(ShieldVerb::Status));
+    let (socket, daemon) = answering("shield-unknown", Reply::Shield("Shield: unknown".into()));
+    assert_eq!(launch(&["--shield", "status"], &socket, b""), (EXIT_ERROR, "Shield: unknown\n".into(), String::new()));
+    daemon.join().unwrap();
+    let (socket, daemon) = answering("shield-escape", Reply::Cancelled);
+    assert_eq!(launch(&["--shield", "allow"], &socket, b""), (EXIT_CANCELLED, String::new(), String::new()));
+    daemon.join().unwrap();
+    let (socket, _connections, stop, daemon) =
+        replying_daemon("shield-old", Reply::Error("malformed request: unknown request \"shield\"".into()));
+    let (code, out, err) = launch(&["--shield", "status"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--shield"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    let (socket, _connections, stop, daemon) = replying_daemon("shield-off", Reply::Error("shield is not configured in bar.toml".into()));
+    let (code, out, err) = launch(&["--shield", "on"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("shield is not configured"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
 }

@@ -435,6 +435,9 @@ pub struct App {
     /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs_app::OutputsApp>,
+    /// The clipboard history (clipboard spec); None with `[clipboard] enabled` off (nothing bound) or
+    /// without a data-control protocol.
+    pub(crate) clipboard: Option<crate::clipboard::app::ClipboardApp>,
     /// The event loop's handle (startup.rs sets it): keyboard repeat, socket
     /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
@@ -502,6 +505,8 @@ pub struct App {
     pub(crate) failed_notice: Option<crate::failed::Notice>,
     /// The event hooks (hooks_app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks_app::HooksApp>,
+    /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
+    pub(crate) shield: Option<crate::shield_app::ShieldApp>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
     pub(crate) osd: crate::osd_surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
@@ -614,11 +619,14 @@ impl App {
             .contains(&ModuleId::Displays)
             .then(|| crate::outputs_app::OutputsApp::bind(globals, qh, &bar.config.displays))
             .flatten();
+        // Only when switched on: otherwise no manager is bound and nothing is allocated.
+        let clipboard = bar.config.clipboard.enabled.then(|| crate::clipboard::app::ClipboardApp::bind(globals, qh)).flatten();
         let timer = crate::timer_app::TimerApp::new(&bar.config);
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         let failed_notice = crate::failed::notice_wanted(&bar.config).then(crate::failed::Notice::default);
         let hooks = crate::hooks_app::HooksApp::new(&bar.config.hooks);
+        let shield = crate::shield_app::ShieldApp::new(&bar.config.shield);
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
@@ -645,6 +653,7 @@ impl App {
             data_devices: DataDeviceManagerState::bind(globals, qh).ok(),
             viewporter,
             displays,
+            clipboard,
             loop_handle: None,
             qh: qh.clone(),
             tray: None,
@@ -672,6 +681,7 @@ impl App {
             battery_alerts,
             failed_notice,
             hooks,
+            shield,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             units_tap: None,
@@ -1222,16 +1232,18 @@ impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
     }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
         if self.seat.is_none() {
             self.seat = Some(seat);
         }
+        self.clipboard_seat(qh);
     }
 
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
         if self.seat.is_none() {
             self.seat = Some(seat.clone());
         }
+        self.clipboard_seat(qh);
         if c == Capability::Pointer && self.pointer.is_none() {
             let surface = self.compositor.create_surface(qh);
             match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
@@ -1261,9 +1273,11 @@ impl SeatHandler for App {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+    fn remove_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
         if tracks_seat(&self.seat, &seat) {
             self.seat = None;
+            self.clipboard_seat(qh);
+            self.clipboard_seat_removed(&seat);
             // The seat itself is gone, not just one of its capabilities: any
             // keyboard bound through it (the launcher's, a grabbing popup's,
             // while open) goes with it — `remove_capability` alone never

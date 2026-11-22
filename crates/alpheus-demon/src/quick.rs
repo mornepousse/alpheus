@@ -21,9 +21,10 @@ use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
 use crate::quick_bt::{Bt, BtOrder, Code};
 use crate::quick_dnd::{DndChoice, DndDetail};
+use crate::quick_shield::{ShieldAsk, ShieldPanel};
 use crate::quick_vpn::Vpn;
 use crate::quick_wifi::Wifi;
-use crate::segments::BELL;
+use crate::segments::{BELL, SHIELD};
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
 use crate::sources::dbus::bt_act::{ActCall, ActError, AgentId, AgentRequest};
@@ -88,6 +89,8 @@ pub enum Focus {
     /// The VPN row, its detail opened once the VPN state arrives (quick VPN spec): `--quick vpn`.
     /// Without a VPN row, the first row.
     Vpn,
+    /// The Shield row (shield spec § 4): a click on the `shield` glyph. Nothing opens.
+    Shield,
 }
 
 impl Focus {
@@ -97,6 +100,7 @@ impl Focus {
             Target::Module(ModuleId::Volume) => Focus::Sound,
             Target::Module(ModuleId::Network) => Focus::Wifi,
             Target::Module(ModuleId::Bluetooth) => Focus::Bluetooth,
+            Target::Module(ModuleId::Shield) => Focus::Shield,
             _ => Focus::Top,
         }
     }
@@ -115,6 +119,8 @@ pub enum Row {
     Bluetooth,
     /// The VPN (quick VPN spec): right under the Bluetooth row.
     Vpn,
+    /// Shield mode (shield spec § 5): right under the VPN row.
+    Shield,
     Mic,
     /// `Mixer…` (`[quick] mixer`): opens a terminal mixer, right under the microphone.
     Mixer,
@@ -212,6 +218,12 @@ pub enum Line {
     VpnProfile(usize),
     /// "More…" (`[quick] vpn_more`).
     VpnMore,
+    /// The Shield detail's "‹ Shield".
+    ShieldHeader,
+    /// The n-th of the Shield detail's blocked devices.
+    ShieldDevice(usize),
+    /// "Reading…", "No blocked device", "Cannot list the devices", "Shield is off".
+    ShieldNote(&'static str),
     /// The do-not-disturb detail's "‹ Do not disturb".
     DndHeader,
     /// The n-th of the do-not-disturb detail's choices (`quick_dnd::CHOICES`).
@@ -239,6 +251,8 @@ pub struct Live<'a> {
     pub config: &'a QuickConfig,
     /// The bar's Bluetooth state; None while it is not read (no row).
     pub bluetooth: Option<&'a BtState>,
+    /// Shield mode's view; None without `[shield]` (no row).
+    pub shield: Option<crate::shield::ShieldView>,
 }
 
 /// The bar's state as the panel reads it.
@@ -265,6 +279,7 @@ pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
             Feed::Ready(s) => Some(s),
             _ => None,
         },
+        shield: bar.shield,
     }
 }
 
@@ -298,6 +313,8 @@ pub enum QuickAction {
     Bluetooth(Vec<BtOrder>),
     /// A choice of the do-not-disturb detail: the wiring applies it (`quick_app::dnd_request`).
     Dnd(DndChoice),
+    /// Shield mode's row or detail asks for a switch or an allow (`App::shield_switch`, `shield_allow`).
+    Shield(ShieldAsk),
 }
 
 /// The question the panel waits on for a second activation: "Reboot? ⏎", "Power off? ⏎", or a
@@ -324,6 +341,8 @@ pub struct Due {
     pub bt_orders: Vec<BtOrder>,
     /// A VPN connection failed at this tick (the 20 s timeout): why, for the log.
     pub vpn_failed: Option<&'static str>,
+    /// The Shield row's `failed` ended at this tick: the wiring clears the model's and republishes.
+    pub shield_failed: bool,
 }
 
 /// What a Wi-Fi state brought (`Quick::set_wifi`): the action to take (a rescan, a cleanup), and why
@@ -501,6 +520,8 @@ pub struct Quick {
     pub vpn: Vpn,
     /// The do-not-disturb detail (quick_dnd.rs).
     pub dnd: DndDetail,
+    /// The Shield detail (quick_shield.rs).
+    pub shield: ShieldPanel,
 }
 
 pub(crate) fn argv(parts: &[&str]) -> Vec<String> {
@@ -533,7 +554,7 @@ struct RowSpec {
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
 ///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
-const ROWS: [RowSpec; 13] = [
+const ROWS: [RowSpec; 14] = [
     RowSpec {
         row: Row::Volume,
         name: "volume",
@@ -546,6 +567,7 @@ const ROWS: [RowSpec; 13] = [
     RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
     RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
     RowSpec { row: Row::Vpn, name: "vpn", group: 1, present: |_, q| q.vpn.shows(), draw: draw_vpn },
+    RowSpec { row: Row::Shield, name: "shield", group: 1, present: |live, _| live.shield.is_some(), draw: draw_shield },
     RowSpec { row: Row::Mic, name: "mic", group: 1, present: |live, _| live.sound.is_some_and(|s| s.source.is_some()), draw: draw_mic },
     RowSpec {
         row: Row::Mixer,
@@ -611,6 +633,9 @@ pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
     if q.dnd.open {
         return q.dnd.lines();
     }
+    if q.shield.open {
+        return q.shield.lines();
+    }
     if q.wifi.open {
         return q.wifi.lines(live.config);
     }
@@ -666,11 +691,13 @@ impl Quick {
             bt: Bt::default(),
             vpn: Vpn { focus_pending: focus == Focus::Vpn, ..Vpn::default() },
             dnd: DndDetail::default(),
+            shield: ShieldPanel::default(),
         };
         let rows = shown(live, &q);
         q.selected = match focus {
             Focus::Sound if rows.contains(&Row::Volume) => Row::Volume,
             Focus::Bluetooth if rows.contains(&Row::Bluetooth) => Row::Bluetooth,
+            Focus::Shield if rows.contains(&Row::Shield) => Row::Shield,
             _ => rows.first().copied().unwrap_or(Row::Volume),
         };
         if focus == Focus::Bluetooth && q.selected == Row::Bluetooth {
@@ -714,6 +741,12 @@ impl Quick {
             self.dnd.open = false;
             self.back_on(Row::Dnd);
         }
+        if self.shield.open && !present(Row::Shield, live, self) {
+            // The row went (`[shield]` is gone): back on the rows.
+            self.shield.close_detail();
+            self.back_on(Row::Shield);
+        }
+        self.shield.fit(live.shield.as_ref());
         let was_open = self.wifi.open;
         self.wifi.fit(live.config);
         if self.wifi.open {
@@ -782,6 +815,7 @@ impl Quick {
             l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l, &devices),
             l @ (Line::VpnProfile(_) | Line::VpnMore) => self.vpn.is_selected(l, &profiles),
             Line::DndChoice(i) => i == self.dnd.selected,
+            l @ Line::ShieldDevice(_) => self.shield.is_selected(l, self.shield.can_allow),
             _ => false,
         })
     }
@@ -836,6 +870,15 @@ impl Quick {
                 self.back_on(Row::Dnd);
             }
             a
+        } else if self.shield.open {
+            let a = match live.shield {
+                Some(v) => self.shield.key(&v, k, now),
+                None => QuickAction::Nothing,
+            };
+            if !self.shield.open {
+                self.back_on(Row::Shield);
+            }
+            a
         } else if self.wifi.open {
             let a = self.wifi.key(live.config, k, now);
             if !self.wifi.open {
@@ -888,6 +931,11 @@ impl Quick {
             (Row::Vpn, Key::Enter | Key::Right) => self.open_vpn(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Mixer, Key::Char(' ') | Key::Enter) => run_and_close(live.config.mixer.as_deref().unwrap_or(&[]), "mixer"),
+            (Row::Shield, Key::Char(' ')) => match live.shield {
+                Some(v) if v.state.is_some() && !v.switching => QuickAction::Shield(ShieldAsk::Toggle),
+                _ => QuickAction::Nothing,
+            },
+            (Row::Shield, Key::Enter | Key::Right) => self.open_shield(live),
             (Row::Dnd, Key::Char(' ')) => QuickAction::ToggleDnd,
             (Row::Dnd, Key::Enter | Key::Right) => self.open_dnd(live),
             (Row::Profile, Key::Enter) => cycle(live),
@@ -1010,6 +1058,16 @@ impl Quick {
                 }
                 a
             }
+            (l @ (Line::ShieldHeader | Line::ShieldDevice(_) | Line::ShieldNote(_)), _) => {
+                let a = match live.shield {
+                    Some(v) => self.shield.press(&v, l, b, now),
+                    None => QuickAction::Nothing,
+                };
+                if !self.shield.open {
+                    self.back_on(Row::Shield);
+                }
+                a
+            }
             (l @ (Line::DndHeader | Line::DndChoice(_)), _) => {
                 let a = self.dnd.press(live, l, b);
                 if !self.dnd.open {
@@ -1114,6 +1172,7 @@ impl Quick {
             self.wifi.deadline(),
             self.bt.deadline(),
             self.vpn.deadline(),
+            self.shield.deadline(),
         ]
         .into_iter()
         .chain(self.reread_toggles)
@@ -1170,6 +1229,8 @@ impl Quick {
         let (failed, redraw) = self.vpn.due(now);
         d.vpn_failed = failed;
         d.redraw |= redraw;
+        d.redraw |= self.shield.due(now);
+        d.shield_failed = std::mem::take(&mut self.shield.row_failed_due);
         d
     }
 
@@ -1329,6 +1390,25 @@ impl Quick {
         QuickAction::Redraw
     }
 
+    /// Enter, →, or a click on the Shield row (shield spec § 5): its detail in place of the rows, a
+    /// read of the blocked devices asked for while the mode is on. Nothing when `blocked` is `[]`.
+    pub fn open_shield(&mut self, live: &Live) -> QuickAction {
+        let (Some(view), true) = (live.shield, present(Row::Shield, live, self)) else { return QuickAction::Nothing };
+        self.detail = false;
+        self.wifi.close_detail();
+        self.vpn.close_detail();
+        self.dnd.open = false;
+        self.top = 0;
+        self.shield.open_detail(&view)
+    }
+
+    /// A detail the Shield's cannot replace in place is open: the Bluetooth one carries orders for the
+    /// acting connection and the Wi-Fi one a password field, so the wiring closes the whole panel through
+    /// its proper path before opening the Shield's (the VPN and do-not-disturb details close in place).
+    pub fn other_detail_open(&self) -> bool {
+        self.bt.open || self.wifi.open
+    }
+
     /// What the Bluetooth reading covers while the panel is open: the detail's lists, else the row.
     pub fn bt_scope(&self) -> BtScope {
         self.bt.scope(true)
@@ -1473,6 +1553,11 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
                 q.vpn.draw(&mut g, l, &profiles, q.vpn.is_selected(l, &profiles))
             }
             l @ (Line::DndHeader | Line::DndChoice(_)) => q.dnd.draw(&mut g, live, l),
+            l @ (Line::ShieldHeader | Line::ShieldDevice(_) | Line::ShieldNote(_)) => {
+                if let Some(v) = live.shield {
+                    q.shield.draw(&mut g, l, &v);
+                }
+            }
         }
         out.rows.push(g);
     }
@@ -1515,6 +1600,19 @@ fn draw_bluetooth(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
 
 fn draw_vpn(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     text_row(g, Some(crate::segments::VPN), "VPN", &format!("{} ›", q.vpn.value()), Style::NORMAL, selected);
+}
+
+fn draw_shield(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
+    let Some(v) = live.shield else { return };
+    text_row(g, Some(SHIELD), "Shield", "", Style::NORMAL, selected);
+    let (text, style) = if v.failed_until.is_some() {
+        (FAILED_TAG, Style::WARN)
+    } else if v.switching {
+        (RUNNING_TAG, Style::MUTED)
+    } else {
+        switch(v.state)
+    };
+    write_cell(g, text, style);
 }
 
 fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {

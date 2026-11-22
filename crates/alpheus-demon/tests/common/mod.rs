@@ -346,6 +346,9 @@ pub enum PwDump {
     /// After the initial dump, exactly what a test writes to `<runtime>/pw-dump.fifo`
     /// (`pw_dump_send`), and nothing else: no wake-up of its own (the OSD's tests).
     Fifo,
+    /// An empty graph (`[]`), then silence: no sink, no source, nothing the sound source ever publishes
+    /// again (Shield mode's tests: no volume row, so the Shield row is the panel's first).
+    Empty,
 }
 
 /// Which compositor the daemon reads, through its environment: the tests' fake Hyprland unless a
@@ -547,9 +550,13 @@ pub fn fake_pw_dump_in(runtime: &Path, mode: PwDump) -> PathBuf {
     let bin = runtime.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let initial = runtime.join("pw-dump-initial-full.json");
-    full_size_initial_dump(&fixtures, &initial);
+    if mode == PwDump::Empty {
+        fs::write(&initial, "[]\n").unwrap();
+    } else {
+        full_size_initial_dump(&fixtures, &initial);
+    }
     let then = match mode {
-        PwDump::Silent => "exec sleep 100000".to_string(),
+        PwDump::Silent | PwDump::Empty => "exec sleep 100000".to_string(),
         PwDump::Busy => format!("while :; do cat '{}'; sleep 0.01; done", fixtures.join("pw-dump-deltas.json").display()),
         PwDump::Fifo => {
             let fifo = runtime.join(PW_DUMP_FIFO);
@@ -649,6 +656,11 @@ fn coreutils_dir() -> PathBuf {
     // Nor the session's own commands the power menu runs (power spec § 5): a fake one missing
     // fails to start, never reaches the real one.
     for real in ["systemctl", "loginctl"] {
+        assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
+    }
+    // Nor Shield mode's privileged commands (shield spec § 7): the tests' `fake-shield` stands in for
+    // the configured argv, and a `pkexec` or `usbguard` reaching the daemon would act on the machine.
+    for real in ["pkexec", "usbguard"] {
         assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
     }
     dir
@@ -786,10 +798,13 @@ impl Drop for WtypeChild {
 /// cleared, the runtime directory and display are this sway's, and the socket must exist before
 /// the spawn. `mime` (`--type`): the one type offered, text by default. `--foreground` keeps the serving process the child itself (never a forked orphan),
 /// `--primary` is never passed, and the guard kills and reaps it on drop. Fictional text only.
-pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
+pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>, sensitive: bool) -> WlCopyChild {
     assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-copy would reach another one");
     let mut command = Command::new("wl-copy");
     command.arg("--foreground");
+    if sensitive {
+        command.arg("--sensitive");
+    }
     if let Some(mime) = mime {
         command.arg("--type").arg(mime);
     }
@@ -806,6 +821,45 @@ pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
         .spawn()
         .expect("wl-copy not found: run these tests inside `nix develop`");
     WlCopyChild(Some(child))
+}
+
+/// The text of THIS sway's clipboard (`wl-paste --no-newline --type text/plain`), None when there
+/// is no selection or it is no text (a non-zero exit). Same guard as `wl_copy`: the socket must
+/// exist, the environment is cleared, the runtime directory and display are this sway's, stdin is
+/// null, and a read that is not over in 2 s is killed (None). Never the primary selection.
+pub fn wl_paste(sway: &Sway) -> Option<String> {
+    assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-paste would reach another one");
+    let mut child = Command::new("wl-paste")
+        .args(["--no-newline", "--type", "text/plain"])
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("XDG_RUNTIME_DIR", &sway.runtime)
+        .env("WAYLAND_DISPLAY", &sway.wayland)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("wl-paste not found: run these tests inside `nix develop`");
+    let mut out = child.stdout.take().expect("piped");
+    let reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        text
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait().expect("wait") {
+            Some(status) => break Some(status),
+            None if start.elapsed() > Duration::from_secs(2) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let text = reader.join().unwrap_or_default();
+    status.filter(|s| s.success()).map(|_| text)
 }
 
 /// The `wl-copy` serving a selection: killed and waited on drop, so a failed assertion never
@@ -928,6 +982,60 @@ pub fn fake_source(runtime: &Path, name: &str, lines: &[String]) -> String {
         list.display().to_string(),
         run.display().to_string()
     )
+}
+
+/// The blocked devices `fake-shield list` prints (USBGuard's `list-devices` format, fictional ones).
+pub const SHIELD_DEVICES: [&str; 2] = [
+    "7: block id abcd:0001 serial \"\" name \"Test Keyboard\" hash \"h1\" parent-hash \"p1\" via-port \"1-2\" with-interface 03:01:01 with-connect-type \"hotplug\"",
+    "12: block id 1234:5678 serial \"\" name \"Test Stick\" hash \"h2\" parent-hash \"p2\" via-port \"1-3\" with-interface 08:06:50 with-connect-type \"hotplug\"",
+];
+
+/// The `fake-shield` of Shield mode's tests (never a real `pkexec`, `usbguard` or `systemctl`):
+/// `<runtime>/bin/fake-shield`, paths baked in (the daemon's environment is cleared). With no
+/// argument it does nothing and exits 0 (the executable probe has no side effect). `on` creates
+/// `flag`, `slow` exits 0 at once and creates it a second later (the grace's case: `timeout` moves it to its own process group, which the runner's group kill at the exit then leaves, given the 0.3 s the stub waits for that), `off` removes it, `fail` exits 126, `list`
+/// appends `list` to `record` and prints `devices` blocked devices (`SHIELD_DEVICES`, then synthetic ones), `allow <id>` appends
+/// `allow <id>`. Every invocation with an argument is appended to `record` as well, as
+/// `run <arguments>` for `on`, `off` and `fail`.
+pub fn shield_stub(sway: &Sway, flag: &Path, record: &Path, devices: usize, list_secs: u32) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(flag.parent().unwrap()).unwrap();
+    // The two fixtures, then synthetic ones (ids from 100) up to `devices`: the memory tests list ten.
+    let synthetic = (SHIELD_DEVICES.len()..devices).map(|n| {
+        format!(
+            "{}: block id 1234:{:04x} serial \"\" name \"Test Device {n}\" hash \"h{n}\" parent-hash \"p{n}\" via-port \"1-{n}\" with-interface 08:06:50 with-connect-type \"hotplug\"",
+            100 + n,
+            n
+        )
+    });
+    let lines: String =
+        SHIELD_DEVICES.iter().map(|l| l.to_string()).chain(synthetic).take(devices).map(|l| format!("printf '%s\\n' '{l}'\n")).collect();
+    let script = format!(
+        "#!/bin/sh\n# Fake privileged command of Shield mode's tests: touches or removes the flag, records, nothing else.\n\
+         [ $# -eq 0 ] && exit 0\n\
+         case \"$1\" in\n\
+         on) printf '%s\\n' 'run on' >> '{record}'; touch '{flag}' ;;\n\
+         off) printf '%s\\n' 'run off' >> '{record}'; rm -f '{flag}' ;;\n\
+         slow) printf '%s\\n' 'run slow' >> '{record}'; timeout 10 /bin/sh -c \"sleep 1; touch '{flag}'\" </dev/null >/dev/null 2>&1 & sleep 0.3 ;;\n\
+         fail) printf '%s\\n' 'run fail' >> '{record}'; exit 126 ;;\n\
+         list) printf '%s\\n' 'list' >> '{record}'; sleep {list_secs}\n{lines};;\n\
+         allow) printf '%s\\n' \"allow $2\" >> '{record}' ;;\n\
+         esac\n",
+        record = record.display(),
+        flag = flag.display(),
+        list_secs = list_secs,
+    );
+    let path = bin.join("fake-shield");
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    wait_until_executable(&path);
+    path
+}
+
+/// What `fake-shield` recorded, in order.
+pub fn shield_record(record: &Path) -> Vec<String> {
+    fs::read_to_string(record).unwrap_or_default().lines().map(String::from).collect()
 }
 
 /// Runs a script just written (one with no side effect) until it no longer fails with "Text file

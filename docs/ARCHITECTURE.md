@@ -13,7 +13,7 @@ One Cargo workspace, four crates:
 |---|---|---|
 | `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays, diagnostics), compositor detection and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
-| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
+| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
 
 These boundaries are enforced from `Cargo.lock` by
@@ -51,7 +51,10 @@ happened*.
     domain's signal after 60 s), never a timer of its own.
   Resources (`/proc`, `/sys`) are a timer on the loop, not a thread. With
   every module on, the daemon measures six threads at rest; they are
-  accounted for in the README's memory table.
+  accounted for in the README's memory table. Short-lived workers come on
+  top only while there is work: the launcher's scan thread, and
+  `alpheus-shield`, which runs one Shield command or one blocked-device read
+  and ends once it has reported (at most one of each at a time).
 - **A guard thread** waits for SIGTERM, SIGHUP and SIGINT without running,
   asks the loop to stop and forces the exit if the loop does not finish within
   a one-second grace period. A single-instance `flock` in `$XDG_RUNTIME_DIR`
@@ -73,7 +76,8 @@ happened*.
   created on show and dropped when done; the launcher binds the keyboard only
   while open.
 - **Configuration.** `bar.toml` is read once at start; the theme files are
-  watched by one inotify fd and reloaded live; `launcher.toml` is read at each
+  watched by one inotify fd and reloaded live (the same fd also watches the
+  directory of the Shield flag, when `[shield]` is set); `launcher.toml` is read at each
   open. `bar.toml` and `launcher.toml` with an unknown key or a bad value fall
   back wholly to the defaults, with one log line; `theme.toml` ignores only
   the faulty key.
@@ -148,13 +152,13 @@ These are guardrails from the scope document, checked mechanically.
 ## The executor
 
 `alpheus-commun::exec::Executor` is the **only** way alpheus launches a system
-tool (`run`, `spawn`, `stream`, `capture`, `spawn_with_input`). Production code
+tool (`run`, `spawn`, `stream`, `capture`, `run_silent`, `spawn_with_input`). Production code
 uses `SystemExecutor` (argument vectors, never a shell, a timeout, the whole
 process group killed and reaped on timeout); tests use `FakeExecutor`, which
 records the exact command lines and answers from a script. In the daemon the
 only executor is wrapped in `NonBlocking`, which refuses `run` outright
 (it would freeze every bar) and lets clicks `spawn`, the sound source `stream`
-and the launcher's scan thread `capture`. This is what makes the rule "no test
+and the launcher's scan thread `capture`; Shield's worker `run_silent`s its commands (output to `/dev/null`, so a privileged helper is never cut by a closed pipe) and `capture`s its device list. This is what makes the rule "no test
 ever calls a real `wpctl`, `nmcli`, `systemctl`, `wm-set`…" practical.
 
 ## Tests and guardrails

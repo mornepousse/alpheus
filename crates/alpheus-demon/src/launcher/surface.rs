@@ -9,7 +9,8 @@ use crate::actions::{self, Button};
 use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
-use crate::launcher::model::{Launcher, Outcome};
+use crate::launcher::host::ScriptOwner;
+use crate::launcher::model::{Activation, Launcher, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
 use crate::launcher::socket::Pending;
@@ -332,6 +333,8 @@ impl Drop for Scrim {
 pub struct OpenLauncher {
     pub model: Launcher,
     pub reply: Option<Pending>,
+    /// Whose script menu this is (`Client` for every other kind of box).
+    pub owner: ScriptOwner,
     pub generation: u64,
     pub requested_at: Instant,
     pub spawner: Spawner,
@@ -478,9 +481,14 @@ impl App {
         box_layer.commit();
         self.launcher_generation += 1;
         let history_path = history_path_for(&model.config, &paths::state_dir());
+        // A password prompt: nothing is stored from the clipboard while it is open.
+        if model.password {
+            self.clipboard_password_opened();
+        }
         self.launcher = Some(OpenLauncher {
             model,
             reply,
+            owner: ScriptOwner::Client,
             generation: self.launcher_generation,
             requested_at,
             spawner: run::spawner(&paths::runtime_dir()),
@@ -549,6 +557,11 @@ impl App {
     /// Drops everything; a waiting dmenu client gets Reply::Cancelled (unless already answered).
     pub fn launcher_close(&mut self, reason: CloseReason) {
         let Some(mut open) = self.launcher.take() else { return };
+        // Nothing is stored from the clipboard for 5 s after a password prompt: stamped before
+        // anything that could panic.
+        if open.model.password {
+            self.clipboard_password_closed();
+        }
         reply_on_close(open.reply.take(), reason);
         drop(open);
         self.keyboard_release();
@@ -667,6 +680,28 @@ impl App {
             Outcome::Nothing => {}
             Outcome::Redraw => self.launcher_redraw(),
             Outcome::Close => self.launcher_close(CloseReason::Escape),
+            // The history's pin, delete or clear: applied to the real one, the box stays open.
+            Outcome::Edit(edit) => {
+                self.clipboard_guarded("edit", |app| app.clipboard_edit(&edit));
+                self.launcher_redraw();
+            }
+            // A history row's Enter: the entry becomes the clipboard again (the daemon's own
+            // source), never run as a launch. A failure shows in the box, which stays open.
+            Outcome::Activate(Activation::Clip { id }) => {
+                let qh = self.qh.clone();
+                let result = self
+                    .clipboard_guarded("copy", |app| app.clipboard_copy(&qh, id))
+                    .unwrap_or_else(|| Err(crate::clipboard::app::NOT_AVAILABLE.into()));
+                match result {
+                    Ok(()) => self.launcher_close(CloseReason::Activated),
+                    Err(m) => {
+                        if let Some(open) = self.launcher.as_mut() {
+                            open.model.show_message(m);
+                        }
+                        self.launcher_redraw();
+                    }
+                }
+            }
             Outcome::Activate(a) => {
                 let App { launcher, exec, .. } = self;
                 let Some(open) = launcher.as_mut() else { return };
@@ -688,11 +723,24 @@ impl App {
                         self.launcher_redraw();
                     }
                     Ok(Done::Reply(mut reply)) => {
-                        if let Some(p) = open.reply.take() {
-                            p.reply(&reply);
-                        }
-                        if let (Reply::Chosen(text), true) = (&mut reply, open.model.password) {
-                            wipe(text);
+                        let (pending, owner, password) = (open.reply.take(), std::mem::take(&mut open.owner), open.model.password);
+                        match owner {
+                            ScriptOwner::Client => {
+                                if let Some(p) = pending {
+                                    p.reply(&reply);
+                                }
+                                if let (Reply::Chosen(text), true) = (&mut reply, password) {
+                                    wipe(text);
+                                }
+                            }
+                            // The Shield picker: a chosen position runs `allow`, the client hears Done
+                            // (or why not); typed text and every other answer run nothing.
+                            ScriptOwner::Shield(ids) => {
+                                let answer = self.shield_picked(&ids, reply);
+                                if let Some(p) = pending {
+                                    p.reply(&answer);
+                                }
+                            }
                         }
                         self.launcher_close(CloseReason::Activated);
                     }
@@ -707,7 +755,9 @@ impl App {
     pub(crate) fn launcher_key(&mut self, event: KeyEvent) {
         let Some(open) = self.launcher.as_mut() else { return };
         let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) else { return };
-        let outcome = open.model.key(key);
+        // The Clear question's clock: read once, by this key only (the model resets it).
+        open.model.set_now(Instant::now());
+        let outcome = open.model.key_repeat(key, self.keyboard.repeat);
         self.launcher_outcome(outcome);
     }
 
@@ -733,6 +783,7 @@ impl App {
                 let frame = self.fonts.frame(scale);
                 let outcome = match (self.launcher.as_mut(), actions::button(*button)) {
                     (Some(open), Some(b)) => {
+                        open.model.set_now(Instant::now());
                         let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout, open.size);
                         match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
