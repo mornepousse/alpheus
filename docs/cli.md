@@ -12,8 +12,9 @@ alpheus [--tab=<name>]
 
 Opens the TUI in the current terminal, on the Home tab unless told otherwise.
 `<name>` is one of `home`, `sound`, `network`, `bluetooth`, `power`,
-`displays`, `appearance` (`theme` is accepted for `appearance`; case is
-ignored). The tabs are also reached with `1` to `7` once open.
+`displays`, `appearance`, `diagnostics` (`theme` is accepted for `appearance`
+and `diag` for `diagnostics`; case is ignored). The tabs are also reached with
+`1` to `8` once open.
 
 There is no `--help`; the usage appears in the error text.
 
@@ -67,6 +68,7 @@ alpheus-launch [--toggle | --close
                | --dmenu [-p|--prompt TEXT] [--index] [--password] [--visible N]
                | --dnd on|off|toggle
                | --clear-notifications
+               | --failed-refresh
                | --osd brightness
                | --quick [sound|wifi|bluetooth]
                | -h|--help]
@@ -83,6 +85,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--dmenu` | read lines on standard input, show them in the launcher, print the chosen one on standard output (a `fuzzel --dmenu` replacement) |
 | `--dnd on\|off\|toggle` | set the notifications module's do-not-disturb |
 | `--clear-notifications` | empty the notification history |
+| `--failed-refresh` | read the failed-unit counts again now (the system manager's through the D-Bus thread, the user manager's on the loop), whatever `[failed] subscribe` says; the control center sends it itself after a unit action and when the Diag tab shows |
 | `--osd brightness` | show the laptop backlight's level in the OSD (read once, never changed) |
 | `--quick [sound\|wifi\|bluetooth]` | open or close the quick settings panel on the focused output; the word opens it on that detail (`sound`: at the volume) |
 | `-h`, `--help` | print the usage and exit 0 |
@@ -103,10 +106,10 @@ and bytes; over the cap is an error before any connection).
 
 | Exit code | Meaning |
 |---|---|
-| 0 | done, or a line was chosen (`--osd`: also when there is nothing to show; `--quick`: also without the `quick` module) |
+| 0 | done, or a line was chosen (`--osd`: also when there is nothing to show; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible` or `--quick` (and its `wifi`/`bluetooth` words): restart it after an upgrade. The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words): restart it after an upgrade. The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. A `--quick`
 arriving less than 250 ms after the one that opened the panel is ignored, so a
