@@ -399,7 +399,7 @@ impl App {
     }
 
     /// A configured toggle's state, read now; None without its toggle.
-    fn quick_toggle_state(&self, t: Toggle) -> Option<bool> {
+    pub(crate) fn quick_toggle_state(&self, t: Toggle) -> Option<bool> {
         let c = t.config(&self.bar.config.quick);
         if c.toggle.is_empty() {
             return None;

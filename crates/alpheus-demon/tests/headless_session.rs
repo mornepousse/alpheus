@@ -317,6 +317,34 @@ fn calc_opens_the_calculator_and_enter_copies() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// Tools menu, `--tools`: the menu opens with no scan; a second `--tools` past the debounce closes
+/// it; typing `reload` and Enter runs `[tools] reload` through a stub (never `shell-ctl`) after the
+/// box closed, and the log names the built-in by id, never the command.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_opens_and_a_builtin_runs_after_the_box_closed() {
+    let sway = Sway::start("tools-open", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_recorder(&sway, "fake-reload");
+    let toml = "[tools]\nreload = [\"fake-reload\", \"--now\"]\n";
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the Tools menu alone scans nothing: {:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "reload", "-k", "Return"]).success());
+    assert!(wait_for_call(&sway, "fake-reload", "fake-reload --now"), "{:?} {:?}", recorded(&sway, "fake-reload"), d.log());
+    assert!(d.wait_for("tools: built-in reload", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("fake-reload") || l.contains("--now")), "never the command: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
 /// Launcher 2, `?`: Enter opens the percent-encoded search URL through `open` (a stub script,
 /// never `xdg-open`), and the text typed is logged nowhere.
 #[test]

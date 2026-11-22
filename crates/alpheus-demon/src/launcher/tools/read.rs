@@ -119,7 +119,8 @@ pub fn run_job(
                 first = false;
                 let (state, why) = state_of(sources::capture_status(&j.argv, exec));
                 if let Some(why) = why {
-                    note(&format!("tools: entry {}: state {why}", j.position));
+                    let i = j.position;
+                    note(&format!("tools: entry {i}: state {why}"));
                 }
                 match state {
                     Some(true) => counts.on += 1,
@@ -137,7 +138,8 @@ pub fn run_job(
         Job::Choices { entry, position, argv, token } => {
             let (lines, failed, why) = choices_of(sources::capture_lines(&argv, exec));
             if let Some(why) = why {
-                note(&format!("tools: entry {position}: choices {why}, {} kept", lines.len()));
+                let (i, k) = (position, lines.len());
+                note(&format!("tools: entry {i}: choices {why}, {k} kept"));
             }
             JobEvent::Choices { entry, token, lines, failed }
         }

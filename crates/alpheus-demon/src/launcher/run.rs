@@ -129,7 +129,7 @@ pub(crate) fn failure(program: &str, e: ExecError) -> String {
 /// Terminal=true): `systemd-run` starts detached, so a program it cannot
 /// find would fail after the launcher closed, silently (spec § 3: the box
 /// says so instead, and stays open).
-fn launch(ctx: &RunContext, argv: Vec<String>) -> Result<(), String> {
+pub(crate) fn launch(ctx: &RunContext, argv: Vec<String>) -> Result<(), String> {
     let program = argv.first().cloned().unwrap_or_default();
     if !has_program(ctx.path_dirs, &program) {
         return Err(failure(&program, ExecError::NotFound));
@@ -182,9 +182,9 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
                 (_, None) => Some(e.key.clone()),
                 (Choices::None, Some(_)) => None,
             };
-            let position = config.position;
+            let i = config.position;
             launch(ctx, argv)?;
-            log(&format!("tools: entry {position} run"));
+            log(&format!("tools: entry {i} run"));
             if let Some(key) = key {
                 remember(l, ctx, &key);
             }

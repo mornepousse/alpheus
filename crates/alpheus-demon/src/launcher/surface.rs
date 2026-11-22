@@ -13,6 +13,7 @@ use crate::launcher::model::{Activation, Launcher, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
 use crate::launcher::socket::Pending;
+use crate::launcher::tools::nav::ToolAction;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
@@ -560,6 +561,8 @@ impl App {
         }
         reply_on_close(open.reply.take(), reason);
         drop(open);
+        // The Tools question's timer goes with the box (nothing is armed at rest).
+        self.tools_timer_sync();
         self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
         // The catalog, the matcher's matrices, the box's pool: give the
@@ -672,11 +675,19 @@ impl App {
     /// Ok(Done::Reply) → that reply (Chosen or Index; a password's text wiped once sent) + close;
     /// Ok(Done::Close) → close Activated).
     pub fn launcher_outcome(&mut self, o: Outcome) {
+        self.launcher_outcome_inner(o);
+        // A question asked, answered or cancelled by this outcome: the timer follows it.
+        self.tools_timer_sync();
+    }
+
+    fn launcher_outcome_inner(&mut self, o: Outcome) {
         match o {
             Outcome::Nothing => {}
-            // The Tools mode's reads and its question are the glue's (Task 7): the box redraws.
-            Outcome::Redraw | Outcome::BackToAll | Outcome::Asked | Outcome::ReadStates(_) | Outcome::ReadChoices(_) => {
-                self.launcher_redraw()
+            Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
+            // The Tools mode's reads: the reader starts or queues the job (tools_app.rs).
+            Outcome::ReadStates(job) | Outcome::ReadChoices(job) => {
+                self.tools_offer(job);
+                self.launcher_redraw();
             }
             Outcome::Close => self.launcher_close(CloseReason::Escape),
             // The history's pin, delete or clear: applied to the real one, the box stays open.
@@ -702,6 +713,21 @@ impl App {
                 }
             }
             Outcome::Activate(a) => {
+                // A built-in that spawns has its program checked while the box is still open: a
+                // missing one is said in the box, which stays.
+                let prepared = match &a {
+                    Activation::Tool(ToolAction::Builtin(i)) => match self.tools_prepare(*i) {
+                        Ok(argv) => argv,
+                        Err(m) => {
+                            if let Some(open) = self.launcher.as_mut() {
+                                open.model.show_message(m);
+                            }
+                            self.launcher_redraw();
+                            return;
+                        }
+                    },
+                    _ => None,
+                };
                 let App { launcher, exec, .. } = self;
                 let Some(open) = launcher.as_mut() else { return };
                 // Cloned out: `perform` needs `&mut open.model`, which the
@@ -730,8 +756,14 @@ impl App {
                         }
                         self.launcher_close(CloseReason::Activated);
                     }
-                    // The built-in's verb is replayed by the glue (Task 7).
-                    Ok(Done::Close | Done::Builtin(_)) => self.launcher_close(CloseReason::Activated),
+                    Ok(Done::Close) => self.launcher_close(CloseReason::Activated),
+                    // The built-in's verb is replayed once the box is gone, as the socket verb would
+                    // (this runs inside `launcher_guarded`: a panic there is caught like the box's).
+                    Ok(Done::Builtin(i)) => {
+                        self.launcher_close(CloseReason::Activated);
+                        let qh = self.qh.clone();
+                        self.run_builtin(&qh, i, prepared);
+                    }
                 }
             }
         }

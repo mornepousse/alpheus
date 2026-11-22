@@ -598,8 +598,12 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
-        // The Tools menu's reader mail is handled by the glue (tools_app.rs, a later task).
-        channel::Event::Msg(Mail::ToolState { .. } | Mail::ToolStatesDone { .. } | Mail::ToolChoices { .. }) => {}
+        // The Tools menu's reader (tools_app.rs): one entry's state, the end of a states read, a choices read.
+        channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
+        channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
+        channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {
+            state.tools_choices(generation, token, entry, lines, failed)
+        }
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format

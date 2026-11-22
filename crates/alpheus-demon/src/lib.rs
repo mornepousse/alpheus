@@ -81,6 +81,7 @@ pub mod text;
 pub mod timer;
 pub mod timer_app;
 pub mod timer_popup;
+pub mod tools_app;
 pub mod tools_join;
 pub mod tray_bridge;
 pub mod watch;

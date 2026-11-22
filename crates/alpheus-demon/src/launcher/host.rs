@@ -79,6 +79,8 @@ pub enum Action {
     OpenWindows,
     /// `--clipboard`: the history alone, replacing any other open launcher.
     OpenClipboard,
+    /// `--tools`: the Tools menu alone, replacing any other open launcher.
+    OpenTools,
     /// `--windows` while the switcher is open: select the next window.
     StepWindows,
     Close(CloseReason),
@@ -92,13 +94,14 @@ pub enum Action {
 }
 
 /// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
-/// window switcher, or the clipboard history.
+/// window switcher, the clipboard history, or the Tools menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opened {
     Apps,
     Script,
     Switcher,
     Clipboard,
+    Tools,
 }
 
 /// The open model's kind.
@@ -109,6 +112,9 @@ pub fn opened(model: &Launcher) -> Opened {
         Opened::Switcher
     } else if model.mode == crate::launcher::matching::Mode::Clipboard {
         Opened::Clipboard
+    } else if model.mode == crate::launcher::matching::Mode::Tools {
+        // A Mod+Space open that jumped in with `/` counts: `--tools` closes it.
+        Opened::Tools
     } else {
         Opened::Apps
     }
@@ -141,6 +147,12 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Clipboard, Some(Opened::Clipboard)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Clipboard, Some(Opened::Clipboard)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Clipboard, Some(_)) => (Action::OpenClipboard, Some(Reply::Done)),
+        // Tools spec § 1: `--tools` toggles the menu (with the debounce against a re-fired press
+        // bind) and replaces anything else open, as `--clipboard` does.
+        (Request::Tools, None) => (Action::OpenTools, Some(Reply::Done)),
+        (Request::Tools, Some(Opened::Tools)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Tools, Some(Opened::Tools)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        (Request::Tools, Some(_)) => (Action::OpenTools, Some(Reply::Done)),
         // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
@@ -161,8 +173,6 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Notes
             | Request::ClipboardClear
             | Request::Power
-            // The Tools menu's open comes with the glue (plan task 7): until then, not answered here.
-            | Request::Tools
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -182,6 +192,7 @@ pub fn open_after(open: Option<Opened>, action: &Action) -> Option<Opened> {
         Action::OpenScript { .. } => Some(Opened::Script),
         Action::OpenWindows => Some(Opened::Switcher),
         Action::OpenClipboard => Some(Opened::Clipboard),
+        Action::OpenTools => Some(Opened::Tools),
     }
 }
 
@@ -267,8 +278,22 @@ pub(crate) fn scan_failure_message(e: &io::Error) -> String {
     format!("could not scan applications: {e}")
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The history file of `config` (empty with the history off or no state dir), its warning logged.
+pub(crate) fn load_history(config: &LauncherConfig, now: u64) -> History {
+    match history_path_for(config, &paths::state_dir()) {
+        Some(path) => {
+            let (h, warning) = History::load(&path, config.history, now);
+            if let Some(w) = warning {
+                log(&w);
+            }
+            h
+        }
+        None => History::empty(0),
+    }
 }
 
 impl App {
@@ -309,6 +334,7 @@ impl App {
             });
         }
         self.keyboard_release();
+        self.tools_timer_sync();
         if !was_open {
             return;
         }
@@ -367,6 +393,12 @@ impl App {
                             self.launcher_close(CloseReason::Replaced);
                         }
                         self.launcher_open_clipboard(qh, requested_at);
+                    }
+                    Action::OpenTools => {
+                        if self.launcher_is_open() {
+                            self.launcher_close(CloseReason::Replaced);
+                        }
+                        self.launcher_open_tools(qh, requested_at);
                     }
                     Action::OpenWindows => {
                         if self.launcher_is_open() {
@@ -428,20 +460,11 @@ impl App {
         self.launcher_open(qh, model, None, requested_at);
     }
 
-    fn launcher_open_apps(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+    pub(crate) fn launcher_open_apps(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         let config = read_config(&paths::config_dir(), &mut |m| log(m));
         let sources = config.sources.clone();
         let now = unix_now();
-        let history = match history_path_for(&config, &paths::state_dir()) {
-            Some(path) => {
-                let (h, warning) = History::load(&path, config.history, now);
-                if let Some(w) = warning {
-                    log(&w);
-                }
-                h
-            }
-            None => History::empty(0),
-        };
+        let history = load_history(&config, now);
         // The scan's environment, read once: its $PATH is also the one
         // activation checks programs against (RunContext::path_dirs, via
         // `open.model.path_dirs` — the single copy), so the
@@ -451,8 +474,12 @@ impl App {
         // the environment a second time, inside `launcher_open`, only to
         // overwrite it with the same value right back here).
         let env = ScanEnv::from_env(|k| std::env::var_os(k));
+        let tools = self.tools_catalog(&config);
         let mut model = Launcher::for_apps(config, self.launcher_toplevels(), history, now);
         model.path_dirs = env.path_dirs.clone();
+        // The Tools entries rank in the typed search and the `/` prefix jumps in (rebuilt at each open).
+        model.set_tools(tools);
+        self.tools_builtin_states(&mut model);
         // The `"` prefix only with the history on and bound.
         if self.clipboard_availability().is_ok() {
             model.clipboard = true;
@@ -628,7 +655,7 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
-        use Opened::{Apps, Clipboard, Script, Switcher};
+        use Opened::{Apps, Clipboard, Script, Switcher, Tools};
         let script =
             Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
         let not_ours = || Action::Nothing;
@@ -657,10 +684,20 @@ mod tests {
             (Request::Clipboard, Some(Script), Action::OpenClipboard, done()),
             (Request::Clipboard, Some(Switcher), Action::OpenClipboard, done()),
             (Request::ClipboardClear, Some(Apps), not_ours(), refused()),
-            // The power menu is answered before the launcher (`Route::Power`); the Tools menu's
-            // open is Task 7: until then `decide` does not know it.
+            // The power menu is answered before the launcher (`Route::Power`).
             (Request::Power, Some(Apps), not_ours(), refused()),
-            (Request::Tools, None, not_ours(), refused()),
+            (Request::Tools, None, Action::OpenTools, done()),
+            (Request::Tools, Some(Tools), Action::Close(R::Toggle), done()),
+            (Request::Tools, Some(Apps), Action::OpenTools, done()),
+            (Request::Tools, Some(Script), Action::OpenTools, done()),
+            (Request::Tools, Some(Switcher), Action::OpenTools, done()),
+            (Request::Tools, Some(Clipboard), Action::OpenTools, done()),
+            (Request::Toggle, Some(Tools), Action::Close(R::Toggle), done()),
+            (Request::Close, Some(Tools), Action::Close(R::Close), done()),
+            (Request::Calc, Some(Tools), Action::Close(R::Toggle), done()),
+            (Request::Windows, Some(Tools), Action::OpenWindows, done()),
+            (Request::Clipboard, Some(Tools), Action::OpenClipboard, done()),
+            (dmenu(), Some(Tools), script.clone(), None),
             (Request::Toggle, Some(Clipboard), Action::Close(R::Toggle), done()),
             (Request::Close, Some(Clipboard), Action::Close(R::Close), done()),
             (Request::Calc, Some(Clipboard), Action::Close(R::Toggle), done()),
@@ -909,6 +946,39 @@ mod tests {
             assert_eq!(lines, ["tools: 17 categories in launcher.toml, the first 16 kept"], "once per open, counts only");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tools spec § 1: `--tools` toggles the menu, ignoring a press-bind refire inside the debounce,
+    /// and replaces any other open launcher.
+    #[test]
+    fn tools_toggles_with_the_debounce_and_replaces_others() {
+        let open = Some(Opened::Tools);
+        assert_eq!(decide(Request::Tools, open, Duration::from_millis(10)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Tools, open, Duration::from_millis(249)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Tools, open, TOGGLE_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        for other in [Opened::Apps, Opened::Script, Opened::Switcher, Opened::Clipboard] {
+            for since in [Duration::from_millis(10), PAST_DEBOUNCE] {
+                assert_eq!(decide(Request::Tools, Some(other), since), (Action::OpenTools, Some(Reply::Done)), "{other:?}");
+            }
+        }
+        assert_eq!(open_after(None, &Action::OpenTools), Some(Opened::Tools));
+    }
+
+    /// A Mod+Space open that jumped into the Tools mode is one `--tools` closes; a `--tools` open too.
+    #[test]
+    fn a_model_in_the_tools_mode_is_opened_tools() {
+        use crate::launcher::tools::catalog::{Catalog, Context};
+        let config = LauncherConfig::default();
+        let catalog = || Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+        let only = Launcher::for_tools(config.clone(), catalog(), History::empty(200), 0);
+        assert_eq!(opened(&only), Opened::Tools);
+        let mut m = apps_model();
+        assert_eq!(opened(&m), Opened::Apps);
+        m.set_tools(catalog());
+        m.key(crate::keys::Key::Char('/'));
+        assert_eq!(opened(&m), Opened::Tools);
+        m.key(crate::keys::Key::Backspace);
+        assert_eq!(opened(&m), Opened::Apps);
     }
 
     fn apps_model() -> Launcher {

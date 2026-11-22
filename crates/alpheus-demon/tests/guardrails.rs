@@ -1062,6 +1062,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // built in `OsdSurface::new`: armed only while the pill shows.
         ("bubbles_surface.rs", "Timer::", 1),
         ("osd_surface.rs", "Timer::", 1),
+        // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
+        // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
+        ("tools_app.rs", "Timer::", 1),
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
@@ -4339,4 +4342,159 @@ builtins = false
             assert!(seen.contains(&(shape, spawner)), "{shape} never reached under {spawner:?}: {seen:?}");
         }
     }
+}
+
+// ---- The Tools menu's glue (tools plan, Task 7). ----
+
+/// The placeholders a Tools log line may interpolate: positions, counts, a built-in's static id and
+/// a `Why`'s fixed words. Never a name, a command, a choice, a line or the query.
+const TOOLS_LOG_PLACEHOLDERS: [&str; 8] = ["{i}", "{n}", "{k}", "{on}", "{off}", "{unknown}", "{id}", "{why}"];
+
+/// The first `log(` or `note(` call in `code` that is not fixed words, if any. The relay
+/// `|m| log(m)` (the notes of the pure code handed to the log) is the one variable allowed.
+fn tools_unfixed_log(code: &str) -> Option<String> {
+    let code = code.replace("|m| log(m)", "");
+    for opener in ["log(", "note("] {
+        let mut rest = code.as_str();
+        while let Some(i) = rest.find(opener) {
+            let before = rest[..i].chars().next_back();
+            let call = &rest[i..];
+            // A longer name (`catalog(`, `tools_note(`) is not the call.
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                rest = &call[opener.len()..];
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut end = call.len();
+            for (j, c) in call.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = j + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = call[..end].to_string();
+            for ok in TOOLS_LOG_PLACEHOLDERS {
+                text = text.replace(ok, "");
+            }
+            let arg = call[opener.len()..end.saturating_sub(1)].trim();
+            let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+            let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2;
+            if !literal || text.contains('{') || text.contains("+ ") {
+                return Some(call[..end].to_string());
+            }
+            rest = &call[end..];
+        }
+    }
+    None
+}
+
+#[test]
+fn the_tools_logs_are_fixed_words() {
+    let files = source_files();
+    let mut seen = 0;
+    for name in ["launcher/tools/read.rs", "tools_app.rs", "tools_join.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+        seen += code.matches("log(").count() + code.matches("note(").count();
+    }
+    let run = &files.iter().find(|(p, _)| relative_path(p) == "launcher/run.rs").expect("run.rs").1;
+    let run_production = production_code(run);
+    let perform_tool = function_body(&run_production, "fn perform_tool");
+    assert_eq!(tools_unfixed_log(perform_tool), None, "a log call in perform_tool names more than fixed words");
+    assert!(seen >= 8 && perform_tool.contains("log("), "the log calls were found: {seen}");
+}
+
+#[test]
+fn the_tools_log_guardrail_helper_bites() {
+    assert_eq!(tools_unfixed_log("log(\"tools: read failed\");"), None);
+    assert_eq!(tools_unfixed_log("log(&format!(\"tools: built-in {id}\"));"), None);
+    assert_eq!(tools_unfixed_log("note(&format!(\"tools: entry {i}: choices {why}, {k} kept\"));"), None);
+    assert_eq!(tools_unfixed_log("let c = tools_catalog(&config); Catalog::build(a, b, &mut |m| log(m));"), None);
+    assert!(tools_unfixed_log("log(&format!(\"tools: entry {name}\"));").is_some(), "a name");
+    assert!(tools_unfixed_log("log(&format!(\"tools: entry {}\", e.name));").is_some(), "a bare placeholder");
+    assert!(tools_unfixed_log("log(&text);").is_some(), "a variable");
+    assert!(tools_unfixed_log("note(&line);").is_some(), "a variable note");
+    assert!(tools_unfixed_log("log(\"a\"); log(&format!(\"{choice}\"));").is_some());
+}
+
+/// The question's timer goes with the box, however it goes: both the close and the panic path
+/// re-sync it (it then reads no deadline).
+#[test]
+fn the_tools_timer_is_disarmed_by_close_and_by_a_panic() {
+    let files = source_files();
+    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let surface = text("launcher/surface.rs");
+    assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_timer_sync()"), "launcher_close");
+    assert!(function_body(&surface, "fn launcher_outcome(").contains("tools_timer_sync()"), "launcher_outcome");
+    let host = text("launcher/host.rs");
+    assert!(function_body(&host, "fn launcher_fail(").contains("tools_timer_sync()"), "launcher_fail");
+}
+
+/// A built-in spawns only through `run::launch` (its own scope, its program looked up first); the
+/// glue never starts a process itself, through a shell or otherwise.
+#[test]
+fn the_tools_glue_spawns_only_through_launch() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "tools_app.rs").expect("tools_app.rs").1;
+    let code = production_code(t);
+    for forbidden in [".spawn(", ".run(", ".capture(", "Command::new", "\"sh\"", "-c\""] {
+        assert!(!code.contains(forbidden), "{forbidden} in tools_app.rs");
+    }
+    assert!(code.contains("run::launch("), "the one spawn");
+    assert_eq!(code.matches("run::launch(").count(), 1);
+}
+
+/// Every built-in's argv is the configured command, `[actions] open_tab` with the tab, or the
+/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell.
+#[test]
+fn every_builtin_argv_stays_on_the_allowlist() {
+    use alpheus_demon::config::QuickConfig;
+    use alpheus_demon::launcher::tools::catalog::{BUILTINS, BuiltinAction};
+    use alpheus_demon::tools_app::{Commands, builtin_argv};
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    let _bin_guard = RemoveOnDrop(bin.clone());
+    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot"];
+    for p in programs {
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let dirs = [bin.clone()];
+    let mut quick = QuickConfig::default();
+    quick.keep_awake.toggle = vec!["keepawake".into(), "--flip".into()];
+    quick.night_light.toggle = vec!["nightlight".into()];
+    let reload = vec!["shell-ctl".to_string(), "reload-bar".to_string()];
+    let terminal = vec!["foot".to_string()];
+    // `open_tab`'s program is missing: the terminal fallback is what runs.
+    let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
+    let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
+    let mut spawned = 0;
+    for b in BUILTINS.iter() {
+        let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
+        let expected: Option<Vec<String>> = match b.action {
+            BuiltinAction::Lock => Some(quick.lock.clone()),
+            BuiltinAction::Toggle(t) => Some(t.config(&quick).toggle.clone()),
+            BuiltinAction::Reload => Some(reload.clone()),
+            BuiltinAction::Tab => {
+                let slug = b.id.strip_prefix("tab.").expect("a tab id");
+                Some(["foot", "alpheus", "--tab", slug].map(String::from).to_vec())
+            }
+            _ => None,
+        };
+        assert_eq!(got, expected, "{}", b.id);
+        if let Some(argv) = got {
+            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
+            spawned += 1;
+        }
+    }
+    assert!(spawned >= 5, "the spawning built-ins were reached: {spawned}");
 }
