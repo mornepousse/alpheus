@@ -439,3 +439,70 @@ indicators). It is written by hand on the `unicode-width` crate the daemon alrea
 dependency is added.
 
 Date: 2026-10-08 · Source: media spec § 1 (amended 2026-10-08); media plan 1, Task 1, "Decisions written down", item "`truncate_title`"
+
+### The microphone pill shows only when its mute flips
+
+The OSD shows the default source only when its mute state flips, with the level the source has
+then. A change of its level never shows: WebRTC apps (a browser or a chat client in a call) move the
+capture gain on their own, and the pill would pop all through a call. The sound source no longer
+publishes a microphone level change alone, so a call wakes nothing. A mute flip shows even right
+after a sink pill (an earlier 500 ms rule, made for level noise, was dropped as it had nothing left
+to guard), and a message that changes both the sink and the microphone shows the sink.
+
+Date: 2026-10-09 · Source: OSD spec § 1 and § 2 (amendments of 2026-10-09)
+
+### A sound change within a second of a start or a new default device shows nothing
+
+The first state after `pw-dump` (re)starts is a baseline and never shows. For 1 s after it, and for
+1 s after a default sink or source appears, goes or is switched, a change shows nothing: the levels of
+a new default settle in silence (WirePlumber restores them). The end of the second counts as outside
+it. One exception: while the sink's name card is on screen, a change inside that second updates the
+card (a second switch shows the new name, a key press the new level); and a switch to a sink whose
+volume has not arrived shows the card once it does.
+
+Date: 2026-10-09 · Source: OSD spec § 2 (and its amendment of the final review); OSD plan 1, "Decisions written down", item 2; `side` in `osd/mod.rs`
+
+### The OSD counts a volume change in whole percent
+
+A change is worth a sink pill when the mute flipped or the integer percent differs. The sound model
+publishes whole percents (as wpctl and the bar show them), so a level that moved by less than half
+a point never reaches the OSD. Carrying tenths would publish, and wake the loop, for changes nobody
+can see.
+
+Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 1
+
+### Brightness is shown on request, read once
+
+The brightness pill comes only from `alpheus-launch --osd brightness`, which reads the backlight's
+`brightness` and `max_brightness` once, then shows the pill. Nothing watches the backlight and
+alpheus never writes it: the user's brightness key keeps changing it (through `brightnessctl`) and
+then calls the verb. A watcher would pop the pill each time hypridle dims and restores the
+screen.
+
+Date: 2026-10-09 · Source: OSD spec § 2 ("Brightness is on request")
+
+### The OSD pill is an Overlay surface with an empty input region, made on show
+
+The pill is one layer surface on the Overlay layer (Hyprland draws the Top layer under a fullscreen
+window), anchored at the bottom with an exclusive zone of 0, taking no keyboard. Its input region is
+empty, so it never takes a click; if the empty region cannot be made, nothing is shown, since a
+surface without one would take every click. It is created when a pill is shown and dropped when it
+goes, with its own pool, so that nothing of it stays at rest.
+
+Date: 2026-10-09 · Source: OSD spec § 3 and "Goal"; OSD plan 1, Task 3, "Decisions written down", item "The surface"
+
+### The pill follows the focused output only when its content changes
+
+A pill is created on the focused output. While it is shown it moves to a newly focused output only
+when its content changes, as the notification bubbles do (`bubbles::moves`); a change of focus alone
+leaves it where it is.
+
+Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 8; Task 3, "Decisions written down", item "The output"
+
+### The OSD logs once when its surface appears and once when it goes
+
+One log line when the surface appears (with what it shows) and one when it goes (with how many
+changes it showed), never one per change: a held key would write 25 lines a second to the journal.
+No line names a device (a card's label stays out of the journal).
+
+Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 7; `describe` in `osd/mod.rs`

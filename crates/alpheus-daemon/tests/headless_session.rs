@@ -4178,7 +4178,8 @@ fn osd_the_pill_never_takes_a_click() {
 fn osd_the_microphone_and_a_default_sink_switch_show_their_pills() {
     // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
     let (sway, _hypr, d) = osd_daemon("osd-mic", 1, "timeout_ms = 5000\n", |_| ());
-    // Mae (2026-10-09): a call's gain control moving the microphone's level shows nothing.
+    // A call's gain control moving the microphone's level shows nothing (decisions.md, "The
+    // microphone pill shows only when its mute flips").
     for level in [80, 65, 90] {
         pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, level, false));
     }
@@ -4383,6 +4384,50 @@ fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
     assert!(d_off.wait_for("the osd module is not in modules", DELAY), "{:?}", d_off.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
+}
+
+/// The pill is made on the focused output and follows the focus only when its content changes
+/// (decisions.md, "The pill follows the focused output only when its content changes"): the same
+/// brightness asked again after the focus moved stays where it is; another content goes to the
+/// focused output.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_pill_stays_put_when_the_focus_moves_until_its_content_changes() {
+    let (sway, hypr, d) = osd_daemon("osd-focus", 2, "timeout_ms = 5000\n", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("osd surface on HEADLESS-2: brightness 50%", DELAY), "the fixture's focused output: {:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(osd_brightness(&sway), EXIT_OK, "the same row again");
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("osd surface on"), 1, "the focus alone moves nothing: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_some()), "still there: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-1: volume 90%", DELAY), "other content: to the focused output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()));
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_none()), "and only there");
+}
+
+/// An output going away takes the pill with it only when the pill is on that output: the other
+/// output's unplugging leaves it where it is.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_an_output_going_away_hides_the_pill_only_when_it_is_on_that_output() {
+    let (sway, _hypr, mut d) = osd_daemon("osd-unplug", 2, "timeout_ms = 5000\n", |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-2: volume 90%", DELAY), "the fixture's focused output: {:?}", d.log());
+    sway.command("output HEADLESS-1 disable");
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("osd surface dropped"), 0, "the pill was on the other output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_some()), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {:?}", d.log());
 }
 
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";
