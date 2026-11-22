@@ -1,17 +1,21 @@
+//! Tests of the failed-units model (`mod.rs`): the total of the two counts, when the notice goes
+//! and what it says. No bus, no clock, no daemon.
+
 use super::*;
 
-fn f(system: Option<u32>, user: Option<u32>) -> Failed {
+/// The two managers' counts, each possibly unknown.
+fn counts(system: Option<u32>, user: Option<u32>) -> Failed {
     Failed { system, user }
 }
 
 #[test]
 fn the_total_adds_the_known_counts() {
-    assert_eq!(total(&f(Some(2), Some(1))), Some(3));
-    assert_eq!(total(&f(Some(2), None)), Some(2), "a user manager that is not there: the system count alone");
-    assert_eq!(total(&f(None, Some(1))), Some(1));
-    assert_eq!(total(&f(Some(0), Some(0))), Some(0));
-    assert_eq!(total(&f(None, None)), None, "neither known: no state");
-    assert_eq!(total(&f(Some(u32::MAX), Some(1))), Some(u32::MAX), "saturates");
+    assert_eq!(total(&counts(Some(2), Some(1))), Some(3));
+    assert_eq!(total(&counts(Some(2), None)), Some(2), "a user manager that is not there: the system count alone");
+    assert_eq!(total(&counts(None, Some(1))), Some(1));
+    assert_eq!(total(&counts(Some(0), Some(0))), Some(0));
+    assert_eq!(total(&counts(None, None)), None, "neither known: no state");
+    assert_eq!(total(&counts(Some(u32::MAX), Some(1))), Some(u32::MAX), "saturates");
 }
 
 /// A notice that has heard both managers (what the daemon does once each answered).
@@ -74,7 +78,7 @@ fn an_unknown_total_changes_nothing() {
 }
 
 #[test]
-fn the_notice_text() {
+fn the_notice_says_how_many_units_failed_and_points_at_the_diag_tab() {
     assert_eq!(incoming(1).summary, "1 unit failed");
     assert_eq!(incoming(3).summary, "3 units failed");
     let i = incoming(3);

@@ -348,7 +348,7 @@ impl App {
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
-        // The system count was read: the user manager's again (its own link, `failed_app`).
+        // The system count was read: the user manager's again (its own link, `failed/app.rs`).
         if matches!(m, Msg::UnitsRead) {
             self.failed_units_read();
         }

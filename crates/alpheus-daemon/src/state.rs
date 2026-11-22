@@ -60,7 +60,7 @@ pub enum Msg {
     Units(Option<u32>),
     /// The failed-units count was just read, whatever it said (sent outside the published state: a
     /// second read of the same count changes nothing the bar draws). No redraw: it asks the user
-    /// manager's count again (the user's own link, `failed_app`).
+    /// manager's count again (the user's own link, `failed/app.rs`).
     UnitsRead,
     /// The user manager's count of failed units, from the session bus (the system's is `Units`);
     /// None: not read, no user manager, or the session bus is down.

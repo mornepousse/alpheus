@@ -144,3 +144,52 @@ never hold the sound's command, a path, or an error's own text, since any of the
 user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`).
 
 Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18
+
+### A source that is down is not a state
+
+A count or a value that becomes unknown because its source went away (the system bus closing,
+NetworkManager or BlueZ leaving the bus, a battery reading `unknown`) changes nothing: the last
+known value stays, the module does not hide, the notice is not re-armed and no hook fires. The next
+real answer replaces the value. Only a count that was never known is absent, and the `failed`
+module hides then rather than showing a placeholder.
+
+Date: 2026-11-15 · Source: hooks spec § 2; hooks plan 1, decision 6; diagnostics spec § 6 and "Decisions written down" 13
+
+### The failed-units count is read on triggers, and `Subscribe` is off by default
+
+systemd sends the Manager's `PropertiesChanged` only while some client has called `Subscribe()`, so
+without it no signal about the count arrives. `[failed] subscribe = true` makes the icon instant,
+and its cost lands on systemd and dbus-daemon (a signal per unit change to every subscriber), not
+on alpheus. The default is `false` until it is chosen after use. Without a subscription the count
+is read on triggers: session start, resume, `alpheus-launch --failed-refresh`, and a read added to
+another domain's wake-up at most once a minute. No timer is added for it.
+
+Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9; diagnostics plan 1, decision 1 and its final fix wave
+
+### The failed-units count is asked for one property, never the whole interface
+
+The count is a `Get` of `NFailedUnits` on the Manager object, on the owner's unique name. A
+`GetAll` of the Manager would also carry its environment, which may hold secrets, so the call
+builder refuses any other interface and property pair, and the daemon never reads a unit name: it
+counts, it does not list.
+
+Date: 2026-11-21 · Source: diagnostics spec § 6; guardrails `the_user_manager_is_asked_for_one_property_and_subscribed_to` and `no_acting_systemd1_method_in_the_daemon`
+
+### The failed-units notice waits for both managers
+
+`[failed] notify` sends one notice when the total rises above the last total notified, and a total
+of 0 re-arms it. The notice waits until the system manager and the user manager have each answered
+once (a manager nobody will ask, with `user_units = false` or no session bus, is not waited for),
+so the first notice carries the whole total and not half of it. Like the battery alerts, it counts
+as given only while alpheus's own notification server is serving, and the latest total is offered
+again when the server starts.
+
+Date: 2026-11-21 · Source: diagnostics spec § 6 ("Notification"); diagnostics plan 1, decision 11
+
+### The bar has no ignore list for failed units
+
+A unit that fails at every boot keeps `󰀦 1` on the bar until it is fixed or reset (the Diag tab's
+`c`). An ignore list would need the daemon to list units and read their names, which it never
+does (see "The failed-units count is asked for one property, never the whole interface").
+
+Date: 2026-11-22 · Source: diagnostics spec "Decisions written down" 9
