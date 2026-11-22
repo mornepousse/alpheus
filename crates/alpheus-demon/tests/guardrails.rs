@@ -3070,7 +3070,7 @@ fn the_timer_is_wired_through_one_path() {
     let notifications = function_body(modules, "if want.notifications");
     assert!(modules.contains("state.timer_load("), "the timer is loaded at start");
     assert!(!notifications.contains("timer_load"), "not only with the notifications module: {notifications}");
-    // Every file under src/: the model is assigned in timer_app.rs's three owners and nowhere else
+    // Every file under src/: the model is assigned in timer/app.rs's three owners and nowhere else
     // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
     for (path, text) in source_files() {
         let name = relative_path(&path);
@@ -3521,10 +3521,10 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let timer_app = src("timer/app.rs");
-    let row = popup_ops_row(&timer_app);
+    let app = src("timer/app.rs");
+    let row = popup_ops_row(&app);
     assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
-    let closed = function_body(&timer_app, "fn timer_closed(");
+    let closed = function_body(&app, "fn timer_closed(");
     let (seen, sync) = (closed.find("seen_at_close("), closed.find("self.timer_sync()"));
     assert!(closed.contains("self.timer_do("), "an end the popup showed is seen: {closed}");
     assert!(matches!((seen, sync), (Some(a), Some(b)) if a < b), "seen first, then the deadline without the seconds: {closed}");

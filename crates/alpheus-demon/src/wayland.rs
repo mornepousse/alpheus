@@ -523,7 +523,7 @@ pub struct App {
     pub(crate) tools: crate::tools_app::ToolsApp,
     /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
     pub(crate) power_verb_opened: Option<Instant>,
-    /// The focus timer's model, lengths and deadline (timer_app.rs); the deadline is armed only
+    /// The focus timer's model, lengths and deadline (timer/app.rs); the deadline is armed only
     /// while a timer runs.
     pub(crate) timer: crate::timer::app::TimerApp,
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an

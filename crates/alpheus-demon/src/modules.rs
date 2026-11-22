@@ -194,7 +194,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     },
     // The screens are read and changed through the output protocol (outputs_app.rs), never drawn.
     row(ModuleId::Displays, "displays", GroupKind::Status),
-    // The focus timer's chip (timer.rs): its popup is wired in a later task.
+    // The focus timer's chip (see timer/mod.rs); its popup is timer/popup.rs.
     ModuleSpec {
         hue: Some(Hue::Yellow),
         segment: Some(|bar, _| segments::timer(bar.timer.as_ref(), bar.module_colors)),
