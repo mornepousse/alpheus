@@ -340,7 +340,7 @@ pub(crate) mod tests {
     #[test]
     fn connection_wanted_table() {
         let (t, bar) = (Instant::now(), bar_bt_on());
-        let live = quick::live(&bar, &crate::dnd::Dnd::default());
+        let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
         assert!(!connection_wanted(None, 0) && !connection_wanted(None, 2), "no panel: never (leaving was sent first)");
         q.follow_bt(&live, Some(bt_view()), t);
@@ -395,7 +395,7 @@ pub(crate) mod tests {
     #[test]
     fn a_refused_connection_is_not_reopened_by_the_syncs() {
         let (t, bar) = (Instant::now(), bar_bt_on());
-        let live = quick::live(&bar, &crate::dnd::Dnd::default());
+        let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
         q.bt.open_detail();
         assert!(!opens_on_sync(Some(&q), 0), "no adapter seen yet");
@@ -411,7 +411,7 @@ pub(crate) mod tests {
     #[test]
     fn a_sync_drops_closes_or_opens() {
         let (t, bar) = (Instant::now(), bar_bt_on());
-        let live = quick::live(&bar, &crate::dnd::Dnd::default());
+        let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
         q.follow_bt(&live, Some(bt_view()), t);
         assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Keep, "the rows only: none");
@@ -432,7 +432,7 @@ pub(crate) mod tests {
     #[test]
     fn a_second_loss_stops_the_syncs_reopening() {
         let (t, bar) = (Instant::now(), bar_bt_on());
-        let live = quick::live(&bar, &crate::dnd::Dnd::default());
+        let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
         q.follow_bt(&live, Some(bt_view()), t);
         q.bt.open_detail();
@@ -447,7 +447,7 @@ pub(crate) mod tests {
     #[test]
     fn adapter_seen_needs_an_adapter_in_the_view() {
         let (t, bar) = (Instant::now(), bar_bt_on());
-        let live = quick::live(&bar, &crate::dnd::Dnd::default());
+        let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
         assert!(!adapter_seen(&q), "nothing read yet");
         q.follow_bt(&live, Some(BtView { adapter: None, ..bt_view() }), t);

@@ -204,7 +204,7 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
 /// notify.rs, the pure model, logs nothing.
 #[test]
 fn the_notification_rules_log_nothing() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/mod.rs")).unwrap();
     let prod = production_code(&text);
     for log in ["log(", "log::write", "crate::log"] {
         assert!(!prod.contains(log), "notify.rs logs nothing ({log})");
@@ -529,7 +529,7 @@ fn shutting_down_closes_and_saves_the_pad() {
 #[test]
 fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
-    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("bubbles_surface.rs", "fn bubbles_create(")] {
+    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
@@ -705,7 +705,7 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
 #[test]
 fn the_panel_marks_read_only_after_it_opened() {
     let files = source_files();
-    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "panel_app.rs").expect("panel_app.rs").1);
+    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/panel_app.rs").expect("notify/panel_app.rs").1);
     let body = function_body(&panel_app, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
@@ -1143,7 +1143,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
-        ("bubbles_surface.rs", "Timer::", 1),
+        ("notify/bubbles_surface.rs", "Timer::", 1),
         ("osd/surface.rs", "Timer::", 1),
         // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
         // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
@@ -1157,7 +1157,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("outputs/app.rs", "Timer::", 1),
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
-        ("notify_app.rs", "Timer::", 1),
+        ("notify/app.rs", "Timer::", 1),
         // The clipboard history's read deadline, built in `ClipboardApp::bind`: armed only while a
         // read is pending, disarmed by every way a read ends.
         ("clipboard/app.rs", "Timer::", 1),
@@ -1573,13 +1573,13 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
 const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
     "media/mod.rs",
-    "notify.rs",
+    "notify/mod.rs",
     "osd/mod.rs",
     "osd/surface.rs",
     "backlight.rs",
-    "bubbles.rs",
-    "bubbles_surface.rs",
-    "panel.rs",
+    "notify/bubbles.rs",
+    "notify/bubbles_surface.rs",
+    "notify/panel.rs",
     "media/popup.rs",
     "popup.rs",
     "calendar/mod.rs",
@@ -1589,7 +1589,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "watch.rs",
     "appearance.rs",
     "state_file.rs",
-    "notify_app.rs",
+    "notify/app.rs",
     "link.rs",
     "failed/app.rs",
     "background.rs",
@@ -1622,8 +1622,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "outputs/app.rs",
     "launcher/calc.rs",
     "launcher/calc/units.rs",
-    "dnd.rs",
-    "battery_alert.rs",
+    "notify/dnd.rs",
+    "notify/battery_alert.rs",
     "hooks/mod.rs",
     "launcher/prefix.rs",
     "launcher/emoji.rs",
@@ -2246,7 +2246,7 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
 /// (a suspended laptop's monotonic timer is late).
 #[test]
 fn the_dnd_tick_fires_before_checking() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap();
     let start = text.find("fn dnd_tick(").expect("dnd_tick");
     let body = &text[start..];
     let body = &body[..body.find("\n    }\n").expect("the end of dnd_tick")];
@@ -2272,12 +2272,12 @@ fn every_dnd_change_goes_through_dnd_apply() {
         let prod = production_code(&t);
         assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
         // notify.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
-        if name == "notify_app.rs" || name == "notify.rs" {
+        if name == "notify/app.rs" || name == "notify/mod.rs" {
             continue;
         }
         assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
     }
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap();
     let prod = production_code(&text);
     let mut owner = String::new();
     let mut allowed = true;
@@ -2303,13 +2303,13 @@ fn the_notification_server_has_no_panicking_path() {
     let text =
         |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("{name}"));
     for name in [
-        "notify.rs",
+        "notify/mod.rs",
         "session_bus/notifications.rs",
-        "notify_app.rs",
-        "dnd.rs",
-        "bubbles.rs",
-        "bubbles_surface.rs",
-        "panel.rs",
+        "notify/app.rs",
+        "notify/dnd.rs",
+        "notify/bubbles.rs",
+        "notify/bubbles_surface.rs",
+        "notify/panel.rs",
         "state_file.rs",
         "session_bus/codec.rs",
     ] {
@@ -2917,7 +2917,7 @@ fn the_panel_readers_have_no_panicking_path() {
 fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify_app.rs"));
+    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     // Fix S1: a slider level still waiting for its window is sent before the panel's body goes:
     // the row's `flush` runs before the take, its `closed` once the body is dropped.
@@ -2928,7 +2928,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let row = popup_ops_row(&quick_app);
     assert!(row.contains("flush: App::quick_flush,") && row.contains("closed: App::quick_closed,"), "the quick panel's row: {row}");
     // The media popup's and the panel's card's Seeked rule and 1 s tick go when either closes.
-    for name in ["media/app.rs", "panel_app.rs"] {
+    for name in ["media/app.rs", "notify/panel_app.rs"] {
         let text = src(name);
         let row = popup_ops_row(&text);
         assert!(row.contains("closed: App::media_closed,"), "{name}: the tick must go with the popup: {row}");
@@ -3738,8 +3738,8 @@ fn on_bar_message_feeds_the_battery_alerts() {
     let body = function_body(&startup, "pub(crate) fn on_bar_message(");
     let (fed, kept) = (body.find("self.battery_feed(&m)"), body.find("on_message("));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "battery_feed, then on_message: {body}");
-    let feed = function_body(&src("notify_app.rs"), "pub(crate) fn battery_feed(").to_string();
-    for text in [src("battery_alert.rs"), feed] {
+    let feed = function_body(&src("notify/app.rs"), "pub(crate) fn battery_feed(").to_string();
+    for text in [src("notify/battery_alert.rs"), feed] {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!text.contains(p), "{p} in the battery alerts");
         }
@@ -3751,7 +3751,7 @@ fn on_bar_message_feeds_the_battery_alerts() {
 #[test]
 fn a_new_server_gets_the_last_battery_reading() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/app.rs").expect("notify/app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }
@@ -3867,7 +3867,7 @@ fn the_hooks_are_fed_where_state_changes() {
     let text = |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone();
     for (file, signature, call) in [
         ("startup.rs", "fn on_bar_message(", "hooks_msg("),
-        ("notify_app.rs", "fn dnd_apply(", "hooks_dnd("),
+        ("notify/app.rs", "fn dnd_apply(", "hooks_dnd("),
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
         ("privacy/app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
@@ -4793,7 +4793,7 @@ fn the_shield_logs_name_nothing() {
         calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
     }
     for name in
-        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks/app.rs", "watch.rs"]
+        ["quick_app.rs", "notify/app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks/app.rs", "watch.rs"]
     {
         calls.extend(
             log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),

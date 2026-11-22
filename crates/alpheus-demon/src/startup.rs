@@ -738,7 +738,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {
-        state.dnd_load(crate::notify_app::unix_now());
+        state.dnd_load(crate::notify::app::unix_now());
     }
     // The focus timer as it was left (nothing without `timer` in `modules`): its chip, even idle,
     // and its deadline; with the loop handle made, whatever `notifications` is.

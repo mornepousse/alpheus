@@ -6,11 +6,11 @@
 //! draws Top under a fullscreen window.
 
 use crate::actions::{self, Button};
-use crate::bubbles::{self, Activation, BubbleBox, DEFAULT_ACTION};
 use crate::deadline::DeadlineTimer;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
 use crate::log::write as log;
 use crate::notify::CloseReason;
+use crate::notify::bubbles::{self, Activation, BubbleBox, DEFAULT_ACTION};
 use crate::painter::FrameInk;
 use crate::popup::box_size;
 use crate::session_bus::notifications::Notifications;

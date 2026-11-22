@@ -4,12 +4,12 @@
 //! the loop, no thread, no command; one timer, armed only while a timed do-not-disturb is on. The bubbles and the panel reach the server
 //! through `App::notify_do` (tray_bridge.rs).
 
-use crate::battery_alert::incoming;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
-use crate::dnd::{Dnd, parse_saved, saved_text};
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
+use crate::notify::battery_alert::incoming;
+use crate::notify::dnd::{Dnd, parse_saved, saved_text};
 use crate::notify::{Center, NotifyView};
 use crate::session_bus::notifications::{Notifications, minute_now};
 use crate::session_bus::router::TrayOutput;

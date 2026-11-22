@@ -14,7 +14,7 @@ use crate::grid::Target;
 use crate::keys::Key;
 use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
-use crate::notify_app::unix_now;
+use crate::notify::app::unix_now;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
 use crate::quick_dnd::DndChoice;
@@ -399,7 +399,7 @@ impl App {
     }
 
     /// A configured toggle's state, read now; None without its toggle.
-    fn quick_toggle_state(&self, t: Toggle) -> Option<bool> {
+    pub(crate) fn quick_toggle_state(&self, t: Toggle) -> Option<bool> {
         let c = t.config(&self.bar.config.quick);
         if c.toggle.is_empty() {
             return None;

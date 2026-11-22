@@ -823,5 +823,13 @@ impl Center {
     }
 }
 
+pub mod app;
+pub mod battery_alert;
+pub mod bubbles;
+pub mod bubbles_surface;
+pub mod dnd;
+pub mod panel;
+pub mod panel_app;
+
 #[cfg(test)]
 mod tests;

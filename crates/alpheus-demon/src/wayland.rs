@@ -457,7 +457,7 @@ pub struct App {
     /// Mirrors `dnd_timed.model.on`; `dnd_apply` and `dnd_load` set both together.
     pub(crate) dnd: bool,
     /// Its timed model and the timer of its end (notify_app.rs).
-    pub(crate) dnd_timed: crate::notify_app::DndTimed,
+    pub(crate) dnd_timed: crate::notify::app::DndTimed,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -496,10 +496,10 @@ pub struct App {
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
     /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
-    pub(crate) bubbles: crate::bubbles_surface::BubbleSurface,
+    pub(crate) bubbles: crate::notify::bubbles_surface::BubbleSurface,
     /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
     /// a threshold in `[battery] warn`.
-    pub(crate) battery_alerts: Option<crate::battery_alert::BatteryAlerts>,
+    pub(crate) battery_alerts: Option<crate::notify::battery_alert::BatteryAlerts>,
     /// The failed-units notice (failed.rs): only with `[failed] notify` and the failed and
     /// notifications modules.
     pub(crate) failed_notice: Option<crate::failed::Notice>,
@@ -627,8 +627,8 @@ impl App {
         // Only when switched on: otherwise no manager is bound and nothing is allocated.
         let clipboard = bar.config.clipboard.enabled.then(|| crate::clipboard::app::ClipboardApp::bind(globals, qh)).flatten();
         let timer = crate::timer::app::TimerApp::new(&bar.config);
-        let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
-            .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
+        let battery_alerts = crate::notify::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
+            .then(|| crate::notify::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         let failed_notice = crate::failed::notice_wanted(&bar.config).then(crate::failed::Notice::default);
         let hooks = crate::hooks::app::HooksApp::new(&bar.config.hooks);
         let shield = crate::shield::app::ShieldApp::new(&bar.config.shield);
@@ -666,7 +666,7 @@ impl App {
             tray_frame_pending: None,
             link: crate::link::LinkState::new(),
             dnd: false,
-            dnd_timed: crate::notify_app::DndTimed::new(),
+            dnd_timed: crate::notify::app::DndTimed::new(),
             tray_deferred_queued: false,
             tray_ready_queued: false,
             hwheel: Wheel::default(),
@@ -682,7 +682,7 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
-            bubbles: crate::bubbles_surface::BubbleSurface::new(),
+            bubbles: crate::notify::bubbles_surface::BubbleSurface::new(),
             battery_alerts,
             failed_notice,
             hooks,

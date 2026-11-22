@@ -6,7 +6,7 @@ use crate::log::write as log;
 use crate::media::Players;
 use crate::media::popup::MediaAction;
 use crate::notify::Center;
-use crate::panel::{self, Panel, PanelAction};
+use crate::notify::panel::{self, Panel, PanelAction};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::session_bus::mpris::Mpris;
 use crate::tray::bridge::{mpris_of, notifications_of};

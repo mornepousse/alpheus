@@ -1642,7 +1642,7 @@ fn a_timed_dnd_shows_its_end_in_the_switch() {
 
 #[test]
 fn live_works_out_the_local_end_of_a_timed_dnd() {
-    use crate::dnd::Dnd;
+    use crate::notify::dnd::Dnd;
     let bar = Bar::new(crate::config::BarConfig::default());
     let until = 1_800_000_000u64;
     let lt = crate::clock::LocalTime::from_epoch(until as i64);

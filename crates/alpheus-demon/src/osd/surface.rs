@@ -6,12 +6,12 @@
 //! Overlay, because Hyprland draws Top under a fullscreen window.
 
 use crate::backlight;
-use crate::bubbles;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
 use crate::list::Boxed;
 use crate::log::write as log;
+use crate::notify::bubbles;
 use crate::osd::{self, Heard, Osd, Pill};
 use crate::painter::FrameInk;
 use crate::popup::box_size;

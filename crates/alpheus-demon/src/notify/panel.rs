@@ -8,12 +8,12 @@
 //! talks to a bus, starts a thread or runs a command.
 
 use crate::actions::Button;
-use crate::bubbles::{DEFAULT_ACTION, clock};
 use crate::grid::{Grid, Style};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Row};
 use crate::media::Players;
 use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
+use crate::notify::bubbles::{DEFAULT_ACTION, clock};
 use crate::notify::{Center, Entry};
 use std::time::Instant;
 

@@ -22,8 +22,8 @@ use crate::keys::{self, Key, Mods};
 use crate::list::Boxed;
 use crate::log::write as log;
 use crate::media::popup::MediaPopup;
+use crate::notify::panel::Panel;
 use crate::painter::{Frame, FrameInk};
-use crate::panel::Panel;
 use crate::power::Power;
 use crate::quick::Quick;
 use crate::resources::ResourcesPopup;
@@ -302,7 +302,7 @@ pub(crate) struct PopupOps {
 static POPUPS: [PopupOps; 8] = [
     crate::calendar::app::OPS,
     crate::media::app::OPS,
-    crate::panel_app::OPS,
+    crate::notify::panel_app::OPS,
     crate::quick_app::OPS,
     crate::power::app::OPS,
     crate::privacy::app::OPS,
