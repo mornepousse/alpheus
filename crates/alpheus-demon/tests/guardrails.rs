@@ -2395,15 +2395,16 @@ fn the_resources_popup_has_no_panicking_path() {
 /// command run. Production code only.
 #[test]
 fn the_quick_model_and_its_state_reader_only_read() {
-    let mut checked = 0;
+    const QUICK_MODEL_FILES: &[&str] =
+        &["quick/mod.rs", "quick/state.rs", "quick/wifi.rs", "quick/bt.rs", "quick/vpn.rs", "quick/dnd.rs", "quick/shield.rs"];
+    let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
+    let unmatched = unmatched_entries(QUICK_MODEL_FILES, &names);
+    assert!(unmatched.is_empty(), "QUICK_MODEL_FILES names no existing file: {unmatched:?}");
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick/mod.rs", "quick/state.rs", "quick/wifi.rs", "quick/bt.rs", "quick/vpn.rs", "quick/dnd.rs", "quick/shield.rs"]
-            .contains(&name.as_str())
-        {
+        if !QUICK_MODEL_FILES.contains(&name.as_str()) {
             continue;
         }
-        checked += 1;
         let prod = production_code(&t);
         for never in [
             "fs::write",
@@ -2421,7 +2422,6 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 7, "quick/mod.rs, quick/state.rs, quick/wifi.rs, quick/bt.rs, quick/vpn.rs, quick/dnd.rs and quick/shield.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
