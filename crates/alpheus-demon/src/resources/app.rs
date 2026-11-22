@@ -7,7 +7,7 @@ use crate::clock::LocalTime;
 use crate::keys::Key;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
-use crate::resources_popup::{ResourcesAction, ResourcesPopup};
+use crate::resources::{ResourcesAction, ResourcesPopup};
 use crate::startup::on_message;
 use crate::state::Msg;
 use crate::system::Sample;

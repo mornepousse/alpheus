@@ -26,7 +26,7 @@ use crate::painter::{Frame, FrameInk};
 use crate::panel::Panel;
 use crate::power::Power;
 use crate::quick::Quick;
-use crate::resources_popup::ResourcesPopup;
+use crate::resources::ResourcesPopup;
 use crate::session_bus::codec::Layout;
 use crate::session_bus::menu::{Menu, MenuAction};
 use crate::session_bus::menu_session::MenuSession;
@@ -306,7 +306,7 @@ static POPUPS: [PopupOps; 8] = [
     crate::quick_app::OPS,
     crate::power::app::OPS,
     crate::privacy_app::OPS,
-    crate::resources_app::OPS,
+    crate::resources::app::OPS,
     crate::timer::app::OPS,
 ];
 

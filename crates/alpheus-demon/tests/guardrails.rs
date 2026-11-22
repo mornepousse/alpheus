@@ -1628,7 +1628,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
-    "resources_popup.rs",
+    "resources/mod.rs",
     "timer/mod.rs",
     "timer/popup.rs",
     "notes/text.rs",
@@ -2373,10 +2373,10 @@ fn the_osd_has_no_panicking_path() {
 #[test]
 fn the_resources_popup_has_no_panicking_path() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources_popup.rs").expect("resources_popup.rs").1;
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources/mod.rs").expect("resources/mod.rs").1;
     let production = production_code(t);
     for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in resources_popup.rs's production code");
+        assert!(!production.contains(p), "{p} in resources/mod.rs's production code");
     }
 }
 
@@ -3620,7 +3620,7 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
 fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let app = src("resources_app.rs");
+    let app = src("resources/app.rs");
     let tick = function_body(&app, "pub(crate) fn resources_tick(");
     let (applied, shown, painted) = (tick.find("on_message("), tick.find("self.resources_shown()"), tick.find("self.resources_refresh()"));
     assert!(

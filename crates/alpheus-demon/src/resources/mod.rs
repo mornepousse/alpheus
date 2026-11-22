@@ -247,5 +247,7 @@ impl ResourcesPopup {
     }
 }
 
+pub mod app;
+
 #[cfg(test)]
 mod tests;
