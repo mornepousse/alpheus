@@ -160,6 +160,9 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Timer(_)
             | Request::Notes
             | Request::ClipboardClear
+            | Request::Power
+            // The Tools menu's open comes with the glue (plan task 7): until then, not answered here.
+            | Request::Tools
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -654,6 +657,10 @@ mod tests {
             (Request::Clipboard, Some(Script), Action::OpenClipboard, done()),
             (Request::Clipboard, Some(Switcher), Action::OpenClipboard, done()),
             (Request::ClipboardClear, Some(Apps), not_ours(), refused()),
+            // The power menu is answered before the launcher (`Route::Power`); the Tools menu's
+            // open is Task 7: until then `decide` does not know it.
+            (Request::Power, Some(Apps), not_ours(), refused()),
+            (Request::Tools, None, not_ours(), refused()),
             (Request::Toggle, Some(Clipboard), Action::Close(R::Toggle), done()),
             (Request::Close, Some(Clipboard), Action::Close(R::Close), done()),
             (Request::Calc, Some(Clipboard), Action::Close(R::Toggle), done()),

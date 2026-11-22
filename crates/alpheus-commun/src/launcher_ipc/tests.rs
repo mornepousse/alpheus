@@ -51,6 +51,8 @@ fn requests() -> Vec<Request> {
         Request::Notes,
         Request::Clipboard,
         Request::ClipboardClear,
+        Request::Tools,
+        Request::Power,
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsTry("step\tDP-1\t1920x1080@60 0 0 1000 0\nstep\tHDMI-A-1\toff\n".into()),
@@ -106,6 +108,8 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Notes), b"alpheus-launcher/1 notes\n");
     assert_eq!(encode_request(&Request::Clipboard), b"alpheus-launcher/1 clipboard\n");
     assert_eq!(encode_request(&Request::ClipboardClear), b"alpheus-launcher/1 clipboard-clear\n");
+    assert_eq!(encode_request(&Request::Tools), b"alpheus-launcher/1 tools\n");
+    assert_eq!(encode_request(&Request::Power), b"alpheus-launcher/1 power\n");
     assert_eq!(
         encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
         b"alpheus-launcher/1 dmenu - 0\n"
@@ -141,6 +145,8 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 calc now\n",
         b"alpheus-launcher/1 windows now\n",
         b"alpheus-launcher/1 notes now\n",
+        b"alpheus-launcher/1 tools now\n",
+        b"alpheus-launcher/1 power now\n",
         b"alpheus-launcher/1 clipboard now\n",
         b"alpheus-launcher/1 clipboard-clear now\n",
         b"alpheus-launcher/1  toggle\n",

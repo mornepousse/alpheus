@@ -798,3 +798,32 @@ fn clipboard_clear_sends_its_request_and_an_old_daemon_exits_3() {
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
 }
+
+/// Tools spec § 1, § 5: both verbs send their request and exit 0 on Done; a daemon too old for one
+/// answers the unknown request: exit 3, one request; the power menu's refusal is exit 2 with its text.
+#[test]
+fn tools_and_power_send_their_requests_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("tools", Reply::Done);
+    assert_eq!(launch(&["--tools"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Tools);
+    let (socket, daemon) = answering("power", Reply::Done);
+    assert_eq!(launch(&["--power"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Power);
+    for (flag, word) in [("--tools", "tools"), ("--power", "power")] {
+        let (socket, connections, stop, daemon) =
+            replying_daemon(&format!("{word}-old"), Reply::Error(format!("malformed request: unknown request \"{word}\"")));
+        let (code, out, err) = launch(&[flag], &socket, b"");
+        assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+        assert!(err.contains(flag), "{err}");
+        stop.store(true, Ordering::SeqCst);
+        daemon.join().unwrap();
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+    }
+    let refusal = "no session command is set ([quick] lock, logout, reboot, poweroff)";
+    let (socket, _connections, stop, daemon) = replying_daemon("power-refused", Reply::Error(refusal.into()));
+    let (code, out, err) = launch(&["--power"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains(refusal), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+}

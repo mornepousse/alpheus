@@ -318,6 +318,8 @@ impl App {
             | Request::Notes
             | Request::Clipboard
             | Request::ClipboardClear
+            | Request::Tools
+            | Request::Power
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep

@@ -192,6 +192,8 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 Route::Timer => reply_guarded(conn, &state.timer_verb(&request)),
                 // The quick notepad's verb: answered here, its own guard inside.
                 Route::Notes => reply_guarded(conn, &state.notes_verb(&q, &request)),
+                // The ⏻ menu's verb: answered here (it closes an open launcher itself, guarded).
+                Route::Power => reply_guarded(conn, &state.power_verb(&q, &request)),
                 // The displays verbs: answered from the output controller, a try once the
                 // compositor answered (its connection kept until then, `outputs_app.rs`).
                 // The clipboard history's clear: answered here, never the launcher's.
@@ -259,6 +261,7 @@ enum Route {
     Quick,
     Timer,
     Notes,
+    Power,
     Clipboard,
     Displays,
     Launcher,
@@ -271,9 +274,16 @@ fn route(request: &Request) -> Route {
         Request::Quick(_) => Route::Quick,
         Request::Timer(_) => Route::Timer,
         Request::Notes => Route::Notes,
+        Request::Power => Route::Power,
         Request::ClipboardClear => Route::Clipboard,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
-        Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Clipboard | Request::Dmenu { .. } => Route::Launcher,
+        Request::Toggle
+        | Request::Close
+        | Request::Calc
+        | Request::Windows
+        | Request::Clipboard
+        | Request::Tools
+        | Request::Dmenu { .. } => Route::Launcher,
     }
 }
 

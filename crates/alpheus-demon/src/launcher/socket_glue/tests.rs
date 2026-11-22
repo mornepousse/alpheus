@@ -20,6 +20,8 @@ fn each_verb_goes_to_its_handler() {
         (Request::Notes, Route::Notes),
         (Request::ClipboardClear, Route::Clipboard),
         (Request::Clipboard, Route::Launcher),
+        (Request::Tools, Route::Launcher),
+        (Request::Power, Route::Power),
         (Request::Toggle, Route::Launcher),
         (Request::Close, Route::Launcher),
         (Request::Calc, Route::Launcher),

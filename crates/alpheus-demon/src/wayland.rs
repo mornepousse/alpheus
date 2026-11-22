@@ -510,6 +510,8 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
+    /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
+    pub(crate) power_verb_opened: Option<Instant>,
     /// The focus timer's model, lengths and deadline (timer_app.rs); the deadline is armed only
     /// while a timer runs.
     pub(crate) timer: crate::timer_app::TimerApp,
@@ -673,6 +675,7 @@ impl App {
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),
+            power_verb_opened: None,
             timer,
             privacy_timer: DeadlineTimer::new(),
             camera: crate::camera_app::Camera::new(),

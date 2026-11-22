@@ -5173,6 +5173,49 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
+/// Waits until the power menu opened by the verb is on screen: its popup background fills a good
+/// part of the area under the bar's right end (the verb anchors there, not under the button).
+fn power_verb_drawn(sway: &Sway, d: &Daemon) {
+    let bg = rgb(preset("catppuccin").unwrap().dark.popup_bg);
+    let filled = |s: &Ppm| (29..80).flat_map(|y| (0..s.width).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(bg)).count() > 300;
+    assert!(sway.wait_for_screen("HEADLESS-1", filled), "the power menu drawn: {:?}", d.log());
+}
+
+/// Tools spec § 5: `--power` opens the menu under the bar's right end with the keyboard and no grab;
+/// ↓ then Enter runs Lock through the fake loginctl; the verb again, past the debounce, closes it as
+/// "popup closed (verb)"; with all four `[quick]` commands empty it is refused (exit 2's text).
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_verb_opens_and_closes_the_menu() {
+    let (sway, _hypr, d) = power_daemon("power-verb");
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for_count("power menu shown (lock reboot poweroff)", 1, DELAY), "{:?}", d.log());
+    // The press bind re-fired at once: ignored, the menu stays.
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for("power: toggle debounced", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "{:?}", d.log());
+    power_verb_drawn(&sway, &d);
+    keys(&sway, &["Down", "Return"]);
+    assert!(wait_for_call(&sway, "loginctl", "loginctl lock-session"), "{:?} {:?}", recorded(&sway, "loginctl"), d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "systemctl").is_empty(), "nothing else ran");
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for_count("power menu shown (lock reboot poweroff)", 2, DELAY), "{:?}", d.log());
+    power_verb_drawn(&sway, &d);
+    thread::sleep(Duration::from_millis(400)); // past the verb's own open's debounce
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("power menu shown"), 2, "closed, not reopened: {:?}", d.log());
+
+    let sway = Sway::start("power-verb-refused", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let bar = "modules = [\"clock\"]\n[quick]\nlock = []\nlogout = []\nreboot = []\npoweroff = []\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Error("no session command is set ([quick] lock, logout, reboot, poweroff)".into()));
+    assert_eq!(d.count("power menu shown"), 0, "{:?}", d.log());
+}
+
 // ---- The resources popup (resources popup plan). The daemon reads the host's real /proc and
 // /sys, so only the memory graph is looked for: it has a point on any machine. ----
 
