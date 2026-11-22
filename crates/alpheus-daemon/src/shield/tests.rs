@@ -1,3 +1,7 @@
+//! Tests of Shield mode's model (`mod.rs`): the flag's readings and edges, the attempt of a switch
+//! and its deadlines, the action and read slots, the status text, the notices and what each verb asks
+//! for. No clock, no file but a temporary flag, no daemon: each test passes the time it wants.
+
 use super::*;
 use alpheus_common::temp_path::TempPath;
 
@@ -88,15 +92,18 @@ fn the_view_follows_the_config() {
 
 use crate::shield::usb::UsbDevice;
 
-fn t0() -> Instant {
+/// The instant a test counts from.
+fn start_time() -> Instant {
     Instant::now()
 }
 
-fn secs(base: Instant, s: u64) -> Instant {
+/// `base` plus `s` seconds.
+fn seconds_after(base: Instant, s: u64) -> Instant {
     base + Duration::from_secs(s)
 }
 
-fn done(job: Job, generation: u64, outcome: RunOutcome) -> ShieldMail {
+/// A worker's report of `job`, `generation` and `outcome`, with no listing.
+fn done_mail(job: Job, generation: u64, outcome: RunOutcome) -> ShieldMail {
     ShieldMail::Done { job, generation, outcome, listed: None }
 }
 
@@ -111,56 +118,56 @@ fn switching_on(now: Instant) -> (Shield, u64) {
 
 #[test]
 fn the_attempt_ends_on_the_flag_the_exit_or_the_deadline() {
-    let now = t0();
+    let now = start_time();
     // The flag first, then the exit.
     let (mut s, g) = switching_on(now);
-    let (edge, fin) = s.flag(Some(true), secs(now, 1));
+    let (edge, fin) = s.flag(Some(true), seconds_after(now, 1));
     assert_eq!((edge, fin), (Some(Edge::On), Some(Finish::Switched(true))));
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 2)), None, "late Done: slot only");
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 2)), None, "late Done: slot only");
     // The exit 0 first, then the flag within the grace.
     let (mut s, g) = switching_on(now);
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 2)), None);
-    assert_eq!(s.flag(Some(true), secs(now, 3)).1, Some(Finish::Switched(true)));
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 2)), None);
+    assert_eq!(s.flag(Some(true), seconds_after(now, 3)).1, Some(Finish::Switched(true)));
     // A non-zero exit fails at once.
     let (mut s, g) = switching_on(now);
     assert_eq!(
-        s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(3))), secs(now, 2)),
+        s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(3))), seconds_after(now, 2)),
         Some(Finish::SwitchFailed(true, Reason::Exit(3)))
     );
     // A signal.
     let (mut s, g) = switching_on(now);
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(None)), now), Some(Finish::SwitchFailed(true, Reason::Killed)));
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(None)), now), Some(Finish::SwitchFailed(true, Reason::Killed)));
     // Exit 0, then 5 s with no flag.
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 10));
-    assert_eq!(s.expired(secs(now, 14)), None, "inside the grace");
-    assert_eq!(s.expired(secs(now, 15)), Some(Finish::SwitchFailed(true, Reason::NoChangeAfter)));
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 10));
+    assert_eq!(s.expired(seconds_after(now, 14)), None, "inside the grace");
+    assert_eq!(s.expired(seconds_after(now, 15)), Some(Finish::SwitchFailed(true, Reason::NoChangeAfter)));
     // Nothing for 60 s.
     let (mut s, _) = switching_on(now);
-    assert_eq!(s.expired(secs(now, 59)), None);
-    assert_eq!(s.expired(secs(now, 60)), Some(Finish::SwitchFailed(true, Reason::NoChangeIn60)));
+    assert_eq!(s.expired(seconds_after(now, 59)), None);
+    assert_eq!(s.expired(seconds_after(now, 60)), Some(Finish::SwitchFailed(true, Reason::NoChangeIn60)));
     // The worker's own deadline.
     let (mut s, g) = switching_on(now);
     assert_eq!(
-        s.done(done(Job::Switch(true), g, RunOutcome::TimedOut), secs(now, 60)),
+        s.done(done_mail(Job::Switch(true), g, RunOutcome::TimedOut), seconds_after(now, 60)),
         Some(Finish::SwitchFailed(true, Reason::NoChangeIn60))
     );
     // Output past the cap: keep waiting for the flag; the bound says output too long.
     let (mut s, g) = switching_on(now);
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Capped), secs(now, 5)), None);
-    assert_eq!(s.expired(secs(now, 60)), Some(Finish::SwitchFailed(true, Reason::OutputTooLong)));
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Capped), seconds_after(now, 5)), None);
+    assert_eq!(s.expired(seconds_after(now, 60)), Some(Finish::SwitchFailed(true, Reason::OutputTooLong)));
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Capped), secs(now, 5));
-    assert_eq!(s.flag(Some(true), secs(now, 6)).1, Some(Finish::Switched(true)), "capped, then the flag");
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Capped), seconds_after(now, 5));
+    assert_eq!(s.flag(Some(true), seconds_after(now, 6)).1, Some(Finish::Switched(true)), "capped, then the flag");
     // The 5 s grace after an exit 0 is not cut by the 60 s bound (final fix wave M2), and it says so.
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 58));
-    assert_eq!(s.deadline(), Some(secs(now, 63)));
-    assert_eq!(s.expired(secs(now, 60)), None, "the command ended at 58 s: its flag has until 63 s");
-    assert_eq!(s.flag(Some(true), secs(now, 62)).1, Some(Finish::Switched(true)), "a flag at 62 s still counts");
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 58));
+    assert_eq!(s.deadline(), Some(seconds_after(now, 63)));
+    assert_eq!(s.expired(seconds_after(now, 60)), None, "the command ended at 58 s: its flag has until 63 s");
+    assert_eq!(s.flag(Some(true), seconds_after(now, 62)).1, Some(Finish::Switched(true)), "a flag at 62 s still counts");
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 58));
-    assert_eq!(s.expired(secs(now, 63)), Some(Finish::SwitchFailed(true, Reason::NoChangeAfter)));
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 58));
+    assert_eq!(s.expired(seconds_after(now, 63)), Some(Finish::SwitchFailed(true, Reason::NoChangeAfter)));
     // Missing and unstartable programs, and a panicked worker.
     for (o, r) in [
         (RunOutcome::NotFound, Reason::NotFound),
@@ -168,52 +175,52 @@ fn the_attempt_ends_on_the_flag_the_exit_or_the_deadline() {
         (RunOutcome::WorkerFailed, Reason::CouldNotStart),
     ] {
         let (mut s, g) = switching_on(now);
-        assert_eq!(s.done(done(Job::Switch(true), g, o), now), Some(Finish::SwitchFailed(true, r)));
+        assert_eq!(s.done(done_mail(Job::Switch(true), g, o), now), Some(Finish::SwitchFailed(true, r)));
     }
 }
 
 #[test]
 fn a_late_change_clears_failed() {
-    let now = t0();
+    let now = start_time();
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(1))), now);
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(1))), now);
     assert!(s.view(&ShieldConfig::default(), now).failed_until.is_some());
     // The helper finished after all: the flag appears, long after `failed`.
-    let (edge, fin) = s.flag(Some(true), secs(now, 3));
+    let (edge, fin) = s.flag(Some(true), seconds_after(now, 3));
     assert_eq!((edge, fin), (Some(Edge::On), None), "an edge as any other, no attempt to end");
-    assert_eq!(s.view(&ShieldConfig::default(), secs(now, 3)).failed_until, None);
+    assert_eq!(s.view(&ShieldConfig::default(), seconds_after(now, 3)).failed_until, None);
 }
 
 #[test]
 fn one_action_slot_until_done() {
-    let now = t0();
+    let now = start_time();
     let (mut s, g) = switching_on(now);
     assert!(s.action_busy());
     assert_eq!(s.begin_switch(now), None);
     assert_eq!(s.begin_allow(7, "Test Stick".into(), now), None);
     // The bound passes, the attempt fails, the slot is still held (a setuid helper the deadline cannot kill).
-    assert!(s.expired(secs(now, 60)).is_some());
+    assert!(s.expired(seconds_after(now, 60)).is_some());
     assert!(s.action_busy(), "held until its worker reports");
-    assert_eq!(s.begin_switch(secs(now, 61)), None);
-    assert_eq!(s.begin_allow(7, "x".into(), secs(now, 61)), None);
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 70)), None);
+    assert_eq!(s.begin_switch(seconds_after(now, 61)), None);
+    assert_eq!(s.begin_allow(7, "x".into(), seconds_after(now, 61)), None);
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 70)), None);
     assert!(!s.action_busy());
-    assert!(s.begin_allow(7, "x".into(), secs(now, 71)).is_some());
+    assert!(s.begin_allow(7, "x".into(), seconds_after(now, 71)).is_some());
 }
 
 #[test]
 fn a_late_done_frees_the_slot_only() {
-    let now = t0();
+    let now = start_time();
     let (mut s, g) = switching_on(now);
-    s.expired(secs(now, 60));
+    s.expired(seconds_after(now, 60));
     let (_, g2) = {
         // The first worker reports, then a second attempt runs.
-        s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 61));
-        s.begin_switch(secs(now, 62)).unwrap()
+        s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 61));
+        s.begin_switch(seconds_after(now, 62)).unwrap()
     };
     assert_ne!(g, g2);
     // A stray report for the first generation cannot end the second attempt.
-    assert_eq!(s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(5))), secs(now, 63)), None);
+    assert_eq!(s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(5))), seconds_after(now, 63)), None);
     assert!(s.switching(), "the second attempt is untouched");
 }
 
@@ -224,19 +231,20 @@ fn one_read_at_a_time() {
     assert!(!s.begin_list(), "the second asker joins the read");
     let p = Parsed { devices: vec![UsbDevice { id: 1, vid_pid: "1234:5678".into(), name: "Test Stick".into() }], more: false };
     let m = ShieldMail::Done { job: Job::List, generation: 0, outcome: RunOutcome::Exited(Some(0)), listed: Some(p.clone()) };
-    assert_eq!(s.done(m, t0()), Some(Finish::Listed(p)));
+    assert_eq!(s.done(m, start_time()), Some(Finish::Listed(p)));
     assert!(s.begin_list(), "free again");
-    let failed = |o| s_done_list(o);
+    let failed = |o| list_finish(o);
     assert_eq!(failed(RunOutcome::TimedOut), Finish::ListFailed(Reason::TimedOut));
     assert_eq!(failed(RunOutcome::Capped), Finish::ListFailed(Reason::OutputTooLong));
     assert_eq!(failed(RunOutcome::Exited(Some(1))), Finish::ListFailed(Reason::Exit(1)));
     assert_eq!(failed(RunOutcome::NotFound), Finish::ListFailed(Reason::NotFound));
 }
 
-fn s_done_list(o: RunOutcome) -> Finish {
+/// What a new model says when the one read it began ends as `o`.
+fn list_finish(o: RunOutcome) -> Finish {
     let mut s = Shield::default();
     s.begin_list();
-    s.done(done(Job::List, 0, o), t0()).unwrap()
+    s.done(done_mail(Job::List, 0, o), start_time()).unwrap()
 }
 
 #[test]
@@ -245,44 +253,55 @@ fn a_read_does_not_hold_the_action_slot() {
     s.observe(Some(true));
     assert!(s.begin_list());
     assert!(!s.action_busy());
-    assert!(s.begin_switch(t0()).is_some());
-    s.done(done(Job::List, 0, RunOutcome::TimedOut), t0());
+    assert!(s.begin_switch(start_time()).is_some());
+    s.done(done_mail(Job::List, 0, RunOutcome::TimedOut), start_time());
     assert!(s.action_busy(), "a read's report never frees the action slot");
 }
 
 #[test]
 fn unknown_state_starts_nothing() {
     let mut s = Shield::default();
-    assert_eq!(s.begin_switch(t0()), None);
+    assert_eq!(s.begin_switch(start_time()), None);
     s.observe(Some(true));
     s.observe(None);
-    assert_eq!(s.begin_switch(t0()), None);
+    assert_eq!(s.begin_switch(start_time()), None);
     assert!(!s.action_busy(), "a refused start holds nothing");
 }
 
 #[test]
-fn failed_shows_4_s() {
-    let now = t0();
+fn a_failed_switch_shows_for_four_seconds_and_clears_once() {
+    let now = start_time();
     let (mut s, g) = switching_on(now);
-    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(1))), now);
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(1))), now);
     let c = ShieldConfig::default();
-    assert_eq!(s.view(&c, now).failed_until, Some(secs(now, 4)));
-    assert!(!s.due(secs(now, 3)));
-    assert!(s.due(secs(now, 4)));
-    assert_eq!(s.view(&c, secs(now, 4)).failed_until, None);
-    assert!(!s.due(secs(now, 5)), "once");
+    assert_eq!(s.view(&c, now).failed_until, Some(seconds_after(now, 4)));
+    assert!(!s.due(seconds_after(now, 3)));
+    assert!(s.due(seconds_after(now, 4)));
+    assert_eq!(s.view(&c, seconds_after(now, 4)).failed_until, None);
+    assert!(!s.due(seconds_after(now, 5)), "once");
+}
+
+#[test]
+fn a_failed_switch_is_not_in_the_view_from_its_end_time_even_before_due_runs() {
+    let now = start_time();
+    let (mut s, g) = switching_on(now);
+    s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(1))), now);
+    let c = ShieldConfig::default();
+    // `due` has not run: the view alone decides, at the last instant before the end and at it.
+    assert_eq!(s.view(&c, seconds_after(now, 4) - Duration::from_millis(1)).failed_until, Some(seconds_after(now, 4)));
+    assert_eq!(s.view(&c, seconds_after(now, 4)).failed_until, None, "an end time that has come is not shown");
 }
 
 #[test]
 fn the_deadline_follows_the_grace() {
-    let now = t0();
+    let now = start_time();
     let mut s = Shield::default();
     assert_eq!(s.deadline(), None);
     let (mut s2, g) = switching_on(now);
-    assert_eq!(s2.deadline(), Some(secs(now, 60)));
-    s2.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 3));
-    assert_eq!(s2.deadline(), Some(secs(now, 8)), "the grace");
-    s2.flag(Some(true), secs(now, 4));
+    assert_eq!(s2.deadline(), Some(seconds_after(now, 60)));
+    s2.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 3));
+    assert_eq!(s2.deadline(), Some(seconds_after(now, 8)), "the grace");
+    s2.flag(Some(true), seconds_after(now, 4));
     assert_eq!(s2.deadline(), None, "none after a success");
     // An allow never arms the shield's timer.
     s.observe(Some(true));
@@ -290,29 +309,29 @@ fn the_deadline_follows_the_grace() {
     assert_eq!(s.deadline(), None);
     // A failure leaves none either.
     let (mut s3, g) = switching_on(now);
-    s3.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(2))), now);
+    s3.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(2))), now);
     assert_eq!(s3.deadline(), None);
 }
 
 #[test]
 fn an_allow_ends_on_its_exit() {
-    let now = t0();
+    let now = start_time();
     let mut s = Shield::default();
     s.observe(Some(true));
     let g = s.begin_allow(7, "Test Stick".into(), now).unwrap();
-    assert_eq!(s.done(done(Job::Allow(7), g, RunOutcome::Exited(Some(0))), now), Some(Finish::Allowed(7, "Test Stick".into())));
+    assert_eq!(s.done(done_mail(Job::Allow(7), g, RunOutcome::Exited(Some(0))), now), Some(Finish::Allowed(7, "Test Stick".into())));
     let g = s.begin_allow(8, "Other".into(), now).unwrap();
-    assert_eq!(s.done(done(Job::Allow(8), g, RunOutcome::Exited(Some(1))), now), Some(Finish::AllowFailed(8, Reason::Exit(1))));
+    assert_eq!(s.done(done_mail(Job::Allow(8), g, RunOutcome::Exited(Some(1))), now), Some(Finish::AllowFailed(8, Reason::Exit(1))));
     for (o, r) in
         [(RunOutcome::Capped, Reason::OutputTooLong), (RunOutcome::TimedOut, Reason::TimedOut), (RunOutcome::NotFound, Reason::NotFound)]
     {
         let g = s.begin_allow(9, "Other".into(), now).unwrap();
-        assert_eq!(s.done(done(Job::Allow(9), g, o), now), Some(Finish::AllowFailed(9, r)));
+        assert_eq!(s.done(done_mail(Job::Allow(9), g, o), now), Some(Finish::AllowFailed(9, r)));
     }
 }
 
 #[test]
-fn status_text_reads() {
+fn the_status_text_lists_the_devices_only_while_on_and_listable() {
     let p = Parsed {
         devices: vec![
             UsbDevice { id: 1, vid_pid: "1234:5678".into(), name: "Test Stick".into() },
@@ -332,7 +351,7 @@ fn status_text_reads() {
 }
 
 #[test]
-fn reasons_are_the_closed_list() {
+fn each_reason_has_its_fixed_words() {
     let all = [
         (Reason::Exit(126), "exit 126"),
         (Reason::Killed, "killed"),
@@ -349,7 +368,7 @@ fn reasons_are_the_closed_list() {
 }
 
 #[test]
-fn the_notices_read() {
+fn each_notice_has_its_summary_and_body() {
     let c = ShieldConfig::default();
     assert_eq!(notice(&NoticeKind::On, &c), ("Shield on".into(), "Protections for public networks are on.".into()));
     assert_eq!(notice(&NoticeKind::Off, &c), ("Shield off".into(), "Back to the usual settings.".into()));
@@ -364,61 +383,63 @@ fn the_notices_read() {
 
 // ---- the verbs' decisions (shield spec § 9) ----
 
-fn ctx(state: Option<bool>) -> VerbCtx {
+/// What the model knows for a verb: `state`, no command running, both commands configured.
+fn verb_context(state: Option<bool>) -> VerbCtx {
     VerbCtx { state, action_busy: false, can_list: true, can_allow: true }
 }
 
-fn error(t: &str) -> VerbPlan {
+/// The plan that refuses with `t`.
+fn error_plan(t: &str) -> VerbPlan {
     VerbPlan::Answer(Reply::Error(t.into()))
 }
 
 #[test]
 fn on_and_off_in_the_asked_state_run_nothing() {
-    assert_eq!(plan_verb(ShieldVerb::On, &ctx(Some(true))), VerbPlan::Answer(Reply::Done));
-    assert_eq!(plan_verb(ShieldVerb::Off, &ctx(Some(false))), VerbPlan::Answer(Reply::Done));
-    assert_eq!(plan_verb(ShieldVerb::On, &ctx(Some(false))), VerbPlan::Switch(true));
-    assert_eq!(plan_verb(ShieldVerb::Off, &ctx(Some(true))), VerbPlan::Switch(false));
-    assert_eq!(plan_verb(ShieldVerb::Toggle, &ctx(Some(true))), VerbPlan::Switch(false));
-    assert_eq!(plan_verb(ShieldVerb::Toggle, &ctx(Some(false))), VerbPlan::Switch(true));
+    assert_eq!(plan_verb(ShieldVerb::On, &verb_context(Some(true))), VerbPlan::Answer(Reply::Done));
+    assert_eq!(plan_verb(ShieldVerb::Off, &verb_context(Some(false))), VerbPlan::Answer(Reply::Done));
+    assert_eq!(plan_verb(ShieldVerb::On, &verb_context(Some(false))), VerbPlan::Switch(true));
+    assert_eq!(plan_verb(ShieldVerb::Off, &verb_context(Some(true))), VerbPlan::Switch(false));
+    assert_eq!(plan_verb(ShieldVerb::Toggle, &verb_context(Some(true))), VerbPlan::Switch(false));
+    assert_eq!(plan_verb(ShieldVerb::Toggle, &verb_context(Some(false))), VerbPlan::Switch(true));
     // Even while a command runs: nothing to start, nothing wrong.
-    let busy = VerbCtx { action_busy: true, ..ctx(Some(true)) };
+    let busy = VerbCtx { action_busy: true, ..verb_context(Some(true)) };
     assert_eq!(plan_verb(ShieldVerb::On, &busy), VerbPlan::Answer(Reply::Done));
 }
 
 #[test]
 fn a_verb_while_busy_is_an_error() {
-    let busy = VerbCtx { action_busy: true, ..ctx(Some(false)) };
+    let busy = VerbCtx { action_busy: true, ..verb_context(Some(false)) };
     for v in [ShieldVerb::On, ShieldVerb::Toggle] {
-        assert_eq!(plan_verb(v, &busy), error(ERR_BUSY), "{v:?}");
+        assert_eq!(plan_verb(v, &busy), error_plan(ERR_BUSY), "{v:?}");
     }
-    let busy_on = VerbCtx { action_busy: true, ..ctx(Some(true)) };
-    assert_eq!(plan_verb(ShieldVerb::Off, &busy_on), error(ERR_BUSY));
+    let busy_on = VerbCtx { action_busy: true, ..verb_context(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Off, &busy_on), error_plan(ERR_BUSY));
 }
 
 #[test]
 fn an_unknown_state_is_an_error_but_for_status() {
     for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Allow] {
-        assert_eq!(plan_verb(v, &ctx(None)), error(ERR_UNKNOWN), "{v:?}");
+        assert_eq!(plan_verb(v, &verb_context(None)), error_plan(ERR_UNKNOWN), "{v:?}");
     }
-    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(None)), VerbPlan::Answer(Reply::Shield("Shield: unknown".into())));
+    assert_eq!(plan_verb(ShieldVerb::Status, &verb_context(None)), VerbPlan::Answer(Reply::Shield("Shield: unknown".into())));
 }
 
 #[test]
 fn status_reads_the_list_only_while_on_and_listable() {
-    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(Some(true))), VerbPlan::StatusRead);
-    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(Some(false))), VerbPlan::Answer(Reply::Shield("Shield: off".into())));
-    let nolist = VerbCtx { can_list: false, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Status, &verb_context(Some(true))), VerbPlan::StatusRead);
+    assert_eq!(plan_verb(ShieldVerb::Status, &verb_context(Some(false))), VerbPlan::Answer(Reply::Shield("Shield: off".into())));
+    let nolist = VerbCtx { can_list: false, ..verb_context(Some(true)) };
     assert_eq!(plan_verb(ShieldVerb::Status, &nolist), VerbPlan::Answer(Reply::Shield("Shield: on".into())));
 }
 
 #[test]
 fn allow_needs_the_mode_on_and_both_commands() {
-    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(true))), VerbPlan::AllowRead);
-    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(false))), error(ERR_OFF));
-    let noallow = VerbCtx { can_allow: false, ..ctx(Some(true)) };
-    assert_eq!(plan_verb(ShieldVerb::Allow, &noallow), error(ERR_NO_ALLOW));
-    let nolist = VerbCtx { can_list: false, ..ctx(Some(true)) };
-    assert_eq!(plan_verb(ShieldVerb::Allow, &nolist), error(ERR_NO_ALLOW));
+    assert_eq!(plan_verb(ShieldVerb::Allow, &verb_context(Some(true))), VerbPlan::AllowRead);
+    assert_eq!(plan_verb(ShieldVerb::Allow, &verb_context(Some(false))), error_plan(ERR_OFF));
+    let noallow = VerbCtx { can_allow: false, ..verb_context(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Allow, &noallow), error_plan(ERR_NO_ALLOW));
+    let nolist = VerbCtx { can_list: false, ..verb_context(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Allow, &nolist), error_plan(ERR_NO_ALLOW));
 }
 
 #[test]

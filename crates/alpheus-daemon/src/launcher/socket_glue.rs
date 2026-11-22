@@ -200,7 +200,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 Route::Clipboard => reply_guarded(conn, &state.clipboard_verb(&request)),
                 Route::Displays => state.displays_verb(&request, conn),
                 // Shield mode's verbs: answered here; `status` and `allow` keep the connection while
-                // the blocked devices are read (`shield_app.rs`).
+                // the blocked devices are read (`shield/app.rs`).
                 Route::Shield => state.shield_verb(&request, conn),
                 // The failed-units count's verb: answered here, nothing of the launcher's.
                 Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),

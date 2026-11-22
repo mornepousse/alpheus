@@ -1,3 +1,6 @@
+//! Tests of USBGuard's line format (`usb.rs`): a device line, the quote-aware reading of a hostile
+//! name, the checks on ids, the cap on devices and the picker's row. Fictional devices only.
+
 use super::*;
 
 const LINE: &str = r#"12: block id 1234:5678 serial "S1" name "Test Stick" hash "h" parent-hash "p" via-port "1-2" with-interface 08:06:50 with-connect-type "hotplug""#;
@@ -58,6 +61,29 @@ fn ids_and_vid_pid_are_checked() {
     assert!(one(r#"12: block id gggg:5678 name "A""#).is_none(), "not hex");
     assert!(one(r#"-1: block id 1234:5678 name "A""#).is_none());
     assert_eq!(one(r#"4294967295: block id 1234:5678 name "A""#).unwrap().id, u32::MAX);
+}
+
+#[test]
+fn a_vendor_and_product_id_is_two_groups_of_exactly_four_hex_digits_around_a_colon() {
+    assert!(one(r#"12: block id 12345:5678 name "A""#).is_none(), "five digits for the vendor");
+    assert!(one(r#"12: block id 1234:56789 name "A""#).is_none(), "five digits for the product");
+    assert!(one(r#"12: block id 12345678 name "A""#).is_none(), "no colon");
+    assert!(one(r#"12: block id "1234:5678" name "A""#).is_none(), "a quoted string is not the ids");
+}
+
+#[test]
+fn only_bare_words_count_as_the_block_and_id_words() {
+    assert!(one(r#"12: "block" id 1234:5678 name "A""#).is_none(), "a quoted block");
+    assert!(one(r#"12: block "id" 1234:5678 name "A""#).is_none(), "a quoted id");
+    assert!(one(r#"12: block ids 1234:5678 name "A""#).is_none(), "another word");
+    assert!(one("12: block").is_none(), "nothing after block");
+}
+
+#[test]
+fn the_name_is_the_quoted_value_right_after_a_bare_name_word() {
+    assert_eq!(one(r#"12: block id 1234:5678 serial "name" "Fake""#).unwrap().name, "?", "a quoted name is a value, not the word");
+    assert_eq!(one(r#"12: block id 1234:5678 name Fake"#).unwrap().name, "?", "an unquoted value is not a name");
+    assert_eq!(one(r#"12: block id 1234:5678 name"#).unwrap().name, "?", "the word name with no value");
 }
 
 #[test]

@@ -63,7 +63,7 @@ pub struct ShieldPanel {
     pub failed: Option<(u32, Instant)>,
     /// `allow` is configured: device rows are selectable (`fit`'s copy of the view's).
     pub can_allow: bool,
-    /// A read of the devices is wanted: taken by the wiring (`shield_app::shield_panel_sync`).
+    /// A read of the devices is wanted: taken by the wiring (`App::shield_panel_sync`, in `shield/app.rs`).
     pub read_wanted: bool,
     /// The row's own `failed` ends at this instant (the view's `failed_until`, copied by `fit`).
     row_failed: Option<Instant>,

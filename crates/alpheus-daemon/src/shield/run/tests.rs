@@ -1,3 +1,6 @@
+//! Tests of the Shield runner (`run.rs`): the exit code a command reports, a listing parsed on the
+//! worker, and the worker delivering exactly once. A fake executor stands in for every program.
+
 use super::*;
 use alpheus_common::exec::fake::FakeExecutor;
 use alpheus_common::exec::{Captured, Output};

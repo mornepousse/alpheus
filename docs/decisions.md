@@ -743,3 +743,103 @@ the theme watch untouched and the two lifetimes apart, at the cost of one file d
 1's spec had planned to use the existing instance.
 
 Date: 2026-10-20 · Source: privacy camera spec § 4 (amendment of delivery 1's § 10)
+
+### An unknown Shield state is never read as off
+
+The mode is on while the flag file exists, off when it does not, and unknown when its existence cannot
+be told (any error but "not found"). Unknown is not off: the switch reads `·`, the bar draws nothing,
+Space and `toggle` do nothing, and the detail says `Shield state unknown` instead of `Shield is off`.
+The spec gives the rule as "never "off" on a guess", the rule of `[quick]`'s `file:` states.
+
+Date: 2026-11-21 · Source: shield spec § 3 and § 14, items 5 and 16
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### A Shield switch succeeds when the flag reaches its target
+
+A switch to on or off is judged by the flag file, not by the command's exit code: it succeeds when the
+flag reaches its target, before or after the command exits. A non-zero exit fails at once, after one
+look at the flag; an exit 0 gives the flag 5 s; a command still running after 60 s fails the switch
+(without being killed). The flag is the truth: a change that arrives late clears `failed` and is
+announced like any change.
+
+Date: 2026-11-21 · Source: shield spec § 7 and § 14, item 7
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### A running Shield command is never killed at its deadline
+
+The 60 s deadline judges a switch and kills nothing. A command's output goes to `/dev/null` and it is
+waited for with no bound of its own: a pipe that alpheus closed at a deadline or at shutdown would
+kill a privileged helper on its next write, half way through its work (a setuid `pkexec` cannot be
+signalled, but SIGPIPE reaches it). At shutdown the daemon stops only the commands it can still
+reach; one already running as root finishes.
+
+Date: 2026-11-21 · Source: shield spec § 7 and § 14, item 6 (final fix wave)
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### Shield commands and reads run on a short-lived thread
+
+`on`, `off` and `allow` (through `run_silent`) and the listing of blocked devices (through `capture`)
+each run on a thread that lives only while the job runs, and mail the outcome back. A `failed` on a
+non-zero exit is wanted, and only a command that is waited for gives an exit code; a detached spawn
+never sees one.
+
+Date: 2026-11-21 · Source: shield spec § 14, item 6; § 13 (the rejected detached spawns)
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### A Shield verb for the state already held runs nothing
+
+`alpheus-launch --shield on` while the mode is on (and `off` while off) answers `Done` and runs no
+command. Running the configured `on` again could repeat a real effect (the spec's example is
+regenerating the USB policy), which a stray key should not cause.
+
+Date: 2026-11-21 · Source: shield spec § 14, item 9; § 9
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### The picker line starts with the checked vendor and product ids
+
+A blocked device is shown as `<vid:pid>  ·  <name>`, with no USBGuard id. The ids are checked text and
+come first, so a hostile name ending in `(1234:5678)` cannot pose as them; the device id means nothing
+to the user and stays inside the daemon. `status` prints the same line.
+
+Date: 2026-11-21 · Source: shield spec § 14, item 13 (final fix wave)
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### The blocked USB devices are read when asked, never watched
+
+The list is read once each time the detail opens, once after an allow, for `status` and for the
+picker; never when a device is plugged, and nothing is read while the mode is off. Reopening the
+detail is the refresh. The design rejects a notice on every plug: that is background watching, and
+allowing stays a deliberate gesture.
+
+Date: 2026-11-21 · Source: shield spec § 11, § 13 and § 14, item 12
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### The Shield flag may not share a directory with alpheus's configuration
+
+The flag's directory and its parent may equal neither the configuration directory nor its parent;
+otherwise Shield mode is turned off with a warning at start. The theme target and the flag target
+would then share inotify watch descriptors (one inode, one descriptor), and re-arming one would drop
+the other. An alias the paths do not show (a symlink, a bind mount) is caught when the watch arms: the
+flag is then not watched and the unwatched mode applies.
+
+Date: 2026-11-21 · Source: shield spec § 14, item 3; shield plan 1, "Decisions written down", item 9
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### The Shield flag is watched in the theme watch's inotify instance
+
+The flag's directory is a second target of the theme watch's one inotify instance, so Shield adds no
+descriptor, thread or timer (the spec's wording is "no new fd, thread or timer"). The instance is
+created when either target needs it, and one target failing to arm leaves the other working. This is
+the opposite of the camera watch, which has an instance of its own.
+
+Date: 2026-11-21 · Source: shield spec § 3 and § 14, item 4
+
+Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)

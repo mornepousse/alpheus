@@ -1,5 +1,31 @@
-//! Shield mode on the `App` (shield spec): the model, the start and the flag's re-reads. Nothing
-//! exists without a configured `[shield]` (every call site is one `Option` check).
+//! Shield mode on the daemon's state: the model, the start and the flag's re-reads, the verbs, the
+//! workers that run the commands, the timer and the notices.
+//!
+//! This is the wiring half of Shield mode. `mod.rs` holds the pure rules (the state, its edges, the
+//! attempt of a switch, what each verb asks for); this file hands them what happens (the flag
+//! changed, a worker reported, a verb arrived, the timer fired) and carries out what they answer:
+//! it starts a worker, sends a notice, repaints the bar and the panel. Nothing exists without a
+//! configured `[shield]`: `App.shield` is then None and every call site is one `Option` check.
+//!
+//! The path of a switch: a click or a verb reaches `shield_switch`, which asks the model to begin
+//! and starts one worker (`shield_spawn`, in `run.rs`); the worker's report comes back as
+//! `Mail::Shield` to `shield_mail`; the flag's change, seen by the watch, reaches `shield_readable`,
+//! which settles the attempt, logs and announces the edge, and calls the hook.
+//!
+//! Never:
+//! - run anything but the argv the user configured, or do root work: the commands go through
+//!   `run.rs`, which builds no shell command;
+//! - write a device name, an id, a command, an argument or a path into a log line: the lines are
+//!   fixed words (a guardrail, `the_shield_logs_name_nothing`, reads them);
+//! - poll: the flag is watched, and re-read at events; the one timer is armed only while a switch
+//!   waits for its flag;
+//! - create a watch of its own: the flag is watched in the theme watch's inotify instance (a
+//!   guardrail, `the_shield_watch_is_the_theme_watchs_instance`).
+//!
+//! See: docs/specs/2026-11-21-alpheus-shield-design.md, docs/features/shield.md, and
+//! docs/decisions.md ("A Shield switch succeeds when the flag reaches its target", "Shield
+//! commands and reads run on a short-lived thread", "The Shield flag is watched in the theme
+//! watch's inotify instance").
 
 use crate::config::ShieldConfig;
 use crate::deadline::DeadlineTimer;
@@ -12,7 +38,7 @@ use crate::shield::run::spawn_job;
 use crate::shield::usb::{Parsed, allow_argv};
 use crate::shield::{
     ERR_BUSY, ERR_NO_ALLOW, ERR_NOT_CONFIGURED, ERR_OFF, ERR_SAME, ERR_UNKNOWN, Edge, Finish, Job, NoticeKind, Reason, RunOutcome, Shield,
-    ShieldMail, VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
+    ShieldMail, ShieldView, VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
 };
 use crate::startup::Mail;
 use crate::wayland::App;
@@ -36,6 +62,8 @@ pub(crate) enum Waiter {
     Picker(Pending),
 }
 
+/// Everything Shield mode keeps on the `App`: the model, the configuration, the timer and who waits
+/// for the read of the blocked devices.
 pub(crate) struct ShieldApp {
     pub(crate) model: Shield,
     pub(crate) config: ShieldConfig,
@@ -45,15 +73,18 @@ pub(crate) struct ShieldApp {
     askers: Vec<ListFor>,
     /// The verbs' clients waiting for that read.
     waiting: Vec<Waiter>,
-    /// The last read of the blocked devices (the detail, the picker and `status` take it).
-    #[allow(dead_code)] // read by the detail and the verbs (tasks 5 and 6)
+    /// The last read of the blocked devices, kept only while the quick panel is open (the allow takes
+    /// the device's name from it).
     pub(crate) listing: Option<Result<Parsed, Reason>>,
 }
 
 impl ShieldApp {
     /// None unless `[shield]` is configured.
     pub(crate) fn new(config: &ShieldConfig) -> Option<ShieldApp> {
-        config.configured().then(|| ShieldApp {
+        if !config.configured() {
+            return None;
+        }
+        Some(ShieldApp {
             model: Shield::default(),
             config: config.clone(),
             timer: DeadlineTimer::new(),
@@ -63,6 +94,7 @@ impl ShieldApp {
         })
     }
 
+    /// The flag file's path.
     pub(crate) fn flag(&self) -> &Path {
         Path::new(&self.config.flag)
     }
@@ -87,13 +119,48 @@ pub(crate) fn incoming(kind: &NoticeKind, config: &ShieldConfig) -> crate::notif
     }
 }
 
+/// Whether the flag's directory is watched, given the theme watch (None when it could not start).
+fn flag_is_watched(watches: Option<&crate::watch::Watches>) -> bool {
+    match watches {
+        Some(watches) => watches.shield_armed(),
+        None => false,
+    }
+}
+
+/// The state a click on the Shield row switches to: the other one than the bar shows, None when the
+/// state is unknown.
+fn toggle_target(view: Option<ShieldView>) -> Option<bool> {
+    match view {
+        Some(ShieldView { state: Some(on), .. }) => Some(!on),
+        _ => None,
+    }
+}
+
+/// Starts one worker for a job, if the loop's mail channel exists; false when no worker could start.
+fn start_worker(
+    mail: Option<smithay_client_toolkit::reexports::calloop::channel::Sender<Mail>>,
+    exec: std::sync::Arc<dyn alpheus_common::exec::Executor>,
+    job: Job,
+    generation: u64,
+    argv: Vec<String>,
+) -> bool {
+    match mail {
+        Some(tx) => spawn_job(exec, job, generation, argv, move |m| {
+            // A closed channel means the loop has gone: nobody is left to hear the report.
+            let _ = tx.send(Mail::Shield(m));
+        })
+        .is_ok(),
+        None => false,
+    }
+}
+
 impl App {
     /// The flag's directory is watched, now: derived from the live watch, so a rearm that failed or a
     /// descriptor shared with the theme's (the target dropped) makes the degraded re-reads happen.
     /// Without a watch the flag is re-read after each command alpheus runs, at each panel open and at
     /// a switch's deadline, never on a timer.
     pub(crate) fn shield_watched(&self) -> bool {
-        self.theme.watch.as_ref().is_some_and(crate::watch::Watches::shield_armed)
+        flag_is_watched(self.theme.watch.as_ref())
     }
 
     /// Reads the flag once and seeds the model (no notice, no hook), once the watch is armed.
@@ -183,14 +250,8 @@ impl App {
     /// One worker for one job; its report comes back as `Mail::Shield`. A thread that cannot start
     /// reports itself failed, so no slot stays held.
     fn shield_spawn(&mut self, job: Job, generation: u64, argv: Vec<String>) {
-        let started = self.mail.clone().and_then(|tx| {
-            spawn_job(self.exec.clone(), job, generation, argv, move |m| {
-                let _ = tx.send(Mail::Shield(m));
-            })
-            .ok()
-        });
-        // The handle is dropped: the worker ends on its own once it has reported.
-        if started.is_none() {
+        // The worker's handle is dropped inside: it ends on its own once it has reported.
+        if !start_worker(self.mail.clone(), self.exec.clone(), job, generation, argv) {
             self.shield_mail(ShieldMail::worker_failed(job, generation));
         }
     }
@@ -223,7 +284,9 @@ impl App {
         self.shield_timer_sync();
     }
 
-    /// The timer fired: calloop dropped it, then the model decides.
+    /// The timer fired: calloop dropped it (`fired` records that), then the model decides. This is
+    /// the callback `shield_timer_sync` gives the timer, so its first parameter is the daemon's state
+    /// and it is not a method.
     fn shield_tick(app: &mut App, now: Instant) {
         let Some(sh) = app.shield.as_mut() else { return };
         sh.timer.fired();
@@ -263,17 +326,17 @@ impl App {
                 self.shield_panel_allow_done(id, true);
                 self.shield_notice(NoticeKind::AllowFailed);
             }
-            Finish::Listed(p) => {
-                if p.more {
+            Finish::Listed(parsed) => {
+                if parsed.more {
                     log("shield: more than 64 blocked devices; the rest not listed");
                 }
                 sh.askers.clear();
-                self.shield_answer_waiting(Ok(&p));
+                self.shield_answer_waiting(Ok(&parsed));
                 // Kept only for an open panel (the allow's device name; nothing resident while closed).
                 if self.quick_shown() {
-                    self.shield_panel_listed(Ok(p.devices.clone()));
+                    self.shield_panel_listed(Ok(parsed.devices.clone()));
                     if let Some(sh) = self.shield.as_mut() {
-                        sh.listing = Some(Ok(p));
+                        sh.listing = Some(Ok(parsed));
                     }
                 }
             }
@@ -307,13 +370,13 @@ impl App {
             self.shield_readable();
         }
         let Some(sh) = self.shield.as_ref() else { return };
-        let ctx = VerbCtx {
+        let context = VerbCtx {
             state: sh.model.state(),
             action_busy: sh.model.action_busy(),
             can_list: !sh.config.blocked_argv().is_empty(),
             can_allow: !sh.config.allow.is_empty(),
         };
-        match plan_verb(*verb, &ctx) {
+        match plan_verb(*verb, &context) {
             VerbPlan::Answer(r) => {
                 if let Reply::Error(why) = &r {
                     log(&format!("shield: not started ({why})"));
@@ -345,26 +408,27 @@ impl App {
     /// The read ended: each waiting verb is answered (the status text, or the picker opened).
     fn shield_answer_waiting(&mut self, result: Result<&Parsed, Reason>) {
         let Some(sh) = self.shield.as_mut() else { return };
+        // `take` moves the waiting clients out and leaves an empty list behind, so each is answered once.
         let (waiting, state) = (std::mem::take(&mut sh.waiting), sh.model.state());
-        for w in waiting {
-            match w {
-                Waiter::Status(p) => p.reply(&Reply::Shield(status_text(state, Some(result)))),
-                Waiter::Picker(p) => match (state, result) {
+        for waiter in waiting {
+            match waiter {
+                Waiter::Status(pending) => pending.reply(&Reply::Shield(status_text(state, Some(result)))),
+                Waiter::Picker(pending) => match (state, result) {
                     (Some(true), Ok(parsed)) if parsed.devices.is_empty() => {
                         self.shield_notice(NoticeKind::NothingBlocked);
-                        p.reply(&Reply::Done);
+                        pending.reply(&Reply::Done);
                     }
                     (Some(true), Ok(parsed)) => {
                         let (lines, ids) = picker(&parsed.devices);
                         let qh = self.qh.clone();
-                        self.launcher_open_picker(&qh, lines, ids, p);
+                        self.launcher_open_picker(&qh, lines, ids, pending);
                     }
-                    (Some(true), Err(_)) => p.reply(&Reply::Error("cannot list the blocked USB devices".into())),
+                    (Some(true), Err(_)) => pending.reply(&Reply::Error("cannot list the blocked USB devices".into())),
                     // The mode went off (or unreadable) while the list was read.
                     (_, _) => {
                         let why = ERR_OFF;
                         log(&format!("shield: not started ({why})"));
-                        p.reply(&Reply::Error(why.into()));
+                        pending.reply(&Reply::Error(why.into()));
                     }
                 },
             }
@@ -377,7 +441,10 @@ impl App {
         let Some((id, name)) = picked(ids, reply) else { return Reply::Cancelled };
         // The picker may have stayed open while the mode went off (or became unreadable): the allow
         // is only for a mode that is on, as when the picker was asked for.
-        let on = self.shield.as_ref().is_some_and(|sh| sh.model.state() == Some(true));
+        let on = match self.shield.as_ref() {
+            Some(sh) => sh.model.state() == Some(true),
+            None => false,
+        };
         let started = if on { self.shield_allow(id, name) } else { Err(ERR_OFF) };
         match started {
             Ok(()) => Reply::Done,
@@ -391,8 +458,8 @@ impl App {
     /// What the quick panel's Shield row asks (`quick_app::quick_action`); a refusal is one fixed line.
     pub(crate) fn shield_ask(&mut self, ask: ShieldAsk) {
         let refused = match ask {
-            ShieldAsk::Toggle => match self.bar.shield.and_then(|v| v.state) {
-                Some(on) => self.shield_switch(!on),
+            ShieldAsk::Toggle => match toggle_target(self.bar.shield) {
+                Some(target) => self.shield_switch(target),
                 None => Err(ERR_UNKNOWN),
             },
             ShieldAsk::Allow(id) => {
@@ -473,8 +540,9 @@ impl App {
         if self.shield.is_none() || !self.quick_enabled() {
             return;
         }
-        // One detail at a time: another one open (the Bluetooth one holds orders for the acting
-        // connection) closes the whole panel through its proper path, and it opens again.
+        // One detail at a time (shield spec § 14, item 17): another one open (the Bluetooth one holds
+        // orders for the acting connection) closes the whole panel through its proper path, and it
+        // opens again.
         if matches!(self.popup_body(), Some(PopupBody::Quick(q)) if q.other_detail_open()) {
             self.popup_close(crate::popup::PopupClose::Replaced);
         }

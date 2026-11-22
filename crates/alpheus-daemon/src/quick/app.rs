@@ -595,7 +595,7 @@ impl App {
                 self.set_dnd(on);
                 log(&format!("quick: do not disturb {}", if on { "on" } else { "off" }));
             }
-            // Shield mode (shield_app.rs): a switch or an allow. A switch changes the view, and its
+            // Shield mode (shield/app.rs): a switch or an allow. A switch changes the view, and its
             // publish repaints the panel (the row says `…`); an allow or a refusal changes only the
             // panel's own state, repainted here: one paint either way.
             QuickAction::Shield(ask) => {
