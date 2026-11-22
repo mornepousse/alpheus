@@ -1,3 +1,7 @@
+//! Tests of the Diag tab's overview logic (`app/diagnostics.rs`): what it reads and when, the health
+//! rows, the unit actions and their confirmation, and how a click or a key opens a view. The worker
+//! never runs: its answers are the `Update`s the tests hand to the `App`.
+
 use super::*;
 use crate::app::action::Tab;
 use crate::app::keymap::Keymap;
@@ -384,6 +388,26 @@ fn the_wayland_socket_is_looked_up_where_it_should_be() {
     let absolute = dir.join("wayland-1");
     let var = move |k: &str| -> Option<OsString> { (k == "WAYLAND_DISPLAY").then(|| absolute.clone().into_os_string()) };
     assert!(matches!(wayland_health(&var), WaylandHealth::Reachable(_)), "an absolute name is the path itself");
+}
+
+#[test]
+fn an_empty_wayland_display_is_unset_and_an_empty_variable_is_not_the_sessions() {
+    let empty = |k: &str| -> Option<OsString> { (k == "WAYLAND_DISPLAY").then(OsString::new) };
+    assert_eq!(wayland_health(&empty), WaylandHealth::Unset);
+    let dir = TempPath::dir("diag-empty-var");
+    let exec = Arc::new(FakeExecutor::new());
+    let backends = Backends::system_isolated(exec, dir.join("none"));
+    let sock = dir.join("compositor.sock");
+    let _listener = UnixListener::bind(&sock).unwrap();
+    let var = move |k: &str| -> Option<OsString> {
+        match k {
+            "WAYLAND_DISPLAY" => Some(OsString::new()),
+            "SWAYSOCK" => Some(sock.clone().into_os_string()),
+            _ => None,
+        }
+    };
+    let names: Vec<String> = health(&backends, &var).own_env.into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, vec!["SWAYSOCK".to_string()], "the empty WAYLAND_DISPLAY is left out");
 }
 
 struct FakePoke(PokeAnswer);

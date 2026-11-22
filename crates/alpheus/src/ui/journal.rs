@@ -1,6 +1,17 @@
-//! The journal view of the Diag tab: a header (what is asked, the filters), a status line, and the
-//! entries, newest at the bottom. Everything that came from a tool passes `clean_line` again on its
-//! way to a cell, whatever the parser did.
+//! The journal view of the Diag tab, drawn: a header (what is asked, the filters), a status line, and
+//! the entries, newest at the bottom, or the unit picker over them.
+//!
+//! `diagnostics::render` calls `render` while the journal view is open, and `hints` gives the status
+//! line's keys. The state it draws is `app/journal.rs`'s.
+//!
+//! Never:
+//! - change the state, run a tool or read a clock: the entries are the `App`'s, and the local time is
+//!   passed in as `LocalTime` (an entry of another day shows its date);
+//! - let text that came from a tool reach a cell as it is: it passes `clean_line` again on its way,
+//!   whatever the parser did.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 3, the journal view),
+//! docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{put, truncate};
@@ -35,6 +46,7 @@ pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, j: &JournalView) {
     }
 }
 
+/// The months' short names, for an entry of another day.
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// "14:02:11", or "Nov 20 14:02:11" when the entry is not from today. In the tests the zone is
@@ -51,10 +63,14 @@ pub fn entry_time(us: u64, today: Option<LocalTime>) -> String {
         tm
     };
     let clock = format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
-    let same_day = today.is_some_and(|t| i32::from(t.day) == tm.tm_mday && i32::from(t.month) == tm.tm_mon);
+    let same_day = match today {
+        Some(t) => i32::from(t.day) == tm.tm_mday && i32::from(t.month) == tm.tm_mon,
+        None => false,
+    };
     if same_day { clock } else { format!("{} {:>2} {clock}", MONTHS[usize::try_from(tm.tm_mon).unwrap_or(0) % 12], tm.tm_mday) }
 }
 
+/// How a priority filter reads in the header.
 fn priority_word(p: Priority) -> &'static str {
     match p {
         Priority::Any => "any",
@@ -65,10 +81,12 @@ fn priority_word(p: Priority) -> &'static str {
     }
 }
 
+/// The view's title: the preset, or "around a crash" when a time range was asked for.
 fn title(j: &JournalView) -> String {
     if j.query.since_until.is_some() { "Journal · around a crash".to_string() } else { format!("Journal · {}", j.query.preset.label()) }
 }
 
+/// Draws the journal view in `body`: the header, the status line, then the entries or the picker.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, _hits: &mut HitMap, chrome: Chrome, today: Option<LocalTime>) {
     let View::Journal(j) = &app.diag.view else { return };
     let th = &app.theme;
@@ -126,6 +144,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, _hits: &mut HitMap, chrom
     entries(buf, rest, app, j, today);
 }
 
+/// The entries that pass the filter, the newest at the bottom, from where the window is scrolled to.
 fn entries(buf: &mut Buffer, area: Rect, app: &App, j: &JournalView, today: Option<LocalTime>) {
     let th = &app.theme;
     let ink = |c: Color| th.ink(c, th.bg, 3.0);
@@ -161,6 +180,7 @@ fn entries(buf: &mut Buffer, area: Rect, app: &App, j: &JournalView, today: Opti
     }
 }
 
+/// One entry: its time, its priority and its text, every outside string cleaned.
 fn line(buf: &mut Buffer, row: Rect, app: &App, e: &Entry, today: Option<LocalTime>) {
     let th = &app.theme;
     let ink = |c: Color| th.ink(c, th.bg, 3.0);
@@ -183,6 +203,7 @@ fn line(buf: &mut Buffer, row: Rect, app: &App, e: &Entry, today: Option<LocalTi
     put(buf, row, row.x, row.y, &truncate(&text, usize::from(row.width)), Style::default().fg(color));
 }
 
+/// The unit picker over the entries: the query and the matching units, the selected one marked.
 fn picker(buf: &mut Buffer, area: Rect, app: &App, p: &Picker) {
     let th = &app.theme;
     let ink = |c: Color| th.ink(c, th.bg, 3.0);

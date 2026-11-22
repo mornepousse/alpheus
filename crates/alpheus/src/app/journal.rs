@@ -1,8 +1,19 @@
-//! The journal view of the Diag tab: what was asked of the journal, the entries held (at most
-//! 2,000), the local text filter, the unit picker and the follow. Nothing here runs a tool: a
-//! read is a `Request::Diag(DiagRead::Journal(..))` for the worker, one at a time, and the view
-//! never asks again while one is in flight. Leaving the view (or the tab) ends the follow: there
-//! is no child that outlives it, only a bounded read each second while the view is open.
+//! The journal view of the Diag tab: what was asked of the journal, the entries held, the local text
+//! filter, the unit picker and the follow.
+//!
+//! At most 2,000 entries are held (`MAX_ENTRIES`, the oldest dropped first). A read is a
+//! `Request::Diag(DiagRead::Journal(..))` for the worker, one at a time: the view never asks again
+//! while one is in flight. Leaving the view or the tab ends the follow, which is only a bounded read
+//! each second while the view is open (`POLL`).
+//!
+//! Never:
+//! - run a tool: the worker runs `journalctl`;
+//! - keep a child running: there is no resident `journalctl`, so nothing outlives the view;
+//! - ask for a read while another is out: a slow read delays the next one, it never stacks;
+//! - draw anything: `ui/journal.rs` draws the view from this state.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 3, the journal view),
+//! docs/features/control-center.md.
 
 use super::action::Action;
 use super::diagnostics::View;
@@ -23,7 +34,10 @@ pub const MAX_ENTRIES: usize = 2000;
 pub const POLL: Duration = Duration::from_secs(1);
 /// The wall clock, in seconds since the epoch.
 fn wall_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(since_epoch) => since_epoch.as_secs(),
+        Err(_) => 0,
+    }
 }
 
 /// How far the wheel moves, in entries.
@@ -88,6 +102,7 @@ impl Picker {
     }
 }
 
+/// The journal view: what was asked, what is held, and where the reading stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalView {
     /// What the person asked for; never carries a cursor (a follow read adds one to a copy).
@@ -121,6 +136,7 @@ pub struct JournalView {
 }
 
 impl JournalView {
+    /// A view on `query`, following if the preset follows and no time range was asked for.
     pub fn new(query: JournalQuery) -> JournalView {
         JournalView {
             follow: query.preset.follows() && query.since_until.is_none(),
@@ -165,6 +181,8 @@ impl JournalView {
         self.entries.back().map(|h| h.entry.cursor.as_str())
     }
 
+    /// Adds entries at the end, dropping the oldest past `MAX_ENTRIES`. When paused, the window keeps
+    /// what it shows and counts the new entries that pass the filter as below it.
     fn push(&mut self, entries: Vec<Entry>) {
         let needle = self.needle();
         let batch = entries.len();
@@ -196,6 +214,7 @@ impl JournalView {
         self.set_offset(next);
     }
 
+    /// Puts the window `k` entries from the newest; 0 is the tail and clears the new-entries count.
     fn set_offset(&mut self, k: usize) {
         if k == 0 {
             self.scroll = Scroll::Tail;
@@ -207,6 +226,7 @@ impl JournalView {
 }
 
 impl App {
+    /// The journal view, if it is the one open.
     fn journal_view(&mut self) -> Option<&mut JournalView> {
         match &mut self.diag.view {
             View::Journal(j) => Some(j.as_mut()),
@@ -257,7 +277,10 @@ impl App {
         }
         let lines = self.config.diagnostics.journal_lines;
         let Some(j) = self.journal_view() else { return };
-        let due = j.last_poll.is_some_and(|t| now.duration_since(t) >= POLL);
+        let due = match j.last_poll {
+            Some(ended) => now.duration_since(ended) >= POLL,
+            None => false,
+        };
         if !j.follow || j.pending.is_some() || j.picker.is_some() || !due || !matches!(j.load, Load::Ready) {
             return;
         }
@@ -277,10 +300,12 @@ impl App {
         match (read, result) {
             (DiagRead::Journal(q), DiagResult::Journal(r)) => self.journal_read_done(q, r, now),
             (DiagRead::ServiceUnits, DiagResult::ServiceUnits(r)) => {
-                if let Some(p) = self.journal_view().and_then(|j| j.picker.as_mut()) {
-                    match r {
-                        Ok(units) => p.units = Some(units),
-                        Err(e) => p.error = Some(e.to_string()),
+                if let Some(j) = self.journal_view() {
+                    if let Some(p) = j.picker.as_mut() {
+                        match r {
+                            Ok(units) => p.units = Some(units),
+                            Err(e) => p.error = Some(e.to_string()),
+                        }
                     }
                 }
             }
@@ -294,6 +319,8 @@ impl App {
         None
     }
 
+    /// An answer to a journal read: ignored unless it answers the question still asked; a failure
+    /// stops the follow; a first read replaces the entries and a follow read adds to them.
     fn journal_read_done(&mut self, q: &JournalQuery, r: BResult<JournalRead>, now: Instant) {
         let Some(j) = self.journal_view() else { return };
         if j.pending.as_ref() != Some(q) {
@@ -394,6 +421,7 @@ impl App {
         true
     }
 
+    /// A key in the unit picker: the text filters, Up and Down choose, Enter picks, Esc closes.
     fn picker_key(&mut self, e: KeyEvent) {
         let Some(j) = self.journal_view() else { return };
         let Some(p) = j.picker.as_mut() else { return };

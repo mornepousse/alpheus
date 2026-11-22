@@ -1,3 +1,6 @@
+//! Tests of the boot and bug report views' logic (`app/report_views.rs`): the reads they ask for, the
+//! text held, scrolling, and when Enter or a click copies.
+
 use super::*;
 use crate::app::diagnostics::DiagItem;
 use crate::app::keymap::Keymap;
@@ -101,6 +104,30 @@ fn no_copy_program_means_no_copy() {
     key(&mut a, KeyCode::Enter);
     a.report_copy_click();
     assert!(a.take_requests().is_empty());
+}
+
+#[test]
+fn enter_after_the_delay_copies_nothing_when_there_is_no_copy_program() {
+    let mut config = Config::default();
+    config.diagnostics.copy = vec![];
+    let mut a = on_diag(config);
+    a.diag_activate(DiagItem::Report);
+    a.take_requests();
+    let t = Instant::now();
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report("text\n".into())), t);
+    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(500));
+    assert!(a.take_requests().is_empty(), "the delay has passed, but there is no program to copy with");
+}
+
+#[test]
+fn the_boot_view_counts_a_line_for_each_failed_list_and_three_for_its_headings() {
+    let unit = |name: &str| Blame { duration_ms: 1, unit: name.into() };
+    let timeout = || BackendError::Timeout { tool: "systemd-analyze".into() };
+    let view = |blame, chain| BootView { read: Some((blame, chain)), ..BootView::default() };
+    assert_eq!(BootView::default().lines(), 0, "nothing before the read has come");
+    assert_eq!(view(Ok(vec![unit("a.service"), unit("b.mount")]), Ok(vec!["graphical.target @1s".into()])).lines(), 2 + 1 + 3);
+    assert_eq!(view(Err(timeout()), Ok(vec![])).lines(), 4, "one line for the error, none for the empty chain, three for the headings");
+    assert_eq!(view(Ok(vec![]), Err(timeout())).lines(), 4);
 }
 
 #[test]

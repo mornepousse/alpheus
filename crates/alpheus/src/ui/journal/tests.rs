@@ -1,3 +1,6 @@
+//! Tests of the journal view's drawing (`ui/journal.rs`): the header, the entries and the picker as
+//! snapshots, the times, and the keys the status line offers.
+
 use crate::app::diagnostics::DiagItem;
 use crate::app::testing::diag_app;
 use crate::app::worker::{DiagRead, DiagResult, Request, Update};
@@ -197,6 +200,16 @@ fn an_older_entry_shows_its_date() {
     let s = rows(&a, 87, 26);
     assert!(s.contains("Nov 14 01:00:00 example-app[101]: yesterday"), "{s}");
     assert!(s.contains("01:00:02 example-app[102]: today") && !s.contains("Nov 15"), "{s}");
+}
+
+#[test]
+fn an_entry_shows_its_date_unless_it_is_from_today_by_both_day_and_month() {
+    use crate::ui::journal::entry_time;
+    use crate::ui::testing::T; // Sunday 15 November
+    let (nov_15, oct_15) = (1_794_751_331_000_000, 1_792_072_931_000_000);
+    assert_eq!(entry_time(nov_15, Some(T)), "14:02:11", "today: the clock alone");
+    assert_eq!(entry_time(oct_15, Some(T)), "Oct 15 14:02:11", "the same day of the month, a month ago");
+    assert_eq!(entry_time(nov_15, None), "Nov 15 14:02:11", "no local time to compare with: always the date");
 }
 
 #[test]

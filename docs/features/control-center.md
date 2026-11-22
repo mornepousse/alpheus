@@ -790,3 +790,157 @@ roles and the styles are described in the README and in the themes and shapes sp
 
 Nothing until the tab is shown; then one read of `theme.toml` and the mode file, and the wallpaper's
 colour file for the mode in use, once. Presets are compiled in. Nothing runs on a timer.
+
+## Diag
+
+### What it does
+
+The Diag tab (the eighth; `--tab diagnostics`, or `--tab diag`) answers "why does my session not work?"
+without leaving the control center. Nothing is read until it is shown, and leaving it stops the reads
+not yet sent. It is one list in sections:
+
+- **Session health**: the compositor's socket answers, `WAYLAND_DISPLAY` is reachable, the systemd user
+  environment names this session's display and compositor, no failed user unit, the alpheus daemon
+  answers, then up to 8 checks of your own (`[[diagnostics.checks]]`). A failing row shows what would
+  fix it as text, and never runs it.
+- **Failed units** of both managers (system and user), the units **restarting in a loop**, the
+  **crashes** of the last seven days (`coredumpctl`) and the **boot** time (`systemd-analyze`).
+- The eight **journal presets** and the **Bug report** row.
+
+Three views open over the list. The **journal view** shows the journal for a preset, a unit or the
+minute around a crash: a header (what is asked, the filters), a status line and the entries with the
+newest at the bottom. The **boot report** shows `systemd-analyze`'s time, the slowest units and the
+critical chain. The **bug report** is a text of versions, failed units, loops, crashes and this boot's
+errors, **redacted**, shown in full, and copied only when you ask.
+
+```
+ Session health                                                    ✗ 2 problems
+   ✓ Mango answers
+   ✓ WAYLAND_DISPLAY wayland-1 reachable
+ ▶ ✗ systemd --user has WAYLAND_DISPLAY=wayland-0 (this session: wayland-1)
+       fix: systemctl --user import-environment WAYLAND_DISPLAY
+   ✗ 1 failed user unit
+   ✓ the alpheus daemon answers
+
+ Failed units (3)
+   ● mnt-data.mount                  system  /mnt/data
+   ● example-app.service             user    Example app
+
+ Restarting in a loop
+   ↻ example-sync.service            user    7 restarts, activating
+
+ Crashes (7 days)
+   ✗ Nov 20 14:02  example-app       SIGSEGV core present
+
+   Boot   Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.9s (kernel)…
+```
+
+(The overview at 80 by 24, from its snapshot and shortened (the list of failed units has three rows),
+without the journal presets and the bug report row
+that follow the boot line; the health row that fails shows its fix.)
+
+### Using it
+
+| Key (default) | What it does |
+| --- | --- |
+| ↑ ↓ | move over the rows |
+| Enter | on a failed or looping unit: open its journal; on a crash: the journal of the minute around it; on the boot row, a preset or the bug report: open it |
+| `r` | restart the unit under the cursor (asked first) |
+| `c` | clear its failed state (asked first on a system unit) |
+| F5 | read everything again (not in the journal view, which reads for itself) |
+| Esc | in a view: back to the overview; in a question: cancel |
+
+A user unit's action runs through the tab's worker. A system unit's action runs in the control
+center's **own window**, so that systemd's password prompt (polkit) appears there: alpheus never runs
+`sudo` or `pkexec`. The question names the unit, with the middle of a long name cut so its end still
+tells two apart, and the focus starts on Cancel. With `[diagnostics] system_actions = false` the two keys
+do nothing on a system unit.
+
+In the **journal view**: `u` filters by unit (a picker), `p` cycles the priority, `/` filters the text
+(case and accents folded), `f` follows (one bounded read a second while the view is open; asking again
+after a failed read reads again), PgUp, PgDn, Home, End and the wheel scroll. Esc clears a filter first
+and then goes back; in the picker it closes the picker (and goes back to the overview if no unit was
+chosen yet), and Backspace on an empty picker clears the unit. `/`, `u`, `p` and `f` are the view's own
+letters: a key the user bound to another action wins. The view holds at most 2,000 entries, the oldest
+dropped first; scrolled up, it stays where it is and counts the new entries below.
+
+In the **bug report**: PgUp and PgDn scroll, Enter (or a click on `[ Copy ]`) copies exactly the text
+on screen through `[diagnostics] copy`, with the text on its standard input; Esc closes and copies
+nothing. An Enter typed within 0.4 seconds of the text appearing is ignored, so one typed ahead does not
+copy a report nobody has read. Redaction replaces the user name, the home directory, the host name and
+machine id, MAC and IP addresses, UUIDs and anything shaped like an e-mail address; **Wi-Fi network
+names and USB serial numbers are not touched**, so the first line of the view says `Read before
+copying: logs can name things`.
+
+### Configuration
+
+`[diagnostics]` in `bar.toml`: `copy` (the clipboard program, default `["wl-copy"]`; `[]` turns Copy
+off), `system_actions` (default true), `restart_loop` (the `NRestarts` count from which a unit is
+"restarting in a loop", default 3), `journal_lines` (entries read when the journal view opens, default
+500), and up to 8 `[[diagnostics.checks]]` (`name`, `run` as an argv, `fix` shown and never run).
+Reading the system journal needs the `wheel`, `adm` or `systemd-journal` group; without it the header
+says "your own messages only".
+
+### How it is built
+
+Three pairs of files and the tab's row in `app/tab.rs`.
+
+- `app/diagnostics.rs` and `ui/diagnostics.rs`: the overview. The state keeps the last good list of
+  each section (`Section`: a failed read keeps the old list and shows its error above it), the health
+  rows are a pure function of what was read (`health_rows`), the items are `App::diag_items`, and the
+  unit actions are `unit_action`, `run_unit` and `system_unit_*`. The drawing builds a list of lines
+  (`lines`) and draws it with a scroll that keeps the focused row in view.
+- `app/journal.rs` and `ui/journal.rs`: the journal view and its follow.
+- `app/report_views.rs` and `ui/report_views.rs`: the boot and the bug report.
+- `app/tab.rs`: the tab's row says it is not searchable, that it is read every 5 seconds while shown
+  from the `Failed` and `Health` domains, and that its label column is 20 cells wide.
+
+**Refresh.** The failed units and the health are read every 5 seconds while the tab is shown; the
+loops, the crashes, the boot line, the declared checks and the daemon check are read once per showing and
+on F5 (`diagnostics_reads`). While the journal view is open the 5-second refresh is held back
+(`diagnostics_refresh_held`): the view makes its own reads, one at a time, so the single worker thread
+is never queued behind more than one of them.
+
+**Outside text.** Every string from systemd, the journal or the user's config passes `clean_line` in the
+parser and again in `ui/` (`cell`, `cell_mid`), so nothing a unit can name reaches the terminal as an
+escape sequence.
+
+**The path of one action**, restarting a system unit:
+
+1. `r` reaches `unit_action`, which refuses unless the row is a unit and the action is allowed, and
+   opens `Overlay::UnitConfirm` with the focus on Cancel.
+2. Confirm reaches `run_unit`, which checks the name again (`valid_unit`) and leaves the job in
+   `system_unit`.
+3. The loop takes it (`take_system_unit`) and runs `systemctl restart -- <unit>` in the control
+   center's own window; `system_unit_done` reports the result and asks for a `failed-refresh` and a
+   read of the tab.
+
+### Rules it keeps
+
+- `the_reads`, `opening_on_the_diag_tab_reads_only_its_domains`, `the_five_second_refresh_skips_the_once_reads`
+  and `no_refresh_while_the_journal_view_is_open` (`app/diagnostics/tests.rs`): what is read, and when.
+- `health_rows_cases`, `the_compositor_socket_is_never_written`,
+  `the_wayland_socket_is_looked_up_where_it_should_be` and
+  `an_empty_wayland_display_is_unset_and_an_empty_variable_is_not_the_sessions`: the health rows, and a
+  compositor's socket is only connected to and closed.
+- `system_restart_asks_then_runs_in_the_window`, `a_system_unit_name_is_checked_again_before_it_is_an_argument`
+  and `system_actions_off_hides_the_keys`: the system-unit rules.
+- `follow_reads_after_the_last_cursor_once_a_second`, `one_follow_read_in_flight`,
+  `leaving_the_view_stops_the_follow`, `the_buffer_keeps_2000` and `the_views_letters_never_shadow_a_users_binding`
+  (`app/journal/tests.rs`): the follow and the buffer.
+- `enter_just_after_the_text_arrives_copies_nothing`, `no_copy_program_means_no_copy`,
+  `enter_after_the_delay_copies_nothing_when_there_is_no_copy_program` and
+  `the_report_is_shown_before_copy` (`app/report_views/tests.rs`): copying.
+- `diag_overview_hostile_description` and `journal_view_hostile_message` (`ui/diagnostics/tests.rs`,
+  `ui/journal/tests.rs`): text that came from outside never reaches a cell as it is.
+- `an_entry_shows_its_date_unless_it_is_from_today_by_both_day_and_month`,
+  `every_focusable_row_is_drawn_and_clickable` and
+  `the_diagnostics_tab_at_80_by_24_matches_its_snapshot` (snapshot in `ui/diagnostics/snapshots/`): the
+  drawing.
+
+### What it costs
+
+Nothing while the tab is not shown. Shown, one `systemctl` read of the failed units and the health every
+5 seconds (the spec's refresh); the once-per-showing reads run through the executor's `capture` on the
+tab's worker, with the deadlines and caps the diagnostics spec states. The tab's first render is
+209–491 µs (README). The journal view makes no read while it is closed and no child outlives it.

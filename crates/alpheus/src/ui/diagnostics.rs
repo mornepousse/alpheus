@@ -1,7 +1,19 @@
-//! The Diag tab: the overview (session health, failed units, loops, crashes, boot, the journal's
-//! presets, the bug report) and the confirmation of a unit action. Every string that came from a
-//! tool, a unit file or the user's config passes `cell` on its way to a cell, whatever the parser
-//! already did: nothing a unit can name reaches the terminal as an escape sequence.
+//! The Diag tab's overview and the confirmation of a unit action: Session health, failed units,
+//! loops, crashes, the boot line, the journal presets and the bug report button.
+//!
+//! `tabs::render` calls `render`, which draws the overview itself and hands the other views to
+//! `journal.rs` and `report_views.rs`. The overview is a list of lines (`lines`), each with the item
+//! it stands for, drawn with a scroll that keeps the focused row in view. `unit_confirm` is the box
+//! that `overlays.rs` opens before a restart or a reset, and `hints` gives the status line's keys.
+//!
+//! Never:
+//! - change the state or run a tool: everything here reads the `App`;
+//! - let outside text reach a cell as it is: every string that came from a tool, a unit file or the
+//!   user's config passes `cell` (or `cell_mid`) first, whatever the parser already did, so nothing
+//!   a unit can name reaches the terminal as an escape sequence.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 2, the Diag tab; § 2.2, unit
+//! actions), docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{centered, put, truncate};
@@ -25,6 +37,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+/// The months' short names, for a crash's time.
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /// The unit column of a row, in cells.
 const UNIT_W: usize = 30;
@@ -73,6 +86,7 @@ pub fn crash_time(us: u64) -> String {
     format!("{month} {:>2} {:02}:{:02}", tm.tm_mday, tm.tm_hour, tm.tm_min)
 }
 
+/// How a piece of text is coloured: `tone_color` turns it into the theme's colour.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tone {
     Fg,
@@ -82,12 +96,14 @@ enum Tone {
     Warn,
 }
 
+/// A piece of text in one tone.
 struct Seg(String, Tone);
 
 fn seg(text: impl Into<String>, tone: Tone) -> Seg {
     Seg(text.into(), tone)
 }
 
+/// What a line of the overview is.
 enum Kind {
     Plain,
     /// A section heading, with an optional summary at the right.
@@ -98,24 +114,29 @@ enum Kind {
     Button,
 }
 
+/// One line of the overview: what it is, its pieces and the item it stands for (if focusable).
 struct Ln {
     kind: Kind,
     segs: Vec<Seg>,
     item: Option<usize>,
 }
 
+/// A line of pieces, for the item `item` if it has one.
 fn plain(segs: Vec<Seg>, item: Option<usize>) -> Ln {
     Ln { kind: Kind::Plain, segs, item }
 }
 
+/// A line of one piece, with no item.
 fn note(text: impl Into<String>, tone: Tone) -> Ln {
     plain(vec![seg(text, tone)], None)
 }
 
+/// An empty line.
 fn blank() -> Ln {
     plain(Vec::new(), None)
 }
 
+/// A section heading, with an optional summary at the right.
 fn heading(title: impl Into<String>, right: Option<(String, Tone)>) -> Ln {
     Ln { kind: Kind::Heading(right), segs: vec![seg(title, Tone::Fg)], item: None }
 }
@@ -123,16 +144,22 @@ fn heading(title: impl Into<String>, right: Option<(String, Tone)>) -> Ln {
 /// The error line of a section and whether its list is stale (dimmed).
 fn errors<T>(out: &mut Vec<Ln>, label: Option<&str>, s: &Section<T>) -> bool {
     if let Some(e) = &s.error {
-        let prefix = label.map_or(String::new(), |l| format!("{l}: "));
+        let prefix = match label {
+            Some(label) => format!("{label}: "),
+            None => String::new(),
+        };
         out.push(note(format!("✗ {prefix}{}", cell(&e.to_string(), 120)), Tone::Err));
     }
     s.error.is_some()
 }
 
+/// `s` padded with spaces to `w` cells.
 fn pad(s: &str, w: usize) -> String {
     format!("{s:<w$}")
 }
 
+/// The overview as lines, in the order `App::diag_items` lists its focusable rows; `width` is the
+/// room the lines have.
 fn lines(app: &App, width: u16) -> Vec<Ln> {
     let items = app.items();
     let idx = |d: DiagItem| items.iter().position(|i| matches!(i, Item::Diag(x) if *x == d));
@@ -286,6 +313,7 @@ fn lines(app: &App, width: u16) -> Vec<Ln> {
     out
 }
 
+/// The theme's colour for a tone, as readable (at least 3:1) over `over`.
 fn tone_color(app: &App, tone: Tone, over: Color) -> Color {
     let th = &app.theme;
     let c = match tone {
@@ -298,6 +326,8 @@ fn tone_color(app: &App, tone: Tone, over: Color) -> Color {
     th.ink(c, over, 3.0)
 }
 
+/// Draws the view that is open: the overview, the journal, or the boot or bug report. `now` is the
+/// time the journal compares entries against.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     match &app.diag.view {
         View::Overview => overview(buf, body, app, hits, chrome),
@@ -306,6 +336,8 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
     }
 }
 
+/// Draws the overview's lines from the first that keeps the focused row in view, adding the
+/// clickable region of each focusable one to `hits`.
 fn overview(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
     let th = &app.theme;
     let rail = chrome == Chrome::Rail;
@@ -325,7 +357,10 @@ fn overview(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: 
         let behind = if focused && rail && !line { th.selection } else { th.bg };
         match &l.kind {
             Kind::Heading(right) => {
-                let title = l.segs.first().map_or("", |s| s.0.as_str());
+                let title = match l.segs.first() {
+                    Some(seg) => seg.0.as_str(),
+                    None => "",
+                };
                 if rail {
                     // The rule runs up to one space before the summary.
                     let rule_end = right.as_ref().map(|(t, _)| body.right().saturating_sub(t.chars().count() as u16 + 1));

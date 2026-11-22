@@ -1,3 +1,7 @@
+//! Tests of the Diag overview's drawing (`ui/diagnostics.rs`): the overview in several states and
+//! sizes, its clickable regions and hints, the unit confirmation, and the whole screen at 80 by 24 as
+//! a snapshot.
+
 use super::*;
 use crate::app::action::Tab;
 use crate::app::diagnostics::{DiagItem, View};

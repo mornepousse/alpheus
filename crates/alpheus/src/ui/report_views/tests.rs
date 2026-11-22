@@ -1,3 +1,6 @@
+//! Tests of the boot and bug report views' drawing (`ui/report_views.rs`): the two views, the Copy
+//! button and the wrapping of a long line.
+
 use super::*;
 use crate::app::diagnostics::DiagItem;
 use crate::app::testing::diag_app;

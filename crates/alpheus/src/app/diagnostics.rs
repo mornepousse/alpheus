@@ -1,6 +1,22 @@
-//! The Diag tab's state: what `systemctl`, `coredumpctl` and the health checks last said, the view
-//! it shows (the overview, or one of the three views opened from it) and the pure rules that turn
-//! those reads into rows. Nothing here runs a tool: the worker does, the tab only queues the reads.
+//! The Diag tab's state: what `systemctl`, `coredumpctl` and the health checks last said, the view it
+//! shows (the overview, or one of the three views opened from it) and the rules that turn those reads
+//! into rows.
+//!
+//! The tab reads only while it is shown. Its reads go to the worker as `Request::Diag`: the failed
+//! units every 5 seconds (`TabSpec.refresh`), the loops, the crashes, the boot line and the declared
+//! checks once per showing and on F5. The journal view (`journal.rs`) and the boot and bug reports
+//! (`report_views.rs`) are views of this tab with state of their own.
+//!
+//! Never:
+//! - run a tool: the worker runs `systemctl`, `journalctl` and the others; the one command that does
+//!   not go through the executor, a system unit's restart or reset, runs in the control center's own
+//!   window so that systemd asks for authorisation there (never `sudo` or `pkexec`);
+//! - run a fix: a failing health row shows what would fix it, and nothing here runs it;
+//! - write to a compositor: `socket_answers` connects to a socket and closes it at once;
+//! - draw anything: `ui/diagnostics.rs` draws the tab from this state.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 2 The Diag tab, § 2.2 Unit actions,
+//! § 2.3 Session health), docs/features/control-center.md.
 
 use super::worker::{DiagRead, DiagResult, Domain, Op, Request};
 use super::{App, Item, Loadable, Overlay, TOAST_TTL, Toast};
@@ -35,6 +51,7 @@ impl<T> Default for Section<T> {
 }
 
 impl<T> Section<T> {
+    /// Keeps a successful read, or keeps the last good list and remembers why this read failed.
     pub fn set(&mut self, r: BResult<Vec<T>>) {
         match r {
             Ok(v) => {
@@ -61,10 +78,10 @@ impl<T> Section<T> {
     }
 }
 
+pub use super::journal::JournalView;
 pub use super::report_views::{BootView, ReportView};
 
-pub use super::journal::JournalView;
-
+/// What the tab is showing: the overview, or a view opened from one of its rows.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
     #[default]
@@ -74,6 +91,8 @@ pub enum View {
     Report(ReportView),
 }
 
+/// What the Diag tab keeps: the last good list of each section, the checks and the health read, and
+/// which view is open.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DiagnosticsTab {
     pub failed_system: Section<FailedUnit>,
@@ -150,6 +169,8 @@ impl DiagnosticsTab {
         self.failed_system.error.is_some() && self.failed_user.error.is_some()
     }
 
+    /// Keeps the answer of a read of the overview's lists; the answers that belong to a view are
+    /// kept by that view (`journal.rs`, `report_views.rs`) and ignored here.
     pub fn apply(&mut self, result: DiagResult) {
         match result {
             DiagResult::Restarts { system, user } => {
@@ -199,6 +220,7 @@ pub struct HealthRead {
     pub own_env: Vec<(String, String)>,
 }
 
+/// The name of a compositor and the environment variable that names it.
 fn describe(c: &Compositor) -> (&'static str, &'static str) {
     match c {
         Compositor::Sway { .. } => ("Sway", "SWAYSOCK"),
@@ -213,16 +235,24 @@ fn socket_answers(path: &Path) -> bool {
     UnixStream::connect(path).is_ok()
 }
 
+/// Whether `WAYLAND_DISPLAY` is set and names a socket: an absolute path as it is, a name inside
+/// `XDG_RUNTIME_DIR`. `var` gives the environment (the process's own, in the worker).
 fn wayland_health(var: &dyn Fn(&str) -> Option<OsString>) -> WaylandHealth {
-    let Some(name) = var("WAYLAND_DISPLAY").filter(|v| !v.is_empty()) else { return WaylandHealth::Unset };
+    let name = match var("WAYLAND_DISPLAY") {
+        Some(name) if !name.is_empty() => name,
+        _ => return WaylandHealth::Unset,
+    };
     let shown = clean_line(&name.to_string_lossy(), 64);
     let path = if Path::new(&name).is_absolute() {
-        Some(PathBuf::from(&name))
+        PathBuf::from(&name)
     } else {
-        var("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).map(|r| PathBuf::from(r).join(&name))
+        match var("XDG_RUNTIME_DIR") {
+            Some(dir) if !dir.is_empty() => PathBuf::from(dir).join(&name),
+            _ => return WaylandHealth::Missing(shown),
+        }
     };
-    match path.and_then(|p| std::fs::metadata(p).ok()) {
-        Some(m) if m.file_type().is_socket() => WaylandHealth::Reachable(shown),
+    match std::fs::metadata(path) {
+        Ok(m) if m.file_type().is_socket() => WaylandHealth::Reachable(shown),
         _ => WaylandHealth::Missing(shown),
     }
 }
@@ -238,10 +268,14 @@ pub fn health(b: &crate::backends::Backends, var: &dyn Fn(&str) -> Option<OsStri
     if let Some(c) = &comp {
         names.push(c.var);
     }
-    let own_env = names
-        .iter()
-        .filter_map(|n| var(n).filter(|v| !v.is_empty()).map(|v| (n.to_string(), clean_line(&v.to_string_lossy(), 256))))
-        .collect();
+    let mut own_env = Vec::new();
+    for name in &names {
+        if let Some(value) = var(name) {
+            if !value.is_empty() {
+                own_env.push((name.to_string(), clean_line(&value.to_string_lossy(), 256)));
+            }
+        }
+    }
     HealthRead { compositor: comp, wayland: wayland_health(var), systemd_env: b.diagnostics.session_env(&names), own_env }
 }
 
@@ -254,6 +288,7 @@ pub struct HealthRow {
     pub fix: Option<String>,
 }
 
+/// What the Session health rows are made from.
 pub struct HealthInputs<'a> {
     pub read: Option<&'a HealthRead>,
     pub failed_user: &'a Section<FailedUnit>,
@@ -262,6 +297,7 @@ pub struct HealthInputs<'a> {
     pub checks: &'a [(Check, Option<CheckResult>)],
 }
 
+/// One health row.
 fn row(ok: bool, text: impl Into<String>, fix: Option<String>) -> HealthRow {
     HealthRow { ok, text: text.into(), fix }
 }
@@ -398,7 +434,12 @@ impl App {
         }
         let d = &self.diag;
         let mut v: Vec<DiagItem> = Vec::new();
-        v.extend(self.health_rows().iter().enumerate().filter(|(_, r)| !r.ok).map(|(i, _)| DiagItem::HealthRow(i)));
+        // A health row is focusable only while it fails: its fix is what the person reads.
+        for (i, row) in self.health_rows().iter().enumerate() {
+            if !row.ok {
+                v.push(DiagItem::HealthRow(i));
+            }
+        }
         for (scope, section) in [(Scope::System, &d.failed_system), (Scope::User, &d.failed_user)] {
             if !section.missing() {
                 v.extend(section.list().iter().map(|u| DiagItem::Failed(scope, u.unit.clone())));
@@ -420,6 +461,7 @@ impl App {
         v.into_iter().map(Item::Diag).collect()
     }
 
+    /// Opens a view over the overview, remembering the overview's selection.
     pub(super) fn open_diag_view(&mut self, view: View) {
         self.diag.saved_focus = self.focus;
         self.focus = 0;
@@ -435,12 +477,12 @@ impl App {
         self.clamp_focus();
     }
 
-    /// Enter on an overview row.
     /// A key was pressed on the tab.
     pub(crate) fn diag_touch(&mut self) {
         self.diag.touched = true;
     }
 
+    /// Enter on an overview row.
     pub(crate) fn diag_activate(&mut self, item: DiagItem) {
         let lines = self.config.diagnostics.journal_lines;
         match item {
@@ -491,7 +533,10 @@ impl App {
 
     /// Whether `r` and `c` do something on the row under the cursor (the key hints follow).
     pub fn unit_keys_apply(&self) -> bool {
-        self.diag_unit().is_some_and(|(scope, _)| scope == Scope::User || self.config.diagnostics.system_actions)
+        match self.diag_unit() {
+            Some((scope, _)) => scope == Scope::User || self.config.diagnostics.system_actions,
+            None => false,
+        }
     }
 
     /// `r` and `c` on a unit. Restarts ask first, a user unit's reset does not; a system unit's
@@ -588,6 +633,7 @@ impl App {
         true
     }
 
+    /// Whether the failed-units domain is failing for both managers.
     pub(crate) fn domain_diag_failing(&self, d: Domain) -> bool {
         d == Domain::Failed && self.diag.failed_failing()
     }

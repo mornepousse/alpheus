@@ -1,7 +1,18 @@
-//! The boot report and the bug report: two read-only views of the Diag tab. The boot report
-//! shows what `systemd-analyze` says; the bug report builds a redacted text, shows it in full and
-//! copies it only on Enter or a click on `[ Copy ]` (Esc closes, nothing copied). What is copied is
-//! exactly the text on screen: it is built once, redacted, then held.
+//! The boot report and the bug report: two read-only views of the Diag tab.
+//!
+//! The boot report shows what `systemd-analyze` says. The bug report is a redacted text, built once
+//! on the worker, shown in full and held: what is copied is exactly the text on screen. It is copied
+//! only on Enter or a click on `[ Copy ]` (Esc closes, nothing is copied).
+//!
+//! Never:
+//! - run a tool or build the text: the worker does, and this file keeps the answer;
+//! - copy on an Enter typed ahead of the text: Enter is ignored for `COPY_GRACE` after the text
+//!   appears;
+//! - copy when `[diagnostics] copy` is empty (`report_can_copy`);
+//! - draw anything: `ui/report_views.rs` draws the two views from this state.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 4, the boot report; § 5, the bug
+//! report), docs/features/control-center.md.
 
 use super::action::Action;
 use super::diagnostics::View;
@@ -28,6 +39,7 @@ const DEFAULT_PAGE: usize = 10;
 /// The slowest units and the critical chain, each as the worker read them.
 pub type BootRead = (BResult<Vec<Blame>>, BResult<Vec<String>>);
 
+/// The boot report: what the worker read, and where the view is scrolled to.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BootView {
     /// None while the worker reads.
@@ -36,6 +48,7 @@ pub struct BootView {
     pub page: Cell<usize>,
 }
 
+/// The bug report: its text once built, when it arrived, and where the view is scrolled to.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReportView {
     /// None while it is built.
@@ -73,17 +86,33 @@ pub fn wrap_rows(text: &str, width: usize) -> Vec<String> {
 }
 
 impl BootView {
+    /// The lines the view takes: both lists (an error counts as one line each) and three more for
+    /// the headings; none before the read has come.
     pub fn lines(&self) -> usize {
-        self.read.as_ref().map_or(0, |(b, c)| b.as_ref().map_or(1, Vec::len) + c.as_ref().map_or(1, Vec::len) + 3)
+        let Some((blame, chain)) = &self.read else { return 0 };
+        let blame_lines = match blame {
+            Ok(units) => units.len(),
+            Err(_) => 1,
+        };
+        let chain_lines = match chain {
+            Ok(lines) => lines.len(),
+            Err(_) => 1,
+        };
+        blame_lines + chain_lines + 3
     }
 }
 
 impl ReportView {
+    /// The rows the text takes at the width of the last draw; none before the text has come.
     pub fn lines(&self) -> usize {
-        self.text.as_ref().map_or(0, |t| wrap_rows(t, self.width.get()).len())
+        match &self.text {
+            Some(text) => wrap_rows(text, self.width.get()).len(),
+            None => 0,
+        }
     }
 }
 
+/// Moves a scroll position by `by` rows, never past the last full page of `lines` rows.
 fn step(scroll: &mut usize, by: isize, lines: usize, page: usize) {
     let max = lines.saturating_sub(page.max(1));
     *scroll = scroll.saturating_add_signed(by).min(max);
@@ -98,7 +127,10 @@ impl App {
 
     /// Enter on "Bug report…": the text is built on the worker.
     pub(crate) fn report_open(&mut self) {
-        let compositor = self.diag.health.as_ref().and_then(|h| h.compositor.as_ref()).map_or("", |c| c.name).to_string();
+        let compositor = match self.diag.health.as_ref().and_then(|h| h.compositor.as_ref()) {
+            Some(c) => c.name.to_string(),
+            None => String::new(),
+        };
         let restart_loop = self.config.diagnostics.restart_loop;
         self.requests.push(Request::Diag(DiagRead::Report { compositor, restart_loop }));
         self.open_diag_view(View::Report(ReportView {
@@ -157,9 +189,14 @@ impl App {
                 if e.code == KeyCode::Enter {
                     // Nothing to copy until the text is there (and has been on screen a moment),
                     // and nothing at all without a program.
-                    let read = r.shown_at.is_some_and(|t| now.saturating_duration_since(t) >= COPY_GRACE);
-                    if let (true, true, Some(text)) = (can_copy, read, r.text.clone()) {
-                        self.send_op(Op::Copy { argv, text });
+                    let read = match r.shown_at {
+                        Some(shown_at) => now.saturating_duration_since(shown_at) >= COPY_GRACE,
+                        None => false,
+                    };
+                    if can_copy && read {
+                        if let Some(text) = r.text.clone() {
+                            self.send_op(Op::Copy { argv, text });
+                        }
                     }
                     return true;
                 }
@@ -194,10 +231,13 @@ impl App {
     /// (the button is drawn only once the text is there).
     pub(crate) fn report_copy_click(&mut self) {
         let argv = self.config.diagnostics.copy.clone();
-        if let (View::Report(r), true) = (&self.diag.view, !argv.is_empty())
-            && let Some(text) = r.text.clone()
-        {
-            self.send_op(Op::Copy { argv, text });
+        if argv.is_empty() {
+            return;
+        }
+        if let View::Report(r) = &self.diag.view {
+            if let Some(text) = r.text.clone() {
+                self.send_op(Op::Copy { argv, text });
+            }
         }
     }
 }

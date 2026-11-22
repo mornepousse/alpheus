@@ -1,3 +1,6 @@
+//! Tests of the journal view's logic (`app/journal.rs`): the reads it asks for and when, the follow,
+//! the buffer's limit, scrolling, the filter and the unit picker.
+
 use super::*;
 use crate::app::diagnostics::DiagItem;
 use crate::app::keymap::Keymap;

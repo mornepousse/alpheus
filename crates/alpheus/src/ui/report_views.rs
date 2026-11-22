@@ -1,5 +1,16 @@
-//! The boot report and the bug report views of the Diag tab. Text from a tool passes `clean_line`
-//! again on its way to a cell.
+//! The boot report and the bug report of the Diag tab, drawn.
+//!
+//! `diagnostics::render` calls `render` while one of them is open, and `report_hints` and
+//! `boot_hints` give the status line's keys. The bug report is drawn in full, wrapped at the width of
+//! the window (`wrap_rows`), with a `[ Copy ]` button (clickable once the text is there): what is drawn is exactly
+//! what is copied.
+//!
+//! Never:
+//! - change the state or run a tool: the text and the boot read are the `App`'s;
+//! - let text that came from a tool reach a cell as it is: it passes `clean_line` again on its way.
+//!
+//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 4, the boot report; § 5, the bug
+//! report), docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{put, truncate};
@@ -39,6 +50,7 @@ pub fn duration(ms: u64) -> String {
     }
 }
 
+/// The view's title row: the title in the tab's hue, and `Esc back` at the right.
 fn header(buf: &mut Buffer, body: Rect, app: &App, chrome: Chrome, title: &str) {
     let th = &app.theme;
     let hue = if chrome == Chrome::Rail { tab_hue(th, app.tab) } else { th.muted };
@@ -47,6 +59,7 @@ fn header(buf: &mut Buffer, body: Rect, app: &App, chrome: Chrome, title: &str) 
     put(buf, body, body.right().saturating_sub(back.len() as u16), body.y, back, Style::default().fg(th.ink(th.muted, th.bg, 3.0)));
 }
 
+/// Draws the boot or the bug report, whichever is open.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
     match &app.diag.view {
         View::Boot(_) => boot(buf, body, app, chrome),
@@ -55,6 +68,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
     }
 }
 
+/// The boot report: the slowest units and the critical chain, or why one is missing.
 fn boot(buf: &mut Buffer, body: Rect, app: &App, chrome: Chrome) {
     let View::Boot(b) = &app.diag.view else { return };
     let th = &app.theme;
@@ -95,6 +109,7 @@ fn boot(buf: &mut Buffer, body: Rect, app: &App, chrome: Chrome) {
     }
 }
 
+/// The bug report: the redacted text wrapped to the window, and the `[ Copy ]` button.
 fn report(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
     let View::Report(r) = &app.diag.view else { return };
     let th = &app.theme;
