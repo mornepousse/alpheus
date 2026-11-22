@@ -5,8 +5,8 @@
 use crate::actions::Button;
 use crate::keys::Key;
 use crate::log::write as log;
+use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
 use crate::media::{MediaView, Players};
-use crate::media_popup::{self, MediaAction, MediaPopup};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::session_bus::mpris::Mpris;
 use crate::state::Msg;

@@ -507,5 +507,8 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+pub mod app;
+pub mod popup;
+
 #[cfg(test)]
 mod tests;

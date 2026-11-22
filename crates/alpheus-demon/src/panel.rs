@@ -13,7 +13,7 @@ use crate::grid::{Grid, Style};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Row};
 use crate::media::Players;
-use crate::media_popup::{self, MediaAction, MediaPopup};
+use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
 use crate::notify::{Center, Entry};
 use std::time::Instant;
 

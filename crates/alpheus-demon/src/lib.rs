@@ -33,8 +33,6 @@ pub mod list;
 pub mod lock;
 pub mod log;
 pub mod media;
-pub mod media_app;
-pub mod media_popup;
 pub mod memory;
 pub mod menu_app;
 pub mod modules;

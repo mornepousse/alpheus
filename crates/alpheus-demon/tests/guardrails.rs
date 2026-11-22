@@ -1572,7 +1572,7 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
 /// entry would otherwise skip its file without a word (`unmatched_entries`).
 const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
-    "media.rs",
+    "media/mod.rs",
     "notify.rs",
     "osd.rs",
     "osd_surface.rs",
@@ -1580,7 +1580,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "bubbles.rs",
     "bubbles_surface.rs",
     "panel.rs",
-    "media_popup.rs",
+    "media/popup.rs",
     "popup.rs",
     "calendar/mod.rs",
     "deadline.rs",
@@ -2918,12 +2918,12 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let row = popup_ops_row(&quick_app);
     assert!(row.contains("flush: App::quick_flush,") && row.contains("closed: App::quick_closed,"), "the quick panel's row: {row}");
     // The media popup's and the panel's card's Seeked rule and 1 s tick go when either closes.
-    for name in ["media_app.rs", "panel_app.rs"] {
+    for name in ["media/app.rs", "panel_app.rs"] {
         let text = src(name);
         let row = popup_ops_row(&text);
         assert!(row.contains("closed: App::media_closed,"), "{name}: the tick must go with the popup: {row}");
     }
-    let media_closed = function_body(&src("media_app.rs"), "pub(crate) fn media_closed(").to_string();
+    let media_closed = function_body(&src("media/app.rs"), "pub(crate) fn media_closed(").to_string();
     assert!(media_closed.contains("popup_closed(out)") && media_closed.contains("self.media_timer_sync()"), "{media_closed}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");

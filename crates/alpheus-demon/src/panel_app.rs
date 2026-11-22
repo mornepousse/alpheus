@@ -4,7 +4,7 @@
 use crate::keys::Key;
 use crate::log::write as log;
 use crate::media::Players;
-use crate::media_popup::MediaAction;
+use crate::media::popup::MediaAction;
 use crate::notify::Center;
 use crate::panel::{self, Panel, PanelAction};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
