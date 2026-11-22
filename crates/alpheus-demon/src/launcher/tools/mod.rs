@@ -4,3 +4,4 @@
 pub mod catalog;
 pub mod config;
 pub mod nav;
+pub mod read;

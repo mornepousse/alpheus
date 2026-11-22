@@ -1094,6 +1094,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("link.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
+        // The Tools menu's reader: one short-lived thread per read of states or of a
+        // `choices_cmd`, started while the menu is open, ending with its last delivery.
+        ("launcher/tools/read.rs", "thread::Builder", 1),
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
@@ -1491,6 +1494,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/surface.rs",
     "notes/paste.rs",
     "clipboard/",
+    "launcher/tools/config.rs",
     "launcher/tools/config.rs",
     "launcher/tools/catalog.rs",
     "launcher/tools/nav.rs",

@@ -111,6 +111,25 @@ fn refusal(e: &ExecError) -> String {
     }
 }
 
+/// `argv`'s program run for its end only (the Tools menu's `state`): its exit status and the caps,
+/// the output dropped at once. Never through a shell. `.capture(` lives here and in `nonblocking.rs`
+/// only (the guardrail), so the Tools reader calls these.
+pub fn capture_status(argv: &[String], exec: &dyn Executor) -> Result<CaptureEnd, ExecError> {
+    let Some((program, args)) = argv.split_first() else { return Err(ExecError::NotFound) };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    exec.capture(program, &args, LIMITS).map(|c| c.end)
+}
+
+/// `argv`'s program run for its lines (the Tools menu's `choices_cmd`): cleaned as a source's are
+/// (`lines`), the ones read before a kill or a cap kept, and how the read ended.
+pub fn capture_lines(argv: &[String], exec: &dyn Executor) -> Result<(Vec<String>, CaptureEnd), ExecError> {
+    let Some((program, args)) = argv.split_first() else { return Err(ExecError::NotFound) };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let captured = exec.capture(program, &args, LIMITS)?;
+    let kept = lines(&captured.stdout, !matches!(captured.end, CaptureEnd::Exited(_)));
+    Ok((kept, captured.end))
+}
+
 /// One source's lines (`lines`), and one `log` line when it failed: could not start, exited
 /// non-zero, was killed, timed out or passed a cap — with its name and how many lines were kept,
 /// never a line.

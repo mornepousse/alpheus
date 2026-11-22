@@ -11,6 +11,7 @@ use crate::launcher::socket::Server;
 use crate::launcher::socket_glue::{launcher_socket_outcome, watch_launcher_socket};
 use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
+use crate::launcher::tools::nav::StateJob;
 use crate::lock;
 use crate::modules::Needs;
 use crate::nonblocking::NonBlocking;
@@ -67,6 +68,28 @@ pub enum Mail {
     Entries {
         generation: u64,
         entries: Entries,
+    },
+    /// One entry's `state`, read for the open Tools menu (tools spec § 6): adopted by the open
+    /// launcher with this generation only.
+    ToolState {
+        generation: u64,
+        entry: usize,
+        state: Option<bool>,
+    },
+    /// The states read is over: the entries it did not read (a waiting choices read stopped it), and
+    /// the reader's slot is free.
+    ToolStatesDone {
+        generation: u64,
+        unread: Vec<StateJob>,
+    },
+    /// A `choices_cmd`'s lines: adopted only by the open launcher whose generation and `token` match;
+    /// the reader's slot is free either way.
+    ToolChoices {
+        generation: u64,
+        token: u64,
+        entry: usize,
+        lines: Vec<String>,
+        failed: bool,
     },
     Stop,
 }
@@ -574,6 +597,8 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
+        // The Tools menu's reader mail is handled by the glue (tools_app.rs, a later task).
+        channel::Event::Msg(Mail::ToolState { .. } | Mail::ToolStatesDone { .. } | Mail::ToolChoices { .. }) => {}
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
