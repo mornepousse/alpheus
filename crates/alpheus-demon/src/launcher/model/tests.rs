@@ -1412,3 +1412,18 @@ fn leaving_tools_by_a_mode_click_forgets_the_prepared_facts() {
     assert_eq!(l.mode, Mode::All);
     assert!(l.ranker.preparations() > before, "the Tools list's facts are not All's");
 }
+
+/// A state the daemon read itself (a built-in's switch) is adopted by the model after the `/` jump
+/// into Tools, as after a `--tools` open: the jump's outcome asks for it, the model keeps it.
+#[test]
+fn a_state_adopted_after_the_slash_jump_sticks() {
+    let mut l = tools_launcher();
+    assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)), "the jump asks for the daemon's own states");
+    let entry = 3; // Root a
+    assert_eq!(l.tools().and_then(|t| t.state_of(entry)), None, "unknown until read");
+    l.adopt_state(entry, Some(true));
+    assert_eq!(l.tools().and_then(|t| t.state_of(entry)), Some(true));
+    l.key(Key::Enter); // into the category and back: the state is the catalog's, not the level's
+    l.key(Key::Left);
+    assert_eq!(l.tools().and_then(|t| t.state_of(entry)), Some(true));
+}

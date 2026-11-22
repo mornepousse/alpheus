@@ -370,6 +370,7 @@ impl App {
                 return;
             }
         }
+        let is_tools = request == Request::Tools;
         match decide(request, open, since_open) {
             (Action::OpenScript { prompt, lines, flags }, _) => {
                 if self.launcher_is_open() {
@@ -414,6 +415,8 @@ impl App {
                         }
                     }
                     Action::Close(reason) => self.launcher_close(reason),
+                    // The only `--tools` that does nothing is the one inside the debounce.
+                    Action::Nothing if is_tools => log("launcher: --tools debounced"),
                     Action::Nothing | Action::OpenScript { .. } => {}
                 }
             }

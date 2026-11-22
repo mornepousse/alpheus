@@ -386,9 +386,11 @@ fn tools_open_and_type(sway: &Sway, d: &Daemon, n: usize, args: &[&str]) {
 fn tools_opens_with_no_scan_and_toggles() {
     let (sway, _hypr, mut d) =
         tools_daemon("tools-toggle", "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
-    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    // Both requests are written before either reply is read: the second reaches the daemon inside
+    // the first's debounce however slow the machine is.
+    assert_eq!(launcher_pair(&sway, &Request::Tools, &Request::Tools), (Reply::Done, Reply::Done));
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
-    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done, "inside the debounce");
+    assert!(d.wait_for("launcher: --tools debounced", DELAY), "the second --tools was ignored, not lost: {:?}", d.log());
     thread::sleep(Duration::from_millis(100));
     assert_eq!(d.count("launcher closed ("), 0, "the quick second --tools must not close it: {:?}", d.log());
     thread::sleep(PAST_DEBOUNCE);
@@ -479,7 +481,7 @@ fn tools_states_are_read_and_a_hung_one_killed() {
     let off = tools_script(&sway, "fake-off", "exit 1");
     wait_until_executable(&on);
     let pid_file = sway.runtime.join("hung.pid");
-    let hung = tools_script(&sway, "fake-hung", &format!("echo $$ > '{}'\nexec sleep 300", pid_file.display()));
+    let hung = tools_script(&sway, "fake-hung", &format!("sleep 300 &\necho $! > '{}'\nwait", pid_file.display()));
     let entry = |n: &str, state: &Path| format!("[[tools.entry]]\nname = \"{n}\"\nrun = [\"x\"]\nstate = [\"{}\"]\n", state.display());
     let toml = format!(
         "[tools]\nbuiltins = false\n{}{}{}",
@@ -617,7 +619,7 @@ fn tools_slash_prefix_keeps_the_apps() {
     let entry = desktop("Fakenotes", "fake-notes");
     let files = [("alpheus-fake-notes.desktop", entry.as_str())];
     let rec = fake_argv_recorder(&sway, "argv-rec");
-    let slow = tools_script(&sway, "fake-slow-list", "sleep 0.7\necho 'Zulu line'");
+    let slow = tools_script(&sway, "fake-slow-list", "sleep 0.5\necho 'Zulu line'");
     let toml = format!(
         "[[tools.entry]]\nname = \"Zed\"\nrun = [\"x\"]\nstate = [\"{}\"]\n[[sources]]\nname = \"Slow\"\nlist = [\"{}\"]\nrun = [\"{}\", \"{{line}}\"]\n",
         on.display(),
@@ -639,8 +641,14 @@ fn tools_slash_prefix_keeps_the_apps() {
     // Tools mode shows, and are there when Backspace goes back.
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "/", "-s", "2000", "-k", "BackSpace", "-s", "200", "zulu", "-k", "Return"]).success());
+    assert!(wtype(&sway, &["-s", "100", "/", "-s", "2000", "-k", "BackSpace", "-s", "200", "zulu", "-k", "Return"]).success());
     assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 1), "the slow source's entry was lost: {:?}", d.log());
+    // The phase still bites: the entries were delivered after the jump into Tools (the second
+    // states line is the jump's), not before it.
+    let log = d.log();
+    let at = |what: &str, nth: usize| log.iter().enumerate().filter(|(_, l)| l.contains(what)).nth(nth).map(|(i, _)| i);
+    let (jump, delivered) = (at("tools: states read", 1), at("ms after the request", 1));
+    assert!(jump.is_some() && delivered.is_some() && jump < delivered, "the source delivered before the jump: {log:?}");
     assert_eq!(recorded_argv(&sway, "argv-rec")[0], ["Zulu line"]);
 }
 
@@ -692,15 +700,17 @@ fn tools_at_rest_no_wakeups_after_a_cycle() {
     ready(&d);
     thread::sleep(Duration::from_millis(500));
     let threads = d.threads();
-    // A question asked, the box closed with it pending.
-    tools_open_and_type(
-        &sway,
-        &d,
-        1,
-        &["-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "100", "-k", "Escape", "-k", "Escape", "-k", "Escape"],
-    );
+    // A question asked (Enter on the category, Enter on the entry), the box then closed by the verb
+    // with the question still pending (inside its 3 s; Escape would cancel it first). wtype keeps
+    // its keyboard up meanwhile, so nothing but the verb closes the box.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "20000"]);
     assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "{:?}", d.log());
-    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1200)); // asked at ~0.3 s, expires at ~3.3 s
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    drop(held);
     assert_eq!(recorded(&sway, "fake-danger").len(), 0, "only ever asked: {:?}", d.log());
     thread::sleep(Duration::from_millis(1500));
     away_from_the_minute();
@@ -713,19 +723,24 @@ fn tools_at_rest_no_wakeups_after_a_cycle() {
         2,
         &["-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "3500", "-k", "Escape", "-k", "Escape", "-k", "Escape"],
     );
-    assert!(d.wait_for_count("launcher closed (escape)", 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(1500));
     away_from_the_minute();
     let second = rest_over_5_s(&d);
     assert_eq!(second, 0, "the loop woke {second} times at rest after an expired question: {:?}", d.log());
     // The box left open after a question expired: no timer keeps ticking (wtype's keyboard stays up).
+    // Started early in the minute and held 25 s, so the hold outlives the window whatever
+    // `away_from_the_minute` waits for (no step of the keyboard's leaving inside it).
+    while !(2..=20).contains(&alpheus_demon::clock::LocalTime::now().0.second) {
+        thread::sleep(Duration::from_millis(200));
+    }
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
-    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "11000"]);
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "25000"]);
     thread::sleep(Duration::from_millis(4000)); // asked at 0.4 s, expired at 3.4 s, redrawn
     let open = rest_over_5_s(&d);
     assert_eq!(open, 0, "the loop woke {open} times with the box open after the question expired: {:?}", d.log());
-    held.wait().unwrap();
+    drop(held);
     assert_eq!(d.threads(), threads, "no thread left behind");
 }
 
