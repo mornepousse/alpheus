@@ -323,3 +323,57 @@ closed. A second verb closes the menu, except within 250 ms of its own open (som
 a key bind twice).
 
 Date: 2026-11-21 · Source: tools menu spec § 7; tools menu plan 1, `power_verb`
+
+### The resources history is kept always, as whole samples
+
+While the `resources` module is on, the bar keeps a ring of the last 60 samples (about 3 KB, written
+in place on the existing tick, with no allocation after start), whether or not the popup is open.
+The popup therefore opens on a graph that is already full. A ring filled only while the popup is
+open would save those 3 KB but open on an empty graph that takes a minute or two to say anything.
+Every pass is stored, including one with no reading, so a missing reading is a gap in the graph and
+the time axis never shifts.
+
+Date: 2026-11-15 · Source: resources popup spec § 3; resources popup plan 1, decisions 1 and 3
+
+### The resources popup spans 60 times the interval
+
+The popup's samples come at the same cadence, `[resources] interval`, whether it is open or closed,
+so its 60 samples span `60 × interval` seconds and the header reads `last {interval} min` (two
+minutes at the default of 2 s, one at `interval = 1`). A faster tick while the popup is open would
+mix two spacings in one ring and need the timer re-armed on every open and close.
+
+Date: 2026-11-15 · Source: resources popup spec § 3; resources popup plan 1, decision 2
+
+### Every resources item keeps its block in the popup
+
+Each item of `[resources] show` has its block in the popup, in the order written, whether or not it
+has a figure at that moment (a dash and an empty graph stand in), so the popup keeps its size while
+it is open and a reading that appears or goes never resizes it.
+
+Date: 2026-11-15 · Source: resources popup spec § 2; resources popup plan 1, decision 12
+
+### The resources graphs have fixed scales, and the network's has a floor
+
+CPU and disk graphs run from 0 to 100 %, memory from 0 to the machine's total, temperature and GPU
+from 0 to 100 °C (clamped). The network graph shares one scale between download and upload, the
+highest rate of either in the ring, never below 128 KiB/s, so that an idle link does not fill the
+graph with noise. A point is in permille of the scale, rounded down, at most 1000.
+
+Date: 2026-11-15 · Source: resources popup spec § 4; resources popup plan 1, decision 4
+
+### The resources popup has no timer of its own
+
+The popup repaints on each tick of the bar's resources timer, and only while it is the open popup;
+a tick with the popup closed paints nothing. It owns no timer, so opening it adds no wake-up, and
+the reading is applied to the bar before the popup is repainted.
+
+Date: 2026-11-15 · Source: resources popup spec § 2 and "Constraints"; resources popup plan 1, decision 12
+
+### The left click opens the resources popup and the right click runs `[actions] resources`
+
+A left click on the resources module opens the popup, which has a `Monitor…` row that runs
+`[actions] resources`; the right click runs the same command directly. It was the left click's job
+before the popup existed. With `[actions] resources` empty the popup has no `Monitor…` row.
+
+Date: 2026-11-15 · Source: resources popup spec § 1; resources popup plan 1, decision 10
+

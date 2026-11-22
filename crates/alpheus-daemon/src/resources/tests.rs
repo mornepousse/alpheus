@@ -1,13 +1,20 @@
+//! Tests of the resources popup's model (`mod.rs`): the graphs' scales and their edges, the rows
+//! for each set of items, the figures' colours, the header's span, the keys and the pointer. No
+//! `/proc`, no clock, no daemon: each test builds the samples it wants.
+
 use super::*;
 use crate::config::ResourceItem::{Cpu, Disk, Gpu, Memory, Net, Temperature};
 use crate::grid::Hue;
 use crate::system::{HISTORY, NetRate, Sample};
 
-fn texts(b: &Boxed) -> Vec<String> {
+/// The text of each row, without its trailing blanks.
+fn row_texts(b: &Boxed) -> Vec<String> {
     b.rows.iter().map(|g| g.text().trim_end().to_string()).collect()
 }
 
-fn ring(samples: &[Sample]) -> Resources {
+/// A `Resources` that has been given `samples`, oldest first (so its ring and its latest sample
+/// are those).
+fn resources_with_history(samples: &[Sample]) -> Resources {
     let mut r = Resources::default();
     for s in samples {
         r.push(*s);
@@ -15,61 +22,78 @@ fn ring(samples: &[Sample]) -> Resources {
     r
 }
 
-fn one(s: Sample) -> History {
-    ring(&[s]).history
+/// A ring holding the one sample `s`.
+fn history_of_one(s: Sample) -> History {
+    resources_with_history(&[s]).history
 }
 
-/// The last point of the item's first series.
-fn last_of(item: ResourceItem, s: Sample) -> Option<u16> {
-    *series(item, &one(s))[0].last().expect("a series is never empty")
+/// The newest point of the item's first series, for a ring holding only `s`.
+fn newest_point_of(item: ResourceItem, s: Sample) -> Option<u16> {
+    *series(item, &history_of_one(s))[0].last().expect("a series is never empty")
 }
 
 #[test]
-fn series_scales_and_their_edges() {
+fn each_item_scales_to_permille_and_the_edges_never_overflow_or_divide_by_zero() {
     for (cpu, want) in [(0u8, 0u16), (50, 500), (100, 1000)] {
-        assert_eq!(last_of(Cpu, Sample { cpu: Some(cpu), ..Sample::default() }), Some(want), "cpu {cpu}");
+        assert_eq!(newest_point_of(Cpu, Sample { cpu: Some(cpu), ..Sample::default() }), Some(want), "cpu {cpu}");
     }
-    assert_eq!(last_of(Disk, Sample { disk: Some(62), ..Sample::default() }), Some(620));
+    assert_eq!(newest_point_of(Disk, Sample { disk: Some(62), ..Sample::default() }), Some(620));
     let mem = Sample { memory: Some(61), memory_total: Some(155), ..Sample::default() };
-    assert_eq!(last_of(Memory, mem), Some(61 * 1000 / 155));
-    assert_eq!(last_of(Memory, Sample { memory: Some(61), memory_total: None, ..Sample::default() }), None, "no total, no point");
-    assert_eq!(last_of(Memory, Sample { memory: Some(61), memory_total: Some(0), ..Sample::default() }), None, "a zero total: no divide");
-    assert_eq!(last_of(Memory, Sample { memory: Some(900), memory_total: Some(155), ..Sample::default() }), Some(1000), "capped");
+    assert_eq!(newest_point_of(Memory, mem), Some(61 * 1000 / 155));
+    assert_eq!(newest_point_of(Memory, Sample { memory: Some(61), memory_total: None, ..Sample::default() }), None, "no total, no point");
+    assert_eq!(
+        newest_point_of(Memory, Sample { memory: Some(61), memory_total: Some(0), ..Sample::default() }),
+        None,
+        "a zero total: no divide"
+    );
+    assert_eq!(newest_point_of(Memory, Sample { memory: Some(900), memory_total: Some(155), ..Sample::default() }), Some(1000), "capped");
     for (t, want) in [(-5i16, 0u16), (54, 540), (130, 1000)] {
-        assert_eq!(last_of(Temperature, Sample { temperature: Some(t), ..Sample::default() }), Some(want), "{t}°");
-        assert_eq!(last_of(Gpu, Sample { gpu: Some(t), ..Sample::default() }), Some(want), "gpu {t}°");
+        assert_eq!(newest_point_of(Temperature, Sample { temperature: Some(t), ..Sample::default() }), Some(want), "{t}°");
+        assert_eq!(newest_point_of(Gpu, Sample { gpu: Some(t), ..Sample::default() }), Some(want), "gpu {t}°");
     }
     // The ring is always HISTORY long: leading gaps until it is full (a fixed time axis).
-    let h = one(Sample { cpu: Some(50), ..Sample::default() });
+    let h = history_of_one(Sample { cpu: Some(50), ..Sample::default() });
     let s = &series(Cpu, &h)[0];
     assert_eq!(s.len(), HISTORY);
     assert!(s[..HISTORY - 1].iter().all(Option::is_none) && s[HISTORY - 1] == Some(500));
 
     let zero = Sample { net: Some(NetRate { down: 0, up: 0 }), ..Sample::default() };
-    let h = one(zero);
+    let h = history_of_one(zero);
     assert_eq!(net_top(&h), Some(NET_FLOOR));
     let n = series(Net, &h);
     assert_eq!(n.len(), 2, "down and up");
     assert!(n.iter().all(|s| s[HISTORY - 1] == Some(0)));
     let huge = Sample { net: Some(NetRate { down: u64::MAX, up: 1 }), ..Sample::default() };
-    let h = one(huge);
+    let h = history_of_one(huge);
     assert_eq!(net_top(&h), Some(u64::MAX));
     assert_eq!(series(Net, &h)[0][HISTORY - 1], Some(1000), "no overflow");
     assert_eq!(series(Net, &h)[1][HISTORY - 1], Some(0));
-    let none = one(Sample::default());
+    let none = history_of_one(Sample::default());
     assert_eq!(net_top(&none), None);
     assert!(series(Net, &none).iter().all(|s| s.iter().all(Option::is_none)));
-    let half = one(Sample { net: Some(NetRate { down: NET_FLOOR * 2, up: NET_FLOOR }), ..Sample::default() });
+    let half = history_of_one(Sample { net: Some(NetRate { down: NET_FLOOR * 2, up: NET_FLOOR }), ..Sample::default() });
     assert_eq!(series(Net, &half)[1][HISTORY - 1], Some(500), "both over the one top");
 }
 
+/// A pass with no net reading (no route for a moment) is skipped, not the end of the search: the
+/// network's top still counts the samples on both sides of it.
 #[test]
-fn the_rows_for_the_default_items() {
+fn the_network_top_skips_a_sample_with_no_reading_and_goes_on() {
+    let rate = |down: u64, up: u64| Sample { net: Some(NetRate { down, up }), ..Sample::default() };
+    let h =
+        resources_with_history(&[rate(NET_FLOOR * 4, 0), Sample::default(), rate(NET_FLOOR * 2, NET_FLOOR * 3), Sample::default()]).history;
+    assert_eq!(net_top(&h), Some(NET_FLOOR * 4), "the highest, whichever side of a gap it is on");
+    let h = resources_with_history(&[rate(NET_FLOOR * 2, 0), Sample::default(), rate(NET_FLOOR * 5, 0)]).history;
+    assert_eq!(net_top(&h), Some(NET_FLOOR * 5), "a higher sample after the gap counts too");
+}
+
+#[test]
+fn the_default_items_give_a_header_three_blocks_and_the_monitor_row() {
     let s = Sample { cpu: Some(12), memory: Some(61), memory_total: Some(155), temperature: Some(54), ..Sample::default() };
-    let r = ring(&[s; 60]);
+    let r = resources_with_history(&[s; 60]);
     let c = ResourcesConfig::default();
     let b = ResourcesPopup::default().render(&r, &c);
-    let t = texts(&b);
+    let t = row_texts(&b);
     assert_eq!(b.rows.len(), 12);
     assert_eq!(b.separators, [10]);
     assert!(t[0].starts_with(" Resources") && t[0].ends_with("last 2 min"), "{:?}", t[0]);
@@ -98,10 +122,10 @@ fn the_rows_for_the_default_items() {
 }
 
 #[test]
-fn the_rows_keep_every_item_without_a_figure() {
+fn an_item_with_no_figure_keeps_its_block_so_the_size_never_changes() {
     let c = ResourcesConfig { show: vec![Net, Disk, Gpu], ..ResourcesConfig::default() };
     let empty = ResourcesPopup::default().render(&Resources::default(), &c);
-    let t = texts(&empty);
+    let t = row_texts(&empty);
     for row in [1, 4, 7] {
         assert!(t[row].ends_with('—'), "{:?}", t[row]);
     }
@@ -111,16 +135,16 @@ fn the_rows_keep_every_item_without_a_figure() {
     assert_eq!((down.ink, down.fill), (Tint::Hue(Hue::Cyan), true));
     assert_eq!((up.ink, up.fill), (Tint::FgDim, false));
     let full = Sample { net: Some(NetRate { down: 5, up: 6 }), disk: Some(40), gpu: Some(50), ..Sample::default() };
-    let with = ResourcesPopup::default().render(&ring(&[full]), &c);
+    let with = ResourcesPopup::default().render(&resources_with_history(&[full]), &c);
     assert_eq!(with.cells(), empty.cells(), "the size never depends on the figures");
-    assert_eq!(texts(&with).len(), texts(&empty).len());
+    assert_eq!(row_texts(&with).len(), row_texts(&empty).len());
 }
 
 #[test]
-fn hot_temperatures_and_net_figures() {
+fn a_temperature_from_85_is_in_the_error_colour_and_the_net_figure_leads_with_its_peak() {
     let c = ResourcesConfig { show: vec![Temperature], ..ResourcesConfig::default() };
     let figure_styles = |t: i16| {
-        let b = ResourcesPopup::default().render(&ring(&[Sample { temperature: Some(t), ..Sample::default() }]), &c);
+        let b = ResourcesPopup::default().render(&resources_with_history(&[Sample { temperature: Some(t), ..Sample::default() }]), &c);
         let cells = b.rows[1].cells();
         let text = b.rows[1].text();
         let at = text.trim_end().chars().count() - format!("{t}°").chars().count();
@@ -131,8 +155,8 @@ fn hot_temperatures_and_net_figures() {
     let c = ResourcesConfig { show: vec![Net], ..ResourcesConfig::default() };
     let peak = Sample { net: Some(NetRate { down: 3_565_158, up: 0 }), ..Sample::default() };
     let now = Sample { net: Some(NetRate { down: 1_258_291, up: 81_920 }), ..Sample::default() };
-    let b = ResourcesPopup::default().render(&ring(&[peak, now]), &c);
-    let row = &texts(&b)[1];
+    let b = ResourcesPopup::default().render(&resources_with_history(&[peak, now]), &c);
+    let row = &row_texts(&b)[1];
     assert!(row.ends_with("peak 3.4M \u{f01da} 1.2M \u{f0552} 80K"), "{row:?}");
     let style_of = |needle: &str| {
         let chars = b.rows[1].text().chars().collect::<Vec<_>>();
@@ -145,15 +169,14 @@ fn hot_temperatures_and_net_figures() {
 }
 
 /// The widest net row: `peak` and both rates at the five-cell cap (`9999G`; 1023 MiB/s itself reads
-/// `1.0G`). It must fit the inner cells and leave the
-/// icon and the name untouched.
+/// `1.0G`). It must fit the inner cells and leave the icon and the name untouched.
 #[test]
 fn the_net_row_fits_at_the_maximum_rate() {
     let c = ResourcesConfig { show: vec![Net], ..ResourcesConfig::default() };
     let max = 10_000 * 1024 * 1024 * 1024;
     let s = Sample { net: Some(NetRate { down: max, up: max }), ..Sample::default() };
-    let b = ResourcesPopup::default().render(&ring(&[s]), &c);
-    let row = &texts(&b)[1];
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    let row = &row_texts(&b)[1];
     assert!(row.ends_with("peak 9999G \u{f01da} 9999G \u{f0552} 9999G"), "{row:?}");
     let width = text_width(row.trim_start());
     assert!(width <= WIDTH - 2, "{width} cells in {row:?}: the inner width is {}", WIDTH - 2);
@@ -163,16 +186,16 @@ fn the_net_row_fits_at_the_maximum_rate() {
 }
 
 #[test]
-fn the_span_follows_the_interval() {
+fn the_header_span_follows_the_interval() {
     for (interval, want) in [(1u64, "last 1 min"), (60, "last 60 min")] {
         let c = ResourcesConfig { interval, ..ResourcesConfig::default() };
         let b = ResourcesPopup::default().render(&Resources::default(), &c);
-        assert!(texts(&b)[0].ends_with(want), "{interval}: {:?}", texts(&b)[0]);
+        assert!(row_texts(&b)[0].ends_with(want), "{interval}: {:?}", row_texts(&b)[0]);
     }
 }
 
 #[test]
-fn keys_follow_the_power_menu() {
+fn the_keys_select_the_monitor_row_and_run_it_only_once_selected() {
     let mut p = ResourcesPopup::default();
     assert!(!p.selected);
     assert_eq!(p.key(Key::Enter), ResourcesAction::Nothing, "nothing selected at open");
@@ -229,7 +252,7 @@ fn no_monitor_row_without_a_command() {
     let b = p.render(&Resources::default(), &c);
     assert_eq!(b.rows.len(), 10, "the header, three blocks, one blank");
     assert!(b.separators.is_empty());
-    assert!(texts(&b).iter().all(|t| !t.contains("Monitor")), "{:?}", texts(&b));
+    assert!(row_texts(&b).iter().all(|t| !t.contains("Monitor")), "{:?}", row_texts(&b));
     for k in [Key::Down, Key::Up, Key::Tab, Key::BackTab, Key::Home, Key::End, Key::Enter, Key::Char(' ')] {
         assert_eq!(p.key(k), ResourcesAction::Nothing, "{k:?}");
     }

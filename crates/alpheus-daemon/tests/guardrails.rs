@@ -2378,14 +2378,17 @@ fn the_osd_has_no_panicking_path() {
     }
 }
 
-/// Resources popup: no panic in the model's production code.
+/// Resources popup: no panic in the model's production code, nor in the wiring's (it runs on every
+/// resources tick while the popup is open).
 #[test]
 fn the_resources_popup_has_no_panicking_path() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources/mod.rs").expect("resources/mod.rs").1;
-    let production = production_code(t);
-    for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in resources/mod.rs's production code");
+    for name in ["resources/mod.rs", "resources/app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
     }
 }
 

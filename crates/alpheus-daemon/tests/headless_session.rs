@@ -5821,6 +5821,23 @@ fn resources_down_enter_runs_the_monitor() {
     assert!(!d.log().iter().any(|l| l.contains("fake-monitor")), "the command never reaches the log: {:?}", d.log());
 }
 
+/// A left press on the `Monitor…` row runs the command through the fake and closes the popup, and
+/// a press on the row above it (a blank one) does nothing: the pointer's cell row is the popup's
+/// own row, counted from its header. The box's rows are 22 px each under the 22 px bar and the
+/// frame's ≈ 7 px, so row 11 (`Monitor…`) is at y 271 to 293.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn resources_a_left_press_on_the_monitor_row_runs_it() {
+    let (sway, _hypr, d) = resources_daemon("resources-press");
+    resources_open(&sway, &d, 1);
+    sway.click(60, 260, "button1");
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-monitor").is_empty(), "the blank row above Monitor… ran nothing: {:?}", d.log());
+    sway.click(60, 282, "button1");
+    assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+}
+
 /// Resources popup spec § 1: Escape closes the popup; a right click on the module then runs the
 /// monitor once and opens no popup.
 #[test]
