@@ -41,18 +41,69 @@ A row whose tool, hardware or command is missing is not shown.
 
 ### Wi-Fi
 
-A Wi-Fi row first under the sliders: a glyph by signal, the SSID, on or off; Space runs
-`nmcli radio wifi on|off`. Its detail (Enter, →, a click, a click on the network module, or
-`alpheus-launch --quick wifi`, which also asks for one `nmcli device wifi rescan`) lists the
-networks, at most 32: the connected one, then saved ones, then the others by signal, with `●`, four
-signal steps, a lock and `saved`. `More…` runs `[quick] wifi_more`.
+**The row.** A Wi-Fi row first under the sliders: a glyph by the signal of the connected network
+(another glyph when the radio is on and nothing is connected, another when it is off), then the SSID
+cut to 16 cells (`hidden` for one that shows nothing), `on` or `off`. Space runs
+`nmcli radio wifi on|off`. The row is hidden when NetworkManager has no Wi-Fi device.
 
-Enter on a network connects: a connected one goes down (`connection down uuid`), a saved one comes up
-(`connection up uuid`), an open one connects (`device wifi connect`). A new WPA-personal network asks
-for its password in a `Password` row, and `nmcli --ask device wifi connect` reads it on its standard
-input, never from an argument. While connecting a row reads `…`, then `●`; a failure reads `failed`
-for 4 s and writes one log line without the SSID. An attempt on a new network outlives the panel, so
-that the profile that appeared during a failed attempt is deleted if it is still saved.
+**The detail.** Enter, →, a click on the row, a click on the `network` module or
+`alpheus-launch --quick wifi` opens it, and opening it with the radio on also runs one
+`nmcli device wifi rescan`. It lists one row per SSID, at its strongest access point, at most 32:
+the connected network, then the saved ones, then the others by signal (then by name). A network whose
+SSID shows nothing (zeros, or nothing left once cleaned) is not listed. A row is `●` on the connected
+network, the SSID, four signal steps, a lock for a secured one and a tag: `saved`, `…` while an
+attempt is under way on it, or `failed` for 4 s after one failed. The signal and the lock sit in one
+column on every row. In place of the list the detail can show `Searching…` (the list is not read
+yet), `No networks` or `Wi-Fi is off`. `More…` runs `[quick] wifi_more` and closes the panel. ↑ ↓
+Home End walk the networks and `More…` without wrapping, Enter acts, Esc or ← go back to the rows; a
+left press on a network chooses and enters it, a press on the header goes back.
+
+**Enter on a network** runs the command for its kind:
+
+| The network is | Enter runs |
+| --- | --- |
+| the connected one | `nmcli connection down uuid <the active connection's uuid>` |
+| saved | `nmcli connection up uuid <uuid>`, whatever its SSID |
+| open | `nmcli device wifi connect <ssid>` |
+| WPA-personal and new | opens a `Password` row under it |
+| 802.1X, WEP, other, or an SSID nmcli would misread | moves the selection to `More…` |
+
+**The password field.** One dot per character, the end kept when the password is longer than the
+row; Backspace erases a character, Ctrl+U the whole password, Space is a character. A character that
+would not fit the 256-byte buffer shows `too long` and Enter is refused until Ctrl+U. Enter on an
+empty field, after `too long`, or during an attempt does nothing; otherwise it runs
+`nmcli --ask device wifi connect <ssid>` and writes the password, then a newline, to its standard
+input: never an argument, never a log line, never `Debug`. The field then closes and its buffer is
+wiped. Esc closes the field and keeps the detail; moving away, a press anywhere but on the field or
+leaving the detail closes it too. A field whose network leaves the list stays 10 s. The password is
+the one place a secret is typed; the per-key string SCTK builds for each typed key is not wiped
+(`secret.rs` says what is and is not covered).
+
+**An attempt.** One at a time: while one is under way only `More…` acts. It ends `●` when
+NetworkManager reports the device activated on that network; it fails when the device state is 120
+(failed), when an activation that was under way is left for anything but activated, after 20 s with
+no word, or at 60 s when the activation is still under way (a slow network). A failure shows `failed`
+for 4 s and writes one log line, `quick: wifi connection failed (<why>)`, with a fixed reason and no
+SSID. NetworkManager going away ends the attempt with one log line, `NetworkManager went away`, and
+closes the detail; the row hides until it is back. Only the network domain does this: an outage of
+BlueZ, UPower or the power profile keeps the detail and its field, and the state it holds is then
+marked stale until a fresh read.
+
+**What outlives the panel.** An attempt on a new network (`nmcli device wifi connect`, with or without
+a password) is followed after the panel closes, up to 20 s (60 s while the device is still
+activating), so that the profile that appeared during a failed attempt is deleted if it is still
+saved. The profile is never deleted when the attempt is in doubt: still activating at 60 s, the
+device activated on what may be the new profile, a state kept through an outage, a NetworkManager
+restart, a profile reserved to another user, or a network-domain outage during the attempt. A
+wrong-password profile may then remain; remove it through `More…`. Residual: while the list of saved
+networks is unknown (a failed listing, an unreadable profile, more than 64 profiles), Enter on an
+already-saved network may create a duplicate profile, which is never deleted.
+
+**Not yet verified.** That `nmcli --ask` reads the password from a pipe, and whether polkit lets
+`nmcli` change Wi-Fi from the session without a prompt, are checked at the trial. See the decisions
+"An SSID that nmcli would misread is never passed to it", "A failed Wi-Fi attempt deletes its new
+profile only when sure", "A row under connection reads `…`", "A Wi-Fi attempt on a new network
+outlives the quick panel" and "The Wi-Fi password lives in one boxed buffer that is wiped".
 
 ### Bluetooth
 

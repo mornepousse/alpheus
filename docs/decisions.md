@@ -1245,6 +1245,42 @@ Date: 2026-10-11 · Source: quick Wi-Fi plan 2, "Decisions written down" 14 and 
 
 Status: awaiting confirmation at the trial (Wi-Fi plan 2's closing report lists decision 14; that `nmcli --ask` reads the password from a pipe is unverified until the trial, CLAUDE.md)
 
+### An SSID that nmcli would misread is never passed to it
+
+`nmcli device wifi connect <ssid>` takes the SSID as an argument, so the panel refuses one it cannot
+pass as it is: empty, holding a NUL, starting with `-` (read as an option), not UTF-8 (an argument is
+a string), `h`, `he`, `hel` or `help`, or six groups of hexadecimal digits (read as a BSSID) (commit
+750810e: nmcli would read the last two otherwise). Enter on such a network, or on an 802.1X, WEP or
+other secured one, moves the selection to `More…`. A saved or connected network is reached by its
+uuid, whatever its SSID.
+
+Date: 2026-10-11 · Source: quick Wi-Fi spec § 5 (the SSID is one argument); plan 2, "Decisions written down" 7; commit 750810e; `refused`, `Wifi::kind`
+
+Status: awaiting confirmation at the trial (Wi-Fi plan 2's closing report lists decision 7)
+
+### A failed Wi-Fi attempt deletes its new profile only when sure
+
+When an attempt that can create a profile (`nmcli device wifi connect`, never a `connection up`)
+fails, the profile that appeared for its SSID during the attempt is deleted, but only if the saved
+list was read whole when the attempt began (so an older profile is never taken for the new one) and
+the profile is still saved at the failure. Nothing is deleted when the attempt is still activating
+at the 60 s bound (a slow network keeps its profile; commit b2223e0), when the device was last seen
+activated on what may be the new profile, or when the state the failure rests on was kept through
+another domain's outage (NetworkManager may have connected since; commit 5857c86). The cleanup
+also deletes nothing after a NetworkManager restart, for a profile reserved to another user, or
+after an outage of the network domain during a followed attempt (CLAUDE.md). A wrong-password
+profile may then remain, and `More…` is the way to remove it.
+
+Date: 2026-10-13 (the merge of Wi-Fi delivery 2, CLAUDE.md) · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); plan 2, "Decisions written down" 9; commits b2223e0 and 5857c86; `Attempt::failure`, `Attempt::expired`
+
+### A row under connection reads `…`
+
+A Wi-Fi network being connected, and a VPN profile being brought up, show `…` after their name, not
+`connecting…`. `failed` is the longest tag, so the tag column is `failed`'s width and an SSID keeps 16
+cells (commit e711bb8).
+
+Date: 2026-10-12 · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); commit e711bb8 ("short tags"); `RUNNING_TAG`, `Wifi::tag`, `Vpn::tag`
+
 ### A toggle's state that cannot be read shows `·`, never off
 
 A configured toggle's state is read when the panel opens and 300 ms after its toggle ran, never

@@ -1,9 +1,32 @@
-//! The quick panel's Wi-Fi (quick Wi-Fi spec), pure: the row's glyph and value, the detail with the
-//! visible networks (one per SSID, its strongest access point, ordered, at most NETWORKS_MAX), its
-//! keys and clicks, the password field, the exact `nmcli` commands to run, and the connection
-//! attempt they start, followed to its end (`Attempt`). The state comes from the D-Bus thread
-//! (`sources/dbus/wifi.rs`) only while the panel is open, or while an attempt on a new network is
-//! still followed after it closed (`quick_app::WifiFollow`, Mae's ruling P1).
+//! The quick panel's Wi-Fi: the row, the list of networks behind it, the password field and the
+//! connection attempt.
+//!
+//! This is the pure half of the Wi-Fi list; the wiring is in `app.rs`. It holds the row's glyph and
+//! value, the detail's networks (one per SSID, at its strongest access point, ordered, at most
+//! `NETWORKS_MAX`), the keys and clicks of the detail, the exact `nmcli` commands they ask for (as
+//! `QuickAction`s), the password field (its bytes live in `secret.rs`) and the connection attempt
+//! (`Attempt`), which NetworkManager's states and the clock follow to its end. The states come from
+//! the D-Bus thread (`sources/dbus/wifi.rs`) only while the panel is open, or while an attempt on a
+//! new network is still followed after the panel closed (`WifiFollow` in `app.rs`). `mod.rs` hands
+//! this file its turn and the helpers the lists share.
+//!
+//! Never:
+//! - write or create a file, or make a raw system call (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`): a command is handed back as a
+//!   `QuickAction`, and the wiring arms the panel's one timer from `Quick::deadline`, which includes `Wifi::deadline`;
+//! - format the password, a key or the field with `Debug` (guardrail
+//!   `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
+//! - read a clock: the caller passes `now` (no guardrail checks it).
+//!
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-wifi-design.md, docs/features/quick-settings.md,
+//! and docs/decisions.md ("A Wi-Fi attempt on a new network outlives the quick panel", "The Wi-Fi
+//! password lives in one boxed buffer that is wiped", "An SSID that nmcli would misread is never
+//! passed to it", "A failed Wi-Fi attempt deletes its new profile only when sure", "A row under
+//! connection reads `…`").
 
 use crate::actions::Button;
 use crate::config::QuickConfig;
@@ -22,43 +45,52 @@ use std::time::{Duration, Instant};
 
 /// The most networks the detail lists (quick Wi-Fi spec § 2).
 pub const NETWORKS_MAX: usize = 32;
-/// NMDeviceState: activated.
+/// NMDeviceState 100: the device is activated (connected).
 pub const ACTIVATED: u32 = 100;
 /// The row's value: at most this many cells of the connected SSID.
 pub const VALUE_CELLS: u16 = 16;
-/// Material Design (Nerd Font): wifi-strength-1 to 4; wifi-strength-outline (on, not connected);
-/// wifi-strength-off-outline.
+/// The row's glyphs, from Nerd Font's Material Design set: `wifi-strength-1` to `wifi-strength-4`
+/// for the connected network's four signal steps.
 pub const STRENGTH: [char; 4] = ['\u{f091f}', '\u{f0922}', '\u{f0925}', '\u{f0928}'];
+/// `wifi-strength-outline`: the radio is on and the device is not connected.
 pub const WIFI_ON: char = '\u{f092f}';
+/// `wifi-strength-off-outline`: the radio is off.
 pub const WIFI_OFF: char = '\u{f092e}';
-/// The detail's notes.
+/// The detail's notes, shown in place of the list.
 pub const OFF_NOTE: &str = "Wi-Fi is off";
 pub const SEARCHING: &str = "Searching…";
 pub const NO_NETWORKS: &str = "No networks";
 /// The row's value on a connected network whose SSID shows nothing.
 pub const HIDDEN: &str = "hidden";
-/// NMDeviceState: an activation under way (prepare to secondaries); failed.
+/// NMDeviceState 40 to 90, from "prepare" to "secondaries": an activation is under way.
 pub const ACTIVATING: RangeInclusive<u32> = 40..=90;
+/// NMDeviceState 120: the activation failed.
 pub const FAILED: u32 = 120;
 /// No word from NetworkManager this long after Enter: failed (quick Wi-Fi spec § 2).
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-/// An attempt still activating on its network at CONNECT_TIMEOUT waits up to this long from its
-/// start (beyond NetworkManager's default 45 s DHCP timeout); then it ends, its profile kept.
+/// An attempt still activating on its network at `CONNECT_TIMEOUT` waits up to this long from its
+/// start, because a slow activation may outlast NetworkManager's default 45 s DHCP timeout (commit
+/// b2223e0); then it ends with its profile kept.
 pub const ACTIVATION_BOUND: Duration = Duration::from_secs(60);
-/// How long an open password field outlives its network leaving the list (an access point aged
-/// out while typing).
+/// How long an open password field outlives its network leaving the list: an access point that
+/// aged out while the password was being typed.
 pub const FIELD_KEPT: Duration = Duration::from_secs(10);
 /// The password's first cell: after "Password" and two spaces.
 pub const PASSWORD_AT: u16 = 13;
 /// The field after a character that did not fit.
 pub const TOO_LONG: &str = "too long";
-/// Why an attempt failed, for the log (never an SSID).
+/// Why an attempt failed, as the one log line says it. Fixed words, so an SSID never reaches the
+/// log.
 const ACTIVATION_FAILED: &str = "the activation failed";
 const NO_ANSWER: &str = "no answer in 20 s";
 const STILL_ACTIVATING: &str = "still activating after 60 s";
+/// Why an attempt ended with NetworkManager gone. `pub(crate)`: visible inside the daemon only (the
+/// VPN list ends its attempt with the same words).
 pub(crate) const NM_GONE: &str = "NetworkManager went away";
-/// A failure whose last state predates an outage of another domain (F4): its profile kept.
+/// Why an attempt failed on a state kept through another domain's outage: its profile is kept. See
+/// docs/decisions.md, "A failed Wi-Fi attempt deletes its new profile only when sure".
 const STALE: &str = "no fresh state since an outage";
+/// The four bars of a network row, from the weakest step to the strongest.
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
 /// A saved network's tag.
 const SAVED_TAG: &str = "saved";
@@ -83,9 +115,10 @@ pub fn hidden(ssid: &[u8]) -> bool {
     ssid.iter().all(|b| *b == 0) || label(ssid).is_empty()
 }
 
-/// An SSID that cannot be one nmcli argument as is (quick Wi-Fi spec § 5): empty, a
-/// NUL, a leading '-' (read as an option), not UTF-8, or one nmcli reads as something else: `h`,
-/// `he`, `hel`, `help` (help), or six hexadecimal groups (a BSSID).
+/// An SSID that cannot be one nmcli argument as it is: empty, holding a NUL, starting with `-`
+/// (read as an option), not UTF-8, or one nmcli reads as something else: `h`, `he`, `hel`, `help`
+/// (the word help), or six hexadecimal groups (a BSSID). See docs/decisions.md, "An SSID that nmcli
+/// would misread is never passed to it".
 pub fn refused(ssid: &[u8]) -> bool {
     ssid.is_empty()
         || ssid.contains(&0)
@@ -97,6 +130,7 @@ pub fn refused(ssid: &[u8]) -> bool {
 
 /// Six groups of one or two hexadecimal digits, joined by ':' or '-' (as libnm parses a BSSID).
 fn looks_like_bssid(ssid: &[u8]) -> bool {
+    // Tried once for each separator; `groups` counts the groups seen while `all` checks each one.
     b":-".iter().any(|sep| {
         let mut groups = 0;
         ssid.split(|b| b == sep).all(|g| {
@@ -106,12 +140,14 @@ fn looks_like_bssid(ssid: &[u8]) -> bool {
     })
 }
 
-/// The actions that start an attempt (`Wifi::enter`, `send_password`): their `what`.
+/// Whether `what` (the short word an action carries for the log) is one of the actions that start
+/// an attempt (`Wifi::enter` and `send_password` build them).
 pub fn starts_attempt(what: &str) -> bool {
     what.starts_with("wifi connect")
 }
 
-/// `[quick] wifi_more`, resolved at startup; unresolved (a test's default) or empty: no `More…`.
+/// `[quick] wifi_more`, resolved at startup; unresolved (what a test's default config gives) or
+/// empty: there is no `More…`.
 pub fn more(config: &QuickConfig) -> &[String] {
     config.wifi_more.as_deref().unwrap_or(&[])
 }
@@ -148,7 +184,8 @@ pub struct Network {
     pub connected: bool,
 }
 
-/// The detail's selection, by identity.
+/// The detail's selection, kept by identity (the SSID), not by position: the list reorders as
+/// signals change.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Pick {
     #[default]
@@ -160,6 +197,8 @@ pub enum Pick {
 }
 
 /// The password field, under the network `ap` (quick Wi-Fi spec § 3).
+///
+/// Its `Debug` is derived, which is safe: `Secret` has its own `Debug` that shows no byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
     /// Its network as listed when the field opened: listed still while the field waits for it.
@@ -172,9 +211,9 @@ pub struct Field {
     pub missing: Option<Instant>,
 }
 
-/// A connection under way (quick Wi-Fi spec § 2), followed by the panel (`Wifi`) or,
-/// once the panel closed, by `quick_app::WifiFollow` (Mae's ruling P1): it needs nothing of the
-/// panel, only the states read and the clock.
+/// A connection under way (quick Wi-Fi spec § 2), followed by the panel (`Wifi`) or, once the panel
+/// closed, by `WifiFollow` in `app.rs`: it needs nothing of the panel, only the states read and the
+/// clock. See docs/decisions.md, "A Wi-Fi attempt on a new network outlives the quick panel".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub ssid: Vec<u8>,
@@ -209,13 +248,21 @@ pub enum Outcome {
     },
 }
 
-/// The saved profiles in `state`, when read.
+/// The Wi-Fi device in `state`, if there is a state and a device.
+fn device_in(state: Option<&WifiState>) -> Option<&WifiDevice> {
+    // `?` after an `Option` ends the function with `None` when there is nothing.
+    state?.device.as_ref()
+}
+
+/// The saved profiles in `state`: `None` when there is no device or the list was not read (it is
+/// read only while the detail is open).
 fn saved_in(state: Option<&WifiState>) -> Option<&Vec<SavedWifi>> {
-    state?.device.as_ref()?.saved.as_ref()
+    device_in(state)?.saved.as_ref()
 }
 
 impl Attempt {
-    /// Enter on `ssid` at `now`, with `state` the last read: the saved profiles noted.
+    /// Enter on `ssid` at `now`, with `state` the last read: the saved profiles' uuids are noted
+    /// (`known`), so that a profile that existed before the attempt is never taken for its own.
     pub fn new(ssid: &[u8], creates: bool, state: Option<&WifiState>, now: Instant) -> Attempt {
         let known = saved_in(state).map(|s| s.iter().map(|p| p.uuid.clone()).collect());
         Attempt { ssid: ssid.to_vec(), started: now, until: now + CONNECT_TIMEOUT, activating: false, known, created: None, creates }
@@ -227,7 +274,7 @@ impl Attempt {
     /// NetworkManager gone ends it. The new profile is the first saved for its SSID that was not
     /// there when it began, both lists read whole (`known` None: never one).
     pub fn observe(&mut self, state: Option<&WifiState>) -> Outcome {
-        let Some(d) = state.and_then(|s| s.device.as_ref()) else { return Outcome::Gone };
+        let Some(d) = device_in(state) else { return Outcome::Gone };
         if self.created.is_none()
             && let (Some(known), Some(saved)) = (&self.known, &d.saved)
         {
@@ -258,20 +305,16 @@ impl Attempt {
         Outcome::Waiting
     }
 
-    /// The clock: no word by `until`, failed; nothing deleted when the device was last seen
-    /// activated on what may be the new profile (its uuid or its access point unread, never shown
-    /// to be another network's).
-    /// Still activating on its network (or on an access point unread) at the timeout: a slow
-    /// activation, never one to lose its profile; the deadline moves to ACTIVATION_BOUND from its
-    /// start, and there the attempt ends with nothing deleted.
+    /// The clock. Before `until`, nothing. At `until`, with the device still activating on this
+    /// network (or on an access point not read), the activation is slow, not failed: the deadline
+    /// moves to `ACTIVATION_BOUND` from the start, and there the attempt ends with nothing deleted.
+    /// Otherwise no word came in time: failed, and nothing deleted either when the device was last
+    /// seen activated on what may be the new profile.
     pub fn expired(&mut self, state: Option<&WifiState>, now: Instant) -> Outcome {
         if self.until > now {
             return Outcome::Waiting;
         }
-        let activating = state
-            .and_then(|s| s.device.as_ref())
-            .is_some_and(|d| ACTIVATING.contains(&d.state) && d.active.as_ref().is_none_or(|ap| ap.ssid == self.ssid));
-        if activating {
+        if self.still_activating(state) {
             let bound = self.started + ACTIVATION_BOUND;
             if now < bound {
                 self.until = bound;
@@ -279,30 +322,57 @@ impl Attempt {
             }
             return Outcome::Failed { why: STILL_ACTIVATING, cleanup: None };
         }
-        let maybe_ours = state.and_then(|s| s.device.as_ref()).is_some_and(|d| {
-            d.state == ACTIVATED
-                && match &d.active_uuid {
-                    Some(uuid) => self.created.as_ref() == Some(uuid),
-                    None => d.active.as_ref().is_none_or(|ap| ap.ssid == self.ssid),
-                }
-        });
-        match self.failure(state, NO_ANSWER) {
-            Outcome::Failed { why, .. } if maybe_ours => Outcome::Failed { why, cleanup: None },
-            failed => failed,
+        let outcome = self.failure(state, NO_ANSWER);
+        if let Outcome::Failed { why, .. } = outcome
+            && self.may_be_on_its_profile(state)
+        {
+            return Outcome::Failed { why, cleanup: None };
+        }
+        outcome
+    }
+
+    /// The device is mid-activation on this attempt's network, or on an access point not read.
+    fn still_activating(&self, state: Option<&WifiState>) -> bool {
+        let Some(d) = device_in(state) else { return false };
+        if !ACTIVATING.contains(&d.state) {
+            return false;
+        }
+        match &d.active {
+            Some(ap) => ap.ssid == self.ssid,
+            None => true,
         }
     }
 
-    /// Failed: its new profile deleted, only when the attempt could make one (never a `connection
-    /// up`'s) and while `state` still lists it (nmcli may have deleted it). Never on a state read
-    /// before another domain's outage (F4: NetworkManager may have connected since): kept, and
-    /// the log says so.
+    /// The device is activated on what may be the profile this attempt made: its active connection
+    /// is that profile, or (its uuid not read) its access point is this network's or unread. Never
+    /// true when the device is shown to be on another network.
+    fn may_be_on_its_profile(&self, state: Option<&WifiState>) -> bool {
+        let Some(d) = device_in(state) else { return false };
+        if d.state != ACTIVATED {
+            return false;
+        }
+        match &d.active_uuid {
+            Some(uuid) => self.created.as_ref() == Some(uuid),
+            None => match &d.active {
+                Some(ap) => ap.ssid == self.ssid,
+                None => true,
+            },
+        }
+    }
+
+    /// Failed with `why`. The cleanup deletes the profile that appeared for this network during the
+    /// attempt, only when the attempt could make one (`nmcli device wifi connect`, never a
+    /// `connection up`) and while `state` still lists it (nmcli may have deleted it itself). On a
+    /// state kept through another domain's outage nothing is deleted, because NetworkManager may
+    /// have connected since; the log says so (`STALE`).
     fn failure(&self, state: Option<&WifiState>, why: &'static str) -> Outcome {
-        let still_saved = |uuid: &str| saved_in(state).is_some_and(|s| s.iter().any(|p| p.uuid == uuid));
-        let cleanup = self
-            .created
-            .as_deref()
-            .filter(|u| self.creates && still_saved(u))
-            .map(|u| run(&["nmcli", "connection", "delete", "uuid", u], "wifi delete the failed profile"));
+        let mut cleanup = None;
+        if self.creates
+            && let Some(uuid) = &self.created
+            && is_saved(state, uuid)
+        {
+            cleanup = Some(run(&["nmcli", "connection", "delete", "uuid", uuid], "wifi delete the failed profile"));
+        }
         if cleanup.is_some() && state.is_some_and(|s| s.stale) {
             return Outcome::Failed { why: STALE, cleanup: None };
         }
@@ -310,7 +380,16 @@ impl Attempt {
     }
 }
 
-/// The panel's Wi-Fi: dropped whole with the panel.
+/// `uuid` is among the saved profiles in `state`.
+fn is_saved(state: Option<&WifiState>, uuid: &str) -> bool {
+    match saved_in(state) {
+        Some(saved) => saved.iter().any(|p| p.uuid == uuid),
+        None => false,
+    }
+}
+
+/// The panel's Wi-Fi, one field of `Quick`: dropped whole with the panel (an attempt that must
+/// outlive it is first handed to `WifiFollow`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Wifi {
     /// What the D-Bus thread last read; None: nothing yet, or NetworkManager gone.
@@ -320,18 +399,19 @@ pub struct Wifi {
     pub pick: Pick,
     /// Opened from the network module or `--quick wifi`: the first state opens the detail.
     pub focus_pending: bool,
-    /// The password field, while open.
+    /// The password field, while it is open.
     pub field: Option<Field>,
     /// The connection under way.
     pub attempt: Option<Attempt>,
-    /// The network that just failed, shown `failed` until then.
+    /// The network whose attempt just failed, tagged `failed` until that instant.
     pub failed: Option<(Vec<u8>, Instant)>,
-    /// The detail was searching for its list: a `More…` chosen meanwhile gives way to the first
-    /// network once the list arrives.
+    /// The detail was waiting for its list (`fit` sets it): a `More…` chosen meanwhile gives way to
+    /// the first network once the list arrives.
     pub searching: bool,
 }
 
 impl Wifi {
+    /// The Wi-Fi device in the last state read, if there is one.
     fn device(&self) -> Option<&WifiDevice> {
         self.state.as_ref()?.device.as_ref()
     }
@@ -341,6 +421,7 @@ impl Wifi {
         self.device().is_some()
     }
 
+    /// The radio is on (`WirelessEnabled`); false until a state is read.
     pub fn enabled(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.enabled)
     }
@@ -351,7 +432,10 @@ impl Wifi {
         if d.state == ACTIVATED { d.active.as_ref() } else { None }
     }
 
+    /// The row's glyph: off, the connected network's signal, or on without a connection.
     pub fn glyph(&self) -> char {
+        // The first arm has no pattern to test: its guard, the radio being off, comes before the
+        // connected network is looked at.
         match self.connected() {
             _ if !self.enabled() => WIFI_OFF,
             Some(ap) => STRENGTH[steps(ap.strength) - 1],
@@ -361,6 +445,7 @@ impl Wifi {
 
     /// The row's value: the connected SSID, "on" or "off" (quick Wi-Fi spec § 1).
     pub fn value(&self) -> String {
+        // The radio off comes first, as in `glyph`.
         match self.connected() {
             _ if !self.enabled() => "off".into(),
             Some(ap) if hidden(&ap.ssid) => HIDDEN.into(),
@@ -369,11 +454,11 @@ impl Wifi {
         }
     }
 
-    /// The detail's networks (quick Wi-Fi spec § 2): one per SSID (its strongest access point, the
-    /// connected one included even when the list misses it, and the open field's for FIELD_KEPT
-    /// once the list misses it), hidden ones left out; the connected
-    /// one, the saved ones by signal, the others by signal (then by label); at most NETWORKS_MAX.
-    /// None with the radio off.
+    /// The detail's networks (quick Wi-Fi spec § 2): one per SSID, at its strongest access point;
+    /// the connected network is included even when the list misses it, and so is the open field's
+    /// for `FIELD_KEPT` once the list misses it; hidden ones are left out. The order is the
+    /// connected one, then the saved ones by signal, then the others by signal (then by label), cut
+    /// to `NETWORKS_MAX`. Empty with the radio off.
     pub fn networks(&self) -> Vec<Network> {
         let Some(d) = self.device() else { return Vec::new() };
         if !self.enabled() {
@@ -381,6 +466,8 @@ impl Wifi {
         }
         let connected = self.connected().map(|a| a.ssid.as_slice());
         let mut best: Vec<&AccessPoint> = Vec::new();
+        // The access points read (`iter().flatten()` is none when they were not read), then the
+        // connected one, so that it is listed even when the list misses it.
         for ap in d.access_points.iter().flatten().chain(self.connected()) {
             if hidden(&ap.ssid) {
                 continue;
@@ -408,6 +495,8 @@ impl Wifi {
                 connected: connected == Some(ap.ssid.as_slice()),
             })
             .collect();
+        // Each network's sort key is a tuple, compared field by field: `false` sorts before `true`,
+        // so the connected and then the saved come first; `Reverse` puts the strongest first.
         v.sort_by(|a, b| {
             (!a.connected, a.saved.is_none(), Reverse(a.strength), &a.label, &a.ssid).cmp(&(
                 !b.connected,
@@ -421,6 +510,8 @@ impl Wifi {
         v
     }
 
+    /// What Enter does on `n`: by its state first (connected, saved), then by whether nmcli can take
+    /// its SSID, then by its security.
     pub fn kind(&self, n: &Network) -> Kind {
         if n.connected {
             return Kind::Connected(self.device().and_then(|d| d.active_uuid.clone()));
@@ -465,7 +556,8 @@ impl Wifi {
     }
 
     /// The D-Bus thread's state (`Quick::set_wifi`): kept, the field's network looked for, and the
-    /// attempt followed (`Attempt::observe`). Returns the cleanup to run and why it failed.
+    /// attempt followed (`Attempt::observe`). Returns the action to run (the cleanup of a failed
+    /// attempt, else a repaint) and, when the attempt failed or went, why (for the log).
     pub fn set_state(&mut self, state: Option<WifiState>, now: Instant) -> (QuickAction, Option<&'static str>) {
         self.state = state;
         self.follow_field(now);
@@ -495,12 +587,15 @@ impl Wifi {
         }
     }
 
-    /// Notes since when the open field's network is missing from what was read (P12).
+    /// Notes since when the open field's network is missing from what was read, so that `due` can
+    /// close the field `FIELD_KEPT` later.
     fn follow_field(&mut self, now: Instant) {
         let listed = match &self.field {
             Some(f) => self.listed(&f.ap.ssid),
             None => return,
         };
+        // The first look is done on `&self.field` so that `listed` can borrow all of `self`; the
+        // field is changed only here, once that borrow has ended.
         if let Some(f) = self.field.as_mut() {
             f.missing = if listed { None } else { Some(f.missing.unwrap_or(now)) };
         }
@@ -513,24 +608,38 @@ impl Wifi {
     }
 
     /// At `now` (the panel's one timer): the attempt timed out (the cleanup to run, why), the
-    /// `failed` mark gone, the field whose network stayed away FIELD_KEPT closed (a repaint each).
+    /// `failed` mark gone, the field whose network stayed away `FIELD_KEPT` closed. The third value
+    /// is whether to repaint.
     pub fn due(&mut self, now: Instant) -> (Vec<QuickAction>, Option<&'static str>, bool) {
         let (mut run, mut failed, mut redraw) = (Vec::new(), None, false);
-        if let Some(Outcome::Failed { why, cleanup }) = self.attempt.as_mut().map(|a| a.expired(self.state.as_ref(), now)) {
+        if let Some(attempt) = self.attempt.as_mut()
+            && let Outcome::Failed { why, cleanup } = attempt.expired(self.state.as_ref(), now)
+        {
             self.mark_failed(now);
             run.extend(cleanup);
             (failed, redraw) = (Some(why), true);
         }
         redraw |= session::expire(&mut self.failed, now);
-        if self.field.as_ref().and_then(|f| f.missing).is_some_and(|at| at + FIELD_KEPT <= now) {
+        if self.field_expired(now) {
             self.close_field();
             redraw = true;
         }
         (run, failed, redraw)
     }
 
+    /// The open field's network has been missing from the access points read for `FIELD_KEPT`.
+    fn field_expired(&self, now: Instant) -> bool {
+        let Some(f) = &self.field else { return false };
+        match f.missing {
+            Some(since) => since + FIELD_KEPT <= now,
+            None => false,
+        }
+    }
+
     /// The attempt's timeout, the `failed` mark's end or the missing field's, whichever first.
     pub fn deadline(&self) -> Option<Instant> {
+        // The three candidates as `Option`s: `flatten` drops the empty ones, `min` takes the first
+        // due (and is `None` when there is none).
         [
             self.attempt.as_ref().map(|a| a.until),
             self.failed.as_ref().map(|(_, at)| *at),
@@ -547,7 +656,7 @@ impl Wifi {
         self.attempt = None;
     }
 
-    /// The open field's secret, for the wiring to hand to nmcli (`quick_spawn_secret`).
+    /// The open field's secret, for the wiring to hand to nmcli (`quick_spawn_secret` in `app.rs`).
     pub fn password(&self) -> Option<&Secret> {
         self.field.as_ref().map(|f| &f.secret)
     }
@@ -585,8 +694,8 @@ impl Wifi {
         v
     }
 
-    /// Before each use: no device, the detail closes; the selection back on a pick that exists (the
-    /// first one when its own went; none while the list is being searched for).
+    /// Before each use: with no device the detail closes; the selection goes back on a pick that
+    /// exists (the first one when its own went; none while the list is being waited for).
     pub fn fit(&mut self, config: &QuickConfig) {
         if !self.shows() {
             self.close_detail();
@@ -602,7 +711,9 @@ impl Wifi {
         // Searching (the list not read yet, no network known): the selection waits for the list,
         // never left on `More…` once it arrives.
         let searching = nets.is_empty() && self.enabled() && self.device().is_some_and(|d| d.access_points.is_none());
-        if std::mem::replace(&mut self.searching, searching)
+        let was_searching = self.searching;
+        self.searching = searching;
+        if was_searching
             && !searching
             && self.pick == Pick::More
             && let Some(first) = nets.first()
@@ -640,6 +751,7 @@ impl Wifi {
         v
     }
 
+    /// Whether `line` is the selected one (`nets` is `networks()`, which the caller already has).
     pub fn is_selected(&self, line: Line, nets: &[Network]) -> bool {
         match (line, &self.pick) {
             (Line::Network(i), Pick::Network(s)) => nets.get(i).is_some_and(|n| n.ssid == *s),
@@ -667,7 +779,10 @@ impl Wifi {
             _ => {}
         }
         let Some(to) = nav(k, at, picks.len()) else { return QuickAction::Nothing };
-        picks.into_iter().nth(to).map_or(QuickAction::Nothing, |p| moved(&mut self.pick, p))
+        match picks.into_iter().nth(to) {
+            Some(pick) => moved(&mut self.pick, pick),
+            None => QuickAction::Nothing,
+        }
     }
 
     /// Keys while the field is open: characters, Backspace, Ctrl+U edit; Enter sends; Escape closes
@@ -720,6 +835,8 @@ impl Wifi {
         QuickAction::RunSecret { argv, what: "wifi connect (password)".into() }
     }
 
+    /// Enter on the selection: `More…` runs, a network is entered, the password row does nothing
+    /// (Enter in the field is `field_key`'s).
     fn activate(&mut self, config: &QuickConfig, nets: &[Network], now: Instant) -> QuickAction {
         match self.pick.clone() {
             Pick::More => run_more(config),
@@ -798,8 +915,9 @@ impl Wifi {
         }
     }
 
-    /// The tag after a network's marks: "…" during its attempt (Mae's short tags, 2026-10-12), "failed" (warn) for
-    /// FAILED_SHOWN after, else "saved" (dimmed) or nothing.
+    /// The tag after a network's marks: `…` during its attempt, `failed` (warn) for `FAILED_SHOWN`
+    /// after, else `saved` (dimmed) or nothing. See docs/decisions.md, "A row under connection reads
+    /// `…`".
     fn tag(&self, n: &Network) -> (&'static str, Style) {
         if self.attempt.as_ref().is_some_and(|a| a.ssid == n.ssid) {
             (RUNNING_TAG, Style::MUTED)
