@@ -8,12 +8,12 @@ use crate::launcher::socket_glue::reply_guarded;
 use crate::log::write as log;
 use crate::popup::PopupBody;
 use crate::quick_shield::ShieldAsk;
+use crate::shield::run::spawn_job;
+use crate::shield::usb::{Parsed, allow_argv};
 use crate::shield::{
     ERR_BUSY, ERR_NO_ALLOW, ERR_NOT_CONFIGURED, ERR_OFF, ERR_SAME, ERR_UNKNOWN, Edge, Finish, Job, NoticeKind, Reason, RunOutcome, Shield,
     ShieldMail, VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
 };
-use crate::shield_run::spawn_job;
-use crate::shield_usb::{Parsed, allow_argv};
 use crate::startup::Mail;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{Reply, Request};
@@ -440,7 +440,7 @@ impl App {
     }
 
     /// A read's result for the open detail (dropped when it waits for none).
-    fn shield_panel_listed(&mut self, result: Result<Vec<crate::shield_usb::UsbDevice>, ()>) {
+    fn shield_panel_listed(&mut self, result: Result<Vec<crate::shield::usb::UsbDevice>, ()>) {
         let Some(view) = self.bar.shield else { return };
         if let Some(PopupBody::Quick(q)) = self.popup_body_mut() {
             q.shield.set_listing(&view, result);
@@ -469,7 +469,6 @@ impl App {
 
     /// Opens the quick panel on the Shield row with its detail open (other deliveries call it; there
     /// is no `--quick shield` word). Nothing without `[shield]` or the `quick` module.
-    #[allow(dead_code)] // called by the tools menu delivery (spec § 5)
     pub(crate) fn shield_open_detail(&mut self) {
         if self.shield.is_none() || !self.quick_enabled() {
             return;

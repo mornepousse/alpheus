@@ -2029,7 +2029,7 @@ fn a_device_row_is_reached_through_the_panels_keys() {
     q.key(&l, Key::Enter, false, t);
     q.shield.set_listing(
         &l.shield.unwrap(),
-        Ok(vec![crate::shield_usb::UsbDevice { id: 7, vid_pid: "1234:5678".into(), name: "Test Stick".into() }]),
+        Ok(vec![crate::shield::usb::UsbDevice { id: 7, vid_pid: "1234:5678".into(), name: "Test Stick".into() }]),
     );
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Shield(ShieldAsk::Allow(7)));
     // A repeat of Enter allows nothing.

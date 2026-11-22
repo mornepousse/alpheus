@@ -86,7 +86,7 @@ fn the_view_follows_the_config() {
     assert_eq!((v.can_list, v.can_allow), (false, true));
 }
 
-use crate::shield_usb::UsbDevice;
+use crate::shield::usb::UsbDevice;
 
 fn t0() -> Instant {
     Instant::now()
@@ -423,7 +423,7 @@ fn allow_needs_the_mode_on_and_both_commands() {
 
 #[test]
 fn the_picker_lines_ids_and_names_go_together() {
-    use crate::shield_usb::UsbDevice;
+    use crate::shield::usb::UsbDevice;
     let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
     let (lines, ids) = picker(&[d(7, "Test Keyboard"), d(12, "Test Stick")]);
     assert_eq!(lines, ["1234:5678  ·  Test Keyboard", "1234:5678  ·  Test Stick"]);
@@ -439,7 +439,7 @@ fn the_picker_lines_ids_and_names_go_together() {
 
 #[test]
 fn the_panels_allow_names_the_device_from_its_listing() {
-    use crate::shield_usb::UsbDevice;
+    use crate::shield::usb::UsbDevice;
     let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
     let ok = Ok(Parsed { devices: vec![d(7, "Test Keyboard"), d(12, "Test Stick")], more: false });
     assert_eq!(device_name(Some(&ok), 12), "Test Stick");
@@ -450,7 +450,7 @@ fn the_panels_allow_names_the_device_from_its_listing() {
 
 #[test]
 fn the_status_text_never_passes_the_reply_cap() {
-    use crate::shield_usb::UsbDevice;
+    use crate::shield::usb::UsbDevice;
     use alpheus_commun::launcher_ipc::MAX_SHIELD_BODY;
     // 64 devices of 64 four-byte characters: 256 bytes a name, past 16 KiB in all.
     let name = "\u{1F600}".repeat(64);

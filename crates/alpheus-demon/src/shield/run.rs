@@ -7,8 +7,8 @@
 //! its standard output and error `/dev/null`, so a helper we cannot kill never meets a closed pipe
 //! half way through its work. Nothing a command prints is ever kept or logged.
 
+use crate::shield::usb::parse_blocked;
 use crate::shield::{Job, RunOutcome, ShieldMail};
-use crate::shield_usb::parse_blocked;
 use alpheus_commun::exec::{CaptureEnd, CaptureLimits, ExecError, Executor};
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};

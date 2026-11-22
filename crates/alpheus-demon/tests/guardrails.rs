@@ -830,15 +830,15 @@ fn only_the_runners_capture_and_never_through_a_shell() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         if prod.contains(".capture(") {
-            assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield_run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+            assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield/run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
         }
         // `run_silent` waits with no bound of its own: the Shield worker's thread alone (and the delegate).
         if prod.contains(".run_silent(") {
-            assert!(matches!(name.as_str(), "shield_run.rs" | "nonblocking.rs"), ".run_silent( in {name}: it blocks");
+            assert!(matches!(name.as_str(), "shield/run.rs" | "nonblocking.rs"), ".run_silent( in {name}: it blocks");
         }
         if name == "launcher/sources.rs" {
             runner = Some(prod);
-        } else if name == "shield_run.rs" {
+        } else if name == "shield/run.rs" {
             shield = Some(prod);
         }
     }
@@ -849,10 +849,10 @@ fn only_the_runners_capture_and_never_through_a_shell() {
     }
     // The Shield runner (shield spec § 7): a configured argv through `capture`, on its own worker
     // thread (`thread::Builder` is its one way to start it), never a shell and never a detached spawn.
-    let shield = shield.expect("shield_run.rs");
+    let shield = shield.expect("shield/run.rs");
     assert!(shield.contains(".capture("), "the Shield runner reads through the executor");
     for never in ["spawn_with_", ".run(", "exec.spawn(", "executor.spawn(", "\"sh\"", "\"-c\"", "shell_argv", "Command::new"] {
-        assert!(!shield.contains(never), "{never} in shield_run.rs");
+        assert!(!shield.contains(never), "{never} in shield/run.rs");
     }
 }
 
@@ -1196,8 +1196,8 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // command or read runs (one action slot and one read slot, each held until the worker's
         // report), and its one DeadlineTimer, built in `ShieldApp::new`: armed only while a
         // switch waits for its flag (the 5 s grace or the 60 s bound).
-        ("shield_run.rs", "thread::Builder", 1),
-        ("shield_app.rs", "Timer::", 1),
+        ("shield/run.rs", "thread::Builder", 1),
+        ("shield/app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -1604,8 +1604,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "quick_vpn.rs",
     "quick_dnd.rs",
     "quick_shield.rs",
-    "shield.rs",
-    "shield_usb.rs",
+    "shield/mod.rs",
+    "shield/usb.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -3871,7 +3871,7 @@ fn the_hooks_are_fed_where_state_changes() {
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
         ("privacy/app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
-        ("shield_app.rs", "fn shield_readable(", "hooks_shield("),
+        ("shield/app.rs", "fn shield_readable(", "hooks_shield("),
     ] {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
@@ -4789,7 +4789,7 @@ fn the_shield_logs_name_nothing() {
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     // Every log call of the Shield's own files, and the Shield's lines of the others.
     let mut calls: Vec<(String, String)> = Vec::new();
-    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick_shield.rs"] {
         calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
     }
     for name in
@@ -4828,7 +4828,7 @@ fn the_shield_logs_name_nothing() {
 #[test]
 fn the_shield_watch_is_the_theme_watchs_instance() {
     let files = source_files();
-    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick_shield.rs"] {
         let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for never in ["Inotify::new", "inotify_", "inotify::"] {
             assert!(!t.contains(never), "{never} in {name}");
@@ -4843,7 +4843,7 @@ fn the_shield_watch_is_the_theme_watchs_instance() {
 #[test]
 fn the_shield_files_have_no_panicking_path() {
     let files = source_files();
-    for name in ["shield.rs", "shield_usb.rs", "shield_run.rs", "quick_shield.rs"] {
+    for name in ["shield/mod.rs", "shield/usb.rs", "shield/run.rs", "quick_shield.rs"] {
         let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
@@ -4864,14 +4864,14 @@ fn the_shield_files_have_no_panicking_path() {
 #[test]
 fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     let files = source_files();
-    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_run.rs").expect("shield_run.rs").1);
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/run.rs").expect("shield/run.rs").1);
     let body = function_body(&t, "pub fn run_job(");
     let list_at = body.find("exec.capture(").expect("the listing's capture");
     let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
     assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
     assert_eq!(body.matches("exec.capture(").count(), 1);
     // Final fix wave M1: a failed switch and a deadline are judged after one look at the flag.
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_app.rs").expect("shield_app.rs").1);
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
     let mail = function_body(&app, "fn shield_mail(");
     assert!(
         mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),

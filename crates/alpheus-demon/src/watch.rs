@@ -393,7 +393,7 @@ fn arm_with(fd: &Inotify, dir: &Path, mask: u32, keep: Option<i32>, between: imp
 }
 
 /// The flag to watch: the configured one, when Shield mode is on.
-fn flag_to_watch(shield: Option<&crate::shield_app::ShieldApp>) -> Option<PathBuf> {
+fn flag_to_watch(shield: Option<&crate::shield::app::ShieldApp>) -> Option<PathBuf> {
     shield.map(|s| s.flag().to_path_buf())
 }
 
@@ -969,7 +969,7 @@ mod tests {
             off: vec!["x".into()],
             ..Default::default()
         };
-        let app = crate::shield_app::ShieldApp::new(&c).unwrap();
+        let app = crate::shield::app::ShieldApp::new(&c).unwrap();
         assert_eq!(flag_to_watch(Some(&app)), Some(PathBuf::from("/var/lib/test-shield/on")));
     }
 

@@ -319,7 +319,7 @@ impl App {
             log("shield: no notification (not serving)");
             return;
         }
-        let n = crate::shield_app::incoming(&kind, &sh.config);
+        let n = crate::shield::app::incoming(&kind, &sh.config);
         self.notify_act(move |s| {
             s.act(|c| {
                 c.notify(n, Instant::now(), minute_now());

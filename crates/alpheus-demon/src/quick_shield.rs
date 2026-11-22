@@ -9,7 +9,7 @@ use crate::keys::Key;
 pub use crate::quick::FAILED_SHOWN;
 use crate::quick::{FAILED_TAG, Line, QuickAction, RUNNING_TAG, moved, nav, note_row, text_row};
 use crate::shield::ShieldView;
-use crate::shield_usb::UsbDevice;
+use crate::shield::usb::UsbDevice;
 use std::time::Instant;
 
 /// The most device rows the detail lists (the Bluetooth detail's bound).
