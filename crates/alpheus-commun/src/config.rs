@@ -95,9 +95,11 @@ impl DiagnosticsConfig {
         let ok = |c: &Check| {
             let n = c.name.chars().count();
             (1..=40).contains(&n)
-                && !c.name.chars().any(char::is_control)
+                && !c.name.chars().any(|ch| ch.is_control() || crate::text::invisible(ch))
                 && !c.run.is_empty()
-                && c.fix.as_ref().is_none_or(|f| f.chars().count() <= 200)
+                && c.fix
+                    .as_ref()
+                    .is_none_or(|f| f.chars().count() <= 200 && !f.chars().any(|ch| ch.is_control() || crate::text::invisible(ch)))
         };
         let before = self.checks.len();
         self.checks.retain(ok);
@@ -210,6 +212,7 @@ mod tests {
             one("\"\"", "[\"x\"]"),
             one(&long, "[\"x\"]"),
             one("\"tab\\there\"", "[\"x\"]"),
+            one("\"bidi\\u202Ename\"", "[\"x\"]"),
             one("\"empty run\"", "[]"),
             one("\"fine\"", "[\"x\"]"),
         ]

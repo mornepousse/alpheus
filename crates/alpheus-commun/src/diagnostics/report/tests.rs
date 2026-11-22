@@ -339,3 +339,66 @@ fn a_login_that_is_a_top_level_directory_is_not_replaced() {
     assert_eq!(r.apply("/dev/sda1 and dev-sda1.device and /home/dev/x"), "/dev/sda1 and dev-sda1.device and ~/x");
     assert_eq!(r.apply("alice"), "<user>");
 }
+
+/// Final review, commun privacy items.
+#[test]
+fn a_sudo_line_keeps_no_command_arguments() {
+    let line = "sudo: jdoe : 3 incorrect password attempts ; TTY=pts/1 ; PWD=/home/jdoe ; USER=root ; COMMAND=/run/current-system/sw/bin/mysql -pHunter2Secret";
+    let out = none().apply(line);
+    assert!(out.ends_with("COMMAND=<command>"), "{out}");
+    assert!(!out.contains("Hunter2Secret") && !out.contains("mysql"), "{out}");
+    let pk = "pkexec: jdoe: Executing command [USER=root] [TTY=/dev/pts/1] [CWD=/home/jdoe] [COMMAND=/usr/bin/tool --token abc123]";
+    let out = none().apply(pk);
+    assert!(out.contains("COMMAND=<command>") && !out.contains("abc123"), "{out}");
+    // Nothing after the marker survives either, whatever it holds.
+    assert_eq!(none().apply("COMMAND=x ; more"), "COMMAND=<command>");
+    assert_eq!(none().apply("no marker here"), "no marker here");
+}
+
+#[test]
+fn the_users_own_address_keeps_no_domain() {
+    let r = Redactions::new(&["jdoe".into()], &[], Some("laptop"), None);
+    assert_eq!(r.apply("mail jdoe@unrelated.net sent"), "mail <email> sent");
+    assert_eq!(r.apply("mail bob@laptop.lan sent"), "mail <email> sent");
+}
+
+#[test]
+fn any_hex_escape_is_a_word_edge() {
+    let r = Redactions::new(&["jdoe".into()], &[], None, None);
+    assert_eq!(r.apply("mnt-foo\\x2bjdoe.mount"), "mnt-foo\\x2b<user>.mount");
+    assert_eq!(r.apply("mnt-foo\\x2djdoe.mount"), "mnt-foo\\x2d<user>.mount");
+}
+
+#[test]
+fn a_dotted_quad_after_a_port_path_or_a_firmware_word_is_not_an_address() {
+    let r = none();
+    assert_eq!(r.apply("usb 2-1.2.1.3: new device"), "usb 2-1.2.1.3: new device");
+    assert_eq!(r.apply("Firmware 1.2.3.4 loaded"), "Firmware 1.2.3.4 loaded");
+    assert_eq!(r.apply("kernel 5.6.7.8 booted"), "kernel 5.6.7.8 booted");
+    assert_eq!(r.apply("from 10.1.2.3 ok"), "from <ip> ok");
+}
+
+#[test]
+fn a_host_with_a_label_of_the_os_name_is_left_alone() {
+    let facts = HostFacts { os: "NixOS 25.05".into(), host: Some("nixos.lan".into()), ..HostFacts::default() };
+    assert_eq!(facts.redactions().apply("NixOS 25.05 on nixos.lan"), "NixOS 25.05 on <host>");
+    // With no os name read, the installer defaults are still no secret.
+    let blank = HostFacts { host: Some("nixos.lan".into()), ..HostFacts::default() };
+    assert_eq!(blank.redactions().apply("NixOS here on nixos.lan"), "NixOS here on <host>");
+    let other = HostFacts { os: "NixOS 25.05".into(), host: Some("box.lan".into()), ..HostFacts::default() };
+    assert_eq!(other.redactions().apply("box runs"), "<host> runs");
+}
+
+#[test]
+fn non_ascii_addresses_and_names() {
+    assert_eq!(none().apply("josé@example.fr wrote"), "<email> wrote");
+    let r = Redactions::new(&["Rénée".into()], &[], None, None);
+    assert_eq!(r.apply("RÉNÉE and rénée"), "<user> and <user>");
+}
+
+#[test]
+fn ids_and_unbracketed_v6_with_a_port() {
+    assert_eq!(none().apply("boot 0123456789abcdef0123456789ABCDEF done"), "boot <id> done");
+    assert_eq!(none().apply("peer 2001:db8::1:443 up"), "peer <ip> up");
+    assert_eq!(none().apply("peer fe80::1:8080 up"), "peer <ip> up");
+}

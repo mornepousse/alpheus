@@ -81,12 +81,18 @@ impl Redactions {
     /// The user's names and homes, the host name (and its short name when it is fully
     /// qualified) and the machine id. Names match in any ASCII case.
     pub fn new(users: &[String], homes: &[String], host: Option<&str>, machine_id: Option<&str>) -> Redactions {
+        Redactions::build(users, homes, host, true, machine_id)
+    }
+
+    /// `short_host`: the first label of a qualified host is replaced on its own too (left out
+    /// when it is a word of the distribution's name).
+    fn build(users: &[String], homes: &[String], host: Option<&str>, short_host: bool, machine_id: Option<&str>) -> Redactions {
         let mut exact: Vec<(String, &'static str, bool)> = Vec::new();
         // `word`: matched as a whole word only (a login or one word of a real name would shred
         // `event` or `systemd` as a substring).
         let mut add = |s: &str, to: &'static str, min: usize, word: bool| {
             let s = s.trim();
-            if s.chars().count() >= min && !exact.iter().any(|(e, ..)| e.eq_ignore_ascii_case(s)) {
+            if s.chars().count() >= min && !exact.iter().any(|(e, ..)| e.to_lowercase() == s.to_lowercase()) {
                 exact.push((s.to_string(), to, word));
             }
         };
@@ -100,7 +106,7 @@ impl Redactions {
         // Whole words, like the login: a host called `work` must not shred `network`.
         if let Some(h) = host {
             add(h, "<host>", MIN_NAME, true);
-            if let Some((short, _)) = h.split_once('.') {
+            if let Some((short, _)) = h.split_once('.').filter(|_| short_host) {
                 add(short, "<host>", MIN_NAME, true);
             }
         }
@@ -117,32 +123,43 @@ impl Redactions {
 
     /// `text` with every listed string and every address-shaped token replaced.
     pub fn apply(&self, text: &str) -> String {
-        let mut out = text.to_string();
+        // The command of a sudo or pkexec line goes first: its arguments can hold anything. E-mail
+        // addresses go before the names, so the user's own keeps no domain behind a placeholder.
+        let mut out = redact_emails(&cut_commands(text));
         for (needle, to, word) in &self.exact {
             out = if *word { replace_word_ci(&out, needle, to) } else { replace_ci(&out, needle, to) };
         }
-        replace_shapes(&out)
+        redact_emails(&replace_shapes(&out))
     }
 }
 
-/// `text` with each ASCII-case-insensitive occurrence of `needle` replaced by `to`. Lowercasing
-/// ASCII keeps every byte offset, so the match positions carry over.
+/// Two characters equal up to Unicode case (single-character mappings: `É`/`é`).
+fn eq_ci(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
+/// `text` with each case-insensitive occurrence of `needle` replaced by `to`.
 fn replace_ci(text: &str, needle: &str, to: &str) -> String {
-    let (hay, pin) = (text.to_ascii_lowercase(), needle.to_ascii_lowercase());
+    let chars: Vec<char> = text.chars().collect();
+    let pin: Vec<char> = needle.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    while let Some(found) = hay[at..].find(&pin) {
-        out.push_str(&text[at..at + found]);
-        out.push_str(to);
-        at += found + pin.len();
+    let mut i = 0;
+    while i < chars.len() {
+        let end = i + pin.len();
+        if !pin.is_empty() && end <= chars.len() && chars[i..end].iter().zip(&pin).all(|(a, b)| eq_ci(*a, *b)) {
+            out.push_str(to);
+            i = end;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
     }
-    out.push_str(&text[at..]);
     out
 }
 
-/// `text` with each ASCII-case-insensitive whole-word occurrence of `needle` replaced by `to`:
-/// no letter right before or after it (a digit, a dash, a dot or the end all count as the word's
-/// edge, and so does systemd's `\x2d` escape before it).
+/// `text` with each case-insensitive whole-word occurrence of `needle` replaced by `to`: no
+/// letter right before or after it (a digit, a dash, a dot or the end all count as the word's
+/// edge, and so does a systemd `\xHH` escape before it).
 fn replace_word_ci(text: &str, needle: &str, to: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let pin: Vec<char> = needle.chars().collect();
@@ -151,9 +168,9 @@ fn replace_word_ci(text: &str, needle: &str, to: &str) -> String {
     while i < chars.len() {
         let end = i + pin.len();
         let hit = end <= chars.len()
-            && chars[i..end].iter().zip(&pin).all(|(a, b)| a.eq_ignore_ascii_case(b))
+            && chars[i..end].iter().zip(&pin).all(|(a, b)| eq_ci(*a, *b))
             && !chars.get(end).is_some_and(|c| c.is_alphabetic())
-            && (i == 0 || !chars[i - 1].is_alphabetic() || escaped_dash_before(&chars, i));
+            && (i == 0 || !chars[i - 1].is_alphabetic() || escaped_before(&chars, i));
         if hit {
             out.push_str(to);
             i = end;
@@ -165,13 +182,36 @@ fn replace_word_ci(text: &str, needle: &str, to: &str) -> String {
     out
 }
 
-/// The four characters before `i` are systemd's `\x2d`.
-fn escaped_dash_before(chars: &[char], i: usize) -> bool {
+/// The four characters before `i` are a systemd `\xHH` escape.
+fn escaped_before(chars: &[char], i: usize) -> bool {
     i >= 4
         && chars[i - 4] == '\\'
         && chars[i - 3].eq_ignore_ascii_case(&'x')
-        && chars[i - 2] == '2'
-        && chars[i - 1].eq_ignore_ascii_case(&'d')
+        && chars[i - 2].is_ascii_hexdigit()
+        && chars[i - 1].is_ascii_hexdigit()
+}
+
+/// Everything after `COMMAND=` (sudo's and pkexec's own field) is replaced by `<command>`, up to
+/// the end of the line, or up to a closing `]` when pkexec brackets it: the arguments are
+/// anything the user typed, a password included.
+fn cut_commands(text: &str) -> String {
+    const MARK: &str = "COMMAND=";
+    if !text.contains(MARK) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at + MARK.len()]);
+        out.push_str("<command>");
+        let tail = &rest[at + MARK.len()..];
+        let bracketed = rest[..at].ends_with('[');
+        let line_end = tail.find('\n').unwrap_or(tail.len());
+        let stop = if bracketed { tail[..line_end].rfind(']').unwrap_or(line_end) } else { line_end };
+        rest = &tail[stop..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replaces every MAC, UUID, IPv6, IPv4 and e-mail shape. The scan tries each shape at every
@@ -187,12 +227,13 @@ fn replace_shapes(text: &str) -> String {
         if (c.is_ascii_hexdigit() || c == ':') && boundary_before(&chars, i) {
             let hit = uuid(&chars[i..])
                 .map(|n| (n, "<uuid>"))
+                .or_else(|| hex_id(&chars[i..]).map(|n| (n, "<id>")))
                 .or_else(|| mac(&chars[i..]).map(|n| (n, "<mac>")))
                 .or_else(|| cisco_mac(&chars[i..]).map(|n| (n, "<mac>")))
                 .or_else(|| bare_mac(&chars[i..]).map(|n| (n, "<mac>")))
                 .or_else(|| ipv6(&chars[i..]).map(|n| (n, "<ip>")))
                 .or_else(|| {
-                    (!after_version(&chars, i) && !inside_dotted_number(&chars, i))
+                    (!after_version_word(&chars, i) && !inside_dotted_number(&chars, i) && !after_port_digit(&chars, i))
                         .then(|| ipv4(&chars[i..]).map(|n| (n, "<ip>")))
                         .flatten()
                 });
@@ -213,7 +254,7 @@ fn replace_shapes(text: &str) -> String {
         out.push(c);
         i += 1;
     }
-    redact_emails(&out)
+    out
 }
 
 /// Not in the middle of a word. A systemd `\x2d` escape (a dash in a unit name) counts as a
@@ -223,7 +264,7 @@ fn boundary_before(chars: &[char], i: usize) -> bool {
     if !prev.is_alphanumeric() {
         return true;
     }
-    escaped_dash_before(chars, i)
+    escaped_before(chars, i)
 }
 
 /// `0x` right before `i`, itself at a word start.
@@ -242,11 +283,23 @@ fn boundary_after(chars: &[char], n: usize) -> bool {
     chars.get(n).is_none_or(|c| !c.is_alphanumeric())
 }
 
-/// The word before `i` (after one space) is "version".
-fn after_version(chars: &[char], i: usize) -> bool {
+/// A digit and a dash right before `i`: a USB port path (`usb 2-1.2.1.3:`), not an address.
+fn after_port_digit(chars: &[char], i: usize) -> bool {
+    i >= 2 && chars[i - 1] == '-' && chars[i - 2].is_ascii_digit()
+}
+
+/// The word before `i` (after one space) is one that introduces a version number.
+fn after_version_word(chars: &[char], i: usize) -> bool {
     let end = if i > 0 && chars[i - 1] == ' ' { i - 1 } else { return false };
     let start = (0..end).rev().find(|&k| !chars[k].is_alphabetic()).map_or(0, |k| k + 1);
-    chars[start..end].iter().collect::<String>().eq_ignore_ascii_case("version")
+    let word: String = chars[start..end].iter().collect();
+    ["version", "firmware", "kernel"].iter().any(|w| word.eq_ignore_ascii_case(w))
+}
+
+/// Thirty-two hex digits as a token of their own: a boot, invocation or machine id. Returns the
+/// length.
+fn hex_id(s: &[char]) -> Option<usize> {
+    (hex_run(s, 32) && boundary_after(s, 32)).then_some(32)
 }
 
 fn hex_run(s: &[char], n: usize) -> bool {
@@ -396,8 +449,8 @@ const UNIT_SUFFIXES: [&str; 11] =
 
 fn redact_emails(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
-    let local = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-');
-    let domain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-');
+    let local = |c: char| c.is_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-');
+    let domain = |c: char| c.is_alphanumeric() || matches!(c, '.' | '-');
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     let mut copied = 0; // chars before `copied` are already in `out`
@@ -663,18 +716,28 @@ impl HostFacts {
         }
         homes.extend(std::env::var("HOME").ok());
         // SAFETY: getpwuid_r writes into the buffers owned here; the strings are copied at once.
+        // A buffer too small answers ERANGE: retried bigger, up to 64 KiB.
         unsafe {
-            let mut pwd: libc::passwd = std::mem::zeroed();
-            let mut buf = vec![0 as libc::c_char; 2048];
-            let mut found: *mut libc::passwd = std::ptr::null_mut();
-            if libc::getpwuid_r(libc::geteuid(), &mut pwd, buf.as_mut_ptr(), buf.len(), &mut found) == 0 && !found.is_null() {
-                users.push(std::ffi::CStr::from_ptr(pwd.pw_name).to_string_lossy().into_owned());
-                homes.push(std::ffi::CStr::from_ptr(pwd.pw_dir).to_string_lossy().into_owned());
-                // The real name (the first comma-separated field of GECOS), when there is one.
-                if !pwd.pw_gecos.is_null() {
-                    let gecos = std::ffi::CStr::from_ptr(pwd.pw_gecos).to_string_lossy().into_owned();
-                    users.extend(real_name_words(&gecos));
+            let mut size = 2048;
+            while size <= 65536 {
+                let mut pwd: libc::passwd = std::mem::zeroed();
+                let mut buf = vec![0 as libc::c_char; size];
+                let mut found: *mut libc::passwd = std::ptr::null_mut();
+                let rc = libc::getpwuid_r(libc::geteuid(), &mut pwd, buf.as_mut_ptr(), buf.len(), &mut found);
+                if rc == libc::ERANGE {
+                    size *= 2;
+                    continue;
                 }
+                if rc == 0 && !found.is_null() {
+                    users.push(std::ffi::CStr::from_ptr(pwd.pw_name).to_string_lossy().into_owned());
+                    homes.push(std::ffi::CStr::from_ptr(pwd.pw_dir).to_string_lossy().into_owned());
+                    // The real name (the first comma-separated field of GECOS), when there is one.
+                    if !pwd.pw_gecos.is_null() {
+                        let gecos = std::ffi::CStr::from_ptr(pwd.pw_gecos).to_string_lossy().into_owned();
+                        users.extend(real_name_words(&gecos));
+                    }
+                }
+                break;
             }
         }
         HostFacts {
@@ -689,13 +752,22 @@ impl HostFacts {
 
     /// A host name that is one of the words of the distribution's own name (`nixos` on NixOS, the
     /// installer's default) is no secret, and replacing it would shred `NixOS 25.05` and the store
-    /// paths: it is left out.
+    /// paths: it is left out. So is the first label of a qualified one (`nixos.lan`), which would
+    /// shred the same words; the whole name is still replaced. Without an os name, `nixos` and
+    /// `localhost` stand in.
     pub fn redactions(&self) -> Redactions {
-        let host = self
-            .host
-            .as_deref()
-            .filter(|h| !self.os.split(|c: char| !c.is_alphanumeric()).any(|w| !w.is_empty() && w.eq_ignore_ascii_case(h.trim())));
-        Redactions::new(&self.users, &self.homes, host, self.machine_id.as_deref())
+        let words: Vec<&str> = self.os.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        let common = |label: &str| {
+            let label = label.trim();
+            if words.is_empty() {
+                ["nixos", "localhost"].iter().any(|w| w.eq_ignore_ascii_case(label))
+            } else {
+                words.iter().any(|w| w.eq_ignore_ascii_case(label))
+            }
+        };
+        let host = self.host.as_deref().filter(|h| !common(h));
+        let short = host.is_none_or(|h| h.split_once('.').is_none_or(|(first, _)| !common(first)));
+        Redactions::build(&self.users, &self.homes, host, short, self.machine_id.as_deref())
     }
 }
 
