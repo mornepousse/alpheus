@@ -560,3 +560,77 @@ changes it showed), never one per change: a held key would write 25 lines a seco
 No line names a device (a card's label stays out of the journal).
 
 Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 7; `describe` in `osd/mod.rs`
+
+### A tray menu is shown only once its layout has arrived
+
+Pressing an icon asks for its menu, but nothing is drawn until the menu's first layout is back, and
+if it takes more than 2 s nothing is drawn at all. A half-built menu is never shown.
+
+Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions (2026-10-05)", item 8; tray spec § 1 ("Menus": no answer within 2 s)
+
+### A tray menu opens with its first entry selected
+
+The first selectable entry is selected before the popup is first drawn, so Enter or a key press has
+something to act on at once.
+
+Date: 2026-10-05 · Source: tray plan 2, "Controller reconciliation", "Mae's decisions added after the skeleton"
+
+### A submenu opens in the same popup
+
+A submenu replaces the menu's current level inside the same popup (→ or Enter enters it, ← goes back
+one level), with the first row showing `◂ <parent label>`. No cascading popups are opened.
+
+Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions (2026-10-05)", item 2
+
+### A failed Activate opens the menu of the icon that was pressed
+
+A left click sends `Activate`; when the item answers with a D-Bus error (Steam's libappindicator has
+no such method) the bar opens its menu instead. That answer comes later, so the bar remembers the icon,
+the cells it occupies and the button that pressed it, and the menu belongs to that press, not to
+whatever is under the pointer when the answer arrives. A press that lands on no icon forgets the
+remembered one, so a late answer never opens a menu for an icon the user has left. A timeout is not a
+failure, because a slow application may have acted.
+
+Date: 2026-10-05 · Source: tray spec § 2 (left click row); tray plan 2, "Controller decisions", item 5; commit 40be9a6 (the last icon cleared by a press on no icon)
+
+### A tray menu is closed by the button that opened it, or by any right click
+
+A press on the icon whose menu is open only closes that menu, and does nothing else, when it is made
+with the button that opened it, or with the right button whatever opened it. So Steam's menu, opened
+by a left click, closes with the same left click, with no new Activate and no flicker.
+
+Date: 2026-10-06 · Source: commit 40be9a6 (the 2026-10-06 ruling quoted in its message); tray plan 2, "Controller reconciliation", "Mae's decisions added after the skeleton" (a second right click on the icon whose menu is open closes it)
+
+### A press right after the compositor closed a menu only closes it
+
+A compositor may deliver `xdg_popup.done` before the press that follows it reaches the bar. For 300 ms
+after such a close, a press on the same icon that would have closed the menu (its opening button, or a
+right click) still only closes: it does not reopen what was just closed.
+
+Date: 2026-10-06 · Source: commit 40be9a6 (`recently_closed_menu`, `closed_recently`)
+
+### A late submenu graft is refused once the selection has moved
+
+A submenu's children are fetched when it is opened, and entered when they arrive. If by then the
+user has moved the selection, gone back, asked for another submenu or run an entry, the fetch is
+dropped. Steam and Electron send `LayoutUpdated` often enough that a late graft could otherwise jump
+into "More" long after the user looked elsewhere.
+
+Date: 2026-10-06 · Source: commit 40be9a6 (`submenu_wanted` cleared, `submenu_still_selected`); comments in `tray/menu_app.rs`
+
+### A burst of tray changes is redrawn once per frame callback
+
+A signal such as `NewIcon` only marks a property dirty. The bar asks for one frame callback on the
+first bar that can take one, and re-reads every dirty property once when it comes. The request is
+committed with one pixel of buffer damage on every compositor, because an undamaged commit may get no
+frame callback at all (Hyprland) or one throttled to about a second (niri).
+
+Date: 2026-10-05 · Source: tray spec § 1 ("Bursts"); tray plan 2, "Controller decisions", item 10
+
+### A closed session bus is never reconnected
+
+When the session bus closes, the tray is dropped and left empty, one line is logged, and no
+reconnection is tried: a retry loop would wake the bar at rest. The media and notification
+consumers that live on the tray's connection go with it.
+
+Date: 2026-10-05 · Source: tray spec § 3 ("No session bus": no retry loop); tray plan 2, "Controller decisions", item 12; `tray_output` (the consumers' log lines)

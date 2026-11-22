@@ -1572,6 +1572,7 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
 /// entry would otherwise skip its file without a word (`unmatched_entries`).
 const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
+    "tray/",
     "media/mod.rs",
     "notify/mod.rs",
     "osd/mod.rs",

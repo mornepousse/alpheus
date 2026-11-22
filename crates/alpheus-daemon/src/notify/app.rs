@@ -2,7 +2,7 @@
 //! (the tray's connection, or the bar's own link), the bell's view, do-not-disturb (the one path
 //! for every change, persisted, timed or not), Clear all, and the `alpheus-launch` verbs. Runs on
 //! the loop, no thread, no command; one timer, armed only while a timed do-not-disturb is on. The bubbles and the panel reach the server
-//! through `App::notify_do` (tray_bridge.rs).
+//! through `App::notify_do` (tray/bridge.rs).
 
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;

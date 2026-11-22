@@ -2,7 +2,7 @@
 //! exclusive zone) per screen, tracked live; a pointer for clicks and the
 //! wheel. Nothing else is asked of the compositor. Redraw only when a
 //! screen's grid changes. The tray's session-bus callbacks (`tray_output`) live in
-//! `tray_bridge.rs`.
+//! `tray/bridge.rs`.
 
 use crate::actions::{self, Button, Wheel};
 use crate::config::ModuleId;
@@ -531,7 +531,7 @@ pub struct App {
     pub(crate) privacy_timer: DeadlineTimer,
     /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
-    /// The tray menus' and tooltip's state (menu_app.rs).
+    /// The tray menus' and tooltip's state (tray/menu_app.rs).
     pub(crate) menu: crate::tray::menu_app::TrayMenu,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
