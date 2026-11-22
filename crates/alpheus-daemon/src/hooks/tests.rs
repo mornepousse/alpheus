@@ -1,102 +1,113 @@
+//! Tests of the hooks' model (`mod.rs`): which changes fire which event, the variables each gets, the
+//! quiet window and the token bucket. No clock, no file, no daemon: each test passes the instant it
+//! wants.
+
 use super::*;
 use crate::config::HooksConfig;
 use crate::privacy::Indicator;
 use crate::system::BtDevice;
 
-fn cfg(keys: &[&str]) -> HooksConfig {
+/// The `[hooks]` table with the given keys set, each to a command named after it.
+fn config_with(keys: &[&str]) -> HooksConfig {
     let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
     crate::config::BarConfig::from_text(&text).unwrap().hooks
 }
 
-fn hooks(keys: &[&str], t0: Instant) -> Hooks {
-    Hooks::new(&cfg(keys), t0).unwrap()
+/// The model of a bar that has a hook on each of `keys`, started at `t0`.
+fn hooks_with(keys: &[&str], t0: Instant) -> Hooks {
+    Hooks::new(&config_with(keys), t0).unwrap()
 }
 
-fn online(link: Link, vpns: usize, limited: bool) -> Msg {
+/// What the network source says when online over `link`.
+fn online_message(link: Link, vpns: usize, limited: bool) -> Msg {
     Msg::Network(Some(NetState::Online { link, vpns, limited }))
 }
 
-fn bt(names: &[&str]) -> Msg {
+/// What the Bluetooth source says when the adapter is on and these devices are connected.
+fn bluetooth_message(names: &[&str]) -> Msg {
     Msg::Bluetooth(Some(BtState::On { devices: names.iter().map(|n| BtDevice { name: n.to_string(), battery: None }).collect() }))
 }
 
-fn power(percent: u8, charge: Charge) -> Msg {
+/// What the power source says for a laptop battery at this charge.
+fn battery_message(percent: u8, charge: Charge) -> Msg {
     Msg::Battery(Some(PowerState { laptop: Some(Battery { percent, charge }), peripherals: vec![] }))
 }
 
-fn profile(p: Profile) -> Msg {
+/// What the power-profile source says when `p` is active.
+fn profile_message(p: Profile) -> Msg {
     Msg::Profile(Some(ProfileState { active: Some(p), offered: vec![] }))
 }
 
-fn on(kinds: &[CaptureKind]) -> Capture {
+/// Indicators with exactly these captures on.
+fn captures_on(kinds: &[CaptureKind]) -> Capture {
     let ind = |k| Indicator { names: vec![], unnamed: kinds.contains(&k) };
     Capture { mic: ind(CaptureKind::Microphone), camera: ind(CaptureKind::Camera), screen: ind(CaptureKind::Screen) }
 }
 
 #[test]
-fn an_empty_table_is_none() {
+fn no_hook_set_gives_no_model() {
     assert!(Hooks::new(&HooksConfig::default(), Instant::now()).is_none());
 }
 
 #[test]
-fn ids_match_the_config_keys() {
+fn the_events_are_listed_in_the_order_of_the_config_keys() {
     let keys: Vec<&str> = HookId::ALL.iter().map(|i| i.key()).collect();
     let want: Vec<&str> = HooksConfig::default().commands().iter().map(|(k, _)| *k).collect();
     assert_eq!(keys, want);
 }
 
 #[test]
-fn the_first_value_is_a_seed() {
+fn the_first_value_of_each_event_is_a_seed_and_never_fires() {
     let t0 = Instant::now();
-    let mut h = hooks(&["network", "bluetooth", "battery_charge", "battery_level", "power_profile", "theme_mode"], t0);
-    assert!(h.on_msg(&online(Link::Wifi, 0, false)).is_empty());
-    assert!(h.on_msg(&online(Link::Wifi, 0, false)).is_empty());
-    assert_eq!(h.on_msg(&online(Link::Ethernet, 0, false)), [Event::Network(Some(Link::Ethernet))]);
-    assert!(h.on_msg(&bt(&["A"])).is_empty());
-    assert!(h.on_msg(&bt(&["A"])).is_empty());
-    assert_eq!(h.on_msg(&bt(&[])), [Event::Bluetooth(BtChange::Disconnected("A".into()))]);
-    assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
-    assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
-    assert_eq!(h.on_msg(&power(50, Charge::Charging)), [Event::BatteryCharge(Battery { percent: 50, charge: Charge::Charging })]);
-    assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
-    assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
-    assert_eq!(h.on_msg(&profile(Profile::Performance)), [Event::PowerProfile(Profile::Performance)]);
+    let mut h = hooks_with(&["network", "bluetooth", "battery_charge", "battery_level", "power_profile", "theme_mode"], t0);
+    assert!(h.on_msg(&online_message(Link::Wifi, 0, false)).is_empty());
+    assert!(h.on_msg(&online_message(Link::Wifi, 0, false)).is_empty());
+    assert_eq!(h.on_msg(&online_message(Link::Ethernet, 0, false)), [Event::Network(Some(Link::Ethernet))]);
+    assert!(h.on_msg(&bluetooth_message(&["A"])).is_empty());
+    assert!(h.on_msg(&bluetooth_message(&["A"])).is_empty());
+    assert_eq!(h.on_msg(&bluetooth_message(&[])), [Event::Bluetooth(BtChange::Disconnected("A".into()))]);
+    assert!(h.on_msg(&battery_message(50, Charge::Discharging)).is_empty());
+    assert!(h.on_msg(&battery_message(50, Charge::Discharging)).is_empty());
+    assert_eq!(h.on_msg(&battery_message(50, Charge::Charging)), [Event::BatteryCharge(Battery { percent: 50, charge: Charge::Charging })]);
+    assert!(h.on_msg(&profile_message(Profile::Balanced)).is_empty());
+    assert!(h.on_msg(&profile_message(Profile::Balanced)).is_empty());
+    assert_eq!(h.on_msg(&profile_message(Profile::Performance)), [Event::PowerProfile(Profile::Performance)]);
     assert_eq!(h.on_mode(Mode::Dark, true), None);
     assert_eq!(h.on_mode(Mode::Dark, true), None);
     assert_eq!(h.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
 }
 
 #[test]
-fn network_and_vpn_edges() {
+fn network_and_vpn_fire_on_a_change_of_kind_or_vpn_state() {
     let t0 = Instant::now();
-    let mut h = hooks(&["network", "vpn"], t0);
+    let mut h = hooks_with(&["network", "vpn"], t0);
     assert!(h.on_msg(&Msg::Network(Some(NetState::Offline))).is_empty());
-    assert_eq!(h.on_msg(&online(Link::Wifi, 0, false)), [Event::Network(Some(Link::Wifi))]);
-    assert!(h.on_msg(&online(Link::Wifi, 0, true)).is_empty(), "limited alone is no edge");
-    assert_eq!(h.on_msg(&online(Link::Wifi, 1, true)), [Event::Vpn(true)]);
-    assert_eq!(h.on_msg(&online(Link::Ethernet, 0, false)), [Event::Network(Some(Link::Ethernet)), Event::Vpn(false)]);
+    assert_eq!(h.on_msg(&online_message(Link::Wifi, 0, false)), [Event::Network(Some(Link::Wifi))]);
+    assert!(h.on_msg(&online_message(Link::Wifi, 0, true)).is_empty(), "limited alone is no edge");
+    assert_eq!(h.on_msg(&online_message(Link::Wifi, 1, true)), [Event::Vpn(true)]);
+    assert_eq!(h.on_msg(&online_message(Link::Ethernet, 0, false)), [Event::Network(Some(Link::Ethernet)), Event::Vpn(false)]);
 
-    let mut only_vpn = hooks(&["vpn"], t0);
-    assert!(only_vpn.on_msg(&online(Link::Wifi, 0, false)).is_empty());
-    assert!(only_vpn.on_msg(&online(Link::Ethernet, 0, false)).is_empty(), "the network is not tracked");
-    assert_eq!(only_vpn.on_msg(&online(Link::Ethernet, 2, false)), [Event::Vpn(true)]);
+    let mut only_vpn = hooks_with(&["vpn"], t0);
+    assert!(only_vpn.on_msg(&online_message(Link::Wifi, 0, false)).is_empty());
+    assert!(only_vpn.on_msg(&online_message(Link::Ethernet, 0, false)).is_empty(), "the network is not tracked");
+    assert_eq!(only_vpn.on_msg(&online_message(Link::Ethernet, 2, false)), [Event::Vpn(true)]);
 }
 
 #[test]
-fn bluetooth_edges_per_device() {
-    let mut h = hooks(&["bluetooth"], Instant::now());
+fn bluetooth_fires_once_per_device_and_for_the_adapter() {
+    let mut h = hooks_with(&["bluetooth"], Instant::now());
     assert!(h.on_msg(&Msg::Bluetooth(Some(BtState::Off))).is_empty());
     assert_eq!(
-        h.on_msg(&bt(&["A", "B"])),
+        h.on_msg(&bluetooth_message(&["A", "B"])),
         [
             Event::Bluetooth(BtChange::On),
             Event::Bluetooth(BtChange::Connected("A".into())),
             Event::Bluetooth(BtChange::Connected("B".into()))
         ]
     );
-    assert_eq!(h.on_msg(&bt(&["A"])), [Event::Bluetooth(BtChange::Disconnected("B".into()))]);
-    assert_eq!(h.on_msg(&bt(&["A", "A"])), [Event::Bluetooth(BtChange::Connected("A".into()))], "alike names count twice");
-    assert_eq!(h.on_msg(&bt(&["A"])), [Event::Bluetooth(BtChange::Disconnected("A".into()))]);
+    assert_eq!(h.on_msg(&bluetooth_message(&["A"])), [Event::Bluetooth(BtChange::Disconnected("B".into()))]);
+    assert_eq!(h.on_msg(&bluetooth_message(&["A", "A"])), [Event::Bluetooth(BtChange::Connected("A".into()))], "alike names count twice");
+    assert_eq!(h.on_msg(&bluetooth_message(&["A"])), [Event::Bluetooth(BtChange::Disconnected("A".into()))]);
     assert_eq!(
         h.on_msg(&Msg::Bluetooth(Some(BtState::Off))),
         [Event::Bluetooth(BtChange::Disconnected("A".into())), Event::Bluetooth(BtChange::Off)]
@@ -104,75 +115,80 @@ fn bluetooth_edges_per_device() {
 }
 
 #[test]
-fn battery_charge_then_level() {
-    let mut h = hooks(&["battery_charge", "battery_level"], Instant::now());
-    assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
+fn a_battery_change_fires_the_charge_before_the_level() {
+    let mut h = hooks_with(&["battery_charge", "battery_level"], Instant::now());
+    assert!(h.on_msg(&battery_message(50, Charge::Discharging)).is_empty());
     let b = |percent, charge| Battery { percent, charge };
-    assert_eq!(h.on_msg(&power(49, Charge::Discharging)), [Event::BatteryLevel(b(49, Charge::Discharging))]);
-    assert_eq!(h.on_msg(&power(49, Charge::Charging)), [Event::BatteryCharge(b(49, Charge::Charging))]);
-    assert_eq!(h.on_msg(&power(50, Charge::Full)), [Event::BatteryCharge(b(50, Charge::Full)), Event::BatteryLevel(b(50, Charge::Full))]);
-    assert!(h.on_msg(&power(50, Charge::Unknown)).is_empty(), "unknown keeps the seed");
-    assert!(h.on_msg(&power(50, Charge::Full)).is_empty(), "back to the seed: no edge");
+    assert_eq!(h.on_msg(&battery_message(49, Charge::Discharging)), [Event::BatteryLevel(b(49, Charge::Discharging))]);
+    assert_eq!(h.on_msg(&battery_message(49, Charge::Charging)), [Event::BatteryCharge(b(49, Charge::Charging))]);
+    assert_eq!(
+        h.on_msg(&battery_message(50, Charge::Full)),
+        [Event::BatteryCharge(b(50, Charge::Full)), Event::BatteryLevel(b(50, Charge::Full))]
+    );
+    assert!(h.on_msg(&battery_message(50, Charge::Unknown)).is_empty(), "unknown keeps the seed");
+    assert!(h.on_msg(&battery_message(50, Charge::Full)).is_empty(), "back to the seed: no edge");
 }
 
 #[test]
 fn a_source_down_is_not_a_state() {
-    let mut h = hooks(&["network", "bluetooth", "battery_charge", "power_profile"], Instant::now());
-    h.on_msg(&online(Link::Wifi, 0, false));
+    let mut h = hooks_with(&["network", "bluetooth", "battery_charge", "power_profile"], Instant::now());
+    h.on_msg(&online_message(Link::Wifi, 0, false));
     assert!(h.on_msg(&Msg::Network(None)).is_empty());
     assert!(h.on_msg(&Msg::Network(Some(NetState::Absent))).is_empty());
-    assert!(h.on_msg(&online(Link::Wifi, 0, false)).is_empty());
+    assert!(h.on_msg(&online_message(Link::Wifi, 0, false)).is_empty());
     assert_eq!(h.on_msg(&Msg::Network(Some(NetState::Offline))), [Event::Network(None)]);
 
-    h.on_msg(&bt(&["A"]));
+    h.on_msg(&bluetooth_message(&["A"]));
     assert!(h.on_msg(&Msg::Bluetooth(None)).is_empty());
     assert!(h.on_msg(&Msg::Bluetooth(Some(BtState::Absent))).is_empty());
-    assert!(h.on_msg(&bt(&["A"])).is_empty());
+    assert!(h.on_msg(&bluetooth_message(&["A"])).is_empty());
 
-    h.on_msg(&power(50, Charge::Discharging));
+    h.on_msg(&battery_message(50, Charge::Discharging));
     assert!(h.on_msg(&Msg::Battery(None)).is_empty());
     assert!(h.on_msg(&Msg::Battery(Some(PowerState { laptop: None, peripherals: vec![] }))).is_empty());
-    assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
+    assert!(h.on_msg(&battery_message(50, Charge::Discharging)).is_empty());
 
-    h.on_msg(&profile(Profile::Balanced));
+    h.on_msg(&profile_message(Profile::Balanced));
     assert!(h.on_msg(&Msg::Profile(None)).is_empty());
     assert!(h.on_msg(&Msg::Profile(Some(ProfileState { active: None, offered: vec![] }))).is_empty());
-    assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
+    assert!(h.on_msg(&profile_message(Profile::Balanced)).is_empty());
 }
 
 #[test]
-fn capture_edges() {
-    let mut h = hooks(&["privacy"], Instant::now());
-    assert!(h.on_capture(&on(&[])).is_empty());
-    assert_eq!(h.on_capture(&on(&[CaptureKind::Camera])), [Event::Privacy(CaptureKind::Camera, true)]);
+fn a_capture_indicator_fires_when_it_turns_on() {
+    let mut h = hooks_with(&["privacy"], Instant::now());
+    assert!(h.on_capture(&captures_on(&[])).is_empty());
+    assert_eq!(h.on_capture(&captures_on(&[CaptureKind::Camera])), [Event::Privacy(CaptureKind::Camera, true)]);
     assert_eq!(
-        h.on_capture(&on(&[CaptureKind::Camera, CaptureKind::Microphone, CaptureKind::Screen])),
+        h.on_capture(&captures_on(&[CaptureKind::Camera, CaptureKind::Microphone, CaptureKind::Screen])),
         [Event::Privacy(CaptureKind::Microphone, true), Event::Privacy(CaptureKind::Screen, true)]
     );
 }
 
-fn sound_up() -> Msg {
+/// The sound source is up (it sends a state).
+fn sound_up_message() -> Msg {
     Msg::Sound(Some(crate::system::SoundState::default()))
 }
 
-fn compositor_up() -> Msg {
+/// The compositor source is up (it sends a state).
+fn compositor_up_message() -> Msg {
     Msg::Compositor(Some(crate::compositor::CompositorState::default()))
 }
 
 #[test]
 fn the_sound_source_going_down_fires_nothing() {
     use CaptureKind::*;
-    let mut h = hooks(&["privacy"], Instant::now());
-    assert_eq!(h.on_capture(&on(&[Microphone, Camera, Screen])).len(), 3);
+    let mut h = hooks_with(&["privacy"], Instant::now());
+    assert_eq!(h.on_capture(&captures_on(&[Microphone, Camera, Screen])).len(), 3);
     h.on_msg(&Msg::Sound(None));
-    assert!(h.on_capture(&on(&[])).is_empty(), "down is not a state: no off");
-    assert!(h.on_msg(&sound_up()).is_empty());
-    assert!(h.on_capture(&on(&[Microphone, Camera, Screen])).is_empty(), "back with the same state: nothing");
+    assert!(h.on_capture(&captures_on(&[])).is_empty(), "down is not a state: no off");
+    assert!(h.on_msg(&sound_up_message()).is_empty());
+    assert!(h.on_capture(&captures_on(&[Microphone, Camera, Screen])).is_empty(), "back with the same state: nothing");
     h.on_msg(&Msg::Sound(None));
-    assert!(h.on_capture(&on(&[])).is_empty());
-    h.on_msg(&sound_up());
+    assert!(h.on_capture(&captures_on(&[])).is_empty());
+    h.on_msg(&sound_up_message());
     assert_eq!(
-        h.on_capture(&on(&[Camera, Screen])),
+        h.on_capture(&captures_on(&[Camera, Screen])),
         [Event::Privacy(Microphone, false)],
         "back with a different state: the difference fires"
     );
@@ -181,17 +197,17 @@ fn the_sound_source_going_down_fires_nothing() {
 #[test]
 fn the_compositor_going_down_keeps_only_the_screen() {
     use CaptureKind::*;
-    let mut h = hooks(&["privacy"], Instant::now());
-    h.on_capture(&on(&[Microphone, Screen]));
+    let mut h = hooks_with(&["privacy"], Instant::now());
+    h.on_capture(&captures_on(&[Microphone, Screen]));
     h.on_msg(&Msg::Compositor(None));
-    assert!(h.on_capture(&on(&[Microphone])).is_empty(), "the screen part is kept");
-    assert_eq!(h.on_capture(&on(&[])), [Event::Privacy(Microphone, false)], "the rest still compares");
-    h.on_msg(&compositor_up());
-    assert_eq!(h.on_capture(&on(&[])), [Event::Privacy(Screen, false)], "compared again once back");
+    assert!(h.on_capture(&captures_on(&[Microphone])).is_empty(), "the screen part is kept");
+    assert_eq!(h.on_capture(&captures_on(&[])), [Event::Privacy(Microphone, false)], "the rest still compares");
+    h.on_msg(&compositor_up_message());
+    assert_eq!(h.on_capture(&captures_on(&[])), [Event::Privacy(Screen, false)], "compared again once back");
     h.on_msg(&Msg::Compositor(None));
-    assert!(h.on_capture(&on(&[Screen])).is_empty());
-    h.on_msg(&compositor_up());
-    assert_eq!(h.on_capture(&on(&[Screen])), [Event::Privacy(Screen, true)]);
+    assert!(h.on_capture(&captures_on(&[Screen])).is_empty());
+    h.on_msg(&compositor_up_message());
+    assert_eq!(h.on_capture(&captures_on(&[Screen])), [Event::Privacy(Screen, true)]);
 }
 
 #[test]
@@ -210,12 +226,12 @@ fn a_bluetooth_address_is_never_a_device_name() {
 
 #[test]
 fn theme_mode_seeds_on_the_portals_first_word() {
-    let mut h = hooks(&["theme_mode"], Instant::now());
+    let mut h = hooks_with(&["theme_mode"], Instant::now());
     assert_eq!(h.on_mode(Mode::Dark, false), None, "no portal answer yet: nothing seeded");
     assert_eq!(h.on_mode(Mode::Light, false), None, "still none, even if the fallback moves");
     assert_eq!(h.on_mode(Mode::Dark, true), None, "the first word seeds");
     assert_eq!(h.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
-    let mut fixed = hooks(&["theme_mode"], Instant::now());
+    let mut fixed = hooks_with(&["theme_mode"], Instant::now());
     assert_eq!(fixed.on_mode(Mode::Dark, true), None);
     assert_eq!(fixed.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
 }
@@ -223,7 +239,7 @@ fn theme_mode_seeds_on_the_portals_first_word() {
 #[test]
 fn a_hook_never_inherits_a_variable_its_event_does_not_set() {
     let t0 = Instant::now();
-    let mut h = hooks(&["dnd", "bluetooth"], t0);
+    let mut h = hooks_with(&["dnd", "bluetooth"], t0);
     let Verdict::Run(f) = h.fire(Event::Dnd(true), t0 + QUIET) else { panic!() };
     assert!(f.unset.contains(&"ALPHEUS_DEVICE") && f.unset.contains(&"ALPHEUS_MODE"));
     assert!(!f.unset.contains(&"ALPHEUS_DND") && !f.unset.contains(&"ALPHEUS_EVENT"));
@@ -254,51 +270,55 @@ fn a_hook_never_inherits_a_variable_its_event_does_not_set() {
     }
 }
 
-fn s(a: &'static str, b: &str) -> (&'static str, String) {
+/// One variable of an event's environment, as `Event::env` lists it.
+fn variable(a: &'static str, b: &str) -> (&'static str, String) {
     (a, b.to_string())
 }
 
 #[test]
 fn the_environment_of_each_event() {
-    assert_eq!(Event::Started.env(), [s("ALPHEUS_EVENT", "started")]);
-    assert_eq!(Event::ThemeMode(Mode::Light).env(), [s("ALPHEUS_EVENT", "theme_mode"), s("ALPHEUS_MODE", "light")]);
-    assert_eq!(Event::Dnd(true).env(), [s("ALPHEUS_EVENT", "dnd"), s("ALPHEUS_DND", "on")]);
+    assert_eq!(Event::Started.env(), [variable("ALPHEUS_EVENT", "started")]);
+    assert_eq!(Event::ThemeMode(Mode::Light).env(), [variable("ALPHEUS_EVENT", "theme_mode"), variable("ALPHEUS_MODE", "light")]);
+    assert_eq!(Event::Dnd(true).env(), [variable("ALPHEUS_EVENT", "dnd"), variable("ALPHEUS_DND", "on")]);
     let b = Battery { percent: 42, charge: Charge::PendingCharge };
     assert_eq!(
         Event::BatteryCharge(b).env(),
-        [s("ALPHEUS_EVENT", "battery_charge"), s("ALPHEUS_CHARGE", "pending"), s("ALPHEUS_PERCENT", "42")]
+        [variable("ALPHEUS_EVENT", "battery_charge"), variable("ALPHEUS_CHARGE", "pending"), variable("ALPHEUS_PERCENT", "42")]
     );
     let b = Battery { percent: 7, charge: Charge::Unknown };
     assert_eq!(
         Event::BatteryLevel(b).env(),
-        [s("ALPHEUS_EVENT", "battery_level"), s("ALPHEUS_CHARGE", "unknown"), s("ALPHEUS_PERCENT", "7")]
+        [variable("ALPHEUS_EVENT", "battery_level"), variable("ALPHEUS_CHARGE", "unknown"), variable("ALPHEUS_PERCENT", "7")]
     );
     assert_eq!(
         Event::PowerProfile(Profile::PowerSaver).env(),
-        [s("ALPHEUS_EVENT", "power_profile"), s("ALPHEUS_POWER_PROFILE", "power-saver")]
+        [variable("ALPHEUS_EVENT", "power_profile"), variable("ALPHEUS_POWER_PROFILE", "power-saver")]
     );
-    assert_eq!(Event::Network(None).env(), [s("ALPHEUS_EVENT", "network"), s("ALPHEUS_NETWORK", "offline"), s("ALPHEUS_LINK", "none")]);
+    assert_eq!(
+        Event::Network(None).env(),
+        [variable("ALPHEUS_EVENT", "network"), variable("ALPHEUS_NETWORK", "offline"), variable("ALPHEUS_LINK", "none")]
+    );
     assert_eq!(
         Event::Network(Some(Link::Wifi)).env(),
-        [s("ALPHEUS_EVENT", "network"), s("ALPHEUS_NETWORK", "online"), s("ALPHEUS_LINK", "wifi")]
+        [variable("ALPHEUS_EVENT", "network"), variable("ALPHEUS_NETWORK", "online"), variable("ALPHEUS_LINK", "wifi")]
     );
-    assert_eq!(Event::Vpn(false).env(), [s("ALPHEUS_EVENT", "vpn"), s("ALPHEUS_VPN", "off")]);
-    assert_eq!(Event::Bluetooth(BtChange::Off).env(), [s("ALPHEUS_EVENT", "bluetooth"), s("ALPHEUS_BLUETOOTH", "off")]);
+    assert_eq!(Event::Vpn(false).env(), [variable("ALPHEUS_EVENT", "vpn"), variable("ALPHEUS_VPN", "off")]);
+    assert_eq!(Event::Bluetooth(BtChange::Off).env(), [variable("ALPHEUS_EVENT", "bluetooth"), variable("ALPHEUS_BLUETOOTH", "off")]);
     assert_eq!(
         Event::Bluetooth(BtChange::Connected("Test Headset".into())).env(),
-        [s("ALPHEUS_EVENT", "bluetooth"), s("ALPHEUS_BLUETOOTH", "connected"), s("ALPHEUS_DEVICE", "Test Headset")]
+        [variable("ALPHEUS_EVENT", "bluetooth"), variable("ALPHEUS_BLUETOOTH", "connected"), variable("ALPHEUS_DEVICE", "Test Headset")]
     );
     assert_eq!(
         Event::Privacy(CaptureKind::Screen, false).env(),
-        [s("ALPHEUS_EVENT", "privacy"), s("ALPHEUS_CAPTURE", "screen"), s("ALPHEUS_STATE", "off")]
+        [variable("ALPHEUS_EVENT", "privacy"), variable("ALPHEUS_CAPTURE", "screen"), variable("ALPHEUS_STATE", "off")]
     );
-    assert_eq!(Event::Displays("desk".into()).env(), [s("ALPHEUS_EVENT", "displays"), s("ALPHEUS_DISPLAY_PROFILE", "desk")]);
+    assert_eq!(Event::Displays("desk".into()).env(), [variable("ALPHEUS_EVENT", "displays"), variable("ALPHEUS_DISPLAY_PROFILE", "desk")]);
 }
 
 #[test]
 fn a_hostile_device_name_is_cleaned_and_cut() {
     let env = Event::Bluetooth(BtChange::Connected("\u{202e}Test\u{7}\u{0}Headset".into())).env();
-    assert_eq!(env.last().unwrap(), &s("ALPHEUS_DEVICE", "TestHeadset"));
+    assert_eq!(env.last().unwrap(), &variable("ALPHEUS_DEVICE", "TestHeadset"));
     let long = "é".repeat(300);
     let v = clean_value(&long);
     assert!(v.len() <= VALUE_MAX && !v.is_empty() && v.chars().all(|c| c == 'é'), "{}", v.len());
@@ -309,7 +329,7 @@ fn a_hostile_device_name_is_cleaned_and_cut() {
 #[test]
 fn edges_inside_the_quiet_window_only_move_the_seed() {
     let t0 = Instant::now();
-    let mut h = hooks(&["dnd"], t0);
+    let mut h = hooks_with(&["dnd"], t0);
     assert_eq!(h.fire(Event::Dnd(true), t0 + Duration::from_secs(1)), Verdict::Dropped);
     assert!(matches!(h.fire(Event::Dnd(true), t0 + QUIET), Verdict::Run(_)));
 }
@@ -317,7 +337,7 @@ fn edges_inside_the_quiet_window_only_move_the_seed() {
 #[test]
 fn the_quiet_window_is_marked_once_when_it_ends() {
     let t0 = Instant::now();
-    let mut h = hooks(&["dnd"], t0);
+    let mut h = hooks_with(&["dnd"], t0);
     assert!(!h.quiet_over(t0 + Duration::from_secs(1)));
     assert!(h.quiet_over(t0 + QUIET));
     assert!(!h.quiet_over(t0 + QUIET + Duration::from_secs(5)), "once");
@@ -326,22 +346,22 @@ fn the_quiet_window_is_marked_once_when_it_ends() {
 #[test]
 fn started_ignores_the_quiet_window() {
     let t0 = Instant::now();
-    let mut h = hooks(&["started"], t0);
+    let mut h = hooks_with(&["started"], t0);
     assert_eq!(
         h.fire(Event::Started, t0),
         Verdict::Run(Fire {
             id: HookId::Started,
             argv: vec!["hook-started".into()],
-            env: vec![s("ALPHEUS_EVENT", "started")],
-            unset: unset_for(&[s("ALPHEUS_EVENT", "started")])
+            env: vec![variable("ALPHEUS_EVENT", "started")],
+            unset: unset_for(&[variable("ALPHEUS_EVENT", "started")])
         })
     );
 }
 
 #[test]
-fn an_unset_hook_is_dropped() {
+fn an_event_with_no_hook_set_is_dropped() {
     let t0 = Instant::now();
-    let mut h = hooks(&["dnd"], t0);
+    let mut h = hooks_with(&["dnd"], t0);
     assert!(!h.wants(HookId::Vpn));
     assert_eq!(h.fire(Event::Vpn(true), t0 + QUIET), Verdict::Dropped);
     assert_eq!(h.set(), 1);
@@ -351,7 +371,7 @@ fn an_unset_hook_is_dropped() {
 fn the_bucket_gives_five_then_one_every_three_seconds() {
     let t0 = Instant::now();
     let late = t0 + QUIET;
-    let mut h = hooks(&["dnd", "vpn"], t0);
+    let mut h = hooks_with(&["dnd", "vpn"], t0);
     let dnd = || Event::Dnd(true);
     for _ in 0..BURST {
         assert!(matches!(h.fire(dnd(), late), Verdict::Run(_)));
@@ -372,10 +392,10 @@ fn the_bucket_gives_five_then_one_every_three_seconds() {
 }
 
 #[test]
-fn throttled_is_said_once_per_episode() {
+fn a_throttled_event_is_said_once_per_episode() {
     let t0 = Instant::now();
     let late = t0 + QUIET;
-    let mut h = hooks(&["dnd"], t0);
+    let mut h = hooks_with(&["dnd"], t0);
     for _ in 0..BURST {
         h.fire(Event::Dnd(true), late);
     }
@@ -388,9 +408,9 @@ fn throttled_is_said_once_per_episode() {
 /// Diagnostics spec § 6: `failed_units` fires when the total of the two counts changes; the first
 /// total is a seed, a source that is down (None) is not a state.
 #[test]
-fn failed_units_edges_on_the_total() {
+fn failed_units_fires_when_the_total_changes() {
     let ev = |total, system, user| Event::FailedUnits { total, system, user };
-    let mut h = hooks(&["failed_units"], Instant::now());
+    let mut h = hooks_with(&["failed_units"], Instant::now());
     assert!(h.on_msg(&Msg::Units(Some(0))).is_empty(), "the first total seeds");
     assert!(h.on_msg(&Msg::Units(Some(0))).is_empty());
     assert_eq!(h.on_msg(&Msg::Units(Some(2))), [ev(2, Some(2), None)]);
@@ -402,23 +422,28 @@ fn failed_units_edges_on_the_total() {
     assert!(h.on_msg(&Msg::UserUnits(None)).is_empty(), "nor the user manager's");
     assert_eq!(h.on_msg(&Msg::UserUnits(Some(0))), [ev(2, Some(2), Some(0))], "the last known system count stays");
     assert_eq!(h.on_msg(&Msg::Units(Some(0))), [ev(0, Some(0), Some(0))]);
-    let mut none = hooks(&["dnd"], Instant::now());
+    let mut none = hooks_with(&["dnd"], Instant::now());
     assert!(none.on_msg(&Msg::Units(Some(1))).is_empty() && none.on_msg(&Msg::Units(Some(2))).is_empty(), "not wanted: nothing");
 }
 
 #[test]
-fn failed_units_variables() {
+fn failed_units_gives_each_managers_count_once_known() {
     assert_eq!(
         Event::FailedUnits { total: 3, system: Some(2), user: Some(1) }.env(),
-        [s("ALPHEUS_EVENT", "failed_units"), s("ALPHEUS_FAILED", "3"), s("ALPHEUS_FAILED_SYSTEM", "2"), s("ALPHEUS_FAILED_USER", "1")]
+        [
+            variable("ALPHEUS_EVENT", "failed_units"),
+            variable("ALPHEUS_FAILED", "3"),
+            variable("ALPHEUS_FAILED_SYSTEM", "2"),
+            variable("ALPHEUS_FAILED_USER", "1")
+        ]
     );
     let env = Event::FailedUnits { total: 2, system: Some(2), user: None }.env();
-    assert_eq!(env, [s("ALPHEUS_EVENT", "failed_units"), s("ALPHEUS_FAILED", "2"), s("ALPHEUS_FAILED_SYSTEM", "2")]);
+    assert_eq!(env, [variable("ALPHEUS_EVENT", "failed_units"), variable("ALPHEUS_FAILED", "2"), variable("ALPHEUS_FAILED_SYSTEM", "2")]);
     assert!(unset_for(&env).contains(&"ALPHEUS_FAILED_USER"), "unknown: removed, never inherited");
 }
 
 #[test]
-fn reads_follows_the_modules() {
+fn an_event_is_read_only_when_its_modules_are_in_modules() {
     use crate::config::ModuleId as M;
     assert!(HookId::Started.reads(&[], false) && HookId::ThemeMode.reads(&[], false));
     assert!(!HookId::Dnd.reads(&[M::Clock], false) && HookId::Dnd.reads(&[M::Notifications], false));
@@ -434,14 +459,14 @@ fn reads_follows_the_modules() {
 }
 
 #[test]
-fn the_shield_event_sets_its_variable() {
-    assert_eq!(Event::Shield(true).env(), [s("ALPHEUS_EVENT", "shield"), s("ALPHEUS_SHIELD", "on")]);
-    assert_eq!(Event::Shield(false).env(), [s("ALPHEUS_EVENT", "shield"), s("ALPHEUS_SHIELD", "off")]);
+fn the_shield_event_sets_its_variable_and_fires_like_the_others() {
+    assert_eq!(Event::Shield(true).env(), [variable("ALPHEUS_EVENT", "shield"), variable("ALPHEUS_SHIELD", "on")]);
+    assert_eq!(Event::Shield(false).env(), [variable("ALPHEUS_EVENT", "shield"), variable("ALPHEUS_SHIELD", "off")]);
     assert_eq!(Event::Shield(true).id(), HookId::Shield);
     assert_eq!(HookId::Shield.key(), "shield");
     // Fired like the others: past the quiet window, under the token bucket.
     let t0 = Instant::now();
-    let mut h = hooks(&["shield"], t0);
+    let mut h = hooks_with(&["shield"], t0);
     assert_eq!(h.fire(Event::Shield(true), t0), Verdict::Dropped, "inside the quiet window");
     let Verdict::Run(f) = h.fire(Event::Shield(true), t0 + QUIET) else { panic!("runs") };
     assert!(f.unset.contains(&"ALPHEUS_DND") && !f.unset.contains(&"ALPHEUS_SHIELD"));
@@ -461,26 +486,26 @@ fn the_shield_hook_needs_shield_configured() {
 }
 
 #[test]
-fn a_family_without_its_key_gives_nothing() {
+fn a_source_whose_key_is_not_set_fires_nothing() {
     let t0 = Instant::now();
     // Only `started` is set: every other family is unset.
-    let mut h = hooks(&["started"], t0);
+    let mut h = hooks_with(&["started"], t0);
     for _ in 0..2 {
-        assert!(h.on_msg(&bt(&["A"])).is_empty());
-        assert!(h.on_msg(&bt(&[])).is_empty());
-        assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
-        assert!(h.on_msg(&power(40, Charge::Charging)).is_empty());
-        assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
-        assert!(h.on_msg(&profile(Profile::Performance)).is_empty());
+        assert!(h.on_msg(&bluetooth_message(&["A"])).is_empty());
+        assert!(h.on_msg(&bluetooth_message(&[])).is_empty());
+        assert!(h.on_msg(&battery_message(50, Charge::Discharging)).is_empty());
+        assert!(h.on_msg(&battery_message(40, Charge::Charging)).is_empty());
+        assert!(h.on_msg(&profile_message(Profile::Balanced)).is_empty());
+        assert!(h.on_msg(&profile_message(Profile::Performance)).is_empty());
         assert!(h.on_mode(Mode::Dark, true).is_none());
         assert!(h.on_mode(Mode::Light, true).is_none());
-        assert!(h.on_capture(&on(&[CaptureKind::Camera])).is_empty());
-        assert!(h.on_capture(&on(&[])).is_empty());
+        assert!(h.on_capture(&captures_on(&[CaptureKind::Camera])).is_empty());
+        assert!(h.on_capture(&captures_on(&[])).is_empty());
     }
 }
 
 #[test]
-fn the_index_is_the_position_in_all() {
+fn an_events_index_is_its_position_in_all() {
     for (i, id) in HookId::ALL.iter().enumerate() {
         assert_eq!(id.index(), i);
     }

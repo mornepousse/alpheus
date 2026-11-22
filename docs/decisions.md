@@ -193,3 +193,50 @@ A unit that fails at every boot keeps `󰀦 1` on the bar until it is fixed or r
 does (see "The failed-units count is asked for one property, never the whole interface").
 
 Date: 2026-11-22 · Source: diagnostics spec "Decisions written down" 9
+
+### A hook fires on a change, never for the state at start
+
+Each event's first observed value is a seed and never fires, and for the first 3 seconds after the
+daemon starts (`QUIET`) any change only moves the seed, so that the state at start never fires a
+hook. The window covers the portal's first answer, the first PipeWire graph, a camera held across a
+restart and a profile applied at start. `started` is the one event that ignores the window. The window is a timestamp
+compared when an edge arrives, never a timer.
+
+Date: 2026-11-15 · Source: hooks spec § 2 ("Edges only") and "Constraints"; hooks plan 1, decision 5
+
+### A hook's data reaches it through the environment, never the arguments
+
+The event's data is given as `ALPHEUS_*` environment variables. No placeholder is expanded in the
+command, and `~` and `$VAR` are not expanded either (a hook that wants a shell is `["sh", "-c",
+"…"]`). Placeholders such as `{device}` were rejected as an injection surface: a device or profile
+name comes from outside and must never become an argument or a shell word. The names handed over
+are cleaned and cut to 255 bytes, and no hook log line ever holds a command, a variable or a name.
+
+Date: 2026-11-15 · Source: hooks spec §§ 3 and 5 and "Approaches"; hooks plan 1, decisions 2, 3 and 4
+
+### Each hook has a token bucket
+
+Per event, 5 runs may happen at once, then one more every 3 seconds. A run without a token is
+dropped, not queued, and the first drop of an episode logs one `throttled` line. A source that
+flaps (a dock plugging in a loop, a radio bouncing) therefore costs at most that. The bucket is a
+timestamp compared when the event arrives, not a timer.
+
+Date: 2026-11-15 · Source: hooks spec § 4; hooks plan 1, decision 8
+
+### A hook never adds a source
+
+Events come from what the configured modules already read. An event whose module is not in
+`modules` never fires, and the daemon says so once at start (`hooks: <event> never fires (needs
+<modules>)`). A hook on `bluetooth` with no Bluetooth module would otherwise make the daemon read
+BlueZ: a cost hidden behind a hook.
+
+Date: 2026-11-15 · Source: hooks spec § 2 ("A hook never adds a source") and "Approaches"; hooks plan 1, decision 9
+
+### A hook runs in its own systemd scope
+
+A hook is started like the launcher starts an app: in `systemd-run --user --scope --quiet
+--collect --` when a user manager runs, and detached on its own otherwise, or when `systemd-run`
+is missing. The hook therefore never dies with the bar, and a restart of the bar never kills it.
+The choice is made once at start. alpheus never waits for a hook, reads its output or kills it.
+
+Date: 2026-11-15 · Source: hooks spec § 3; hooks plan 1, decision 11
