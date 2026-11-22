@@ -5,7 +5,7 @@
 use crate::config::ShieldConfig;
 use crate::quick::FAILED_SHOWN;
 use crate::shield_usb::{Parsed, UsbDevice};
-use alpheus_commun::launcher_ipc::{Reply, ShieldVerb};
+use alpheus_commun::launcher_ipc::{MAX_SHIELD_BODY, Reply, ShieldVerb};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -139,8 +139,16 @@ pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>
         Some(Ok(p)) if p.devices.is_empty() => out.push_str("\nBlocked USB devices: none"),
         Some(Ok(p)) => {
             out.push_str("\nBlocked USB devices:");
-            for d in &p.devices {
-                out.push_str(&format!("\n  {}", crate::shield_usb::picker_line(d)));
+            // The reply has a cap (`MAX_SHIELD_BODY`, the client refuses more): lines that would pass
+            // it, keeping room for the cut's own line, are left out and counted.
+            const MORE_ROOM: usize = 32;
+            for (i, d) in p.devices.iter().enumerate() {
+                let line = format!("\n  {}", crate::shield_usb::picker_line(d));
+                if out.len() + line.len() + MORE_ROOM > MAX_SHIELD_BODY {
+                    out.push_str(&format!("\n  \u{2026} {} more", p.devices.len() - i));
+                    break;
+                }
+                out.push_str(&line);
             }
         }
     }
@@ -174,8 +182,16 @@ pub enum VerbPlan {
 
 /// The picker's prompt (spec § 9).
 pub const PICKER_PROMPT: &str = "Allow a blocked USB device";
+/// The words of a refusal (`shield: not started (<why>)` in the log, the client's error line): one
+/// wording per condition, whoever asked (a verb, the panel, the picker).
 pub const ERR_BUSY: &str = "a shield command is already running";
-pub const ERR_UNKNOWN: &str = "the shield state cannot be read";
+pub const ERR_UNKNOWN: &str = "the shield state is unknown";
+pub const ERR_SAME: &str = "already in that state";
+pub const ERR_NO_ALLOW: &str = "allow is not configured";
+pub const ERR_OFF: &str = "the shield is off";
+pub const ERR_NOT_CONFIGURED: &str = "shield is not configured in bar.toml";
+/// Every word a refusal may carry (the log's closed list).
+pub const ERR_ALL: [&str; 6] = [ERR_BUSY, ERR_UNKNOWN, ERR_SAME, ERR_NO_ALLOW, ERR_OFF, ERR_NOT_CONFIGURED];
 
 pub fn plan_verb(verb: ShieldVerb, c: &VerbCtx) -> VerbPlan {
     let error = |t: &str| VerbPlan::Answer(Reply::Error(t.into()));
@@ -200,8 +216,8 @@ pub fn plan_verb(verb: ShieldVerb, c: &VerbCtx) -> VerbPlan {
         },
         ShieldVerb::Allow => match c.state {
             None => error(ERR_UNKNOWN),
-            Some(false) => error("the shield is off"),
-            Some(true) if !(c.can_allow && c.can_list) => error("no allow command in [shield]"),
+            Some(false) => error(ERR_OFF),
+            Some(true) if !(c.can_allow && c.can_list) => error(ERR_NO_ALLOW),
             Some(true) => VerbPlan::AllowRead,
         },
     }
@@ -209,15 +225,22 @@ pub fn plan_verb(verb: ShieldVerb, c: &VerbCtx) -> VerbPlan {
 
 /// The picker's lines and, in the same order, the device ids they stand for (the ids never reach
 /// the box: a chosen position maps back to one).
-pub fn picker(devices: &[UsbDevice]) -> (Vec<String>, Vec<u32>) {
-    (devices.iter().map(crate::shield_usb::picker_line).collect(), devices.iter().map(|d| d.id).collect())
+pub fn picker(devices: &[UsbDevice]) -> (Vec<String>, Vec<(u32, String)>) {
+    (devices.iter().map(crate::shield_usb::picker_line).collect(), devices.iter().map(|d| (d.id, d.name.clone())).collect())
 }
 
-/// The id a picker's answer stands for: a chosen position only. Typed text (`Index(None)`), a
+/// The name the notice gives a device the panel allows (the listing it was picked from); `?` when
+/// that listing no longer has it.
+pub fn device_name(listing: Option<&Result<Parsed, Reason>>, id: u32) -> String {
+    let found = listing.and_then(|l| l.as_ref().ok()).and_then(|p| p.devices.iter().find(|d| d.id == id));
+    found.map_or_else(|| "?".to_string(), |d| d.name.clone())
+}
+
+/// The id and name a picker's answer stands for: a chosen position only. Typed text (`Index(None)`), a
 /// line's text, Escape or an out-of-range position run nothing.
-pub fn picked(ids: &[u32], reply: Reply) -> Option<u32> {
+pub fn picked(ids: &[(u32, String)], reply: Reply) -> Option<(u32, String)> {
     match reply {
-        Reply::Index(Some(i)) => ids.get(i).copied(),
+        Reply::Index(Some(i)) => ids.get(i).cloned(),
         _ => None,
     }
 }

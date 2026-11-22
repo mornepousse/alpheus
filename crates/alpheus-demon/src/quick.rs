@@ -1402,10 +1402,11 @@ impl Quick {
         self.shield.open_detail(&view)
     }
 
-    /// A detail other than the Shield's is open (the Bluetooth one carries orders for the acting
-    /// connection, so the wiring closes the whole panel before opening the Shield's: one at a time).
+    /// A detail the Shield's cannot replace in place is open: the Bluetooth one carries orders for the
+    /// acting connection and the Wi-Fi one a password field, so the wiring closes the whole panel through
+    /// its proper path before opening the Shield's (the VPN and do-not-disturb details close in place).
     pub fn other_detail_open(&self) -> bool {
-        self.bt.open || self.wifi.open || self.vpn.open || self.dnd.open
+        self.bt.open || self.wifi.open
     }
 
     /// What the Bluetooth reading covers while the panel is open: the detail's lists, else the row.

@@ -92,13 +92,13 @@ pub enum Action {
 }
 
 /// Who a script menu's answer belongs to: a client's `--dmenu` (the chosen line goes back to it), or the
-/// daemon's own Shield picker (the chosen position runs `allow` for that device's id; nothing else
-/// ever does: the ids never reach the box).
+/// daemon's own Shield picker (the chosen position runs `allow` for that device's id, announced by its
+/// name; nothing else ever does: the ids never reach the box).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ScriptOwner {
     #[default]
     Client,
-    Shield(Vec<u32>),
+    Shield(Vec<(u32, String)>),
 }
 
 /// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
@@ -600,7 +600,7 @@ impl App {
         &mut self,
         qh: &QueueHandle<App>,
         lines: Vec<String>,
-        ids: Vec<u32>,
+        ids: Vec<(u32, String)>,
         pending: crate::launcher::socket::Pending,
     ) {
         let qh = qh.clone();

@@ -2077,12 +2077,13 @@ fn one_detail_at_a_time() {
     let mut q = quick(&w, Focus::Shield);
     assert!(!q.other_detail_open());
     q.vpn.open = true;
-    assert!(q.other_detail_open());
+    assert!(!q.other_detail_open(), "the VPN detail closes in place: no panel re-open");
     q.open_shield(&l);
     assert!(q.shield.open && !q.vpn.open, "the VPN detail closed in place");
     q.dnd.open = true;
     q.open_shield(&l);
     assert!(!q.dnd.open, "and the do-not-disturb one");
+    assert!(!q.other_detail_open());
     // Orders-carrying details (Bluetooth) and Wi-Fi are the wiring's: it sees them and re-opens the panel.
     q.bt.open = true;
     assert!(q.other_detail_open());

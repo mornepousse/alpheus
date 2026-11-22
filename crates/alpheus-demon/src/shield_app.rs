@@ -9,7 +9,8 @@ use crate::log::write as log;
 use crate::popup::PopupBody;
 use crate::quick_shield::ShieldAsk;
 use crate::shield::{
-    Edge, Finish, Job, NoticeKind, Reason, Shield, ShieldMail, VerbCtx, VerbPlan, picked, picker, plan_verb, read_flag, status_text,
+    ERR_BUSY, ERR_NO_ALLOW, ERR_NOT_CONFIGURED, ERR_OFF, ERR_SAME, ERR_UNKNOWN, Edge, Finish, Job, NoticeKind, Reason, Shield, ShieldMail,
+    VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
 };
 use crate::shield_run::spawn_job;
 use crate::shield_usb::{Parsed, allow_argv};
@@ -18,9 +19,6 @@ use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{Reply, Request};
 use std::path::Path;
 use std::time::Instant;
-
-/// Every verb's answer while `[shield]` is not set (spec § 2: no Shield anywhere).
-pub(crate) const NOT_CONFIGURED: &str = "shield is not configured in bar.toml";
 
 /// Who asked for a read of the blocked devices; they join the one read in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,13 +139,13 @@ impl App {
 
     /// Starts the switch to `target` (the other state than the one known): Err says why not.
     pub(crate) fn shield_switch(&mut self, target: bool) -> Result<(), &'static str> {
-        let sh = self.shield.as_mut().ok_or("shield is not configured in bar.toml")?;
+        let sh = self.shield.as_mut().ok_or(ERR_NOT_CONFIGURED)?;
         match sh.model.state() {
-            None => return Err("the shield state is unknown"),
-            Some(on) if on == target => return Err("already in that state"),
+            None => return Err(ERR_UNKNOWN),
+            Some(on) if on == target => return Err(ERR_SAME),
             Some(_) => {}
         }
-        let (target, generation) = sh.model.begin_switch(Instant::now()).ok_or("a shield command is already running")?;
+        let (target, generation) = sh.model.begin_switch(Instant::now()).ok_or(ERR_BUSY)?;
         let argv = if target { sh.config.on.clone() } else { sh.config.off.clone() };
         log(if target { "shield: on" } else { "shield: off" });
         self.shield_spawn(Job::Switch(target), generation, argv);
@@ -156,13 +154,11 @@ impl App {
         Ok(())
     }
 
-    /// Allows the blocked device `id`: Err says why not.
-    pub(crate) fn shield_allow(&mut self, id: u32) -> Result<(), &'static str> {
-        let sh = self.shield.as_mut().ok_or("shield is not configured in bar.toml")?;
-        let argv = allow_argv(&sh.config.allow, id).ok_or("allow is not configured")?;
-        let name = sh.listing.as_ref().and_then(|l| l.as_ref().ok()).and_then(|p| p.devices.iter().find(|d| d.id == id));
-        let name = name.map_or_else(|| "?".to_string(), |d| d.name.clone());
-        let generation = sh.model.begin_allow(id, name, Instant::now()).ok_or("a shield command is already running")?;
+    /// Allows the blocked device `id`, which the notice names `name`: Err says why not.
+    pub(crate) fn shield_allow(&mut self, id: u32, name: String) -> Result<(), &'static str> {
+        let sh = self.shield.as_mut().ok_or(ERR_NOT_CONFIGURED)?;
+        let argv = allow_argv(&sh.config.allow, id).ok_or(ERR_NO_ALLOW)?;
+        let generation = sh.model.begin_allow(id, name, Instant::now()).ok_or(ERR_BUSY)?;
         log("shield: allow");
         self.shield_spawn(Job::Allow(id), generation, argv);
         self.shield_publish();
@@ -297,7 +293,7 @@ impl App {
             return;
         };
         if self.shield.is_none() {
-            reply_guarded(conn, &Reply::Error(NOT_CONFIGURED.into()));
+            reply_guarded(conn, &Reply::Error(ERR_NOT_CONFIGURED.into()));
             return;
         }
         // Degraded (no watch): the flag is read again now, so the verb acts on the truth.
@@ -312,7 +308,12 @@ impl App {
             can_allow: !sh.config.allow.is_empty(),
         };
         match plan_verb(*verb, &ctx) {
-            VerbPlan::Answer(r) => reply_guarded(conn, &r),
+            VerbPlan::Answer(r) => {
+                if let Reply::Error(why) = &r {
+                    log(&format!("shield: not started ({why})"));
+                }
+                reply_guarded(conn, &r);
+            }
             VerbPlan::Switch(target) => {
                 let r = match self.shield_switch(target) {
                     Ok(()) => Reply::Done,
@@ -354,7 +355,11 @@ impl App {
                     }
                     (Some(true), Err(_)) => p.reply(&Reply::Error("cannot list the blocked USB devices".into())),
                     // The mode went off (or unreadable) while the list was read.
-                    (_, _) => p.reply(&Reply::Error("the shield is off".into())),
+                    (_, _) => {
+                        let why = ERR_OFF;
+                        log(&format!("shield: not started ({why})"));
+                        p.reply(&Reply::Error(why.into()));
+                    }
                 },
             }
         }
@@ -362,9 +367,9 @@ impl App {
 
     /// The picker's answer: a chosen position runs `allow` for that device (the client hears Done, or
     /// why not); anything else (typed text, Escape) runs nothing and cancels.
-    pub(crate) fn shield_picked(&mut self, ids: &[u32], reply: Reply) -> Reply {
-        let Some(id) = picked(ids, reply) else { return Reply::Cancelled };
-        match self.shield_allow(id) {
+    pub(crate) fn shield_picked(&mut self, ids: &[(u32, String)], reply: Reply) -> Reply {
+        let Some((id, name)) = picked(ids, reply) else { return Reply::Cancelled };
+        match self.shield_allow(id, name) {
             Ok(()) => Reply::Done,
             Err(why) => {
                 log(&format!("shield: not started ({why})"));
@@ -378,9 +383,12 @@ impl App {
         let refused = match ask {
             ShieldAsk::Toggle => match self.bar.shield.and_then(|v| v.state) {
                 Some(on) => self.shield_switch(!on),
-                None => Err("the shield state is unknown"),
+                None => Err(ERR_UNKNOWN),
             },
-            ShieldAsk::Allow(id) => self.shield_allow(id),
+            ShieldAsk::Allow(id) => {
+                let name = device_name(self.shield.as_ref().and_then(|sh| sh.listing.as_ref()), id);
+                self.shield_allow(id, name)
+            }
         };
         if let Err(why) = refused {
             log(&format!("shield: not started ({why})"));

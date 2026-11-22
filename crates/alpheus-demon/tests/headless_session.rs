@@ -7271,8 +7271,21 @@ fn shield_the_detail_lists_and_allows() {
     assert!(w.d.wait_for("shield: allow", DELAY), "{:?}", w.d.log());
 }
 
+/// A hash of the whole screen (two screens are told apart, never read).
+fn fingerprint(s: &Ppm) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for y in 0..s.height {
+        for x in 0..s.width {
+            let p = s.at(x, y).map_or(0, |p| u64::from(p[0]) << 16 | u64::from(p[1]) << 8 | u64::from(p[2]));
+            h = (h ^ p).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
 /// A listing that ends after the panel closed is dropped: nothing breaks, nothing is kept, and the
-/// next open reads the devices afresh.
+/// next open reads the devices afresh and shows `Reading…` until it ends (a late listing adopted would
+/// draw the devices at once: the screen right after the reopen must differ from the one after the read).
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
 fn a_listing_after_the_panel_closed_is_dropped() {
@@ -7280,6 +7293,9 @@ fn a_listing_after_the_panel_closed_is_dropped() {
     w.open_panel();
     keys(&w.sway, &["Return"]);
     assert!(wait_until(|| w.record() == ["list"]), "{:?}", w.record());
+    thread::sleep(Duration::from_millis(200)); // `Reading…` drawn
+    let first_reading = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    thread::sleep(PAST_DEBOUNCE); // past the open's own debounce: the verb really closes
     assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
     assert!(w.d.wait_for("popup closed (verb)", DELAY), "{:?}", w.d.log());
     thread::sleep(Duration::from_millis(1800)); // the read ends and is mailed to a closed panel
@@ -7289,6 +7305,12 @@ fn a_listing_after_the_panel_closed_is_dropped() {
     w.open_panel();
     keys(&w.sway, &["Return"]);
     assert!(wait_until(|| w.record() == ["list", "list"]), "a fresh read, the late one was not kept: {:?}", w.record());
+    thread::sleep(Duration::from_millis(200));
+    let reading = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    assert_eq!(reading, first_reading, "the reopen shows `Reading…` again, as the first open did: the late listing was not adopted");
+    thread::sleep(Duration::from_millis(1800)); // the second read ends and is drawn
+    let listed = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    assert_ne!(reading, listed, "and the devices once read");
 }
 
 /// `--shield status` prints the state and the blocked devices; `--shield allow` opens the picker in the
@@ -7357,6 +7379,18 @@ fn shield_unconfigured_is_silent() {
     assert!(w.d.wait_for("quick shown", DELAY), "{:?}", w.d.log());
     assert!(w.d.log().iter().all(|l| !l.contains("shield:")), "{:?}", w.d.log());
     assert!(w.d.log().iter().all(|l| !l.contains("rows: volume shield")), "no row: {:?}", w.d.log());
+    assert!(w.record().is_empty());
+}
+
+/// A verb refused before it ran leaves one closed-list line, with the same words the client reads.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_refused_verb_is_logged() {
+    let w = shield_daemon("shield-refused", &ShieldSetup::default());
+    let (code, out) = shield_verb(&w.sway, "allow");
+    assert_eq!(code, EXIT_ERROR, "{out}");
+    assert!(out.contains("the shield is off"), "{out}");
+    assert!(w.d.wait_for("shield: not started (the shield is off)", DELAY), "{:?}", w.d.log());
     assert!(w.record().is_empty());
 }
 

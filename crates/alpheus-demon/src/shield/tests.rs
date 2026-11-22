@@ -409,24 +409,78 @@ fn status_reads_the_list_only_while_on_and_listable() {
 #[test]
 fn allow_needs_the_mode_on_and_both_commands() {
     assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(true))), VerbPlan::AllowRead);
-    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(false))), error("the shield is off"));
+    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(false))), error(ERR_OFF));
     let noallow = VerbCtx { can_allow: false, ..ctx(Some(true)) };
-    assert_eq!(plan_verb(ShieldVerb::Allow, &noallow), error("no allow command in [shield]"));
+    assert_eq!(plan_verb(ShieldVerb::Allow, &noallow), error(ERR_NO_ALLOW));
     let nolist = VerbCtx { can_list: false, ..ctx(Some(true)) };
-    assert_eq!(plan_verb(ShieldVerb::Allow, &nolist), error("no allow command in [shield]"));
+    assert_eq!(plan_verb(ShieldVerb::Allow, &nolist), error(ERR_NO_ALLOW));
 }
 
 #[test]
-fn the_picker_lines_and_ids_go_together() {
+fn the_picker_lines_ids_and_names_go_together() {
     use crate::shield_usb::UsbDevice;
     let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
     let (lines, ids) = picker(&[d(7, "Test Keyboard"), d(12, "Test Stick")]);
     assert_eq!(lines, ["Test Keyboard (1234:5678)", "Test Stick (1234:5678)"]);
-    assert_eq!(ids, [7, 12]);
-    // What the chosen index maps to: only a real position, never typed text.
-    assert_eq!(picked(&ids, Reply::Index(Some(1))), Some(12));
+    assert_eq!(ids, [(7, "Test Keyboard".to_string()), (12, "Test Stick".to_string())]);
+    // What the chosen index maps to: only a real position, never typed text. The name goes with the
+    // id (the notice names the device; the listing is gone by then, so `?` was announced).
+    assert_eq!(picked(&ids, Reply::Index(Some(1))), Some((12, "Test Stick".to_string())));
     assert_eq!(picked(&ids, Reply::Index(Some(2))), None);
     assert_eq!(picked(&ids, Reply::Index(None)), None, "typed text runs nothing");
     assert_eq!(picked(&ids, Reply::Chosen("Test Stick (1234:5678)".into())), None);
     assert_eq!(picked(&ids, Reply::Cancelled), None);
+}
+
+#[test]
+fn the_panels_allow_names_the_device_from_its_listing() {
+    use crate::shield_usb::UsbDevice;
+    let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
+    let ok = Ok(Parsed { devices: vec![d(7, "Test Keyboard"), d(12, "Test Stick")], more: false });
+    assert_eq!(device_name(Some(&ok), 12), "Test Stick");
+    assert_eq!(device_name(Some(&ok), 99), "?", "an id the listing lacks");
+    assert_eq!(device_name(Some(&Err(Reason::TimedOut)), 12), "?");
+    assert_eq!(device_name(None, 12), "?");
+}
+
+#[test]
+fn the_status_text_never_passes_the_reply_cap() {
+    use crate::shield_usb::UsbDevice;
+    use alpheus_commun::launcher_ipc::MAX_SHIELD_BODY;
+    // 64 devices of 64 four-byte characters: 256 bytes a name, past 16 KiB in all.
+    let name = "\u{1F600}".repeat(64);
+    let devices: Vec<UsbDevice> = (0..64).map(|id| UsbDevice { id, vid_pid: "1234:5678".into(), name: name.clone() }).collect();
+    let p = Parsed { devices, more: false };
+    let text = status_text(Some(true), Some(Ok(&p)));
+    assert!(text.len() <= MAX_SHIELD_BODY, "{} bytes", text.len());
+    let last = text.lines().last().unwrap();
+    assert!(last.starts_with("  \u{2026} ") && last.ends_with(" more"), "the cut is said: {last}");
+    let shown = text.lines().filter(|l| l.contains(&name)).count();
+    assert!(shown > 0 && last.contains(&(64 - shown).to_string()), "{shown} shown, {last}");
+    // A short list is never cut.
+    let few = Parsed { devices: p.devices[..3].to_vec(), more: false };
+    let text = status_text(Some(true), Some(Ok(&few)));
+    assert_eq!(text.lines().count(), 5);
+    assert!(!text.contains(" more"));
+}
+
+/// Every refusal a verb can get carries a word of the log's closed list (one wording per condition).
+#[test]
+fn every_refusal_is_a_word_of_the_closed_list() {
+    let states = [None, Some(false), Some(true)];
+    for verb in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Status, ShieldVerb::Allow] {
+        for state in states {
+            for (action_busy, can_list, can_allow) in [(false, true, true), (true, true, true), (false, false, true), (false, true, false)]
+            {
+                let c = VerbCtx { state, action_busy, can_list, can_allow };
+                if let VerbPlan::Answer(Reply::Error(e)) = plan_verb(verb, &c) {
+                    assert!(ERR_ALL.contains(&e.as_str()), "{verb:?} {state:?}: {e}");
+                }
+            }
+        }
+    }
+    let mut sorted = ERR_ALL.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ERR_ALL.len(), "one wording per condition");
 }
