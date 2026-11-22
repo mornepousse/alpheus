@@ -449,7 +449,7 @@ fn tool_rows_join_a_typed_all_query_only() {
 fn the_slash_prefix_jumps_into_tools_and_backspace_returns() {
     let mut l = apps(CFG);
     let o = l.key(Key::Char('/'));
-    let Outcome::ReadStates(Job::States(jobs)) = o else { panic!("{o:?}") };
+    let Outcome::ReadStates(Job::States(jobs, _)) = o else { panic!("{o:?}") };
     assert_eq!(jobs.len(), 1);
     assert_eq!((jobs[0].position, jobs[0].argv.clone()), (5, vec!["s".to_string()]), "Home thing, the entry that has a state");
     assert_eq!((l.mode, l.query.as_str()), (Mode::Tools, ""));

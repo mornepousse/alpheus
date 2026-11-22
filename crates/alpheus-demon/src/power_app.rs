@@ -33,6 +33,12 @@ pub(crate) fn power_refusal(config: &crate::config::QuickConfig) -> Option<&'sta
     crate::session::configured(config).is_empty().then_some("no session command is set ([quick] lock, logout, reboot, poweroff)")
 }
 
+/// What `--power` answers when it cannot open the menu now: no command, or no bar (`has_anchor`
+/// false). Decided before anything is closed.
+pub(crate) fn power_open_refusal(config: &crate::config::QuickConfig, has_anchor: bool) -> Option<&'static str> {
+    power_refusal(config).or((!has_anchor).then_some("no bar to open the power menu under"))
+}
+
 /// Spawns `s`'s command `argv` (`[quick]`'s, as given), never waiting (power spec § 3). The log
 /// line: "power: <word>", or "power: <word> could not start (<error>)"; never the command itself,
 /// whose program or arguments may name the user (a path in a home directory).
@@ -84,7 +90,8 @@ impl App {
         if !matches!(request, Request::Power) {
             return Reply::Done;
         }
-        if let Some(refusal) = power_refusal(&self.bar.config.quick) {
+        let anchor = self.quick_anchor();
+        if let Some(refusal) = power_open_refusal(&self.bar.config.quick, anchor.is_some() || self.power_shown()) {
             return Reply::Error(refusal.into());
         }
         if self.power_shown() {
@@ -95,12 +102,12 @@ impl App {
             }
             return Reply::Done;
         }
-        if self.launcher.is_some() {
-            self.launcher_guarded("power", |app| app.launcher_close(CloseReason::Replaced));
-        }
-        match self.quick_anchor() {
-            Some(anchor) => self.power_toggle(qh, anchor, Input::Keys),
-            None => log("power: no bar to open under"),
+        // Everything that can refuse is known: only now is an open launcher closed.
+        if let Some(anchor) = anchor {
+            if self.launcher.is_some() {
+                self.launcher_guarded("power", |app| app.launcher_close(CloseReason::Replaced));
+            }
+            self.power_toggle(qh, anchor, Input::Keys);
         }
         Reply::Done
     }
@@ -189,6 +196,18 @@ mod tests {
     use crate::config::QuickConfig;
     use alpheus_commun::exec::ExecError;
     use alpheus_commun::exec::fake::FakeExecutor;
+
+    /// The verb cannot open the menu with no bar to anchor it under: refused, and (the host's
+    /// glue) the open launcher is left alone.
+    #[test]
+    fn the_verb_is_refused_without_a_bar_to_open_under() {
+        let c = QuickConfig::default();
+        assert_eq!(power_open_refusal(&c, true), None);
+        assert_eq!(power_open_refusal(&c, false), Some("no bar to open the power menu under"));
+        // The session commands' refusal comes first.
+        let none = QuickConfig { lock: Vec::new(), logout: Vec::new(), reboot: Vec::new(), poweroff: Vec::new(), ..QuickConfig::default() };
+        assert_eq!(power_open_refusal(&none, false), power_refusal(&none));
+    }
 
     /// `--power` is refused only with all four `[quick]` commands empty; one is enough to open.
     #[test]

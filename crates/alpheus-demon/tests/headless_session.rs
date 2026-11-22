@@ -5173,6 +5173,23 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
+/// Two requests on two connections, both written before either reply is read: the daemon gets the
+/// second right behind the first, with no timing between them.
+fn launcher_pair(sway: &Sway, a: &Request, b: &Request) -> (Reply, Reply) {
+    let path = socket_path(&sway.runtime);
+    let (mut first, mut second) = (UnixStream::connect(&path).unwrap(), UnixStream::connect(&path).unwrap());
+    first.write_all(&encode_request(a)).unwrap();
+    second.write_all(&encode_request(b)).unwrap();
+    let read = |s: &mut UnixStream| {
+        s.set_read_timeout(Some(DELAY)).unwrap();
+        let mut bytes = Vec::new();
+        s.read_to_end(&mut bytes).unwrap();
+        alpheus_commun::launcher_ipc::decode_reply(&bytes).unwrap()
+    };
+    let (ra, rb) = (read(&mut first), read(&mut second));
+    (ra, rb)
+}
+
 /// Waits until the power menu opened by the verb is on screen: its popup background fills a good
 /// part of the area under the bar's right end (the verb anchors there, not under the button).
 fn power_verb_drawn(sway: &Sway, d: &Daemon) {
@@ -5188,10 +5205,12 @@ fn power_verb_drawn(sway: &Sway, d: &Daemon) {
 #[ignore = "headless sway, grim and wtype (nix develop)"]
 fn power_verb_opens_and_closes_the_menu() {
     let (sway, _hypr, d) = power_daemon("power-verb");
-    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    // The press bind re-fired at once: ignored, the menu stays. Both requests are on the wire before
+    // either reply is read, so the second reaches the daemon right behind the first whatever the
+    // machine's speed (no timing assumption): the first opens, the second is inside its debounce.
+    let (first, second) = launcher_pair(&sway, &Request::Power, &Request::Power);
+    assert_eq!((first, second), (Reply::Done, Reply::Done));
     assert!(d.wait_for_count("power menu shown (lock reboot poweroff)", 1, DELAY), "{:?}", d.log());
-    // The press bind re-fired at once: ignored, the menu stays.
-    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
     assert!(d.wait_for("power: toggle debounced", DELAY), "{:?}", d.log());
     assert_eq!(d.count("popup closed"), 0, "{:?}", d.log());
     power_verb_drawn(&sway, &d);
@@ -5206,6 +5225,21 @@ fn power_verb_opens_and_closes_the_menu() {
     assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
     assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened: {:?}", d.log());
+
+    // Without `power` in `modules` (the default `[quick]` is enough), over an open launcher: the
+    // launcher is closed as replaced, and only then does the menu open.
+    let sway = Sway::start("power-verb-replaces", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("modules = [\"clock\"]\n"), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("power menu shown (lock reboot poweroff)", 1, DELAY), "{:?}", d.log());
+    let log = d.log();
+    let at = |what: &str| log.iter().position(|l| l.contains(what));
+    assert!(at("launcher closed (replaced)") < at("power menu shown"), "closed first: {log:?}");
 
     let sway = Sway::start("power-verb-refused", 1);
     let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);

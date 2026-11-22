@@ -1,6 +1,7 @@
 use super::*;
 use crate::launcher::sources::{LIST_DEADLINE, MAX_SOURCE_LINES};
 use crate::launcher::testing::TempDir;
+use crate::launcher::tools::nav::Counts;
 use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_commun::exec::{Captured, SystemExecutor};
 use std::path::{Path, PathBuf};
@@ -122,7 +123,8 @@ fn states_arrive_one_by_one() {
     ];
     let t = Instant::now();
     let mut seen = Vec::new();
-    let last = run_job(Job::States(jobs), &real(), &AtomicBool::new(false), &mut |e| seen.push((t.elapsed(), e)), &mut |_| {});
+    let last =
+        run_job(Job::States(jobs, Counts::default()), &real(), &AtomicBool::new(false), &mut |e| seen.push((t.elapsed(), e)), &mut |_| {});
     assert_eq!(seen.len(), 3);
     assert!(seen[0].0 < Duration::from_millis(400), "the first state does not wait for the second: {:?}", seen[0].0);
     let states: Vec<_> = seen.into_iter().map(|(_, e)| e).collect();
@@ -134,7 +136,7 @@ fn states_arrive_one_by_one() {
             JobEvent::State { entry: 2, state: Some(true) },
         ]
     );
-    assert_eq!(last, JobEvent::StatesDone { unread: Vec::new() });
+    assert_eq!(last, JobEvent::StatesDone { unread: Vec::new(), counts: Counts { on: 2, off: 1, unknown: 0 } });
 }
 
 #[test]
@@ -144,7 +146,7 @@ fn preempt_stops_after_the_current_entry_and_returns_the_rest() {
     let preempt = AtomicBool::new(false);
     let mut seen = Vec::new();
     let last = run_job(
-        Job::States(jobs.clone()),
+        Job::States(jobs.clone(), Counts::default()),
         &real(),
         &preempt,
         &mut |e| {
@@ -157,10 +159,43 @@ fn preempt_stops_after_the_current_entry_and_returns_the_rest() {
         &mut |_| {},
     );
     assert_eq!(seen.len(), 2, "the current entry finished, no other started");
-    assert_eq!(last, JobEvent::StatesDone { unread: jobs[2..].to_vec() });
+    assert_eq!(last, JobEvent::StatesDone { unread: jobs[2..].to_vec(), counts: Counts { on: 2, off: 0, unknown: 0 } });
     // Set before a job starts, it still reads its first entry.
-    let last = run_job(Job::States(jobs.clone()), &real(), &preempt, &mut |_| {}, &mut |_| {});
-    assert_eq!(last, JobEvent::StatesDone { unread: jobs[1..].to_vec() });
+    let last = run_job(Job::States(jobs.clone(), Counts::default()), &real(), &preempt, &mut |_| {}, &mut |_| {});
+    assert_eq!(last, JobEvent::StatesDone { unread: jobs[1..].to_vec(), counts: Counts { on: 1, off: 0, unknown: 0 } });
+}
+
+/// A preempted slice's counts travel with the unread entries: the slice that finishes the menu logs
+/// the whole menu's totals, once.
+#[test]
+fn a_resumed_slice_logs_the_whole_menus_totals() {
+    let d = TempDir::new("tools-resume");
+    let jobs = vec![
+        state_job(0, 1, script(&d, "a", "exit 0")),
+        state_job(1, 2, script(&d, "b", "exit 1")),
+        state_job(2, 3, script(&d, "c", "exit 0")),
+        state_job(3, 4, vec!["/nonexistent/x".into()]),
+    ];
+    let preempt = AtomicBool::new(true);
+    let mut notes = Vec::new();
+    let JobEvent::StatesDone { unread, counts } =
+        run_job(Job::States(jobs, Counts::default()), &real(), &preempt, &mut |_| {}, &mut |n| notes.push(n.to_string()))
+    else {
+        panic!()
+    };
+    assert_eq!((unread.len(), counts), (3, Counts { on: 1, off: 0, unknown: 0 }));
+    assert!(notes.is_empty(), "a preempted slice writes no summary: {notes:?}");
+    // Resumed (the middle slice is preempted again after one more entry).
+    let JobEvent::StatesDone { unread, counts } =
+        run_job(Job::States(unread, counts), &real(), &preempt, &mut |_| {}, &mut |n| notes.push(n.to_string()))
+    else {
+        panic!()
+    };
+    assert_eq!((unread.len(), counts), (2, Counts { on: 1, off: 1, unknown: 0 }));
+    preempt.store(false, Ordering::Release);
+    let last = run_job(Job::States(unread, counts), &real(), &preempt, &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    assert_eq!(last, JobEvent::StatesDone { unread: Vec::new(), counts: Counts { on: 2, off: 1, unknown: 1 } });
+    assert_eq!(notes, ["tools: entry 4: state program not found", "tools: states read (2 on, 1 off, 1 unknown)"]);
 }
 
 #[test]
@@ -172,7 +207,7 @@ fn notes_name_the_position_only() {
         state_job(2, 9, script(&d, "secret-cmd-b", "sleep 30")),
     ];
     let mut notes = Vec::new();
-    run_job(Job::States(jobs), &real(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    run_job(Job::States(jobs, Counts::default()), &real(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
     let choices = Job::Choices { entry: 3, position: 12, argv: script(&d, "secret-cmd-c", "echo secret-line\nexit 5"), token: 1 };
     run_job(choices, &real(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
     assert_eq!(
@@ -244,6 +279,37 @@ fn a_panicking_job_is_caught_and_frees_the_slot() {
     let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let rx = spawn(choices_job(v(&["x"])), Arc::new(Panics)).unwrap();
     assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), JobEvent::Choices { entry: 0, token: 5, lines: Vec::new(), failed: true });
-    let rx = spawn(Job::States(vec![state_job(0, 1, v(&["x"]))]), Arc::new(Panics)).unwrap();
-    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), JobEvent::StatesDone { unread: Vec::new() });
+    let rx = spawn(Job::States(vec![state_job(0, 1, v(&["x"]))], Counts::default()), Arc::new(Panics)).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), JobEvent::StatesDone { unread: Vec::new(), counts: Counts::default() });
+}
+
+/// The slot is free by the time the last event is delivered: a delivery that starts the next job
+/// (the glue's waiting one) never finds it taken. Checked from inside `deliver`, on both job kinds.
+#[test]
+fn the_slot_is_free_when_the_last_event_is_delivered() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let d = TempDir::new("tools-free-slot");
+    for first in
+        [choices_job(script(&d, "c1", "echo a")), Job::States(vec![state_job(0, 1, script(&d, "s1", "exit 0"))], Counts::default())]
+    {
+        let (tx, rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let exec = Arc::new(real());
+        let (next_exec, next) = (exec.clone(), choices_job(script(&d, "c2", "echo b")));
+        let mut next = Some(next);
+        spawn_job(first, exec, Arc::new(AtomicBool::new(false)), move |e| {
+            if matches!(e, JobEvent::Choices { .. } | JobEvent::StatesDone { .. }) {
+                if let Some(job) = next.take() {
+                    let done_tx = done_tx.clone();
+                    let started = spawn_job(job, next_exec.clone(), Arc::new(AtomicBool::new(false)), move |e| {
+                        let _ = done_tx.send(e);
+                    });
+                    let _ = tx.send(started.map_err(|e| e.kind()));
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), Ok(()), "the next job starts from inside the last delivery");
+        assert!(matches!(done_rx.recv_timeout(Duration::from_secs(3)).unwrap(), JobEvent::Choices { .. }));
+    }
 }

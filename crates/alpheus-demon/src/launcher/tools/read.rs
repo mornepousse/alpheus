@@ -5,7 +5,7 @@
 //! current entry and gets the unread ones back. Notes name an entry by its position in
 //! launcher.toml, never its name, command or output.
 
-use super::nav::{Job, StateJob};
+use super::nav::{Counts, Job, StateJob};
 use crate::launcher::sources;
 use crate::log::write as log;
 use alpheus_commun::exec::{CaptureEnd, ExecError, Executor};
@@ -87,9 +87,10 @@ pub fn choices_of(r: Result<(Vec<String>, CaptureEnd), ExecError>) -> (Vec<Strin
 pub enum JobEvent {
     /// One entry's state (None: unknown).
     State { entry: usize, state: Option<bool> },
-    /// The states job is over (it ended, or `preempt` stopped it): the entries it did not read.
+    /// The states job is over (it ended, or `preempt` stopped it): the entries it did not read, and
+    /// the counts so far (to resume with).
     /// Always the job's last event.
-    StatesDone { unread: Vec<StateJob> },
+    StatesDone { unread: Vec<StateJob>, counts: Counts },
     /// The choices job's only event.
     Choices { entry: usize, token: u64, lines: Vec<String>, failed: bool },
 }
@@ -105,8 +106,7 @@ pub fn run_job(
     note: &mut dyn FnMut(&str),
 ) -> JobEvent {
     match job {
-        Job::States(jobs) => {
-            let (mut on, mut off, mut unknown) = (0, 0, 0);
+        Job::States(jobs, mut counts) => {
             let mut rest = jobs.into_iter();
             let mut unread = Vec::new();
             let mut first = true;
@@ -122,16 +122,17 @@ pub fn run_job(
                     note(&format!("tools: entry {}: state {why}", j.position));
                 }
                 match state {
-                    Some(true) => on += 1,
-                    Some(false) => off += 1,
-                    None => unknown += 1,
+                    Some(true) => counts.on += 1,
+                    Some(false) => counts.off += 1,
+                    None => counts.unknown += 1,
                 }
                 deliver(JobEvent::State { entry: j.entry, state });
             }
             if unread.is_empty() {
+                let Counts { on, off, unknown } = counts;
                 note(&format!("tools: states read ({on} on, {off} off, {unknown} unknown)"));
             }
-            JobEvent::StatesDone { unread }
+            JobEvent::StatesDone { unread, counts }
         }
         Job::Choices { entry, position, argv, token } => {
             let (lines, failed, why) = choices_of(sources::capture_lines(&argv, exec));
@@ -171,7 +172,7 @@ pub fn spawn_job(
     let running = Running;
     std::thread::Builder::new().name(THREAD.into()).spawn(move || {
         let on_panic = match &job {
-            Job::States(_) => JobEvent::StatesDone { unread: Vec::new() },
+            Job::States(..) => JobEvent::StatesDone { unread: Vec::new(), counts: Counts::default() },
             Job::Choices { entry, token, .. } => JobEvent::Choices { entry: *entry, token: *token, lines: Vec::new(), failed: true },
         };
         let last =

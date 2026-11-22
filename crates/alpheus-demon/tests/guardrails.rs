@@ -1501,7 +1501,6 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/paste.rs",
     "clipboard/",
     "launcher/tools/config.rs",
-    "launcher/tools/config.rs",
     "launcher/tools/catalog.rs",
     "launcher/tools/nav.rs",
 ];

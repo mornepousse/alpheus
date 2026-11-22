@@ -19,13 +19,28 @@ pub struct StateJob {
     pub argv: Vec<String>,
 }
 
+/// How many states a menu's reads found so far, carried across a preempted job's slices so the
+/// last one logs the whole menu's totals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub on: usize,
+    pub off: usize,
+    pub unknown: usize,
+}
+
 /// What the reader thread is asked (tools spec § 6): the states of every entry that has one, or a
 /// `choices_cmd`. A choices job carries the token of the open it answers: a delivery with another
 /// token is stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
-    States(Vec<StateJob>),
-    Choices { entry: usize, position: usize, argv: Vec<String>, token: u64 },
+    /// The entries to read, and the counts of the slices already read (none for a first slice).
+    States(Vec<StateJob>, Counts),
+    Choices {
+        entry: usize,
+        position: usize,
+        argv: Vec<String>,
+        token: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +285,7 @@ impl ToolsState {
                 EntryKind::Builtin(_) => None,
             })
             .collect();
-        (!jobs.is_empty()).then_some(Job::States(jobs))
+        (!jobs.is_empty()).then_some(Job::States(jobs, Counts::default()))
     }
 
     /// The state of `entry`, read: a switch on its row (None: unknown, no switch).

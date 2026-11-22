@@ -11,7 +11,7 @@ use crate::launcher::socket::Server;
 use crate::launcher::socket_glue::{launcher_socket_outcome, watch_launcher_socket};
 use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
-use crate::launcher::tools::nav::StateJob;
+use crate::launcher::tools::nav::{Counts, StateJob};
 use crate::lock;
 use crate::modules::Needs;
 use crate::nonblocking::NonBlocking;
@@ -81,6 +81,7 @@ pub enum Mail {
     ToolStatesDone {
         generation: u64,
         unread: Vec<StateJob>,
+        counts: Counts,
     },
     /// A `choices_cmd`'s lines: adopted only by the open launcher whose generation and `token` match;
     /// the reader's slot is free either way.
