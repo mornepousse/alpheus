@@ -16,7 +16,7 @@ One Cargo workspace, four crates:
 |---|---|---|
 | `alpheus-common` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays, diagnostics), compositor detection and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
-| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
+| `alpheus-daemon` (binary `alpheus-demon`) | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
 
 These boundaries are enforced from `Cargo.lock` by

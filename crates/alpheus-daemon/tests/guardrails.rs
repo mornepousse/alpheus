@@ -300,7 +300,7 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 
 /// The daemon only reads from the compositor, plus two writes: the workspace command, and output
 /// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
-/// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
+/// and sent only by `outputs/app.rs` (the controller's one-in-flight, last-screen and cap rules);
 /// never output power management, never dpms (displays spec § 2, as amended). A third write is the
 /// clipboard's own selection, set in `clipboard/control.rs` only (clipboard spec decision 14): the
 /// daemon's re-copy of a history entry, never a primary selection.

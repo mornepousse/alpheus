@@ -274,7 +274,7 @@ A Cargo workspace of four crates:
 | Crate | Role |
 |---|---|
 | `alpheus` | **Control center** as a TUI (ratatui), opened on demand |
-| `alpheus-demon` | **Resident daemon**: the bar, one per screen (layer-shell) |
+| `alpheus-daemon` (binary `alpheus-demon`) | **Resident daemon**: the bar, one per screen (layer-shell) |
 | `alpheus-launch` | **Scripting bridge** to the daemon's launcher, notifications, OSD and quick panel (`--toggle`, `--dmenu`, `--dnd`, `--quick`…) |
 | `alpheus-common` | Shared foundation: command execution, configuration, theme, access to system tools |
 
