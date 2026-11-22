@@ -2309,8 +2309,9 @@ fn every_dnd_change_goes_through_dnd_apply() {
 }
 
 /// No panic in the notification server's production code: its model,
-/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
-/// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
+/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, hold no `.expect(`,
+/// `.unwrap()` nor `panic!(` in their production code (`production_code`: everything but the items
+/// that follow `#[cfg(test)]`).
 #[test]
 fn the_notification_server_has_no_panicking_path() {
     let panics = |text: &str| [".expect(", ".unwrap()", "panic!("].iter().any(|p| text.contains(p));
@@ -2329,8 +2330,7 @@ fn the_notification_server_has_no_panicking_path() {
         "session_bus/codec.rs",
     ] {
         let t = text(name);
-        let production = t.split("#[cfg(").next().unwrap_or_default();
-        assert!(!panics(production), "a panicking call in {name}'s production code");
+        assert!(!panics(&production_code(&t)), "a panicking call in {name}'s production code");
     }
     let bus = text("session_bus/bus.rs");
     let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
