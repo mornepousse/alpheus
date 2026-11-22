@@ -1619,7 +1619,6 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "sources/dbus/bt_act.rs",
     "quick/bt_app.rs",
     "outputs/",
-    "outputs/app.rs",
     "launcher/calc.rs",
     "launcher/calc/units.rs",
     "notify/dnd.rs",
