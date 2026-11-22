@@ -24,7 +24,8 @@ with no `Status` line is settled.
 
 Each feature's decisions are added when its code is brought to the house standard
 (`docs/STYLE.md`), so the file does not yet cover every feature: the ones it covers have a page in
-`docs/features/`, and the older decisions of the rest are still in `docs/specs/` and `docs/plans/`.
+`docs/features/` (listed in [features/README.md](features/README.md)), and the older decisions of
+the rest are still in `docs/specs/` and `docs/plans/`.
 
 ---
 
