@@ -1,8 +1,8 @@
-//! The journal view of the Diag tab, drawn: a header (what is asked, the filters), a status line, and
+//! The journal view of the Diag tab, drawn: a header (what is asked, the filters), a row for the state of the read, and
 //! the entries, newest at the bottom, or the unit picker over them.
 //!
-//! `diagnostics::render` calls `render` while the journal view is open, and `hints` gives the status
-//! line's keys. The state it draws is `app/journal.rs`'s.
+//! `diagnostics::render` calls `render` while the journal view is open, and `hints` gives the keys of the
+//! shortcut bar (the keycaps row in the rail). The state it draws is `app/journal.rs`'s.
 //!
 //! Never:
 //! - change the state, run a tool or read a clock: the entries are the `App`'s, and the local time is
@@ -28,7 +28,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-/// The keys the status line offers in the journal view: a picker, the filter being typed, or the
+/// The keys the shortcut bar (the keycaps row in the rail) offers in the journal view: a picker, the filter being typed, or the
 /// view itself.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, j: &JournalView) {
     if j.picker.is_some() {
@@ -86,7 +86,7 @@ fn title(j: &JournalView) -> String {
     if j.query.since_until.is_some() { "Journal · around a crash".to_string() } else { format!("Journal · {}", j.query.preset.label()) }
 }
 
-/// Draws the journal view in `body`: the header, the status line, then the entries or the picker.
+/// Draws the journal view in `body`: the header, the read's state row, then the entries or the picker.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, _hits: &mut HitMap, chrome: Chrome, today: Option<LocalTime>) {
     let View::Journal(j) = &app.diag.view else { return };
     let th = &app.theme;

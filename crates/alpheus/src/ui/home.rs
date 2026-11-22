@@ -7,10 +7,10 @@
 //! do-not-disturb red, keep-awake orange). The seven items and their order are `App::items()`'s
 //! (`app/home.rs`), so keys, the palette and the mouse work as on the rows.
 //!
-//! The dashboard is laid out for the 87 by 26 window of the Super+A launcher first (a 67 by 20
+//! The dashboard is laid out for an 87 by 26 window (the size it is tested at) first (a 67 by 20
 //! body beside the rail: one-cell digits, the date, greeting and summary stacked, compact cards
-//! and tiles), and grows into larger bodies. Below `MIN_W` by `MIN_H` `tabs::render` draws the
-//! rows instead, and this file also holds the shortcut hints and the local time the clock shows.
+//! and tiles), and grows into larger bodies. Without the rail, or in a body below `MIN_W` by
+//! `MIN_H`, `tabs::render` draws the rows instead, and this file also holds the shortcut hints and the local time the clock shows.
 //!
 //! Never:
 //! - change the state: everything here reads the `App` and fills the cells and the map of
@@ -37,7 +37,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
-/// The keys the status line offers on this tab; `adjust` is the label of the two adjust keys.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab; `adjust` is the label of the two adjust keys.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap, adjust: String) {
     pairs.push((km.label(Action::Toggle), "Toggle"));
     pairs.push((adjust, "Adjust"));

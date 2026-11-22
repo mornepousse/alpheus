@@ -501,8 +501,8 @@ switches (**Wi-Fi**, **Bluetooth**, **Do not disturb**, **Keep awake**) and the 
 else, apart from the list of active connections and the connected Bluetooth devices, which the
 dashboard shows.
 
-In a window where the tab's body is at least 64 columns by 20 rows (the 87 by 26 window of the
-Super+A launcher leaves a 67 by 20 body beside the rail), Home is a **dashboard**: a clock in large
+With the rail and a body of at least 64 columns by 20 rows (an 87 by 26 window, the size it is
+tested at, leaves a 67 by 20 body beside the rail), Home is a **dashboard**: a clock in large
 block digits with the date, a greeting (`Good morning` from 5 to 11 o'clock, `Good afternoon` from 12
 to 17, `Good evening` otherwise) and a one-line summary (`2 connections · 1 device · Balanced`); a card
 for the volume, one for the brightness and one for the energy profile; four tiles for the switches,
@@ -510,7 +510,7 @@ filled with their colour when on and showing what is connected (the Wi-Fi networ
 Bluetooth device); and the two lists, **Connections** and **Devices**. The cards and tiles take the
 shape of the theme's `style` (round caps under `islands`, arrow tips under `powerline`, no fill under
 `underline`, double frames under `floating`). In a smaller body the tab is plain rows (the classic
-layout):
+layout, or any window without the rail):
 
 ```
  ▶ Volume              ███████████████░░░░░░░░░  62 %
@@ -561,7 +561,7 @@ Two files and the tab's row in `app/tab.rs`.
   Keep awake, profiles, and the two lists).
 - `ui/home.rs`: the dashboard (`render`, and one function per card, tile and list), the clock
   (`LocalTime`, passed in by `ui::render_at` so a test can draw at any time) and the shortcut hints.
-  The rows used below 64 by 20 are the shared arm `Tab::Home | Tab::Power` of `ui/tabs.rs`, which
+  The rows used without the rail or below 64 by 20 are the shared arm `Tab::Home | Tab::Power` of `ui/tabs.rs`, which
   stays there because Power draws its rows with the same code (see the Power section); the items are
   drawn by the shared item drawing in the same file.
 - `app/tab.rs`: the tab's row says it is not searchable, that it is read every second while it is
@@ -572,10 +572,12 @@ Two files and the tab's row in `app/tab.rs`.
 is 2, and so on) and a test (`home_item_indices_match_the_app`) fails if `app/home.rs` reorders them.
 
 **The layout.** `bands` gives the heights: at 20 rows a 4-row clock, 7-row cards, 4-row tiles and what
-is left for the lists; every row more goes, in a fixed order, to the cards, a gap, the tiles, the
-clock. The two lists are drawn only if four rows are left for them. The clock tries three
-arrangements in turn (two-cell digits with the date beside them, one-cell digits beside them, two-cell
-digits with the date stacked) and takes the first that fits.
+is left for the lists. Each row more goes, in the order cards, gap, cards, tiles, gap, clock, cards,
+tiles, cards, tiles (`ORDER`); it stops after ten rows, and any further row goes to the lists. The two
+lists are drawn only if four rows are left for them. The clock tries three arrangements in turn
+(two-cell digits with the date beside them, one-cell digits beside them, two-cell digits with the date
+stacked) and takes the first that fits; when none does, it falls back to one-cell digits with the
+date, greeting and summary stacked.
 
 ### Rules it keeps
 
@@ -584,11 +586,11 @@ digits with the date stacked) and takes the first that fits.
   app's.
 - `the_dashboard_needs_a_64x20_body` and `small_bodies_keep_the_rows` (`ui/home/tests.rs`): the
   thresholds, and the rows below them.
-- `dashboard_hits_reach_today_s_actions` (`ui/home/tests.rs`): a click on a card or a tile reaches
-  the same action as the rows.
-- `mae_window_87x26_shows_the_whole_dashboard` and `a_clock_strip_that_just_fits_gets_the_two_cell_digits`
+- `dashboard_hits_reach_today_s_actions` (`ui/home/tests.rs`): a click on a tile, on a gauge and on a
+  profile option reaches the same action as the rows.
+- `an_87_by_26_window_shows_the_whole_dashboard` and `a_clock_strip_that_just_fits_gets_the_two_cell_digits`
   (`ui/home/tests.rs`): the dashboard whole at 87 by 26, and the clock's choice at its edge.
-- `the_dashboards_hints_follow_the_keymap` (`ui/home/tests.rs`): no key is written into a hint.
+- `the_dashboards_hints_follow_the_keymap` (`ui/home/tests.rs`): the hints read the keymap's labels.
 - `the_dashboard_at_120_by_36_matches_its_snapshot` and `the_home_tab_at_80_by_24_matches_its_snapshot`
   (`ui/home/tests.rs`, their snapshots in `ui/home/snapshots/`).
 
@@ -617,19 +619,26 @@ back. The tab is locked while a trial or another change is in progress, and afte
 read has come: a change is never planned on screens that may have been rolled back.
 
 ```
- Profiles   [ Laptop only ]  [ Desktop ]  [ + Save current ]
+ ▶ Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]
 
  Map
-   ┌───Acme───┐┌──Globex──┐
-   │    3     ││    2   ● │
-   └──────────┘└──────────┘
+    ┌──Alpha───┐┌──Bravo──┐
+    │    2     ││    3    │
+    └──────────┘└─────────┘
+   ┌───Laptop────┐
+   │             │
+   │      1      │
+   │             │
+   └─────────────┘
 
  Displays
- ▶ 1 Laptop   eDP-1       [■] on   2560×1600@60   scale 1.0   below Acme
-   2 Acme     DVI-I-1 ⚠   [■] on   1920×1080@60   scale 1.0   origin
+   1 Laptop     eDP-1     [■] on        2560×1600@60  position 0, 1080
+   2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  origin
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha
 ```
 
-(The classic layout. From 84 columns by 26 rows the tab is drawn with the rail, in green; at 80
+(The classic layout at 80 columns, copied from the snapshot of
+`the_displays_tab_at_80_by_24_matches_its_snapshot` in `ui/displays/tests.rs`. From 84 columns by 26 rows the tab is drawn with the rail, in green; at 80
 columns the scale column is dropped, and when the placement text still does not fit the connector
 too: the placement is what the tab is for, a comment in `ui/displays.rs`.)
 
@@ -713,7 +722,7 @@ The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `
   `a_reference_screen_that_is_not_connected_shows_the_brand_from_its_description` and
   `the_displays_tab_at_80_by_24_matches_its_snapshot` (`ui/displays/tests.rs`, its snapshot in
   `ui/displays/snapshots/`); the rest of the tab's drawing in `ui/tests.rs` (`displays_tab_rendering`,
-  `displays_fit_mae_window_87x26`, `displays_snapshots`).
+  `displays_fit_an_87_by_26_window`, `displays_snapshots`).
 
 ### What it costs
 
@@ -842,8 +851,8 @@ not yet sent. It is one list in sections:
 - The eight **journal presets** and the **Bug report** row.
 
 Three views open over the list. The **journal view** shows the journal for a preset, a unit or the
-minute around a crash: a header (what is asked, the filters), a status line and the entries with the
-newest at the bottom. The **boot report** shows `systemd-analyze`'s time, the slowest units and the
+minute around a crash: a header (what is asked, the filters), a row for the state of the read
+(reading, failed, more lines waiting) and the entries with the newest at the bottom. The **boot report** shows `systemd-analyze`'s time, the slowest units and the
 critical chain. The **bug report** is a text of versions, failed units, loops, crashes and this boot's
 errors, **redacted**, shown in full, and copied only when you ask.
 
@@ -869,7 +878,7 @@ errors, **redacted**, shown in full, and copied only when you ask.
    Boot   Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.9s (kernel)…
 ```
 
-(The overview at 80 by 24, from its snapshot and shortened (the list of failed units has three rows),
+(The overview at 80 by 24, from the snapshot `diag_overview_problems_80x24` and shortened (the list of failed units has three rows),
 without the journal presets and the bug report row
 that follow the boot line; the health row that fails shows its fix.)
 
@@ -890,25 +899,29 @@ center's **own window**, so that systemd's password prompt (polkit) appears ther
 tells two apart, and the focus starts on Cancel. With `[diagnostics] system_actions = false` the two keys
 do nothing on a system unit.
 
+With the mouse, a click on a row selects it. On a failed or looping unit the first click selects and a
+second one on the same row opens its journal; a crash, the boot row, a preset or the bug report open
+at the first click; a health row only gets selected (`diag_click`).
+
 In the **journal view**: `u` filters by unit (a picker), `p` cycles the priority, `/` filters the text
 (case and accents folded), `f` follows (one bounded read a second while the view is open; asking again
 after a failed read reads again), PgUp, PgDn, Home, End and the wheel scroll. Esc clears a filter first
 and then goes back; in the picker it closes the picker (and goes back to the overview if no unit was
-chosen yet), and Backspace on an empty picker clears the unit. `/`, `u`, `p` and `f` are the view's own
-letters: a key the user bound to another action wins. The view holds at most 2,000 entries, the oldest
+chosen yet), and Backspace on an empty picker clears the unit. `/` always opens the text filter; `u`, `p` and `f` are the view's own
+letters, and a key the user bound to another action wins over them (`the_views_letters_never_shadow_a_users_binding` covers `p`). The view holds at most 2,000 entries, the oldest
 dropped first; scrolled up, it stays where it is and counts the new entries below.
 
 In the **bug report**: PgUp and PgDn scroll, Enter (or a click on `[ Copy ]`) copies exactly the text
 on screen through `[diagnostics] copy`, with the text on its standard input; Esc closes and copies
 nothing. An Enter typed within 0.4 seconds of the text appearing is ignored, so one typed ahead does not
-copy a report nobody has read. Redaction replaces the user name, the home directory, the host name and
+copy a report nobody has read. Redaction is a safety net, not a promise (diagnostics spec § 5). It replaces the user name, the home directory, the host name and
 machine id, MAC and IP addresses, UUIDs and anything shaped like an e-mail address; **Wi-Fi network
 names and USB serial numbers are not touched**, so the first line of the view says `Read before
 copying: logs can name things`.
 
 ### Configuration
 
-`[diagnostics]` in `bar.toml`: `copy` (the clipboard program, default `["wl-copy"]`; `[]` turns Copy
+`[diagnostics]` in `config.toml` (the control center's file, not the daemon's `bar.toml`; diagnostics spec § 7): `copy` (the clipboard program, default `["wl-copy"]`; `[]` turns Copy
 off), `system_actions` (default true), `restart_loop` (the `NRestarts` count from which a unit is
 "restarting in a loop", default 3), `journal_lines` (entries read when the journal view opens, default
 500), and up to 8 `[[diagnostics.checks]]` (`name`, `run` as an argv, `fix` shown and never run).
@@ -929,7 +942,9 @@ Three pairs of files and the tab's row in `app/tab.rs`.
 - `app/tab.rs`: the tab's row says it is not searchable, that it is read every 5 seconds while shown
   from the `Failed` and `Health` domains, and that its label column is 20 cells wide.
 
-**Refresh.** The failed units and the health are read every 5 seconds while the tab is shown; the
+**Refresh.** Every 5 seconds while the tab is shown, three reads: the failed units of the system manager
+and of the user manager, and the health (`systemctl --user show-environment`, a connection to the
+compositor's socket, and a look at the Wayland socket's file); the
 loops, the crashes, the boot line, the declared checks and the daemon check are read once per showing and
 on F5 (`diagnostics_reads`). While the journal view is open the 5-second refresh is held back
 (`diagnostics_refresh_held`): the view makes its own reads, one at a time, so the single worker thread
@@ -955,7 +970,7 @@ escape sequence.
   and `no_refresh_while_the_journal_view_is_open` (`app/diagnostics/tests.rs`): what is read, and when.
 - `health_rows_cases`, `the_compositor_socket_is_never_written`,
   `the_wayland_socket_is_looked_up_where_it_should_be` and
-  `an_empty_wayland_display_is_unset_and_an_empty_variable_is_not_the_sessions`: the health rows, and a
+  `an_empty_wayland_display_is_unset_and_an_empty_variable_is_left_out_of_own_env`: the health rows, and a
   compositor's socket is only connected to and closed.
 - `system_restart_asks_then_runs_in_the_window`, `a_system_unit_name_is_checked_again_before_it_is_an_argument`
   and `system_actions_off_hides_the_keys`: the system-unit rules.
@@ -974,7 +989,7 @@ escape sequence.
 
 ### What it costs
 
-Nothing while the tab is not shown. Shown, one `systemctl` read of the failed units and the health every
-5 seconds (the spec's refresh); the once-per-showing reads run through the executor's `capture` on the
+Nothing while the tab is not shown. Shown, three reads every 5 seconds (the failed units of both managers and the health, the spec's
+refresh); the once-per-showing reads run through the executor's `capture` on the
 tab's worker, with the deadlines and caps the diagnostics spec states. The tab's first render is
 209–491 µs (README). The journal view makes no read while it is closed and no child outlives it.

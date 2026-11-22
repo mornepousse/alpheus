@@ -381,7 +381,7 @@ fn the_color_helper_matches_roles() {
     assert_eq!(a.theme.bg, rgb(a.appearance.preview.unwrap().bar_bg));
 }
 
-// Through the real key table, as Mae types it.
+// Through the real key table, as a user types it.
 fn key(a: &mut App, code: ratatui::crossterm::event::KeyCode) {
     a.on_key(ratatui::crossterm::event::KeyEvent::new(code, ratatui::crossterm::event::KeyModifiers::NONE), Instant::now());
 }

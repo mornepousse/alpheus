@@ -391,7 +391,7 @@ fn the_wayland_socket_is_looked_up_where_it_should_be() {
 }
 
 #[test]
-fn an_empty_wayland_display_is_unset_and_an_empty_variable_is_not_the_sessions() {
+fn an_empty_wayland_display_is_unset_and_an_empty_variable_is_left_out_of_own_env() {
     let empty = |k: &str| -> Option<OsString> { (k == "WAYLAND_DISPLAY").then(OsString::new) };
     assert_eq!(wayland_health(&empty), WaylandHealth::Unset);
     let dir = TempPath::dir("diag-empty-var");

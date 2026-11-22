@@ -4,7 +4,7 @@
 //! `tabs::render` calls `render`, which draws the overview itself and hands the other views to
 //! `journal.rs` and `report_views.rs`. The overview is a list of lines (`lines`), each with the item
 //! it stands for, drawn with a scroll that keeps the focused row in view. `unit_confirm` is the box
-//! that `overlays.rs` opens before a restart or a reset, and `hints` gives the status line's keys.
+//! that `overlays.rs` opens before a restart or a reset, and `hints` gives the keys of the shortcut bar (the keycaps row in the rail).
 //!
 //! Never:
 //! - change the state or run a tool: everything here reads the `App`;
@@ -42,7 +42,7 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 /// The unit column of a row, in cells.
 const UNIT_W: usize = 30;
 
-/// The keys the status line offers on this tab, by the view that is open.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab, by the view that is open.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
     match &app.diag.view {
         View::Journal(j) => journal::hints(pairs, j),

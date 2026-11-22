@@ -221,9 +221,9 @@ fn displays_tab_rendering() {
     assert!(draw(&a, 120, 28).0[27].contains("Enter  Apply"));
 }
 
-/// Mae's window (87×26): a 67-column body beside the rail. Every output's placement is whole.
+/// An 87 by 26 window: a 67-column body beside the rail. Every output's placement is whole.
 #[test]
-fn displays_fit_mae_window_87x26() {
+fn displays_fit_an_87_by_26_window() {
     let mut a = displays_tab();
     a.focus = 2;
     let (rows, _) = draw(&a, 87, 26);
@@ -628,7 +628,7 @@ fn rail_tab_snapshots() {
 fn rail_controls_fit_mae_window_87x26() {
     let cut = |rows: &[String]| assert!(!rows.join("\n").contains('…'), "a cut row:\n{}", rows.join("\n"));
     // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show in a body
-    // below 64×20 (else the dashboard, see `home::tests::mae_window_87x26_shows_the_whole_dashboard`).
+    // below 64×20 (else the dashboard, see `home::tests::an_87_by_26_window_shows_the_whole_dashboard`).
     let a = tab_app(Tab::Home);
     let (rows, hits) = rail_rows(&a, 67, 19);
     cut(&rows);

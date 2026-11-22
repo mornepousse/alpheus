@@ -314,7 +314,7 @@ fn powerline_previews_full_blocks_and_arrows() {
     let a = styled("prev-powerline", "powerline", "icons");
     let p = preset("tokyo-night").unwrap().dark;
     let b = buffer(&a);
-    // Left (Mae, 2026-10-08): workspaces on pill_bg, an arrow into the title's block (raised),
+    // Left (shapes spec § 3, amended 2026-10-08): workspaces on pill_bg, an arrow into the title's block (raised),
     // and one out of it into the bar.
     assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.pill_bg), rgb(p.raised)), "workspaces -> title");
     let second = (find(&b, 4, "\u{e0b0}") + 1..100).find(|x| b[(*x, 4)].symbol() == "\u{e0b0}").expect("a second arrow");
@@ -368,7 +368,7 @@ fn underline_previews_a_rule_under_the_active_workspace_and_the_hued_blocks() {
     let b = buffer(&a);
     let one = find(&b, 4, "1");
     assert_eq!((b[(one, 5)].symbol(), b[(one, 5)].fg), ("━", rgb(p.accent)), "under the active workspace");
-    // Mae, 2026-10-08: no accent fill, its text in accent on the block.
+    // Shapes spec § 3, amended 2026-10-08: no accent fill, its text in accent on the block.
     assert_eq!(cell(&b, 4, "1"), (rgb(p.accent), rgb(p.pill_bg)), "the active workspace: accent text, no fill");
     assert_ne!(p.accent, p.pill_bg, "the test bites only if the two differ");
     assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "under the sound block, its hue");
@@ -538,10 +538,10 @@ fn every_block_style_preview_at_80_columns_matches_its_snapshot() {
     }
 }
 
-/// Mae's window: 87×26, so a 67×20 body beside the rail.
+/// An 87 by 26 window: a 67×20 body beside the rail.
 #[test]
-fn the_theme_tab_fits_mae_window_87x26() {
-    let (a, _dir) = open("mae-window", &[("theme.toml", "theme = \"nord\"\nstyle = \"islands\"\n")]);
+fn the_theme_tab_fits_an_87_by_26_window() {
+    let (a, _dir) = open("window-87x26", &[("theme.toml", "theme = \"nord\"\nstyle = \"islands\"\n")]);
     let (rows, hits) = crate::ui::testing::draw(&a, 87, 26);
     let all = rows.join("\n");
     // Every entry is on screen, with its tags (the wallpaper and the fifteen presets).

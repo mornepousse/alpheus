@@ -1,7 +1,7 @@
 //! The boot report and the bug report of the Diag tab, drawn.
 //!
 //! `diagnostics::render` calls `render` while one of them is open, and `report_hints` and
-//! `boot_hints` give the status line's keys. The bug report is drawn in full, wrapped at the width of
+//! `boot_hints` give the keys of the shortcut bar (the keycaps row in the rail). The bug report is drawn in full, wrapped at the width of
 //! the window (`wrap_rows`), with a `[ Copy ]` button (clickable once the text is there): what is drawn is exactly
 //! what is copied.
 //!
@@ -26,7 +26,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// The keys the status line offers on the bug report: copy when it can be copied, and scroll.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on the bug report: copy when it can be copied, and scroll.
 pub(super) fn report_hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
     if app.report_can_copy() {
         pairs.push((km.label(Action::Activate), "Copy"));
@@ -34,7 +34,7 @@ pub(super) fn report_hints(pairs: &mut Vec<(String, &'static str)>, app: &App, k
     pairs.push(("PgUp/PgDn".into(), "Scroll"));
 }
 
-/// The keys the status line offers on the boot report: scroll.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on the boot report: scroll.
 pub(super) fn boot_hints(pairs: &mut Vec<(String, &'static str)>) {
     pairs.push(("PgUp/PgDn".into(), "Scroll"));
 }

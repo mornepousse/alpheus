@@ -1,4 +1,4 @@
-//! The Appearance tab's state and logic: the theme list, the light/dark mode, the module colours and
+//! The Theme tab's state and logic: the theme list, the light/dark mode, the module colours and
 //! the bar style, their preview, and the write of `theme.toml`.
 //!
 //! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor or a chip only

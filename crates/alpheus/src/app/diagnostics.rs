@@ -2,9 +2,10 @@
 //! shows (the overview, or one of the three views opened from it) and the rules that turn those reads
 //! into rows.
 //!
-//! The tab reads only while it is shown. Its reads go to the worker as `Request::Diag`: the failed
-//! units every 5 seconds (`TabSpec.refresh`), the loops, the crashes, the boot line and the declared
-//! checks once per showing and on F5. The journal view (`journal.rs`) and the boot and bug reports
+//! The tab reads only while it is shown. The failed units and the health checks go to the worker
+//! every 5 seconds (`TabSpec.refresh`) as `Request::Refresh(vec![Domain::Failed, Domain::Health])`;
+//! the loops, the crashes, the boot line and the declared checks are `Request::Diag` reads made
+//! once per showing and on F5 (with a `Request::Do(Op::FailedRefresh)`). The journal view (`journal.rs`) and the boot and bug reports
 //! (`report_views.rs`) are views of this tab with state of their own.
 //!
 //! Never:
@@ -434,7 +435,7 @@ impl App {
         }
         let d = &self.diag;
         let mut v: Vec<DiagItem> = Vec::new();
-        // A health row is focusable only while it fails: its fix is what the person reads.
+        // A health row is focusable only while it fails.
         for (i, row) in self.health_rows().iter().enumerate() {
             if !row.ok {
                 v.push(DiagItem::HealthRow(i));

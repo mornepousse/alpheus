@@ -52,7 +52,7 @@ pub(super) fn rows(app: &App, map_rows: usize, rows: &mut Vec<Row>) {
     }
 }
 
-/// The keys the status line offers on this tab.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
     match app.focused() {
         Some(Item::DisplayProfiles) => {
@@ -255,7 +255,7 @@ impl Cols {
 // ── Overlays ─────────────────────────────────────────────────────────
 
 /// The two buttons of a small box on row `y`: `no` (Cancel) then `yes`, the focused one filled.
-/// `yes_enabled` false greys `yes` out (the countdown has not started, or the draft is refused).
+/// `yes_enabled` false greys `yes` out (the Keep box's countdown has not started).
 #[allow(clippy::too_many_arguments)]
 fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focused: bool, yes_enabled: bool, app: &App, hits: &mut HitMap) {
     let th = &app.theme;

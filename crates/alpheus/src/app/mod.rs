@@ -541,7 +541,7 @@ impl App {
     pub fn go_tab(&mut self, t: Tab, now: Instant) {
         if t != self.tab {
             if self.tab == Tab::Displays {
-                // Mae moved on: a profile still waiting is not applied behind her back.
+                // The user moved on: a profile still waiting is not applied behind their back.
                 self.displays.queued_profile = None;
             }
             if self.tab == Tab::Diagnostics {

@@ -88,9 +88,9 @@ fn the_dashboard_at_120_by_36_matches_its_snapshot() {
     insta::assert_snapshot!("home_dashboard", all);
 }
 
-/// Mae's window: the rail and the whole dashboard, nothing cut.
+/// An 87 by 26 window: the rail and the whole dashboard, nothing cut.
 #[test]
-fn mae_window_87x26_shows_the_whole_dashboard() {
+fn an_87_by_26_window_shows_the_whole_dashboard() {
     let a = ready_app();
     let (rows, hits) = draw_at(&a, 87, 26, Some(T));
     let all = rows.join("\n");
@@ -283,7 +283,7 @@ fn long_names_are_cut_inside_their_cards_and_tiles() {
             .map(|y| (left + 1..right).map(|x| b[(x, y)].symbol()).collect::<String>())
             .find(|t| t.contains("A very"))
             .unwrap_or_else(|| panic!("{w}x{h}: no SSID row in the Connections card:\n{}", rows.join("\n")));
-        // Whole where the card is wide (120), cut at Mae's window (87×26).
+        // Whole where the card is wide (120), cut at 87×26.
         if w == 87 {
             assert!(row.trim_end().ends_with('…'), "{w}x{h}: {row:?}");
         } else {
@@ -322,7 +322,7 @@ fn tiles_and_cards_take_the_shape() {
     assert_eq!(cell(&a, vol.x, vol.y).symbol(), "┌");
 }
 
-/// Mae's window, every shape, each tile focused in turn: the label and the state row both stay.
+/// An 87 by 26 window, every shape, each tile focused in turn: the label and the state row both stay.
 #[test]
 fn a_focused_tile_keeps_its_state_row_at_87x26() {
     for shape in [Shape::Flat, Shape::Round, Shape::Arrow, Shape::Line, Shape::Float] {

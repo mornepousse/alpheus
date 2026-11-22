@@ -1,5 +1,5 @@
 //! Tests of the journal view's drawing (`ui/journal.rs`): the header, the entries and the picker as
-//! snapshots, the times, and the keys the status line offers.
+//! snapshots, the times, and the keys the shortcut bar offers.
 
 use crate::app::diagnostics::DiagItem;
 use crate::app::testing::diag_app;

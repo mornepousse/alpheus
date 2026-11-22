@@ -11,7 +11,7 @@
 //!
 //! Never:
 //! - talk to the compositor or run a tool: every request leaves through `send_op` and the worker
-//!   answers the daemon's socket;
+//!   talks to the daemon's socket;
 //! - plan on outputs that may be stale: while a configuration is in flight, or a read has not come
 //!   after an answer (`awaiting_read`), a change is refused with a message;
 //! - overwrite a `displays.toml` that could not be read (`profiles_invalid`);
@@ -92,15 +92,16 @@ pub struct Trial {
     pub remaining: u64,
 }
 
-/// The "Keep these settings?" dialog. The focus starts on Cancel, so a key pressed by reflex keeps
-/// nothing (the spec: "with focus on **Cancel**").
+/// The "Keep these settings?" dialog. The focus starts on Cancel (displays spec § 3: "with focus on
+/// **Cancel**").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Keep {
     pub keep_focused: bool,
 }
 
-/// A field of the settings panel, from the top: the first four are always shown, `Reference` and
-/// `Align` only while the placement is relative to another screen (`panel_fields`).
+/// A field of the settings panel, from the top: `Mode`, `Scale`, `Rotation`, `Place`, `Cancel` and
+/// `Apply` are always shown, `Reference` and `Align` only while the placement is relative to another
+/// screen (`panel_fields`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelField {
     Mode,
@@ -149,7 +150,7 @@ pub struct SaveDialog {
     pub yes_focused: bool,
 }
 
-/// How a placement choice reads in the panel's Place field.
+/// How a placement choice reads in the panel's Placement field.
 pub fn place_label(p: PlaceChoice) -> &'static str {
     match p {
         PlaceChoice::Free => "current position",
@@ -304,6 +305,7 @@ fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, 
     for j in 0..outs.len() {
         if j != i && !follows(screens, j, i) {
             anchor = current_and_solved(outs, &pos, j);
+            // The first one found stays: a later screen that is off would reset the anchor to None.
             if anchor.is_some() {
                 break;
             }
@@ -484,13 +486,13 @@ impl App {
         self.inform("Displays: the trial ended", now);
     }
 
-    /// An informational line: the status bar and one toast.
+    /// An informational line: the last message (`status.last`) and one toast.
     fn inform(&mut self, msg: &str, now: Instant) {
         self.status.last = Some(msg.into());
         self.toast(msg.into(), false, now);
     }
 
-    /// Tells how the daemon ended a trial: a line in the status bar (or its error line) and a toast.
+    /// Tells how the daemon ended a trial: the last message (or its error line) and a toast.
     fn tell_end(&mut self, end: TrialEnd, now: Instant) {
         let (msg, error) = match end {
             TrialEnd::Kept => ("Displays: settings kept", false),

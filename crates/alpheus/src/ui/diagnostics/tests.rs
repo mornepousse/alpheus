@@ -93,7 +93,7 @@ fn diag_rail_shows_eight_tabs() {
         assert!(hits.find(Target::Tab(t)).is_some(), "{t:?} has no entry on the rail");
     }
     let diag = hits.find(Target::Tab(Tab::Diagnostics)).unwrap();
-    assert!(diag.bottom() < 25, "the eighth entry stays above the status line");
+    assert!(diag.bottom() < 25, "the eighth entry stays above the keycaps row");
 }
 
 #[test]

@@ -3,9 +3,9 @@
 //!
 //! The preview is a mini bar in the chosen style and a mini menu, drawn in cells with the previewed
 //! theme's own roles: `mini_bar` for the flat line, `mini_blocks` for the other five styles (the
-//! blocks, rounded ends, powerline arrows and underline are approximated with cell backgrounds and
-//! half-block characters), `mini_menu` for the menu. `tabs::render` calls `render` for this tab, and
-//! `hints` gives the status line's keys.
+//! blocks are cell backgrounds and the rounded ends half-blocks; the powerline arrows are U+E0B0 and
+//! U+E0B2 and the underline is `━`), `mini_menu` for the menu. `tabs::render` calls `render` for this tab, and
+//! `hints` gives the keys of the shortcut bar (the keycaps row in the rail).
 //!
 //! Never:
 //! - change the state or read a file: everything here reads the `App` (the roles to preview are
@@ -31,7 +31,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// The keys the status line offers on this tab: choose in the list or along the focused row, apply.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab: choose in the list or along the focused row, apply.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
     if app.appearance.focus != Focus::List {
         pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
@@ -293,7 +293,7 @@ fn on_hue(p: &Roles, hue: Rgb) -> Rgb {
 /// A block's background under `style`; None where the bar's own background shows. `i` is the
 /// block's index over the blocks shown on both sides (0: the workspaces), for powerline's
 /// alternation: as the daemon's, `pill_bg` at an even distance from the workspaces, `raised` at an
-/// odd one (ruling of 2026-10-08, CLAUDE.md, Themes delivery 2), so the workspaces are on `pill_bg` and neighbours differ.
+/// odd one (shapes spec § 3, amended 2026-10-08), so the workspaces are on `pill_bg` and neighbours differ.
 fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -> Option<Rgb> {
     let pill = if colors == ModuleColors::Pills { Some(b.hue.unwrap_or(p.pill_bg)) } else { None };
     match style {
@@ -409,7 +409,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     // (spec § 1), which `blocks` already gives its runs.
     let pills = colors == ModuleColors::Pills && style != BarStyle::Underline;
     // One block: lead cell, runs, trail cell; returns the x after it.
-    // Underline: the active workspace has no fill, its text is accent (ruling of 2026-10-08, CLAUDE.md, Themes delivery 2).
+    // Underline: the active workspace has no fill, its text is accent (shapes spec § 3, amended 2026-10-08).
     let underline = style == BarStyle::Underline;
     let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>| -> u16 {
         let end = |glyph: &'static str| match (rounded, f) {

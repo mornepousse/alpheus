@@ -421,7 +421,9 @@ impl App {
         true
     }
 
-    /// A key in the unit picker: the text filters, Up and Down choose, Enter picks, Esc closes.
+    /// A key in the unit picker: the text filters; Up, Down and Tab choose (Tab moves down); Enter picks;
+    /// Backspace on an empty text clears the unit, closes the picker and reads again; Esc closes the
+    /// picker, and the whole view too when it was opened from "Logs of a service…" with no unit chosen.
     fn picker_key(&mut self, e: KeyEvent) {
         let Some(j) = self.journal_view() else { return };
         let Some(p) = j.picker.as_mut() else { return };
