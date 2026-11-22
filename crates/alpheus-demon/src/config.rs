@@ -41,6 +41,10 @@
 //! ignore = []                                               # apps never shown: names compared whole, case-insensitively
 //! dev_dir = "/dev"                                          # where video devices are listed (watched, never opened)
 //! proc_dir = "/proc"                                        # where processes are listed (a camera opened outside PipeWire)
+//! [failed]                                                  # the failed-units count (systemd's)
+//! user_units = true                                         # also count the user manager's failed units (the session bus)
+//! subscribe = false                                         # true: Subscribe() to systemd so that a change arrives at once (costs systemd and dbus-daemon a signal per unit change); false: read on triggers only
+//! notify = false                                            # a notification when the count rises
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
 //! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
@@ -84,9 +88,17 @@
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
 //! [clipboard]                                               # the text clipboard history (read at start)
 //! enabled = false                                           # true: follow the clipboard (data-control), 50 entries in memory, never on disk
+//! [shield]                                                  # Shield mode for public networks (none set: no Shield anywhere); read at start
+//! flag = "/var/lib/shield/on"                               # absolute; the mode is on while this file exists (not in alpheus's config directory)
+//! on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
+//! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
+//! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
+//! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
+//! # on_text = "Protections for public networks are on."     # the notices' bodies, no control or format character, at most 256 bytes
+//! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
-//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays, failed_units
 //! ```
 
 use crate::clock;
@@ -108,6 +120,12 @@ pub enum ModuleId {
     Media,
     /// The privacy indicators (privacy spec § 1): who holds the microphone, the camera or the screen.
     Privacy,
+    /// Shield mode (shield spec § 4): a green glyph drawn only while the mode is on; its row and
+    /// detail live in the quick panel.
+    Shield,
+    /// The failed-units count (diagnostics spec § 6): `󰀦 N` when a unit of the system or the user
+    /// manager is in the failed state; nothing at 0. A left click opens the control center's Diag tab.
+    Failed,
     Volume,
     Network,
     Bluetooth,
@@ -430,6 +448,116 @@ impl Default for PrivacyConfig {
     }
 }
 
+/// `[failed]` (diagnostics spec § 7): how the failed-units count is followed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FailedConfig {
+    /// Also count the user manager's failed units (the session bus).
+    pub user_units: bool,
+    /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
+    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
+    /// until Mae chooses): the count is read on triggers only (a resume, `failed-refresh`, another
+    /// domain's wake-up, a piggyback).
+    pub subscribe: bool,
+    /// A notification when the count rises.
+    pub notify: bool,
+}
+
+impl Default for FailedConfig {
+    fn default() -> Self {
+        FailedConfig { user_units: true, subscribe: false, notify: false }
+    }
+}
+
+/// The longest `[shield] on_text` or `off_text`, in bytes.
+pub const SHIELD_TEXT_MAX: usize = 256;
+
+/// `[shield]` (shield spec § 2): empty by default, no Shield anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShieldConfig {
+    /// Absolute path; the mode is on while this file exists.
+    pub flag: String,
+    pub on: Vec<String>,
+    pub off: Vec<String>,
+    /// `{id}` as one whole element; empty: the blocked devices cannot be allowed from alpheus.
+    pub allow: Vec<String>,
+    /// None: USBGuard's own command; `[]`: no device list.
+    pub blocked: Option<Vec<String>>,
+    pub on_text: Option<String>,
+    pub off_text: Option<String>,
+}
+
+impl ShieldConfig {
+    /// `flag`, `on` and `off` all set.
+    pub fn configured(&self) -> bool {
+        !self.flag.is_empty() && !self.on.is_empty() && !self.off.is_empty()
+    }
+
+    /// The command printing the blocked devices; empty: none.
+    pub fn blocked_argv(&self) -> &[String] {
+        const DEFAULT: &[&str] = &["usbguard", "list-devices", "--blocked"];
+        match &self.blocked {
+            Some(v) => v,
+            None => {
+                static OWNED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+                OWNED.get_or_init(|| DEFAULT.iter().map(|s| s.to_string()).collect())
+            }
+        }
+    }
+
+    pub fn on_body(&self) -> &str {
+        self.on_text.as_deref().unwrap_or("Protections for public networks are on.")
+    }
+
+    pub fn off_body(&self) -> &str {
+        self.off_text.as_deref().unwrap_or("Back to the usual settings.")
+    }
+}
+
+/// `[shield]` checked (decision 8 of the plan): the hard errors of the file.
+fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
+    if !sh.flag.is_empty() {
+        let p = Path::new(&sh.flag);
+        if !p.is_absolute() || p.file_name().is_none() || sh.flag.ends_with('/') || sh.flag.contains('\0') {
+            return Err("shield.flag: must be an absolute path to a file".into());
+        }
+    }
+    for (key, command) in [
+        ("shield.on", sh.on.as_slice()),
+        ("shield.off", sh.off.as_slice()),
+        ("shield.allow", sh.allow.as_slice()),
+        ("shield.blocked", sh.blocked.as_deref().unwrap_or(&[])),
+    ] {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("{key}: the program is blank"));
+        }
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("{key}: an argument holds a NUL"));
+        }
+    }
+    if !sh.allow.is_empty() {
+        let whole = sh.allow.iter().filter(|a| a.as_str() == "{id}").count();
+        let any = sh.allow.iter().filter(|a| a.contains("{id}")).count();
+        if whole != 1 || any != 1 {
+            return Err("shield.allow: {id} must be a whole element, once".into());
+        }
+    }
+    for (key, t) in [("shield.on_text", &sh.on_text), ("shield.off_text", &sh.off_text)] {
+        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.chars().any(|c| c.is_control() || format_char(c))) {
+            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, no control or format character"));
+        }
+    }
+    Ok(())
+}
+
+/// A Unicode format character (Cf) that hides or reorders text: bidi controls, zero width, soft
+/// hyphen, word joiner and invisible operators, BOM. (ZWNJ and ZWJ are shaping, but a notice body
+/// has no use for them either.)
+fn format_char(c: char) -> bool {
+    matches!(c, '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+}
+
 /// `[displays]` (displays spec § 1).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -461,11 +589,13 @@ pub struct HooksConfig {
     pub bluetooth: Vec<String>,
     pub privacy: Vec<String>,
     pub displays: Vec<String>,
+    pub shield: Vec<String>,
+    pub failed_units: Vec<String>,
 }
 
 impl HooksConfig {
     /// Every hook with its TOML key, in field order.
-    pub fn commands(&self) -> [(&'static str, &[String]); 11] {
+    pub fn commands(&self) -> [(&'static str, &[String]); 13] {
         [
             ("started", &self.started),
             ("theme_mode", &self.theme_mode),
@@ -478,6 +608,8 @@ impl HooksConfig {
             ("bluetooth", &self.bluetooth),
             ("privacy", &self.privacy),
             ("displays", &self.displays),
+            ("shield", &self.shield),
+            ("failed_units", &self.failed_units),
         ]
     }
 
@@ -885,6 +1017,7 @@ pub struct BarConfig {
     pub tray: TrayConfig,
     pub media: MediaConfig,
     pub privacy: PrivacyConfig,
+    pub failed: FailedConfig,
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
@@ -892,6 +1025,7 @@ pub struct BarConfig {
     pub clipboard: ClipboardConfig,
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
+    pub shield: ShieldConfig,
 }
 
 impl Default for BarConfig {
@@ -908,6 +1042,7 @@ impl Default for BarConfig {
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
             privacy: PrivacyConfig::default(),
+            failed: FailedConfig::default(),
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
@@ -915,6 +1050,7 @@ impl Default for BarConfig {
             clipboard: ClipboardConfig::default(),
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
+            shield: ShieldConfig::default(),
         }
     }
 }
@@ -949,6 +1085,8 @@ struct Raw {
     #[serde(default)]
     privacy: PrivacyConfig,
     #[serde(default)]
+    failed: FailedConfig,
+    #[serde(default)]
     notifications: NotificationsConfig,
     #[serde(default)]
     osd: OsdConfig,
@@ -962,6 +1100,8 @@ struct Raw {
     displays: DisplaysConfig,
     #[serde(default)]
     hooks: HooksConfig,
+    #[serde(default)]
+    shield: ShieldConfig,
 }
 
 impl BarConfig {
@@ -1088,6 +1228,7 @@ impl BarConfig {
         }
         check_quick(&b.quick)?;
         check_hooks(&b.hooks)?;
+        check_shield(&b.shield)?;
         check_timer(&b.timer)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
@@ -1108,6 +1249,7 @@ impl BarConfig {
             tray,
             media: b.media,
             privacy: b.privacy,
+            failed: b.failed,
             notifications: {
                 let mut n = b.notifications.clone();
                 for r in &mut n.rules {
@@ -1121,6 +1263,7 @@ impl BarConfig {
             clipboard: b.clipboard,
             displays: b.displays,
             hooks: b.hooks,
+            shield: b.shield,
         })
     }
 }

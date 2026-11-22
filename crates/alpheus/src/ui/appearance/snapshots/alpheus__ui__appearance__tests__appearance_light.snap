@@ -2,7 +2,7 @@
 source: crates/alpheus/src/ui/appearance/tests.rs
 expression: "draw(&a, 100, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
+ alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag                   
                                                                                                     
  Theme                           Preview — Gruvbox, light                                           
      Wallpaper (matugen)         ┌────────────────────────────────────────────┐                     

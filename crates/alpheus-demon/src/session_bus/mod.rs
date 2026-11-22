@@ -42,6 +42,15 @@ pub const MPRIS_PROPERTIES_RULE: &str = "type='signal',interface='org.freedeskto
 /// Seeked, added only while the media popup is open.
 pub const MPRIS_SEEKED_RULE: &str =
     "type='signal',interface='org.mpris.MediaPlayer2.Player',member='Seeked',path='/org/mpris/MediaPlayer2'";
+/// The user's systemd manager (diagnostics spec § 6): its name, object and Manager interface on the session
+/// bus; only `NFailedUnits` is read and only `Subscribe` is called.
+pub const SYSTEMD_NAME: &str = "org.freedesktop.systemd1";
+pub const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
+pub const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
+/// The user manager arriving, leaving and restarting (`daemon-reexec` included): the bus driver's NameOwnerChanged for its name.
+pub const SYSTEMD_OWNER_RULE: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.systemd1'";
+/// Its Manager properties, which carry the count (and only while a client has subscribed).
+pub const SYSTEMD_PROPERTIES_RULE: &str = "type='signal',sender='org.freedesktop.systemd1',path='/org/freedesktop/systemd1',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.systemd1.Manager'";
 /// The notification server (notifications spec § 1): its well-known name, object and interface.
 pub const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
 pub const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";

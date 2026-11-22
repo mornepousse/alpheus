@@ -27,7 +27,8 @@ use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
 use alpheus_demon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_demon::session_bus::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, SYSTEMD_MANAGER,
+    SYSTEMD_NAME, SYSTEMD_PATH, WATCHER_NAME,
 };
 use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
@@ -402,6 +403,67 @@ fn output_power_management_never_appears() {
     assert!(files > 100, "the workspace's sources were not found ({files})");
 }
 
+/// Diagnostics spec § 8: the daemon reads systemd's failed-units count and subscribes to its signals,
+/// and asks it for nothing else. No method that starts, stops, restarts, resets, kills, enables,
+/// masks, reloads or changes anything of systemd's may be named in `sources/dbus/` (the acting
+/// Bluetooth connection excepted: it names none of them either), the count's one `Get` never
+/// becomes a `GetAll` (the Manager's carries its `Environment`), and no unit name is logged.
+#[test]
+fn no_acting_systemd1_method_in_the_daemon() {
+    let mut seen = 0;
+    for (path, text) in source_files() {
+        let name = relative_path(&path);
+        if !name.starts_with("sources/dbus/") {
+            continue;
+        }
+        seen += 1;
+        let prod = production_code(&text);
+        for word in [
+            "StartUnit",
+            "StopUnit",
+            "RestartUnit",
+            "TryRestartUnit",
+            "ReloadUnit",
+            "ReloadOrRestartUnit",
+            "ResetFailed",
+            "KillUnit",
+            "CleanUnit",
+            "FreezeUnit",
+            "StartTransientUnit",
+            "SetUnitProperties",
+            "EnableUnitFiles",
+            "DisableUnitFiles",
+            "MaskUnitFiles",
+            "LinkUnitFiles",
+            "SetEnvironment",
+            "UnsetEnvironment",
+            "Reexecute",
+            "Unsubscribe",
+            "systemd1.Manager.Reload",
+            "\"Reload\"",
+            "\"Halt\"",
+            "\"KExec\"",
+            "\"Exit\"",
+        ] {
+            assert!(!prod.contains(word), "{word} in {name}: the daemon only counts failed units");
+        }
+        // `Subscribe` is built in `dbusrs_bus.rs` and driven from `units.rs`, nowhere else (the
+        // test-only fake answers it).
+        let allowed = ["dbusrs_bus.rs", "units.rs", "mod.rs", "fake.rs"].map(|f| format!("sources/dbus/{f}"));
+        if !allowed.contains(&name) {
+            assert!(!prod.contains("subscribe_units("), "{name} subscribes to systemd");
+        }
+    }
+    assert!(seen >= 10, "sources/dbus/ was not found: {seen} files");
+    let units = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/units.rs").expect("units.rs").1;
+    let prod = production_code(&units);
+    assert!(!prod.contains("get_all(") && !prod.contains("\"Environment\""), "units.rs reads one property, never GetAll");
+    assert_eq!(prod.matches("get_u32(").count(), 1, "one read");
+    // The reader logs a fixed line: no formatting of a name, an owner or a path.
+    assert_eq!(prod.matches("log(").count(), 1, "{prod}");
+    assert!(prod.contains("log(\"D-Bus Units: Subscribe refused\")"), "a fixed line");
+}
+
 /// Review guardrail: only files in `src/sources/` are allowed to open or
 /// connect to the compositor's sockets — never elsewhere in the daemon
 /// (painter, wayland, state, grid…), which only ever receive the already
@@ -756,26 +818,41 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
-/// Launcher sources (sources spec § 6): `Executor::capture` blocks for up to its deadline, so only
-/// the source runner calls it, on the scan thread (`NonBlocking` delegates it); and the runner never
-/// builds a shell command from a line — the line is one argv element.
+/// Launcher sources (sources spec § 6) and Shield (shield spec § 7): `Executor::capture` blocks for
+/// up to its deadline, so only the source runner (on the scan thread) and the Shield runner (on its
+/// own worker thread) call it (`NonBlocking` delegates it); and neither builds a shell command from
+/// a line — the line is one argv element.
 #[test]
-fn only_the_source_runner_captures_and_never_through_a_shell() {
+fn only_the_runners_capture_and_never_through_a_shell() {
     let mut runner = None;
+    let mut shield = None;
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         if prod.contains(".capture(") {
-            assert!(matches!(name.as_str(), "launcher/sources.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+            assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield_run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+        }
+        // `run_silent` waits with no bound of its own: the Shield worker's thread alone (and the delegate).
+        if prod.contains(".run_silent(") {
+            assert!(matches!(name.as_str(), "shield_run.rs" | "nonblocking.rs"), ".run_silent( in {name}: it blocks");
         }
         if name == "launcher/sources.rs" {
             runner = Some(prod);
+        } else if name == "shield_run.rs" {
+            shield = Some(prod);
         }
     }
     let runner = runner.expect("launcher/sources.rs");
     assert!(runner.contains(".capture("), "the runner reads through the executor");
     for never in ["shell_argv", "\"sh\"", "\"-c\"", "spawn("] {
         assert!(!runner.contains(never), "{never} in launcher/sources.rs");
+    }
+    // The Shield runner (shield spec § 7): a configured argv through `capture`, on its own worker
+    // thread (`thread::Builder` is its one way to start it), never a shell and never a detached spawn.
+    let shield = shield.expect("shield_run.rs");
+    assert!(shield.contains(".capture("), "the Shield runner reads through the executor");
+    for never in ["spawn_with_", ".run(", "exec.spawn(", "executor.spawn(", "\"sh\"", "\"-c\"", "shell_argv", "Command::new"] {
+        assert!(!shield.contains(never), "{never} in shield_run.rs");
     }
 }
 
@@ -790,7 +867,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, TimerVerb};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -806,6 +883,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
             Request::ClearNotifications => "clear-notifications",
+            Request::FailedRefresh => "failed-refresh",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
             Request::Timer(_) => "timer",
@@ -813,6 +891,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsTry(_) => "outputs-try",
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
+            Request::Shield(_) => "shield",
         }
     }
     let all = [
@@ -829,6 +908,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
         Request::ClearNotifications,
+        Request::FailedRefresh,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
         Request::Timer(TimerVerb::Popup),
@@ -836,6 +916,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsTry(String::new()),
         Request::OutputsKeep,
         Request::OutputsRevert,
+        Request::Shield(ShieldVerb::Status),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -853,13 +934,15 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "dnd",
             "dnd-on",
             "clear-notifications",
+            "failed-refresh",
             "osd",
             "quick",
             "timer",
             "outputs",
             "outputs-try",
             "outputs-keep",
-            "outputs-revert"
+            "outputs-revert",
+            "shield"
         ]
     );
 }
@@ -1109,6 +1192,12 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
+        // The Shield command or read (shield spec § 7): one worker thread, alive only while that
+        // command or read runs (one action slot and one read slot, each held until the worker's
+        // report), and its one DeadlineTimer, built in `ShieldApp::new`: armed only while a
+        // switch waits for its flag (the 5 s grace or the 60 s bound).
+        ("shield_run.rs", "thread::Builder", 1),
+        ("shield_app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -1176,7 +1265,9 @@ fn d_bus_is_confined_to_sources_and_read_only() {
             "EnumerateDevices",
             "GetDevices",
             "ListConnections",
-            "GetSettings"
+            "GetSettings",
+            "Get",
+            "Subscribe"
         ]
     );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
@@ -1390,6 +1481,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             "PlayPause",
             "Next",
             "Previous",
+            "Subscribe",
         ]
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
@@ -1432,6 +1524,46 @@ fn the_portal_is_read_through_exactly_two_members() {
     }
 }
 
+/// Diagnostics spec § 8: the user manager is asked for one property and told `Subscribe`, nothing
+/// else of systemd's. `Subscribe` is the only call on the Manager interface the session bus's
+/// allowlist holds; the count is a `Get` of one property, never `GetAll` (its `Environment` may
+/// hold secrets); `failed_app.rs` names no dbus type, builds no call, and logs fixed words (no
+/// owner, no unit name).
+#[test]
+fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
+    let on_manager: Vec<&str> = TrayMethod::ALL.iter().filter(|m| m.interface() == SYSTEMD_MANAGER).map(|m| m.name()).collect();
+    assert_eq!(on_manager, ["Subscribe"], "the only systemd call on the session bus");
+    let get = message(&Call::Get {
+        destination: ":1.9".into(),
+        path: SYSTEMD_PATH.into(),
+        property: alpheus_demon::session_bus::bus::Property::NFailedUnits,
+    });
+    assert_eq!(get.read2::<&str, &str>().unwrap(), (SYSTEMD_MANAGER, "NFailedUnits"), "one property");
+    assert!(!get.get_auto_start(), "never starts the manager");
+    let sub = message(&Call::SubscribeUnits { dest: ":1.9".into() });
+    assert_eq!(sub.destination().as_deref(), Some(":1.9"), "to its unique name, never the well-known one");
+    assert!(!sub.get_auto_start());
+    assert_eq!(SYSTEMD_NAME, "org.freedesktop.systemd1");
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "failed_app.rs").expect("failed_app.rs").1;
+    let prod = production_code(&file);
+    assert!(!uses_crate(&prod, "dbus"), "failed_app.rs goes through the tray's typed calls and codec");
+    assert!(!prod.contains("method_call(") && !prod.contains("get_all") && !prod.contains("GetAll"), "one Get, built by bus::message");
+    assert!(!prod.contains("Environment"), "never the Manager's environment");
+    assert_eq!(
+        prod.matches("Call::").count(),
+        prod.matches("Call::AddMatch").count()
+            + prod.matches("Call::GetNameOwner").count()
+            + prod.matches("Call::Get {").count()
+            + prod.matches("Call::SubscribeUnits").count(),
+        "only the two rules, the owner, the count and the subscription"
+    );
+    for word in ["StartUnit", "StopUnit", "RestartUnit", "ResetFailed", "KillUnit", "Reload", "Unsubscribe", "SetEnvironment"] {
+        assert!(!prod.contains(word), "{word} in failed_app.rs: the daemon only counts failed units");
+    }
+    // Every log line is a fixed word: nothing formatted, so no owner, no unit, no path.
+    assert!(!prod.contains("log(&format!") && !prod.contains("say)(&format!"), "fixed lines only");
+}
+
 /// The files of the tray, the popups and the calendar: they run on the
 /// bar's loop, never on a thread of their own, and never run a command
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
@@ -1458,6 +1590,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "state_file.rs",
     "notify_app.rs",
     "link.rs",
+    "failed_app.rs",
     "background.rs",
     "painter/",
     "placement.rs",
@@ -1469,6 +1602,9 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "quick_bt.rs",
     "quick_vpn.rs",
     "quick_dnd.rs",
+    "quick_shield.rs",
+    "shield.rs",
+    "shield_usb.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -2012,6 +2148,9 @@ impl Executor for ArgvSpy {
     fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
         Err(self.record(prog, args))
     }
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        Err(self.record(prog, args))
+    }
 }
 
 /// The daemon paints with the 16 roles only. The old 7-colour
@@ -2214,7 +2353,9 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs", "quick_shield.rs"]
+            .contains(&name.as_str())
+        {
             continue;
         }
         checked += 1;
@@ -2235,7 +2376,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 6, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs and quick_dnd.rs");
+    assert_eq!(checked, 7, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs, quick_dnd.rs and quick_shield.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2259,7 +2400,15 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), dnd_end: None, profile: Some(&profile), config: &config, bluetooth: None };
+    let live = Live {
+        sound: Some(&sound),
+        dnd: Some(false),
+        dnd_end: None,
+        profile: Some(&profile),
+        config: &config,
+        bluetooth: None,
+        shield: None,
+    };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || {
@@ -2554,6 +2703,7 @@ fn the_quick_panel_has_no_panicking_path() {
         "quick_bt.rs",
         "quick_vpn.rs",
         "quick_dnd.rs",
+        "quick_shield.rs",
         "session.rs",
         "bt_app.rs",
     ] {
@@ -3673,6 +3823,7 @@ fn the_hooks_are_fed_where_state_changes() {
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
         ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
+        ("shield_app.rs", "fn shield_readable(", "hooks_shield("),
     ] {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
@@ -3685,7 +3836,7 @@ fn the_hooks_are_fed_where_state_changes() {
         assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
         checked += 1;
     }
-    assert_eq!(checked, 6);
+    assert_eq!(checked, 7);
 }
 
 /// Quick notes: nothing of the pad outlives it. `notes_close` takes the pad out before it syncs the
@@ -3768,7 +3919,7 @@ fn the_notes_spawn_only_the_copy_command() {
         }
         seen += 1;
         let prod = production_code(&t);
-        for never in [".spawn(", ".capture(", ".stream(", ".run("] {
+        for never in [".spawn(", ".capture(", ".stream(", ".run(", ".run_silent("] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         let n = prod.matches("spawn_with_input(").count();
@@ -4528,4 +4679,174 @@ fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
     );
     let tick = function_body(&tools, "pub(crate) fn tools_tick(");
     assert!(tick.contains("launcher_guarded(\"tools timer\""), "the timer's tick runs guarded");
+}
+
+/// The string literals of `call` (escapes skipped) and what is left of it once they are removed.
+fn literals_and_rest(call: &str) -> (Vec<String>, String) {
+    let (mut lits, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
+    for c in call.chars() {
+        if inside {
+            if escaped {
+                cur.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                cur.push(c);
+                escaped = true;
+            } else if c == '"' {
+                inside = false;
+                lits.push(std::mem::take(&mut cur));
+                rest.push('"');
+            } else {
+                cur.push(c);
+            }
+        } else {
+            if c == '"' {
+                inside = true;
+            }
+            rest.push(c);
+        }
+    }
+    (lits, rest)
+}
+
+/// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
+/// command, argument or path: what is left of each whole `log(` call once its literals are removed
+/// names none of them, and every literal is one of the list's (a `<reason>` slot is filled by
+/// `Reason::text` alone).
+#[test]
+fn the_shield_logs_name_nothing() {
+    const CLOSED: [&str; 19] = [
+        "shield: on",
+        "shield: off",
+        "shield: allow",
+        "shield: now on",
+        "shield: now off",
+        "shield: switching {} failed ({})",
+        "shield: allow failed ({})",
+        "shield: listing failed ({})",
+        "shield: more than 64 blocked devices; the rest not listed",
+        "shield: the flag cannot be read",
+        "shield: flag not watched ({})",
+        "shield: flag not watched ({e})",
+        "shield: flag not watched (shares the config directory's watch)",
+        "shield: no notification (not serving)",
+        "shield: worker failed",
+        "shield: not started ({why})",
+        "theme: mask not restored; watching again",
+        "on",
+        "off",
+    ];
+    const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    // Every log call of the Shield's own files, and the Shield's lines of the others.
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
+    }
+    for name in
+        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks_app.rs", "watch.rs"]
+    {
+        calls.extend(
+            log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
+        );
+    }
+    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same way.
+    let watch = src("watch.rs");
+    calls.push(("watch.rs".into(), function_body(&watch, "fn shield_unwatched_line(").to_string()));
+    // The theme watch's own line for the flag's rearm.
+    calls
+        .extend(log_calls(&watch).into_iter().filter(|c| c.contains("mask not restored")).map(|c| ("watch.rs".to_string(), c.to_string())));
+    calls.sort();
+    calls.dedup();
+    assert!(calls.len() >= 10, "the Shield's log calls were found: {}", calls.len());
+    for (name, call) in &calls {
+        let (lits, rest) = literals_and_rest(call);
+        for l in &lits {
+            assert!(CLOSED.contains(&l.as_str()), "a literal outside the closed list in {name}: {l:?} in {call}");
+        }
+        for word in rest.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            assert!(!FORBIDDEN.contains(&word), "a log call in {name} names `{word}`: {call}");
+        }
+    }
+    // The `<reason>` slot of the failure lines is `Reason::text`.
+    for call in calls.iter().map(|(_, c)| c).filter(|c| c.contains("failed ({})")) {
+        assert!(call.contains("why.text()"), "{call}");
+    }
+}
+
+/// Shield spec § 3 and decision 4: the flag is watched in the theme watch's one inotify instance; the
+/// Shield's own files create none.
+#[test]
+fn the_shield_watch_is_the_theme_watchs_instance() {
+    let files = source_files();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for never in ["Inotify::new", "inotify_", "inotify::"] {
+            assert!(!t.contains(never), "{never} in {name}");
+        }
+    }
+    let watch = production_code(&files.iter().find(|(p, _)| relative_path(p) == "watch.rs").expect("watch.rs").1);
+    assert_eq!(watch.matches("Inotify::new()").count(), 1, "one inotify instance, the theme watch's, carries both targets");
+}
+
+/// Shield spec § 12 and the plan's constraints: the pure model, the parser, the runner and the panel
+/// detail have no panicking path (a USB name is hostile text).
+#[test]
+fn the_shield_files_have_no_panicking_path() {
+    let files = source_files();
+    for name in ["shield.rs", "shield_usb.rs", "shield_run.rs", "quick_shield.rs"] {
+        let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// Shield spec § 7 (final fix wave I1): an action (on, off, allow) never goes through a pipe it could
+/// be cut by (`capture` drops its read end at a deadline: a privileged helper we cannot kill would die
+/// of SIGPIPE half way through its work); only the listing does. And the daemon's shutdown stops what
+/// it can still reach.
+#[test]
+fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
+    let files = source_files();
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_run.rs").expect("shield_run.rs").1);
+    let body = function_body(&t, "pub fn run_job(");
+    let list_at = body.find("exec.capture(").expect("the listing's capture");
+    let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
+    assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
+    assert_eq!(body.matches("exec.capture(").count(), 1);
+    // Final fix wave M1: a failed switch and a deadline are judged after one look at the flag.
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_app.rs").expect("shield_app.rs").1);
+    let mail = function_body(&app, "fn shield_mail(");
+    assert!(
+        mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),
+        "shield_mail reads the flag before it judges a failed switch"
+    );
+    let tick = function_body(&app, "fn shield_tick(");
+    assert!(
+        tick.find("shield_readable()").expect("a read in shield_tick") < tick.find("model.expired(").expect("expired"),
+        "shield_tick reads the flag before it judges the deadline, watched or not"
+    );
+    assert!(!tick.contains("shield_watched"), "the deadline's read does not depend on the watch");
+    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    assert!(function_body(startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
+}
+
+/// Shield spec § 5 (I1 of the Task 4-5 review): the panel's timer follows its view from the open, so a
+/// `failed` shown at open (a switch that failed a moment before the panel was reopened) clears at its
+/// 4 s: `quick_toggle` syncs it itself, whatever refresh happens to follow.
+#[test]
+fn the_quick_panels_timer_follows_the_view_from_the_open() {
+    let files = source_files();
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
+    }
 }

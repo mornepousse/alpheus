@@ -21,7 +21,7 @@ expression: all
                                                                                        
   󰏘 Theme    7     Wi-Fi            Bluetooth        Do not disturb   Keep awake       
                    󰖩 MON_WIFI_1     󰂯 CasqueBT       󰂛 off            󰅶 off            
-                                                                                       
+  󰃤 Diag     8                                                                         
                   ┌ 󰛳 Connections ────────────────┐ ┌ 󰂯 Devices ────────────────────┐  
                   │ 󰖩 MON_WIFI_1           Wi-Fi  │ │ 󰂱 CasqueBT        ● connected │  
                   │ 󰈀 Wired connection 1          │ │                               │  

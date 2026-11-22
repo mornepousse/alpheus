@@ -20,8 +20,14 @@ const TAIL_ROOM: u16 = 13;
 
 /// A section heading: upper-case, bold, in the tab's hue, then a quiet rule.
 pub fn heading(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, hue: Color, th: &Theme) {
+    heading_to(buf, clip, x, y, text, hue, th, None);
+}
+
+/// `heading`, its rule running up to column `rule_end` (exclusive) instead of its usual length.
+#[allow(clippy::too_many_arguments)]
+pub fn heading_to(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, hue: Color, th: &Theme, rule_end: Option<u16>) {
     let w = put(buf, clip, x, y, &text.to_uppercase(), Style::default().fg(hue).add_modifier(Modifier::BOLD));
-    let end = x.saturating_add(w + 1 + GAUGE_W).min(clip.right());
+    let end = rule_end.unwrap_or_else(|| x.saturating_add(w + 1 + GAUGE_W)).min(clip.right());
     for k in x.saturating_add(w + 1)..end {
         put(buf, clip, k, y, "─", Style::default().fg(th.raised));
     }

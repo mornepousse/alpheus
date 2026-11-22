@@ -1,0 +1,29 @@
+---
+source: crates/alpheus/src/ui/journal/tests.rs
+assertion_line: 61
+expression: "rows(&a, 80, 24)"
+---
+  1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        
+                                                                                
+ Journal · Errors this boot                                            Esc back 
+ unit: any  ·  level: err and worse  ·  follow: off  ·  / filter                
+ 01:00:01 kernel[101]: usb 3-2: new high-speed USB device number 4              
+ 01:00:02 example-app[102]: started                                             
+ 01:00:03 example-sync[103]: nothing to sync                                    
+ 01:00:04 NetworkManager[104]: device (wlan0): link is slow                     
+ 01:00:05 example-app[105]: failed to open /mnt/data                            
+ 01:00:06 kernel[106]: Kernel panic - not syncing                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Diag · ready                                                                   
+ / Filter  u Unit  p Level  f Follow  PgUp/Dn/End Scroll  q Quit  F1 Help

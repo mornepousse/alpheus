@@ -500,13 +500,21 @@ pub struct App {
     /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
     /// a threshold in `[battery] warn`.
     pub(crate) battery_alerts: Option<crate::battery_alert::BatteryAlerts>,
+    /// The failed-units notice (failed.rs): only with `[failed] notify` and the failed and
+    /// notifications modules.
+    pub(crate) failed_notice: Option<crate::failed::Notice>,
     /// The event hooks (hooks_app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks_app::HooksApp>,
+    /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
+    pub(crate) shield: Option<crate::shield_app::ShieldApp>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
     pub(crate) osd: crate::osd_surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).
     pub(crate) quick: crate::quick_app::QuickApp,
+    /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
+    /// `Units` domain.
+    pub(crate) units_tap: Option<Arc<crate::sources::dbus::UnitsTap>>,
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
@@ -621,7 +629,9 @@ impl App {
         let timer = crate::timer_app::TimerApp::new(&bar.config);
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
+        let failed_notice = crate::failed::notice_wanted(&bar.config).then(crate::failed::Notice::default);
         let hooks = crate::hooks_app::HooksApp::new(&bar.config.hooks);
+        let shield = crate::shield_app::ShieldApp::new(&bar.config.shield);
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
@@ -674,9 +684,12 @@ impl App {
             media_timer: DeadlineTimer::new(),
             bubbles: crate::bubbles_surface::BubbleSurface::new(),
             battery_alerts,
+            failed_notice,
             hooks,
+            shield,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
+            units_tap: None,
             power_timer: DeadlineTimer::new(),
             tools: crate::tools_app::ToolsApp::new(),
             power_verb_opened: None,

@@ -1,0 +1,30 @@
+---
+source: crates/alpheus/src/ui/report_views/tests.rs
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    Bug report                                                 Esc back  
+                  Read before copying: logs can name things                            
+  󰕾 Sound    2    [ Copy ]  Enter copies exactly this text; Esc closes and copies not  
+                                                                                       
+  󰖩 Network  3    alpheus diagnostics report, 2026-11-21 21:40 UTC                     
+                  alpheus 0.1.0 · systemd 260 (260.5)                                  
+  󰂯 BT       4    Failed units: none                                                   
+                  hostile                                                              
+  󰐥 Power    5                                                                         
+                                                                                       
+  󰍹 Displays 6                                                                         
+                                                                                       
+  󰏘 Theme    7                                                                         
+                                                                                       
+ ▌󰃤 Diag     8                                                                         
+                                                                                       
+                                                                                       
+                                                                                       
+  ● ready                                                                              
+                                                                                       
+                   Enter  Copy    PgUp/PgDn  Scroll    q  Quit    F1  Help

@@ -28,7 +28,7 @@ use common::{
     start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy, wl_paste, write_atomically, wtype,
     wtype_spawn,
 };
-use common::{FakeVpn, vpn_uuid};
+use common::{FakeSystemd, FakeVpn, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -7342,6 +7342,235 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
 }
 
+// ---- The failed-units module (diagnostics plan 1, task 9). Two private buses: the system one and
+// the session one each carry a `FakeSystemd`; the compositor is the headless sway. ----
+
+/// The bar with the failed count and the clock only: no hue but the error role's could be red.
+const FAILED_BAR: &str = "modules = [\"workspaces\", \"failed\", \"clock\"]\n";
+
+/// A daemon on two private buses, `system` and `user` systemd managers with those counts; returned
+/// once the bar is placed and both counts were read.
+fn failed_daemon(
+    name: &str,
+    bar_toml: &str,
+    system: u32,
+    user: u32,
+    extra_env: impl FnOnce(&Sway),
+) -> (Sway, PrivateBus, PrivateBus, FakeSystemd, FakeSystemd, Daemon) {
+    let sway = Sway::start(name, 1);
+    extra_env(&sway);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let (sys_bus, user_bus) = (PrivateBus::start(&format!("{name}-sys")), PrivateBus::start(&format!("{name}-user")));
+    let (sys, usr) = (FakeSystemd::serve(&sys_bus, system), FakeSystemd::serve(&user_bus, user));
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(bar_toml),
+            system_bus: Some(&sys_bus.address),
+            session_bus: Some(&user_bus.address),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (sway, sys_bus, user_bus, sys, usr, d)
+}
+
+/// Both managers' counts were read (the module is on), and the bar drawn.
+fn failed_counts_read(sys: &FakeSystemd, usr: &FakeSystemd) {
+    sys.wait_until("the system count read", |s| s.calls("Get") >= 1);
+    usr.wait_until("the user count read", |s| s.calls("Get") >= 1);
+    thread::sleep(Duration::from_millis(300));
+}
+
+fn error_red_on_the_bar(sway: &Sway) -> bool {
+    sway.screenshot("HEADLESS-1").is_some_and(|s| on_the_bar(&s, privacy_red()).is_some())
+}
+
+/// Spec § 6: nothing drawn at 0; a count pushed by a subscribed manager draws `󰀦 N` in the error
+/// role and it goes again at 0. Either manager's count counts.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_shows_only_above_zero() {
+    let (sway, _sys_bus, _user_bus, sys, usr, d) =
+        failed_daemon("failed-shows", &format!("{FAILED_BAR}[failed]\nsubscribe = true\n"), 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(!error_red_on_the_bar(&sway), "nothing at zero: {:?}", d.log());
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    usr.wait_until("the user subscription", |s| s.subscribers() == 1);
+    sys.set_failed(1);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "never drawn: {:?}", d.log());
+    sys.set_failed(0);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_none()), "never gone: {:?}", d.log());
+    // The user manager's count alone shows too.
+    usr.set_failed(2);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "the user count: {:?}", d.log());
+    assert_eq!(sys.calls("GetAll") + usr.calls("GetAll"), 0, "the Manager's Environment is never asked for");
+}
+
+/// With `subscribe = false` a change shows only when something asks: `alpheus-launch
+/// --failed-refresh` makes the daemon read both managers (the system one through the D-Bus
+/// thread, the user one on the loop). The system count alone is changed: a verb that skipped the
+/// poke would leave the bar as it was.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_follows_failed_refresh_unsubscribed() {
+    let toml = format!("{FAILED_BAR}[failed]\nsubscribe = false\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-refresh", &toml, 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    ready(&d);
+    assert_eq!((sys.calls("Subscribe"), usr.calls("Subscribe")), (0, 0), "[failed] subscribe = false");
+    sys.set_failed(1);
+    thread::sleep(Duration::from_millis(800));
+    assert!(!error_red_on_the_bar(&sway), "no subscription, no push: {:?}", d.log());
+    let user_reads = usr.calls("Get");
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "never drawn after the verb: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(usr.calls("Get"), user_reads + 1, "the user manager was read once more, not twice (one read per refresh)");
+    // And back to zero by the verb as well.
+    sys.set_failed(0);
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap().0, EXIT_OK);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_none()), "never gone: {:?}", d.log());
+}
+
+/// `[failed] user_units = false`: the session bus is never asked (no `Get`, no `Subscribe`), the
+/// system count alone shows.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_user_units_off_never_touches_the_session_bus() {
+    let toml = format!("{FAILED_BAR}[failed]\nuser_units = false\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-nouser", &toml, 1, 5, |_| ());
+    sys.wait_until("the system count read", |s| s.calls("Get") >= 1);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!((usr.calls("Get"), usr.calls("Subscribe")), (0, 0), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("the user manager")), "no user client started: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "the system count shows: {:?}", d.log());
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap().0, EXIT_OK);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(usr.calls("Get"), 0, "a refresh reads no user count either: {:?}", d.log());
+}
+
+/// With `battery` in `modules` (the D-Bus thread is up) and no `failed`, neither manager is read,
+/// nothing is subscribed to, and no systemd match rule is added on either bus: the domain and the
+/// user client cost nothing unless asked for.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_off_with_the_dbus_thread_up_touches_no_systemd() {
+    let sway = Sway::start("failed-off-battery", 1);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let (sys_bus, user_bus) = (PrivateBus::start("failed-off-battery-sys"), PrivateBus::start("failed-off-battery-user"));
+    let (sys_watch, user_watch) = (common::MatchMonitor::start(&sys_bus), common::MatchMonitor::start(&user_bus));
+    let (sys, usr) = (FakeSystemd::serve(&sys_bus, 3), FakeSystemd::serve(&user_bus, 3));
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some("modules = [\"workspaces\", \"battery\", \"clock\"]\n"),
+            system_bus: Some(&sys_bus.address),
+            session_bus: Some(&user_bus.address),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    ready(&d);
+    // The system bus's rules prove the monitor works and the D-Bus thread is up (UPower's).
+    let until = Instant::now() + DELAY;
+    while sys_watch.rules().is_empty() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(50));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let (system_rules, user_rules) = (sys_watch.rules(), user_watch.rules());
+    assert!(!system_rules.is_empty(), "the D-Bus thread added its rules: {:?}", d.log());
+    assert!(system_rules.iter().chain(&user_rules).all(|r| !r.contains("systemd1")), "{system_rules:?} {user_rules:?}");
+    assert_eq!((sys.calls("Get"), sys.calls("Subscribe"), usr.calls("Get"), usr.calls("Subscribe")), (0, 0, 0, 0), "{:?}", d.log());
+}
+
+/// The verb with the module off: Done, and nothing is read.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_refresh_without_the_module_is_done_and_reads_nothing() {
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-off", "modules = [\"workspaces\", \"clock\"]\n", 0, 0, |_| ());
+    ready(&d);
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((sys.calls("Get"), usr.calls("Get")), (0, 0), "nothing read: {:?}", d.log());
+}
+
+/// Spec § 6, the hook: `failed_units` fires on a change of the total (past the quiet window), with
+/// both counts in its environment, and not twice for a total that did not change.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_units_hook_fires_on_change() {
+    let toml = format!("{FAILED_BAR}[failed]\nsubscribe = true\n[hooks]\nfailed_units = [\"hook-rec\"]\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-hook", &toml, 0, 0, |sway| {
+        fake_env_recorder(sway, "hook-rec");
+    });
+    failed_counts_read(&sys, &usr);
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    usr.wait_until("the user subscription", |s| s.subscribers() == 1);
+    assert!(recorded(&sway, "hook-rec").is_empty(), "the first total is a seed: {:?}", d.log());
+    past_the_quiet_window();
+    sys.set_failed(2);
+    let calls = hook_calls(&sway, &d, 1);
+    assert_eq!(
+        calls[0], "hook-rec |ALPHEUS_EVENT=failed_units ALPHEUS_FAILED=2 ALPHEUS_FAILED_SYSTEM=2 ALPHEUS_FAILED_USER=0 ",
+        "{calls:?}"
+    );
+    usr.set_failed(1);
+    let calls = hook_calls(&sway, &d, 2);
+    assert_eq!(
+        calls[1], "hook-rec |ALPHEUS_EVENT=failed_units ALPHEUS_FAILED=3 ALPHEUS_FAILED_SYSTEM=2 ALPHEUS_FAILED_USER=1 ",
+        "{calls:?}"
+    );
+    // The same count again is no change of the total: no third run.
+    sys.set_failed(2);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(recorded(&sway, "hook-rec").len(), 2, "no more than the changes of the total: {:?}", d.log());
+    assert!(d.wait_for("hook: failed_units", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().filter(|l| l.contains("hook")).all(|l| !l.contains("ALPHEUS")), "the log names the event only: {:?}", d.log());
+}
+
+/// Both managers already failing at start: one notice, not one per manager (the notice waits for
+/// both to answer once, so it carries the total).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_notice_at_start_is_one_with_the_total() {
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nsubscribe = true\nnotify = true\n";
+    let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice-start", toml, 2, 1, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(d.wait_for_count("failed: notice", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("failed: notice"), 1, "one notice for both managers: {:?}", d.log());
+}
+
+/// Spec § 6, the notice: with `[failed] notify` and the notifications module, a total that rises
+/// above the last notified sends one notice; the same total, or a fall, none; zero re-arms it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nsubscribe = true\nnotify = true\n";
+    let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice", toml, 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    sys.set_failed(1);
+    assert!(d.wait_for_count("failed: notice", 1, DELAY), "{:?}", d.log());
+    sys.set_failed(2);
+    assert!(d.wait_for_count("failed: notice", 2, DELAY), "{:?}", d.log());
+    sys.set_failed(1);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("failed: notice"), 2, "a fall is no notice: {:?}", d.log());
+    sys.set_failed(0);
+    thread::sleep(Duration::from_millis(300));
+    sys.set_failed(1);
+    assert!(d.wait_for_count("failed: notice", 3, DELAY), "re-armed at zero: {:?}", d.log());
+}
+
 // ---- the clipboard history (clipboard spec, task 6) ----
 //
 // Fictional texts only, served by the harness `wl_copy` on THIS sway; `wl_paste` reads this sway's
@@ -7576,4 +7805,487 @@ fn clipboard_replaces_another_launcher_mode() {
     thread::sleep(PAST_DEBOUNCE);
     assert_eq!(launcher(&sway, &Request::Clipboard), Reply::Done);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+}
+
+// ---- Shield mode (shield spec) ----
+
+/// What a Shield test starts the daemon with.
+struct ShieldSetup<'a> {
+    /// The argument `on` passes to `fake-shield`: `on`, or `fail` for a refused password.
+    on_arg: &'a str,
+    /// How many of the fixture's blocked devices `fake-shield list` prints.
+    devices: usize,
+    /// The flag exists before the daemon starts.
+    flag_present: bool,
+    /// `[shield]` is written (false: no table at all).
+    configured: bool,
+    /// A private session bus: alpheus takes `org.freedesktop.Notifications` on it (notices are given).
+    serving: bool,
+    /// More of bar.toml (`[hooks]`).
+    extra: &'a str,
+    /// The `notifications` module is in `modules` (without a session bus its connection retries on a
+    /// doubling backoff: a few wake-ups in the first seconds, nothing to do with Shield mode).
+    notifications: bool,
+    /// `fake-shield list` sleeps this many seconds before it prints.
+    list_secs: u32,
+    /// The flag's directory is a link to the config directory: the watch cannot tell them apart, so
+    /// the flag is not watched (the degraded mode).
+    degraded: bool,
+}
+
+impl Default for ShieldSetup<'_> {
+    fn default() -> Self {
+        ShieldSetup {
+            on_arg: "on",
+            devices: 2,
+            flag_present: false,
+            configured: true,
+            serving: false,
+            extra: "",
+            notifications: true,
+            list_secs: 0,
+            degraded: false,
+        }
+    }
+}
+
+struct ShieldWorld {
+    sway: Sway,
+    _hypr: FakeHyprland,
+    d: Daemon,
+    flag: PathBuf,
+    record: PathBuf,
+    _bus: Option<PrivateBus>,
+    /// The system bus, serving nothing: the D-Bus source settles instead of retrying on a backoff.
+    _system: PrivateBus,
+}
+
+/// The Shield bar (catppuccin dark): only `quick`, `notifications` and `shield`, an empty pw-dump graph
+/// (no volume row), no NetworkManager, BlueZ or power profile, no backlight, no session command: the
+/// Shield row is the panel's first (each test reads the rows from the `quick shown` line before pressing
+/// a key, so a harness change fails loudly instead of acting on another row).
+fn shield_daemon(name: &str, o: &ShieldSetup) -> ShieldWorld {
+    let bus = o.serving.then(|| PrivateBus::start(name));
+    let system = PrivateBus::start(&format!("{name}-system"));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let flag = if o.degraded {
+        let link = sway.runtime.join("shield-link");
+        std::os::unix::fs::symlink(&config, &link).unwrap();
+        link.join("flag")
+    } else {
+        sway.runtime.join("shield-state/flag")
+    };
+    let record = sway.runtime.join("shield-record");
+    fake_env_recorder(&sway, "hook-rec");
+    shield_stub(&sway, &flag, &record, o.devices, o.list_secs);
+    if o.flag_present {
+        std::fs::write(&flag, "").unwrap();
+    }
+    let table = if o.configured {
+        format!(
+            "[shield]\nflag = {:?}\non = [\"fake-shield\", {:?}]\noff = [\"fake-shield\", \"off\"]\nblocked = [\"fake-shield\", \"list\"]\nallow = [\"fake-shield\", \"allow\", \"{{id}}\"]\n",
+            flag.display().to_string(),
+            o.on_arg
+        )
+    } else {
+        String::new()
+    };
+    let modules = if o.notifications { "[\"quick\", \"notifications\", \"shield\"]" } else { "[\"quick\", \"shield\"]" };
+    let toml =
+        format!("modules = {modules}\n[osd]\nbacklight_dir = \"{}\"\n{table}{}", sway.runtime.join("no-backlight").display(), o.extra);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(&toml),
+            pw_dump: PwDump::Empty,
+            system_bus: Some(&system.address),
+            session_bus: bus.as_ref().map(|b| b.address.as_str()),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    if let Some(b) = &bus {
+        wait_for_the_server(b);
+    }
+    thread::sleep(Duration::from_millis(500)); // the first reading of the flag, the bar drawn
+    ShieldWorld { sway, _hypr: hypr, d, flag, record, _bus: bus, _system: system }
+}
+
+impl ShieldWorld {
+    fn record(&self) -> Vec<String> {
+        shield_record(&self.record)
+    }
+
+    /// Opens the panel by the verb (its first row selected) and checks that row is the Shield's: what
+    /// the keys that follow act on.
+    fn open_panel(&self) {
+        assert_eq!(quick_verb(&self.sway, &["--quick"]), EXIT_OK);
+        assert!(self.d.wait_for_count("quick shown", 1, DELAY), "{:?}", self.d.log());
+        let line = self.d.log().into_iter().rev().find(|l| l.contains("quick shown")).unwrap();
+        assert!(line.contains("quick shown (rows: shield"), "the Shield row is first: {line}");
+    }
+}
+
+/// `alpheus-launch --shield <word>` with nothing on stdin: its exit code and what it printed.
+fn shield_verb(sway: &Sway, word: &str) -> (i32, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args: Vec<OsString> = ["--shield", word].iter().map(OsString::from).collect();
+    let code = run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err);
+    (code, String::from_utf8_lossy(&out).into_owned() + &String::from_utf8_lossy(&err))
+}
+
+/// Space on the Shield row runs `on`; the flag appears, the change is seen at once and announced as
+/// any change, and the bar draws the glyph in the green, only while it is on.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_space_switches_on_and_the_glyph_shows() {
+    let w = shield_daemon("shield-on", &ShieldSetup::default());
+    let green = privacy_green();
+    assert_eq!(on_the_bar(&w.sway.screenshot("HEADLESS-1").expect("grim"), green), None, "off: no glyph: {:?}", w.d.log());
+    w.open_panel();
+    keys(&w.sway, &["space"]);
+    assert!(w.d.wait_for("shield: on", DELAY), "{:?}", w.d.log());
+    assert!(w.d.wait_for("shield: now on", DELAY), "{:?}", w.d.log());
+    assert!(w.flag.exists());
+    assert_eq!(w.record(), ["run on"]);
+    wait_for_the_glyph(&w.sway, &w.d, green);
+}
+
+/// Whether any pixel below the bar is catppuccin dark's warn: the `failed` tag of the Shield row.
+fn warn_under_the_bar(s: &Ppm) -> bool {
+    let warn = rgb(preset("catppuccin").unwrap().dark.warn);
+    (22..s.height).any(|y| (0..s.width).any(|x| s.at(x, y) == Some(warn)))
+}
+
+/// Seconds 2 to 35 of the minute: room for a rest window that must not meet the clock's turn.
+fn early_in_the_minute() {
+    while !(2..=35).contains(&alpheus_demon::clock::LocalTime::now().0.second) {
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// A change made elsewhere (a terminal, the boot, another session) shows at once, with nothing run by
+/// alpheus: the flag's directory is watched, never polled.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_change_made_elsewhere_shows_at_once() {
+    let w = shield_daemon("shield-elsewhere", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    let green = privacy_green();
+    wait_for_the_glyph(&w.sway, &w.d, green);
+    assert_eq!(w.d.count("shield: now"), 0, "the start is a seed: {:?}", w.d.log());
+    std::fs::remove_file(&w.flag).unwrap();
+    assert!(w.d.wait_for("shield: now off", Duration::from_secs(1)), "{:?}", w.d.log());
+    assert!(w.sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, green).is_none()), "the glyph went: {:?}", w.d.log());
+    assert!(w.record().is_empty(), "alpheus ran nothing: {:?}", w.record());
+}
+
+/// A refused password (the command exits 126): one fixed-word line with the exit code, the flag
+/// unchanged, nothing named in the log.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_refused_password_fails() {
+    let w = shield_daemon("shield-fail", &ShieldSetup { on_arg: "fail", ..ShieldSetup::default() });
+    w.open_panel();
+    keys(&w.sway, &["space"]);
+    assert!(w.d.wait_for("shield: switching on failed (exit 126)", DELAY), "{:?}", w.d.log());
+    assert!(!w.flag.exists());
+    assert_eq!(w.record(), ["run fail"]);
+    assert!(w.sway.wait_for_screen("HEADLESS-1", warn_under_the_bar), "`failed` shown: {:?}", w.d.log());
+}
+
+/// The panel reopened within 4 s of a failed switch shows `failed` at once, and it clears at its
+/// 4 s: the panel's timer follows the view from the open (a stale `failed` never stays).
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_panel_reopened_within_4_s_of_a_failed_switch_shows_failed_then_clears() {
+    let w = shield_daemon("shield-reopen", &ShieldSetup { on_arg: "fail", ..ShieldSetup::default() });
+    w.open_panel();
+    keys(&w.sway, &["space"]);
+    assert!(w.d.wait_for("shield: switching on failed (exit 126)", DELAY), "{:?}", w.d.log());
+    let failed_at = Instant::now();
+    keys(&w.sway, &["Escape"]);
+    assert!(w.d.wait_for("popup closed (escape)", DELAY), "{:?}", w.d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
+    assert!(w.d.wait_for_count("quick shown", 2, DELAY), "{:?}", w.d.log());
+    assert!(failed_at.elapsed() < Duration::from_secs(4), "the reopen is within the 4 s");
+    assert!(w.sway.wait_for_screen("HEADLESS-1", warn_under_the_bar), "reopened: `failed` still shown: {:?}", w.d.log());
+    assert!(w.sway.wait_for_screen("HEADLESS-1", |s| !warn_under_the_bar(s)), "and cleared by itself: {:?}", w.d.log());
+    assert!(failed_at.elapsed() >= Duration::from_secs(3), "not before its 4 s");
+}
+
+/// Enter on the row opens the detail: one read; Enter on a device runs `allow` with its id, then the
+/// list is read again.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_the_detail_lists_and_allows() {
+    let w = shield_daemon("shield-detail", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    w.open_panel();
+    keys(&w.sway, &["Return"]);
+    assert!(wait_until(|| w.record() == ["list"]), "{:?}", w.record());
+    thread::sleep(Duration::from_millis(500)); // the listing adopted and drawn
+    keys(&w.sway, &["Down", "Return"]); // the second device: Test Stick, id 12
+    assert!(wait_until(|| w.record() == ["list", "allow 12", "list"]), "{:?} {:?}", w.record(), w.d.log());
+    assert!(w.d.wait_for("shield: allow", DELAY), "{:?}", w.d.log());
+}
+
+/// A hash of the whole screen (two screens are told apart, never read).
+fn fingerprint(s: &Ppm) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for y in 0..s.height {
+        for x in 0..s.width {
+            let p = s.at(x, y).map_or(0, |p| u64::from(p[0]) << 16 | u64::from(p[1]) << 8 | u64::from(p[2]));
+            h = (h ^ p).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// A listing that ends after the panel closed is dropped: nothing breaks, nothing is kept, and the
+/// next open reads the devices afresh and shows `Reading…` until it ends (a late listing adopted would
+/// draw the devices at once: the screen right after the reopen must differ from the one after the read).
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn a_listing_after_the_panel_closed_is_dropped() {
+    let w = shield_daemon("shield-late-list", &ShieldSetup { flag_present: true, list_secs: 1, ..ShieldSetup::default() });
+    w.open_panel();
+    keys(&w.sway, &["Return"]);
+    assert!(wait_until(|| w.record() == ["list"]), "{:?}", w.record());
+    thread::sleep(Duration::from_millis(200)); // `Reading…` drawn
+    let first_reading = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    thread::sleep(PAST_DEBOUNCE); // past the open's own debounce: the verb really closes
+    assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
+    assert!(w.d.wait_for("popup closed (verb)", DELAY), "{:?}", w.d.log());
+    thread::sleep(Duration::from_millis(1800)); // the read ends and is mailed to a closed panel
+    assert!(w.d.log().iter().all(|l| !l.contains("panic") && !l.contains("error in")), "{:?}", w.d.log());
+    assert_eq!(w.d.count("shield: listing failed"), 0, "{:?}", w.d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    w.open_panel();
+    keys(&w.sway, &["Return"]);
+    assert!(wait_until(|| w.record() == ["list", "list"]), "a fresh read, the late one was not kept: {:?}", w.record());
+    thread::sleep(Duration::from_millis(200));
+    let reading = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    assert_eq!(reading, first_reading, "the reopen shows `Reading…` again, as the first open did: the late listing was not adopted");
+    thread::sleep(Duration::from_millis(1800)); // the second read ends and is drawn
+    let listed = w.sway.screenshot("HEADLESS-1").map(|s| fingerprint(&s)).expect("grim reads the output");
+    assert_ne!(reading, listed, "and the devices once read");
+}
+
+/// `--shield status` prints the state and the blocked devices; `--shield allow` opens the picker in the
+/// launcher's box, a chosen line runs `allow` for that device and the client exits 0; typed text and
+/// Escape run nothing (exit 1); a `--dmenu` while the picker is open is busy.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_status_and_allow_verbs() {
+    let w = shield_daemon("shield-verbs", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    let (code, out) = shield_verb(&w.sway, "status");
+    assert_eq!(code, EXIT_OK, "{out}");
+    assert!(
+        out.starts_with("Shield: on\n") && out.contains("abcd:0001  ·  Test Keyboard") && out.contains("1234:5678  ·  Test Stick"),
+        "{out}"
+    );
+    assert!(!out.contains("hash") && !out.contains("serial") && !out.contains("block"), "the attributes stay inside: {out}");
+    // The picker: the second line chosen.
+    let sway_runtime = w.sway.runtime.clone();
+    let asked = thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<OsString> = ["--shield", "allow"].iter().map(OsString::from).collect();
+        run(&args, &socket_path(&sway_runtime), &mut std::io::empty(), &mut out, &mut err)
+    });
+    assert!(w.d.wait_for("launcher shown", DELAY), "{:?}", w.d.log());
+    let busy = launcher(&w.sway, &Request::Dmenu { prompt: None, lines: vec!["x".into()], flags: DmenuFlags::default() });
+    assert_eq!(busy, Reply::Busy, "a second script menu is refused");
+    keys(&w.sway, &["Down", "Return"]);
+    assert_eq!(asked.join().unwrap(), EXIT_OK);
+    assert!(wait_until(|| w.record().last().is_some_and(|l| l == "allow 12")), "{:?}", w.record());
+    // Escape: exit 1, nothing run.
+    let before = w.record().len();
+    let sway_runtime = w.sway.runtime.clone();
+    let asked = thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<OsString> = ["--shield", "allow"].iter().map(OsString::from).collect();
+        run(&args, &socket_path(&sway_runtime), &mut std::io::empty(), &mut out, &mut err)
+    });
+    assert!(w.d.wait_for_count("launcher shown", 2, DELAY), "{:?}", w.d.log());
+    keys(&w.sway, &["Escape"]);
+    assert_eq!(asked.join().unwrap(), EXIT_CANCELLED);
+    // Typed text that matches no line: nothing is allowed either.
+    let sway_runtime = w.sway.runtime.clone();
+    let asked = thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<OsString> = ["--shield", "allow"].iter().map(OsString::from).collect();
+        run(&args, &socket_path(&sway_runtime), &mut std::io::empty(), &mut out, &mut err)
+    });
+    assert!(w.d.wait_for_count("launcher shown", 3, DELAY), "{:?}", w.d.log());
+    assert!(wtype(&w.sway, &["-s", "300", "zzzz", "-k", "Return"]).success());
+    assert_eq!(asked.join().unwrap(), EXIT_CANCELLED, "typed text runs nothing");
+    assert!(w.record().iter().filter(|l| l.starts_with("allow")).count() == 1, "{:?}", w.record());
+    assert!(w.record().len() > before, "the two reads happened: {:?}", w.record());
+}
+
+/// The picker stayed open while the mode went off (final fix wave B3): the chosen device is not
+/// allowed, the client hears why (exit 2) and nothing runs.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_picker_chosen_after_the_mode_went_off_allows_nothing() {
+    let w = shield_daemon("shield-picker-off", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    let sway_runtime = w.sway.runtime.clone();
+    let asked = thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<OsString> = ["--shield", "allow"].iter().map(OsString::from).collect();
+        let code = run(&args, &socket_path(&sway_runtime), &mut std::io::empty(), &mut out, &mut err);
+        (code, String::from_utf8_lossy(&err).into_owned())
+    });
+    assert!(w.d.wait_for("launcher shown", DELAY), "{:?}", w.d.log());
+    std::fs::remove_file(&w.flag).unwrap();
+    assert!(w.d.wait_for("shield: now off", DELAY), "{:?}", w.d.log());
+    keys(&w.sway, &["Down", "Return"]);
+    let (code, err) = asked.join().unwrap();
+    assert_eq!(code, EXIT_ERROR, "{err}");
+    assert!(err.contains("the shield is off"), "{err}");
+    assert!(w.d.wait_for("shield: not started (the shield is off)", DELAY), "{:?}", w.d.log());
+    assert!(w.record().iter().all(|l| !l.starts_with("allow")), "nothing allowed: {:?}", w.record());
+}
+
+/// Without `[shield]` nothing exists: no log line, no row, no glyph, every word exit 2.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_unconfigured_is_silent() {
+    let w = shield_daemon("shield-none", &ShieldSetup { configured: false, ..ShieldSetup::default() });
+    for word in ["on", "off", "toggle", "status", "allow"] {
+        let (code, out) = shield_verb(&w.sway, word);
+        assert_eq!(code, EXIT_ERROR, "{word}: {out}");
+        assert!(out.contains("shield is not configured in bar.toml"), "{word}: {out}");
+    }
+    assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
+    assert!(w.d.wait_for("quick shown", DELAY), "{:?}", w.d.log());
+    assert!(w.d.log().iter().all(|l| !l.contains("shield:")), "{:?}", w.d.log());
+    // The Shield row would be the first of the line's rows (`rows: shield …`): none of them is.
+    let shown: Vec<String> = w.d.log().into_iter().filter(|l| l.contains("quick shown")).collect();
+    assert_eq!(shown.len(), 1, "{:?}", w.d.log());
+    assert!(shown[0].contains("rows: "), "the rows are named, so the check below is not vacuous: {}", shown[0]);
+    assert!(!shown[0].contains("shield"), "no Shield row: {}", shown[0]);
+    assert!(w.record().is_empty());
+}
+
+/// A verb refused before it ran leaves one closed-list line, with the same words the client reads.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_refused_verb_is_logged() {
+    let w = shield_daemon("shield-refused", &ShieldSetup::default());
+    let (code, out) = shield_verb(&w.sway, "allow");
+    assert_eq!(code, EXIT_ERROR, "{out}");
+    assert!(out.contains("the shield is off"), "{out}");
+    assert!(w.d.wait_for("shield: not started (the shield is off)", DELAY), "{:?}", w.d.log());
+    assert!(w.record().is_empty());
+}
+
+/// The state changes of a configured daemon: with a private session bus alpheus serves the
+/// notifications and gives its notice; without one it logs once that it could not.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn shield_a_notice_is_given_only_while_serving() {
+    let silent = shield_daemon("shield-notice-no", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    std::fs::remove_file(&silent.flag).unwrap();
+    assert!(silent.d.wait_for("shield: no notification (not serving)", DELAY), "{:?}", silent.d.log());
+    drop(silent);
+    let serving = shield_daemon("shield-notice-yes", &ShieldSetup { flag_present: true, serving: true, ..ShieldSetup::default() });
+    std::fs::remove_file(&serving.flag).unwrap();
+    assert!(serving.d.wait_for("shield: now off", DELAY), "{:?}", serving.d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(serving.d.count("no notification"), 0, "{:?}", serving.d.log());
+}
+
+/// No watch (the flag's directory is a link to the config directory, one inotify descriptor for both):
+/// the flag is read again at each panel open, never on a timer.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn the_degraded_mode_rereads_at_open() {
+    let w = shield_daemon("shield-degraded-open", &ShieldSetup { degraded: true, ..ShieldSetup::default() });
+    assert!(w.d.wait_for("shield: flag not watched (shares the config directory's watch)", DELAY), "{:?}", w.d.log());
+    std::fs::write(&w.flag, "").unwrap();
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(w.d.count("shield: now on"), 0, "nobody told it: {:?}", w.d.log());
+    assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
+    assert!(w.d.wait_for("shield: now on", DELAY), "the open read it: {:?}", w.d.log());
+}
+
+/// Degraded, a command that exits 0 and a flag that appears later, unwatched: at the grace's end the
+/// flag is read before the attempt is judged, so it ends as a success, never "no change after the
+/// command".
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn the_degraded_mode_reads_the_flag_before_judging_the_grace() {
+    let w = shield_daemon("shield-degraded-tick", &ShieldSetup { degraded: true, on_arg: "noop", ..ShieldSetup::default() });
+    assert!(w.d.wait_for("shield: flag not watched (shares the config directory's watch)", DELAY), "{:?}", w.d.log());
+    w.open_panel();
+    keys(&w.sway, &["space"]);
+    assert!(w.d.wait_for("shield: on", DELAY), "{:?}", w.d.log());
+    thread::sleep(Duration::from_millis(800)); // the command exited 0 and the flag is not there
+    std::fs::write(&w.flag, "").unwrap();
+    assert!(w.d.wait_for("shield: now on", Duration::from_secs(8)), "read at the grace's end: {:?}", w.d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(w.d.count("switching on failed"), 0, "{:?}", w.d.log());
+}
+
+/// 0 loop wake-ups at rest, configured, on and off: after a switch, a listing and a close, none of the
+/// shield's timers is left armed.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_at_rest_no_wakeups() {
+    let w = shield_daemon("shield-rest", &ShieldSetup { notifications: false, on_arg: "slow", ..ShieldSetup::default() });
+    early_in_the_minute();
+    w.open_panel();
+    keys(&w.sway, &["space"]);
+    assert!(w.d.wait_for("shield: now on", DELAY), "{:?}", w.d.log());
+    // Past the key's repeat timer (SCTK's, once ~0.6 s after a press: older than this delivery).
+    thread::sleep(Duration::from_millis(1300));
+    let (before, ticks) = (w.d.main_thread_wakeups(), w.d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(w.d.main_thread_wakeups().saturating_sub(before), 0, "on, panel open: nothing armed: {:?}", w.d.log());
+    assert_no_spin(w.d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(5), "the loop thread");
+    keys(&w.sway, &["Return"]);
+    assert!(wait_until(|| w.record().contains(&"list".to_string())), "{:?}", w.record());
+    thread::sleep(Duration::from_millis(400));
+    // Closed by a click (a key's close leaves SCTK's repeat timer to fire once, older than this delivery).
+    w.sway.click(640, 10, "button1");
+    assert!(w.d.wait_for("popup closed (outside click)", DELAY), "{:?}", w.d.log());
+    early_in_the_minute();
+    thread::sleep(Duration::from_millis(500));
+    let (before, ticks) = (w.d.main_thread_wakeups(), w.d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(w.d.main_thread_wakeups().saturating_sub(before), 0, "closed: {:?}", w.d.log());
+    assert_no_spin(w.d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(5), "the loop thread");
+}
+
+/// Hooks spec, `shield`: a change inside the quiet window fires nothing; one past it runs the hook once
+/// with `ALPHEUS_SHIELD` (the flag's change, whoever made it); the log names the event only.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn shield_the_hook_fires_on_a_change_past_the_quiet_window() {
+    let w = shield_daemon(
+        "shield-hook",
+        &ShieldSetup {
+            flag_present: true,
+            notifications: false,
+            extra: "[hooks]\nshield = [\"hook-rec\", \"up\"]\n",
+            ..ShieldSetup::default()
+        },
+    );
+    assert!(w.d.wait_for("hooks: 1 set", DELAY), "{:?}", w.d.log());
+    std::fs::remove_file(&w.flag).unwrap();
+    assert!(w.d.wait_for("shield: now off", DELAY), "{:?}", w.d.log());
+    past_the_quiet_window();
+    if w.d.count("hooks: quiet window over") > 0 {
+        eprintln!("inconclusive: the first change came after the quiet window: {:?}", w.d.log());
+        return;
+    }
+    assert!(recorded(&w.sway, "hook-rec").is_empty(), "nothing fired inside the quiet window: {:?}", w.d.log());
+    std::fs::write(&w.flag, "").unwrap();
+    assert!(w.d.wait_for("hook: shield", DELAY), "{:?}", w.d.log());
+    assert_eq!(recorded(&w.sway, "hook-rec"), ["hook-rec up|ALPHEUS_EVENT=shield ALPHEUS_SHIELD=on "]);
 }

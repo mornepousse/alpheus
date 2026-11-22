@@ -29,10 +29,10 @@ use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 /// media, title), then the system indicators (Q9); the tray goes right
 /// after resources (Mae's ruling for the tray), and the launcher button
 /// after the system indicators (Mae, 2026-10-05: `Mod+Space` still opens the
-/// launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb), then the privacy indicators (privacy spec § 1), then the power button, the last of
+/// launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb), then the failed-units count (diagnostics spec § 6), then the Shield glyph (shield spec § 4), then the privacy indicators (privacy spec § 1), then the power button, the last of
 /// all (power spec § 1).
 /// Workspaces, the clock and the bell always stay.
-const REMOVAL: [ModuleId; 12] = [
+const REMOVAL: [ModuleId; 14] = [
     ModuleId::Resources,
     ModuleId::Tray,
     ModuleId::Media,
@@ -43,6 +43,8 @@ const REMOVAL: [ModuleId; 12] = [
     ModuleId::Battery,
     ModuleId::Launcher,
     ModuleId::Timer,
+    ModuleId::Failed,
+    ModuleId::Shield,
     ModuleId::Privacy,
     ModuleId::Power,
 ];

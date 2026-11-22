@@ -1,0 +1,420 @@
+use super::*;
+
+fn inputs() -> ReportInputs {
+    ReportInputs {
+        when: "2026-11-21 21:40 UTC".into(),
+        alpheus: "0.1.0".into(),
+        systemd: "260 (260.5)".into(),
+        kernel: "6.18.2".into(),
+        compositor: "Mango".into(),
+        os: "NixOS 26.05 (Yarara)".into(),
+        failed: Some(vec![ReportUnit { unit: "mnt-data.mount".into(), scope: "system", description: "/mnt/data".into() }]),
+        loops: Some(vec![ReportLoop { unit: "example-sync.service".into(), scope: "user", restarts: 7 }]),
+        crashes: Some(vec![ReportCrash { time: "Nov 20 14:02".into(), exe: "example-app".into(), signal: "SIGSEGV".into() }]),
+        errors: Some(vec![
+            ReportError {
+                time: "21:02:11".into(),
+                ident: "kernel".into(),
+                message: "usb 3-2: device descriptor read/64, error -71".into(),
+            },
+            ReportError {
+                time: "21:02:12".into(),
+                ident: "kernel".into(),
+                message: "usb 3-2: device descriptor read/64, error -71".into(),
+            },
+            ReportError { time: "21:03:00".into(), ident: "example-app".into(), message: "failed to open /mnt/data".into() },
+        ]),
+    }
+}
+
+fn none() -> Redactions {
+    Redactions::default()
+}
+
+fn err(n: usize, len: usize) -> ReportError {
+    ReportError { time: format!("21:{:02}:00", n % 60), ident: "kernel".into(), message: format!("{n:04} {}", "x".repeat(len)) }
+}
+
+#[test]
+fn the_report_holds_only_the_listed_fields() {
+    let text = build(&inputs(), &none());
+    assert_eq!(
+        text,
+        "alpheus diagnostics report, 2026-11-21 21:40 UTC\n\
+         alpheus 0.1.0 · systemd 260 (260.5) · kernel 6.18.2 · Mango · NixOS 26.05 (Yarara)\n\
+         Failed units: mnt-data.mount (system: /mnt/data)\n\
+         Restarting in a loop: example-sync.service (user, 7 restarts)\n\
+         Crashes (7 days): Nov 20 14:02 example-app SIGSEGV\n\
+         Errors this boot (latest 2, duplicates folded):\n \
+         21:02:12 kernel: usb 3-2: device descriptor read/64, error -71 (×2)\n \
+         21:03:00 example-app: failed to open /mnt/data\n"
+    );
+    let empty =
+        ReportInputs { when: "t".into(), alpheus: "0.1.0".into(), failed: Some(vec![]), errors: Some(vec![]), ..Default::default() };
+    let empty = build(&empty, &none());
+    assert!(empty.contains("Failed units: none") && empty.contains("Errors this boot: none"), "{empty}");
+    // A read that failed is not "none".
+    let unknown = build(&ReportInputs { when: "t".into(), alpheus: "0.1.0".into(), ..Default::default() }, &none());
+    assert!(
+        unknown.contains("Failed units: unknown")
+            && unknown.contains("Crashes (7 days): unknown")
+            && unknown.contains("Errors this boot: unknown"),
+        "{unknown}"
+    );
+}
+
+#[test]
+fn redaction_cases() {
+    let r =
+        Redactions::new(&["alice".into()], &["/home/alice".into()], Some("host-01.example.org"), Some("0123456789abcdef0123456789abcdef"));
+    let cases = [
+        ("opened /home/alice/notes by alice", "opened ~/notes by <user>"),
+        ("on host-01.example.org now", "on <host> now"),
+        ("id 0123456789abcdef0123456789abcdef", "id <machine-id>"),
+        ("link 00:1a:2b:3c:4d:5e up", "link <mac> up"),
+        ("link 00-1A-2B-3C-4D-5E up", "link <mac> up"),
+        ("from 192.168.1.20: refused", "from <ip>: refused"),
+        ("v6 fe80::1ff:fe23:4567:890a and 2001:db8:0:0:0:0:0:1 ok", "v6 <ip> and <ip> ok"),
+        ("mail bob.smith+x@example.org, thanks", "mail <email>, thanks"),
+        ("a@b is not one", "a@b is not one"),
+        // Not addresses: a clock, a kernel version, an out-of-range quad, a version with five parts.
+        ("21:02:11 kernel 6.18.2 999.1.1.1", "21:02:11 kernel 6.18.2 999.1.1.1"),
+        ("device (wlan0): state 12:34", "device (wlan0): state 12:34"),
+        // A port after the address stays; the address goes.
+        ("dns 192.168.1.1:53 up", "dns <ip>:53 up"),
+        // A word glued to the address by punctuation does not hide it.
+        ("BSSID:aa:bb:cc:dd:ee:ff", "BSSID:<mac>"),
+        ("wlan0-aa:bb:cc:dd:ee:ff", "wlan0-<mac>"),
+        ("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "/org/bluez/hci0/dev_<mac>"),
+        ("via ::ffff:10.1.2.3 ok", "via <ip> ok"),
+        ("[2001:db8::1]:443", "[<ip>]:443"),
+        // Not addresses: a Rust path, a version after the word, a letter-prefixed quad.
+        ("std::io failed", "std::io failed"),
+        ("a::b and Foo::Bar", "a::b and Foo::Bar"),
+        ("version 1.2.3.4", "version 1.2.3.4"),
+        ("v1.2.3.4 and 1.2.3.4.5", "v1.2.3.4 and 1.2.3.4.5"),
+        ("peer 1.2.3.4 gone", "peer <ip> gone"),
+        // Names match in any case, and the short name of a fully qualified host does too.
+        ("Alice ALICE", "<user> <user>"),
+        ("HOST-01.example.org and host-01 and host-01.other.net", "<host> and <host> and <host>.other.net"),
+        // UUIDs, plain and in a unit name's escaping.
+        ("fs 123e4567-e89b-12d3-a456-426614174000 ok", "fs <uuid> ok"),
+        ("dev-disk-by\\x2duuid-123e4567\\x2de89b\\x2d12d3\\x2da456\\x2d426614174000.device", "dev-disk-by\\x2duuid-<uuid>.device"),
+        // An address after a word and a dot (a PipeWire or BlueZ name, a host label) is found.
+        ("bluez_output.AA_BB_CC_DD_EE_FF.1 suspended", "bluez_output.<mac>.1 suspended"),
+        ("bluez_card.aa_bb_cc_dd_ee_ff", "bluez_card.<mac>"),
+        ("dev.aa:bb:cc:dd:ee:ff", "dev.<mac>"),
+        ("eth0.aa:bb:cc:dd:ee:ff", "eth0.<mac>"),
+        ("host.10.0.0.1", "host.<ip>"),
+        ("server.192.168.1.5:22", "server.<ip>:22"),
+        // A UUID after a unit name's escaped dash.
+        (
+            "systemd-cryptsetup@luks\\x2d123e4567\\x2de89b\\x2d12d3\\x2da456\\x2d426614174000.service",
+            "systemd-cryptsetup@luks\\x2d<uuid>.service",
+        ),
+        // A templated unit is not an e-mail address.
+        ("getty@tty1.service", "getty@tty1.service"),
+        ("user@1000.service", "user@1000.service"),
+        ("wg-quick@wg0.service failed", "wg-quick@wg0.service failed"),
+        ("bob@example.org.service2", "<email>"),
+        // A dotted local part before the unit suffix is an address; `\x40` is an `@`.
+        ("mbsync@carol@example.org.service", "mbsync@<email>"),
+        ("mbsync@carol\\x40example.org.service", "mbsync@<email>"),
+        ("bob\\x40example.org", "<email>"),
+        // A bare 12-hex after `0x` is a MAC too.
+        ("0xaabbccddeeff", "0x<mac>"),
+        // Longer chains, a 0x prefix, bare 12 hex digits as a token, Cisco dots, tcpdump's port.
+        ("00:11:22:33:44:55:66", "<mac>"),
+        ("0x00:11:22:33:44:55", "<mac>"),
+        ("id AABBCCDDEEFF.", "id <mac>."),
+        ("AABBCCDDEEFFA 123456789012 aabbccddeeff00", "AABBCCDDEEFFA 123456789012 aabbccddeeff00"),
+        ("aabb.ccdd.eeff", "<mac>"),
+        ("192.168.1.5.443 > 10.0.0.1.52311", "<ip>.443 > <ip>.52311"),
+    ];
+    for (input, want) in cases {
+        assert_eq!(r.apply(input), want, "{input}");
+    }
+    // A two-letter name is not replaced everywhere: it would shred ordinary words.
+    let short = Redactions::new(&["al".into()], &[], None, None);
+    assert_eq!(short.apply("a real total"), "a real total");
+    // Real-name words and the login match whole words: ordinary words around them survive.
+    let named = Redactions::new(&["emartin".into(), "Eve Martin".into(), "Eve".into(), "Martin".into(), "System".into()], &[], None, None);
+    assert_eq!(
+        named.apply("CTRL-EVENT-CONNECTED event restart Debian systemd emartinez"),
+        "CTRL-EVENT-CONNECTED event restart Debian systemd emartinez"
+    );
+    assert_eq!(named.apply("by Eve Martin, eve and EMARTIN; System up"), "by <user>, <user> and <user>; <user> up");
+    assert_eq!(named.apply("home-emartin\\x2dfoo.mount"), "home-<user>\\x2dfoo.mount");
+    // The home is replaced before the user name, so the path keeps no name.
+    assert_eq!(r.apply("/home/alice"), "~");
+}
+
+#[test]
+fn errors_fold_and_keep_the_latest_40() {
+    let mut i = inputs();
+    let mut e: Vec<_> = (0..60).map(|n| err(n, 5)).collect();
+    e.push(err(59, 5)); // one repeated
+    i.errors = Some(e);
+    let text = build(&i, &none());
+    assert!(text.contains("(latest 40, duplicates folded)"), "{text}");
+    assert!(text.contains("0059 xxxxx (×2)"), "{text}");
+    assert!(text.contains("0020 xxxxx") && !text.contains("0019 xxxxx"), "the latest 40 of the 60 folded ones");
+}
+
+#[test]
+fn cut_drops_oldest_errors_first() {
+    let mut i = inputs();
+    i.errors = Some((0..40).map(|n| err(n, 150)).collect());
+    let text = build(&i, &none());
+    assert!(text.len() <= 4096, "{}", text.len());
+    for kept in ["alpheus diagnostics report", "Failed units: mnt-data.mount", "Restarting in a loop", "Crashes (7 days)"] {
+        assert!(text.contains(kept), "{kept} missing:\n{text}");
+    }
+    assert!(text.contains("0039 "), "the newest error stays");
+    assert!(!text.contains("0000 "), "the oldest goes first");
+    let heading = text.lines().find(|l| l.starts_with("Errors this boot")).unwrap();
+    let k: usize = heading.split("latest ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    assert!((12..=25).contains(&k), "about 15-20 fit: {heading}");
+    assert!(heading.ends_with("of 40, older ones cut):"), "{heading}");
+    assert_eq!(text.lines().filter(|l| l.starts_with(" 21:")).count(), k, "the heading counts what is shown");
+}
+
+#[test]
+fn a_huge_fixed_part_is_cut_on_a_line() {
+    let mut i = inputs();
+    i.failed = Some(
+        (0..200)
+            .map(|n| ReportUnit { unit: format!("example-unit-{n:03}.service"), scope: "system", description: "d".repeat(50) })
+            .collect(),
+    );
+    let text = build(&i, &none());
+    assert!(text.len() <= 4096);
+    assert!(text.ends_with("… cut\n"), "{text:?}");
+    assert!(text.starts_with("alpheus diagnostics report"));
+    assert!(text.lines().all(|l| l.len() < 4000), "cut on a line boundary");
+}
+
+#[test]
+fn redaction_runs_on_the_final_text_and_the_size_is_of_the_redacted_text() {
+    // A home path of 40 characters becomes `~`: more errors fit than the raw length allows.
+    let home = format!("/home/{}", "a".repeat(34));
+    let mut i = inputs();
+    i.errors = Some(
+        (0..40)
+            .map(|n| ReportError { time: "21:00:00".into(), ident: "k".into(), message: format!("{n:04} {home}/{}", "x".repeat(100)) })
+            .collect(),
+    );
+    let r = Redactions::new(&[], std::slice::from_ref(&home), None, None);
+    let text = build(&i, &r);
+    assert!(!text.contains(&home) && text.contains("~/"), "{text}");
+    assert!(text.len() <= 4096);
+    let kept = text.lines().filter(|l| l.starts_with(" 21:")).count();
+    let raw = build(&i, &none()).lines().filter(|l| l.starts_with(" 21:")).count();
+    assert!(kept > raw, "{kept} vs {raw}");
+}
+
+#[test]
+fn kernel_release_is_not_the_node_name() {
+    // SAFETY: a zeroed utsname is valid; the fields are filled below within their bounds.
+    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    let put = |dst: &mut [libc::c_char], s: &str| {
+        for (d, b) in dst.iter_mut().zip(s.bytes()) {
+            *d = b as libc::c_char;
+        }
+    };
+    put(&mut u.nodename, "my-secret-host");
+    put(&mut u.release, "6.18.2");
+    assert_eq!(release_of(&u), "6.18.2");
+    assert!(!format!("{:?}", release_of(&u)).contains("secret"));
+    assert_eq!(os_pretty("NAME=NixOS\nPRETTY_NAME=\"NixOS 26.05 (Yarara)\"\nID=nixos\n"), "NixOS 26.05 (Yarara)");
+    assert_eq!(os_pretty("ID=x\n"), "");
+}
+
+#[test]
+fn a_secret_is_redacted_before_the_line_is_cut() {
+    // 190 characters, then a name that would straddle the 200-character cut.
+    let mut i = inputs();
+    i.errors =
+        Some(vec![ReportError { time: "21:00:00".into(), ident: "k".into(), message: format!("{} alice-secret-name", "x".repeat(190)) }]);
+    let r = Redactions::new(&["alice-secret-name".into()], &[], None, None);
+    let text = build(&i, &r);
+    assert!(!text.contains("alice") && !text.contains("secret-name"), "{text}");
+    assert!(text.contains("<user>"), "redacted whole, then cut: {text}");
+}
+
+#[test]
+fn a_user_named_like_a_placeholder_is_not_redacted_twice() {
+    let mut i = inputs();
+    i.errors = Some(vec![ReportError { time: "21:00:00".into(), ident: "k".into(), message: "hello user".into() }]);
+    let r = Redactions::new(&["user".into()], &[], None, None);
+    assert!(build(&i, &r).contains("k: hello <user>\n"), "{}", build(&i, &r));
+}
+
+#[test]
+fn tag_characters_survive_only_after_a_flag() {
+    let mut i = inputs();
+    let flag = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+    i.errors = Some(vec![
+        ReportError { time: "21:00:00".into(), ident: "k".into(), message: format!("flag {flag} ok") },
+        ReportError { time: "21:00:01".into(), ident: "k".into(), message: "hidden \u{e0041}\u{e0042} tags".into() },
+    ]);
+    let text = build(&i, &none());
+    assert!(text.contains(flag), "a subdivision flag is kept");
+    assert!(!text.contains('\u{e0041}') && text.contains("hidden  tags"), "{text:?}");
+}
+
+#[test]
+fn a_cut_that_fell_back_still_says_how_many_errors_there_were() {
+    // Fixed parts of every length near the bound: the fallback never calls a read errors
+    // "unknown" when they were read (for lengths just over the bound it used to).
+    let mut base = inputs();
+    base.errors = Some(vec![]);
+    let mut units = Vec::new();
+    while build(&ReportInputs { failed: Some(units.clone()), ..base.clone() }, &none()).len() < 3990 {
+        let n = units.len();
+        units.push(ReportUnit { unit: format!("example-unit-{n:03}.service"), scope: "system", description: "d".repeat(10) });
+    }
+    for pad in 0..120 {
+        let mut i = inputs();
+        let mut failed = units.clone();
+        failed.push(ReportUnit { unit: "pad.service".into(), scope: "system", description: "p".repeat(pad.min(60)) });
+        failed.push(ReportUnit { unit: "x".repeat(pad.saturating_sub(60) + 1), scope: "system", description: String::new() });
+        i.failed = Some(failed);
+        i.errors = Some((0..3).map(|n| err(n, 5)).collect());
+        let text = build(&i, &none());
+        assert!(text.len() <= 4096 && !text.contains("Errors this boot: unknown"), "{pad}: {text}");
+    }
+}
+
+#[test]
+fn the_real_name_gives_each_long_word() {
+    assert_eq!(real_name_words("Alice Marie Dupont,Room 1,,"), ["Alice Marie Dupont", "Alice", "Marie", "Dupont"]);
+    assert_eq!(real_name_words("Al Li Bo"), ["Al Li Bo"]);
+    assert!(real_name_words(" ,x").is_empty());
+    let r = Redactions::new(&real_name_words("Alice Dupont"), &[], None, None);
+    assert_eq!(r.apply("dupont wrote"), "<user> wrote");
+}
+
+/// Review of Task 9, item 6: a host name matches whole words, a default host name equal to the
+/// distribution's own name is no secret, a dotted unit instance keeps its unit name, a pointer-shaped
+/// token is redacted as a MAC (the safe side), a login that is a top-level directory is not replaced.
+#[test]
+fn the_host_name_matches_whole_words() {
+    let r = Redactions::new(&[], &[], Some("work"), None);
+    assert_eq!(r.apply("network framework work and WORK-pc"), "network framework <host> and <host>-pc");
+}
+
+#[test]
+fn a_host_named_like_the_distribution_is_left_alone() {
+    let facts =
+        HostFacts { os: "NixOS 25.05 (Warbler)".into(), host: Some("nixos".into()), users: vec!["alice".into()], ..HostFacts::default() };
+    let text = "NixOS 25.05 on /nix/store/abc123-nixos-system-nixos-25.05 by alice";
+    assert_eq!(facts.redactions().apply(text), "NixOS 25.05 on /nix/store/abc123-nixos-system-nixos-25.05 by <user>");
+    // Any other host name is still replaced, the distribution's word or not.
+    let other = HostFacts { host: Some("laptop".into()), ..facts };
+    assert_eq!(other.redactions().apply("laptop runs NixOS"), "<host> runs NixOS");
+}
+
+#[test]
+fn a_dotted_unit_instance_keeps_its_unit_name() {
+    let r = none();
+    for unit in ["openvpn-client@my.vpn.service", "wg-quick@vpn.home.service", "getty@tty1.service", "user@1000.service"] {
+        assert_eq!(r.apply(unit), unit);
+    }
+    // A second `@` inside the instance is an address.
+    assert_eq!(r.apply("mbsync@carol@example.org.service"), "mbsync@<email>");
+    assert_eq!(r.apply("bob@example.org"), "<email>");
+}
+
+/// `0x` and twelve hex digits look like a user-space pointer too: redacted as a MAC anyway
+/// (over-redaction is the safe side; the report says so in the view's notice).
+#[test]
+fn a_twelve_digit_pointer_is_redacted_as_a_mac() {
+    assert_eq!(none().apply("ptr 0x7ffd12345678 end"), "ptr 0x<mac> end");
+}
+
+#[test]
+fn a_login_that_is_a_top_level_directory_is_not_replaced() {
+    let r = Redactions::new(&["dev".into(), "alice".into()], &["/home/dev".into()], None, None);
+    assert_eq!(r.apply("/dev/sda1 and dev-sda1.device and /home/dev/x"), "/dev/sda1 and dev-sda1.device and ~/x");
+    assert_eq!(r.apply("alice"), "<user>");
+}
+
+/// Final review, commun privacy items.
+#[test]
+fn a_sudo_line_keeps_no_command_arguments() {
+    let line = "sudo: jdoe : 3 incorrect password attempts ; TTY=pts/1 ; PWD=/home/jdoe ; USER=root ; COMMAND=/run/current-system/sw/bin/mysql -pHunter2Secret";
+    let out = none().apply(line);
+    assert!(out.ends_with("COMMAND=<command>"), "{out}");
+    assert!(!out.contains("Hunter2Secret") && !out.contains("mysql"), "{out}");
+    let pk = "pkexec: jdoe: Executing command [USER=root] [TTY=/dev/pts/1] [CWD=/home/jdoe] [COMMAND=/usr/bin/tool --token abc123]";
+    let out = none().apply(pk);
+    assert!(out.contains("COMMAND=<command>") && !out.contains("abc123"), "{out}");
+    // Nothing after the marker survives either, whatever it holds.
+    assert_eq!(none().apply("COMMAND=x ; more"), "COMMAND=<command>");
+    // sudo's ENV field before it holds variables the user set: a token, a key.
+    let env = "sudo: jdoe : TTY=pts/1 ; PWD=/home/jdoe ; USER=root ; ENV=API_TOKEN=s3cr3t ; COMMAND=/bin/curl -u a:b";
+    let out = none().apply(env);
+    assert!(!out.contains("s3cr3t") && !out.contains("API_TOKEN"), "{out}");
+    assert!(out.contains("ENV=<env> ; COMMAND=<command>"), "{out}");
+    // doas names the command between `ran command` and `as`.
+    let out = none().apply("doas: jdoe ran command passwd --stdin secret as root from /home/jdoe");
+    assert!(!out.contains("secret") && out.contains("ran command <command> as root"), "{out}");
+    assert_eq!(none().apply("no marker here"), "no marker here");
+}
+
+#[test]
+fn the_users_own_address_keeps_no_domain() {
+    let r = Redactions::new(&["jdoe".into()], &[], Some("laptop"), None);
+    assert_eq!(r.apply("mail jdoe@unrelated.net sent"), "mail <email> sent");
+    assert_eq!(r.apply("mail bob@laptop.lan sent"), "mail <email> sent");
+}
+
+#[test]
+fn any_hex_escape_is_a_word_edge() {
+    let r = Redactions::new(&["jdoe".into()], &[], None, None);
+    assert_eq!(r.apply("mnt-foo\\x2bjdoe.mount"), "mnt-foo\\x2b<user>.mount");
+    assert_eq!(r.apply("mnt-foo\\x2djdoe.mount"), "mnt-foo\\x2d<user>.mount");
+}
+
+#[test]
+fn a_dotted_quad_after_a_port_path_or_a_firmware_word_is_not_an_address() {
+    let r = none();
+    assert_eq!(r.apply("usb 2-1.2.1.3: new device"), "usb 2-1.2.1.3: new device");
+    assert_eq!(r.apply("Firmware 1.2.3.4-rc1 loaded"), "Firmware 1.2.3.4-rc1 loaded");
+    assert_eq!(r.apply("Linux kernel 5.15.153.1-generic booted"), "Linux kernel 5.15.153.1-generic booted");
+    assert_eq!(r.apply("version 1.2.3.4 loaded"), "version 1.2.3.4 loaded");
+    // A bare dotted quad after those words is an address.
+    assert_eq!(r.apply("kernel 192.168.0.1 booted"), "kernel <ip> booted");
+    assert_eq!(r.apply("firmware 10.1.2.3 loaded"), "firmware <ip> loaded");
+    assert_eq!(r.apply("from 10.1.2.3 ok"), "from <ip> ok");
+    // A range of addresses redacts both ends; a USB port path elsewhere stays.
+    assert_eq!(r.apply("range 10.0.0.1-10.0.0.9 ok"), "range <ip>-<ip> ok");
+    assert_eq!(r.apply("192.168.1.2-192.168.1.50"), "<ip>-<ip>");
+    assert_eq!(r.apply("hub 2-1.2.1.3:1.0: ok"), "hub 2-1.2.1.3:1.0: ok");
+}
+
+#[test]
+fn a_host_with_a_label_of_the_os_name_is_left_alone() {
+    let facts = HostFacts { os: "NixOS 25.05".into(), host: Some("nixos.lan".into()), ..HostFacts::default() };
+    assert_eq!(facts.redactions().apply("NixOS 25.05 on nixos.lan"), "NixOS 25.05 on <host>");
+    // With no os name read, the installer defaults are still no secret.
+    let blank = HostFacts { host: Some("nixos.lan".into()), ..HostFacts::default() };
+    assert_eq!(blank.redactions().apply("NixOS here on nixos.lan"), "NixOS here on <host>");
+    let other = HostFacts { os: "NixOS 25.05".into(), host: Some("box.lan".into()), ..HostFacts::default() };
+    assert_eq!(other.redactions().apply("box runs"), "<host> runs");
+}
+
+#[test]
+fn non_ascii_addresses_and_names() {
+    assert_eq!(none().apply("josé@example.fr wrote"), "<email> wrote");
+    let r = Redactions::new(&["Rénée".into()], &[], None, None);
+    assert_eq!(r.apply("RÉNÉE and rénée"), "<user> and <user>");
+}
+
+#[test]
+fn ids_and_unbracketed_v6_with_a_port() {
+    assert_eq!(none().apply("boot 0123456789abcdef0123456789ABCDEF done"), "boot <id> done");
+    assert_eq!(none().apply("peer 2001:db8::1:443 up"), "peer <ip> up");
+    assert_eq!(none().apply("peer fe80::1:8080 up"), "peer <ip> up");
+}

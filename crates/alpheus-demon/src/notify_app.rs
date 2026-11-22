@@ -149,6 +149,7 @@ impl App {
         // The name was just acquired: an alert held back for want of a server goes out now.
         if view.serving && !before.is_some_and(|b| b.serving) {
             self.battery_deliver(None);
+            self.failed_deliver(true);
         }
     }
 
@@ -287,6 +288,46 @@ impl App {
         log(&format!("battery: alert at {} %", alert.threshold));
     }
 
+    /// The failed units' total changed (`Msg::Units` or the user manager's): the notice, when
+    /// `[failed] notify` is on and the total rose above the last one notified.
+    pub(crate) fn failed_notify(&mut self) {
+        self.failed_deliver(false);
+    }
+
+    /// Feeds the notice the bar's total (`again`: the server just started, so the last total seen
+    /// once more). Counts as given only while this daemon holds the name; before that it stays armed.
+    fn failed_deliver(&mut self, again: bool) {
+        let serving = self.notifications().is_some_and(|n| n.held());
+        let Some(notice) = self.failed_notice.as_mut() else { return };
+        let total = if again { notice.last() } else { crate::failed::total(&self.bar.failed) };
+        let Some(n) = notice.feed(total, serving) else { return };
+        let incoming = crate::failed::incoming(n);
+        self.notify_act(move |s| {
+            s.act(|c| {
+                c.notify(incoming, Instant::now(), minute_now());
+                c.take_effects()
+            })
+        });
+        log("failed: notice");
+    }
+
+    /// A Shield notice (shield spec § 8), through the server only while it serves: app `alpheus`,
+    /// normal urgency; under do-not-disturb it goes to the history like every notice.
+    pub(crate) fn shield_notice(&mut self, kind: crate::shield::NoticeKind) {
+        let Some(sh) = self.shield.as_ref() else { return };
+        if !self.notifications().is_some_and(|n| n.held()) {
+            log("shield: no notification (not serving)");
+            return;
+        }
+        let n = crate::shield_app::incoming(&kind, &sh.config);
+        self.notify_act(move |s| {
+            s.act(|c| {
+                c.notify(n, Instant::now(), minute_now());
+                c.take_effects()
+            })
+        });
+    }
+
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).
     pub(crate) fn clear_notifications(&mut self) {
         self.notify_act(|n| n.act(Center::clear));
@@ -312,6 +353,7 @@ impl App {
             | Request::Calc
             | Request::Windows
             | Request::Dmenu { .. }
+            | Request::FailedRefresh
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Timer(_)
@@ -323,7 +365,8 @@ impl App {
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
-            | Request::OutputsRevert => {}
+            | Request::OutputsRevert
+            | Request::Shield(_) => {}
         }
         Reply::Done
     }

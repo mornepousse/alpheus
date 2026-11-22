@@ -40,6 +40,9 @@ const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
 /// power-profiles-daemon: what the quick panel shows.
 const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 
+/// systemd's Manager: the failed-units count, the only property of it that emits a change.
+const SYSTEMD_PROPS: [&str; 1] = [units::PROPERTY];
+
 /// The properties of `path`/`interface` the bar reads (I1): an
 /// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
 /// not named here can't change what the bar shows. None: an interface the
@@ -53,6 +56,8 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
         Some(&UPOWER_PROPS)
     } else if under(path, power::PATH) {
         Some(&POWER_PROFILES_PROPS)
+    } else if path == units::PATH {
+        Some(&SYSTEMD_PROPS)
     } else if under(path, "/org/bluez") {
         match interface {
             Some("org.bluez.Adapter1") => Some(&BLUEZ_ADAPTER_PROPS),
@@ -148,6 +153,7 @@ impl Signal {
                 BLUEZ => Some(Domain::Bluetooth),
                 UPOWER => Some(Domain::Battery),
                 POWER_PROFILES => Some(Domain::Power),
+                SYSTEMD1 => Some(Domain::Units),
                 _ => None,
             };
         }
@@ -157,6 +163,8 @@ impl Signal {
             Domain::Battery
         } else if under(&self.path, power::PATH) {
             Domain::Power
+        } else if self.path == units::PATH {
+            Domain::Units
         } else if under(&self.path, "/org/bluez") || (self.path == "/" && self.interface == OBJECT_MANAGER) {
             Domain::Bluetooth
         } else {

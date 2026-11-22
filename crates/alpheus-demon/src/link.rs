@@ -15,6 +15,7 @@
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, ModuleId, NotificationsConfig};
 use crate::deadline::DeadlineTimer;
+use crate::failed_app::UserUnits;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;
@@ -87,6 +88,8 @@ pub struct LinkOutput {
     pub notifications: Option<NotifyView>,
     /// The bubbles to show changed: the wiring re-syncs them.
     pub bubbles: bool,
+    /// The user manager's failed-units count changed: Some(None) is unknown.
+    pub user_units: Option<Option<u32>>,
     /// The session bus closed: the wiring drops the link (never reconnected).
     pub closed: bool,
 }
@@ -103,6 +106,9 @@ impl LinkOutput {
             self.notifications = other.notifications;
         }
         self.bubbles |= other.bubbles;
+        if other.user_units.is_some() {
+            self.user_units = other.user_units;
+        }
         self.closed |= other.closed;
     }
 }
@@ -133,13 +139,14 @@ pub struct SessionLink {
     appearance: Option<Appearance>,
     media: Option<Mpris>,
     notifications: Option<Notifications>,
+    failed: Option<UserUnits>,
     /// What `notifications_do` changed, delivered by the next `route` (an idle `link_readable`).
     deferred: LinkOutput,
 }
 
 impl SessionLink {
     pub fn new(bus: SessionBus) -> SessionLink {
-        SessionLink { bus, appearance: None, media: None, notifications: None, deferred: LinkOutput::default() }
+        SessionLink { bus, appearance: None, media: None, notifications: None, failed: None, deferred: LinkOutput::default() }
     }
 
     /// The portal's rule and its one ReadOne, sent at once. Once: a second call is a no-op.
@@ -154,6 +161,28 @@ impl SessionLink {
     pub fn start_media(&mut self, cfg: &MediaConfig) {
         if self.media.is_none() {
             self.media = Some(Mpris::start(&mut self.bus, cfg));
+            self.bus.flush();
+        }
+    }
+
+    /// The user manager's failed-units count: two rules and the owner asked for, sent at once.
+    /// Once: a second call is a no-op.
+    pub fn start_failed(&mut self, subscribe: bool) {
+        if self.failed.is_none() {
+            self.failed = Some(UserUnits::start(&mut self.bus, subscribe));
+            self.bus.flush();
+        }
+    }
+
+    pub fn failed(&self) -> Option<&UserUnits> {
+        self.failed.as_ref()
+    }
+
+    /// Runs `f` on the user manager's count with this connection, then flushes. What the flush
+    /// drained waits in `ready` (`has_ready`), routed from an idle `link_readable`.
+    pub fn failed_do(&mut self, f: impl FnOnce(&mut UserUnits, &mut SessionBus)) {
+        if let Some(failed) = self.failed.as_mut() {
+            f(failed, &mut self.bus);
             self.bus.flush();
         }
     }
@@ -275,6 +304,15 @@ impl SessionLink {
                 out.media = Some(view);
             }
         }
+        // The user manager's count, when it changed; the bus gone, it is unknown.
+        if let Some(f) = self.failed.as_mut() {
+            if out.closed {
+                f.lost();
+            }
+            if let Some(count) = f.take_change() {
+                out.user_units = Some(count);
+            }
+        }
         // The notifications server: its view and bubbles when they changed; the bus gone, the name
         // goes with it (no bubble, no timer).
         let closed = out.closed;
@@ -294,6 +332,8 @@ impl SessionLink {
                         }
                     } else if let Some(m) = self.media.as_mut().filter(|m| m.owns(id)) {
                         m.answer(&mut self.bus, id, result);
+                    } else if let Some(f) = self.failed.as_mut().filter(|f| f.owns(id)) {
+                        f.answer(&mut self.bus, id, result);
                     } else if let Some(n) = self.notifications.as_mut().filter(|n| n.owns(id)) {
                         n.answer(id, result);
                     }
@@ -306,6 +346,7 @@ impl SessionLink {
                     }
                     s => {
                         let ours = self.notifications.as_mut().is_some_and(|n| n.signal(&s));
+                        let ours = ours || self.failed.as_mut().is_some_and(|f| f.signal(&mut self.bus, &s));
                         if !ours && let Some(media) = self.media.as_mut() {
                             media.signal(&mut self.bus, &s);
                         }
@@ -432,6 +473,9 @@ impl App {
             if link.notifications().is_some() {
                 log("notifications: the session bus closed");
             }
+            if link.failed().is_some() {
+                log("failed: the session bus closed");
+            }
         }
         if let Some(mode) = out.mode {
             self.portal_said(mode);
@@ -441,6 +485,9 @@ impl App {
         }
         if let Some(view) = out.notifications {
             self.notify_view(view);
+        }
+        if let Some(count) = out.user_units {
+            self.failed_user(count);
         }
         if out.bubbles {
             self.bubbles_sync();
@@ -476,6 +523,7 @@ pub(crate) enum LinkUser {
     Appearance,
     Media,
     Notifications,
+    Failed,
 }
 
 /// A failure line of `open_link`: the appearance's says the mode falls back to dark; the media
@@ -485,6 +533,7 @@ fn link_failed(who: LinkUser, what: &str) -> String {
         LinkUser::Appearance => format!("appearance: {what}; dark"),
         LinkUser::Media => format!("media: {what}"),
         LinkUser::Notifications => format!("notifications: {what}"),
+        LinkUser::Failed => format!("failed: {what}"),
     }
 }
 

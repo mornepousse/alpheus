@@ -3,8 +3,8 @@
 //! reply. Never the session's real socket.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, TimerVerb, encode_reply,
-    socket_path,
+    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, ShieldVerb, TimerVerb,
+    encode_reply, socket_path,
 };
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
@@ -501,6 +501,7 @@ fn help_prints_usage_and_exits_0() {
         "--lines N",
         "--quick [sound|wifi|bluetooth|vpn]",
         "(or its wifi, bluetooth or vpn word)",
+        "--failed-refresh",
     ] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
@@ -515,6 +516,7 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
         (&["--dnd", "on", "--for", "30m"], Request::DndOn(DndEnd::For(1800))),
         (&["--dnd", "on", "--for=1h30m"], Request::DndOn(DndEnd::For(5400))),
         (&["--clear-notifications"], Request::ClearNotifications),
+        (&["--failed-refresh"], Request::FailedRefresh),
     ];
     for (i, (args, expected)) in cases.into_iter().enumerate() {
         let (socket, daemon) = answering(&format!("notify-{i}"), Reply::Done);
@@ -682,6 +684,7 @@ fn dnd_toggle_with_no_daemon_exits_3() {
     assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
     assert!(err.contains("not running"), "{err}");
     assert_eq!(launch(&["--clear-notifications"], &socket, b"").0, EXIT_UNREACHABLE);
+    assert_eq!(launch(&["--failed-refresh"], &socket, b"").0, EXIT_UNREACHABLE);
 }
 
 #[test]
@@ -824,6 +827,41 @@ fn tools_and_power_send_their_requests_and_an_old_daemon_exits_3() {
     let (code, out, err) = launch(&["--power"], &socket, b"");
     assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
     assert!(err.contains(refusal), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+}
+
+/// Shield spec § 9: every word sends its request; `status` prints the body (exit 0, 2 when the
+/// state is unknown); `allow` exits 1 when the picker is escaped; an old daemon exits 3, an
+/// unconfigured one 2 with its text.
+#[test]
+fn shield_verbs_send_their_request_and_map_the_answers() {
+    for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Allow] {
+        let (socket, daemon) = answering("shield-done", Reply::Done);
+        assert_eq!(launch(&["--shield", v.word()], &socket, b""), (EXIT_OK, String::new(), String::new()), "{v:?}");
+        assert_eq!(daemon.join().unwrap(), Request::Shield(v));
+    }
+    let body = "Shield: on\nBlocked USB devices:\n  Test Stick (1234:5678)";
+    let (socket, daemon) = answering("shield-status", Reply::Shield(body.into()));
+    assert_eq!(launch(&["--shield", "status"], &socket, b""), (EXIT_OK, format!("{body}\n"), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Shield(ShieldVerb::Status));
+    let (socket, daemon) = answering("shield-unknown", Reply::Shield("Shield: unknown".into()));
+    assert_eq!(launch(&["--shield", "status"], &socket, b""), (EXIT_ERROR, "Shield: unknown\n".into(), String::new()));
+    daemon.join().unwrap();
+    let (socket, daemon) = answering("shield-escape", Reply::Cancelled);
+    assert_eq!(launch(&["--shield", "allow"], &socket, b""), (EXIT_CANCELLED, String::new(), String::new()));
+    daemon.join().unwrap();
+    let (socket, _connections, stop, daemon) =
+        replying_daemon("shield-old", Reply::Error("malformed request: unknown request \"shield\"".into()));
+    let (code, out, err) = launch(&["--shield", "status"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--shield"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    let (socket, _connections, stop, daemon) = replying_daemon("shield-off", Reply::Error("shield is not configured in bar.toml".into()));
+    let (code, out, err) = launch(&["--shield", "on"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("shield is not configured"), "{err}");
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
 }

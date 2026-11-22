@@ -93,6 +93,16 @@ pub enum Action {
     },
 }
 
+/// Who a script menu's answer belongs to: a client's `--dmenu` (the chosen line goes back to it), or the
+/// daemon's own Shield picker (the chosen position runs `allow` for that device's id, announced by its
+/// name; nothing else ever does: the ids never reach the box).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ScriptOwner {
+    #[default]
+    Client,
+    Shield(Vec<(u32, String)>),
+}
+
 /// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
 /// window switcher, the clipboard history, or the Tools menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +177,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             Request::Dnd(_)
             | Request::DndOn(_)
             | Request::ClearNotifications
+            | Request::FailedRefresh
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Timer(_)
@@ -176,7 +187,8 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
-            | Request::OutputsRevert,
+            | Request::OutputsRevert
+            | Request::Shield(_),
             _,
         ) => (Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
     }
@@ -620,6 +632,37 @@ impl App {
     /// Watches the open script menu's client: edge-triggered (a client that
     /// half-closed after sending stays readable forever: level-triggered
     /// would spin the loop). Removed when the launcher is dropped.
+    /// The Shield picker (shield spec § 9): a script menu the daemon owns, opened for `pending` (the
+    /// `--shield allow` client). Another script menu open answers it Busy, as a second `--dmenu`
+    /// would; an app launcher or the switcher is replaced.
+    pub(crate) fn launcher_open_picker(
+        &mut self,
+        qh: &QueueHandle<App>,
+        lines: Vec<String>,
+        ids: Vec<(u32, String)>,
+        pending: crate::launcher::socket::Pending,
+    ) {
+        let qh = qh.clone();
+        // A panic inside: the client it held is dropped (it reads a closed connection, exit 2).
+        self.launcher_guarded("picker", move |app| {
+            if app.launcher.as_ref().is_some_and(|o| opened(&o.model) == Opened::Script) {
+                pending.reply(&Reply::Busy);
+                return;
+            }
+            if app.launcher_is_open() {
+                app.launcher_close(CloseReason::Replaced);
+            }
+            let config = read_config(&paths::config_dir(), &mut |m| log(m));
+            let flags = DmenuFlags { index: true, ..DmenuFlags::default() };
+            let model = Launcher::for_dmenu(config, Some(crate::shield::PICKER_PROMPT.into()), lines, flags);
+            app.launcher_open(&qh, model, Some(pending), Instant::now());
+            if let Some(open) = app.launcher.as_mut() {
+                open.owner = ScriptOwner::Shield(ids);
+            }
+            app.launcher_watch_client();
+        });
+    }
+
     fn launcher_watch_client(&mut self) {
         let Some(handle) = self.loop_handle.clone() else { return };
         let Some(open) = self.launcher.as_mut() else { return };
@@ -679,6 +722,7 @@ mod tests {
             (dmenu(), Some(Switcher), script.clone(), None),
             (Request::Dnd(DndVerb::Toggle), None, not_ours(), refused()),
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
+            (Request::FailedRefresh, None, not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
             (Request::Notes, Some(Apps), not_ours(), refused()),
             (Request::Clipboard, None, Action::OpenClipboard, done()),

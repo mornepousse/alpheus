@@ -92,6 +92,8 @@ pub enum Mail {
         lines: Vec<String>,
         failed: bool,
     },
+    /// A Shield worker's report (shield spec § 7).
+    Shield(crate::shield::ShieldMail),
     Stop,
 }
 
@@ -103,7 +105,53 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_vpn_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_mixer(&mut config.quick, &launcher.terminal);
-    (config, warning.into_iter().collect())
+    let mut warnings: Vec<String> = warning.into_iter().collect();
+    warnings.extend(resolve_shield(&mut config.shield, directory));
+    (config, warnings)
+}
+
+/// `[shield]` once the config directory is known (shield plan, decisions 8 and 9): a partial table
+/// or a flag whose watch would share a descriptor with the theme's turns Shield mode off, with the
+/// warning to log. The flag's directory and its parent may equal neither the config directory nor
+/// its parent (compared as written: an alias the paths do not show is caught when the watch arms).
+pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &Path) -> Option<String> {
+    if *s == crate::config::ShieldConfig::default() {
+        return None;
+    }
+    let warning = if !s.configured() {
+        Some("shield: needs flag, on and off; Shield mode off")
+    } else {
+        // Compared lexically normalised (`..` and `.` resolved as written).
+        let flag = normalise(Path::new(&s.flag));
+        let config_dir = &normalise(config_dir);
+        let flag_dir = flag.parent();
+        let mine = [flag_dir, flag_dir.and_then(Path::parent)];
+        let theirs = [Some(config_dir.as_path()), config_dir.parent()];
+        let shared = mine.iter().flatten().any(|m| theirs.iter().flatten().any(|t| m == t));
+        shared.then_some("shield.flag: must not share a directory with alpheus's config; Shield mode off")
+    };
+    let warning = warning?;
+    *s = crate::config::ShieldConfig::default();
+    Some(warning.to_string())
+}
+
+/// `path` with its `.` and `..` components resolved lexically (no file system access; a `..` at
+/// the root stays at the root).
+fn normalise(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() && !path.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode
@@ -232,10 +280,17 @@ pub struct Wanted {
     /// The notifications server and the bell: on the tray's connection, or
     /// on the bar's link when the tray is off; false: no RequestName, no surface, no call.
     pub notifications: bool,
+    /// The user manager's failed-units count (the `failed` module): on the tray's connection, or on
+    /// the bar's link when the tray is off; false: no connection, no rule, no call.
+    pub failed: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
-    let needs = Needs::of(modules);
+    wanted_for(Needs::of(modules))
+}
+
+/// What `needs` ask for together (`wanted`; tests give theirs directly).
+pub(crate) fn wanted_for(needs: Needs) -> Wanted {
     // In this order, whichever modules ask: with the network module and the panel both, the
     // network domain is read once.
     let dbus = [
@@ -243,6 +298,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         (Needs::BLUETOOTH, Domain::Bluetooth),
         (Needs::BATTERY, Domain::Battery),
         (Needs::POWER_PROFILE, Domain::Power),
+        (Needs::UNITS, Domain::Units),
     ]
     .into_iter()
     .filter(|(n, _)| needs.contains(*n))
@@ -255,6 +311,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         tray: needs.contains(Needs::TRAY),
         media: needs.contains(Needs::MEDIA),
         notifications: needs.contains(Needs::NOTIFICATIONS),
+        failed: needs.contains(Needs::UNITS),
     }
 }
 
@@ -291,7 +348,18 @@ impl App {
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
+        // The system count was read: the user manager's again (its own link, `failed_app`).
+        if matches!(m, Msg::UnitsRead) {
+            self.failed_units_read();
+        }
+        let units = matches!(m, Msg::Units(_));
         on_message(self, m, || LocalTime::now().0);
+        if units {
+            if let Some(notice) = self.failed_notice.as_mut() {
+                notice.settle_system();
+            }
+            self.failed_notify();
+        }
         if quick {
             self.quick_refresh();
         }
@@ -604,6 +672,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {
             state.tools_choices(generation, token, entry, lines, failed)
         }
+        channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
@@ -660,6 +729,12 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
+    // The user manager's failed-units count, on the same connection.
+    if want.failed && state.bar.config.failed.user_units {
+        state.start_failed(true);
+    } else {
+        state.failed_user_never();
+    }
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {
@@ -721,12 +796,23 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no VPN tap ({e})")),
             }
         }
+        // The failed-units count's word (`failed-refresh`), only with its domain.
+        if want.dbus.contains(&Domain::Units) {
+            match sources::dbus::UnitsTap::new() {
+                Ok(t) => state.units_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("failed: no units tap ({e})")),
+            }
+        }
+        let tx_read = tx.clone();
         sources::dbus::start(
             want.dbus.clone(),
             state.quick.wifi_tap.clone(),
             state.quick.bt_tap.clone(),
             state.quick.vpn_tap.clone(),
+            state.units_tap.clone(),
+            sources::dbus::units::UnitsOptions { subscribe: state.bar.config.failed.subscribe, ..Default::default() },
             move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()),
+            move || tx_read.send(Mail::Bar(Msg::UnitsRead)).is_ok(),
         );
     }
 }
@@ -789,6 +875,12 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
+    // Every child the executor registered is killed with its group and no new one starts: the
+    // pw-dump stream, a launcher source's capture, a Shield action still waiting (a pkexec on its
+    // password is cancelled; a privileged helper already running cannot be signalled and is left to
+    // end, its output being /dev/null). The sound source then sees its stream end and may log one
+    // `sound source down` line just before `shutdown`: accepted, it is the supervisor's own line.
+    state.exec.stop_running();
     // The history is wiped before the app is dropped.
     state.clipboard_guarded("shutdown", |app| app.clipboard_shutdown());
     drop(core.state); // surfaces destroyed

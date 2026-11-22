@@ -6,13 +6,13 @@
 use crate::config::{HooksConfig, ModuleId};
 use crate::modules::Needs;
 use crate::privacy::Capture;
-use crate::state::Msg;
+use crate::state::{Failed, Msg};
 use crate::system::{Battery, BtState, Charge, Link, NetState, PowerState, Profile, ProfileState};
 use crate::text;
 use alpheus_commun::theme::Mode;
 use std::time::{Duration, Instant};
 
-pub const COUNT: usize = 11;
+pub const COUNT: usize = 13;
 /// After start, an edge only moves its seed: the portal's first answer, the first graph, a profile
 /// applied at start. `Started` alone ignores it.
 pub const QUIET: Duration = Duration::from_secs(3);
@@ -35,6 +35,8 @@ pub enum HookId {
     Bluetooth,
     Privacy,
     Displays,
+    Shield,
+    FailedUnits,
 }
 
 impl HookId {
@@ -50,6 +52,8 @@ impl HookId {
         HookId::Bluetooth,
         HookId::Privacy,
         HookId::Displays,
+        HookId::Shield,
+        HookId::FailedUnits,
     ];
 
     /// The `[hooks]` key.
@@ -66,11 +70,13 @@ impl HookId {
             HookId::Bluetooth => "bluetooth",
             HookId::Privacy => "privacy",
             HookId::Displays => "displays",
+            HookId::Shield => "shield",
+            HookId::FailedUnits => "failed_units",
         }
     }
 
-    /// Whether the configured `modules` read what this event comes from.
-    pub fn reads(self, modules: &[ModuleId]) -> bool {
+    /// Whether the configured `modules` (or `[shield]`) read what this event comes from.
+    pub fn reads(self, modules: &[ModuleId], shield_configured: bool) -> bool {
         let needs = || Needs::of(modules);
         match self {
             HookId::Started | HookId::ThemeMode => true,
@@ -81,6 +87,9 @@ impl HookId {
             HookId::Bluetooth => needs().contains(Needs::BLUETOOTH),
             HookId::Privacy => modules.contains(&ModuleId::Privacy),
             HookId::Displays => modules.contains(&ModuleId::Displays),
+            // The flag is watched by `ShieldApp`, which exists with a configured `[shield]` alone.
+            HookId::Shield => shield_configured,
+            HookId::FailedUnits => needs().contains(Needs::UNITS),
         }
     }
 
@@ -97,6 +106,8 @@ impl HookId {
             HookId::Bluetooth => "bluetooth or quick",
             HookId::Privacy => "privacy",
             HookId::Displays => "displays",
+            HookId::Shield => "[shield]",
+            HookId::FailedUnits => "failed",
         }
     }
 
@@ -135,11 +146,19 @@ pub enum Event {
     Privacy(CaptureKind, bool),
     /// The applied profile's name.
     Displays(String),
+    /// Shield mode turned on (true) or off.
+    Shield(bool),
+    /// The failed units' total changed; each manager's count when known.
+    FailedUnits {
+        total: u32,
+        system: Option<u32>,
+        user: Option<u32>,
+    },
 }
 
 /// Every variable a hook may be given. One an event does not set is removed from the hook's
 /// environment (`unset_for`), so an inherited one never passes for the event's.
-pub const VARS: [&str; 14] = [
+pub const VARS: [&str; 18] = [
     "ALPHEUS_EVENT",
     "ALPHEUS_MODE",
     "ALPHEUS_DND",
@@ -154,6 +173,10 @@ pub const VARS: [&str; 14] = [
     "ALPHEUS_CAPTURE",
     "ALPHEUS_STATE",
     "ALPHEUS_DISPLAY_PROFILE",
+    "ALPHEUS_SHIELD",
+    "ALPHEUS_FAILED",
+    "ALPHEUS_FAILED_SYSTEM",
+    "ALPHEUS_FAILED_USER",
 ];
 
 /// The names of `VARS` that `env` does not set.
@@ -214,6 +237,8 @@ impl Event {
             Event::Bluetooth(_) => HookId::Bluetooth,
             Event::Privacy(..) => HookId::Privacy,
             Event::Displays(_) => HookId::Displays,
+            Event::Shield(_) => HookId::Shield,
+            Event::FailedUnits { .. } => HookId::FailedUnits,
         }
     }
 
@@ -263,6 +288,12 @@ impl Event {
                 env.push(("ALPHEUS_STATE", on_off(*b)));
             }
             Event::Displays(name) => env.push(("ALPHEUS_DISPLAY_PROFILE", clean_value(name))),
+            Event::Shield(b) => env.push(("ALPHEUS_SHIELD", on_off(*b))),
+            Event::FailedUnits { total, system, user } => {
+                env.push(("ALPHEUS_FAILED", total.to_string()));
+                env.extend(system.map(|n| ("ALPHEUS_FAILED_SYSTEM", n.to_string())));
+                env.extend(user.map(|n| ("ALPHEUS_FAILED_USER", n.to_string())));
+            }
         }
         env
     }
@@ -310,6 +341,9 @@ pub struct Hooks {
     sound_down: bool,
     compositor_down: bool,
     quiet_said: bool,
+    /// The last count of each manager that was known, and the total last seen.
+    failed: Failed,
+    failed_total: Option<u32>,
 }
 
 impl Hooks {
@@ -334,6 +368,8 @@ impl Hooks {
             sound_down: false,
             compositor_down: false,
             quiet_said: false,
+            failed: Failed::default(),
+            failed_total: None,
         })
     }
 
@@ -408,6 +444,15 @@ impl Hooks {
                     out.push(Event::BatteryLevel(*b));
                 }
             }
+            // A count that is down (None) is no state: the last known one stays.
+            Msg::Units(Some(n)) if self.wants(HookId::FailedUnits) => {
+                let first = self.failed.system.replace(*n).is_none();
+                out.extend(self.failed_edge(first));
+            }
+            Msg::UserUnits(Some(n)) if self.wants(HookId::FailedUnits) => {
+                let first = self.failed.user.replace(*n).is_none();
+                out.extend(self.failed_edge(first));
+            }
             Msg::Profile(Some(ProfileState { active: Some(p), .. }))
                 if self.wants(HookId::PowerProfile) && self.profile.replace(*p).is_some_and(|old| old != *p) =>
             {
@@ -416,6 +461,17 @@ impl Hooks {
             _ => {}
         }
         out
+    }
+
+    /// The total of the known counts against the last one seen. A manager's first answer (`seed`),
+    /// whenever it arrives, only moves the seed: it is no change, just one more count known.
+    fn failed_edge(&mut self, seed: bool) -> Option<Event> {
+        let total = crate::failed::total(&self.failed)?;
+        let old = self.failed_total.replace(total);
+        if seed {
+            return None;
+        }
+        old.filter(|old| *old != total).map(|_| Event::FailedUnits { total, system: self.failed.system, user: self.failed.user })
     }
 
     /// The mode in effect: a seed, then an edge on each change. `settled`: the mode is the user's

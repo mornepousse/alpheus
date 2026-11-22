@@ -272,6 +272,9 @@ impl Executor for Panics {
     fn capture(&self, _: &str, _: &[&str], _: alpheus_commun::exec::CaptureLimits) -> Result<Captured, ExecError> {
         panic!("secret-payload")
     }
+    fn run_silent(&self, _: &str, _: &[&str]) -> Result<Option<i32>, ExecError> {
+        Err(ExecError::NotFound)
+    }
 }
 
 #[test]

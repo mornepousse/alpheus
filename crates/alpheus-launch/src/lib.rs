@@ -7,12 +7,13 @@
 //! other changes: the chosen line on stdout and exit 0; Escape → nothing,
 //! exit 1; anything wrong (another menu open, bad usage, no answer) → a
 //! message on stderr, exit 2. One code of its own: 3 when the daemon is
-//! unreachable (not running) or too old for `--index`/`--password`/`--visible`, the only
-//! cases where a caller may fall back to another menu.
+//! unreachable (not running) or too old for a flag it was sent (`--index`/`--password`/`--visible`
+//! and the later ones, `--failed-refresh` among them), the only cases where a caller may fall
+//! back to another menu.
 
 use alpheus_commun::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
-    Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
+    Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
 };
 use alpheus_commun::local_time;
 pub use alpheus_commun::local_time::parse_clock;
@@ -35,9 +36,9 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
-                      | --clipboard | --clipboard-clear | --tools | --power | --help]
+                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -56,6 +57,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           with --dnd on: end it after 30m, 2h or 1h30m (1m to 24h), or at the
                           next local HH:MM; either one replaces an earlier end
   --clear-notifications   empty the bar's notification history
+  --failed-refresh        read the bar's failed-unit counts again now (the failed module; nothing without it)
   --osd brightness        show the laptop's backlight level (read once; never changed)
   --quick [sound|wifi|bluetooth|vpn]
                           open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
@@ -71,13 +73,17 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --clipboard-clear       empty the clipboard history (pinned entries stay)
   --tools                 open the Tools menu, or close it
   --power                 open the power menu (lock, log out, reboot, power off), or close it
+  --shield on|off|toggle  switch Shield mode (the commands of [shield] in bar.toml; the password prompt is theirs)
+  --shield status         print the state, and the blocked USB devices while it is on
+  --shield allow          pick a blocked USB device in the launcher's box and allow it
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-or timer module not in bar.toml, no [quick] session command for --power, or the clipboard history off in bar.toml or without a data-control protocol), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--clipboard/--clipboard-clear/--tools/--power (restarted since the upgrade? until then, use another menu).
+or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--power/--shield (restarted since the upgrade? until then, use another menu).
 
+--shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
 ";
@@ -96,6 +102,7 @@ pub enum Invocation {
     Dmenu { prompt: Option<String>, flags: DmenuFlags },
     Dnd(DndVerb, Option<EndArg>),
     ClearNotifications,
+    FailedRefresh,
     Osd(OsdVerb),
     Quick(QuickVerb),
     Calc,
@@ -106,6 +113,7 @@ pub enum Invocation {
     ClipboardClear,
     Tools,
     Power,
+    Shield(ShieldVerb),
     Help,
 }
 
@@ -131,6 +139,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() })?,
             "--dnd" => choose(&mut mode, Invocation::Dnd(verb_arg(&mut it, "--dnd", "on, off or toggle", DndVerb::parse)?, None))?,
             "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
+            "--failed-refresh" => choose(&mut mode, Invocation::FailedRefresh)?,
             "--osd" => choose(&mut mode, Invocation::Osd(verb_arg(&mut it, "--osd", "brightness", OsdVerb::parse)?))?,
             "--quick" => {
                 // The one optional word: taken only when it is one of QuickVerb's.
@@ -159,6 +168,10 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--clipboard-clear" => choose(&mut mode, Invocation::ClipboardClear)?,
             "--tools" => choose(&mut mode, Invocation::Tools)?,
             "--power" => choose(&mut mode, Invocation::Power)?,
+            "--shield" => choose(
+                &mut mode,
+                Invocation::Shield(verb_arg(&mut it, "--shield", "on, off, toggle, status or allow", ShieldVerb::parse)?),
+            )?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -276,6 +289,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
             Request::DndOn(DndEnd::Until(u64::try_from(at).map_err(|_| "no such local time")?))
         }
         Invocation::ClearNotifications => Request::ClearNotifications,
+        Invocation::FailedRefresh => Request::FailedRefresh,
         Invocation::Osd(v) => Request::Osd(v),
         Invocation::Quick(v) => Request::Quick(v),
         Invocation::Calc => Request::Calc,
@@ -286,6 +300,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::ClipboardClear => Request::ClipboardClear,
         Invocation::Tools => Request::Tools,
         Invocation::Power => Request::Power,
+        Invocation::Shield(v) => Request::Shield(v),
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -385,7 +400,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"
                 .into(),
         );
     }
@@ -483,6 +498,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Close
             | Invocation::Dnd(..)
             | Invocation::ClearNotifications
+            | Invocation::FailedRefresh
             | Invocation::Osd(_)
             | Invocation::Quick(_)
             | Invocation::Calc
@@ -492,7 +508,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Clipboard
             | Invocation::ClipboardClear
             | Invocation::Tools
-            | Invocation::Power),
+            | Invocation::Power
+            | Invocation::Shield(_)),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -542,6 +559,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Dnd(_)
             | Request::DndOn(_)
             | Request::ClearNotifications
+            | Request::FailedRefresh
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Calc
@@ -554,9 +572,17 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Power
             | Request::OutputsTry(_)
             | Request::OutputsKeep
-            | Request::OutputsRevert,
+            | Request::OutputsRevert
+            | Request::Shield(_),
             Reply::Done,
         ) => EXIT_OK,
+        // The picker's Escape, as dmenu's.
+        (Request::Shield(ShieldVerb::Allow), Reply::Cancelled) => EXIT_CANCELLED,
+        // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
+        (Request::Shield(ShieldVerb::Status), Reply::Shield(text)) => {
+            let code = print(&text);
+            if code == EXIT_OK && text.lines().next() == Some("Shield: unknown") { EXIT_ERROR } else { code }
+        }
         (_, Reply::Busy) => fail(stderr, "another menu is already open"),
         (_, Reply::Error(m)) => match too_old_for(request, &m) {
             Some(what) => daemon_too_old(stderr, what, &m),
@@ -589,6 +615,8 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         Request::Tools if error == "malformed request: unknown request \"tools\"" => Some("--tools"),
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
+        Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
+        Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
@@ -686,6 +714,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off, None)));
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle, None)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
+        assert_eq!(parse_args(&args(&["--failed-refresh"])), Ok(Invocation::FailedRefresh));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
         assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
         assert_eq!(parse_args(&args(&["--windows"])), Ok(Invocation::Windows));
@@ -755,13 +784,10 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
-            (
-                &["--calc", "--toggle"],
-                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --help",
-            ),
+            (&["--calc", "--toggle"], "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
-            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --help"),
+            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
             (&["--tools", "--power"], "only one of"),
             (&["--tools", "--toggle"], "--tools"),
             (&["--power", "--clipboard"], "only one of"),
@@ -779,6 +805,8 @@ mod tests {
             (&["--clear-notifications", "--dnd", "on"], "only one of"),
             (&["--dnd", "on", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--clear-notifications", "now"], "unknown option"),
+            (&["--failed-refresh", "--dnd", "on"], "only one of"),
+            (&["--failed-refresh", "now"], "unknown option"),
             (&["--osd"][..], "--osd needs brightness"),
             (&["--osd", "volume"], "--osd takes brightness"),
             (&["--osd", "brightness", "--close"], "only one of"),
@@ -891,6 +919,17 @@ mod tests {
         assert_eq!(reply_to_exit(&Request::Windows, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
     }
 
+    /// A daemon from before `--failed-refresh` refuses the word as an unknown request: exit 3.
+    #[test]
+    fn a_daemon_without_failed_refresh_is_too_old() {
+        let refusal = "malformed request: unknown request \"failed-refresh\"";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--failed-refresh"), "{}", String::from_utf8_lossy(&err));
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut Vec::new()), EXIT_ERROR);
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
+    }
+
     /// A daemon from before `--notes` refuses the word as an unknown request: exit 3, naming it.
     #[test]
     fn a_daemon_without_notes_is_too_old() {
@@ -939,6 +978,51 @@ mod tests {
         // Another verb's refusal is not this one's.
         let refusal = "malformed request: unknown request \"power\"".to_string();
         assert_eq!(reply_to_exit(&Request::Tools, Reply::Error(refusal), &[], &mut Vec::new(), &mut Vec::new()), EXIT_ERROR);
+    }
+
+    #[test]
+    fn shield_words_parse() {
+        for v in ShieldVerb::ALL {
+            assert_eq!(parse_args(&args(&["--shield", v.word()])), Ok(Invocation::Shield(v)));
+        }
+        assert_eq!(request_of(Invocation::Shield(ShieldVerb::Status), 0), Ok(Request::Shield(ShieldVerb::Status)));
+        for (a, why) in [
+            (&["--shield"][..], "--shield needs on, off, toggle, status or allow"),
+            (&["--shield", "maybe"], "--shield takes on, off, toggle, status or allow"),
+            (&["--shield", "on", "--close"], "only one of"),
+            (&["--shield", "on", "-p", "x"], "--prompt only goes with --dmenu"),
+        ] {
+            let e = parse_args(&args(a)).unwrap_err();
+            assert!(e.contains(why), "{a:?}: {e}");
+        }
+    }
+
+    /// Spec § 9: `status` prints the daemon's text (exit 0 on or off, 2 unknown), the others exit 0
+    /// on Done; a Cancelled picker is 1; a daemon from before the verb is exit 3, a current daemon's
+    /// error exit 2.
+    #[test]
+    fn shield_replies_map_to_exit_codes() {
+        let status = Request::Shield(ShieldVerb::Status);
+        for (text, code) in [("Shield: on\nBlocked USB devices: none", EXIT_OK), ("Shield: off", EXIT_OK), ("Shield: unknown", EXIT_ERROR)]
+        {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            assert_eq!(reply_to_exit(&status, Reply::Shield(text.into()), &[], &mut out, &mut err), code, "{text}");
+            assert_eq!(String::from_utf8(out).unwrap(), format!("{text}\n"));
+        }
+        for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Allow] {
+            assert_eq!(reply_to_exit(&Request::Shield(v), Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
+        }
+        let allow = Request::Shield(ShieldVerb::Allow);
+        assert_eq!(reply_to_exit(&allow, Reply::Cancelled, &[], &mut Vec::new(), &mut Vec::new()), EXIT_CANCELLED);
+        let refusal = "malformed request: unknown request \"shield\"";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&allow, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--shield"), "{}", String::from_utf8_lossy(&err));
+        let off = "shield is not configured in bar.toml";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&allow, Reply::Error(off.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        assert!(String::from_utf8_lossy(&err).contains(off));
+        assert_eq!(reply_to_exit(&allow, Reply::Busy, &[], &mut Vec::new(), &mut Vec::new()), EXIT_ERROR);
     }
 
     /// An upgrade not followed by a restart: a daemon that never heard of the displays verbs

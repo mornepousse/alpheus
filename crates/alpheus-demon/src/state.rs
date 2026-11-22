@@ -55,6 +55,16 @@ pub enum Msg {
         open: Option<u64>,
         state: Option<VpnState>,
     },
+    /// systemd's count of failed units on the system bus (diagnostics spec § 6); None: not read,
+    /// nobody owns systemd1, its read failed, or the system bus is down.
+    Units(Option<u32>),
+    /// The failed-units count was just read, whatever it said (sent outside the published state: a
+    /// second read of the same count changes nothing the bar draws). No redraw: it asks the user
+    /// manager's count again (the user's own link, `failed_app`).
+    UnitsRead,
+    /// The user manager's count of failed units, from the session bus (the system's is `Units`);
+    /// None: not read, no user manager, or the session bus is down.
+    UserUnits(Option<u32>),
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring.
     Tray(Vec<TrayIcon>),
@@ -79,6 +89,8 @@ pub struct Bar {
     /// The power profile, for the quick panel; nothing in the bar draws it.
     pub profile: Feed<ProfileState>,
     pub resources: Resources,
+    /// The failed-units counts (the system manager's and the user manager's), drawn by the `failed` module.
+    pub failed: Failed,
     /// The tray's icons, in registration order; empty at start.
     pub tray: Vec<TrayIcon>,
     /// The media module's mark and title; None until a player plays or pauses, and again when none does.
@@ -95,6 +107,18 @@ pub struct Bar {
     /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
     /// by the wiring like `module_colors`; `Flat` until then.
     pub style: BarStyle,
+    /// Shield mode's view (shield spec); None without `[shield]`. Set by `ShieldApp`, never by a message.
+    pub shield: Option<crate::shield::ShieldView>,
+}
+
+/// The failed units of each manager: None when that count is unknown (a source that is down is not
+/// a state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Failed {
+    /// The system manager's, from the system bus.
+    pub system: Option<u32>,
+    /// The user manager's, from the session bus.
+    pub user: Option<u32>,
 }
 
 /// Puts `v` in `slot`; true if it changed.
@@ -157,12 +181,14 @@ impl Bar {
             battery: Feed::Waiting,
             profile: Feed::Waiting,
             resources: Resources::default(),
+            failed: Failed::default(),
             tray: Vec::new(),
             media: None,
             notifications: None,
             timer: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
+            shield: None,
         }
     }
 
@@ -218,6 +244,11 @@ impl Bar {
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
             Msg::Vpn { .. } => false,
+            // A count going unknown keeps the last known one (spec § 6): a transient outage neither
+            // hides the module nor re-arms the notice.
+            Msg::Units(n) => n.is_some() && set_if_changed(&mut self.failed.system, n),
+            Msg::UnitsRead => false,
+            Msg::UserUnits(n) => n.is_some() && set_if_changed(&mut self.failed.user, n),
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
             Msg::Media(view) => set_if_changed(&mut self.media, view),
@@ -233,6 +264,30 @@ mod tests {
     use crate::compositor::example;
     use crate::system::*;
     use alpheus_commun::backends::Volume;
+
+    /// Diagnostics spec § 6: the system manager's count is kept (and says when it changed); the word that it
+    /// was read again is no state and no redraw.
+    #[test]
+    fn the_failed_count_is_kept_and_its_read_word_changes_nothing() {
+        let mut b = Bar::new(BarConfig::default());
+        assert_eq!(b.failed, Failed::default());
+        assert!(b.apply(Msg::Units(Some(2))));
+        assert_eq!(b.failed, Failed { system: Some(2), user: None });
+        assert!(!b.apply(Msg::Units(Some(2))), "the same count: no redraw");
+        assert!(!b.apply(Msg::UnitsRead), "a read is no change");
+        assert!(b.apply(Msg::UserUnits(Some(1))));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(!b.apply(Msg::UserUnits(Some(1))), "the same count: no redraw");
+        // A count going unknown keeps the last known one (no flicker, a source down is no state).
+        assert!(!b.apply(Msg::UserUnits(None)));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(!b.apply(Msg::Units(None)));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(b.apply(Msg::Units(Some(0))), "known again: the new value");
+        let mut fresh = Bar::new(BarConfig::default());
+        assert!(!fresh.apply(Msg::Units(None)) && !fresh.apply(Msg::UserUnits(None)), "unknown from the start: nothing");
+        assert_eq!(fresh.failed, Failed::default());
+    }
 
     const H: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 

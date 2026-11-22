@@ -1,0 +1,31 @@
+---
+source: crates/alpheus/src/ui/journal/tests.rs
+assertion_line: 134
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    Journal · Errors this boot                                 Esc back  
+                  unit: any  ·  level: err and worse  ·  follow: off  ·  / filter      
+  󰕾 Sound    2    Service: ▌                                                           
+                   NetworkManager.service                                              
+  󰖩 Network  3     example-sync.service                                                
+                   example-app.service  user                                           
+  󰂯 BT       4                                                                         
+                                                                                       
+  󰐥 Power    5                                                                         
+                                                                                       
+  󰍹 Displays 6                                                                         
+                                                                                       
+  󰏘 Theme    7                                                                         
+                                                                                       
+ ▌󰃤 Diag     8                                                                         
+                                                                                       
+                                                                                       
+                                                                                       
+  ● ready                                                                              
+                  Enter choose  ·  Backspace clears the unit  ·  Esc closes            
+                   Enter  Choose    Esc  Close    q  Quit    F1  Help

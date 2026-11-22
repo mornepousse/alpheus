@@ -367,7 +367,7 @@ fn refreshed(r: &[Request]) -> Vec<Domain> {
     r.iter()
         .flat_map(|q| match q {
             Request::Refresh(ds) => ds.clone(),
-            Request::Do(_) => Vec::new(),
+            Request::Do(_) | Request::Diag(_) => Vec::new(),
         })
         .collect()
 }

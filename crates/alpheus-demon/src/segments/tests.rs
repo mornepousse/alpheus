@@ -221,10 +221,23 @@ fn shown(mic: bool, camera: bool, screen: bool) -> Privacy {
     p
 }
 
+/// The styles of the cells `glyphs` sit on in a whole bar's grid, under `mc` (the layout is where
+/// `module_colors` acts: a segment alone never sees it).
+fn bar_styles(b: &mut Bar, mc: ModuleColors, glyphs: &str) -> String {
+    b.module_colors = mc;
+    let g = b.grid("HDMI-A-1", 200);
+    let (text, styles) = (g.text(), g.styles());
+    let styles: Vec<char> = styles.chars().collect();
+    text.chars().enumerate().filter(|(_, c)| glyphs.contains(*c)).map(|(i, _)| styles[i]).collect()
+}
+
 /// Privacy spec § 1: each active glyph in its fixed hue, whatever `module_colors` says.
 #[test]
 fn the_privacy_segment_shows_each_active_glyph_in_its_hue() {
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        let mut b = full_bar();
+        b.privacy = shown(true, true, true);
+        assert_eq!(bar_styles(&mut b, mc, "\u{f036c}\u{f0100}\u{f0379}"), "ogr", "in the bar under {mc:?}");
         let s = super::privacy(&shown(true, true, true)).unwrap();
         assert_eq!(draw(&s), ("\u{f036c} \u{f0100} \u{f0379}".into(), "oggrr".into()), "{mc:?}");
         assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Privacy, &Some(Target::Module(ModuleId::Privacy)), true));
@@ -254,6 +267,38 @@ fn the_muted_microphone_is_dim_and_only_it() {
 fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
     assert!(super::privacy(&Privacy::new(Vec::new())).is_none());
     assert!(super::privacy(&shown(false, false, false)).is_none());
+}
+
+/// Diagnostics spec § 6: `󰀦 N` in the error role whatever `module_colors` says; nothing at 0 or
+/// when neither manager's count is known.
+#[test]
+fn failed_two() {
+    let two = Failed { system: Some(1), user: Some(1) };
+    let s = super::failed(&two).unwrap();
+    assert_eq!(draw(&s), ("\u{f0026} 2".into(), "eee".into()));
+    assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Failed, &Some(Target::Module(ModuleId::Failed)), false));
+    assert_eq!(draw(&super::failed(&Failed { system: Some(12), user: None }).unwrap()), ("\u{f0026} 12".into(), "eeee".into()));
+}
+
+/// Under every `module_colors`, `pills` included, the block has no hue: the glyph stays in the error role.
+#[test]
+fn failed_two_pills() {
+    let two = Failed { system: Some(2), user: Some(0) };
+    assert_eq!(ModuleId::Failed.spec().hue, None);
+    let mut b = Bar::new(BarConfig::default());
+    b.failed = two;
+    for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        b.module_colors = mc;
+        let s = (ModuleId::Failed.spec().segment.unwrap())(&b, "HDMI-A-1").unwrap();
+        assert_eq!(draw(&s), ("\u{f0026} 2".into(), "eee".into()), "{mc:?}");
+    }
+}
+
+#[test]
+fn failed_is_hidden_at_zero_and_unknown() {
+    assert!(super::failed(&Failed { system: Some(0), user: Some(0) }).is_none());
+    assert!(super::failed(&Failed { system: Some(0), user: None }).is_none());
+    assert!(super::failed(&Failed::default()).is_none(), "neither known: nothing");
 }
 
 #[test]
@@ -973,4 +1018,20 @@ fn the_timer_chip_by_look() {
     for (c, withheld) in [(&running, false), (&paused, true), (&done, false), (&idle, true)] {
         assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
     }
+}
+
+/// Shield spec § 4: the glyph only while on, always green whatever `module_colors` says.
+#[test]
+fn the_shield_glyph_shows_only_while_on() {
+    for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        let mut b = full_bar();
+        b.shield =
+            Some(crate::shield::ShieldView { state: Some(true), switching: false, failed_until: None, can_list: true, can_allow: true });
+        assert_eq!(bar_styles(&mut b, mc, "\u{f0498}"), "g", "in the bar under {mc:?}");
+        let s = super::shield(Some(true)).unwrap_or_else(|| panic!("{mc:?}"));
+        assert_eq!(draw(&s), ("\u{f0498}".into(), "g".into()), "{mc:?}");
+        assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Shield, &Some(Target::Module(ModuleId::Shield)), true));
+    }
+    assert!(super::shield(Some(false)).is_none(), "off: nothing");
+    assert!(super::shield(None).is_none(), "unknown: nothing");
 }

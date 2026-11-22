@@ -1,5 +1,5 @@
 use super::*;
-use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, TimerVerb};
+use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, ShieldVerb, TimerVerb};
 
 /// Each verb to the one that answers it: the displays verbs to the output controller, never to
 /// the launcher (which would close or open on them).
@@ -19,9 +19,12 @@ fn each_verb_goes_to_its_handler() {
         (Request::Timer(TimerVerb::Start(60)), Route::Timer),
         (Request::Notes, Route::Notes),
         (Request::ClipboardClear, Route::Clipboard),
+        (Request::Shield(ShieldVerb::Status), Route::Shield),
+        (Request::Shield(ShieldVerb::Allow), Route::Shield),
         (Request::Clipboard, Route::Launcher),
         (Request::Tools, Route::Launcher),
         (Request::Power, Route::Power),
+        (Request::FailedRefresh, Route::Failed),
         (Request::Toggle, Route::Launcher),
         (Request::Close, Route::Launcher),
         (Request::Calc, Route::Launcher),

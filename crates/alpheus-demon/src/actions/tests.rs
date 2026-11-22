@@ -259,6 +259,19 @@ fn resources_left_opens_the_popup_right_runs_the_monitor() {
     assert_eq!(ModulePopup::of(&r, Button::Right, false), None);
 }
 
+/// Diagnostics spec § 6: a left click on the failed count opens the Diag tab through `open_tab`;
+/// no other click does anything.
+#[test]
+fn a_left_click_opens_the_diag_tab() {
+    let b = full();
+    let t = Target::Module(ModuleId::Failed);
+    assert_eq!(command(&b, "eDP-1", &t, Button::Left), argv(&["alpheus-toggle", "diagnostics"]));
+    for other in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+        assert_eq!(command(&b, "eDP-1", &t, other), None, "{other:?}");
+    }
+    assert_eq!(crate::popup::ModulePopup::of(&t, Button::Left, true), None, "no popup");
+}
+
 #[test]
 fn click_commands_configurable_in_bar_toml() {
     let mut b = without_quick(full());

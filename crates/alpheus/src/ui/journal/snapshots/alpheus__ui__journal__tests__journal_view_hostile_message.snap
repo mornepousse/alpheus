@@ -1,0 +1,31 @@
+---
+source: crates/alpheus/src/ui/journal/tests.rs
+assertion_line: 93
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    Journal · Errors this boot                                 Esc back  
+                  unit: any  ·  level: err and worse  ·  follow: off  ·  / filter      
+  󰕾 Sound    2    01:00:00 evil: tidy live  reorderd                                   
+                                                                                       
+  󰖩 Network  3                                                                         
+                                                                                       
+  󰂯 BT       4                                                                         
+                                                                                       
+  󰐥 Power    5                                                                         
+                                                                                       
+  󰍹 Displays 6                                                                         
+                                                                                       
+  󰏘 Theme    7                                                                         
+                                                                                       
+ ▌󰃤 Diag     8                                                                         
+                                                                                       
+                                                                                       
+                                                                                       
+  ● ready                                                                              
+                                                                                       
+                   /  Filter    u  Unit    p  Level    f  Follow    PgUp/Dn/End  Scroll

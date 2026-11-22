@@ -121,6 +121,15 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Clipboard history, full (50 × 4,000 bytes) | +164…+188 KB of anonymous memory over rest; 100 more copies +4 KB; cleared back to about rest | `clipboard_full_history`, 3 runs (bounds 384 / 64 KB on `Anonymous:`; PSS printed: +290…+430 KB); the history, its previews and the one read buffer, all wiped when removed |
 | Clipboard history, launcher open on 50 entries | +1.0–1.14 MB PSS over closed; after 2 warm-up and 4 more cycles −112…+12 KB of anonymous memory | `clipboard_launcher_open_and_closed`, 3 runs (bound 128 KB); the first open warms code and font pages once |
 | Clipboard history, at rest | 0 loop wake-ups in 5 s after copies and after a `--clipboard` cycle | `at_rest_no_wakeups_after_copies`, 3 runs; the 1 s read deadline is armed only while a read is pending |
+| Shield mode, linked in (unconfigured: no `[shield]`) | −4…+214 KB at start (`everything` of `startup_pss_per_source`: 9,178 / 9,933 / 9,070 KB base against 9,174 / 9,181 / 9,284 on this side; `plan 1` −504…+437: the harness drifts, trust the deltas) | binary 7,541,680 → 7,590,864 bytes stripped (+48 KiB: code, no allocation); measured against `2a94055` (the merge of the clipboard into the Shield branch, so the figures are the Shield's alone), release, back to back, 3 runs each, separate target directories; unconfigured: no watch descriptor, no segment, no row, nothing allocated |
+| Shield mode, configured, at rest | `Anonymous:` +0…+8 KB with the mode off, +28 KB with it on, over unconfigured (1,416 KB; bound 64); PSS −422…+72 KB off and +162…+732 KB on (file pages: the glyph's font and the code, file-backed) | `shield_pss_at_rest_unconfigured_and_configured`, 3 runs (7.5–8.9 MB, 1 output, the Shield row first): one inotify watch in the theme watch's instance, no thread, no timer |
+| Shield detail open on 10 blocked devices | ≈ +0.6 MB PSS over rest (+551…+690 KB in 3 runs: spread, the page cache moves it); once closed `Anonymous:` +64…+68 KB over rest (1,440–1,444 KB; bound 256), the pools back below rest's; 10 more cycles +64…+68 KB (bound 128); in a 40-cycle run (release, once) `Anonymous:` read 1,448 KB at rest, 1,512 closed, then 1,564 / 1,588 / 1,584 / 1,588 after 10 / 20 / 30 / 40 cycles: it plateaus after about 20 cycles (+76 KB over closed), no creep | `shield_pss_detail_open_and_closed`, 3 runs; the first open's code and font file pages (file-backed, one-time) are in the PSS figures only; the bounds are on anonymous memory; a 16 KiB leak per listing reads +236 KB of `Anonymous:` and turns it red |
+| Shield mode, at rest | 0 loop and 0 whole-daemon wake-ups in 5 s with the mode off, with it on, and after a detail cycle (the window starts within a second of the close); 6 threads before and after a switch and a listing | `at_rest_no_wakeups_with_shield` and `shield_threads_back_to_baseline`, 3 runs; the worker threads live only while a command or a read runs; a 1 s timer left armed reads 5 wake-ups and turns it red |
+| Diagnostics (the Units domain, the user manager's count client, the `failed` module, the Diag tab's backend), linked in, `failed` not in `modules` | −392…+844 KB PSS at start vs. `b980b84` (`everything` of `startup_pss_per_source`, 3 pairings: 8,425 → 8,033, 8,770 → 9,614, 9,354 → 9,610 KB); the harness drifts by about 1 MB between boots (the base's own `plan 1` case read 7,466, 6,766 and 8,075 KB in the same three runs), so read the anonymous memory | the default bar's `Pss_Anon` (modules unset, `failed` in it on the new side, both managers served by a fake at count 0): 1,588 / 1,648 / 1,644 → 1,660 / 1,660 / 1,656 KB (+72, +12, +12), 6 threads either way, two more sockets (the units tap's pair); no session link and no thread added (the session link was already the portal's, mode `auto`). Binary, stripped, bytes: daemon 7,390,128 → 7,435,184 (+44 KiB), `alpheus-launch` unchanged, the control center 1,627,064 → 1,995,776 (+360 KiB: see the note below the table). Measured `b980b84` in a throwaway worktree with its own target directory, 3 runs each, back to back |
+| The `failed` module on, at start (both managers at 0) | With the default `subscribe = false`: +28…+36 KB of anonymous memory over the same bar without it (1,440 → 1,476 / 1,468 / 1,472 KB; PSS +228, +220, +224); with `subscribe = true`: +12…+16 KB (1,452 / 1,452 / 1,456 KB; PSS +204…+208); bound 256 (3 runs, `subscribe` stated each way) | `failed_module_pss_at_start`, 3 runs (8.6–8.9 MB, 1 output): one more thread, the D-Bus thread, which every default bar has anyway (a bar with no D-Bus domain has none), and one read of the system manager's count at start (the user manager's `Get` is called twice: once after the owner is found, once after the system read); no `Subscribe` call by default (asserted), one on each manager with `true` (asserted). With no session bus: +8 KB (run 1). The `+ failed` case of `startup_pss_per_source`, which runs the default: over `everything` +36, −8, +96 KB (bound 256) |
+| The `failed` module with two managers failing, then 20 more changes | `subscribe = true`: `Pss_Anon` +20 / +24 / +24 KB shown, +32 / +32 / +32 KB after 20 changes (bound 64); PSS +128…+132 KB shown, +140…+144 after (file pages the repaint touches, not growth) | `failed_module_shown_pss`, 3 runs; with `subscribe = false` (the default) and a refresh after each change: `Pss_Anon` +20 / +20 / 0 KB shown, +16 / +28 / 0 KB after, PSS +128 / +128 / 0 shown, +236 / +248 / +220 after. Prove-it-bites: a 16 KiB `black_box(Vec::leak(…))` per system read reads +360 KB and turns it red |
+| The `failed` module, at rest | 0 loop, 0 D-Bus-thread and 0 whole-daemon wake-ups in 5 s, with `subscribe` true and false (3 runs each); 0 after a piggybacked read (3 runs: a real 61 s wait, one battery change, one read, then 5 s; `subscribe = false`, the default) | `at_rest_no_wakeups_with_failed_units`, `piggyback_costs_no_wakeup` (slow: run it with `--exact`); no timer, no polling: the count rides the D-Bus thread's own blocking wait and the session link's fd. A D-Bus thread whose poll times out each second reads `(5, 0, 5)` and turns the test red; a change inside the first minute reads nothing (asserted) |
+| Diag tab, first render | 209–491 µs median over 20 renders (max 0.66–1.27 ms), 3 runs, 120×36, the tools made 500 ms slow: the tab renders its "reading" state at once | `first_render_medians_of_20_runs`; the Home tab's 218–300 µs on the same runs; budget 100 ms. Nothing is read while another tab shows |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -132,6 +141,18 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > from the tray-delivery measurement (three runs); the themes rows from two
 > alternated runs against the delivery before; the bar shapes rows likewise
 > (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise; the OSD rows likewise; the quick settings rows likewise. The privacy rows: 6 runs for the module on at start, 9 pairings (three harness variants) for the linked-in cost.
+>
+> **The control center's binary** grew 1,627,064 → 1,995,776 bytes stripped (+360 KiB) with the
+> Diag tab. Where it went, from the symbol sizes of two unstripped release builds of the same
+> two commits (`nm --size-sort`, grouped by name; LTO inlines across crates, so the split is
+> approximate and about 40 KiB of the growth belongs to no symbol): ≈ 180 KiB in the alpheus
+> crates' own code (the tab, the journal and report views, the backend's parsers, the health
+> checks, the redaction, the config), ≈ 30 KiB in `serde_json` (new to this binary: it joined
+> `alpheus-commun` for `journalctl -o json` and `systemctl --output=json`), ≈ 70 KiB in generic
+> std and dependency code instantiated for the new types, ≈ 15 KiB in `toml` and `serde` derive
+> code. It is code, not a new connection or a new library: the TUI still links no D-Bus. The spec
+> estimated 0.3–0.5 MiB for linking D-Bus into the TUI and chose to spawn the tools instead; the
+> binary grew by +0.35 MiB all the same, and the control center is not resident.
 >
 > **Note:** the "live" row above (≈ 11.3 MB) and the resident total it
 > feeds into (≈ 14 MB) predate the move from zbus to dbus-rs, the launcher
@@ -188,9 +209,11 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Per-app notification rules | ✅ `[[notifications.rules]]`: mute (kept in the history), drop, or change the urgency | ➖ | ✅ | ❌ | ➖ |
 | Low battery alerts | ✅ a notification at 20, 10 and 5 % while discharging (`[battery] warn`), the lowest one critical | ➖ | ✅ | ❌ | ➖ |
 | Event hooks | ✅ `[hooks]` in `bar.toml`: a command (an argv, run as given) per event — started, theme mode, do-not-disturb, battery charge and level, power profile, network, VPN, Bluetooth, privacy, displays — with the data in `ALPHEUS_*` variables, run in its own systemd scope, rate-limited, never logged | ➖ | ✅ | ❌ | ➖ |
+| Shield mode (public-network security: state, toggle, blocked USB devices) | ✅ `[shield]` in `bar.toml`: a green glyph while the mode is on, a quick-panel row and a blocked-USB detail, `alpheus-launch --shield on\|off\|toggle\|status\|allow`, notices, a hook; the root work stays in your system configuration (alpheus runs the argv you give it, nothing else); nothing exists unconfigured | ❌ | ❌ | ❌ | ❌ |
 | Focus timer (countdown, Pomodoro, stopwatch) | ✅ a chip in the bar (`󰔛` idle, `󰔛 25m` running, `󰔟`/`󰅶` work and break, `󱎫` stopwatch, `󰏤` paused, `󰂞 done`), a popup under it, `alpheus-launch --timer start 25m\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup`; the end through the notification server and an optional sound; kept across a restart; no seconds on the chip, so one wake-up a minute | ❌ | ➖ a countdown plugin | ❌ | ❌ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is still invisible | ✅ | ➖ | ✅ | ✅ |
+| Failed units (systemd) | ✅ `󰀦 N` in the bar, only above 0: `NFailedUnits` of the system and the user manager, read on triggers (start, resume, a refresh, a piggyback) or, with `[failed] subscribe = true` (off by default: systemd then signals every client), pushed at once, a left click opens the Diag tab; a `failed_units` hook; an optional notification (`[failed] notify`) | — | — | — | ➖ a custom module of your own |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
 | Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi\|bluetooth\|vpn]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), Bluetooth (power, paired and nearby devices, connect, pair with codes, forget), VPN (the NetworkManager profiles, up and down), a Bluetooth headset's Hi-Fi/Mic mode, microphone, do-not-disturb (with a duration), power profile, keep-awake, night light (switches on the toggle rows), labelled session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest: a left rail, a Home dashboard, shapes that follow the bar's style | ✅ | ✅ | ➖ | ❌ |
@@ -198,6 +221,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Display settings | ✅ TUI (enable, place, resolution, scale, profiles, 15 s rollback held by the daemon) through `zwlr_output_manager_v1`, no external script; profiles applied on hotplug (at most 3 a minute per set of screens, a held-back one applied when the minute ends); a trial restored when the daemon stops (lost if it crashes); DisplayLink kept at 120 Hz or below | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ✅ Wi-Fi, Bluetooth and VPN in the quick panel (Bluetooth: connect, pair with codes, forget, headset mode; VPN: a row and a detail of the saved profiles, up and down (a failing `nmcli` shows `…` until NetworkManager answers or 20 s pass; a profile needing a secret no agent provides fails; `More…` (nmtui-edit) is where to store the secret); `More…` opens nmtui, and nmtui-edit for the VPN profiles, for enterprise, hidden networks, hotspot); per-app audio in the TUI (wiremix) and a `Mixer…` row in the quick panel that opens it | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
+| Session health, journal viewer, boot report, crash list, bug report | ✅ the control center's Diag tab: the compositor, `WAYLAND_DISPLAY` and the systemd user environment checked (your own checks in `config.toml`), failed units and units restarting in a loop with restart and reset-failed (system units: systemd's own password prompt in the tab's window), eight journal presets, filters by unit, priority and text, follow, the boot's `systemd-analyze`, recent crashes, and a redacted bug report shown in full before it is copied | — | — | — | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
 | **Launcher** | | | | | |
 | Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
@@ -236,7 +260,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 swayosd + swaybg, from PSS figures of different days (see the memory note
 above). Other shells' features from their documentation or source (October 2026);
 memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
-(October 2026, unverified).
+(October 2026, unverified). — : not found in that shell's documentation (not verified).
 
 ## What's in the repository
 
@@ -254,20 +278,21 @@ checks this.
 
 ### The control center (`alpheus`)
 
-Seven tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
+Eight tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
 **Displays** (enable, place, set resolution and scale, profiles, with
 automatic rollback after 15 s if not confirmed; the daemon speaks the output
 protocol and holds that countdown, so it works under every compositor that
 implements `zwlr_output_manager_v1`, and a profile matching the connected
 screens is applied on hotplug), **Theme** (choose a
-theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`).
+theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`) and **Diag**
+(session health, failed units, the journal, a boot report, a bug report: see below; `--tab diagnostics`).
 
 **The rail.** In a terminal of at least 84 columns and 26 rows (Mae's
 Super+A window is 87×26) the tabs become a left rail: the brand, then icon,
 name and number per tab, the active one filled with the theme's accent
 container, and the status line at its foot. Each tab has its own hue (Home the
 accent, Sound blue, Network cyan, BT purple, Power red, Displays green, Theme
-orange) for its header, headings, gauges and switches; a hue is only ever the
+orange, Diag yellow) for its header, headings, gauges and switches; a hue is only ever the
 ink of a glyph or a heading, never of text on a fill (labels on a button, a
 chip or a tag are `fg`). Its controls are drawn in the
 theme: selection bands, knob gauges for volume and brightness, switches,
@@ -301,15 +326,41 @@ show as boxes; `flat` needs none.
 
 | Key | Action |
 |---|---|
-| `1`…`7`, `Tab` / `Shift+Tab` | switch tabs |
+| `1`…`8`, `Tab` / `Shift+Tab` | switch tabs |
 | `Ctrl+P` | command palette (fuzzy search) |
 | `/`, `Ctrl+F` | search a list |
 | `F1`, `?` | help |
 | `Esc` | go back; `q` quits |
 
 `alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`,
-`bluetooth`, `power`, `displays`, `appearance`; `theme` is accepted for
-`appearance`).
+`bluetooth`, `power`, `displays`, `appearance`, `diagnostics`; `theme` is accepted for
+`appearance`, `diag` for `diagnostics`).
+
+**The Diag tab.** Nothing is read until it is shown, and leaving it stops the reads not yet sent (one already running finishes).
+One list, in sections: the **session health** (the compositor's socket answers, `WAYLAND_DISPLAY`
+is reachable, the systemd user environment names this session's display and compositor, no failed
+user unit, the alpheus daemon answers, plus `[[diagnostics.checks]]` of your own; a failing one
+shows its fix as text, never runs it), the **failed units** of both managers, the units
+**restarting in a loop**, the **crashes** of the last seven days (`coredumpctl`) and the **boot**
+time. On a failed or looping unit `Enter` opens its journal, `r` restarts it (asked first) and `c`
+clears its failed state (also asked first on a system unit); a user unit runs through the tab's worker, a system one in the tab's own
+window so that systemd's password prompt appears there (alpheus never runs `sudo` or `pkexec`;
+`[diagnostics] system_actions = false` hides both keys on system units). The **journal view** has
+eight presets (errors this boot, USB, suspend and resume, out of memory, thermal and throttling,
+NetworkManager, live journal, the logs of a service), `u` filters by unit, `p` cycles the priority,
+`/` filters the text, `f` follows (one bounded read a second while the view is open, no resident
+`journalctl`; pressed again after a failed read, it reads again), `PgUp`/`PgDn`/`Home`/`End` and
+the wheel scroll, `Esc` clears a filter first and then goes back (in the unit picker it closes the
+picker, and back to the overview when no unit was chosen yet; `Backspace` on an empty picker clears
+the unit). `/`, `u`, `p` and `f` are the view's own letters: a key you bound to another action wins. The **boot report** shows `systemd-analyze`'s time, blame and
+critical chain. The **bug report** (versions, failed units, loops, crashes, this boot's errors) is
+shown in full, redacted, and copied through `[diagnostics] copy` (`wl-copy` by default; the text
+goes on its standard input) only when you press Enter in the report or click Copy. Redaction is a safety net: it
+replaces your user name, home, host name and machine id, MAC and IP addresses, UUIDs and anything
+shaped like an e-mail address; **Wi-Fi network names and USB serial numbers are not touched**. Read
+it before copying. Reading the system journal needs the `wheel`, `adm` or `systemd-journal` group
+(the header says "your own messages only" otherwise). Every string from systemd or the journal is
+cleaned of control characters before it reaches a cell. `F5` (the `refresh` binding; not in the journal view, which reads for itself) reads everything again.
 
 ### The bar (`alpheus-demon`)
 
@@ -337,7 +388,7 @@ Shipped: **launcher** (an icon that opens it, first module by default),
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
 **privacy** (nothing while nothing is captured; then one glyph per capture in an own block: `󰍬` microphone in orange, `󰄀` camera in green, `󰍹` screen in red, whatever `module_colors` says; the microphone glyph is dim while the default source is muted. Read from PipeWire's graph by the `pw-dump` child the sound module already runs, so a meter (pavucontrol, cava), a filter chain or a loopback never lights it, and an app muting itself in its own call still does; a screen cast announced by niri or Hyprland lights the screen too. A glyph goes 0.5 s after its capture ends, never blinking on a renegotiation. A left click opens a popup listing the apps by name (`(unnamed)` when only the compositor knows); a middle click mutes or unmutes the default microphone. A camera opened directly (`/dev/video*` outside PipeWire) lights it too: the daemon watches the device nodes with inotify (`[privacy] dev_dir`, `proc_dir`: where video devices and processes are listed) and, 300 ms after an open or close, scans its own user's `/proc/<pid>/fd` for a link to a `video*` node (never opening one; PipeWire, WirePlumber and the daemon itself excluded). **Not seen:** wf-recorder under Sway and Mango, which announce nothing, a camera held by another user's process, and a same-user process named `pipewire` or `wireplumber`; under Hyprland, a cast running before the daemon started shows only through PipeWire (niri reports it at connection). **Known:** on boards whose hardware codec nodes are named `video*` (some ARM boards), a codec in use also lights the camera; the nodes are never opened to tell them apart),
-**volume** (an icon and the percentage, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
+**shield** (nothing unless `[shield]` is set in `bar.toml` and the mode is on; then `󰒘`, always green, in an own block right after the privacy indicators, removed on a narrow bar just before them. Its state is a file: the mode is on while `flag` exists, watched through the theme watch's one inotify instance, so a change made in a terminal shows at once. A left click opens the quick panel on the Shield row (with the `quick` module): Space switches it with the `on` or `off` command, which asks for authorisation itself (`pkexec` shows polkit's dialog), `…` until the flag follows, `failed` for 4 s on a refusal; Enter opens the detail, the USB devices blocked since the mode went on (read once each time it opens), Enter on one runs `allow` with its id. `alpheus-launch --shield` does the same from a script, and the notices come from alpheus's own server; see [Shield mode](#shield-mode)), **volume** (an icon and the percentage, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU, memory, temperature: each an icon and a figure; a left click opens a popup with each item's figure and a graph of its last 60 samples, drawn in pixels (`last N min`: 60 × `interval` seconds), and a `Monitor…` row; the right click runs `[actions] resources`; the 60 samples are kept in a fixed ring of about 3 KB, fed by the tick that already runs, so nothing more wakes; `[resources] show` adds `net` (the default route's interface, receive and send rates; IPv4 only), `disk` ($HOME's filesystem, percent used, rounded up like `df`) and `gpu` (the GPU's temperature, from its hwmon); all read at the same tick, nothing more is read for an item left out. `disk` calls `statvfs` on `$HOME` at each pass, on the event loop: a hung network `$HOME` would block the bar. Reading a discrete GPU's hwmon can wake it on a hybrid laptop: set `gpu_sensor` to the integrated GPU's driver (`i915`, `xe`, `amdgpu`) to read that one instead), **tray** (status icons of running apps as Nerd
 Font glyphs — or a letter —, left click activates, right click opens the
@@ -347,7 +398,7 @@ server holds the name; a left click opens the panel — the player, the last 50 
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
 clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi|bluetooth]`: the volume with its output devices and, for a Bluetooth headset, its Hi-Fi/Mic mode (a switch of its PipeWire profile with `wpctl set-profile`), the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the Bluetooth (power, and a detail of the paired devices and of the nearby ones found while it is open: connect or disconnect, pair a new one — a keyboard's code to type or a code to confirm shown in the panel by alpheus's own pairing agent, then trusted and connected —, and forget one after `Forget? ⏎`; the Bluetooth module's left click opens it), the microphone and a `Mixer…` row that opens wiremix in a terminal (`[quick] mixer`; `[]` hides it), do-not-disturb (Space toggles; Enter or → opens a detail: Off, 30 minutes, 1 hour, 2 hours, Until `[quick] dnd_until`, Until I turn it off; a timed one reads `until HH:MM` on the row), the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show (except the default `Mixer…`, not checked: without wiremix its terminal closes at once)), **displays** (nothing drawn: the daemon reads the screens through `zwlr_output_manager_v1` for the Displays tab, holds the tab's 15 s trial and applies the matching `displays.toml` profile on hotplug, 500 ms after the screens settle, at most 3 times a minute per set of screens (one held back is applied when the minute ends); a trial still open when the daemon stops is rolled back, one lost to a crash is not, and a try still waiting for the compositor at shutdown may keep its layout; `[displays] auto = false` keeps the tab and drops the hotplug behaviour), **clock** (a click opens the
-month's calendar), **timer** (a dim `󰔛` while idle, in its own yellow block just before the clock; `[timer] idle = "hidden"` draws nothing then. Running: the minutes left, rounded up (`󰔛 25m`, `󰔛 1h05`); a Pomodoro shows `󰔟` while working and `󰅶` on a break; the stopwatch `󱎫 12m`; paused `󰏤 24m`, dim; ended `󰂞 done` in the warn colour. The chip changes once a minute, never each second. A left click opens a popup (Timer ‹ 10 min › with ← → and the wheel, Pomodoro, Stopwatch; while one runs Pause or Resume, Add 1 min or Skip, Stop; the time ticks each second only while it is open), a middle click pauses or resumes. The end is a notification from alpheus's own server (kept in the history only under do-not-disturb, which also mutes the sound) and `[timer] sound`, an argv run at each end; the state survives a restart in `$XDG_STATE_HOME/alpheus/timer`), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
+month's calendar), **timer** (a dim `󰔛` while idle, in its own yellow block just before the clock; `[timer] idle = "hidden"` draws nothing then. Running: the minutes left, rounded up (`󰔛 25m`, `󰔛 1h05`); a Pomodoro shows `󰔟` while working and `󰅶` on a break; the stopwatch `󱎫 12m`; paused `󰏤 24m`, dim; ended `󰂞 done` in the warn colour. The chip changes once a minute, never each second. A left click opens a popup (Timer ‹ 10 min › with ← → and the wheel, Pomodoro, Stopwatch; while one runs Pause or Resume, Add 1 min or Skip, Stop; the time ticks each second only while it is open), a middle click pauses or resumes. The end is a notification from alpheus's own server (kept in the history only under do-not-disturb, which also mutes the sound) and `[timer] sound`, an argv run at each end; the state survives a restart in `$XDG_STATE_HOME/alpheus/timer`), **failed** (`󰀦 N` in the error colour, drawn only above 0: systemd's `NFailedUnits` for the system manager plus the user manager, each read through one `Get` of that property on the D-Bus connections the bar already has, never the Manager's other properties; a left click opens the Diag tab. By default (`[failed] subscribe = false`) the count is read at start, on resume, on `alpheus-launch --failed-refresh` and the Diag tab's refresh, and piggybacked on another domain's wake-up at most once a minute, never with a timer of its own; with `true` alpheus calls `Subscribe()` once on each manager so that systemd sends the change at once (the icon is instant, and systemd and dbus-daemon then serialize their signals for every client on that bus; the piggyback is skipped). If the session link closes, the user count stays as last known (the link is never reconnected). A systemd1 that fails to answer leaves the count unknown for that read (one rate-limited log line, the session and the other modules unaffected). A count going unknown keeps its last value. `[failed] user_units = false` leaves the session bus alone; `notify = true` sends one notification when the total rises), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
 clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi|bluetooth|vpn]`: the volume with its output devices and, for a Bluetooth headset, its Hi-Fi/Mic mode (a switch of its PipeWire profile with `wpctl set-profile`), the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the Bluetooth (power, and a detail of the paired devices and of the nearby ones found while it is open: connect or disconnect, pair a new one — a keyboard's code to type or a code to confirm shown in the panel by alpheus's own pairing agent, then trusted and connected —, and forget one after `Forget? ⏎`; the Bluetooth module's left click opens it), the VPN (a row under Bluetooth with the active profile, else `off`; Space brings the last used one up or down, and a detail lists the NetworkManager VPN profiles, OpenVPN-style and WireGuard alike, to bring one up or down with `nmcli connection up|down uuid`, no secret ever read or typed in the panel; `More…` opens nmtui-edit; a failing `nmcli` itself is not seen: the profile shows `…` until NetworkManager says otherwise or 20 s pass (60 s while it reports the connection activating), then `failed`, on the row too; a profile that needs a secret no agent provides (a password asked each time, with no secret agent running) fails, and `More…` (nmtui-edit) is where to store the secret), the microphone and a `Mixer…` row that opens wiremix in a terminal (`[quick] mixer`; `[]` hides it), do-not-disturb (Space toggles; Enter or → opens a detail: Off, 30 minutes, 1 hour, 2 hours, Until `[quick] dnd_until`, Until I turn it off; a timed one reads `until HH:MM` on the row), the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show (except the default `Mixer…`, not checked: without wiremix its terminal closes at once)), **displays** (nothing drawn: the daemon reads the screens through `zwlr_output_manager_v1` for the Displays tab, holds the tab's 15 s trial and applies the matching `displays.toml` profile on hotplug, 500 ms after the screens settle, at most 3 times a minute per set of screens (one held back is applied when the minute ends); a trial still open when the daemon stops is rolled back, one lost to a crash is not, and a try still waiting for the compositor at shutdown may keep its layout; `[displays] auto = false` keeps the tab and drops the hotplug behaviour), **clock** (a click opens the
 month's calendar), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
 of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
@@ -379,7 +430,7 @@ empties the history; exit code 2 when the notifications module is not in `bar.to
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
 show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--windows` opens the window switcher (see [The launcher](#the-launcher)); a second `--windows` while it is open steps to the next window, and it replaces any other open launcher, cancelling a waiting `--dmenu` (a password prompt included); exit 3 when the bar is not running or older than `--windows`. `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. `--timer start <duration>` (`90s`, `25m`, `1h30m`, or a bare number of minutes: 1 second to 24 hours), `--timer pomodoro`, `--timer stopwatch`, `--timer pause|resume|toggle|stop|skip` (on whatever runs; nothing to act on is no error) and `--timer popup` (opens or closes the popup under the chip, the keyboard taken without a grab; a second within 250 ms of its own open is ignored) drive the focus timer (exit 2 without the `timer` module, 3 when the bar is not running or older than `--timer`). A known
 show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--windows` opens the window switcher (see [The launcher](#the-launcher)); a second `--windows` while it is open steps to the next window, and it replaces any other open launcher, cancelling a waiting `--dmenu` (a password prompt included); exit 3 when the bar is not running or older than `--windows`. `--notes` opens or closes the quick notepad (see [The quick notepad](#the-quick-notepad); a `--notes` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--notes`). `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
-show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--quick [sound|wifi|bluetooth|vpn]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`, `vpn`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi`, `bluetooth` or `vpn` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. `--clipboard` opens or closes the clipboard history in the launcher's box (any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored) and `--clipboard-clear` forgets every unpinned entry without touching the current clipboard (exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol, 3 when the bar is not running or older than the verb). A known
+show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--quick [sound|wifi|bluetooth|vpn]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`, `vpn`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi`, `bluetooth` or `vpn` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. `--shield on|off|toggle|status|allow` drives Shield mode (see [Shield mode](#shield-mode); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run; 3 when the bar is not running or older than `--shield`), `--clipboard` opens or closes the clipboard history in the launcher's box (any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored) and `--clipboard-clear` forgets every unpinned entry without touching the current clipboard (exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol, 3 when the bar is not running or older than the verb). A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### Event hooks
@@ -400,6 +451,8 @@ means no hook. Every hook gets `ALPHEUS_EVENT=<key>`, plus:
 | `vpn` | a VPN becomes active, or the last one goes | `ALPHEUS_VPN` = `on` \| `off` | `network` or `quick` |
 | `bluetooth` | the adapter powers on or off, or a device connects or disconnects | `ALPHEUS_BLUETOOTH` = `on` \| `off` \| `connected` \| `disconnected`, `ALPHEUS_DEVICE` (the device's name, the last two only; unset for a name that is a Bluetooth address) | `bluetooth` or `quick` |
 | `privacy` | the microphone, camera or screen indicator turns on or off | `ALPHEUS_CAPTURE` = `microphone` \| `camera` \| `screen`, `ALPHEUS_STATE` = `on` \| `off` | `privacy` |
+| `shield` | Shield mode turns on or off, by any path | `ALPHEUS_SHIELD` = `on` \| `off` | `[shield]` set in `bar.toml` |
+| `failed_units` | the total of failed units (system plus user manager) changes | `ALPHEUS_FAILED` (the total), `ALPHEUS_FAILED_SYSTEM`, `ALPHEUS_FAILED_USER` (each unset until that manager has answered once; afterwards its last known value) | `failed` |
 | `displays` | a `displays.toml` profile was applied on hotplug | `ALPHEUS_DISPLAY_PROFILE` (the profile's name) | `displays` |
 
 ```toml
@@ -412,6 +465,8 @@ theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-schem
 - **Edges only.** A hook fires on a change, never for the start-up state: each event's first value
   is only a seed, and for the first 3 s after the daemon starts an edge only moves its seed (the
   portal's first answer, the first `pw-dump` graph). `started` is the one exception.
+  `failed_units` seeds each manager apart: a user count that answers after the first 3 s is a seed
+  too, not a change.
 - **A hook never adds a source.** Events come from what the configured `modules` already read; one
   whose module is off never fires, and the daemon says so once at start
   (`hooks: power_profile never fires (needs quick)`). A source that is down is not a state: nothing
@@ -468,7 +523,7 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 **Window switcher.** `alpheus-launch --windows` (bind it to Alt+Tab in your compositor: `bind=ALT,Tab,spawn,alpheus-launch --windows` in Mango, `bindsym Mod1+Tab exec alpheus-launch --windows` in Sway) opens the windows with the previous one selected, so Enter goes back to the last window. A second `--windows` while it is open, and `Tab`, step down (`Shift+Tab` up), wrapping, so holding the modifier and pressing the key again walks the list; only a `--windows` within 250 ms of the switcher's own open is ignored (Hyprland re-fires a press bind on release). Esc closes. No modes row, no thumbnails, no scan of apps or `$PATH`, nothing resident.
 
 **Command sources.** A menu script's lines can be searched next to the apps.
-A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` command. `list` runs once per open, on the thread that already scans the applications, after them: 1 s at most, 2,000 lines, 256 KiB. `run` receives the chosen line as one argument, never through a shell.
+A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` command. `list` runs once per open, on the thread that already scans the applications, after them: 1 s at most, 2,000 lines, 256 KiB. `run` receives the chosen line as one argument, never through a shell; it is the cleaned line (controls and invisible formatting characters removed, U+2028 and U+2029 turned into a space), not the script's raw bytes.
 
 A line `Captures · Screenshot zone` shows as **Screenshot zone**, then `Captures` dimmed. It is found by typing either part. It is never listed on an empty query, in another mode or behind a prefix. Its use is remembered for the ranking like an app's.
 
@@ -517,6 +572,17 @@ Off by default. `[clipboard] enabled = true` in `bar.toml` (read at start: `shel
 Open it with `alpheus-launch --clipboard` (bind it yourself: Mango `bind=SUPER,v,spawn,alpheus-launch --clipboard`, Sway `bindsym $mod+v exec alpheus-launch --clipboard`) or type `"` in Mod+Space. Enter copies the entry back and closes; Ctrl+Enter or a right click pins or unpins it (10 pins at most, kept first and never evicted); Delete forgets it; the last row, `Clear history`, asks (`Clear? ⏎`; a second Enter confirms, but only from 0.4 s after the question, and a held Enter never confirms; any other key or a click cancels it) and keeps the pins; `alpheus-launch --clipboard-clear` does the same from a script. Both verbs exit 2 when the history is off and when the compositor offers no data-control protocol (3 when the bar is not running). After Enter the daemon itself owns the clipboard (so it empties if the daemon stops), with no `wl-copy` left running.
 
 **What is never stored.** A copy whose offer carries the password-manager hint (`x-kde-passwordManagerHint`, or macOS's and Windows' concealed types) is skipped without its text ever being received: KeePassXC, `wl-copy --sensitive` (so `pass`) and, per a user report, the Bitwarden desktop app set it. Anything copied while an alpheus `--dmenu --password` prompt is open, or in the 5 s after it closes, is skipped too (a tool that prompts for a password and copies it without the hint more than 5 s after the prompt closed, such as a slow gpg or pinentry decrypt, is not covered). **What is stored.** A copy **without** a hint **is stored**, in memory, with its text: a password manager that sets none puts its passwords in the history. Not verified: 1Password for Linux, the Bitwarden browser extension (browsers refuse custom types), Firefox's and Chromium's own password-field copies, gopass. Delete or `--clipboard-clear` forgets such an entry; log lines and the debug output never carry any clipboard text. **Device lifetime.** When the compositor finishes the data device the history attaches to a new one once; if the seat is removed it attaches to another seat.
+
+### Shield mode
+
+A security mode for public networks, with the work split in two. **Your system configuration does the root work** (a firewall chain, stopping sshd and Avahi, USBGuard's policy) behind one privileged command you already have; **alpheus does everything visible**: it shows the state, switches it, lists the USB devices USBGuard blocks, allows one, tells you and fires a hook. Nothing in alpheus is distribution-specific: the state is "a file exists", the actions are argv arrays, and the device list is USBGuard's `list-devices` text, which alpheus parses itself. It never runs anything but the argv you configured (no sudo, no polkit API, no firewall or USBGuard call of its own) and never watches USB plugs in the background. With no `[shield]` table nothing exists: no watch, no glyph, no row, and every verb answers `shield is not configured in bar.toml` (exit 2). **Configured** means `flag`, `on` and `off` are all set; the keys are in the [`bar.toml` reference](#configure). `on_text` and `off_text` are the notices' bodies.
+
+- **State.** `flag` existing is on, absent is off, anything else unreadable (shown `·`, nothing runs). Its directory is watched in the theme watch's inotify instance (no new descriptor, thread or polling; a directory that other programs keep busy, such as `/tmp`, wakes the loop for each change in it, so give the flag a directory of its own); when that is impossible one log line says so and the flag is read at each panel open and after each command alpheus runs. The first reading is a seed: no notice and no hook for it.
+- **The bar and the panel.** The `shield` module is drawn only while on. In the quick panel the Shield row sits under the VPN row: Space runs `off` or `on` (`…` until the flag follows; `failed` for 4 s when the command exits non-zero, is killed or the flag does not follow, with one log line of fixed words, never a device name or a command); Enter or → opens the blocked devices (`Reading…`, `No blocked device`, `Cannot list the devices`, or `Shield is off`), at most 32 rows with the `vid:pid` muted; Enter on one runs `allow` with its USBGuard id, then reads the list again. The configured command (for example `pkexec`) may show polkit's own dialog: a command may take 60 s (typing a password) and it survives the panel closing; its output goes to `/dev/null`, so a privileged helper is never cut half way by a closed pipe.
+- **Verbs.** `alpheus-launch --shield on|off|toggle` answer once the command has started (the outcome reaches you through the switch, the notice and the log, never the exit code; already in the asked state: nothing runs); `status` prints `Shield: on|off` then the blocked devices as `<vid:pid>  ·  <name>` (exit 0 either way, `Shield: unknown` exits 2); `allow` opens the blocked devices as a picker in the launcher's box (`<vid:pid>  ·  <name>`, the checked ids first) and runs `allow` for the chosen one (Escape exits 1; nothing blocked gives the `No blocked USB device` notice, exit 0). A daemon older than the verb exits 3, the one code a caller falls back on.
+- **Notices.** `Shield on` / `Shield off` (your `on_text` / `off_text`, at any change, whoever made it), `Shield unchanged` (a failed switch), `USB device allowed` (naming the device), `USB device not allowed`, `No blocked USB device`: through alpheus's own notification server, one log line `shield: no notification (not serving)` when it is not serving.
+- **Hook.** `[hooks] shield` runs on each change with `ALPHEUS_SHIELD=on|off`, under the hooks' rules.
+- **Costs.** Commands and reads run on a short-lived thread (`alpheus-shield`, alive only while one runs: one command and one read at a time, a read bounded to 2 s, 64 KiB and 1,024 lines); one timer, armed only while a switch waits for its flag (5 s after a clean exit, 60 s while the command still runs). Figures in the memory table above.
 
 ### Themes
 
@@ -817,7 +883,7 @@ center starts (restart it to apply an edit); `displays.toml` when the control ce
 
 ```toml
 # bar.toml — default values
-modules = ["launcher", "workspaces", "window", "media", "privacy", "volume", "network",
+modules = ["launcher", "workspaces", "window", "media", "privacy", "shield", "failed", "volume", "network",
            "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "timer", "clock", "power"]
 height = 22
 
@@ -850,6 +916,20 @@ ignore = []               # app names (whole name, any case) never shown; an ind
 
 [clipboard]
 enabled = false           # true: follow the clipboard and keep a text history in memory (50 x 4 KiB, never a copy with a password-manager hint); read at start
+
+# [shield]                # Shield mode: none set, no Shield anywhere; read at start (shell-ctl reload-bar after a change)
+# flag = "/var/lib/shield/on"      # absolute: the mode is on while this file exists (not in alpheus's config directory)
+# on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]     # argv, run as given; their program asks for authorisation itself
+# off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
+# allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: devices are listed only
+# blocked = ["usbguard", "list-devices", "--blocked"]   # the default; []: no device list
+# on_text = "Protections for public networks are on."     # the notices' bodies, one line, 256 bytes at most
+# off_text = "Back to the usual settings."
+
+[failed]                                     # the failed-units count (the `failed` module)
+user_units = true    # also count the user manager's failed units (the session bus); false: that bus is never touched
+subscribe = false    # true: call Subscribe() on each manager so a change arrives at once; false (default): read at start, on resume, on a refresh and piggybacked (at most once a minute)
+notify = false       # one notification when the total rises (needs "notifications" in modules); re-armed at 0
 
 [displays]
 auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change
@@ -892,7 +972,7 @@ dnd_until = "08:00"                         # the do-not-disturb detail's "Until
 
 [hooks]            # a command per event, its data in ALPHEUS_* variables (see "Event hooks"); none set: nothing runs
 # started = ["notify-send", "alpheus up"]   # an argv, run as given (no ~ or $VAR expansion); [] or absent: no hook
-# theme_mode = []                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
+# theme_mode = []                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
 [timer]
 countdown = 10       # minutes, the popup's Timer row at start (1 to 180)
 work = 25            # Pomodoro, minutes (1 to 180)
@@ -903,9 +983,9 @@ sound = []           # an argv run at each end (not under do-not-disturb), e.g. 
 idle = "glyph"       # "glyph" | "hidden": the chip when nothing runs
 
 [actions]
-open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth or battery: {tab} becomes sound, network, bluetooth or home
+open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth, battery or failed: {tab} becomes sound, network, bluetooth, home or diagnostics
 resources = ["foot", "-e", "btop"]       # a right click on the resources module, and the popup's Monitor… row (a left click opens the popup)
-# {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth and "home" for battery; no other module runs open_tab.
+# {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth, "home" for battery and "diagnostics" for failed; no other module runs open_tab.
 # With the quick panel (`quick` in modules) a left click on volume, network or Bluetooth opens the panel instead, and open_tab runs on the right click.
 
 [resources]
@@ -962,10 +1042,22 @@ dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow ke
 mixer = ["wiremix"]
 network = ["nmtui"]
 bluetooth = ["bluetui"]
+
+[diagnostics]        # the Diag tab
+copy = ["wl-copy"]           # the bug report's clipboard program, the text on its standard input; [] disables Copy
+system_actions = true        # restart / reset-failed on system units, in the control center's own window (polkit asks there)
+restart_loop = 3             # NRestarts at or above this is "restarting in a loop" (1 to 1000)
+journal_lines = 500          # entries read when the journal view opens (1 to 5000)
+
+# At most 8 checks of your own, run on showing the tab and on F5; exit 0 is fine, `fix` is shown, never run.
+# [[diagnostics.checks]]
+# name = "One hypridle"
+# run = ["sh", "-c", "[ \"$(pgrep -cx hypridle)\" -le 1 ]"]
+# fix = "pkill -x hypridle && systemctl --user restart hypridle"
 ```
 
 Action names for `[keys.bindings]`: `quit`, `back`, `help`, `palette`,
-`search`, `next_tab`, `prev_tab`, `tab_1`…`tab_7`, `left`, `right`, `up`,
+`search`, `next_tab`, `prev_tab`, `tab_1`…`tab_8`, `unit_restart`, `unit_reset`, `refresh`, `left`, `right`, `up`,
 `down`, `page_up`, `page_down`, `home`, `end`, `toggle`, `activate`,
 `decrease`, `increase`. A chord is optional modifiers joined by `+` (`ctrl`,
 `alt`, `shift`) then a key: a single character (`?`, `-`, `+`, `k`…), or

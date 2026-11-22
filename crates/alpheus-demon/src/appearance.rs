@@ -59,7 +59,7 @@ pub(crate) struct ThemeState {
     /// that truncate before writing would log every save otherwise).
     pub(crate) blank_noted: bool,
     /// The inotify watch on the config directory; None: the theme files are read at startup only.
-    pub(crate) watch: Option<crate::watch::ThemeWatch>,
+    pub(crate) watch: Option<crate::watch::Watches>,
     /// `follow_portal_if_auto` already acted: never a second attempt.
     pub(crate) portal_tried: bool,
     /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes; None: unset, nothing written.

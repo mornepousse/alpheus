@@ -5,13 +5,15 @@
 
 use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};
+use super::tap::UnitsTap;
 use super::vpn::VpnTap;
 use super::wifi::{self, WifiTap};
-use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone, under};
+use super::{BLUEZ, Bus, NM, POWER_PROFILES, SYSTEMD1, Signal, UPOWER, power, service_gone, under, units};
 use crate::system::{Saved, SavedWifi};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const NM_ROOT: &str = include_str!("../../../tests/fixtures/dbus-nm-root.json");
 const NM_ACTIVE: [(u32, &str); 4] = [
@@ -36,6 +38,7 @@ pub const NM_OWNER: &str = ":1.10";
 pub const UPOWER_OWNER: &str = ":1.11";
 pub const BLUEZ_OWNER: &str = ":1.12";
 pub const POWER_OWNER: &str = ":1.13";
+pub const SYSTEMD_OWNER: &str = ":1.14";
 
 /// Synthesized around the recording (it has no device objects): a wired device, and the Wi-Fi
 /// device of the recorded Wi-Fi connection (ActiveConnection/9).
@@ -95,6 +98,16 @@ pub struct FakeBus {
     pub bt_tap: Arc<BtTap>,
     /// The VPN reading's, the same way.
     pub vpn_tap: Arc<VpnTap>,
+    /// The failed-units count's, the same way.
+    pub units_tap: Arc<UnitsTap>,
+    /// systemd's `NFailedUnits`, answered while it runs (`with_systemd`).
+    pub n_failed: u32,
+    /// `Subscribe` is refused (an error reply), as a manager that does not take it would.
+    pub refuse_subscribe: bool,
+    /// `Subscribe` fails with this error text (name, then message).
+    pub subscribe_error: Option<&'static str>,
+    /// The fake clock the piggyback reads: a script's step moves it (`advance`).
+    pub clock: Instant,
     pub script: VecDeque<Step>,
     /// UPower can be D-Bus-activated: `start_upower` then gives it its owner.
     pub upower_activatable: bool,
@@ -124,6 +137,11 @@ impl FakeBus {
             tap: Arc::default(),
             bt_tap: Arc::default(),
             vpn_tap: Arc::default(),
+            units_tap: Arc::default(),
+            n_failed: 0,
+            refuse_subscribe: false,
+            subscribe_error: None,
+            clock: Instant::now(),
             script: VecDeque::new(),
             upower_activatable: false,
             starts: Arc::default(),
@@ -167,6 +185,27 @@ impl FakeBus {
         self.owners.insert(POWER_PROFILES, POWER_OWNER);
         self.set(power::PATH, power::INTERFACE, POWER_PROFILES_JSON);
         self.props_mut(power::PATH, power::INTERFACE).0.insert("ActiveProfile".into(), Prop::Str(active.into()));
+    }
+
+    /// systemd running, with `n` failed units.
+    pub fn with_systemd(&mut self, n: u32) {
+        self.owners.insert(SYSTEMD1, SYSTEMD_OWNER);
+        self.n_failed = n;
+    }
+
+    /// Moves the fake clock forward.
+    pub fn advance(&mut self, by: Duration) {
+        self.clock += by;
+    }
+
+    /// How many `Get`s of the count were made.
+    pub fn units_gets(&self) -> usize {
+        self.calls.iter().filter(|c| c.starts_with("Get ")).count()
+    }
+
+    /// How many `Subscribe`s were sent.
+    pub fn subscribes(&self) -> usize {
+        self.calls.iter().filter(|c| c.starts_with("Subscribe ")).count()
     }
 
     /// Synthesized around the recording (fictional networks): a wired device, then the Wi-Fi device
@@ -310,6 +349,35 @@ impl Bus for FakeBus {
         self.calls.push(format!("EnumerateDevices {destination}"));
         self.reach(destination)?;
         Ok(self.devices.clone())
+    }
+
+    fn get_u32(&mut self, destination: &str, path: &str, interface: &str, property: &str) -> io::Result<u32> {
+        self.calls.push(format!("Get {destination} {path} {interface} {property}"));
+        self.reach(destination)?;
+        assert_eq!((path, interface, property), (units::PATH, units::MANAGER, units::PROPERTY), "a Get that is not systemd's count");
+        if self.disconnecting.contains(path) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("Disconnected: {path}")));
+        }
+        if self.failing.contains(path) {
+            return Err(io::Error::other(format!("timeout: {path}")));
+        }
+        Ok(self.n_failed)
+    }
+
+    fn subscribe_units(&mut self, destination: &str) -> io::Result<()> {
+        self.calls.push(format!("Subscribe {destination}"));
+        self.reach(destination)?;
+        if let Some(e) = self.subscribe_error {
+            return Err(io::Error::other(e));
+        }
+        if self.refuse_subscribe {
+            return Err(io::Error::other("AccessDenied: Subscribe"));
+        }
+        Ok(())
+    }
+
+    fn now(&self) -> Instant {
+        self.clock
     }
 
     fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {

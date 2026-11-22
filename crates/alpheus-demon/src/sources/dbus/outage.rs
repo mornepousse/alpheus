@@ -95,6 +95,7 @@ fn domain_index(d: Domain) -> usize {
         Domain::Bluetooth => 1,
         Domain::Battery => 2,
         Domain::Power => 3,
+        Domain::Units => 4,
     }
 }
 

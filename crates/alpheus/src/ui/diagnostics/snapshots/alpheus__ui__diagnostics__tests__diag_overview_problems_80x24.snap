@@ -1,0 +1,28 @@
+---
+source: crates/alpheus/src/ui/diagnostics/tests.rs
+expression: "rows(&a, 80, 24)"
+---
+  1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        
+                                                                                
+ Session health                                                    ✗ 2 problems 
+   ✓ Mango answers                                                              
+   ✓ WAYLAND_DISPLAY wayland-1 reachable                                        
+ ▶ ✗ systemd --user has WAYLAND_DISPLAY=wayland-0 (this session: wayland-1)     
+       fix: systemctl --user import-environment WAYLAND_DISPLAY                 
+   ✗ 1 failed user unit                                                         
+   ✓ the alpheus daemon answers                                                 
+                                                                                
+ Failed units (3)                                                               
+   ● mnt-data.mount                  system  /mnt/data                          
+   ● example-sync.service            system  Example sync job                   
+   ● example-app.service             user    Example app                        
+                                                                                
+ Restarting in a loop                                                           
+   ↻ example-sync.service            user    7 restarts, activating             
+                                                                                
+ Crashes (7 days)                                                               
+   ✗ Nov 20 14:02  example-app       SIGSEGV core present                       
+                                                                                
+   Boot   Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.9s (kernel)… 
+ Diag · ready                                                                   
+ Enter Open  F5 Refresh  q Quit  F1 Help  Ctrl+P Palette  Esc Back
