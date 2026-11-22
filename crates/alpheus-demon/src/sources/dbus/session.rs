@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::system::PanelScope;
+use tap::UnitsTap;
+use units::{UnitsLink, UnitsOptions};
 
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
 /// domain is now None, tagged `Outage::Domain(d)` (I2) so a caller
@@ -16,6 +18,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
         Domain::Bluetooth => bluez::read(bus).map(|v| s.bluetooth = Some(v)),
         Domain::Battery => upower::read(bus).map(|v| s.battery = Some(v)),
         Domain::Power => power::read(bus).map(|v| s.power = Some(v)),
+        Domain::Units => units::read(bus).map(|v| s.units = v),
     };
     let Err(e) = r else {
         log_state.note_success(d);
@@ -26,6 +29,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
         Domain::Bluetooth => s.bluetooth = None,
         Domain::Battery => s.battery = None,
         Domain::Power => s.power = None,
+        Domain::Units => s.units = None,
     }
     // Rate limited per domain (follow-up, re-review): NotFound never logs
     // (worth_logging), and a short-circuiting `&&` means it never touches
@@ -134,8 +138,29 @@ fn asked<T>(
     if reopened { rescope(PanelScope::Closed).and_then(|_| rescope(scope)) } else { rescope(scope) }
 }
 
+/// What the session does after a read of the failed-units count (`domains` holds `Units` and the
+/// read did not fail): the read is remembered for the piggyback, systemd is subscribed to when
+/// wanted, and the loop is told the count was just read (`units_read`, outside the compared
+/// state: two reads of the same count are two words, one publication). False: the loop is gone.
+fn units_done(link: &mut UnitsLink, bus: &mut dyn Bus, count: Option<u32>, units_read: &mut dyn FnMut() -> bool) -> io::Result<bool> {
+    let now = bus.now();
+    link.read_done(bus, count, now)?;
+    Ok(units_read())
+}
+
+/// Whether a failure `e` of a read of `domains` spares the count's own read: it is neither the
+/// count's outage nor the bus going away.
+fn units_read_ok(domains: &[Domain], failed: &Option<io::Error>) -> bool {
+    domains.contains(&Domain::Units)
+        && failed.as_ref().is_none_or(|e| outage_of(e) != Outage::Domain(Domain::Units) && outage_of(e) != Outage::Bus)
+}
+
 /// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
-/// again on each of its pokes and with every network re-read; Closed reads nothing.
+/// again on each of its pokes and with every network re-read; Closed reads nothing. `units`: the
+/// loop's word "read the failed-units count now"; `opts`: whether to `Subscribe` to systemd and
+/// how long another domain's wake-up waits before it reads the count too; `units_read`: told
+/// after each successful read of the count (never part of the published state).
+#[allow(clippy::too_many_arguments)]
 pub fn session(
     bus: &mut dyn Bus,
     domains: &[Domain],
@@ -143,14 +168,20 @@ pub fn session(
     wifi: &WifiTap,
     bt: &BtTap,
     vpn: &VpnTap,
+    units: &UnitsTap,
+    opts: UnitsOptions,
     publish: &mut dyn FnMut(SystemState) -> bool,
+    units_read: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     let mut s = SystemState::default();
+    let mut link = UnitsLink::new(opts);
+    let mut units_seen = units.pokes();
     let mut reader = WifiReader::default();
     let mut bt_reader = BtReader::default();
     let mut vpn_reader = VpnReader::default();
     let mut last = None;
     let mut failed = read_all(bus, domains, &mut s, log_state);
+    let initial_units_ok = units_read_ok(domains, &failed);
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
@@ -177,6 +208,15 @@ pub fn session(
     // than waiting for a first signal that may be seconds or minutes away,
     // gives the lower startup footprint (budget: 15 MB) sooner.
     release_memory();
+    // The count was read: the loop is told, and systemd subscribed to (after the publish, so the
+    // wait for the bus never delays the bar's first state).
+    if initial_units_ok {
+        match units_done(&mut link, bus, s.units, units_read) {
+            Ok(true) => {}
+            Ok(false) => return Ok(()),
+            Err(e) => failed = Some(e),
+        }
+    }
     if let Some(e) = failed {
         return Err(e);
     }
@@ -202,8 +242,18 @@ pub fn session(
             let b = bt_into(b, &mut s);
             let v = asked(vpn.snapshot(), &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
             let v = vpn_into(v, &mut s);
+            // The loop's `failed-refresh`: the count again, now.
+            let poked = domains.contains(&Domain::Units) && units.poked_since(&mut units_seen);
+            let mut u = poked.then(|| read(bus, Domain::Units, &mut s, log_state));
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
+            }
+            if let Some(Ok(())) = u {
+                match units_done(&mut link, bus, s.units, units_read) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(()),
+                    Err(e) => u = Some(Err(e)),
+                }
             }
             // The panel closed: what this thread's arena held for it goes back, as at startup.
             if reader.scope() == WifiScope::Closed && bt_reader.scope() == BtScope::Closed && vpn_reader.scope() == VpnScope::Closed {
@@ -212,6 +262,7 @@ pub fn session(
             r?;
             b?;
             v?;
+            u.transpose()?;
             continue;
         }
         if signal.is_wake() {
@@ -231,6 +282,13 @@ pub fn session(
             }
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
+            }
+            if units_read_ok(domains, &failed) {
+                match units_done(&mut link, bus, s.units, units_read) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(()),
+                    Err(e) => failed = Some(e),
+                }
             }
             if let Some(e) = failed {
                 return Err(e);
@@ -269,7 +327,15 @@ pub fn session(
             b?;
             continue;
         };
+        // A new owner of systemd1 (a `daemon-reexec`, a restart) has no subscriber yet.
+        if d == Domain::Units && signal.member == "NameOwnerChanged" {
+            link.new_owner();
+        }
         let r = read(bus, d, &mut s, log_state);
+        // The count rides another domain's wake-up when it was last read `opts.piggyback` ago or
+        // more: no timer, no wake-up of its own.
+        let piggyback = d != Domain::Units && domains.contains(&Domain::Units) && link.due(bus.now());
+        let p = piggyback.then(|| read(bus, Domain::Units, &mut s, log_state));
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
         // The same re-read for an open VPN reading (the actives, not the list at the row).
         let v = if d == Domain::Network { vpn_into(vpn_reader.reread(bus), &mut s) } else { Ok(()) };
@@ -279,17 +345,29 @@ pub fn session(
         if !publish_if_changed(&mut last, &s, publish) {
             return Ok(());
         }
+        let mut units_err = None;
+        if (d == Domain::Units && r.is_ok()) || matches!(p, Some(Ok(()))) {
+            match units_done(&mut link, bus, s.units, units_read) {
+                Ok(true) => {}
+                Ok(false) => return Ok(()),
+                Err(e) => units_err = Some(e),
+            }
+        }
         // The Wi-Fi read fails only with the bus itself gone: that outage wins over the domain's.
         w?;
         v?;
         b?;
         r?;
+        p.transpose()?;
+        if let Some(e) = units_err {
+            return Err(e);
+        }
     }
 }
 
 /// The bar's messages for a published state; None (the whole bus down): "–" for every module, no
-/// power profile, no Wi-Fi, no VPN.
-pub fn messages(s: Option<SystemState>) -> [Msg; 7] {
+/// power profile, no Wi-Fi, no VPN, no failed-units count.
+pub fn messages(s: Option<SystemState>) -> [Msg; 8] {
     match s {
         Some(s) => [
             Msg::Network(s.network),
@@ -299,6 +377,7 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 7] {
             Msg::Wifi { open: Some(s.wifi_open), state: s.wifi },
             Msg::Bt { open: Some(s.bt_open), state: s.bt },
             Msg::Vpn { open: Some(s.vpn_open), state: s.vpn },
+            Msg::Units(s.units),
         ],
         None => [
             Msg::Network(None),
@@ -308,6 +387,7 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 7] {
             Msg::Wifi { open: None, state: None },
             Msg::Bt { open: None, state: None },
             Msg::Vpn { open: None, state: None },
+            Msg::Units(None),
         ],
     }
 }

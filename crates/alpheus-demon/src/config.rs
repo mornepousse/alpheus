@@ -41,6 +41,10 @@
 //! ignore = []                                               # apps never shown: names compared whole, case-insensitively
 //! dev_dir = "/dev"                                          # where video devices are listed (watched, never opened)
 //! proc_dir = "/proc"                                        # where processes are listed (a camera opened outside PipeWire)
+//! [failed]                                                  # the failed-units count (systemd's)
+//! user_units = true                                         # also count the user manager's failed units (the session bus)
+//! subscribe = true                                          # Subscribe() to systemd so that a change arrives at once; false: read on triggers only
+//! notify = false                                            # a notification when the count rises
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
 //! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
@@ -425,6 +429,25 @@ pub struct PrivacyConfig {
 impl Default for PrivacyConfig {
     fn default() -> Self {
         PrivacyConfig { ignore: Vec::new(), dev_dir: PathBuf::from("/dev"), proc_dir: PathBuf::from("/proc") }
+    }
+}
+
+/// `[failed]` (diagnostics spec § 7): how the failed-units count is followed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FailedConfig {
+    /// Also count the user manager's failed units (the session bus).
+    pub user_units: bool,
+    /// `Subscribe()` to systemd so that a change arrives at once; false: the count is read on
+    /// triggers only (a resume, `failed-refresh`, another domain's wake-up).
+    pub subscribe: bool,
+    /// A notification when the count rises.
+    pub notify: bool,
+}
+
+impl Default for FailedConfig {
+    fn default() -> Self {
+        FailedConfig { user_units: true, subscribe: true, notify: false }
     }
 }
 
@@ -876,6 +899,7 @@ pub struct BarConfig {
     pub tray: TrayConfig,
     pub media: MediaConfig,
     pub privacy: PrivacyConfig,
+    pub failed: FailedConfig,
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
@@ -898,6 +922,7 @@ impl Default for BarConfig {
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
             privacy: PrivacyConfig::default(),
+            failed: FailedConfig::default(),
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
@@ -937,6 +962,8 @@ struct Raw {
     media: MediaConfig,
     #[serde(default)]
     privacy: PrivacyConfig,
+    #[serde(default)]
+    failed: FailedConfig,
     #[serde(default)]
     notifications: NotificationsConfig,
     #[serde(default)]
@@ -1095,6 +1122,7 @@ impl BarConfig {
             tray,
             media: b.media,
             privacy: b.privacy,
+            failed: b.failed,
             notifications: {
                 let mut n = b.notifications.clone();
                 for r in &mut n.rules {

@@ -400,6 +400,67 @@ fn output_power_management_never_appears() {
     assert!(files > 100, "the workspace's sources were not found ({files})");
 }
 
+/// Diagnostics spec § 8: the daemon reads systemd's failed-units count and subscribes to its signals,
+/// and asks it for nothing else. No method that starts, stops, restarts, resets, kills, enables,
+/// masks, reloads or changes anything of systemd's may be named in `sources/dbus/` (the acting
+/// Bluetooth connection excepted: it names none of them either), the count's one `Get` never
+/// becomes a `GetAll` (the Manager's carries its `Environment`), and no unit name is logged.
+#[test]
+fn no_acting_systemd1_method_in_the_daemon() {
+    let mut seen = 0;
+    for (path, text) in source_files() {
+        let name = relative_path(&path);
+        if !name.starts_with("sources/dbus/") {
+            continue;
+        }
+        seen += 1;
+        let prod = production_code(&text);
+        for word in [
+            "StartUnit",
+            "StopUnit",
+            "RestartUnit",
+            "TryRestartUnit",
+            "ReloadUnit",
+            "ReloadOrRestartUnit",
+            "ResetFailed",
+            "KillUnit",
+            "CleanUnit",
+            "FreezeUnit",
+            "StartTransientUnit",
+            "SetUnitProperties",
+            "EnableUnitFiles",
+            "DisableUnitFiles",
+            "MaskUnitFiles",
+            "LinkUnitFiles",
+            "SetEnvironment",
+            "UnsetEnvironment",
+            "Reexecute",
+            "Unsubscribe",
+            "systemd1.Manager.Reload",
+            "\"Reload\"",
+            "\"Halt\"",
+            "\"KExec\"",
+            "\"Exit\"",
+        ] {
+            assert!(!prod.contains(word), "{word} in {name}: the daemon only counts failed units");
+        }
+        // `Subscribe` is built in `dbusrs_bus.rs` and driven from `units.rs`, nowhere else (the
+        // test-only fake answers it).
+        let allowed = ["dbusrs_bus.rs", "units.rs", "mod.rs", "fake.rs"].map(|f| format!("sources/dbus/{f}"));
+        if !allowed.contains(&name) {
+            assert!(!prod.contains("subscribe_units("), "{name} subscribes to systemd");
+        }
+    }
+    assert!(seen >= 10, "sources/dbus/ was not found: {seen} files");
+    let units = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/units.rs").expect("units.rs").1;
+    let prod = production_code(&units);
+    assert!(!prod.contains("get_all(") && !prod.contains("\"Environment\""), "units.rs reads one property, never GetAll");
+    assert_eq!(prod.matches("get_u32(").count(), 1, "one read");
+    // The reader logs a fixed line: no formatting of a name, an owner or a path.
+    assert_eq!(prod.matches("log(").count(), 1, "{prod}");
+    assert!(prod.contains("log(\"D-Bus Units: Subscribe refused\")"), "a fixed line");
+}
+
 /// Review guardrail: only files in `src/sources/` are allowed to open or
 /// connect to the compositor's sockets — never elsewhere in the daemon
 /// (painter, wayland, state, grid…), which only ever receive the already
@@ -1153,7 +1214,9 @@ fn d_bus_is_confined_to_sources_and_read_only() {
             "EnumerateDevices",
             "GetDevices",
             "ListConnections",
-            "GetSettings"
+            "GetSettings",
+            "Get",
+            "Subscribe"
         ]
     );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;

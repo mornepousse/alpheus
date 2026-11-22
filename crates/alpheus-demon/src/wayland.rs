@@ -504,6 +504,9 @@ pub struct App {
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).
     pub(crate) quick: crate::quick_app::QuickApp,
+    /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
+    /// `Units` domain.
+    pub(crate) units_tap: Option<Arc<crate::sources::dbus::UnitsTap>>,
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
@@ -666,6 +669,7 @@ impl App {
             hooks,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
+            units_tap: None,
             power_timer: DeadlineTimer::new(),
             timer,
             privacy_timer: DeadlineTimer::new(),

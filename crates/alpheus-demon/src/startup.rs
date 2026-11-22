@@ -211,7 +211,11 @@ pub struct Wanted {
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
-    let needs = Needs::of(modules);
+    wanted_for(Needs::of(modules))
+}
+
+/// What `needs` ask for together (`wanted`; tests give theirs directly).
+pub(crate) fn wanted_for(needs: Needs) -> Wanted {
     // In this order, whichever modules ask: with the network module and the panel both, the
     // network domain is read once.
     let dbus = [
@@ -219,6 +223,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         (Needs::BLUETOOTH, Domain::Bluetooth),
         (Needs::BATTERY, Domain::Battery),
         (Needs::POWER_PROFILE, Domain::Power),
+        (Needs::UNITS, Domain::Units),
     ]
     .into_iter()
     .filter(|(n, _)| needs.contains(*n))
@@ -689,12 +694,23 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no VPN tap ({e})")),
             }
         }
+        // The failed-units count's word (`failed-refresh`), only with its domain.
+        if want.dbus.contains(&Domain::Units) {
+            match sources::dbus::UnitsTap::new() {
+                Ok(t) => state.units_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("failed: no units tap ({e})")),
+            }
+        }
+        let tx_read = tx.clone();
         sources::dbus::start(
             want.dbus.clone(),
             state.quick.wifi_tap.clone(),
             state.quick.bt_tap.clone(),
             state.quick.vpn_tap.clone(),
+            state.units_tap.clone(),
+            sources::dbus::units::UnitsOptions { subscribe: state.bar.config.failed.subscribe, ..Default::default() },
             move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()),
+            move || tx_read.send(Mail::Bar(Msg::UnitsRead)).is_ok(),
         );
     }
 }

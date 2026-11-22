@@ -38,6 +38,8 @@ impl Needs {
     /// The sound source publishes for the OSD too (a microphone or a label change), not the sink's
     /// volume alone.
     pub(crate) const OSD_SCOPE: Needs = Needs(1 << 10);
+    /// systemd's failed-units count (the D-Bus `Units` domain); no module asks for it yet.
+    pub(crate) const UNITS: Needs = Needs(1 << 11);
 
     pub(crate) const fn or(self, other: Needs) -> Needs {
         Needs(self.0 | other.0)

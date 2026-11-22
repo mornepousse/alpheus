@@ -1347,7 +1347,12 @@ pub struct Peer {
 
 impl Peer {
     pub fn connect(bus: &PrivateBus) -> Peer {
-        let mut channel = dbus::channel::Channel::open_private(&bus.address).unwrap();
+        Peer::connect_at(&bus.address)
+    }
+
+    /// The same, from the address alone (a fake service restarting inside its own thread).
+    pub fn connect_at(address: &str) -> Peer {
+        let mut channel = dbus::channel::Channel::open_private(address).unwrap();
         channel.register().unwrap();
         let name = channel.unique_name().unwrap().to_string();
         Peer { channel, name }
@@ -1566,6 +1571,234 @@ fn power_profiles_reply(active: &str) -> String {
         profile("power-saver"),
         profile("balanced"),
         profile("performance")
+    )
+}
+
+/// systemd's well-known name and its Manager (diagnostics spec § 6).
+pub const SYSTEMD_NAME: &str = "org.freedesktop.systemd1";
+const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
+const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
+
+#[derive(Default)]
+struct SystemdShared {
+    n_failed: u32,
+    /// The unique names that called `Subscribe` (systemd drops them with their connection).
+    subscribers: Vec<String>,
+    /// Every call received, "Member" or "Member arg".
+    calls: Vec<String>,
+}
+
+enum SystemdCmd {
+    Failed(u32),
+    Restart,
+}
+
+/// A systemd on a private bus (test code only): owns its name, answers `Get` of `NFailedUnits`,
+/// `GetAll` (its `Environment` holds `SECRET=x`: a daemon that asked would show in `calls`),
+/// `Subscribe` and `Unsubscribe`; and, like the real one, emits the Manager's `PropertiesChanged`
+/// **only while a client has subscribed**. `restart` drops its connection and takes the name again
+/// (a new owner with no subscriber). Dropped: its connection closes.
+pub struct FakeSystemd {
+    tx: Option<mpsc::Sender<SystemdCmd>>,
+    shared: Arc<Mutex<SystemdShared>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl FakeSystemd {
+    pub fn serve(bus: &PrivateBus, n_failed: u32) -> FakeSystemd {
+        Self::start(bus, n_failed, false)
+    }
+
+    /// One whose `Subscribe` is refused (an error reply).
+    pub fn serve_refusing(bus: &PrivateBus, n_failed: u32) -> FakeSystemd {
+        Self::start(bus, n_failed, true)
+    }
+
+    fn start(bus: &PrivateBus, n_failed: u32, refuse: bool) -> FakeSystemd {
+        let address = bus.address.clone();
+        let mut peer = Peer::connect_at(&address);
+        peer.own(SYSTEMD_NAME);
+        let shared = Arc::new(Mutex::new(SystemdShared { n_failed, ..Default::default() }));
+        let state = shared.clone();
+        let (tx, rx) = mpsc::channel::<SystemdCmd>();
+        let thread = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(SystemdCmd::Failed(n)) => {
+                        let announce = {
+                            let mut s = state.lock().unwrap();
+                            s.n_failed = n;
+                            !s.subscribers.is_empty()
+                        };
+                        if announce {
+                            let mut m =
+                                dbus::Message::new_signal(SYSTEMD_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged").unwrap();
+                            busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"s","data":["{SYSTEMD_MANAGER}"]}}"#));
+                            busctl_wire::push_reply(
+                                &mut m,
+                                &format!(r#"{{"type":"a{{sv}}","data":[{{"NFailedUnits":{{"type":"u","data":{n}}}}}]}}"#),
+                            );
+                            busctl_wire::push_reply(&mut m, r#"{"type":"as","data":[[]]}"#);
+                            let _ = peer.channel.send(m);
+                            peer.channel.flush();
+                        }
+                    }
+                    Ok(SystemdCmd::Restart) => {
+                        // The old connection goes: its name is free, its subscribers forgotten.
+                        drop(peer);
+                        state.lock().unwrap().subscribers.clear();
+                        peer = Peer::connect_at(&address);
+                        let own = |peer: &Peer| {
+                            let m = dbus::Message::new_method_call(
+                                "org.freedesktop.DBus",
+                                "/org/freedesktop/DBus",
+                                "org.freedesktop.DBus",
+                                "RequestName",
+                            )
+                            .unwrap()
+                            .append2(SYSTEMD_NAME, 0u32);
+                            peer.call(m).ok().and_then(|r| r.read1::<u32>().ok()) == Some(1)
+                        };
+                        let until = Instant::now() + Duration::from_secs(3);
+                        while !own(&peer) && Instant::now() < until {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match peer.channel.blocking_pop_message(Duration::from_millis(20)) {
+                    Ok(Some(call)) if call.msg_type() == dbus::message::MessageType::MethodCall => {
+                        let member = call.member().map(|m| m.to_string()).unwrap_or_default();
+                        let sender = call.sender().map(|s| s.to_string()).unwrap_or_default();
+                        let mut s = state.lock().unwrap();
+                        let reply = match member.as_str() {
+                            "Get" => {
+                                let (interface, property): (String, String) = call.read2().unwrap_or_default();
+                                s.calls.push(format!("Get {property}"));
+                                if interface == SYSTEMD_MANAGER && property == "NFailedUnits" {
+                                    let mut r = call.method_return();
+                                    busctl_wire::push_reply(
+                                        &mut r,
+                                        &format!(r#"{{"type":"v","data":[{{"type":"u","data":{}}}]}}"#, s.n_failed),
+                                    );
+                                    r
+                                } else {
+                                    call.error(&"org.freedesktop.DBus.Error.UnknownProperty".into(), c"not the count")
+                                }
+                            }
+                            "GetAll" => {
+                                s.calls.push("GetAll".into());
+                                let mut r = call.method_return();
+                                busctl_wire::push_reply(
+                                    &mut r,
+                                    &format!(
+                                        r#"{{"type":"a{{sv}}","data":[{{"NFailedUnits":{{"type":"u","data":{}}},"Environment":{{"type":"as","data":[["SECRET=x"]]}}}}]}}"#,
+                                        s.n_failed
+                                    ),
+                                );
+                                r
+                            }
+                            "Subscribe" => {
+                                s.calls.push("Subscribe".into());
+                                if refuse {
+                                    call.error(&"org.freedesktop.DBus.Error.AccessDenied".into(), c"refused")
+                                } else {
+                                    if !s.subscribers.contains(&sender) {
+                                        s.subscribers.push(sender);
+                                    }
+                                    call.method_return()
+                                }
+                            }
+                            "Unsubscribe" => {
+                                s.calls.push("Unsubscribe".into());
+                                s.subscribers.retain(|n| *n != sender);
+                                call.method_return()
+                            }
+                            other => {
+                                s.calls.push(other.to_string());
+                                call.error(&"org.freedesktop.DBus.Error.UnknownMethod".into(), c"not served")
+                            }
+                        };
+                        drop(s);
+                        let _ = peer.channel.send(reply);
+                        peer.channel.flush();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        FakeSystemd { tx: Some(tx), shared, thread: Some(thread) }
+    }
+
+    /// Sets the count (returns once it is set: a read that follows sees it); emits
+    /// `PropertiesChanged` only while someone has subscribed.
+    pub fn set_failed(&self, n: u32) {
+        if let Some(tx) = &self.tx {
+            tx.send(SystemdCmd::Failed(n)).unwrap();
+        }
+        self.wait_until("the count to be set", |s| s.shared.lock().unwrap().n_failed == n);
+    }
+
+    /// Drops the connection and takes the name again: a new owner, with no subscriber.
+    pub fn restart(&self) {
+        if let Some(tx) = &self.tx {
+            tx.send(SystemdCmd::Restart).unwrap();
+        }
+    }
+
+    /// The clients subscribed now.
+    pub fn subscribers(&self) -> usize {
+        self.shared.lock().unwrap().subscribers.len()
+    }
+
+    /// The calls received whose text starts with `prefix` ("Get", "GetAll", "Subscribe").
+    pub fn calls(&self, prefix: &str) -> usize {
+        self.shared.lock().unwrap().calls.iter().filter(|c| c.starts_with(prefix)).count()
+    }
+
+    /// Waits until `f` holds (5 s at most).
+    pub fn wait_until(&self, what: &str, f: impl Fn(&FakeSystemd) -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !f(self) {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for FakeSystemd {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// `session` with the failed-units count's defaults and nobody to tell (the other private-bus
+/// tests do not read it).
+pub fn session_plain(
+    bus: &mut dyn alpheus_demon::sources::dbus::Bus,
+    domains: &[alpheus_demon::sources::dbus::Domain],
+    log_state: &mut alpheus_demon::sources::dbus::DomainLog,
+    wifi: &alpheus_demon::sources::dbus::wifi::WifiTap,
+    bt: &alpheus_demon::sources::dbus::bt::BtTap,
+    vpn: &alpheus_demon::sources::dbus::vpn::VpnTap,
+    publish: &mut dyn FnMut(alpheus_demon::sources::dbus::SystemState) -> bool,
+) -> std::io::Result<()> {
+    alpheus_demon::sources::dbus::session(
+        bus,
+        domains,
+        log_state,
+        wifi,
+        bt,
+        vpn,
+        &alpheus_demon::sources::dbus::UnitsTap::default(),
+        alpheus_demon::sources::dbus::units::UnitsOptions::default(),
+        publish,
+        &mut || true,
     )
 }
 

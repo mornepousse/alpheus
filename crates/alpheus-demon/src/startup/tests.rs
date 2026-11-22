@@ -90,6 +90,20 @@ fn only_the_sources_the_modules_need() {
     );
 }
 
+/// Diagnostics spec § 6: the failed-units count is the `Units` domain, last in reading order. No
+/// module asks for it until the failed module comes (the default bar reads no count).
+#[test]
+fn the_units_domain_follows_its_need_and_no_module_has_it_yet() {
+    use crate::modules::Needs;
+    assert_eq!(wanted_for(Needs::UNITS).dbus, vec![Domain::Units]);
+    assert_eq!(
+        wanted_for(Needs::UNITS.or(Needs::NETWORK).or(Needs::POWER_PROFILE)).dbus,
+        vec![Domain::Network, Domain::Power, Domain::Units]
+    );
+    assert!(!wanted(&ModuleId::ALL).dbus.contains(&Domain::Units), "no module sets it yet");
+    assert_eq!(wanted_for(Needs::NONE), wanted(&[]));
+}
+
 /// Power spec § 1: the power button reads nothing: no source, no thread.
 #[test]
 fn the_power_module_wants_no_source() {
@@ -150,6 +164,7 @@ fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         bluetooth: Some(BtState::Off),
         battery: Some(PowerState::default()),
         power: None,
+        units: None,
         wifi: None,
         wifi_open: 0,
         bt: None,
