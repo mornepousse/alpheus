@@ -469,7 +469,6 @@ impl App {
 
     /// Opens the quick panel on the Shield row with its detail open (other deliveries call it; there
     /// is no `--quick shield` word). Nothing without `[shield]` or the `quick` module.
-    #[allow(dead_code)] // called by the tools menu delivery (spec § 5)
     pub(crate) fn shield_open_detail(&mut self) {
         if self.shield.is_none() || !self.quick_enabled() {
             return;

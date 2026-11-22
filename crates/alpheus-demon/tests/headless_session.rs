@@ -709,6 +709,40 @@ fn tools_tab_builtin_runs_open_tab_or_falls_back() {
     assert_eq!(recorded_argv(&sway, "term-rec")[0], ["alpheus", "--tab", "displays"]);
 }
 
+/// The Shield built-in opens the quick panel on the Shield detail when `[shield]` is configured
+/// and the `quick` module is on; without `[shield]` the row is absent (typing `Shield` and Enter
+/// runs nothing). Tools spec § 8: the join's hook points, filled once `feat/shield` merged.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn tools_shield_builtin_opens_the_detail_when_configured() {
+    let w = shield_daemon("tools-shield", &ShieldSetup::default());
+    tools_open_and_type(&w.sway, &w.d, 1, &["Shield", "-k", "Return"]);
+    assert!(w.d.wait_for("tools: built-in quick.shield", DELAY), "{:?}", w.d.log());
+    assert!(w.d.wait_for("quick shown", DELAY), "the panel opens on the Shield: {:?}", w.d.log());
+    assert_eq!(w.d.count("tools: the shield is not built in"), 0, "{:?}", w.d.log());
+    drop(w);
+    let w = shield_daemon("tools-shield-off", &ShieldSetup { configured: false, ..ShieldSetup::default() });
+    tools_open_and_type(&w.sway, &w.d, 1, &["Shield", "-k", "Return"]);
+    thread::sleep(Duration::from_millis(600));
+    assert_eq!(w.d.count("tools: built-in quick.shield"), 0, "no row without [shield]: {:?}", w.d.log());
+    assert_eq!(w.d.count("quick shown"), 0, "{:?}", w.d.log());
+}
+
+/// The Diagnostics built-in is listed and opens the control center on its tab (`--tab diagnostics`).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_diagnostics_builtin_opens_its_tab() {
+    let sway = Sway::start("tools-diag", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let open = fake_recorder(&sway, "fake-open");
+    let bar = format!("[actions]\nopen_tab = [\"{}\", \"{{tab}}\"]\n", open.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&bar), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["Diagnostics", "-k", "Return"]);
+    assert!(wait_for_call(&sway, "fake-open", "fake-open diagnostics"), "{:?} {:?}", recorded(&sway, "fake-open"), d.log());
+    assert!(d.wait_for("tools: built-in tab.diagnostics", DELAY), "{:?}", d.log());
+}
+
 /// Nothing at rest after a cycle that read states, asked a question (closed with it pending, and
 /// left to expire): no loop wake-up in 5 s each, the thread count where it was.
 #[test]

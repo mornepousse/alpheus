@@ -3225,16 +3225,19 @@ fn the_parallel_branches_are_named_only_in_tools_join() {
     assert!(seen >= 3, "the tools files were not found");
 }
 
-/// Until `feat/shield` and `feat/diagnostics` merge, their hook points answer "not shown": the
-/// shield is never available and there is no diagnostics tab. The merge that fills them updates
-/// this test with them.
+/// The shield and diagnostics hook points are filled in (they merged): the shield is available
+/// exactly when `[shield]` is configured and the `quick` module is on (what `shield_open_detail`
+/// needs), opens through it, and the tab's slug is the one the control center accepts.
 #[test]
-fn the_stub_hooks_answer_not_shown() {
+fn the_join_hooks_are_filled_in() {
     let files = source_files();
     let join = &files.iter().find(|(p, _)| relative_path(p) == "tools_join.rs").expect("tools_join.rs").1;
-    let body = function_body(join, "pub fn shield_available");
-    assert_eq!(body.trim_start_matches('{').trim_end_matches('}').trim(), "false", "shield_available is a stub");
-    assert!(join.contains("pub const DIAGNOSTICS_TAB: Option<&str> = None;"), "DIAGNOSTICS_TAB is None");
+    let available = function_body(join, "pub fn shield_available");
+    assert!(available.contains("shield.is_some()") && available.contains("quick_enabled()"), "shield_available: {available}");
+    assert!(function_body(join, "pub fn open_shield").contains("shield_open_detail()"), "open_shield goes through the Shield feature");
+    assert!(join.contains("pub const DIAGNOSTICS_TAB: Option<&str> = Some(\"diagnostics\");"), "DIAGNOSTICS_TAB");
+    let tab = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../alpheus/src/app/tab.rs")).expect("the TUI's tab.rs");
+    assert!(tab.contains("slug: \"diagnostics\""), "the control center has no tab with the slug alpheus-launch passes");
 }
 
 /// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's

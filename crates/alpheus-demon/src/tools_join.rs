@@ -1,9 +1,7 @@
 //! The hook points for the parallel deliveries (tools spec § 8): the only file that names the
 //! clipboard, the shield and the diagnostics tab for the Tools menu. One function each for
-//! "shown?" and "open it". The clipboard's is real; shield and diagnostics answer "not shown"
-//! until their branches merge.
+//! "shown?" and "open it"; the diagnostics tab is a constant.
 
-use crate::log::write as log;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
@@ -21,18 +19,17 @@ pub fn open_clipboard(app: &mut App, qh: &QueueHandle<App>) {
     }
 }
 
-/// Whether the shield's detail can be opened. Stub: once `feat/shield` merges this becomes its
-/// availability check (`[shield]` configured).
-pub fn shield_available(_: &App) -> bool {
-    false
+/// Whether the shield's detail can be opened: `[shield]` is configured and the `quick` module is
+/// on (the panel holds the detail).
+pub fn shield_available(app: &App) -> bool {
+    app.shield.is_some() && app.quick_enabled()
 }
 
-/// Opens the shield's detail. Stub, never reached while `shield_available` is false: once
-/// `feat/shield` merges this becomes `app.shield_open_detail()`.
-pub fn open_shield(_: &mut App) {
-    log("tools: the shield is not built in");
+/// Opens the quick panel on the shield's detail (a no-op when `shield_available` is false).
+pub fn open_shield(app: &mut App) {
+    app.shield_open_detail();
 }
 
-/// The control center tab of the diagnostics page, if this build has one. `None` until
-/// `feat/diagnostics` merges, then `Some("diagnostics")`.
-pub const DIAGNOSTICS_TAB: Option<&str> = None;
+/// The control center tab of the diagnostics page, if this build has one: the slug `alpheus --tab`
+/// accepts.
+pub const DIAGNOSTICS_TAB: Option<&str> = Some("diagnostics");
