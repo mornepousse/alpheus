@@ -17,6 +17,7 @@ use super::watcher::Watcher;
 use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, NotificationsConfig};
+use crate::failed_app::UserUnits;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;
@@ -62,6 +63,8 @@ pub struct TrayOutput {
     pub notifications: Option<NotifyView>,
     /// The bubbles to show changed (shown, replaced, expired, all gone): the wiring re-syncs them.
     pub bubbles: bool,
+    /// The user manager's failed-units count changed: Some(None) is unknown.
+    pub user_units: Option<Option<u32>>,
 }
 
 impl TrayOutput {
@@ -84,6 +87,9 @@ impl TrayOutput {
             self.notifications = other.notifications;
         }
         self.bubbles |= other.bubbles;
+        if other.user_units.is_some() {
+            self.user_units = other.user_units;
+        }
     }
 }
 
@@ -130,6 +136,8 @@ pub struct Tray {
     media: Option<Mpris>,
     /// The notifications server on this same connection; None unless asked.
     notifications: Option<Notifications>,
+    /// The user manager's failed-units count on this same connection; None unless asked.
+    failed: Option<UserUnits>,
 }
 
 /// How many times a flush's drained answers are routed (and what that sends flushed again) before
@@ -153,6 +161,7 @@ impl Tray {
             appearance: None,
             media: None,
             notifications: None,
+            failed: None,
         };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
@@ -184,6 +193,31 @@ impl Tray {
 
     pub fn media(&self) -> Option<&Mpris> {
         self.media.as_ref()
+    }
+
+    /// Follows the user manager's failed-units count on this connection: two rules, then the
+    /// owner asked for (pending, on the tray's timer). Once: a second call is a no-op.
+    pub fn start_failed(&mut self, subscribe: bool) {
+        if self.failed.is_none() {
+            self.failed = Some(UserUnits::start(&mut self.bus, subscribe));
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
+    }
+
+    pub fn failed(&self) -> Option<&UserUnits> {
+        self.failed.as_ref()
+    }
+
+    /// Runs `f` on the user manager's count with this connection (the system count was just read, a
+    /// `failed-refresh`): flushed, and what the flush drained kept for `take_deferred`, as
+    /// `media_do` does.
+    pub fn failed_do(&mut self, f: impl FnOnce(&mut UserUnits, &mut SessionBus)) {
+        if let Some(failed) = self.failed.as_mut() {
+            f(failed, &mut self.bus);
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
     }
 
     /// Runs `f` on the media consumer with this connection (a control, the popup's Seeked rule and
@@ -417,6 +451,15 @@ impl Tray {
                 out.media = Some(view);
             }
         }
+        // The user manager's count: once per batch, when it changed; the bus gone, it is unknown.
+        if let Some(f) = self.failed.as_mut() {
+            if out.bus_closed {
+                f.lost();
+            }
+            if let Some(count) = f.take_change() {
+                out.user_units = Some(count);
+            }
+        }
         // The notifications server: once per batch, its view and bubbles when they changed; the bus
         // gone, the name goes with it (no bubble, no timer).
         let closed = out.bus_closed;
@@ -431,6 +474,10 @@ impl Tray {
         }
         if let Some(a) = self.appearance.as_mut().filter(|a| a.owns(id)) {
             return TrayOutput { appearance: a.answer(id, result), ..TrayOutput::default() };
+        }
+        if let Some(f) = self.failed.as_mut().filter(|f| f.owns(id)) {
+            f.answer(&mut self.bus, id, result);
+            return TrayOutput::default();
         }
         if let Some(m) = self.media.as_mut().filter(|m| m.owns(id)) {
             m.answer(&mut self.bus, id, result);
@@ -520,6 +567,11 @@ impl Tray {
         }
         if let Some(media) = self.media.as_mut()
             && media.signal(&mut self.bus, &s)
+        {
+            return TrayOutput::default();
+        }
+        if let Some(failed) = self.failed.as_mut()
+            && failed.signal(&mut self.bus, &s)
         {
             return TrayOutput::default();
         }

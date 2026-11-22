@@ -208,6 +208,9 @@ pub struct Wanted {
     /// The notifications server and the bell: on the tray's connection, or
     /// on the bar's link when the tray is off; false: no RequestName, no surface, no call.
     pub notifications: bool,
+    /// The user manager's failed-units count (the `failed` module): on the tray's connection, or on
+    /// the bar's link when the tray is off; false: no connection, no rule, no call.
+    pub failed: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
@@ -236,6 +239,7 @@ pub(crate) fn wanted_for(needs: Needs) -> Wanted {
         tray: needs.contains(Needs::TRAY),
         media: needs.contains(Needs::MEDIA),
         notifications: needs.contains(Needs::NOTIFICATIONS),
+        failed: needs.contains(Needs::UNITS),
     }
 }
 
@@ -272,6 +276,10 @@ impl App {
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
+        // The system count was read: the user manager's again (its own link, `failed_app`).
+        if matches!(m, Msg::UnitsRead) {
+            self.failed_units_read();
+        }
         on_message(self, m, || LocalTime::now().0);
         if quick {
             self.quick_refresh();
@@ -633,6 +641,8 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
+    // The user manager's failed-units count, on the same connection.
+    state.start_failed(want.failed);
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {

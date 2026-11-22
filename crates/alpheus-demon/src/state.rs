@@ -62,6 +62,9 @@ pub enum Msg {
     /// second read of the same count changes nothing the bar draws). No redraw: it asks the user
     /// manager's count again (the user's own link, `failed_app`).
     UnitsRead,
+    /// The user manager's count of failed units, from the session bus (the system's is `Units`);
+    /// None: not read, no user manager, or the session bus is down.
+    UserUnits(Option<u32>),
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring.
     Tray(Vec<TrayIcon>),
@@ -240,6 +243,7 @@ impl Bar {
             Msg::Vpn { .. } => false,
             Msg::Units(n) => set_if_changed(&mut self.failed.system, n),
             Msg::UnitsRead => false,
+            Msg::UserUnits(n) => set_if_changed(&mut self.failed.user, n),
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
             Msg::Media(view) => set_if_changed(&mut self.media, view),
@@ -266,6 +270,11 @@ mod tests {
         assert_eq!(b.failed, Failed { system: Some(2), user: None });
         assert!(!b.apply(Msg::Units(Some(2))), "the same count: no redraw");
         assert!(!b.apply(Msg::UnitsRead), "a read is no change");
+        assert!(b.apply(Msg::UserUnits(Some(1))));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(!b.apply(Msg::UserUnits(Some(1))), "the same count: no redraw");
+        assert!(b.apply(Msg::UserUnits(None)));
+        assert_eq!(b.failed.user, None);
         assert_eq!(b.failed.system, Some(2));
         assert!(b.apply(Msg::Units(None)), "unknown again");
         assert_eq!(b.failed.system, None);

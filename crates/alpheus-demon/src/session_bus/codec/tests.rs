@@ -1150,3 +1150,34 @@ fn long_text_is_cut_to_256_characters() {
     assert!(t.chars().all(|c| c == 'é' || c == 'x' || c == ' '), "controls removed, line breaks spaced");
     assert_eq!(label(&"_x".repeat(10_000)), "x".repeat(MAX_TEXT), "labels too");
 }
+
+#[test]
+fn the_failed_count_is_one_u32_in_a_variant() {
+    use crate::session_bus::SYSTEMD_PATH;
+    let call = Call::Get { destination: ":1.30".into(), path: SYSTEMD_PATH.into(), property: Property::NFailedUnits };
+    assert_eq!(reply(&call, &body(|i| i.append(Variant(3u32)))), Ok(Reply::Count(3)));
+    assert!(matches!(reply(&call, &body(|i| i.append(Variant("3")))), Err(CallError::BadReply(_))), "not a u32");
+    assert!(matches!(reply(&call, &body(|i| i.append(3u32))), Err(CallError::BadReply(_))), "not in a variant");
+    assert_eq!(reply(&Call::SubscribeUnits { dest: ":1.30".into() }, &body(|_| {})), Ok(Reply::Unit));
+}
+
+#[test]
+fn the_managers_properties_changed_is_the_units_signal_and_nothing_else() {
+    use crate::session_bus::{PROPERTIES_INTERFACE, SYSTEMD_MANAGER, SYSTEMD_PATH};
+    // Never decoded beyond the interface name: the dict may carry the Environment.
+    let changed = |path: &str, interface: &str| {
+        signal_from(":1.30", path, PROPERTIES_INTERFACE, "PropertiesChanged", |i| {
+            i.append(interface);
+            i.append(std::collections::HashMap::<String, Variant<u32>>::from([("NFailedUnits".to_string(), Variant(2u32))]));
+            i.append(Vec::<String>::new());
+        })
+    };
+    assert_eq!(changed(SYSTEMD_PATH, SYSTEMD_MANAGER), Signal::UnitsChanged { sender: ":1.30".into() });
+    assert_eq!(changed(SYSTEMD_PATH, "org.freedesktop.systemd1.Unit"), Signal::Other, "another interface");
+    assert_eq!(changed("/org/freedesktop/systemd1/unit/a", SYSTEMD_MANAGER), Signal::Other, "another object");
+    let mut m = Message::new_signal(SYSTEMD_PATH, PROPERTIES_INTERFACE, "PropertiesChanged").unwrap();
+    m.set_sender(Some(":1.30".into()));
+    let mut m = m.append1(SYSTEMD_MANAGER);
+    m.set_destination(Some(":1.9".into()));
+    assert_eq!(signal(&m), Signal::Other, "unicast: a peer's, not the rule's");
+}

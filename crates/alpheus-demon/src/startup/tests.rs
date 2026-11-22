@@ -36,7 +36,7 @@ fn privacy_alone_starts_the_sound_source() {
     assert!(wanted(&[ModuleId::Privacy]).sound);
     assert_eq!(
         wanted(&[ModuleId::Privacy]),
-        Wanted { sound: true, dbus: vec![], resources: false, tray: false, media: false, notifications: false },
+        Wanted { sound: true, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false },
         "the capture graph needs pw-dump and nothing else"
     );
     let without: Vec<ModuleId> = ModuleId::ALL
@@ -49,18 +49,37 @@ fn privacy_alone_starts_the_sound_source() {
 #[test]
 fn only_the_sources_the_modules_need() {
     let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
-    assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true });
+    assert_eq!(
+        wanted(&ModuleId::ALL),
+        Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true, failed: false }
+    );
     assert_eq!(
         wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
-        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false }
+        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false }
     );
     assert_eq!(
         wanted(&[ModuleId::Battery]),
-        Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false, media: false, notifications: false }
+        Wanted {
+            sound: false,
+            dbus: vec![Domain::Battery],
+            resources: false,
+            tray: false,
+            media: false,
+            notifications: false,
+            failed: false
+        }
     );
     assert_eq!(
         wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
-        Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false, media: false, notifications: false }
+        Wanted {
+            sound: false,
+            dbus: vec![Domain::Bluetooth],
+            resources: false,
+            tray: false,
+            media: false,
+            notifications: false,
+            failed: false
+        }
     );
     assert_eq!(
         wanted(&[ModuleId::Battery, ModuleId::Network]),
@@ -70,13 +89,14 @@ fn only_the_sources_the_modules_need() {
             resources: false,
             tray: false,
             media: false,
-            notifications: false
+            notifications: false,
+            failed: false
         },
         "reading order, whatever the bar's order"
     );
     assert_eq!(
         wanted(&[ModuleId::Volume, ModuleId::Resources]),
-        Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false }
+        Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false, failed: false }
     );
     assert_eq!(
         wanted(&[ModuleId::Quick]).dbus,
@@ -101,6 +121,9 @@ fn the_units_domain_follows_its_need_and_no_module_has_it_yet() {
         vec![Domain::Network, Domain::Power, Domain::Units]
     );
     assert!(!wanted(&ModuleId::ALL).dbus.contains(&Domain::Units), "no module sets it yet");
+    assert!(!wanted(&ModuleId::ALL).failed, "nor the user manager's count on the session bus");
+    assert!(wanted_for(Needs::UNITS).failed, "the same need asks for both counts");
+    assert!(!wanted_for(Needs::NETWORK).failed);
     assert_eq!(wanted_for(Needs::NONE), wanted(&[]));
 }
 
@@ -109,7 +132,7 @@ fn the_units_domain_follows_its_need_and_no_module_has_it_yet() {
 fn the_power_module_wants_no_source() {
     assert_eq!(
         wanted(&[ModuleId::Power]),
-        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false }
+        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false }
     );
 }
 
@@ -121,7 +144,7 @@ fn wanted_tray_only_with_the_module() {
     assert!(!wanted(&without).tray, "every other module: no session bus");
     assert_eq!(
         wanted(&[ModuleId::Tray]),
-        Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false, notifications: false },
+        Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false, notifications: false, failed: false },
         "the tray alone"
     );
 }
@@ -133,7 +156,7 @@ fn wanted_media_only_with_the_module() {
     assert!(!wanted(&without).media, "every other module: no MPRIS");
     assert_eq!(
         wanted(&[ModuleId::Media]),
-        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true, notifications: false },
+        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true, notifications: false, failed: false },
         "media alone needs no other source"
     );
 }
@@ -145,7 +168,7 @@ fn wanted_notifications_only_with_the_module() {
     assert!(!wanted(&without).notifications, "every other module: no RequestName");
     assert_eq!(
         wanted(&[ModuleId::Notifications]),
-        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: true },
+        Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: true, failed: false },
         "the bell alone needs no other source"
     );
 }

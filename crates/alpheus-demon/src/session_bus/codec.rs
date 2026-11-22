@@ -9,7 +9,7 @@ use super::bus::{Call, CallError, Property};
 use super::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MAX_ITEMS, MAX_MENU_DEPTH, MAX_MENU_ENTRIES, MAX_TEXT, MENU_INTERFACE,
     MPRIS_PATH, MPRIS_PLAYER_INTERFACE, NOTIFICATIONS_INTERFACE, NOTIFICATIONS_PATH, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, PropSet,
-    PropValue, SETTINGS_INTERFACE, Status, WATCHER_INTERFACE,
+    PropValue, SETTINGS_INTERFACE, SYSTEMD_MANAGER, SYSTEMD_PATH, Status, WATCHER_INTERFACE,
 };
 use crate::media::Value;
 use crate::notify::{self, Action, Incoming, Urgency};
@@ -61,6 +61,8 @@ pub enum Reply {
     Text(String),
     /// PlayerPosition's µs (as sent: the model clamps it).
     Position(i64),
+    /// The user manager's `NFailedUnits`.
+    Count(u32),
 }
 
 fn bad(what: impl Into<String>) -> CallError {
@@ -88,12 +90,17 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
         | Call::RemoveMatch { .. }
         | Call::RegisterStatusNotifierHost { .. }
         | Call::Event { .. }
-        | Call::PlayerControl { .. } => Ok(Reply::Unit),
+        | Call::PlayerControl { .. }
+        | Call::SubscribeUnits { .. } => Ok(Reply::Unit),
         Call::Get { property: Property::Item(p), .. } => item_property(*p, &mut it).map(Reply::Prop),
         Call::Get { property: Property::RegisteredItems, .. } => {
             let mut v = it.recurse(ArgType::Variant).ok_or_else(|| bad("RegisteredStatusNotifierItems: not a variant"))?;
             names(&mut v).map(Reply::Names)
         }
+        Call::Get { property: Property::NFailedUnits, .. } => match variant_u32(&mut it) {
+            Some(n) => Ok(Reply::Count(n)),
+            None => Err(bad("NFailedUnits: not a u32 in a variant")),
+        },
         Call::ListNames => names(&mut it).map(Reply::Names),
         Call::GetNameOwner { .. } => read::<&str>(&mut it, "GetNameOwner").map(|s| Reply::Owner(s.to_string())),
         Call::GetConnectionUnixProcessID { .. } => read::<u32>(&mut it, "GetConnectionUnixProcessID").map(Reply::Pid),
@@ -115,6 +122,11 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
             _ => Err(bad("Position: not an integer in a variant")),
         },
     }
+}
+
+/// The u32 inside the variant at `it`; None when it holds anything else.
+fn variant_u32(it: &mut Iter<'_>) -> Option<u32> {
+    it.recurse(ArgType::Variant)?.get::<u32>()
 }
 
 /// The value inside the variant at `it` (a `Get` reply); None when `it` holds no variant.
@@ -297,6 +309,11 @@ pub enum Signal {
         sender: String,
         us: i64,
     },
+    /// The user manager's `PropertiesChanged` for its Manager interface on its object: the count is to be
+    /// read again (the dict is never decoded: it may carry the Environment).
+    UnitsChanged {
+        sender: String,
+    },
     /// The bus driver's NameAcquired, sent to us alone: that name is ours now (the consumer keeps
     /// the one it asked for: the watcher's comes on this connection too).
     NameAcquired(String),
@@ -367,6 +384,10 @@ pub fn signal(m: &Message) -> Signal {
         (PROPERTIES_INTERFACE, "PropertiesChanged") if path == MPRIS_PATH => match player_props(&mut it) {
             Some((changed, invalidated)) => Signal::PlayerProps { sender, changed, invalidated },
             None => Signal::Other,
+        },
+        (PROPERTIES_INTERFACE, "PropertiesChanged") if path == SYSTEMD_PATH => match it.get::<&str>() {
+            Some(SYSTEMD_MANAGER) => Signal::UnitsChanged { sender },
+            _ => Signal::Other,
         },
         (MPRIS_PLAYER_INTERFACE, "Seeked") if path == MPRIS_PATH => match it.get::<i64>() {
             Some(us) => Signal::Seeked { sender, us },
