@@ -11,7 +11,8 @@
 //!
 //! Never:
 //! - read a clock: the caller passes `now` to every call that needs it;
-//! - read a file, start a thread or run a command (a guardrail checks);
+//! - read a file, start a thread or run a command (a guardrail checks the thread and the command,
+//!   none checks the file);
 //! - panic (a guardrail checks).
 //!
 //! See: docs/specs/2026-10-13-alpheus-power-menu-design.md (§ 2, § 4), docs/features/power.md, and

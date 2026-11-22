@@ -20,9 +20,9 @@ A left click on the resources module opens a popup under it:
     colour from 85 °C as on the bar; Network `󰇚 1.2M 󰕒 80K` (download then upload), preceded by,
     dim, `peak 3.4M` (the graph's top); Disk `62%`; and a dim `—` when there is no figure;
   - a graph under it: the last 60 samples, the newest at the right edge, drawn in pixels by the
-    painter in the theme's colours. A filled graph is the item's hue (a lighter body, a full-colour
-    top edge); the network's upload is a dim line over its download's fill. A point with no reading
-    is a gap.
+    painter in the theme's colours. A filled graph has a body at 40 % of the item's hue over the
+    popup's background and a full-colour top edge, over a baseline in the border colour; the
+    network's upload is a dim line over its download's fill. A point with no reading is a gap.
 - A separator, then `Monitor…`, which runs `[actions] resources`. With that setting empty the
   popup has no `Monitor…` row and no separator.
 
@@ -37,7 +37,9 @@ timer, and only while it is open.
 
 - **Left click on the module** opens the popup; a second left click on the module closes it.
 - **The right click** on the module runs `[actions] resources` directly (`foot -e btop` by default);
-  it was the left click's job before the popup existed.
+  it was the left click's job before the popup existed. That path goes through `actions::run`, which
+  logs the whole argv when the start fails (the argv can name the user): a known follow-up, not
+  changed here.
 - **Keys:** nothing is selected when the popup opens. ↓, ↑, Tab, Shift+Tab, Home and End select
   `Monitor…`; Enter or Space runs it once selected; Esc closes. Every other key does nothing.
 - **Mouse:** hovering `Monitor…` selects it, and a left press on it runs it. The wheel and the
@@ -78,8 +80,9 @@ Two files in `crates/alpheus-daemon/src/resources/`, and the figures they read i
 - `app.rs`: the wiring. `OPS` is the popup's row in the table of popups (`popup::POPUPS`).
   `resources_toggle` opens it, `resources_key` and `resources_pointer` hand input to the model,
   `resources_action` closes the popup or runs `Monitor…` through the daemon's executor
-  (`spawn_monitor`), and `resources_tick` is the bar's resources timer's callback: it applies the
-  reading to the bar, then repaints the popup when it is the open one.
+  (`spawn_monitor`), and `resources_tick` is what the bar's resources timer's callback (in
+  `startup.rs`) calls with each reading: it applies the reading to the bar, then repaints the
+  popup when it is the open one.
 - `system::Resources` holds the latest `Sample` and a `History`, a ring of the last 60 samples
   (about 3 KB, inline, written in place with no allocation). This folder does not read the system:
   `sources/resources.rs` does that, and the bar's own text comes from the same samples.
@@ -91,7 +94,8 @@ popup table's `toggle`, which is `resources_toggle`; a right press runs `[action
 the popup a key reaches `resources_key` and the pointer `resources_pointer`; a left press on
 `Monitor…`, or Enter on it, spawns the command, logs `resources: monitor` (never the command, which
 can name the user; `resources: monitor could not start (<error>)` on a failed start) and closes the
-popup.
+popup. The right click is not that path: `actions::run` logs the whole argv of a failed start (see
+"Using it").
 
 **The path of a tick.** The timer's callback in `startup.rs` calls `resources_tick` with the new
 reading. The popup owns no timer: opening it adds no wake-up.
@@ -113,8 +117,8 @@ reading. The popup owns no timer: opening it adds no wake-up.
 - `at_rest_no_wakeups_after_the_resources_popup`: after a close, the daemon has no wake-up at rest.
 - The reasons are in [decisions.md](../decisions.md): "The resources history is kept always, as whole
   samples", "The resources popup spans 60 times the interval", "Every resources item keeps its
-  block in the popup", "The resources graphs have fixed scales, and the network's has a floor",
-  "The resources popup has no timer of its own", "The left click opens the resources popup and the
+  block in the popup", "Each resources graph has a set scale; the network's follows its peak, with a
+  floor", "The resources popup has no timer of its own", "The left click opens the resources popup and the
   right click runs `[actions] resources`", "Logs carry fixed words and numbers only".
 
 ## What it costs
@@ -125,6 +129,6 @@ method):
 - **Linked in:** within noise of the build before it (binary +24 KiB stripped).
 - **The history:** about 3 KB, below what PSS can show; `Pss_Anon` does not move between 30 s and
   70 s with the ring full.
-- **Popup open:** about 530 KB over rest; once closed, +40 to +44 KB of anonymous memory over rest;
+- **Popup open:** +532 to +544 KB over rest; once closed, +40 to +44 KB of anonymous memory over rest;
   twenty more cycles +44 to +60 KB (`resources_popup_pss_idle_open_and_closed`).
 - **At rest:** 0 loop wake-ups after a close; the bar's own tick is unchanged.

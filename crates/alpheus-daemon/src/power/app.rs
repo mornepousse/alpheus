@@ -118,8 +118,8 @@ impl App {
     /// `alpheus-launch --power`, answered before the launcher's guard (`launcher/socket_glue.rs`):
     /// toggles the menu under the bar's right end on the focused output, the keyboard taken without
     /// a grab. An open launcher is closed first; a verb within the debounce of the verb's own open
-    /// is ignored; an error when no `[quick]` session command is set. See docs/decisions.md,
-    /// "`alpheus-launch --power` opens the menu without a grab".
+    /// is ignored; an error when no `[quick]` session command is set or no bar can anchor the menu.
+    /// See docs/decisions.md, "`alpheus-launch --power` opens the menu without a grab".
     pub(crate) fn power_verb(&mut self, qh: &QueueHandle<App>, request: &Request) -> Reply {
         if !matches!(request, Request::Power) {
             return Reply::Done;

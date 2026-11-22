@@ -17,6 +17,11 @@ One or two sentences: what is decided, and why.
 Date: <YYYY-MM-DD> · Source: <the spec section, plan decision or commit it comes from>
 ```
 
+An entry may carry one more line, `Status: awaiting confirmation at the trial`. It means the
+decision was taken while the feature was built, its source says it is to be confirmed once the
+feature has been tried, and that has not been done yet; the line is removed when it has. An entry
+with no `Status` line is settled.
+
 Each feature's decisions are added when its code is brought to the house standard
 (`docs/STYLE.md`), so the file does not yet cover every feature: the ones it covers have a page in
 `docs/features/`, and the older decisions of the rest are still in `docs/specs/` and `docs/plans/`.
@@ -32,6 +37,8 @@ popup).
 
 Date: 2026-11-15 · Source: timer spec § 2; timer plan 1, decision 1
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### The timer counts wall-clock time
 
 A timer keeps its end (or its start) as a Unix time in milliseconds, not as a count of ticks. So
@@ -41,6 +48,8 @@ longer than the countdown itself, so the time left is cut to the total.
 
 Date: 2026-11-15 · Source: timer spec § 1; timer plan 1, decision 5
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### One deadline, armed only while a timer runs
 
 The timer uses one `DeadlineTimer` (a one-shot timer on the event loop), set to the next moment
@@ -49,6 +58,8 @@ paused timer arms nothing, so the daemon sleeps. A one-second tick would wake th
 a minute for a chip that changes once.
 
 Date: 2026-11-15 · Source: timer spec "Constraints" and "Approaches"; timer plan 1, decision 4
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
 ### The clock's minute tick re-checks the timer
 
@@ -61,6 +72,8 @@ A deadline that fires early only arms the next one.
 
 Date: 2026-11-15 · Source: timer spec § 1; timer plan 1, decision 4; guardrail `the_timer_is_wired_through_one_path`
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### A late end is applied once
 
 If the end of a Pomodoro phase passed long ago (a sleep, a stalled loop), it is applied once, and
@@ -68,6 +81,8 @@ the next phase starts at the moment the end is noticed, not at the old end. Othe
 sleep would make several phases end one after another with a notification each.
 
 Date: 2026-11-15 · Source: timer plan 1, decisions 5 and 6, Review Focus 1
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
 ### A change applies a due end first
 
@@ -78,6 +93,8 @@ through it.
 
 Date: 2026-11-15 · Source: timer plan 1, Review Focus 1; guardrail `the_timer_is_wired_through_one_path`
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### Under do-not-disturb the end goes to the history only
 
 When do-not-disturb is on, a timer's end sends its notification to the server, which keeps it in
@@ -87,11 +104,15 @@ name, and is never kept for later: a late timer notice is noise.
 
 Date: 2026-11-15 · Source: timer spec § 5; timer plan 1, decision 8
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### The 24-hour stopwatch stop is silent
 
 A stopwatch stops itself, paused, after a day. That writes one log line and notifies nothing.
 
 Date: 2026-11-15 · Source: timer plan 1, decisions 9 and 13
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
 ### `done` is cleared by looking, and is never saved
 
@@ -102,6 +123,8 @@ file, so it does not come back after a restart.
 
 Date: 2026-11-15 · Source: timer spec §§ 2 and 6; timer plan 1, decision 7
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### The state file is hostile input
 
 The timer's state file is read back at start as if someone else had written it: exact fields,
@@ -110,6 +133,8 @@ to 12. Anything else is dropped with one log line, and the timer starts idle. Th
 it never panics (guardrail `the_timer_has_no_panicking_path`).
 
 Date: 2026-11-15 · Source: timer spec § 6; timer plan 1, decision 13
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
 ### The popup lists what the state allows
 
@@ -121,6 +146,8 @@ question and a new start replaces whatever runs.
 
 Date: 2026-11-15 · Source: timer spec § 3; timer plan 1, decisions 10 and 11
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### The popup's one-second tick exists only while it is open
 
 While the popup is open and a timer runs, the time in it counts each second, through the same one
@@ -128,6 +155,8 @@ deadline. When the popup closes, by any way, the tick goes with it (the popup's 
 re-sets the deadline). With the popup closed the chip changes at most once a minute.
 
 Date: 2026-11-15 · Source: timer spec § 3 and "Constraints"; timer plan 1, decision 4; guardrail `the_timer_popup_closing_drops_its_tick_and_sees_the_end`
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
 ### The verb opens the popup under the chip
 
@@ -138,16 +167,24 @@ twice.
 
 Date: 2026-11-15 · Source: timer spec § 4; timer plan 1, decision 17
 
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
+
 ### Logs carry fixed words and numbers only
 
 The timer's log lines are fixed words (`timer: paused`, `timer: countdown ended`) and numbers. They
 never hold the sound's command, a path, or an error's own text, since any of these can name the
-user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`). Every
-command the daemon runs for a menu follows the same rule: the power menu logs `power: power off`
-and the resources popup `resources: monitor`, never the command, and a failed start adds the
-executor's error (`could not start (NotFound)`).
+user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`). The power
+menu and the resources popup's `Monitor…` row follow the first half of the rule: they log the
+entry's word (`power: power off`, `resources: monitor`), never the command. They differ on a failed
+start: they add the executor's error (`could not start (NotFound)`; for an I/O error, the system's
+own message), where the timer logs the kind word alone. The quick panel names the program in its
+own start failures, and the right click on the resources module goes through `actions::run`,
+which logs the whole argv of a failed start; neither follows this rule, and both are known
+follow-ups.
 
 Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18; power spec § 3 and plan 1, decision 10; resources popup spec "Constraints"
+
+Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": the timer part; every one is to be confirmed at the trial)
 
 ### A source that is down is not a state
 
@@ -176,7 +213,7 @@ on alpheus. The default is `false` until it is chosen after use. Without a subsc
 is read on triggers: session start, resume, `alpheus-launch --failed-refresh`, and a read added to
 another domain's wake-up at most once a minute. No timer is added for it.
 
-Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9, and its "Decisions written down" 1 (final fix wave, Mae to choose at the trial); diagnostics plan 1, "Decisions written down" 1 said on, which that decision reverses
+Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9, and its "Decisions written down" 1 (final fix wave, the owner to choose at the trial); diagnostics plan 1, "Decisions written down" 1 said on, which that decision reverses
 
 ### The failed-units count is asked for one property, never the whole interface
 
@@ -258,7 +295,7 @@ Date: 2026-11-15 · Source: hooks spec § 3; hooks plan 1, decision 11
 The month title (`October 2026`) and the weekday initials (`Mo Tu We`) are in English, as the
 clock's text is.
 
-Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 3 (formerly "Questions for Mae")
+Date: 2026-10-05 · Source: tray plan 2, the first decisions list (formerly "Questions"), item 3
 
 ### The calendar's first day comes from the locale, read at each open
 
@@ -267,14 +304,14 @@ locale that cannot be read, give Monday (ISO 8601). The locale is read each time
 opens, through `newlocale`, `nl_langinfo_l` and `freelocale`: this is thread-safe, changes no
 global locale, and nothing is kept while the calendar is closed.
 
-Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 4 (formerly "Questions for Mae") and "Controller decisions" 11; tray spec "Calendar"
+Date: 2026-10-05 · Source: tray plan 2, the first decisions list (formerly "Questions"), item 4 and "Controller decisions" 11; tray spec "Calendar"
 
 ### Calendar week numbers are ISO 8601
 
 When `[clock] week_numbers` is on, the numbers are ISO 8601 weeks. In a calendar whose week starts
 on Sunday, a row shows the ISO week of its Monday.
 
-Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 5 (formerly "Questions for Mae") and "Controller reconciliation"
+Date: 2026-10-05 · Source: tray plan 2, the first decisions list (formerly "Questions"), item 5 and "Controller reconciliation"
 
 ### The power menu runs the `[quick]` commands and has no setting of its own
 
@@ -283,7 +320,7 @@ panel's session buttons run, so one setting serves both. A `[power]` table would
 An entry whose command is empty is not shown, and with all four empty the menu and its button do not
 exist. alpheus never handles sleep, so there is no suspend or hibernate entry.
 
-Date: 2026-10-13 · Source: power spec § 3, § 6; power plan 1, decision 1
+Date: 2026-10-13 · Source: power spec §§ 1, 3 and 6
 
 ### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
 
@@ -291,10 +328,12 @@ Lock and Log out run at once. Reboot and Power off turn their row into `Reboot? 
 `Power off? ⏎` in the warning colour; a second activation runs the command only from 0.4 s after the
 question appeared and until 3 s after it, so a double click or a double Enter never confirms. Moving
 the selection, hovering or pressing another entry, any other key, or 3 s passing cancels the
-question. The rule is one function shared with the quick panel, so the panel and the menu cannot
-drift apart.
+question. The rule is two functions, `session::activate` and `session::expire`, shared with the
+quick panel, so the panel and the menu cannot drift apart.
 
 Date: 2026-10-13 · Source: power spec § 2, § 4; quick settings spec § 2 (the 0.4 s rule); power plan 1, decisions 1 and 5
+
+Status: awaiting confirmation at the trial for one part, any other key cancelling the question (power plan 1, "Decisions written down", decision 5, listed for confirmation in the plan's closing note); the 0.4 s to 3 s rule is settled
 
 ### Nothing is selected when the power menu opens
 
@@ -304,13 +343,17 @@ last, and Enter with nothing selected does nothing; this is also how the spec's 
 
 Date: 2026-10-13 · Source: power plan 1, decisions 3 and 4
 
+Status: awaiting confirmation at the trial (power plan 1, "Decisions written down", decision 3, listed for confirmation in the plan's closing note)
+
 ### A held key repeats only to move, in the power menu
 
 The keyboard's auto-repeat moves the selection but never activates: a held Enter acts once. Without
-this the repeat would arrive after 0.4 s and confirm the question that the first Enter had just
-asked. The wheel and the right and middle buttons do nothing in the menu.
+this the repeat would arrive inside the 0.4 s to 3 s window and confirm the question that the
+first Enter had just asked. The wheel and the right and middle buttons do nothing in the menu.
 
 Date: 2026-10-13 · Source: power plan 1, decisions 6 and 7
+
+Status: awaiting confirmation at the trial (power plan 1, "Decisions written down", decision 6, listed for confirmation in the plan's closing note)
 
 ### The power menu has its own timer
 
@@ -342,6 +385,8 @@ the time axis never shifts.
 
 Date: 2026-11-15 · Source: resources popup spec § 3; resources popup plan 1, decisions 1 and 3
 
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
+
 ### The resources popup spans 60 times the interval
 
 The popup's samples come at the same cadence, `[resources] interval`, whether it is open or closed,
@@ -351,6 +396,8 @@ mix two spacings in one ring and need the timer re-armed on every open and close
 
 Date: 2026-11-15 · Source: resources popup spec § 3; resources popup plan 1, decision 2
 
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
+
 ### Every resources item keeps its block in the popup
 
 Each item of `[resources] show` has its block in the popup, in the order written, whether or not it
@@ -359,7 +406,9 @@ it is open and a reading that appears or goes never resizes it.
 
 Date: 2026-11-15 · Source: resources popup spec § 2; resources popup plan 1, decision 12
 
-### The resources graphs have fixed scales, and the network's has a floor
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
+
+### Each resources graph has a set scale; the network's follows its peak, with a floor
 
 CPU and disk graphs run from 0 to 100 %, memory from 0 to the machine's total, temperature and GPU
 from 0 to 100 °C (clamped). The network graph shares one scale between download and upload, the
@@ -367,6 +416,8 @@ highest rate of either in the ring, never below 128 KiB/s, so that an idle link 
 graph with noise. A point is in permille of the scale, rounded down, at most 1000.
 
 Date: 2026-11-15 · Source: resources popup spec § 4; resources popup plan 1, decision 4
+
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
 
 ### The resources popup has no timer of its own
 
@@ -376,6 +427,8 @@ the reading is applied to the bar before the popup is repainted.
 
 Date: 2026-11-15 · Source: resources popup spec § 2 and "Constraints"; resources popup plan 1, decision 12
 
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
+
 ### The left click opens the resources popup and the right click runs `[actions] resources`
 
 A left click on the resources module opens the popup, which has a `Monitor…` row that runs
@@ -384,6 +437,7 @@ before the popup existed. With `[actions] resources` empty the popup has no `Mon
 
 Date: 2026-11-15 · Source: resources popup spec § 1; resources popup plan 1, decision 10
 
+Status: awaiting confirmation at the trial (resources popup plan 1, "Decisions written down": confirm them at the trial)
 
 ### The active media player is the pinned one, else the best status
 

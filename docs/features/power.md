@@ -44,8 +44,9 @@ alpheus never handles sleep, so the menu has no suspend or hibernate entry.
   buttons, do nothing in the menu.
 - **From a key.** `alpheus-launch --power` opens the menu under the bar's right end on the focused
   output (it works without the `power` module, and prints an error and exits 2 when no session
-  command is set), and the same verb closes it. The keyboard is taken without a grab, because a verb has no pointer press to grab with. It is also the Tools menu's
-  `Power menu` entry.
+  command is set or when there is no bar to open the menu under), and the same verb closes it.
+  The keyboard is taken without a grab, because a verb has no pointer press to grab with. It is
+  also the Tools menu's `Power menu` entry.
 
 The click-opened menu is a popup with a grab (`Input::Grab`). The README notes what that means for
 the bar's keyboard on Hyprland.
@@ -74,7 +75,7 @@ A `modules` list of your own needs `"power"` added, after `"clock"`, to show the
 narrow bar the button is the last module to be removed. Without the `window` module in `modules`,
 the free space goes before the last module, so a bar configured `[..., "clock", "power"]` shows the
 ⏻ alone at the right end, with the clock at the left (what is wanted there, if the clock should
-stay beside it, is not decided).
+stay beside it, is not decided: power plan 1, decision 13, to be confirmed at the trial).
 
 ## How it is built
 
@@ -114,7 +115,8 @@ never as its command, which can name the user.
   the timer, a repaint re-syncs it, and the only command spawned is the entry's own `[quick]`
   command, once, through the executor.
 - `every_power_menu_activation_is_a_configured_session`: whatever the model is driven through, it
-  only ever asks to run an entry whose command is set, and no command mentions sleep.
+  only ever asks to run an entry whose command is set, no command mentions sleep, and Reboot and
+  Power off never run without their question and a second activation at least 0.4 s later.
 - The headless tests (`power_a_click_opens_the_menu_and_down_enter_locks`,
   `power_a_click_on_a_row_runs_it`, `power_off_asks_then_a_second_enter_after_half_a_second_runs_it`,
   `power_two_enters_a_tenth_of_a_second_apart_run_nothing`,

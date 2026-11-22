@@ -44,7 +44,8 @@ pub struct Notice {
     /// The latest total seen, to be offered again when the server starts.
     last: Option<u32>,
     /// The system manager has answered once (an unknown count included: the bus down or no owner
-    /// also publishes `Units(None)`), or will never: its domain is not running.
+    /// also publishes `Units(None)`). The notice exists only with the module, which wants the
+    /// domain, so an answer always comes.
     system_seen: bool,
     /// The user manager has answered once (or will never: no session bus, `user_units = false`).
     /// Before both have, the total is half of what it will be, and the first notice would carry it.
@@ -52,7 +53,7 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// The system manager answered (or its domain says it never will).
+    /// The system manager answered.
     pub fn settle_system(&mut self) {
         self.system_seen = true;
     }
