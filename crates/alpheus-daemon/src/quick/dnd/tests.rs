@@ -1,3 +1,6 @@
+//! Tests of the do-not-disturb detail (`dnd.rs`): the six choices and their labels, and the entry the
+//! state marks. No clock, no file, no daemon.
+
 use super::*;
 
 #[test]
@@ -8,7 +11,7 @@ fn the_six_choices_and_their_labels() {
 }
 
 #[test]
-fn marked_by_the_state() {
+fn the_mark_sits_on_the_entry_the_state_matches() {
     let until = (8, 0);
     assert_eq!(marked(Some(false), None, until), Some(0));
     assert_eq!(marked(Some(true), None, until), Some(5));

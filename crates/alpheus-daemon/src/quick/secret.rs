@@ -1,39 +1,61 @@
-//! The Wi-Fi password's only home (quick Wi-Fi spec § 3): a fixed buffer of CAPACITY bytes on the
-//! heap (moving the panel never copies it), wiped with volatile writes when the field closes, after
-//! the password is handed to `nmcli`, and on drop. Its `Debug` never shows a byte; `bytes()` is the
-//! only way to read it. A character that would not fit is refused whole: the field then refuses to
-//! connect, so a password is never sent cut short.
+//! The Wi-Fi password's buffer: the one place the password lives while it is being typed.
+//!
+//! It is a fixed buffer of `CAPACITY` bytes on the heap, so moving the panel never copies it. The
+//! wipe is done with volatile writes (writes the compiler is not allowed to drop as dead stores):
+//! `clear()` wipes the whole buffer, which the Wi-Fi code calls when the field closes and right after
+//! the password has been handed to `nmcli`; a dropped buffer is cleared too, and a removed character
+//! is wiped at once. `bytes()` is the only way to read it, and its `Debug` never shows a byte. A character that would
+//! not fit is refused whole: the field then refuses to connect, so a password is never sent cut
+//! short.
+//!
+//! Never:
+//! - show a byte through `Debug`, or derive `Debug` or `Clone` (guardrail
+//!   `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`, which also allows this file exactly
+//!   one block of low-level code, the volatile write);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
+//!
+//! What is not covered: the buffer is not locked in memory, and the key event that carried each
+//! typed character comes from SCTK (the Wayland toolkit) as a heap string that is not wiped.
+//!
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-wifi-design.md (§ 3), docs/features/quick-settings.md,
+//! and docs/decisions.md ("The Wi-Fi password lives in one boxed buffer that is wiped").
 
 use std::sync::atomic::{Ordering, compiler_fence};
 
 /// Bytes a password may take.
 pub const CAPACITY: usize = 256;
 
+/// The password typed so far: `len` bytes of `buf`, the rest zero.
 pub struct Secret {
     buf: Box<[u8; CAPACITY]>,
     len: usize,
 }
 
 impl Secret {
+    /// An empty buffer, all zero.
     pub fn new() -> Secret {
         Secret { buf: Box::new([0u8; CAPACITY]), len: 0 }
     }
 
+    /// The typed bytes, never the unused part of the buffer.
     pub fn bytes(&self) -> &[u8] {
         self.buf.get(..self.len).unwrap_or(&[])
     }
 
+    /// Whether nothing is typed.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Characters typed (UTF-8 code points, counted by their lead bytes): the field's dots.
+    /// Characters typed (UTF-8 code points, counted by their lead bytes): the field's dots. A byte
+    /// that begins with the bits `10` continues a character, so it is not counted.
     pub fn chars(&self) -> usize {
         self.bytes().iter().filter(|b| **b & 0xC0 != 0x80).count()
     }
 
     /// Appends `c` whole; false, and nothing written, when it would not fit.
     pub fn push(&mut self, c: char) -> bool {
+        // A character takes 1 to 4 bytes; the copy on the stack is wiped before returning.
         let mut tmp = [0u8; 4];
         let n = c.encode_utf8(&mut tmp).len();
         let end = self.len + n;
@@ -54,6 +76,7 @@ impl Secret {
         if self.len == 0 {
             return false;
         }
+        // Step back over continuation bytes (`10xxxxxx`) to the first byte of the last character.
         let mut start = self.len - 1;
         while start > 0 && self.buf.get(start).is_some_and(|b| b & 0xC0 == 0x80) {
             start -= 1;
@@ -72,12 +95,14 @@ impl Secret {
     }
 }
 
+/// The same as `Secret::new()`.
 impl Default for Secret {
     fn default() -> Self {
         Secret::new()
     }
 }
 
+/// A dropped buffer is wiped whole, so a password never outlives its field in freed memory.
 impl Drop for Secret {
     fn drop(&mut self) {
         self.clear();
@@ -94,6 +119,7 @@ impl Clone for Secret {
     }
 }
 
+/// Two buffers are equal when they hold the same typed bytes.
 impl PartialEq for Secret {
     fn eq(&self, other: &Self) -> bool {
         self.bytes() == other.bytes()
@@ -102,6 +128,7 @@ impl PartialEq for Secret {
 
 impl Eq for Secret {}
 
+/// `Debug` prints a fixed word, never a byte.
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Secret(…)")

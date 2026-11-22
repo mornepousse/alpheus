@@ -1,3 +1,7 @@
+//! Tests of the quick panel's Shield detail (`shield.rs`): the listing's notes, which rows can be
+//! selected, what Enter and a click ask for, the tags and their deadlines, and the 32-row bound. No
+//! command, no clock, no daemon: each test builds the view it needs.
+
 use super::*;
 use crate::actions::Button;
 use crate::grid::{Grid, text_width};
@@ -31,7 +35,7 @@ fn listed(devices: Vec<UsbDevice>, v: &ShieldView) -> ShieldPanel {
 }
 
 #[test]
-fn the_notes() {
+fn each_state_of_the_listing_has_its_own_note_and_an_off_mode_runs_nothing() {
     let on = view(Some(true), true, true);
     let mut p = ShieldPanel::default();
     p.open_detail(&on);
@@ -60,7 +64,7 @@ fn opening_asks_for_one_read_only_while_on_and_listable() {
 }
 
 #[test]
-fn a_flag_edge_reevaluates_off_and_reading() {
+fn a_change_of_the_mode_while_the_detail_shows_asks_one_read_or_drops_the_list() {
     let mut p = ShieldPanel::default();
     p.open_detail(&view(Some(false), true, true));
     p.fit(Some(&view(Some(true), true, true)));
@@ -86,7 +90,7 @@ fn a_listing_when_not_waiting_for_one_is_dropped() {
 }
 
 #[test]
-fn devices_are_not_selectable_without_allow() {
+fn devices_are_not_selectable_without_allow_and_are_with_it() {
     let v = view(Some(true), true, false);
     let mut p = listed(vec![dev(7, "Test Stick"), dev(8, "Test Keyboard")], &v);
     assert!(!p.is_selected(Line::ShieldDevice(0), v.can_allow));
@@ -166,7 +170,7 @@ fn failed_shows_four_seconds_on_its_row_then_goes() {
 }
 
 #[test]
-fn at_most_32_rows() {
+fn the_detail_lists_at_most_32_devices_and_keeps_the_selection_on_a_drawn_row() {
     let v = view(Some(true), true, true);
     let many: Vec<UsbDevice> = (0..40).map(|i| dev(i, "Dev")).collect();
     let mut p = listed(many, &v);

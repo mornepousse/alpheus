@@ -1,7 +1,20 @@
-//! The quick panel's Shield detail (shield spec § 5), pure: the blocked USB devices as the daemon
-//! read them, the keys and clicks that allow one, the tags (`…` while its command runs, `failed`
-//! for FAILED_SHOWN) and the notes. What a key asks (`ShieldAsk`) is the wiring's
-//! (`quick_app.rs`): nothing here reads a file, runs a command or starts anything.
+//! The quick panel's Shield detail: the USB devices the daemon read as blocked, and the keys and
+//! clicks that allow one.
+//!
+//! This is the pure half of the detail. It holds what the detail knows (`Listing`), the tags (`…`
+//! while a device's `allow` command runs, `failed` for `FAILED_SHOWN`) and the notes shown in place
+//! of a list ("Reading…", "No blocked device", and so on). What a key asks (`ShieldAsk`) is the
+//! wiring's, in `shield/app.rs`; the panel's own glue is `quick/app.rs`.
+//!
+//! Never:
+//! - read a file, run a command or start anything (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - put a device's name, id or `vid:pid` in a log line (guardrail `the_shield_logs_name_nothing`);
+//! - panic: a USB name is text from outside (guardrail `the_shield_files_have_no_panicking_path`).
+//!
+//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§ 5), docs/features/quick-settings.md,
+//! docs/features/shield.md, and docs/decisions.md ("The Shield detail's device rows are selectable
+//! only when `allow` is configured").
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style, text_width, truncate};
@@ -108,7 +121,10 @@ impl ShieldPanel {
     /// Before each use, with the view the panel reads: the row's `failed` end noted; an open detail
     /// follows the mode (on: one read; off: the list dropped) and keeps its selection on a drawn row.
     pub fn fit(&mut self, view: Option<&ShieldView>) {
-        self.row_failed = view.and_then(|v| v.failed_until);
+        self.row_failed = match view {
+            Some(v) => v.failed_until,
+            None => None,
+        };
         let Some(v) = view else { return };
         self.can_allow = v.can_allow;
         if !self.open {
@@ -146,7 +162,7 @@ impl ShieldPanel {
         if self.allowing == Some(id) {
             self.allowing = None;
         }
-        self.failed = failed.then(|| (id, now + FAILED_SHOWN));
+        self.failed = if failed { Some((id, now + FAILED_SHOWN)) } else { None };
     }
 
     /// The header, a separator, then the devices or one note.
@@ -205,7 +221,8 @@ impl ShieldPanel {
         if !view.can_allow || self.allowing.is_some() {
             return QuickAction::Nothing;
         }
-        let Some(id) = self.devices().get(i).map(|d| d.id) else { return QuickAction::Nothing };
+        let Some(device) = self.devices().get(i) else { return QuickAction::Nothing };
+        let id = device.id;
         self.pick = i;
         self.allowing = Some(id);
         self.failed = None;
@@ -214,6 +231,7 @@ impl ShieldPanel {
 
     /// The earliest `failed` to clear (a device's, or the row's own).
     pub fn deadline(&self) -> Option<Instant> {
+        // `flatten` drops the ends that are None, `min` keeps the earliest of the rest.
         [self.failed.map(|(_, at)| at), self.row_failed].into_iter().flatten().min()
     }
 

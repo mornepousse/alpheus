@@ -1,7 +1,17 @@
-//! The quick panel's do-not-disturb detail (small features 2 spec § 3), pure: six choices (off, a
-//! duration, until a clock time, until turned off), the ● on the one the state matches, its keys and
-//! clicks. What a choice does is the wiring's (`quick_app::dnd_request`): nothing here reads a
-//! clock, runs a command or starts anything.
+//! The quick panel's do-not-disturb detail: the six choices behind the row, and what a key or a click
+//! on them asks for.
+//!
+//! The choices are off, a duration (30 minutes, 1 hour, 2 hours), until a clock time
+//! (`[quick] dnd_until`) and until turned off. The `●` sits on the choice the current state matches.
+//! This file is the pure half: what a choice does is the wiring's (`dnd_request` in `app.rs`).
+//!
+//! Never:
+//! - read a clock or a file, run a command, or start anything (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
+//!
+//! See: docs/specs/2026-11-15-alpheus-small-features-2-design.md (§ 2), docs/features/quick-settings.md,
+//! and docs/decisions.md ("The do-not-disturb detail marks and opens by the current state").
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style};
@@ -39,15 +49,28 @@ pub fn label(c: DndChoice, until: (u32, u32)) -> String {
     }
 }
 
+/// Where `choice` is in `CHOICES`.
+fn position(choice: DndChoice) -> Option<usize> {
+    CHOICES.iter().position(|c| *c == choice)
+}
+
 /// The entry carrying the ●: off marks `Off`; on and untimed (sharing included) `Until I turn it
 /// off`; a timed end whose local time is `dnd_until` the `Until` one; anything else (a duration, an
-/// end elsewhere) nothing; an unknown state nothing.
+/// end elsewhere) nothing; an unknown state nothing. See docs/decisions.md, "The do-not-disturb detail
+/// marks and opens by the current state".
 pub fn marked(on: Option<bool>, end: Option<(u8, u8)>, until: (u32, u32)) -> Option<usize> {
-    let index = |c: DndChoice| CHOICES.iter().position(|x| *x == c);
-    match (on?, end) {
-        (false, _) => index(DndChoice::Off),
-        (true, None) => index(DndChoice::Untimed),
-        (true, Some((h, m))) => ((u32::from(h), u32::from(m)) == until).then(|| index(DndChoice::Until)).flatten(),
+    // `?` after a value that is None ends the function with None: an unknown state marks nothing.
+    let on = on?;
+    match (on, end) {
+        (false, _) => position(DndChoice::Off),
+        (true, None) => position(DndChoice::Untimed),
+        (true, Some((h, m))) => {
+            if (u32::from(h), u32::from(m)) == until {
+                position(DndChoice::Until)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -62,12 +85,18 @@ impl DndDetail {
     /// Opened on the ● entry, else on `30 minutes` (also when that entry is `Off`: nothing to turn off).
     pub fn open(&mut self, live: &Live) {
         self.open = true;
-        self.selected = marked(live.dnd, live.dnd_end, live.config.dnd_until_hm()).filter(|i| *i != 0).unwrap_or(DEFAULT_AT);
+        self.selected = match marked(live.dnd, live.dnd_end, live.config.dnd_until_hm()) {
+            // Entry 0 is `Off`: nothing to turn off, so the fallback is chosen instead.
+            Some(i) if i != 0 => i,
+            _ => DEFAULT_AT,
+        };
     }
 
     /// The header, a separator, the six entries.
     pub fn lines(&self) -> Vec<Line> {
-        [Line::DndHeader, Line::Separator].into_iter().chain((0..CHOICES.len()).map(Line::DndChoice)).collect()
+        let mut lines = vec![Line::DndHeader, Line::Separator];
+        lines.extend((0..CHOICES.len()).map(Line::DndChoice));
+        lines
     }
 
     /// ↑ ↓ Home End move; Enter applies the entry, Esc and ← go back; Space and the rest do nothing.
@@ -110,7 +139,11 @@ impl DndDetail {
         let until = live.config.dnd_until_hm();
         match line {
             Line::DndHeader => {
-                let right = live.dnd_end.map(|(h, m)| format!("until {h:02}:{m:02}")).unwrap_or_default();
+                // The end of a timed do-not-disturb, in two digits ("until 07:05"), else nothing.
+                let right = match live.dnd_end {
+                    Some((h, m)) => format!("until {h:02}:{m:02}"),
+                    None => String::new(),
+                };
                 text_row(g, None, "‹ Do not disturb", &right, Style::MUTED, false);
             }
             Line::DndChoice(i) => {

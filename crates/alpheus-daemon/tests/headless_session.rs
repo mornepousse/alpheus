@@ -4463,8 +4463,13 @@ fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Dae
 
 /// `quick_daemon` with its own `modules` line.
 fn quick_daemon_on(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    quick_daemon_on_outputs(name, 1, modules, extra)
+}
+
+/// `quick_daemon_on` on `outputs` screens (the fake Hyprland's focused output is HEADLESS-2).
+fn quick_daemon_on_outputs(name: &str, outputs: u32, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     let bus = PrivateBus::start(name);
-    let sway = Sway::start(name, 1);
+    let sway = Sway::start(name, outputs);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
@@ -4478,6 +4483,9 @@ fn quick_daemon_on(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway,
         DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
     let d = start_daemon_with(&sway, &options);
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    for output in 2..=outputs {
+        assert!(d.wait_for(&format!("bar placed on HEADLESS-{output}"), DELAY), "{:?}", d.log());
+    }
     thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read, the bar drawn
     (bus, sway, hypr, d)
 }
@@ -4722,6 +4730,37 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     drop(typist);
     thread::sleep(Duration::from_secs(1)); // the virtual keyboard's capability going settles
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
+}
+
+/// Quick spec § 1: the verb opens the panel under the bar of the focused output, whichever it is:
+/// HEADLESS-2 (the fake Hyprland's own), then HEADLESS-1 once the focus moved. Before the verb,
+/// neither screen shows a panel.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon (nix develop)"]
+fn quick_the_verb_opens_under_the_bar_of_the_focused_output() {
+    let (_bus, sway, hypr, d) = quick_daemon_on_outputs("quick-focused", 2, QUICK_BAR, "");
+    for output in ["HEADLESS-1", "HEADLESS-2"] {
+        let screen = sway.screenshot(output).expect("grim");
+        assert!(!quick_drawn_on_the_right(&screen), "{output}: the check bites only if no panel is there yet");
+    }
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("quick shown (rows: volume", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", quick_drawn_on_the_right), "the focused output: {:?}", d.log());
+    let other = sway.screenshot("HEADLESS-1").expect("grim");
+    assert!(!quick_drawn_on_the_right(&other), "nothing on the other output");
+    // The verb again closes it (past the debounce); the focus moves; the verb opens it on the other.
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| !quick_drawn_on_the_right(s)), "closed: {:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", quick_drawn_on_the_right), "the focus moved: {:?}", d.log());
+    let first = sway.screenshot("HEADLESS-2").expect("grim");
+    assert!(!quick_drawn_on_the_right(&first), "nothing on the output that lost the focus");
 }
 
 /// Twice the daemon's TOGGLE_DEBOUNCE (250 ms, crate-private): a verb that really toggles.
