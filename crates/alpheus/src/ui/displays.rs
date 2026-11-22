@@ -1,5 +1,20 @@
-//! Displays tab: profile bar, scaled map, one output's row; and its
-//! overlays (settings panel, "Keep these settings?", saving a profile).
+//! The Displays tab's drawing: the profile bar, the scaled map, one row per output, the shortcut
+//! hints, and the three boxes that open over the tab (the settings panel, "Keep these settings?" and
+//! saving a profile).
+//!
+//! `tabs::render` draws the rows this file lists (`rows`) with its shared item drawing, which calls
+//! `draw_profiles` and `draw_output` for this tab's two kinds of item. The boxes are drawn by
+//! `overlays.rs`, which calls `keep`, `panel` and `save` here and supplies their frame. The state
+//! they show is `app/displays.rs`'s.
+//!
+//! Never:
+//! - change the state: everything here reads the `App` and fills cells and the map of clickable
+//!   regions;
+//! - run a tool or read a clock: the countdown it shows is `Trial::remaining`, set by the tick.
+//!
+//! See: docs/specs/2026-10-03-alpheus-ecrans-design.md (§ 2, the tab; § 3, the "Keep these settings?"
+//! box), docs/specs/2026-11-15-alpheus-ui-refresh-design.md (the rail and the tab hues),
+//! docs/features/control-center.md.
 
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
@@ -146,9 +161,10 @@ pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &
     // Under the rail the focused row's band carries the focus: `fg` on it (the accent does not read on every `selection`).
     let label = if focused && !rail { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
     put(buf, body, lx, y, "Profiles", label);
-    let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
+    let mut names: Vec<String> = app.displays.profiles.iter().map(|p| p.name.clone()).collect();
+    names.push("+ Save current".to_string());
     let mut x = lx + 11;
-    for (j, name) in names.enumerate() {
+    for (j, name) in names.iter().enumerate() {
         let chosen = focused && j == app.displays.profile_sel;
         let (w, gap) = if rail {
             // The rail's chips: the chosen one filled with the tab's hue, the others on `raised`.
@@ -226,12 +242,20 @@ impl Cols {
         let full = Cols { conn: Some(13), toggle: 23, mode: 37, scale: Some(51), pos: 64 };
         let no_scale = Cols { scale: None, pos: 51, ..full };
         let compact = Cols { conn: None, toggle: 13, mode: 27, scale: None, pos: 41 };
-        [full, no_scale].into_iter().find(|c| c.pos + pos_w <= avail).unwrap_or(compact)
+        if full.pos + pos_w <= avail {
+            full
+        } else if no_scale.pos + pos_w <= avail {
+            no_scale
+        } else {
+            compact
+        }
     }
 }
 
 // ── Overlays ─────────────────────────────────────────────────────────
 
+/// The two buttons of a small box on row `y`: `no` (Cancel) then `yes`, the focused one filled.
+/// `yes_enabled` false greys `yes` out (the countdown has not started, or the draft is refused).
 #[allow(clippy::too_many_arguments)]
 fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focused: bool, yes_enabled: bool, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
@@ -289,6 +313,7 @@ pub fn keep(buf: &mut Buffer, area: Rect, app: &App, k: &Keep, hits: &mut HitMap
     buttons(buf, inner, y, "Cancel", "Keep", k.keep_focused, t.deadline.is_some(), app, hits);
 }
 
+/// The label of a panel field (the two buttons have none: they are drawn apart).
 fn field_label(f: PanelField) -> &'static str {
     match f {
         PanelField::Mode => "Mode",
@@ -306,7 +331,11 @@ fn field_value(app: &App, p: &Panel, f: PanelField) -> String {
     match f {
         PanelField::Mode => {
             let modes = app.panel_modes(p);
-            let k = modes.iter().position(|m| *m == p.mode).map_or(0, |k| k + 1);
+            // The mode's place in the list, counted from 1; 0 if it is not in it.
+            let k = match modes.iter().position(|m| *m == p.mode) {
+                Some(k) => k + 1,
+                None => 0,
+            };
             format!("{}  {k}/{}", p.mode.label(), modes.len())
         }
         PanelField::Scale => p.scale.label(),
@@ -317,7 +346,10 @@ fn field_value(app: &App, p: &Panel, f: PanelField) -> String {
             let labels = short_names(outs);
             match &p.reference {
                 None => "—".into(),
-                Some(d) => outs.iter().position(|o| o.description == *d).map_or_else(|| short_from_description(d), |i| labels[i].clone()),
+                Some(d) => match outs.iter().position(|o| o.description == *d) {
+                    Some(i) => labels[i].clone(),
+                    None => short_from_description(d),
+                },
             }
         }
         PanelField::Align => match p.place {

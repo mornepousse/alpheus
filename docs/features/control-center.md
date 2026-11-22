@@ -564,3 +564,125 @@ The first render of the dashboard is checked to take under 100 milliseconds even
 slow (`first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, `tests/first_render.rs`;
 README: 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
 the spec's, § 3).
+
+## Displays
+
+### What it does
+
+The Displays tab shows the screens and changes them: a **profile bar** (the saved profiles, then
+`+ Save current`), a **map** of the enabled screens drawn to scale (each with its number and short
+name; `●` marks the one focused in the list), and **one row per output** with its number and short
+name, its connector (`⚠` for a DisplayLink output), a switch (`[■] on`, `[■] only on` for the last
+active screen, `[ ] off`), its mode, its scale and where it is placed (`origin`, `right of Alpha`,
+`below Alpha, centered`, `position 0, 1080`).
+
+Every change is a **trial**: the change is applied and a box, **Keep these settings?**, shows what
+changed and `Automatic rollback in N s` (15 seconds). The focus starts on **Cancel**. Keep makes the
+change permanent; Cancel, the end of the countdown, or closing alpheus puts the previous settings
+back. The tab is locked while a trial or another change is in progress, and after one until a fresh
+read has come: a change is never planned on screens that may have been rolled back.
+
+```
+ Profiles   [ Laptop only ]  [ Desktop ]  [ + Save current ]
+
+ Map
+   ┌───Acme───┐┌──Globex──┐
+   │    3     ││    2   ● │
+   └──────────┘└──────────┘
+
+ Displays
+ ▶ 1 Laptop   eDP-1       [■] on   2560×1600@60   scale 1.0   below Acme
+   2 Acme     DVI-I-1 ⚠   [■] on   1920×1080@60   scale 1.0   origin
+```
+
+(The classic layout. From 84 columns by 26 rows the tab is drawn with the rail, in green; at 80
+columns the scale column is dropped, and when the placement text still does not fit the connector
+too: the placement is what the tab is for, a comment in `ui/displays.rs`.)
+
+The settings panel of an output has the fields **Mode**, **Scale**, **Rotation**, **Placement** and,
+for a placement relative to another screen, **Reference** and **Alignment**, then **Cancel** and
+**Apply**. If the geometry refuses the draft, Apply is greyed out and the reason is shown.
+
+### Using it
+
+| Key (default) | What it does |
+| --- | --- |
+| ↑ ↓ | move over the profile bar and the outputs |
+| ← → | on the profile bar: choose a profile (or `+ Save current`) |
+| Enter | on the profile bar: apply the profile, or open the name entry for `+ Save current`; on an output: open its settings panel |
+| Space | on an output: switch it on or off (never the last active one) |
+| ↑ ↓, ← → or `-` `+` | in the panel: the previous or next field; the value of the field |
+| `/` | in the panel, on Mode: search a mode (a substring, so `1280` does not find `1920x1080`) |
+| Enter | in the panel: on Apply, apply; on Cancel, close; on another field, move to Apply |
+| ← → or Tab, Enter, Esc | in the Keep box: choose Cancel or Keep; answer; cancel |
+
+With the mouse: a click on a chip chooses and applies a profile, on a switch changes the output, on
+a row opens its panel; in the panel a click on a field selects it, on `◀` `▶` steps its value; in the
+box a click on Cancel or Keep answers it. The command palette (Ctrl+P) lists `Display profile: <name>`
+for each profile and `Go to: Displays`; a profile chosen there from another tab is applied once the
+tab has a fresh read, and dropped after 10 seconds (`Displays: profile not applied (busy)`) if it
+never gets one.
+
+A change that touches a DisplayLink output adds `⚠ DisplayLink output: known freeze risk on this
+machine` to the box. A profile whose screens are not all connected still applies: the missing ones are
+listed as `<name> missing, ignored`.
+
+### Configuration
+
+Profiles are in `displays.toml` (in the config directory), written by `+ Save current` and applied by
+the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; see the README). A
+`displays.toml` that could not be read at startup is never overwritten: saving says
+`invalid displays.toml: fix it before saving`. The keys come from `[keys]` and `[keys.bindings]`.
+
+### How it is built
+
+The daemon, not this tab, owns the screens: it speaks the Wayland output protocol, applies a plan,
+holds the 15-second trial and rolls it back by itself (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`).
+The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `Op::KeepDisplays`,
+`Op::RevertDisplays`, and `Domain::Displays` for the read) and runs no command.
+
+- `app/displays.rs`: the state (`DisplaysTab`, `Trial`, `Panel`, `SaveDialog`), `items` (the profile
+  bar, then one item per output), the plans (`enable_plan`, `App::panel_preview`, `kept_in_place`, the
+  geometry from `crate::displays::geometry`) and every answer: the daemon's snapshot
+  (`displays_read`), its trial (`trial_read`, `trial_gone`), the worker's answer (`displays_done`),
+  the countdown (`displays_tick`), Keep and Cancel (`keep_answer`).
+- `ui/displays.rs`: `rows`, `hints`, the map (`map_canvas`), `draw_profiles`, `draw_output` and the
+  three boxes (`keep`, `panel`, `save`), which `ui/overlays.rs` calls. The item rows are drawn by the
+  shared item drawing in `ui/tabs.rs`.
+- `app/tab.rs`: the tab's row says it is not searchable, that it is read every 2 seconds while
+  shown, from `Domain::Displays`, and that its label column is 20 cells wide.
+
+**The path of one change**, switching an output off:
+
+1. Space reaches `toggle_output`, which refuses if a change is in progress or the output is the last
+   active one, and otherwise builds a `Plan` with one step.
+2. `start_trial` keeps the plan as the `Trial`, opens the Keep box and sends `Op::TryDisplays`.
+3. The worker sends the plan to the daemon; its answer (`displays_done`) starts the countdown from
+   this tab's own clock. The daemon's `seconds left` in each 2-second read only brings it forward.
+4. Keep (`keep_answer(true)`) sends `Op::KeepDisplays`; Cancel or the end of the countdown sends
+   `Op::RevertDisplays`. Either way no further change is planned until a read with no trial has come.
+
+### Rules it keeps
+
+- `locked_until_a_fresh_read`, `locked_while_the_daemon_is_busy` and `another_trial_open_locks_the_tab`
+  (`app/displays/tests.rs`): no change is planned on a stale read.
+- `profile_applied_with_countdown`, `automatic_rollback_after_fifteen_seconds`, `the_countdown_follows_the_daemon`
+  and `cancel_reverts_at_once_and_keep_leaves_nothing_to_revert`: the trial and its countdown.
+- `the_last_active_screen_cannot_be_switched_off`, `a_trial_that_touches_a_displaylink_output_says_so`
+  and `saving_refused_if_the_file_is_invalid`: the three protections.
+- `layout_off_origin_panel_with_no_change`, `never_a_negative_coordinate_after_anchoring` and
+  `scaling_the_origin_neighbors_follow`: the placement rules.
+- `the_rightmost_screen_skips_the_adjusted_one_and_the_last_of_equal_right_edges_wins` and
+  `the_reference_field_wraps_round_the_other_screens`: where an enabled screen goes, and the reference
+  field's wrapping.
+- `an_output_row_gives_up_its_scale_then_its_connector_as_the_placement_needs_room`,
+  `a_reference_screen_that_is_not_connected_shows_the_brand_from_its_description` and
+  `the_displays_tab_at_80_by_24_matches_its_snapshot` (`ui/displays/tests.rs`, its snapshot in
+  `ui/displays/snapshots/`); the rest of the tab's drawing in `ui/tests.rs` (`displays_tab_rendering`,
+  `displays_fit_mae_window_87x26`, `displays_snapshots`).
+
+### What it costs
+
+One read of the daemon's model, answered from its memory, every 2 seconds while the tab is shown, and
+nothing otherwise (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`). The daemon's own
+costs (the trial's one timer, the hotplug debounce) are in the README's component table.

@@ -1,3 +1,7 @@
+//! Tests of the Displays tab's logic (`app/displays.rs`): the trial and its countdown, the lock until
+//! a fresh read, the profile bar, the settings panel and its placement rules, and saving a profile.
+//! The daemon is never reached: its answers are the `Update`s the tests hand to the `App`.
+
 use super::*;
 use crate::app::action::{Command, Tab};
 use crate::app::testing::{ready, ready_app};
@@ -217,7 +221,7 @@ fn a_refused_try_closes_the_box_with_the_daemons_words() {
 }
 
 #[test]
-fn tab_items() {
+fn opening_the_tab_asks_for_a_read_and_lists_the_profile_bar_then_each_output() {
     let mut a = ready_app();
     a.go_tab(Tab::Displays, Instant::now());
     assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])]);
@@ -303,7 +307,7 @@ fn automatic_rollback_after_fifteen_seconds() {
 }
 
 #[test]
-fn cancel_and_keep() {
+fn cancel_reverts_at_once_and_keep_leaves_nothing_to_revert() {
     let t0 = Instant::now();
     let (mut a, _) = applied(t0);
     a.keep_answer(false);
@@ -425,7 +429,7 @@ fn no_other_change_during_the_trial() {
 }
 
 #[test]
-fn displaylink_warning() {
+fn a_trial_that_touches_a_displaylink_output_says_so() {
     let mut a = displays_tab();
     a.toggle_output("DVI-I-1", Instant::now()); // Alpha, on the DisplayLink dock
     assert!(a.displays.trial.as_ref().unwrap().displaylink);
@@ -435,7 +439,7 @@ fn displaylink_warning() {
 }
 
 #[test]
-fn last_active_screen_protected() {
+fn the_last_active_screen_cannot_be_switched_off() {
     let mut a = displays_tab();
     a.data.displays = Loadable::Ready(vec![machine()[0].clone(), off("DVI-I-1", ALPHA), off("HDMI-A-1", BRAVO)]);
     a.toggle_output("eDP-1", Instant::now());
@@ -450,7 +454,7 @@ fn last_active_screen_protected() {
 }
 
 #[test]
-fn toggling_an_output() {
+fn switching_an_output_off_moves_no_other_and_an_off_one_goes_right_of_the_rightmost() {
     let mut a = displays_tab();
     a.toggle_output("eDP-1", Instant::now());
     let plan = sent_trial(&mut a);
@@ -515,7 +519,7 @@ fn profile_already_in_place() {
 }
 
 #[test]
-fn profile_bar_bounded() {
+fn the_profile_bar_selection_stops_at_both_ends() {
     let mut a = ready_app();
     a.go_tab(Tab::Displays, Instant::now());
     a.adjust(1, Instant::now());
@@ -635,7 +639,7 @@ fn rotation_and_scale() {
 }
 
 #[test]
-fn mode_search() {
+fn the_mode_search_matches_substrings_and_the_mode_follows_the_first_match() {
     let mut a = displays_tab();
     a.data.displays = Loadable::Ready(recorded_outputs());
     a.open_panel("DVI-I-1", Instant::now());
@@ -827,7 +831,7 @@ fn saving_refused_if_the_file_is_invalid() {
 }
 
 #[test]
-fn placement_labels_text() {
+fn placements_read_as_origin_position_or_a_relation_to_a_screen() {
     assert_eq!(placement_labels(&machine()), vec!["position 0, 1080", "origin", "right of Alpha"]);
     let outs = vec![on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 800, 600, 560, 1080), off("DP-3", "Charlie 3")];
     assert_eq!(placement_labels(&outs), vec!["origin", "below Alpha, centered", ""]);
@@ -948,4 +952,30 @@ fn no_trial_read_guards() {
     a.displays_read(none(), t0);
     assert!(a.displays.trial.is_some(), "an action in flight");
     assert_eq!(toasted(&a, "Displays: the trial ended"), 0);
+}
+
+#[test]
+fn the_rightmost_screen_skips_the_adjusted_one_and_the_last_of_equal_right_edges_wins() {
+    // Bravo's right edge is the furthest (4053), the internal panel's the next (2560).
+    assert_eq!(rightmost(&machine(), 2), Some(0), "Bravo is the adjusted screen, so the panel is the rightmost");
+    assert_eq!(rightmost(&machine(), 99), Some(2), "nothing skipped: Bravo");
+    let twins = vec![on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 1920, 1080, 0, 0)];
+    assert_eq!(rightmost(&twins, 99), Some(1), "equal right edges: the last one");
+    assert_eq!(rightmost(&[off("DP-1", ALPHA)], 99), None, "a screen that is off is never the rightmost");
+}
+
+#[test]
+fn the_reference_field_wraps_round_the_other_screens() {
+    let mut a = displays_tab();
+    a.open_panel("eDP-1", Instant::now());
+    a.panel_move(3);
+    a.panel_step(1); // free → origin
+    a.panel_step(1); // → right of, with the first reference
+    a.panel_move(1); // the Reference field
+    a.panel_step(1);
+    assert_eq!(panel(&a).reference.as_deref(), Some(BRAVO));
+    a.panel_step(1);
+    assert_eq!(panel(&a).reference.as_deref(), Some(ALPHA), "after the last reference, the first");
+    a.panel_step(-1);
+    assert_eq!(panel(&a).reference.as_deref(), Some(BRAVO), "and back");
 }

@@ -1,8 +1,25 @@
-//! Displays tab: profiles, toggling an output, the settings panel, saving
-//! the current state, and the "Keep these settings?" trial. Every setting is
-//! tried by the alpheus daemon, which holds the 15 s trial and rolls back on
-//! its own (displays protocol spec); the tab shows its countdown, sends Keep
-//! or Cancel, and learns from the 2 s refresh how a trial ended.
+//! The Displays tab's state and logic: the profile bar, switching an output on or off, the settings
+//! panel of an output, saving the current layout as a profile, and the "Keep these settings?" trial.
+//!
+//! The alpheus daemon owns everything that touches the screens: it speaks the Wayland output
+//! protocol, holds the 15-second trial and rolls it back by itself. This tab only asks. It sends a
+//! plan with `Op::TryDisplays`, shows a countdown from its own clock (brought forward by the
+//! daemon's "seconds left"), sends `Op::KeepDisplays` or `Op::RevertDisplays`, and learns from its
+//! 2-second read how a trial ended. The geometry (`crate::displays::geometry`: placements, the
+//! solver) and the profiles file (`crate::displays::profiles`) are shared model code; this file
+//! turns what the user does into a `Plan` with them.
+//!
+//! Never:
+//! - talk to the compositor or run a tool: every request leaves through `send_op` and the worker
+//!   answers the daemon's socket;
+//! - plan on outputs that may be stale: while a configuration is in flight, or a read has not come
+//!   after an answer (`awaiting_read`), a change is refused with a message;
+//! - overwrite a `displays.toml` that could not be read (`profiles_invalid`);
+//! - draw anything: `ui/displays.rs` draws the tab from this state.
+//!
+//! See: docs/specs/2026-10-03-alpheus-ecrans-design.md (§ 2, the tab; § 3, safety and errors),
+//! docs/specs/2026-10-30-alpheus-displays-protocol-design.md ("The trial moves to the daemon",
+//! "What stays in the TUI"), docs/features/control-center.md.
 
 use super::worker::{Domain, Op};
 use super::{App, Item, Loadable, Overlay};
@@ -25,18 +42,18 @@ pub const KEEP_DELAY: Duration = Duration::from_secs(15);
 /// refresh. Past that it is dropped, never applied unasked much later.
 pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
 
-/// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
+// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
 use alpheus_common::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_NO_TRIAL as NO_TRIAL, ERROR_OFF as OFF};
 
-/// Tab state outside the data read.
+/// The tab's state outside the outputs it reads (those are in `App::data.displays`).
 #[derive(Debug, Default)]
 pub struct DisplaysTab {
     pub profiles: Vec<Profile>,
     /// displays.toml; `None`: saving is impossible (tests).
     pub profiles_path: Option<PathBuf>,
     /// The file loaded at startup was invalid (warning kept): saving would
-    /// overwrite it without having been able to read it, refused until Mae
-    /// has fixed it (set by `build_app`).
+    /// overwrite it without having been able to read it, refused until the
+    /// user has fixed it (set by `build_app`).
     pub profiles_invalid: bool,
     /// Chip selected in the profile bar; `profiles.len()` designates
     /// "+ Save current".
@@ -75,12 +92,15 @@ pub struct Trial {
     pub remaining: u64,
 }
 
-/// "Keep these settings?" dialog; focus starts on Cancel.
+/// The "Keep these settings?" dialog. The focus starts on Cancel, so a key pressed by reflex keeps
+/// nothing (the spec: "with focus on **Cancel**").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Keep {
     pub keep_focused: bool,
 }
 
+/// A field of the settings panel, from the top: the first four are always shown, `Reference` and
+/// `Align` only while the placement is relative to another screen (`panel_fields`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelField {
     Mode,
@@ -129,6 +149,7 @@ pub struct SaveDialog {
     pub yes_focused: bool,
 }
 
+/// How a placement choice reads in the panel's Place field.
 pub fn place_label(p: PlaceChoice) -> &'static str {
     match p {
         PlaceChoice::Free => "current position",
@@ -147,8 +168,13 @@ pub fn panel_fields(p: &Panel) -> Vec<PanelField> {
     v
 }
 
+/// The short name of the screen whose description is `desc`: its name in `labels` if it is among
+/// `outs`, else a short name made from the description alone.
 fn label_of(outs: &[Output], labels: &[String], desc: &str) -> String {
-    outs.iter().position(|o| o.description == desc).map_or_else(|| short_from_description(desc), |i| labels[i].clone())
+    match outs.iter().position(|o| o.description == desc) {
+        Some(i) => labels[i].clone(),
+        None => short_from_description(desc),
+    }
 }
 
 /// Each output's placement, in plain words, for the list: "origin", "right
@@ -175,12 +201,23 @@ pub fn placement_labels(outs: &[Output]) -> Vec<String> {
 
 /// Rightmost screen (largest right edge) among the enabled ones.
 fn rightmost(outs: &[Output], except: usize) -> Option<usize> {
-    outs.iter()
-        .enumerate()
-        .filter(|(j, _)| *j != except)
-        .filter_map(|(j, o)| o.active.as_ref().map(|a| (j, a.x + logical_size(a.mode, a.scale, a.transform).0)))
-        .max_by_key(|&(_, right)| right)
-        .map(|(j, _)| j)
+    let mut best: Option<(usize, i32)> = None;
+    for (j, o) in outs.iter().enumerate() {
+        let Some(a) = &o.active else { continue };
+        if j == except {
+            continue;
+        }
+        let right = a.x + logical_size(a.mode, a.scale, a.transform).0;
+        // Among screens with the same right edge, the last one wins.
+        let is_better = match best {
+            Some((_, best_right)) => right >= best_right,
+            None => true,
+        };
+        if is_better {
+            best = Some((j, right));
+        }
+    }
+    best.map(|(j, _)| j)
 }
 
 /// Screens for the geometry engine: each at its current (absolute) place.
@@ -248,14 +285,33 @@ fn follows(screens: &[Screen], mut j: usize, i: usize) -> bool {
     false
 }
 
+/// Where screen `j` is now, and where the solver put it, or None if it is off.
+fn current_and_solved(outs: &[Output], pos: &[Option<(i32, i32)>], j: usize) -> Option<((i32, i32), (i32, i32))> {
+    let active = outs[j].active.as_ref()?;
+    let solved = pos[j]?;
+    Some(((active.x, active.y), solved))
+}
+
 /// `resolve` re-anchors the whole set at (0, 0); on a live screen, we
 /// translate back so nothing moves without reason: an enabled output that
 /// wasn't adjusted, and that doesn't follow the adjusted output `i`, keeps
 /// its current position; if there is none, the adjusted output keeps its
 /// own. Then never a negative coordinate.
 fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, i32)>>, i: usize) -> Vec<Option<(i32, i32)>> {
-    let now_at = |j: usize| outs[j].active.as_ref().map(|a| (a.x, a.y)).zip(pos[j]);
-    let anchor = (0..outs.len()).filter(|&j| j != i && !follows(screens, j, i)).find_map(now_at).or_else(|| now_at(i));
+    // The anchor: the first screen that is enabled, was not adjusted and does not follow the adjusted
+    // one, as (where it is now, where the solver put it); if there is none, the adjusted screen itself.
+    let mut anchor = None;
+    for j in 0..outs.len() {
+        if j != i && !follows(screens, j, i) {
+            anchor = current_and_solved(outs, &pos, j);
+            if anchor.is_some() {
+                break;
+            }
+        }
+    }
+    if anchor.is_none() {
+        anchor = current_and_solved(outs, &pos, i);
+    }
     if let Some(((cx, cy), (nx, ny))) = anchor {
         for p in pos.iter_mut().flatten() {
             *p = (p.0 + cx - nx, p.1 + cy - ny);
@@ -274,7 +330,10 @@ fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, 
 
 /// Line of a trial's summary.
 fn describe_step(s: &Step, outs: &[Output], labels: &[String]) -> String {
-    let label = outs.iter().position(|o| o.name == s.output).map_or_else(|| s.output.clone(), |i| labels[i].clone());
+    let label = match outs.iter().position(|o| o.name == s.output) {
+        Some(i) => labels[i].clone(),
+        None => s.output.clone(),
+    };
     match &s.active {
         None => format!("{label}: off"),
         Some(a) => {
@@ -288,6 +347,7 @@ fn remaining(deadline: Instant, now: Instant) -> u64 {
     deadline.saturating_duration_since(now).as_millis().div_ceil(1000) as u64
 }
 
+/// `idx` moved by `dir` and wrapped round inside `len` entries (an empty list counts as one).
 fn wrap(idx: usize, dir: i32, len: usize) -> usize {
     (idx as i32 + dir).rem_euclid(len.max(1) as i32) as usize
 }
@@ -295,7 +355,10 @@ fn wrap(idx: usize, dir: i32, len: usize) -> usize {
 impl App {
     /// Outputs read so far (empty until something is read).
     pub fn outputs(&self) -> &[Output] {
-        self.data.displays.ready().map_or(&[], Vec::as_slice)
+        match self.data.displays.ready() {
+            Some(outputs) => outputs.as_slice(),
+            None => &[],
+        }
     }
 
     /// A trial is waiting for Keep or Cancel (or for the daemon's answer): closing reverts it.
@@ -316,6 +379,7 @@ impl App {
         true
     }
 
+    /// Closes the "Keep these settings?" box if it is the one open.
     fn close_keep(&mut self) {
         if matches!(self.overlay, Overlay::Keep(_)) {
             self.overlay = Overlay::None;
@@ -408,7 +472,10 @@ impl App {
     /// tab counts down an answered try: the daemon restarted, or the trial ended unseen. The box
     /// closes; there is nothing left to keep or revert.
     fn trial_gone(&mut self, state: TrialState, now: Instant) {
-        let answered = self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some());
+        let answered = match &self.displays.trial {
+            Some(trial) => trial.deadline.is_some(),
+            None => false,
+        };
         if state != TrialState::None || !answered || self.is_pending(Domain::Displays) {
             return;
         }
@@ -423,6 +490,7 @@ impl App {
         self.toast(msg.into(), false, now);
     }
 
+    /// Tells how the daemon ended a trial: a line in the status bar (or its error line) and a toast.
     fn tell_end(&mut self, end: TrialEnd, now: Instant) {
         let (msg, error) = match end {
             TrialEnd::Kept => ("Displays: settings kept", false),
@@ -454,7 +522,11 @@ impl App {
             }
             (Op::TryDisplays(plan), Err(e)) => {
                 // Refused, or the daemon unreachable: nothing was applied.
-                if self.displays.trial.as_ref().is_some_and(|t| t.plan == plan) {
+                let is_ours = match &self.displays.trial {
+                    Some(trial) => trial.plan == plan,
+                    None => false,
+                };
+                if is_ours {
                     self.displays.trial = None;
                     self.close_keep();
                 }
@@ -499,7 +571,11 @@ impl App {
 
     /// A queued profile that waited too long is dropped, with a word.
     fn queued_expiry(&mut self, now: Instant) {
-        if self.displays.queued_profile.is_some() && self.displays.queued_until.is_some_and(|u| now >= u) {
+        let expired = match self.displays.queued_until {
+            Some(until) => now >= until,
+            None => false,
+        };
+        if self.displays.queued_profile.is_some() && expired {
             self.displays.queued_profile = None;
             self.displays.queued_until = None;
             self.toast("Displays: profile not applied (busy)".into(), true, now);
@@ -540,7 +616,11 @@ impl App {
     /// the try in the worker's queue).
     pub(crate) fn keep_answer(&mut self, keep: bool) {
         if keep {
-            if self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some()) {
+            let answered = match &self.displays.trial {
+                Some(trial) => trial.deadline.is_some(),
+                None => false,
+            };
+            if answered {
                 self.displays.trial = None;
                 self.close_keep();
                 // "Settings kept" once the daemon answers (it may have restarted).
@@ -554,6 +634,9 @@ impl App {
 
     // ── Profiles and list ────────────────────────────────────────────
 
+    /// Applies the profile called `name` as a trial: refused while a change is in progress, when
+    /// the outputs are unknown, when no such profile exists or when the profile cannot be planned on
+    /// the screens now connected; screens it names that are not connected are listed as ignored.
     pub(crate) fn apply_display_profile(&mut self, name: &str, now: Instant) {
         if self.displays_busy(now) {
             return;
@@ -603,6 +686,8 @@ impl App {
         }
     }
 
+    /// Moves the selection along the profile bar (the profiles, then "+ Save current"), stopping
+    /// at both ends.
     pub(crate) fn profile_bar_move(&mut self, dir: i32) {
         let n = self.displays.profiles.len() as i32;
         self.displays.profile_sel = (self.displays.profile_sel as i32 + dir).clamp(0, n) as usize;
@@ -610,14 +695,20 @@ impl App {
 
     /// Enter on the profile bar: apply, or "+ Save current".
     pub(crate) fn profile_bar_activate(&mut self, now: Instant) {
-        match self.displays.profiles.get(self.displays.profile_sel).map(|p| p.name.clone()) {
-            Some(name) => self.apply_display_profile(&name, now),
+        match self.displays.profiles.get(self.displays.profile_sel) {
+            Some(profile) => {
+                let name = profile.name.clone();
+                self.apply_display_profile(&name, now);
+            }
             None => self.open_save(now),
         }
     }
 
     // ── Settings panel ───────────────────────────────────────────────
 
+    /// Opens the settings panel of output `name`, filled with what the output has now (its mode,
+    /// scale, rotation and placement), or with its first mode and a place to the right of the
+    /// rightmost screen when it is off. Refused while a change is in progress.
     pub(crate) fn open_panel(&mut self, name: &str, now: Instant) {
         if self.displays_busy(now) {
             return;
@@ -739,6 +830,7 @@ impl App {
         if plan.steps.is_empty() { Err("no change".into()) } else { Ok(plan) }
     }
 
+    /// The open panel, if the open box is one.
     fn panel_mut(&mut self) -> Option<&mut Panel> {
         match &mut self.overlay {
             Overlay::Panel(p) => Some(p),
@@ -785,7 +877,11 @@ impl App {
             PanelField::Reference => {
                 let refs = self.panel_references(&p);
                 if !refs.is_empty() {
-                    let k = p.reference.as_ref().and_then(|r| refs.iter().position(|x| x == r)).unwrap_or(0);
+                    // A reference that is not in the list (or none yet) starts from the first.
+                    let k = match &p.reference {
+                        Some(current) => refs.iter().position(|x| x == current).unwrap_or(0),
+                        None => 0,
+                    };
                     p.reference = Some(refs[wrap(k, dir, refs.len())].clone());
                 }
             }
@@ -831,6 +927,7 @@ impl App {
         }
     }
 
+    /// Apply in the panel: starts a trial of the draft's plan, or says why the draft is refused.
     pub(crate) fn panel_apply(&mut self, now: Instant) {
         let Overlay::Panel(p) = &self.overlay else { return };
         let p = p.clone();
@@ -839,7 +936,10 @@ impl App {
                 self.overlay = Overlay::None;
                 let outs = self.outputs();
                 let labels = short_names(outs);
-                let label = outs.iter().position(|o| o.name == p.output).map_or(p.output.clone(), |i| labels[i].clone());
+                let label = match outs.iter().position(|o| o.name == p.output) {
+                    Some(i) => labels[i].clone(),
+                    None => p.output.clone(),
+                };
                 self.start_trial(format!("Adjusting {label}"), plan, Vec::new(), now);
             }
             Err(e) => self.toast(format!("Displays: {e}"), true, now),
@@ -848,6 +948,7 @@ impl App {
 
     // ── Save current ─────────────────────────────────────────────────
 
+    /// Opens the name entry of "+ Save current" (refused while the outputs are unknown).
     pub(crate) fn open_save(&mut self, now: Instant) {
         if self.data.displays.ready().is_none() {
             self.toast("Displays: unknown state".into(), true, now);
@@ -886,6 +987,8 @@ impl App {
         }
     }
 
+    /// Saves the screens as they are now as the profile `name` (replacing one of that name) in
+    /// `displays.toml`, unless that file was unreadable at startup.
     fn save_current(&mut self, name: &str, now: Instant) {
         self.overlay = Overlay::None;
         if self.displays.profiles_invalid {
