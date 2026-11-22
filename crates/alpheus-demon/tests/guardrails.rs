@@ -2020,6 +2020,9 @@ impl Executor for ArgvSpy {
     fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
         Err(self.record(prog, args))
     }
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        Err(self.record(prog, args))
+    }
 }
 
 /// The daemon paints with the 16 roles only. The old 7-colour
@@ -4313,6 +4316,36 @@ fn the_shield_files_have_no_panicking_path() {
             }
         }
     }
+}
+
+/// Shield spec § 7 (final fix wave I1): an action (on, off, allow) never goes through a pipe it could
+/// be cut by (`capture` drops its read end at a deadline: a privileged helper we cannot kill would die
+/// of SIGPIPE half way through its work); only the listing does. And the daemon's shutdown stops what
+/// it can still reach.
+#[test]
+fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
+    let files = source_files();
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_run.rs").expect("shield_run.rs").1);
+    let body = function_body(&t, "pub fn run_job(");
+    let list_at = body.find("exec.capture(").expect("the listing's capture");
+    let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
+    assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
+    assert_eq!(body.matches("exec.capture(").count(), 1);
+    // Final fix wave M1: a failed switch and a deadline are judged after one look at the flag.
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield_app.rs").expect("shield_app.rs").1);
+    let mail = function_body(&app, "fn shield_mail(");
+    assert!(
+        mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),
+        "shield_mail reads the flag before it judges a failed switch"
+    );
+    let tick = function_body(&app, "fn shield_tick(");
+    assert!(
+        tick.find("shield_readable()").expect("a read in shield_tick") < tick.find("model.expired(").expect("expired"),
+        "shield_tick reads the flag before it judges the deadline, watched or not"
+    );
+    assert!(!tick.contains("shield_watched"), "the deadline's read does not depend on the watch");
+    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    assert!(function_body(startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
 }
 
 /// Shield spec § 5 (I1 of the Task 4-5 review): the panel's timer follows its view from the open, so a

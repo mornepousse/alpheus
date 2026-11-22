@@ -152,10 +152,15 @@ fn the_attempt_ends_on_the_flag_the_exit_or_the_deadline() {
     let (mut s, g) = switching_on(now);
     s.done(done(Job::Switch(true), g, RunOutcome::Capped), secs(now, 5));
     assert_eq!(s.flag(Some(true), secs(now, 6)).1, Some(Finish::Switched(true)), "capped, then the flag");
-    // The bound before the grace's end wins.
+    // The 5 s grace after an exit 0 is not cut by the 60 s bound (final fix wave M2), and it says so.
     let (mut s, g) = switching_on(now);
     s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 58));
-    assert_eq!(s.expired(secs(now, 60)), Some(Finish::SwitchFailed(true, Reason::NoChangeIn60)));
+    assert_eq!(s.deadline(), Some(secs(now, 63)));
+    assert_eq!(s.expired(secs(now, 60)), None, "the command ended at 58 s: its flag has until 63 s");
+    assert_eq!(s.flag(Some(true), secs(now, 62)).1, Some(Finish::Switched(true)), "a flag at 62 s still counts");
+    let (mut s, g) = switching_on(now);
+    s.done(done(Job::Switch(true), g, RunOutcome::Exited(Some(0))), secs(now, 58));
+    assert_eq!(s.expired(secs(now, 63)), Some(Finish::SwitchFailed(true, Reason::NoChangeAfter)));
     // Missing and unstartable programs, and a panicked worker.
     for (o, r) in [
         (RunOutcome::NotFound, Reason::NotFound),
@@ -317,7 +322,7 @@ fn status_text_reads() {
     };
     assert_eq!(
         status_text(Some(true), Some(Ok(&p))),
-        "Shield: on\nBlocked USB devices:\n  Test Stick (1234:5678)\n  Test Keyboard (abcd:0001)"
+        "Shield: on\nBlocked USB devices:\n  1234:5678  ·  Test Stick\n  abcd:0001  ·  Test Keyboard"
     );
     assert_eq!(status_text(Some(true), Some(Ok(&Parsed::default()))), "Shield: on\nBlocked USB devices: none");
     assert_eq!(status_text(Some(true), Some(Err(Reason::TimedOut))), "Shield: on\nBlocked USB devices: cannot list (timed out)");
@@ -421,14 +426,14 @@ fn the_picker_lines_ids_and_names_go_together() {
     use crate::shield_usb::UsbDevice;
     let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
     let (lines, ids) = picker(&[d(7, "Test Keyboard"), d(12, "Test Stick")]);
-    assert_eq!(lines, ["Test Keyboard (1234:5678)", "Test Stick (1234:5678)"]);
+    assert_eq!(lines, ["1234:5678  ·  Test Keyboard", "1234:5678  ·  Test Stick"]);
     assert_eq!(ids, [(7, "Test Keyboard".to_string()), (12, "Test Stick".to_string())]);
     // What the chosen index maps to: only a real position, never typed text. The name goes with the
     // id (the notice names the device; the listing is gone by then, so `?` was announced).
     assert_eq!(picked(&ids, Reply::Index(Some(1))), Some((12, "Test Stick".to_string())));
     assert_eq!(picked(&ids, Reply::Index(Some(2))), None);
     assert_eq!(picked(&ids, Reply::Index(None)), None, "typed text runs nothing");
-    assert_eq!(picked(&ids, Reply::Chosen("Test Stick (1234:5678)".into())), None);
+    assert_eq!(picked(&ids, Reply::Chosen("1234:5678  ·  Test Stick".into())), None);
     assert_eq!(picked(&ids, Reply::Cancelled), None);
 }
 

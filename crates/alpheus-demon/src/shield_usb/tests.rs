@@ -90,5 +90,8 @@ fn allow_takes_the_id_as_a_whole_element() {
 #[test]
 fn the_picker_line_has_the_name_and_ids_but_not_the_device_id() {
     let d = UsbDevice { id: 12, vid_pid: "1234:5678".into(), name: "Test Stick".into() };
-    assert_eq!(picker_line(&d), "Test Stick (1234:5678)");
+    assert_eq!(picker_line(&d), "1234:5678  ·  Test Stick");
+    // A name cannot fake the ids: the real ones lead the row.
+    let fake = UsbDevice { id: 13, vid_pid: "dead:beef".into(), name: "Evil (1234:5678)".into() };
+    assert!(picker_line(&fake).starts_with("dead:beef  ·  "));
 }

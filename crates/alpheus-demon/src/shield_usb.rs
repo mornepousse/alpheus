@@ -119,9 +119,11 @@ pub fn allow_argv(allow: &[String], id: u32) -> Option<Vec<String>> {
     Some(allow.iter().map(|a| if a == "{id}" { id.to_string() } else { a.clone() }).collect())
 }
 
-/// The picker's row: `<name> (<vid:pid>)`, no id.
+/// The picker's row: `<vid:pid>  ·  <name>`, no id. The checked `vid:pid` comes first, in a fixed
+/// width: a name (hostile text, cut at 64 characters) can never pose as one by ending in
+/// `(1234:5678)`, because the real one is always what the row starts with.
 pub fn picker_line(d: &UsbDevice) -> String {
-    format!("{} ({})", d.name, d.vid_pid)
+    format!("{}  ·  {}", d.vid_pid, d.name)
 }
 
 #[cfg(test)]

@@ -879,12 +879,20 @@ fn shield_hard_checks_refuse_the_file() {
     let err = |t: String| BarConfig::from_text(&t).unwrap_err();
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "relative/flag")).contains("shield.flag"));
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "/")).contains("shield.flag"), "no file name");
+    // Final fix wave M4: a trailing slash names a directory (`Path::file_name` ignores it).
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield/on/")).contains("shield.flag"));
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield//")).contains("shield.flag"));
     assert!(err(with("allow = [\"x\", \"--id={id}\"]\n")).contains("shield.allow"), "allow_with_a_partial_placeholder_is_refused");
     assert!(err(with("allow = [\"x\", \"{id}\", \"{id}\"]\n")).contains("shield.allow"));
     assert!(err(with("allow = [\"x\"]\n")).contains("shield.allow"), "absent {{id}}");
     assert!(BarConfig::from_text(&with("allow = []\n")).is_ok(), "no allow: list only");
     assert!(err(with(&format!("on_text = \"{}\"\n", "a".repeat(300)))).contains("shield.on_text"));
     assert!(err(with("off_text = \"a\\nb\"\n")).contains("shield.off_text"));
+    // Every control character, not only the line breaks (the text is shown in a bubble).
+    for c in ["\\t", "\\u001b", "\\u007f", "\\u0085"] {
+        assert!(err(with(&format!("on_text = \"a{c}b\"\n"))).contains("shield.on_text"), "{c}");
+        assert!(err(with(&format!("off_text = \"a{c}b\"\n"))).contains("shield.off_text"), "{c}");
+    }
     assert!(
         err(shield_text().replace("\"/x/helper\", \"on\"", "\"\", \"on\"").replace("\"pkexec\", \"\"", "\" \", \"\""))
             .contains("shield.on")

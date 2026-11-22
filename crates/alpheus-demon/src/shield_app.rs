@@ -9,8 +9,8 @@ use crate::log::write as log;
 use crate::popup::PopupBody;
 use crate::quick_shield::ShieldAsk;
 use crate::shield::{
-    ERR_BUSY, ERR_NO_ALLOW, ERR_NOT_CONFIGURED, ERR_OFF, ERR_SAME, ERR_UNKNOWN, Edge, Finish, Job, NoticeKind, Reason, Shield, ShieldMail,
-    VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
+    ERR_BUSY, ERR_NO_ALLOW, ERR_NOT_CONFIGURED, ERR_OFF, ERR_SAME, ERR_UNKNOWN, Edge, Finish, Job, NoticeKind, Reason, RunOutcome, Shield,
+    ShieldMail, VerbCtx, VerbPlan, device_name, picked, picker, plan_verb, read_flag, status_text,
 };
 use crate::shield_run::spawn_job;
 use crate::shield_usb::{Parsed, allow_argv};
@@ -199,9 +199,18 @@ impl App {
     /// the degraded mode (no watch) the flag read again after a command.
     pub(crate) fn shield_mail(&mut self, m: ShieldMail) {
         let watched = self.shield_watched();
-        let Some(sh) = self.shield.as_mut() else { return };
-        let ShieldMail::Done { job, .. } = &m;
+        if self.shield.is_none() {
+            return;
+        }
+        let ShieldMail::Done { job, outcome, .. } = &m;
         let acted = *job != Job::List;
+        // A switch that failed (a non-zero exit, a signal, a program that would not start) is judged
+        // after one look at the flag, watched or not: a flag that did reach its target ends the
+        // attempt as a success, so "Shield unchanged" never contradicts an immediate "Shield on".
+        if matches!(job, Job::Switch(_)) && *outcome != RunOutcome::Exited(Some(0)) {
+            self.shield_readable();
+        }
+        let Some(sh) = self.shield.as_mut() else { return };
         let finish = sh.model.done(m, Instant::now());
         let degraded = acted && !watched;
         if let Some(f) = finish {
@@ -216,14 +225,11 @@ impl App {
 
     /// The timer fired: calloop dropped it, then the model decides.
     fn shield_tick(app: &mut App, now: Instant) {
-        let watched = app.shield_watched();
         let Some(sh) = app.shield.as_mut() else { return };
         sh.timer.fired();
-        if !watched {
-            // No watch: the deadline is the one moment the flag is read again (once, never polled), so a
-            // change nobody told us about ends the attempt as a success, not as "unchanged".
-            app.shield_readable();
-        }
+        // The flag is read once more before the judgement, watched or not (never polled): a change
+        // nobody told us about ends the attempt as a success, not as "unchanged".
+        app.shield_readable();
         let Some(sh) = app.shield.as_mut() else { return };
         if let Some(f) = sh.model.expired(now) {
             app.shield_finish(f);
@@ -369,7 +375,11 @@ impl App {
     /// why not); anything else (typed text, Escape) runs nothing and cancels.
     pub(crate) fn shield_picked(&mut self, ids: &[(u32, String)], reply: Reply) -> Reply {
         let Some((id, name)) = picked(ids, reply) else { return Reply::Cancelled };
-        match self.shield_allow(id, name) {
+        // The picker may have stayed open while the mode went off (or became unreadable): the allow
+        // is only for a mode that is on, as when the picker was asked for.
+        let on = self.shield.as_ref().is_some_and(|sh| sh.model.state() == Some(true));
+        let started = if on { self.shield_allow(id, name) } else { Err(ERR_OFF) };
+        match started {
             Ok(()) => Reply::Done,
             Err(why) => {
                 log(&format!("shield: not started ({why})"));

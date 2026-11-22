@@ -7323,7 +7323,7 @@ fn shield_status_and_allow_verbs() {
     let (code, out) = shield_verb(&w.sway, "status");
     assert_eq!(code, EXIT_OK, "{out}");
     assert!(
-        out.starts_with("Shield: on\n") && out.contains("Test Keyboard (abcd:0001)") && out.contains("Test Stick (1234:5678)"),
+        out.starts_with("Shield: on\n") && out.contains("abcd:0001  ·  Test Keyboard") && out.contains("1234:5678  ·  Test Stick"),
         "{out}"
     );
     assert!(!out.contains("hash") && !out.contains("serial") && !out.contains("block"), "the attributes stay inside: {out}");
@@ -7365,6 +7365,30 @@ fn shield_status_and_allow_verbs() {
     assert!(w.record().len() > before, "the two reads happened: {:?}", w.record());
 }
 
+/// The picker stayed open while the mode went off (final fix wave B3): the chosen device is not
+/// allowed, the client hears why (exit 2) and nothing runs.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn shield_a_picker_chosen_after_the_mode_went_off_allows_nothing() {
+    let w = shield_daemon("shield-picker-off", &ShieldSetup { flag_present: true, ..ShieldSetup::default() });
+    let sway_runtime = w.sway.runtime.clone();
+    let asked = thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<OsString> = ["--shield", "allow"].iter().map(OsString::from).collect();
+        let code = run(&args, &socket_path(&sway_runtime), &mut std::io::empty(), &mut out, &mut err);
+        (code, String::from_utf8_lossy(&err).into_owned())
+    });
+    assert!(w.d.wait_for("launcher shown", DELAY), "{:?}", w.d.log());
+    std::fs::remove_file(&w.flag).unwrap();
+    assert!(w.d.wait_for("shield: now off", DELAY), "{:?}", w.d.log());
+    keys(&w.sway, &["Down", "Return"]);
+    let (code, err) = asked.join().unwrap();
+    assert_eq!(code, EXIT_ERROR, "{err}");
+    assert!(err.contains("the shield is off"), "{err}");
+    assert!(w.d.wait_for("shield: not started (the shield is off)", DELAY), "{:?}", w.d.log());
+    assert!(w.record().iter().all(|l| !l.starts_with("allow")), "nothing allowed: {:?}", w.record());
+}
+
 /// Without `[shield]` nothing exists: no log line, no row, no glyph, every word exit 2.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -7378,7 +7402,11 @@ fn shield_unconfigured_is_silent() {
     assert_eq!(quick_verb(&w.sway, &["--quick"]), EXIT_OK);
     assert!(w.d.wait_for("quick shown", DELAY), "{:?}", w.d.log());
     assert!(w.d.log().iter().all(|l| !l.contains("shield:")), "{:?}", w.d.log());
-    assert!(w.d.log().iter().all(|l| !l.contains("rows: volume shield")), "no row: {:?}", w.d.log());
+    // The Shield row would be the first of the line's rows (`rows: shield …`): none of them is.
+    let shown: Vec<String> = w.d.log().into_iter().filter(|l| l.contains("quick shown")).collect();
+    assert_eq!(shown.len(), 1, "{:?}", w.d.log());
+    assert!(shown[0].contains("rows: "), "the rows are named, so the check below is not vacuous: {}", shown[0]);
+    assert!(!shown[0].contains("shield"), "no Shield row: {}", shown[0]);
     assert!(w.record().is_empty());
 }
 

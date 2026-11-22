@@ -3,7 +3,7 @@
 //! needs it — clicks `spawn`, the sound source `stream`s on its own thread —
 //! so this wrapper refuses it outright, without even trying. `capture` blocks
 //! too, up to its deadline: only the launcher's scan thread calls it (a
-//! guardrail), so it is delegated.
+//! guardrail), so it is delegated; so is `run_silent`, on the Shield worker's own thread.
 
 use crate::log::write as log;
 use alpheus_commun::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
@@ -36,6 +36,14 @@ impl<E: Executor> Executor for NonBlocking<E> {
 
     fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError> {
         self.0.capture(prog, args, limits)
+    }
+
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        self.0.run_silent(prog, args)
+    }
+
+    fn stop_running(&self) {
+        self.0.stop_running();
     }
 }
 

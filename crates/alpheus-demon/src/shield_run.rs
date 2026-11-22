@@ -1,7 +1,11 @@
-//! Running one Shield job (shield spec §§ 6 and 7): `Executor::capture` on a short-lived thread
-//! named `alpheus-shield`, so alpheus sees the exit code without ever blocking the loop. The
-//! worker mails its outcome back (`Mail::Shield`); a listing is parsed here, bounded, so the loop
-//! never handles raw output. The command's output is read and dropped, never logged.
+//! Running one Shield job (shield spec §§ 6 and 7) on a short-lived thread named `alpheus-shield`,
+//! so alpheus sees the exit code without ever blocking the loop. The worker mails its outcome back
+//! (`Mail::Shield`). A listing (unprivileged, its output needed) is read through `Executor::capture`
+//! and parsed here, bounded, so the loop never handles raw output. An action (on, off, allow: often
+//! a privileged helper such as pkexec, whose output is never wanted) goes through
+//! `Executor::run_silent`: waited for with no bound of its own (the model's 60 s deadline judges),
+//! its standard output and error `/dev/null`, so a helper we cannot kill never meets a closed pipe
+//! half way through its work. Nothing a command prints is ever kept or logged.
 
 use crate::shield::{Job, RunOutcome, ShieldMail};
 use crate::shield_usb::parse_blocked;
@@ -14,17 +18,20 @@ use std::time::Duration;
 
 /// A device list: short and small.
 pub const LIST_LIMITS: CaptureLimits = CaptureLimits { deadline: Duration::from_secs(2), max_bytes: 64 * 1024, max_lines: 1024 };
-/// A command waits for a password: long. The caps are high enough that a chatty helper is never cut,
-/// which would kill it.
-pub const ACTION_LIMITS: CaptureLimits = CaptureLimits { deadline: Duration::from_secs(60), max_bytes: 256 * 1024, max_lines: 16_384 };
 
 /// Runs `argv` as `job` and reports how it ended. Synchronous.
 pub fn run_job(exec: &dyn Executor, job: Job, generation: u64, argv: &[String]) -> ShieldMail {
     let done = |outcome, listed| ShieldMail::Done { job, generation, outcome, listed };
     let Some((prog, args)) = argv.split_first() else { return done(RunOutcome::CouldNotStart, None) };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let limits = if job == Job::List { LIST_LIMITS } else { ACTION_LIMITS };
-    match exec.capture(prog, &args, limits) {
+    if job != Job::List {
+        return match exec.run_silent(prog, &args) {
+            Ok(code) => done(RunOutcome::Exited(code), None),
+            Err(ExecError::NotFound) => done(RunOutcome::NotFound, None),
+            Err(_) => done(RunOutcome::CouldNotStart, None),
+        };
+    }
+    match exec.capture(prog, &args, LIST_LIMITS) {
         Ok(c) => match c.end {
             CaptureEnd::Exited(code) => {
                 let listed = (job == Job::List && code == Some(0)).then(|| parse_blocked(&c.stdout));

@@ -446,11 +446,14 @@ impl Shield {
         Finish::SwitchFailed(target, reason)
     }
 
-    /// When a waiting switch must be judged: the grace's end, else the 60 s bound.
+    /// When a waiting switch must be judged: the grace's end once the command exited 0 (the bound
+    /// does not cut it short: a command that ended at 58 s still gets its 5 s), else the 60 s bound.
     pub fn deadline(&self) -> Option<Instant> {
         let a = self.attempt.filter(|a| matches!(a.kind, AttemptKind::Switch(_)))?;
-        let bound = a.started.checked_add(ACTION_DEADLINE)?;
-        Some(a.grace_end.map_or(bound, |g| g.min(bound)))
+        match a.grace_end {
+            Some(g) => Some(g),
+            None => a.started.checked_add(ACTION_DEADLINE),
+        }
     }
 
     /// The deadline passed: the switch fails (the slot stays held until its worker reports).
@@ -460,8 +463,7 @@ impl Shield {
         if now < self.deadline()? {
             return None;
         }
-        let bound = a.started.checked_add(ACTION_DEADLINE)?;
-        let reason = if a.grace_end.is_some_and(|g| g < bound) {
+        let reason = if a.grace_end.is_some() {
             Reason::NoChangeAfter
         } else if a.capped {
             Reason::OutputTooLong

@@ -345,6 +345,12 @@ fn shield_unwatched_line(e: &ArmError) -> String {
 
 /// The directory (with `mask`), or its parent when the directory does not exist.
 fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, ArmError> {
+    arm_with(fd, dir, mask, || {})
+}
+
+/// `arm`, with `between` run after the directory was found missing and before its parent is watched:
+/// the window a test fills by creating the directory.
+fn arm_with(fd: &Inotify, dir: &Path, mask: u32, between: impl FnOnce()) -> Result<On, ArmError> {
     match fd.add(dir, mask) {
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -354,9 +360,18 @@ fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, ArmError> {
                     reason: "no parent directory to wait in".into(),
                 });
             };
-            fd.add(parent, PARENT_MASK)
-                .map(On::Parent)
-                .map_err(|e| ArmError { text: format!("cannot watch {} ({e})", parent.display()), reason: e.kind().to_string() })
+            between();
+            let parent_wd = fd
+                .add(parent, PARENT_MASK)
+                .map_err(|e| ArmError { text: format!("cannot watch {} ({e})", parent.display()), reason: e.kind().to_string() })?;
+            // The directory may have appeared between the two calls, before the parent could tell:
+            // looked for once more now that the parent is watched, so its creation is never missed. The
+            // parent's watch stays (a stray one, whose events no target matches: its descriptor may be
+            // another target's too, so it is never removed here).
+            match fd.add(dir, mask) {
+                Ok(wd) => Ok(On::Dir(wd)),
+                Err(_) => Ok(On::Parent(parent_wd)),
+            }
         }
         Err(e) => Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() }),
     }
@@ -837,6 +852,22 @@ mod tests {
                 .text
                 .starts_with("cannot watch /nonexistent-alpheus-parent")
         );
+    }
+
+    /// Final fix wave M3: a directory created between the failed `add` and the parent's arm is found by
+    /// the retry (its creation would otherwise never be reported by anyone).
+    #[test]
+    fn a_directory_created_while_the_parent_is_armed_is_found() {
+        let parent = temp("arm-race");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = parent.join("late");
+        let fd = Inotify::new().unwrap();
+        let on = arm_with(&fd, &dir, DIR_MASK, || std::fs::create_dir(&dir).unwrap()).unwrap();
+        assert!(matches!(on, On::Dir(_)), "the directory, not its parent: {on:?}");
+        // Control: with nothing created in between, the parent waits.
+        let other = parent.join("never");
+        assert!(matches!(arm_with(&fd, &other, DIR_MASK, || {}).unwrap(), On::Parent(_)));
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]

@@ -864,6 +864,12 @@ impl Quick {
                 self.back_on(Row::Vpn);
             }
             a
+        } else if self.dnd.open {
+            let a = self.dnd.key(live, k);
+            if !self.dnd.open {
+                self.back_on(Row::Dnd);
+            }
+            a
         } else if self.shield.open {
             let a = match live.shield {
                 Some(v) => self.shield.key(&v, k, now),
@@ -871,12 +877,6 @@ impl Quick {
             };
             if !self.shield.open {
                 self.back_on(Row::Shield);
-            }
-            a
-        } else if self.dnd.open {
-            let a = self.dnd.key(live, k);
-            if !self.dnd.open {
-                self.back_on(Row::Dnd);
             }
             a
         } else if self.wifi.open {

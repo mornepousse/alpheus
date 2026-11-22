@@ -808,6 +808,9 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
+    // A Shield command still running is killed with its group when it can be (a privileged helper
+    // cannot: it is left to end, its output being /dev/null so nothing cuts it), and no new one starts.
+    state.exec.stop_running();
     // The history is wiped before the app is dropped.
     state.clipboard_guarded("shutdown", |app| app.clipboard_shutdown());
     drop(core.state); // surfaces destroyed

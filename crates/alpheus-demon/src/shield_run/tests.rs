@@ -17,31 +17,19 @@ fn outcome(m: &ShieldMail) -> RunOutcome {
 }
 
 #[test]
-fn a_switch_reports_the_exit_code() {
+fn a_switch_reports_the_exit_code_and_keeps_no_output() {
     let fake = FakeExecutor::new();
     fake.capture_ok("fake-shield on", exited(126, "output that is never kept\n"));
     let m = run_job(&fake, Job::Switch(true), 4, &argv(&["fake-shield", "on"]));
     assert_eq!(m, ShieldMail::Done { job: Job::Switch(true), generation: 4, outcome: RunOutcome::Exited(Some(126)), listed: None });
     assert_eq!(fake.calls(), ["fake-shield on"], "run once");
-    assert_eq!(fake.capture_limits(), [ACTION_LIMITS], "a command may wait for a password");
+    assert!(fake.capture_limits().is_empty(), "an action is never a capture (final fix wave I1): its output is dropped, not piped");
     // A signal.
     fake.capture_ok("fake-shield off", Captured { stdout: vec![], end: CaptureEnd::Exited(None) });
     assert_eq!(outcome(&run_job(&fake, Job::Switch(false), 5, &argv(&["fake-shield", "off"]))), RunOutcome::Exited(None));
-    // Ends of a capture.
-    fake.capture_ok("fake-shield timed", Captured { stdout: vec![], end: CaptureEnd::TimedOut });
-    fake.capture_ok("fake-shield capped", Captured { stdout: vec![], end: CaptureEnd::Capped });
-    assert_eq!(outcome(&run_job(&fake, Job::Allow(7), 1, &argv(&["fake-shield", "timed"]))), RunOutcome::TimedOut);
-    assert_eq!(outcome(&run_job(&fake, Job::Allow(7), 1, &argv(&["fake-shield", "capped"]))), RunOutcome::Capped);
-}
-
-#[test]
-fn a_missing_program_is_not_found() {
-    let fake = FakeExecutor::new();
-    assert_eq!(outcome(&run_job(&fake, Job::Switch(true), 1, &argv(&["fake-missing", "on"]))), RunOutcome::NotFound);
-    fake.capture_err("fake-broken", ExecError::Io("denied".into()));
-    assert_eq!(outcome(&run_job(&fake, Job::Switch(true), 1, &argv(&["fake-broken"]))), RunOutcome::CouldNotStart);
-    assert_eq!(outcome(&run_job(&fake, Job::Switch(true), 1, &[])), RunOutcome::CouldNotStart, "an empty argv runs nothing");
-    assert_eq!(fake.calls(), ["fake-missing on", "fake-broken"]);
+    fake.capture_ok("fake-allow", exited(0, ""));
+    assert_eq!(outcome(&run_job(&fake, Job::Allow(7), 1, &argv(&["fake-allow"]))), RunOutcome::Exited(Some(0)));
+    assert!(fake.capture_limits().is_empty());
 }
 
 #[test]
@@ -108,6 +96,9 @@ impl Executor for Panicking {
         unreachable!()
     }
     fn capture(&self, _: &str, _: &[&str], _: CaptureLimits) -> Result<Captured, ExecError> {
+        panic!("a bug in the executor")
+    }
+    fn run_silent(&self, _: &str, _: &[&str]) -> Result<Option<i32>, ExecError> {
         panic!("a bug in the executor")
     }
 }

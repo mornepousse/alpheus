@@ -126,6 +126,17 @@ pub trait Executor: Send + Sync {
     /// killed (SIGKILL) and the command reaped: nothing it started outlives the read. Blocks for up to
     /// the deadline: never on the event loop (only the launcher's scan thread calls it, a guardrail).
     fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError>;
+    /// Launches `prog args…` and waits for it, with no bound, its standard input, output and error
+    /// all `/dev/null` (so nothing it writes can ever fail, and a privileged helper that outlives
+    /// whoever waits is never cut by a closed pipe), its own process group, killed if the launching
+    /// thread dies (PDEATHSIG). Returns its exit code (`None`: ended by a signal). Registered with
+    /// `stop_running`, which kills the group of a command it can still reach. Blocks: never on the
+    /// event loop.
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError>;
+    /// Kills the commands of `run_silent`, `capture` and `stream` still in progress and refuses new
+    /// ones (the daemon at shutdown). A privileged command that cannot be signalled is left to end.
+    /// The fakes do nothing.
+    fn stop_running(&self) {}
 }
 
 /// PIDs of the commands in progress — `run`s, and `stream`s not yet dropped —
@@ -198,6 +209,20 @@ fn exited(pid: u32) -> Result<bool, ExecError> {
     }
     // SAFETY: with WNOHANG, si_pid is 0 as long as nothing has changed.
     Ok(unsafe { info.si_pid() } != 0)
+}
+
+/// Blocks until the child `pid` has ended, without reaping it (WNOWAIT).
+fn wait_exited(pid: u32) {
+    let id = libc::id_t::from(pid);
+    loop {
+        // SAFETY: siginfo_t is a plain C struct, valid when zero-filled.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid struct that lives for the duration of the call.
+        let r = unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
+        }
+    }
 }
 
 fn io_err(e: std::io::Error) -> ExecError {
@@ -701,6 +726,49 @@ impl Executor for SystemExecutor {
             Stop::Capped => CaptureEnd::Capped,
         };
         Ok(Captured { stdout: bytes, end })
+    }
+
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
+            return Err(ExecError::Io("alpheus is shutting down".into()));
+        }
+        let parent = std::process::id();
+        let mut command = Command::new(prog);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+        // SAFETY: as in `capture`: only async-signal-safe calls between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                unblock_signals()?;
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() as u32 != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().map_err(io_err)?;
+        let pid = child.id();
+        {
+            let mut guard = self.running.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.closed {
+                drop(guard);
+                kill_group(pid);
+                let _ = child.wait();
+                return Err(ExecError::Io("alpheus is shutting down".into()));
+            }
+            guard.pids.insert(pid);
+        }
+        // Without reaping (WNOWAIT): the PID stays ours until it leaves the list, then it is reaped.
+        wait_exited(pid);
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).pids.remove(&pid);
+        let status = child.wait().map_err(|e| ExecError::Io(e.to_string()))?;
+        Ok(status.code())
+    }
+
+    fn stop_running(&self) {
+        self.kill_running();
     }
 }
 

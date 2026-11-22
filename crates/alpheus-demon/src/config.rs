@@ -90,7 +90,7 @@
 //! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
 //! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
 //! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
-//! # on_text = "Protections for public networks are on."     # the notices' bodies, one line, at most 256 bytes
+//! # on_text = "Protections for public networks are on."     # the notices' bodies, no control character, at most 256 bytes
 //! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
@@ -491,7 +491,7 @@ impl ShieldConfig {
 fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
     if !sh.flag.is_empty() {
         let p = Path::new(&sh.flag);
-        if !p.is_absolute() || p.file_name().is_none() || sh.flag.contains('\0') {
+        if !p.is_absolute() || p.file_name().is_none() || sh.flag.ends_with('/') || sh.flag.contains('\0') {
             return Err("shield.flag: must be an absolute path to a file".into());
         }
     }
@@ -516,8 +516,8 @@ fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
         }
     }
     for (key, t) in [("shield.on_text", &sh.on_text), ("shield.off_text", &sh.off_text)] {
-        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.contains(['\n', '\r'])) {
-            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, one line"));
+        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.chars().any(char::is_control)) {
+            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, no control character"));
         }
     }
     Ok(())
