@@ -1281,6 +1281,52 @@ cells (commit e711bb8).
 
 Date: 2026-10-12 · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); commit e711bb8 ("short tags"); `RUNNING_TAG`, `Wifi::tag`, `Vpn::tag`
 
+### alpheus never handles a VPN secret
+
+The VPN detail brings a profile up with `nmcli connection up uuid <uuid>`, never `nmcli --ask`, and
+has no password field. `--ask` reads its secrets from standard input, which alpheus never feeds, so
+the stored secrets in NetworkManager and any secret agent already registered (a desktop's) answer as
+they usually do. A profile whose settings mark a secret as agent-owned or not saved (and not "not
+required") fails with a hedged reason (`the connection may need a secret`), and `More…` is the way.
+`GetSecrets` is never called.
+
+Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 1; quick VPN spec ("What", "How")
+
+Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 4 (VPN)": does `nmcli connection up` find her VPNs' secrets without `--ask`?)
+
+### Space on the VPN row takes the active profile down, else brings the last used one up
+
+Space takes the first activating or activated profile (in the detail's order) down. With none, it
+brings up the last used one: the highest `last_used` (NetworkManager's `connection.timestamp`) over
+every profile read, even one past the 16 the detail lists; a tie or no timestamp: the first in the
+detail's order. Nothing happens while an attempt runs.
+
+Date: 2026-11-15 · Source: quick VPN spec ("What"); plan 1, "Rulings" 2 and 3; CLAUDE.md, "Quick settings, delivery 4 (VPN)"; `Vpn::toggle`
+
+Status: awaiting confirmation at the trial (the plan's rulings are to be confirmed at the trial, CLAUDE.md)
+
+### A VPN attempt lives in the panel only, and taking a profile down is no attempt
+
+`nmcli connection up` creates no profile, so a VPN attempt needs no cleanup after the panel closes:
+closing drops it and `nmcli` carries on (the Wi-Fi attempt on a new network, which may leave a
+profile behind, is followed after the close instead; see "A Wi-Fi attempt on a new network outlives
+the quick panel"). A `connection down` is not followed: an active connection that NetworkManager
+reports as activating or deactivating reads `…` from the state itself. During an attempt only
+`More…` acts in the detail. A non-zero exit of `nmcli` is not seen (the executor's `spawn` is
+detached), so a failed command shows `…` until NetworkManager's state says otherwise or after 20 s.
+
+Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 5 and 6; CLAUDE.md, "Quick settings, delivery 4 (VPN)" ("Known limit"); `Vpn::act`, `Vpn::value`
+
+Status: awaiting confirmation at the trial (the plan's rulings are to be confirmed at the trial, CLAUDE.md)
+
+### Several active connections for one VPN profile count by the most advanced state
+
+After a down then an up, NetworkManager may still list the old active connection, deactivated, beside
+the new one. A profile's state is the most advanced of its entries (activated, then activating, then
+deactivating, then deactivated), so a stale deactivated entry never fails a fresh attempt.
+
+Date: 2026-11-16 · Source: CLAUDE.md, "Quick settings, delivery 4 (VPN)" ("Final fix wave"); `active_state`
+
 ### A toggle's state that cannot be read shows `·`, never off
 
 A configured toggle's state is read when the panel opens and 300 ms after its toggle ran, never

@@ -1,3 +1,8 @@
+//! Tests of the VPN list (`vpn.rs`): the row, the profiles listed, the exact `nmcli` commands, the
+//! connection attempt and its outcomes, and the detail's keys, rows and tags. A fake `VpnState` stands
+//! for what NetworkManager reports (made-up profiles and uuids); no D-Bus and no command: each test
+//! passes the times it wants.
+
 use super::*;
 use crate::actions::Button;
 use crate::config::QuickConfig;
@@ -53,10 +58,10 @@ fn the_row_hides_without_a_profile() {
 }
 
 #[test]
-fn the_value_is_the_active_name_or_off() {
+fn the_value_is_the_active_name_then_an_ellipsis_while_under_way_else_off() {
     assert_eq!(three(&[(3, ACTIVATED)]).value(), "WG-Test");
     assert_eq!(three(&[(1, ACTIVATING)]).value(), "…", "activating only");
-    assert_eq!(three(&[(1, DEACTIVATING)]).value(), "…", "ruling 6: a deactivating one reads as under way");
+    assert_eq!(three(&[(1, DEACTIVATING)]).value(), "…", "a deactivating one reads as under way");
     assert_eq!(three(&[]).value(), "off");
     assert_eq!(Vpn::default().value(), "off");
     assert_eq!(three(&[(1, ACTIVATING), (3, ACTIVATED)]).value(), "WG-Test", "an activated one wins");
@@ -66,7 +71,7 @@ fn the_value_is_the_active_name_or_off() {
 }
 
 #[test]
-fn active_first_then_by_name_at_most_16() {
+fn the_profiles_list_active_first_then_by_name_at_most_16() {
     let profiles: Vec<VpnProfile> = (0..20).map(|n| profile(n, &format!("VPN-Test-{n:02}"), VpnKind::Plugin, 0, false)).collect();
     let v = vpn(profiles, &[(19, ACTIVATED)]);
     let l = v.listed();
@@ -94,7 +99,7 @@ fn active_first_then_by_name_at_most_16() {
 }
 
 #[test]
-fn enter_ups_an_inactive_and_downs_an_active() {
+fn enter_brings_an_inactive_profile_up_and_an_active_one_down() {
     let t = Instant::now();
     let mut v = three(&[(2, ACTIVATED)]);
     assert_eq!(v.enter(&uuid(1), t), run(&["nmcli", "connection", "up", "uuid", &uuid(1)], "vpn up"));
@@ -129,7 +134,7 @@ fn one_attempt_at_a_time() {
 }
 
 #[test]
-fn space_downs_the_active_one_else_ups_the_last_used() {
+fn space_takes_the_active_profile_down_else_brings_the_last_used_one_up() {
     let t = Instant::now();
     // The highest last_used (VPN-Test-2, 300) is upped.
     assert_eq!(three(&[]).toggle(t), run(&["nmcli", "connection", "up", "uuid", &uuid(2)], "vpn up"));
@@ -203,7 +208,7 @@ fn the_profile_going_away_ends_the_attempt_without_a_mark() {
 }
 
 #[test]
-fn no_word_fails_at_20_s_still_activating_waits_to_60_s() {
+fn no_word_fails_the_attempt_at_20_s_and_a_still_activating_one_waits_to_60_s() {
     let t = Instant::now();
     let mut v = three(&[]);
     v.enter(&uuid(1), t);
@@ -225,7 +230,7 @@ fn no_word_fails_at_20_s_still_activating_waits_to_60_s() {
 }
 
 #[test]
-fn nm_gone_ends_the_attempt_without_a_mark() {
+fn networkmanager_going_away_ends_the_attempt_without_a_mark() {
     let t = Instant::now();
     let mut v = three(&[]);
     v.enter(&uuid(1), t);
@@ -240,7 +245,7 @@ fn nm_gone_ends_the_attempt_without_a_mark() {
 }
 
 #[test]
-fn failed_shows_4_s() {
+fn a_failure_shows_failed_for_4_s() {
     let t = Instant::now();
     let mut v = three(&[]);
     v.enter(&uuid(1), t);
@@ -345,7 +350,7 @@ fn row(v: &Vpn, line: Line, selected: bool) -> Grid {
 }
 
 #[test]
-fn the_detail_lines_and_more() {
+fn the_detail_lines_are_the_header_the_profiles_and_more() {
     let v = opened(three(&[(3, ACTIVATED)]));
     use Line::*;
     assert_eq!(
@@ -402,7 +407,7 @@ fn a_long_name_keeps_the_tag_column() {
 }
 
 #[test]
-fn the_tags() {
+fn the_tag_after_a_name_follows_the_attempt_the_state_and_the_failure() {
     let t = Instant::now();
     // Its attempt: `…`, muted.
     let mut v = opened(three(&[]));
@@ -469,7 +474,7 @@ fn keys_walk_the_profiles_then_more_and_enter_acts() {
 }
 
 #[test]
-fn presses_pick_enter_or_run() {
+fn a_left_press_chooses_and_enters_a_profile_or_runs_more() {
     let (c, t) = (config(), Instant::now());
     let mut v = opened(three(&[]));
     assert_eq!(v.press(&c, Line::VpnProfile(1), Button::Right, t), QuickAction::Nothing, "left only");
@@ -535,4 +540,32 @@ fn fit_closes_without_profiles_and_moves_the_pick_to_a_neighbour() {
     v.pick = Pick::More;
     v.fit(&QuickConfig { vpn_more: Some(vec![]), ..QuickConfig::default() });
     assert_eq!(v.pick, Pick::Profile(uuid(1)));
+}
+
+#[test]
+fn an_unknown_connection_state_ranks_behind_every_known_one() {
+    let known = |states: &[u32]| {
+        let active = states.iter().map(|s| ActiveVpn { uuid: uuid(1), state: *s }).collect();
+        active_state(&VpnState { profiles: vec![], active }, &uuid(1))
+    };
+    assert_eq!(known(&[0, ACTIVATED]), Some(ACTIVATED));
+    assert_eq!(known(&[ACTIVATED, 0]), Some(ACTIVATED));
+    assert_eq!(known(&[0, DEACTIVATED]), Some(DEACTIVATED), "an unknown one never hides a deactivated one");
+    assert_eq!(known(&[DEACTIVATED, 0]), Some(DEACTIVATED));
+}
+
+#[test]
+fn only_an_activating_connection_makes_an_attempt_wait_past_20_s() {
+    let t = Instant::now();
+    let attempt = || {
+        let mut v = three(&[]);
+        v.enter(&uuid(1), t);
+        v
+    };
+    let mut v = attempt();
+    v.state = Some(VpnState { active: vec![ActiveVpn { uuid: uuid(1), state: ACTIVATED }], ..v.state.clone().expect("a state") });
+    assert_eq!(v.due(t + CONNECT_TIMEOUT), (Some("no answer in 20 s"), true), "activated is not waiting");
+    let mut v = attempt();
+    v.state = None;
+    assert_eq!(v.due(t + CONNECT_TIMEOUT), (Some("no answer in 20 s"), true), "no state: not waiting either");
 }

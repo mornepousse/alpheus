@@ -121,13 +121,39 @@ own BlueZ agent: a code to confirm shows as `Code 482 913? ⏎`, a code to type 
 
 ### VPN
 
-A VPN row under the Bluetooth row: the active profile's name, else `off`; hidden when NetworkManager
-has no VPN or WireGuard profile. Space takes the active profile down, else brings the last used one
-up. Its detail (Enter, →, a click, or `alpheus-launch --quick vpn`) lists at most 16 profiles, the
-active ones first with `●`; Enter brings one up (`nmcli connection up uuid`) or down. While
-activating a row reads `…`; a failure reads `failed` for 4 s with one log line that names no profile.
-alpheus never handles a VPN secret: a profile that needs one is answered by NetworkManager's stored
-secrets or the desktop's agent, else it fails, and `More…` (`[quick] vpn_more`) is the way.
+**The row.** A VPN row under the Bluetooth row: the first activated profile's name (cut to 16 cells),
+`…` while one is activating or deactivating, `failed` for 4 s after a failed attempt, else `off`. It is hidden when NetworkManager has no VPN or WireGuard profile; for that,
+each open of the panel lists the saved profiles and reads their settings (at most 64 are read). Space
+takes the first activating or activated profile down, else brings the last used one up (the highest
+`connection.timestamp`, over every profile read, even past the 16 listed).
+
+**The detail.** Enter, →, a click on the row or `alpheus-launch --quick vpn` opens it. It lists at
+most 16 profiles, the active ones first with `●`, then by name; a WireGuard profile has its own
+glyph in front of the name, any other the VPN glyph of the `network` module. Enter on a profile brings it down when it is
+activating or activated (`nmcli connection down uuid <uuid>`), does nothing while it deactivates,
+and otherwise brings it up (`nmcli connection up uuid <uuid>`). The tag after a name is `…` while an
+attempt is under way on it or NetworkManager activates or deactivates it, `failed` for 4 s after a
+failure. One attempt at a time: during one only `More…` acts. `More…` runs `[quick] vpn_more` and
+closes the panel. ↑ ↓ Home End walk the profiles and `More…` without wrapping, Esc or ← go back, a
+left press chooses and enters, a press on the header goes back.
+
+**An attempt** ends when NetworkManager reports the profile activated. It fails when the connection
+is deactivating or deactivated, when an activation that was under way is left with no active
+connection at all, after 20 s with no word, or at 60 s when it is still activating. A failure shows
+`failed` and writes one log line, `quick: vpn connection failed (<why>)`, whose reason is a fixed
+phrase and never a profile's name or uuid; for a profile that NetworkManager is set to ask a secret
+for, the reason says the connection may need a secret. NetworkManager going away, or the profile
+disappearing, ends the attempt with no `failed` mark. A NetworkManager-domain outage drops the VPN
+the way it drops Wi-Fi: the row hides and an open detail closes.
+
+**Secrets.** alpheus never handles a VPN secret: no `nmcli --ask`, no password field, no
+`GetSecrets`. A profile that needs one is answered by NetworkManager's stored secrets or a desktop's
+secret agent, else it fails, and `More…` is the way. Known limit: a non-zero exit of `nmcli` is not
+seen (the executor's `spawn` is detached), so a failed command shows `…` until NetworkManager's state
+says otherwise or after 20 s. A VPN profile past the 64th saved connection is not seen. See the
+decisions "alpheus never handles a VPN secret", "Space on the VPN row takes the active profile down,
+else brings the last used one up", "A VPN attempt lives in the panel only, and taking a profile down
+is no attempt" and "Several active connections for one VPN profile count by the most advanced state".
 
 ## Using it
 
@@ -300,7 +326,8 @@ Figures are those recorded when each part merged, in release, back to back with 
   rest ≤ 256 KB, open ≤ 1 MB over rest, closed ≤ rest + 512 KB, 20 more cycles ≤ closed + 128 KB.
 - **The details open:** the Wi-Fi detail on 40 access points (32 listed), 898–910 KB over the module
   at rest (`quick_wifi_pss_detail_open_and_closed`); the VPN detail on 10 profiles, 846–854 KB
-  (`quick_vpn_pss_detail_open_with_10_profiles_and_after`); the Bluetooth detail on 20 devices,
+  (`quick_vpn_pss_detail_open_with_10_profiles_and_after`), +696…+704 KB of the daemon's own once
+  closed, of which +60…+68 KB is anonymous (the rest is the first open's code and font pages); the Bluetooth detail on 20 devices,
   +1.1–1.8 MB, of which the daemon's own +436…+540 KB and the shared buffers the rest
   (`bluetooth_detail_pss_with_20_devices_and_after`); the Shield detail on 10 devices, about
   +0.6 MB (`shield_pss_detail_open_and_closed`). The leak bounds for the details read anonymous
