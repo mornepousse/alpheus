@@ -1423,7 +1423,9 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 /// NetworkManager's, UPower's and BlueZ's names: what `FakeBus::workstation`
 /// is to the unit tests, over the wire. An object the recording doesn't
 /// have gets `UnknownObject`, as `FakeBus` answers NotFound.
-pub struct Workstation;
+pub struct Workstation {
+    peer: Arc<Peer>,
+}
 
 impl Workstation {
     pub fn serve(bus: &PrivateBus) -> Workstation {
@@ -1437,7 +1439,8 @@ impl Workstation {
     }
 
     fn serve_recorded(bus: &PrivateBus, display: Option<(f64, u32)>) -> Workstation {
-        let peer = Peer::connect(bus);
+        let peer = Arc::new(Peer::connect(bus));
+        let served = peer.clone();
         for name in ["org.freedesktop.NetworkManager", "org.freedesktop.UPower", "org.bluez"] {
             peer.own(name);
         }
@@ -1463,7 +1466,13 @@ impl Workstation {
             replies.push(((format!("/org/freedesktop/UPower/devices/{device}"), "GetAll"), json));
         }
         thread::spawn(move || {
-            while let Some(call) = peer.next_call() {
+            // A short poll, never `next_call`'s hour: a signal sent from another thread
+            // (`battery_changed`) would wait on the connection's lock behind it.
+            while served.channel.is_connected() {
+                let Ok(Some(call)) = served.channel.blocking_pop_message(Duration::from_millis(20)) else { continue };
+                if call.msg_type() != dbus::message::MessageType::MethodCall {
+                    continue;
+                }
                 let path = call.path().map(|p| p.to_string()).unwrap_or_default();
                 let member = call.member().map(|m| m.to_string()).unwrap_or_default();
                 let reply = match replies.iter().find(|((p, m), _)| *p == path && *m == member) {
@@ -1474,11 +1483,27 @@ impl Workstation {
                     }
                     None => call.error(&"org.freedesktop.DBus.Error.UnknownObject".into(), c"not in the recording"),
                 };
-                let _ = peer.channel.send(reply);
-                peer.channel.flush();
+                let _ = served.channel.send(reply);
+                served.channel.flush();
             }
         });
-        Workstation
+        Workstation { peer }
+    }
+
+    /// UPower announces a change on its display device (an empty `PropertiesChanged`): the
+    /// daemon reads its battery again, as it would for a percentage that moved.
+    pub fn battery_changed(&self) {
+        let mut m = dbus::Message::new_signal(
+            "/org/freedesktop/UPower/devices/DisplayDevice",
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+        )
+        .unwrap();
+        busctl_wire::push_reply(&mut m, r#"{"type":"s","data":["org.freedesktop.UPower.Device"]}"#);
+        busctl_wire::push_reply(&mut m, r#"{"type":"a{sv}","data":[{"Percentage":{"type":"d","data":70.0}}]}"#);
+        busctl_wire::push_reply(&mut m, r#"{"type":"as","data":[[]]}"#);
+        let _ = self.peer.channel.send(m);
+        self.peer.channel.flush();
     }
 }
 

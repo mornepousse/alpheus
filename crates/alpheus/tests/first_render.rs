@@ -85,3 +85,35 @@ fn first_render_of_diagnostics_under_100_ms_even_with_slow_tools() {
     let text: String = (0..36).flat_map(|y| (0..120).map(move |x| (x, y))).map(|p| buf[p].symbol().to_string()).collect();
     assert!(text.to_lowercase().contains("session health") && text.contains('…'), "the screen shows waiting, not emptiness: {text}");
 }
+
+/// Printed for the diagnostics delivery's measurements: the Diag tab's first render (the app
+/// built, the reads sent, one frame drawn) and the Home tab's, the median of 20 runs each.
+#[test]
+fn first_render_medians_of_20_runs() {
+    let median = |tab: Tab| {
+        let mut runs: Vec<Duration> = (0..20)
+            .map(|i| {
+                let start = Instant::now();
+                let dir = std::env::temp_dir().join(format!("alpheus-first-render-median-no-config-{i}"));
+                let mut app = build_app(&dir, tab, start);
+                let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
+                let (tx, _rx) = worker::spawn(Backends::system_isolated(exec, dir.clone()));
+                for r in app.take_requests() {
+                    tx.send(r).unwrap();
+                }
+                let mut term = Terminal::new(TestBackend::new(120, 36)).unwrap();
+                term.draw(|f| {
+                    ui::render(f, &app);
+                })
+                .unwrap();
+                start.elapsed()
+            })
+            .collect();
+        runs.sort();
+        (runs[10], runs[19])
+    };
+    let (diag, diag_max) = median(Tab::Diagnostics);
+    let (home, home_max) = median(Tab::Home);
+    println!("first render, median of 20 (max): Diag tab {diag:?} ({diag_max:?}), Home tab {home:?} ({home_max:?})");
+    assert!(diag < Duration::from_millis(100), "Diag tab first render median {diag:?}");
+}
