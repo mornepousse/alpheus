@@ -3,12 +3,14 @@
 
 use super::Chrome;
 use super::appearance;
+use super::bluetooth;
 use super::controls;
 use super::diagnostics;
 use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use super::home::{self, LocalTime};
+use super::network;
 use super::rail::tab_hue;
 use super::shape::{self, Ink};
 use super::sound;
@@ -105,36 +107,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
             }
         }
         Tab::Sound => sound::rows(app, &items, &mut rows),
-        Tab::Network => {
-            rows.push(Row::Item(0));
-            rows.push(Row::Blank);
-            rows.push(Row::Heading("Active connections"));
-            match &app.data.network {
-                Loadable::Loading => rows.push(Row::Text("…".into())),
-                Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                Loadable::Ready(n) => {
-                    let list: Vec<_> = n.active.iter().filter(|c| app.matches_search(&c.name)).collect();
-                    if list.is_empty() {
-                        rows.push(Row::Text("none".into()));
-                    }
-                    for c in list {
-                        rows.push(Row::Text(if rail {
-                            let glyph = match c.kind.as_str() {
-                                "Wi-Fi" => "󰖩",
-                                "Ethernet" => "󰈀",
-                                "WireGuard" | "VPN" => "󰦝",
-                                _ => "󰛳",
-                            };
-                            format!("{glyph}  {:<24} {:<10} {}", c.name, c.kind, c.device)
-                        } else {
-                            format!("{:<10} {}  ({})", c.kind, c.name, c.device)
-                        }));
-                    }
-                }
-            }
-            rows.push(Row::Blank);
-            rows.push(Row::Item(1));
-        }
+        Tab::Network => network::rows(app, rail, &mut rows),
         Tab::Appearance | Tab::Diagnostics => {}
         Tab::Displays => {
             rows.push(Row::Item(0));
@@ -154,31 +127,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
                 }
             }
         }
-        Tab::Bluetooth => {
-            rows.push(Row::Item(0));
-            rows.push(Row::Blank);
-            rows.push(Row::Heading("Connected devices"));
-            match &app.data.bluetooth {
-                Loadable::Loading => rows.push(Row::Text("…".into())),
-                Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                Loadable::Ready(b) if !b.powered => rows.push(Row::Text("Bluetooth is off".into())),
-                Loadable::Ready(b) => {
-                    let list: Vec<_> = b.connected.iter().filter(|d| app.matches_search(&d.name)).collect();
-                    if list.is_empty() {
-                        rows.push(Row::Text("none".into()));
-                    }
-                    for d in list {
-                        rows.push(Row::Text(if rail {
-                            format!("󰂱  {:<24} {}", d.name, d.mac)
-                        } else {
-                            format!("{}  ({})", d.name, d.mac)
-                        }));
-                    }
-                }
-            }
-            rows.push(Row::Blank);
-            rows.push(Row::Item(1));
-        }
+        Tab::Bluetooth => bluetooth::rows(app, rail, &mut rows),
     }
     rows
 }

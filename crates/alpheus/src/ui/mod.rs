@@ -2,6 +2,7 @@
 //! clickable regions: each component knows its own region for click testing.
 
 mod appearance;
+mod bluetooth;
 mod controls;
 mod diagnostics;
 mod digits;
@@ -10,7 +11,9 @@ pub mod draw;
 pub mod hit;
 pub mod home;
 mod journal;
+mod network;
 mod overlays;
+mod power;
 pub mod rail;
 mod report_views;
 pub mod shape;
@@ -125,12 +128,9 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 pairs.push((adjust, "Adjust"));
             }
             Tab::Sound => sound::hints(&mut pairs, km, adjust),
-            Tab::Network | Tab::Bluetooth => {
-                pairs.push((km.label(Action::Toggle), "Toggle"));
-                pairs.push((km.label(Action::Activate), "Open"));
-                pairs.push((km.label(Action::Search), "Search"));
-            }
-            Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
+            Tab::Network => network::hints(&mut pairs, km),
+            Tab::Bluetooth => bluetooth::hints(&mut pairs, km),
+            Tab::Power => power::hints(&mut pairs, km),
             Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Journal(_)) => {
                 let crate::app::diagnostics::View::Journal(j) = &app.diag.view else { unreachable!() };
                 if j.picker.is_some() {

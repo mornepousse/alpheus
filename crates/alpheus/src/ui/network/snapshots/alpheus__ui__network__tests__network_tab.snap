@@ -1,18 +1,16 @@
 ---
-source: crates/alpheus/src/ui/tests.rs
+source: crates/alpheus/src/ui/network/tests.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        
                                                                                 
- ▶ Bluetooth           [■] on                                                   
+ ▶ Wi-Fi               [■] on                                                   
                                                                                 
- Connected devices                                                              
-   CasqueBT  (AA:BB:CC:DD:EE:01)                                                
+ Active connections                                                             
+   Wi-Fi      MON_WIFI_1  (wlp0s1f01)                                           
+   Ethernet   Wired connection 1  (enp0s0u1u2i10)                               
                                                                                 
-   [ Pair a device ]                                                            
-                                                                                
-                                                                                
-                                                                                
+   [ Choose a network ]                                                         
                                                                                 
                                                                                 
                                                                                 
@@ -24,5 +22,7 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
                                                                                 
                                                                                 
                                                                                 
- BT · ready                                                                     
+                                                                                
+                                                                                
+ Network · ready                                                                
  Space Toggle  Enter Open  / Search  q Quit  F1 Help  Ctrl+P Palette  Esc Back

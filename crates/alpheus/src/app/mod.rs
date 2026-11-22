@@ -5,12 +5,15 @@
 
 pub mod action;
 pub mod appearance;
+mod bluetooth;
 pub mod diagnostics;
 pub mod displays;
 mod input;
 pub mod journal;
 pub mod keymap;
 mod mouse;
+mod network;
+mod power;
 pub mod report_views;
 pub mod run;
 mod sound;
@@ -572,11 +575,9 @@ impl App {
                 Item::Profile,
             ],
             Tab::Sound => sound::items(self),
-            Tab::Network => vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))],
-            Tab::Bluetooth => {
-                vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
-            }
-            Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
+            Tab::Network => network::items(),
+            Tab::Bluetooth => bluetooth::items(),
+            Tab::Power => power::items(),
             Tab::Appearance => Vec::new(),
             Tab::Diagnostics => self.diag_items(),
             Tab::Displays => {

@@ -1,20 +1,18 @@
 ---
-source: crates/alpheus/src/ui/tests.rs
+source: crates/alpheus/src/ui/power/tests.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        
                                                                                 
- ▶ Wi-Fi               [■] on                                                   
+ ▶ [ Lock ]                                                                     
                                                                                 
- Active connections                                                             
-   Wi-Fi      MON_WIFI_1  (wlp0s1f01)                                           
-   Ethernet   Wired connection 1  (enp0s0u1u2i10)                               
+   [ Log out ]                                                                  
                                                                                 
-   [ Choose a network ]                                                         
+   [ Suspend ]                                                                  
                                                                                 
+   [ Reboot ]                                                                   
                                                                                 
-                                                                                
-                                                                                
+   [ Power off ]                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -24,5 +22,7 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
                                                                                 
                                                                                 
                                                                                 
- Network · ready                                                                
- Space Toggle  Enter Open  / Search  q Quit  F1 Help  Ctrl+P Palette  Esc Back
+                                                                                
+                                                                                
+ Power · ready                                                                  
+ Enter Activate  q Quit  F1 Help  Ctrl+P Palette  Esc Back
