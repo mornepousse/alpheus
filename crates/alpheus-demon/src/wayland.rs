@@ -532,7 +532,7 @@ pub struct App {
     /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
     /// The tray menus' and tooltip's state (menu_app.rs).
-    pub(crate) menu: crate::menu_app::TrayMenu,
+    pub(crate) menu: crate::tray::menu_app::TrayMenu,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
     pub(crate) recently_closed_popup: Option<(ModulePopup, Instant)>,

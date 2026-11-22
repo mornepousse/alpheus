@@ -10,7 +10,7 @@ use crate::media::{MediaView, Players};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::session_bus::mpris::Mpris;
 use crate::state::Msg;
-use crate::tray_bridge::mpris_of;
+use crate::tray::bridge::mpris_of;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;

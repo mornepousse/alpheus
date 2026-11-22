@@ -16,7 +16,7 @@ use crate::session_bus::router::TrayOutput;
 use crate::state::Msg;
 use crate::state_file;
 use crate::system::Battery;
-use crate::tray_bridge::notifications_of;
+use crate::tray::bridge::notifications_of;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{DND_MAX_SECS, DND_MIN_SECS, DndEnd, DndVerb, Reply, Request};
 use alpheus_commun::paths;
@@ -360,6 +360,8 @@ impl App {
             | Request::Notes
             | Request::Clipboard
             | Request::ClipboardClear
+            | Request::Tools
+            | Request::Power
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep

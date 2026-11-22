@@ -15,7 +15,7 @@ use crate::painter::FrameInk;
 use crate::popup::box_size;
 use crate::session_bus::notifications::Notifications;
 use crate::state::Feed;
-use crate::tray_bridge::notifications_of;
+use crate::tray::bridge::notifications_of;
 use crate::wayland::{App, pick_buffer};
 use smithay_client_toolkit::compositor::Region;
 use smithay_client_toolkit::reexports::client::Connection;

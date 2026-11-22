@@ -725,7 +725,7 @@ fn the_panel_marks_read_only_after_it_opened() {
 fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (link, bridge) = (src("link.rs"), src("tray_bridge.rs"));
+    let (link, bridge) = (src("link.rs"), src("tray/bridge.rs"));
     for (body, ready, read) in [
         (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
         (function_body(&bridge, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
@@ -747,7 +747,7 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (menu_app, popup, surface) = (src("menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
+    let (menu_app, popup, surface) = (src("tray/menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
     let repaint = function_body(&menu_app, "fn menu_repaint(");
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
     assert!(repaint.contains("position_by"), "menu_repaint must find its bar by the popup's parent surface: {repaint}");
