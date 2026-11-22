@@ -246,3 +246,24 @@ fn the_source_never_talks_to_the_compositor_or_the_displays_directly() {
         }
     }
 }
+
+/// The health checks connect to the compositor's socket named by the environment: only the real
+/// worker (`run.rs`) hands them the process's own; the worker, the checks and every test file get
+/// an injected one, so `cargo test` never reaches the session it runs in.
+#[test]
+fn the_health_checks_never_read_the_process_environment() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = vec![src.join("app/worker.rs")];
+    rs_files(&src.join("app/diagnostics"), &mut files);
+    files.push(src.join("app/diagnostics.rs"));
+    let mut tests = Vec::new();
+    rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"), &mut tests);
+    files.extend(tests.into_iter().filter(|f| f.file_name().is_some_and(|n| n != "guardrails.rs")));
+    assert!(files.len() >= 4, "{files:?}");
+    for f in files {
+        let t = std::fs::read_to_string(&f).unwrap();
+        for call in ["env::var_os", "env::var(", "env::vars"] {
+            assert!(!t.contains(call), "`{call}` in {}: the environment must be injected", f.display());
+        }
+    }
+}

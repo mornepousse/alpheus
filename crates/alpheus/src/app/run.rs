@@ -165,7 +165,7 @@ pub fn run(options: Options) -> io::Result<()> {
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let backends = Backends::system(exec.clone(), runtime_dir());
     let displays = backends.displays.clone();
-    let (tx, rx) = worker::spawn(backends);
+    let (tx, rx) = worker::spawn_with(backends, Arc::new(|k| std::env::var_os(k)));
     spawn_guard(exec.clone());
     let r = {
         let mut terminal = ratatui::init(); // also installs terminal restoration on panic
@@ -206,7 +206,9 @@ fn event_loop(
         if let Some(job) = app.take_system_unit() {
             // In the TUI's own window, never through the executor: systemd asks for the password
             // on the terminal it is given.
-            let r = external_tools::open(&mut CrosstermScreen, &mut ProcessLauncher, &App::system_unit_argv(&job));
+            let argv = App::system_unit_argv(&job);
+            let intro = App::system_unit_intro(&job);
+            let r = external_tools::open_noticed(&mut CrosstermScreen, &mut ProcessLauncher, &argv, &intro);
             terminal.clear()?;
             app.system_unit_done(&job, r, Instant::now());
             continue;

@@ -16,6 +16,8 @@ use crate::diagnostics::show::Restarts;
 use crate::diagnostics::units::FailedUnit;
 use crate::displays::Plan;
 use crate::displays::wire::Snapshot;
+use std::ffi::OsString;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,17 +160,31 @@ impl Op {
     }
 }
 
+/// The environment the health checks read: the process's own in the real worker (`run.rs`), an
+/// empty one everywhere else, so a test never finds (nor connects to) the session's compositor.
+pub type Env = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
+
+/// No variable set at all.
+pub fn empty_env() -> Env {
+    Arc::new(|_| None)
+}
+
 /// What reading `d` gives: one update, two for the failed units (one per manager).
-pub fn fetch_all(b: &Backends, d: Domain) -> Vec<Update> {
+pub fn fetch_all(b: &Backends, d: Domain, var: &dyn Fn(&str) -> Option<OsString>) -> Vec<Update> {
     match d {
         Domain::Failed => [Scope::System, Scope::User].into_iter().map(|s| Update::Failed(s, b.diagnostics.failed(s))).collect(),
-        d => vec![fetch(b, d)],
+        d => vec![fetch_with(b, d, var)],
     }
 }
 
-/// One update for a domain that gives one (the failed units' first manager for `Failed`; the
-/// worker uses `fetch_all`).
+/// `fetch_with` over an empty environment.
 pub fn fetch(b: &Backends, d: Domain) -> Update {
+    fetch_with(b, d, &|_| None)
+}
+
+/// One update for a domain that gives one (the failed units' first manager for `Failed`; the
+/// worker uses `fetch_all`); `var` is the environment of the health checks.
+pub fn fetch_with(b: &Backends, d: Domain, var: &dyn Fn(&str) -> Option<OsString>) -> Update {
     match d {
         Domain::Volume => Update::Volume(b.sound.volume()),
         Domain::Brightness => Update::Brightness(b.brightness.get()),
@@ -180,7 +196,7 @@ pub fn fetch(b: &Backends, d: Domain) -> Update {
         Domain::Audio => Update::Audio(b.sound.status()),
         Domain::Displays => Update::Displays(b.displays.snapshot().map_err(BackendError::Daemon)),
         Domain::Failed => Update::Failed(Scope::System, b.diagnostics.failed(Scope::System)),
-        Domain::Health => Update::Health(health(b, &|k| std::env::var_os(k))),
+        Domain::Health => Update::Health(health(b, var)),
     }
 }
 
@@ -243,7 +259,7 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
 }
 
 /// Coalesces a burst: last setting per slider, a single refresh (union of
-/// domains) placed after the actions. Also returns the dropped settings, to
+/// domains) placed after the actions, then the Diag once-reads. Also returns the dropped settings, to
 /// be announced as `Update::Superseded`.
 pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     let mut superseded: Vec<Op> = Vec::new();
@@ -265,6 +281,12 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
                     }
                 }
             }
+            // The daemon is poked once per burst, whatever number of actions asked for it.
+            Request::Do(Op::FailedRefresh) => {
+                if !ops.contains(&Op::FailedRefresh) {
+                    ops.push(Op::FailedRefresh);
+                }
+            }
             Request::Do(op) => {
                 let replaced = |o: &Op| match (&op, o) {
                     (Op::SetVolume(n, _), Op::SetVolume(m, _)) => m == n,
@@ -279,15 +301,20 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
         }
     }
     let mut out: Vec<Request> = ops.into_iter().map(Request::Do).collect();
-    out.extend(diag);
     if !refresh.is_empty() {
         out.push(Request::Refresh(refresh));
     }
+    out.extend(diag);
     (out, superseded)
 }
 
-/// Starts the thread; it stops once the request sender is dropped.
+/// Starts the thread over an empty environment (tests); it stops once the request sender is dropped.
 pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
+    spawn_with(b, empty_env())
+}
+
+/// Starts the thread; `env` is what its health checks read.
+pub fn spawn_with(b: Backends, env: Env) -> (Sender<Request>, Receiver<Update>) {
     let (tx_req, rx_req) = mpsc::channel::<Request>();
     let (tx_up, rx_up) = mpsc::channel::<Update>();
     std::thread::spawn(move || {
@@ -306,7 +333,7 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
             }
             for req in reqs {
                 let sent = match req {
-                    Request::Refresh(ds) => ds.into_iter().flat_map(|d| fetch_all(&b, d)).all(|u| tx_up.send(u).is_ok()),
+                    Request::Refresh(ds) => ds.into_iter().flat_map(|d| fetch_all(&b, d, &*env)).all(|u| tx_up.send(u).is_ok()),
                     Request::Do(op) => tx_up.send(respond(&b, op)).is_ok(),
                     Request::Diag(read) => {
                         let result = diag_fetch(&b, &read);
@@ -342,6 +369,37 @@ mod tests {
         assert_eq!(Tab::Diagnostics.domains(), &[Domain::Failed, Domain::Health]);
         assert!(Tab::Power.domains().is_empty());
         assert!(Tab::Appearance.domains().is_empty());
+    }
+
+    #[test]
+    fn the_health_read_sees_only_the_environment_it_is_given() {
+        let f = Arc::new(FakeExecutor::new());
+        let b = backends(&f);
+        // Plain `fetch` is an empty environment: no compositor, no Wayland display, whatever the
+        // session running the tests has.
+        let Update::Health(h) = fetch(&b, Domain::Health) else { panic!("not a health read") };
+        assert!(h.compositor.is_none(), "{h:?}");
+        assert_eq!(h.wayland, crate::app::diagnostics::WaylandHealth::Unset);
+        // A given one is used, and a socket that is not there answers no.
+        let env = |k: &str| (k == "SWAYSOCK").then(|| OsString::from("/nonexistent/alpheus-test.sock"));
+        let Update::Health(h) = fetch_with(&b, Domain::Health, &env) else { panic!("not a health read") };
+        let c = h.compositor.expect("the injected variable is read");
+        assert_eq!((c.name, c.answers), ("Sway", false));
+    }
+
+    #[test]
+    fn the_spawned_worker_reads_an_empty_environment() {
+        let f = Arc::new(FakeExecutor::new());
+        let (tx, rx) = spawn(backends(&f));
+        tx.send(Request::Refresh(vec![Domain::Health])).unwrap();
+        let mut got = None;
+        for _ in 0..50 {
+            if let Ok(Update::Health(h)) = rx.recv_timeout(Duration::from_millis(100)) {
+                got = Some(h);
+                break;
+            }
+        }
+        assert!(got.expect("a health update").compositor.is_none());
     }
 
     #[test]
@@ -422,7 +480,7 @@ mod tests {
         f.capture_ok("systemd-analyze time --no-pager", done("Startup finished in 42.9s\n"));
         let b = backends(&f);
         assert_eq!(
-            fetch_all(&b, Domain::Failed),
+            fetch_all(&b, Domain::Failed, &|_| None),
             vec![Update::Failed(Scope::System, Ok(vec![])), Update::Failed(Scope::User, Ok(vec![]))],
             "one update per manager"
         );
@@ -451,15 +509,19 @@ mod tests {
             Request::Diag(DiagRead::BootTime),
             Request::Diag(DiagRead::Crashes),
             Request::Do(Op::FailedRefresh),
+            Request::Do(Op::FailedRefresh),
         ]);
+        // The actions first, then the tab's main content (the failed units and the health), then
+        // the once-reads: what the person looks at arrives before what is below it.
         assert_eq!(
             r,
             vec![
                 Request::Do(Op::FailedRefresh),
+                Request::Refresh(vec![Domain::Failed]),
                 Request::Diag(DiagRead::Crashes),
                 Request::Diag(DiagRead::BootTime),
-                Request::Refresh(vec![Domain::Failed]),
-            ]
+            ],
+            "the poke is asked once"
         );
         assert!(dropped.is_empty());
     }

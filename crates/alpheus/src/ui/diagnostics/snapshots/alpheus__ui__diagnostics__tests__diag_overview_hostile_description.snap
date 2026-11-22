@@ -7,7 +7,7 @@ expression: "rows(&a, 87, 26)"
  control center   Session health, failed units and the journal                         
                   ━━━━━━━━━━━━───────────────────────────────────────────────────────  
                                                                                        
-  󰋜 Home     1    SESSION HEALTH ────────────────────────────────────────  ✓ all good  
+  󰋜 Home     1    SESSION HEALTH ───────────────────────────────────────── ✓ all good  
                     ✓ Mango answers                                                    
   󰕾 Sound    2      ✓ WAYLAND_DISPLAY wayland-1 reachable                              
                     ✓ systemd --user environment matches this session                  

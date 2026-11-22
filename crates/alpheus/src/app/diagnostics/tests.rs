@@ -125,6 +125,33 @@ fn no_refresh_while_the_journal_view_is_open() {
 }
 
 #[test]
+fn f5_in_the_journal_view_does_not_queue_the_overview_refresh() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    a.diag.view = View::Journal(JournalView { query: JournalQuery::new(Preset::Live, 500) });
+    a.diagnostics_refresh(at(2, t0));
+    assert!(a.take_requests().is_empty(), "the journal view owns the worker");
+}
+
+#[test]
+fn the_focus_follows_the_unit_when_a_refresh_shifts_the_rows() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    a.on_update(Update::Failed(Scope::User, Ok(vec![unit("example-app.service"), unit("example-sync.service")])), t0);
+    let target = Item::Diag(DiagItem::Failed(Scope::User, "example-sync.service".into()));
+    a.focus = a.items().iter().position(|i| *i == target).unwrap();
+    // Another unit fails and sorts first: every row below moves down by one.
+    a.on_update(
+        Update::Failed(Scope::User, Ok(vec![unit("example-aaa.service"), unit("example-app.service"), unit("example-sync.service")])),
+        t0,
+    );
+    assert_eq!(a.focused(), Some(target), "`c` and `r` still hit the unit the person chose");
+    // The unit itself leaving falls back to a valid row, never past the end.
+    a.on_update(Update::Failed(Scope::User, Ok(vec![])), t0);
+    assert!(a.focused().is_some());
+}
+
+#[test]
 fn a_failing_failed_units_domain_is_slowed_to_fifteen_seconds() {
     let t0 = Instant::now();
     let mut a = on_diag(t0);
@@ -541,6 +568,7 @@ mod overview {
         let job = a.take_system_unit().expect("the window's job");
         assert_eq!(job, (UnitAction::Restart, "mnt-data.mount".to_string()));
         assert_eq!(App::system_unit_argv(&job), ["systemctl", "restart", "--", "mnt-data.mount"]);
+        assert_eq!(App::system_unit_intro(&job), "Running systemctl restart -- mnt-data.mount (Ctrl+C stops waiting)");
         assert!(a.take_system_unit().is_none(), "the slot is emptied");
         assert_eq!(a.take_external(), None, "not an external tool: `External` stays data-less");
         assert!(sent(&mut a).iter().all(|r| !matches!(r, Request::Do(Op::UnitUser(..)))), "never through the worker's executor");
@@ -624,7 +652,8 @@ mod overview {
         c(&mut a, 'r');
         c(&mut a, 'q');
         assert_eq!(a.overlay, Overlay::None);
-        assert!(!a.should_quit || sent(&mut a).is_empty());
+        assert!(!a.should_quit, "the overlay never leaks a quit");
+        assert!(sent(&mut a).is_empty());
     }
 
     #[test]
@@ -810,4 +839,16 @@ mod overview {
         a.diag_activate(DiagItem::Crash(5));
         assert_eq!(a.diag.view, View::Overview);
     }
+}
+
+#[test]
+fn the_question_keeps_the_end_of_a_long_unit_name() {
+    let long = |tail: &str| format!("example-{}-{tail}.service", "very-long-segment-".repeat(8));
+    let (a, b) =
+        (unit_question(Scope::User, &long("alpha"), UnitAction::Restart), unit_question(Scope::User, &long("bravo"), UnitAction::Restart));
+    assert_ne!(a, b, "two long units that differ only at the end stay distinguishable");
+    assert!(a.contains("alpha.service") && a.contains('…'), "{a}");
+    assert!(a.starts_with("Restart example-"), "{a}");
+    let short = unit_question(Scope::User, "example-app.service", UnitAction::Restart);
+    assert_eq!(short, "Restart example-app.service (user)?", "a short name is whole");
 }

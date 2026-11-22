@@ -2,9 +2,11 @@
 //! cell: no control character, no escape sequence, no bidirectional override gets through.
 
 /// Zero-width and bidirectional formatting characters: drawn as nothing, they could hide or
-/// reorder what a cell shows (soft hyphen, line and paragraph separators, word joiners, tag
-/// characters, the byte-order mark). U+200C and U+200D stay out of this list on purpose (ordinary text
-/// shaping: ligatures, emoji sequences).
+/// reorder what a cell shows (soft hyphen, word joiners, the byte-order mark). U+200C and U+200D
+/// stay out of this list on purpose (ordinary text
+/// shaping: ligatures, emoji sequences), and so do the tag characters (U+E0000–E007F: a subdivision
+/// flag emoji is made of them). U+2028 and U+2029 are not here either: each cleaner turns them
+/// into a space.
 pub fn invisible(c: char) -> bool {
     matches!(
         c,
@@ -13,11 +15,10 @@ pub fn invisible(c: char) -> bool {
             | '\u{200b}'
             | '\u{200e}'
             | '\u{200f}'
-            | '\u{2028}'..='\u{202e}'
+            | '\u{202a}'..='\u{202e}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{feff}'
-            | '\u{e0000}'..='\u{e007f}'
     )
 }
 
@@ -60,7 +61,7 @@ pub fn clean_line(s: &str, max_chars: usize) -> String {
                 }
                 continue;
             }
-            '\t' | '\r' | '\n' => ' ',
+            '\t' | '\r' | '\n' | '\u{2028}' | '\u{2029}' => ' ',
             c if c.is_control() || invisible(c) => continue,
             c => c,
         };
@@ -94,7 +95,10 @@ mod tests {
         assert_eq!(clean_line("x\u{1b}]0;owned\u{1b}\\y", 100), "xy", "OSC ended by ST");
         assert_eq!(clean_line("a\u{85}b\u{9b}c\u{200f}\u{feff}d\u{2066}e", 100), "abcde", "C1 and bidi controls");
         assert_eq!(clean_line("a\u{1b}[31;1mred\u{1b}[0m", 100), "ared");
-        assert_eq!(clean_line("a\u{2028}b\u{2029}c\u{ad}d\u{2060}e\u{2064}f\u{e0041}g\u{e007f}h", 100), "abcdefgh");
+        assert_eq!(clean_line("a\u{ad}b\u{2060}c\u{2064}d", 100), "abcd");
+        assert_eq!(clean_line("a\u{2028}b\u{2029}c", 100), "a b c", "line and paragraph separators are spaces");
+        let flag = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+        assert_eq!(clean_line(flag, 100), flag, "a subdivision flag (tag characters) is an emoji, kept");
         assert_eq!(clean_line("a\u{200c}b\u{200d}c", 100), "a\u{200c}b\u{200d}c", "ZWNJ and ZWJ stay");
         let long = "é".repeat(300);
         let cut = clean_line(&long, 200);

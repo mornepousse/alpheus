@@ -313,7 +313,9 @@ fn overview(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: 
             Kind::Heading(right) => {
                 let title = l.segs.first().map_or("", |s| s.0.as_str());
                 if rail {
-                    super::controls::heading(buf, body, body.x, y, title, hue, th);
+                    // The rule runs up to one space before the summary.
+                    let rule_end = right.as_ref().map(|(t, _)| body.right().saturating_sub(t.chars().count() as u16 + 1));
+                    super::controls::heading_to(buf, body, body.x, y, title, hue, th, rule_end);
                 } else {
                     put(buf, body, body.x, y, title, Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
                 }

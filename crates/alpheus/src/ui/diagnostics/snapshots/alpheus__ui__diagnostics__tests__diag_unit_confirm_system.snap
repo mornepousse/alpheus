@@ -7,7 +7,7 @@ expression: all
  control center   Session health, failed units and the journal                         
                   ━━━━━━━━━━━━───────────────────────────────────────────────────────  
                                                                                        
-  󰋜 Home     1    SESSION HEALTH ────────────────────────────────────────✗ 2 problems  
+  󰋜 Home     1    SESSION HEALTH ─────────────────────────────────────── ✗ 2 problems  
                     ✓ Mango answers                                                    
   󰕾 Sound    2      ✓ WAYLAND_DISPLAY wayland-1 reachable                              
                   ▌ ✗ systemd --user has WAYLAND_DISPLAY=wayland-0 (this session: wa…  

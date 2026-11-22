@@ -117,13 +117,28 @@ pub enum DiagItem {
     Report,
 }
 
+/// `s` cut to `max` characters in the middle (`head…tail`): a unit's end (`-a.service`) is what tells
+/// two long names apart.
+fn middle_cut(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let tail = max.saturating_sub(1).div_ceil(2);
+    let head = max.saturating_sub(1) - tail;
+    let mut out: String = s.chars().take(head).collect();
+    out.push('…');
+    out.extend(s.chars().skip(n - tail));
+    out
+}
+
 /// "Restart mnt-data.mount (system)?": what the unit confirmation asks.
 pub fn unit_question(scope: Scope, unit: &str, action: UnitAction) -> String {
     let verb = match action {
         UnitAction::Restart => "Restart",
         UnitAction::ResetFailed => "Clear the failed state of",
     };
-    let unit = clean_line(unit, 80);
+    let unit = middle_cut(&clean_line(unit, 256), 80);
     match scope {
         Scope::User => format!("{verb} {unit} (user)?"),
         Scope::System => format!("{verb} {unit} (system)? systemd will ask for your password in this window."),
@@ -349,9 +364,9 @@ impl App {
         self.requests.push(Request::Do(Op::FailedRefresh));
     }
 
-    /// F5: everything again, now.
+    /// F5: everything again, now (not in the journal view, which reads for itself).
     pub fn diagnostics_refresh(&mut self, now: Instant) {
-        if self.tab == super::Tab::Diagnostics {
+        if self.tab == super::Tab::Diagnostics && !self.diagnostics_refresh_held() {
             self.refresh_tab(now);
             self.diagnostics_reads();
         }
@@ -500,6 +515,11 @@ impl App {
             UnitAction::ResetFailed => "reset-failed",
         };
         ["systemctl", verb, "--", job.1.as_str()].map(String::from).to_vec()
+    }
+
+    /// What the window says before it runs: the exact command, and how to stop waiting.
+    pub fn system_unit_intro(job: &(UnitAction, String)) -> String {
+        format!("Running {} (Ctrl+C stops waiting)", Self::system_unit_argv(job).join(" "))
     }
 
     /// The window's command ended.

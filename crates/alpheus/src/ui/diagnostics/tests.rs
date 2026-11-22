@@ -192,3 +192,13 @@ fn a_view_covers_the_overview_with_its_way_back() {
     let all = rows(&a, 87, 26);
     assert!(all.contains("Bug report") && all.contains("Esc goes back"), "{all}");
 }
+
+#[test]
+fn the_rail_heading_keeps_one_space_between_its_rule_and_the_summary() {
+    for (w, h) in [(87, 26), (120, 40)] {
+        let all = rows(&diag_app(false), w, h);
+        let line = all.lines().find(|l| l.contains("SESSION HEALTH")).unwrap();
+        assert!(line.contains("─ ✓ all good"), "{line}");
+        assert!(!line.contains("─  ✓ all good"), "two spaces: {line}");
+    }
+}

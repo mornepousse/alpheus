@@ -364,6 +364,13 @@ impl App {
                 return;
             }
         }
+        // On the Diag overview a read can add or drop rows above the cursor: a selected unit stays
+        // selected (`r` and `c` act on it), never whatever slid into its place. The other rows keep
+        // their place: the first read must not carry the cursor off the top.
+        let keep = match self.focused() {
+            Some(item @ Item::Diag(DiagItem::Failed(..) | DiagItem::Loop(..))) => Some(item),
+            _ => None,
+        };
         match u {
             Update::Volume(r) => self.data.volume = r.into(),
             Update::Brightness(r) => self.data.brightness = r.into(),
@@ -388,6 +395,9 @@ impl App {
                 self.op_done(op, r, now);
             }
             Update::Superseded(op) => self.op_answered(&op),
+        }
+        if let Some(i) = keep.and_then(|k| self.items().iter().position(|i| *i == k)) {
+            self.focus = i;
         }
         self.clamp_focus();
     }
