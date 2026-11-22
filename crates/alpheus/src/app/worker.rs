@@ -1,9 +1,11 @@
 //! The worker thread: the one place that runs the backends (`wpctl`, `nmcli`, the daemon's socket,
-//! `systemctl` and the rest).
+//! `systemctl` and the rest) while the program is up. Closing is the exception: `run.rs`'s
+//! `revert_on_close` asks the daemon to revert an open display trial itself, once the loop is over.
 //!
 //! The `App` sends `Request`s (read these domains, do this action, make this Diag read) down a
 //! channel and gets `Update`s back on another. The thread takes what has piled up, merges it
-//! (`coalesce`), runs each request in turn and answers each one as soon as it is done. A slow tool
+//! (`coalesce`), runs each request in turn and answers each one as soon as it is done (a refresh
+//! streams one `Update` per domain, each as soon as that domain is read). A slow tool
 //! (killed after up to 2 s, `run.rs`'s `TOOL_TIMEOUT`) therefore never freezes the screen. The
 //! functions that do the reading and the acting (`fetch_with`, `diag_fetch`, `perform`) are plain
 //! functions over `Backends`, so the tests call them with fake backends and no thread.
@@ -13,8 +15,10 @@
 //! - read the process's environment on its own: the health checks read the `Env` they are given
 //!   (`run.rs` gives the process's own; everywhere else it is empty, so a test never finds the
 //!   session's compositor);
-//! - leave an action without an answer: each `Request::Do` gets exactly one `Update::Done` or
-//!   `Update::Superseded`, so the `App`'s count of actions in flight always returns to zero.
+//! - leave a counted action without an answer: each action the `App` counts in flight (`Op::domains`
+//!   not empty) gets exactly one `Update::Done` or `Update::Superseded`, so that count always
+//!   returns to zero. `Op::FailedRefresh` is not counted (its `domains` are empty): the daemon is
+//!   poked once per burst and answered by `Update::Poke`, never `Done`.
 //!
 //! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3), docs/features/control-center.md.
 
@@ -313,7 +317,8 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
 /// volume per node, one brightness), a single refresh (the union of the domains) placed after the
 /// actions, then the Diag reads, each made once. Also returns the dropped settings, to be
 /// announced as `Update::Superseded`. Every other action is kept, in order, and none is merged
-/// with another: a toggle pressed twice runs twice.
+/// with another: a toggle pressed twice runs twice. The one exception is `Op::FailedRefresh`,
+/// kept once per burst (its answer is an `Update::Poke`, and it is not a counted action).
 pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     let mut superseded: Vec<Op> = Vec::new();
     let mut ops: Vec<Op> = Vec::new();

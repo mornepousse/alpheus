@@ -19,8 +19,8 @@ use std::time::Duration;
 pub struct TabSpec {
     /// The tab this row describes; equals the row's index in `TABS`.
     pub tab: Tab,
-    /// Label in the tab bar, the status line, the palette and the help (the rail's entries and
-    /// header use it too).
+    /// Label in the tab bar, the status line, the palette (the rail's entries and header use it
+    /// too). The help does not list it: it shows one line, "Tabs 1 to 8", with the tab keys.
     pub title: &'static str,
     /// Name on the command line (`alpheus --tab <slug>`).
     pub slug: &'static str,

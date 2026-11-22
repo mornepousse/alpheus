@@ -1,8 +1,8 @@
 //! The rail layout's frame: a left rail with the brand and one entry per tab, a header in the tab's
 //! hue with a one-line summary, and the shortcut hints drawn as keycaps on the last row.
 //!
-//! It is drawn when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H`; the UI refresh spec sized
-//! those for its 87×26 real window. Below them `ui::render` draws the classic layout. `render`
+//! It is drawn when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H`; the UI refresh plan's
+//! amendment set them (84×26) after measuring a real 87×26 window. Below them `ui::render` draws the classic layout. `render`
 //! returns the body rectangle the tab draws into. The tab hues (`tab_hue`) and the tab summaries
 //! (`subtitle`) live here because the rail and the header are what show them.
 //!

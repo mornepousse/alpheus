@@ -1,10 +1,13 @@
 //! The control center's state and logic: the `App` that every input changes.
 //!
 //! A key, a mouse event, a worker answer or a clock tick each arrives as a method call on `App`
-//! and changes its state. What has to reach the outside is left in boxes that the real loop
+//! and changes its state. What has to reach the outside is mostly left in boxes that the real loop
 //! (`run.rs`) empties: requests for the worker (`take_requests`), an external tool to open
-//! (`take_external`) and a system unit's action (`take_system_unit`, in `diagnostics.rs`). So every
-//! behaviour is tested by calling methods, with no terminal.
+//! (`take_external`) and a system unit's action (`take_system_unit`, in `diagnostics.rs`). Two
+//! things the `App` does itself, on the loop thread: it writes theme.toml (`appearance_apply`, then
+//! reloads the theme with `Theme::load`) and displays.toml (`displays.rs`, `profiles::save`). So
+//! behaviour is tested by calling methods, with no terminal and no worker thread (the fake
+//! backends are for `worker.rs`'s tests).
 //!
 //! This file holds what every tab shares: the data types (`Data`, `Item`, `Overlay`), the focus,
 //! the sliders and toggles, the commands, the palette and the rule that decides what is read again
@@ -15,8 +18,9 @@
 //! - touch the terminal or draw: `ui/` draws from this state;
 //! - start a thread or run a tool: a change is queued with `send_op` and the worker runs it
 //!   (`worker.rs`);
-//! - read the clock: every method that needs the time takes `now` from its caller, so a test can
-//!   pick any time it likes.
+//! - read the monotonic clock (`Instant::now`): every method that needs the time takes `now` from
+//!   its caller, so a test can pick any time it likes. The one exception is the journal's wall-clock
+//!   stamp (`journal.rs`'s `wall_secs`, `SystemTime::now`).
 //!
 //! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, "Refresh"), docs/features/control-center.md.
 
@@ -61,7 +65,8 @@ pub const STEP: i32 = 5;
 /// Lifetime of an ephemeral message.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
 /// A failed domain is re-read at most once per this period (spec § 3: "a failing domain is
-/// retried at most every 15 s"). Without it a broken tool would be launched again at every tick.
+/// retried at most every 15 s"). Without it a failed domain would be re-read once per tab period
+/// (1 to 5 s, `TabSpec::refresh`) instead of every 15 s.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
 /// A value the worker may not have read yet: `Loading` before the first answer, `Ready` once read,
@@ -127,7 +132,8 @@ pub enum SliderId {
     Node(u32),
 }
 
-/// A switch with two states, shown on Home and on the tab of its name.
+/// A switch with two states. Wi-Fi is on Home and on the Network tab, Bluetooth on Home and the
+/// Bluetooth tab; Do not disturb and Keep awake are on Home only (no tab of their own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToggleId {
     Wifi,
@@ -460,7 +466,8 @@ impl App {
         self.clamp_focus();
     }
 
-    /// An action got its answer: a message, and (except for a slider) a new read of the tab.
+    /// An action got its answer: a message, and a new read of the tab, except after a slider that
+    /// succeeded (a failed slider is re-read too, which cancels the optimistic display).
     fn op_done(&mut self, op: Op, r: BResult<()>, now: Instant) {
         match r {
             Ok(()) => {
@@ -529,9 +536,11 @@ impl App {
 
     // ── Time ─────────────────────────────────────────────────────────
 
-    /// The clock tick (the real loop calls it each turn): drops expired toasts, then asks the
-    /// worker to read the shown tab again once its period has passed (`TabSpec::refresh`). A tab
-    /// with no period (Power, Theme) is never read on a tick.
+    /// The clock tick (the real loop calls it each turn): drops expired toasts, runs the Displays
+    /// trial's countdown (`displays_tick`) and the journal's follow read (`journal_tick`), then,
+    /// unless the Diag tab holds its refresh back (`diagnostics_refresh_held`, the journal view open),
+    /// asks the worker to read the shown tab again once its period has passed (`TabSpec::refresh`).
+    /// A tab with no period (Power, Theme) is never read on a tick.
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
@@ -543,7 +552,7 @@ impl App {
         let due = now.duration_since(self.last_refresh) >= period;
         // A failed domain is not probed on the normal tick: a broken tool
         // (shell-ctl reports every one of its failures) must not be
-        // relaunched every second. It's re-read at most every 15 s, and on
+        // relaunched at every tab period (1 to 5 s). It's re-read at most every 15 s, and on
         // entering the tab or after an action.
         let mut ds: Vec<Domain> = Vec::new();
         for d in self.tab.domains() {
@@ -753,7 +762,8 @@ impl App {
     }
 
     /// Sets a slider to `value` percent: shown at once, queued for the worker. Nothing is sent when
-    /// the state is unknown or already equal. Brightness never goes below `brightness::MIN_PERCENT`
+    /// the state is unknown or already equal, nor when the current value is above 100 % and `value`
+    /// asks for more (it would be clamped to 100 and lower the sound). Brightness never goes below `brightness::MIN_PERCENT`
     /// (0 % would turn the screen off, which alpheus never does).
     pub fn set_slider(&mut self, id: SliderId, value: i32) {
         let min = if id == SliderId::Brightness { i32::from(brightness::MIN_PERCENT) } else { 0 };

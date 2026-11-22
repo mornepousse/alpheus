@@ -139,7 +139,9 @@ impl App {
     }
 
     /// A wheel turn: `dir` is 1 for up, -1 for down. On the palette it moves the cursor; with any
-    /// other overlay open it does nothing; on a slider it adjusts it; elsewhere it moves the focus.
+    /// other overlay open it does nothing; on the Diag tab the journal view or a report view (boot,
+    /// bug report) takes it first when it is open; on a slider it adjusts it; elsewhere it moves
+    /// the focus.
     fn wheel(&mut self, hit: Option<(Rect, Target)>, dir: i32) {
         if matches!(self.overlay, Overlay::Palette(_)) {
             let count = self.palette_matches().len();

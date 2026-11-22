@@ -2,8 +2,9 @@
 //! must appear in order in the candidate, case- and accent-insensitive ("cafe" finds "Café").
 //!
 //! `score` says whether and how well one candidate matches; `rank` orders a list of labels by it.
-//! A match scores higher when its characters are contiguous or start a word, and a shorter
-//! candidate wins a tie by a small margin.
+//! A match scores higher when its characters are contiguous or start a word, and a longer
+//! candidate loses one point per ten characters (integer division: candidates in the same block of
+//! ten characters tie, and `rank` keeps their original order).
 //!
 //! Never:
 //! - read or write anything but its arguments: it is a pure function of the query and the candidates.
@@ -95,6 +96,14 @@ mod tests {
         let long = "lock the session and wait for a very long time here";
         assert_eq!(rank("lock", &[long, "lock"]), vec![1, 0]);
         assert!(score("abc", "xabc").unwrap() > score("abc", "xaxbxc").unwrap());
+    }
+
+    /// The length penalty is one point per ten characters: 9 and 4 characters are in the same
+    /// block, so they tie and keep their original order.
+    #[test]
+    fn labels_in_the_same_block_of_ten_characters_tie() {
+        assert_eq!(rank("lock", &["lock aaaa", "lock"]), vec![0, 1]);
+        assert_eq!(score("lock", "lock aaaa"), score("lock", "lock"));
     }
 
     #[test]

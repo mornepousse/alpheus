@@ -1,7 +1,7 @@
 //! Tests of the drawing (`mod.rs`, `tabs.rs`, `overlays.rs`): each tab and overlay drawn on a
 //! `TestBackend` at fixed sizes, in both layouts, with the clickable regions it records and the
-//! snapshots of the whole screens. Nothing here runs a tool; the data is the anonymised recording
-//! `ready_app` holds.
+//! snapshots of the whole screens. Nothing here runs a tool; the data is the hand-written values
+//! `ready_app` holds (plus a parsed profiles constant), not a recording.
 
 use super::testing::draw;
 use super::*;
@@ -652,7 +652,7 @@ fn rail_tab_snapshots() {
     }
 }
 
-/// An 87 by 26 window (a 67×20 body; the UI refresh spec sizes the rail for the real 87×26 window): nothing the classic layout showed whole is cut, the
+/// An 87 by 26 window (a 67×20 body; the UI refresh plan's amendment set the rail's 84×26 after measuring a real 87×26 window): nothing the classic layout showed whole is cut, the
 /// controls are whole, and what is clickable is what is drawn.
 #[test]
 fn rail_controls_fit_an_87_by_26_window() {

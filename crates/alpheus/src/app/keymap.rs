@@ -5,7 +5,7 @@
 //! F1, Esc, the arrows) plus `d`, `h`, `t`, `n` for left, down, up and right (Dvorak navigation,
 //! `[keys] dvorak_nav = false` turns them off). `[keys]` in config.toml overrides any of them by
 //! action name. `input.rs` asks `lookup` what a key press means; the help box and the shortcut
-//! bar ask for the labels.
+//! hints (the classic bar and the rail's keycaps, both through `shortcut_pairs`) ask for the labels.
 //!
 //! Never:
 //! - read a file or a config itself: it is handed a `KeysConfig`;

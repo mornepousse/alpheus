@@ -10,7 +10,9 @@
 //!
 //! Never:
 //! - change the `App`: it is read-only here, so a draw can happen any number of times;
-//! - write outside the area it was given: every write goes through `draw::put`, which clips;
+//! - write outside the area it was given: plain text goes through `draw::put`, which clips; frames
+//!   are ratatui `Block`s rendered inside their rectangle (`overlays.rs`, `home.rs`), and
+//!   `controls.rs` recolours one cell after its own clip check;
 //! - panic on a small window (`small_sizes_never_panic`, `overlays_never_panic_in_a_small_window`).
 //!
 //! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2), docs/specs/2026-11-15-alpheus-ui-refresh-design.md,
@@ -136,7 +138,8 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
 
 /// The keys to name at the foot of the screen, as (key, what it does): the shown tab's own first,
 /// then the generic ones. The classic layout draws them on the shortcut bar, the rail layout as
-/// keycaps; both take this list.
+/// keycaps; both take this list. While the search box is being edited the list is just
+/// Enter (Confirm) and Esc (Clear).
 pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     let km = &app.keymap;
     let mut pairs: Vec<(String, &'static str)> = Vec::new();

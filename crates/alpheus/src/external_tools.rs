@@ -8,7 +8,9 @@
 //! real ones; the sequence is tested with a fake screen and a fake launcher.
 //!
 //! Never:
-//! - run a tool in a test: the tests use the fakes, no real terminal and no real process;
+//! - open a real terminal or run a session tool in a test: the order of the sequence is tested with
+//!   the fakes; the real `ProcessLauncher` only runs harmless programs (`sh -c true`, `exit 4`, a
+//!   missing name, a `kill -INT $PPID`), see `real_launcher` and the Ctrl+C test;
 //! - leave the control center killed by the tool's Ctrl+C: `ProcessLauncher` swaps the SIGINT and
 //!   SIGQUIT handlers for an empty one for the length of the run.
 //!

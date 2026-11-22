@@ -67,8 +67,9 @@ fn decoration(s: &str) -> bool {
 }
 
 /// What a pair must reach. Glyphs 3:1. Text 4.5:1, except where the presets' own data cannot give it
-/// (and alpheus-common tests only the floor): `fg` on `raised`, `pill` and `selection` 3.5 (the
-/// shapes trial's decision, recorded in CLAUDE.md under "Themes delivery 2"), `on_accent` on a hue 3.0, `fg_dim` anywhere 3.0.
+/// (and alpheus-common tests only the floor): `fg` on `raised` 3.5 (the shapes trial's ruling of
+/// 2026-10-08, recorded in CLAUDE.md under "Themes delivery 2": `raised`, fg ≥ 3.5:1), `fg` on `pill`
+/// and `selection` 3.5 too (reason not recorded), `on_accent` on a hue 3.0, `fg_dim` anywhere 3.0.
 fn need(th: &Theme, fg: Color, bg: Color, text: bool) -> f32 {
     if !text {
         return 3.0;

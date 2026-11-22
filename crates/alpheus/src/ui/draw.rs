@@ -1,11 +1,12 @@
 //! Bounded writes into the terminal buffer: `put`, `clear`, `centered` and `truncate`.
 //!
-//! Every drawing function writes through these, so nothing leaves the rectangle it was given,
-//! whatever the window size.
+//! Plain text is written through these, so it never leaves the rectangle it was given, whatever the
+//! window size. The frames of `overlays.rs` and `home.rs` are ratatui `Block`s rendered inside their
+//! rectangle, and `controls.rs` recolours one cell after its own clip check: those do not pass here.
 //!
 //! Never:
 //! - write a cell outside the given clip, or outside the buffer's own area even if the clip is
-//!   larger.
+//!   larger (`put` and `clear`; the exceptions above are not in this file).
 //!
 //! See: docs/features/control-center.md.
 

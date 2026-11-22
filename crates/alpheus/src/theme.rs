@@ -1,8 +1,8 @@
 //! The control center's theme: the shared resolver (`alpheus_common::theme::settings`) turned into
 //! ratatui colours, plus the shape the bar's `style` gives the controls.
 //!
-//! The control center is short-lived, so it resolves once at start (theme.toml, the mode, the
-//! colour files). In mode `auto` the mode is the one the daemon publishes in
+//! The control center is short-lived, so it resolves at start (theme.toml, the mode, the colour
+//! files) and again only when the Theme tab writes theme.toml (`appearance.rs` reloads it). In mode `auto` the mode is the one the daemon publishes in
 //! `$XDG_RUNTIME_DIR/alpheus/mode`; a missing file means dark. The file outlives the daemon, so
 //! a control center started after the daemon stopped reads the last published mode: accepted, no
 //! cleanup. The rest of the control center only ever sees `Theme`.

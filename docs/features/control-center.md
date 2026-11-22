@@ -34,11 +34,14 @@ config.toml, the theme, the keys, displays.toml; a file that cannot be read give
 a startup warning, never an error), starts the worker thread (`worker::spawn_with`) and a guard
 thread, then runs `event_loop`. Each turn of the loop:
 
+0. at the top of each turn it checks `should_exit` (a stop signal) and, if set, closes;
 1. it sends the worker the requests the `App` has queued (`take_requests`);
 2. it draws the whole screen (`ui::render`), which returns the map of clickable regions;
+   If the `App` has quit (`should_quit`) it closes here, right after the draw;
 3. if the `App` asked for an external tool (`take_external`: wiremix, nmtui, bluetui) or a system
    unit's action (`take_system_unit`), it hands the terminal over, runs it in the foreground
-   and takes the screen back (`external_tools.rs`);
+   and takes the screen back (`external_tools.rs`); the loop then starts its next turn and skips
+   steps 4 to 6 for this one;
 4. it waits up to 100 ms for a key or mouse event and gives it to the `App` (`on_key`, `on_mouse`);
 5. it hands the `App` every answer the worker has sent (`on_update`);
 6. it calls `App::on_tick`, which expires the toasts and decides what to read again.
@@ -50,11 +53,15 @@ tool still running on every way out, a panic included; the guard thread ends the
 after a stop signal if the loop is stuck.
 
 The `App` itself holds no terminal and no thread: a key, a mouse event, a worker answer and a tick
-are method calls, and what it wants done outside is left in boxes the loop empties. That is why
-nearly everything is tested by calling methods on an `App` with fake backends.
+are method calls, and what it wants done outside is mostly left in boxes the loop empties. Two
+writes it makes itself, on the loop thread: theme.toml (the Theme tab's `appearance_apply`, which
+then reloads the theme) and displays.toml (the Displays tab's save box, `profiles::save`). That is
+why nearly everything is tested by calling methods on an `App` with no worker thread; the fake
+backends are for the worker's own tests.
 
 **The worker (`app/worker.rs`).** It is the only place that runs the backends, so a slow tool
-never freezes the screen (a tool is killed after 2 seconds). The `App` sends a `Request`:
+never freezes the screen (a tool is killed after 2 seconds) while the program is up; at closing
+`run.rs` itself asks the daemon to revert an open display trial. The `App` sends a `Request`:
 
 - `Request::Refresh(domains)`: read these domains;
 - `Request::Do(op)`: do this action (`Op`: set a volume, switch Wi-Fi, try a display layout,
@@ -65,9 +72,11 @@ never freezes the screen (a tool is killed after 2 seconds). The `App` sends a `
 and gets `Update`s back. The thread takes everything that has piled up, merges it (`coalesce`: the
 last setting per slider wins, one refresh covers the union of the domains, a Diag read asked twice
 is made once, a newer journal read replaces an older one), runs the requests in order and answers
-each as soon as it is done. Every action gets exactly one answer, `Update::Done` or, for a setting
-dropped by the merge, `Update::Superseded`, so the `App`'s count of actions in flight always
-returns to zero. A read gives an `Update` per domain (two for the failed units, one per systemd
+each as soon as it is done. Every action the `App` counts in flight (those whose `Op::domains` is
+not empty) gets exactly one answer, `Update::Done` or, for a setting dropped by the merge,
+`Update::Superseded`, so that count always returns to zero. The failed-units poke
+(`Op::FailedRefresh`) is not counted: it is sent once per burst and answered by `Update::Poke`. A
+read streams an `Update` per domain as each is read (two for the failed units, one per systemd
 manager). The functions that do the work (`fetch_with`, `diag_fetch`, `perform`) are plain
 functions over the backends, called directly by tests.
 
@@ -79,9 +88,11 @@ when the window is closed (spec § 3, "Refresh"). `App::on_tick` asks for the sh
 once its period has passed: Home 1 second; Sound, Network, BT and Displays 2 seconds; Diag 5
 seconds (held back while its journal view is open, which reads for itself); Power and Theme have
 no period and are never read on a tick. A tab is also read when it is entered and after an action
-(except after a slider, so a drag does not jump back). A domain whose read failed is not read on
-the normal tick: it is tried again at most every 15 seconds (`FAILED_RETRY`; a broken tool must
-not be launched again every second), and on entering the tab or after an action.
+(except after a slider that succeeded, so a drag does not jump back; a failed slider is read again,
+which cancels the optimistic display). A domain whose read failed is not read on
+the normal tick: it is tried again at most every 15 seconds (`FAILED_RETRY`; without it a failed
+domain would be read again once per tab period, 1 to 5 seconds), and on entering the tab, on F5
+(`Action::Refresh`), after an action, and on the return from an external tool (`external_done`).
 
 While an action on a domain is in flight, reads of that domain are dropped (`App::on_update`),
 because one launched before the action would bring the old state back over the new one that was
@@ -99,20 +110,23 @@ command palette (Ctrl+P) lists one entry per `Command` (`app/action.rs`: the tog
 tab, opening an external tool, the energy and display profiles, the power actions) and filters
 them with the fuzzy search (`fuzzy.rs`).
 
-**The palette of colours (`theme.rs`).** The control center resolves its theme once, at start,
-through the same resolver the daemon uses (theme.toml, the mode, the colour files), and turns its
+**The palette of colours (`theme.rs`).** The control center resolves its theme at start, and again
+after each write the Theme tab makes, through the same resolver the daemon uses (theme.toml, the mode, the colour files), and turns its
 roles (16 colours and 7 hues) into ratatui colours (`Theme`). In mode `auto` it reads the mode the daemon
 publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when there is no file); it never uses D-Bus. The
 bar's `style` also gives the controls a `Shape` (square, round caps, arrow tips, underline, double
-frames), which `ui/shape.rs` applies. The drawing only ever reads the `Theme`; the one write
-the program makes to a file of its own is the Theme tab's edit of theme.toml (`theme_file.rs`).
+frames), which `ui/shape.rs` applies. The drawing only ever reads the `Theme`. The program writes two files of its own:
+theme.toml (the Theme tab, `theme_file.rs`) and displays.toml (the Displays tab's save box,
+`app/displays.rs` through `profiles::save`).
 
 **The drawing (`ui/`).** `ui::render` draws two layouts: the classic one (tab bar, body, status
 line, shortcut bar) in a small terminal, and from 84 by 26 the rail layout (`ui/rail.rs`: the
 rail, a header, the keycaps row), where Home becomes a dashboard when its body is at least 64 by
 20. The body of a tab is a list of rows (`ui/tabs.rs`) that the tab's own `ui/<tab>.rs` builds; the
-overlays are drawn last so their regions win a click. Every write goes through `ui/draw.rs`, which
-clips to the area it was given, and every clickable region goes into the `HitMap` (`ui/hit.rs`).
+overlays are drawn last so their regions win a click. Plain text is written through `ui/draw.rs`,
+which clips to the area it was given (the frames of the overlays and the dashboard are ratatui
+`Block`s rendered inside their rectangle, and the rail's buttons recolour one cell after their own
+clip check), and every clickable region goes into the `HitMap` (`ui/hit.rs`).
 Below 30 by 8 only a message is drawn.
 
 ## Sound

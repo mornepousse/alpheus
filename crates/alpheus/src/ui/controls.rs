@@ -1,11 +1,14 @@
 //! The rail layout's controls: hued headings, knob gauges, ON/off switches and glyph buttons.
 //!
 //! They are drawn only under `Chrome::Rail`; the classic layout keeps `tabs.rs`'s own bars and
-//! brackets. Each draws what a `Loadable` holds (`…` while loading, `✗` and the message when
-//! failed) and returns the rectangle a click needs, when it has one.
+//! brackets. `heading` and `heading_to` draw a title and a rule and return nothing; `switch` draws
+//! a `Loadable<bool>` (`…` while loading, `✗` and the message when failed) and returns nothing;
+//! `gauge` draws a `Loadable<u8>` and returns the rectangle a click needs (`Option<Rect>`);
+//! `button` draws a `Command` and returns the width it took.
 //!
 //! Never:
-//! - write outside its clip: every write goes through `draw::put`;
+//! - write outside its clip: text goes through `draw::put`, and the one cell `button` recolours is
+//!   written only after its own clip check;
 //! - change the `App`, or know what the control does when used: `app/mouse.rs` does that from the
 //!   regions the caller records.
 //!

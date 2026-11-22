@@ -1,8 +1,9 @@
 //! The control center's vocabulary: tabs, keyboard intents (`Action`), what a button or a palette
 //! entry does (`Command`), the external tools, and the palette's entries.
 //!
-//! These are closed sets, so every place that handles one is a `match` the compiler checks is
-//! complete. The per-tab plain data (`TabSpec`) is in `tab.rs`; what an `Action` or a `Command`
+//! These are closed sets, so a `match` over one (`do_action` over `Action`, `run_command` over
+//! `Command`) lists its variants and the compiler flags a missing one; the inner matches on the
+//! focused `Item` do end in `_ => {}`, so those are not checked that way. The per-tab plain data (`TabSpec`) is in `tab.rs`; what an `Action` or a `Command`
 //! does to the state is in `mod.rs` (`run_command`) and `input.rs` (`do_action`).
 //!
 //! Never:
