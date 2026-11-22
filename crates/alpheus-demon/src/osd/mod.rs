@@ -335,5 +335,7 @@ pub fn brightness_percent(brightness: &str, max: &str) -> Option<u8> {
     u8::try_from(p).ok()
 }
 
+pub mod surface;
+
 #[cfg(test)]
 mod tests;

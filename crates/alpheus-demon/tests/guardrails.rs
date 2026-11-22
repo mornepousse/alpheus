@@ -529,7 +529,7 @@ fn shutting_down_closes_and_saves_the_pad() {
 #[test]
 fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
-    for (name, create) in [("osd_surface.rs", "fn osd_create("), ("bubbles_surface.rs", "fn bubbles_create(")] {
+    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("bubbles_surface.rs", "fn bubbles_create(")] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
@@ -1144,7 +1144,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
         ("bubbles_surface.rs", "Timer::", 1),
-        ("osd_surface.rs", "Timer::", 1),
+        ("osd/surface.rs", "Timer::", 1),
         // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
         // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
         ("tools_app.rs", "Timer::", 1),
@@ -1574,8 +1574,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
     "media/mod.rs",
     "notify.rs",
-    "osd.rs",
-    "osd_surface.rs",
+    "osd/mod.rs",
+    "osd/surface.rs",
     "backlight.rs",
     "bubbles.rs",
     "bubbles_surface.rs",
@@ -2331,7 +2331,7 @@ fn the_osd_only_reads() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["osd.rs", "osd_surface.rs", "backlight.rs"].contains(&name.as_str()) {
+        if !["osd/mod.rs", "osd/surface.rs", "backlight.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -2360,7 +2360,7 @@ fn the_osd_only_reads() {
 #[test]
 fn the_osd_has_no_panicking_path() {
     let files = source_files();
-    for name in ["osd.rs", "osd_surface.rs", "backlight.rs"] {
+    for name in ["osd/mod.rs", "osd/surface.rs", "backlight.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

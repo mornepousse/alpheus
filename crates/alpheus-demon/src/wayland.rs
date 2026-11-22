@@ -508,7 +508,7 @@ pub struct App {
     /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
     pub(crate) shield: Option<crate::shield_app::ShieldApp>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
-    pub(crate) osd: crate::osd_surface::OsdSurface,
+    pub(crate) osd: crate::osd::surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).
     pub(crate) quick: crate::quick_app::QuickApp,
@@ -687,7 +687,7 @@ impl App {
             failed_notice,
             hooks,
             shield,
-            osd: crate::osd_surface::OsdSurface::new(),
+            osd: crate::osd::surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             units_tap: None,
             power_timer: DeadlineTimer::new(),
