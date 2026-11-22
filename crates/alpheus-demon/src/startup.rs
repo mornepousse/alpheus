@@ -808,8 +808,11 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
-    // A Shield command still running is killed with its group when it can be (a privileged helper
-    // cannot: it is left to end, its output being /dev/null so nothing cuts it), and no new one starts.
+    // Every child the executor registered is killed with its group and no new one starts: the
+    // pw-dump stream, a launcher source's capture, a Shield action still waiting (a pkexec on its
+    // password is cancelled; a privileged helper already running cannot be signalled and is left to
+    // end, its output being /dev/null). The sound source then sees its stream end and may log one
+    // `sound source down` line just before `shutdown`: accepted, it is the supervisor's own line.
     state.exec.stop_running();
     // The history is wiped before the app is dropped.
     state.clipboard_guarded("shutdown", |app| app.clipboard_shutdown());

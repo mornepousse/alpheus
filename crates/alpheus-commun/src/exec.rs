@@ -164,7 +164,7 @@ impl SystemExecutor {
     /// Kills the commands still in progress and closes the door: alpheus
     /// leaves nothing behind, and nothing can start after this.
     pub fn kill_running(&self) {
-        let mut guard = self.running.lock().unwrap();
+        let mut guard = self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.closed = true;
         // Killed with the lock held: a PID only leaves the list under this
         // same lock — `run` reaps its child and removes it in one go, a

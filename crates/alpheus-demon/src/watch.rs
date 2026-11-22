@@ -184,7 +184,7 @@ impl Watches {
     /// armed logs its own line and is left out, the other unaffected.
     pub(crate) fn start(theme_dir: &Path, flag: Option<&Path>) -> Result<Watches, String> {
         let fd = Inotify::new()?;
-        let theme = match arm(&fd, theme_dir, DIR_MASK) {
+        let theme = match arm(&fd, theme_dir, DIR_MASK, None) {
             Ok(on) => Some(Target { dir: theme_dir.to_path_buf(), on }),
             Err(e) => {
                 log(&format!("theme: {e}; theme files read at startup only"));
@@ -193,7 +193,7 @@ impl Watches {
         };
         let shield = flag.and_then(|flag| {
             let (dir, name) = (flag.parent()?, flag.file_name()?);
-            match arm(&fd, dir, FLAG_DIR_MASK) {
+            match arm(&fd, dir, FLAG_DIR_MASK, theme.as_ref().and_then(|t| t.on.wd())) {
                 Ok(on) => Some(ShieldTarget { target: Target { dir: dir.to_path_buf(), on }, flag_name: name.as_bytes().to_vec() }),
                 Err(e) => {
                     log(&shield_unwatched_line(&e));
@@ -286,11 +286,12 @@ impl Watches {
     }
 
     fn rearm_theme(&mut self) {
+        let keep = self.shield.as_ref().and_then(|s| s.target.on.wd());
         let Some(t) = self.theme.as_mut() else { return };
         if let Some(wd) = t.on.wd() {
             self.fd.rm(wd);
         }
-        t.on = match arm(&self.fd, &t.dir, DIR_MASK) {
+        t.on = match arm(&self.fd, &t.dir, DIR_MASK, keep) {
             Ok(on) => on,
             Err(e) => {
                 log(&format!("theme: {e}; theme files no longer watched"));
@@ -300,11 +301,12 @@ impl Watches {
     }
 
     fn rearm_shield(&mut self) {
+        let keep = self.theme.as_ref().and_then(|t| t.on.wd());
         let Some(s) = self.shield.as_mut() else { return };
         if let Some(wd) = s.target.on.wd() {
             self.fd.rm(wd);
         }
-        s.target.on = match arm(&self.fd, &s.target.dir, FLAG_DIR_MASK) {
+        s.target.on = match arm(&self.fd, &s.target.dir, FLAG_DIR_MASK, keep) {
             Ok(on) => on,
             Err(e) => {
                 log(&shield_unwatched_line(&e));
@@ -344,13 +346,13 @@ fn shield_unwatched_line(e: &ArmError) -> String {
 }
 
 /// The directory (with `mask`), or its parent when the directory does not exist.
-fn arm(fd: &Inotify, dir: &Path, mask: u32) -> Result<On, ArmError> {
-    arm_with(fd, dir, mask, || {})
+fn arm(fd: &Inotify, dir: &Path, mask: u32, keep: Option<i32>) -> Result<On, ArmError> {
+    arm_with(fd, dir, mask, keep, || {})
 }
 
 /// `arm`, with `between` run after the directory was found missing and before its parent is watched:
 /// the window a test fills by creating the directory.
-fn arm_with(fd: &Inotify, dir: &Path, mask: u32, between: impl FnOnce()) -> Result<On, ArmError> {
+fn arm_with(fd: &Inotify, dir: &Path, mask: u32, keep: Option<i32>, between: impl FnOnce()) -> Result<On, ArmError> {
     match fd.add(dir, mask) {
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -365,12 +367,25 @@ fn arm_with(fd: &Inotify, dir: &Path, mask: u32, between: impl FnOnce()) -> Resu
                 .add(parent, PARENT_MASK)
                 .map_err(|e| ArmError { text: format!("cannot watch {} ({e})", parent.display()), reason: e.kind().to_string() })?;
             // The directory may have appeared between the two calls, before the parent could tell:
-            // looked for once more now that the parent is watched, so its creation is never missed. The
-            // parent's watch stays (a stray one, whose events no target matches: its descriptor may be
-            // another target's too, so it is never removed here).
+            // looked for once more now that the parent is watched, so its creation is never missed. Once
+            // found (or refused), the parent's watch is dropped, unless its descriptor is the other
+            // target's (inotify gives one per inode).
+            let drop_parent = || {
+                if keep != Some(parent_wd) {
+                    fd.rm(parent_wd);
+                }
+            };
             match fd.add(dir, mask) {
-                Ok(wd) => Ok(On::Dir(wd)),
-                Err(_) => Ok(On::Parent(parent_wd)),
+                Ok(wd) => {
+                    drop_parent();
+                    Ok(On::Dir(wd))
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(On::Parent(parent_wd)),
+                // Anything else cannot be waited out: an error, never a silent wait in the parent.
+                Err(e) => {
+                    drop_parent();
+                    Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() })
+                }
             }
         }
         Err(e) => Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() }),
@@ -847,7 +862,7 @@ mod tests {
         assert!(!w.theme_armed(), "neither the directory nor its parent exists: no theme target, no panic");
         assert!(!w.shield_armed());
         assert!(
-            arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK)
+            arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK, None)
                 .unwrap_err()
                 .text
                 .starts_with("cannot watch /nonexistent-alpheus-parent")
@@ -862,17 +877,64 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let dir = parent.join("late");
         let fd = Inotify::new().unwrap();
-        let on = arm_with(&fd, &dir, DIR_MASK, || std::fs::create_dir(&dir).unwrap()).unwrap();
+        let on = arm_with(&fd, &dir, DIR_MASK, None, || std::fs::create_dir(&dir).unwrap()).unwrap();
         assert!(matches!(on, On::Dir(_)), "the directory, not its parent: {on:?}");
         // Control: with nothing created in between, the parent waits.
         let other = parent.join("never");
-        assert!(matches!(arm_with(&fd, &other, DIR_MASK, || {}).unwrap(), On::Parent(_)));
+        assert!(matches!(arm_with(&fd, &other, DIR_MASK, None, || {}).unwrap(), On::Parent(_)));
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// The parent's stray watch is dropped once the retry found the directory, unless the descriptor is
+    /// another target's (inotify gives one per inode).
+    #[test]
+    fn the_strays_parent_watch_is_dropped_unless_another_target_owns_it() {
+        let parent = temp("arm-stray");
+        std::fs::create_dir_all(&parent).unwrap();
+        let events = |fd: &Inotify| {
+            let mut n = Vec::new();
+            fd.drain(|c| n.extend(crate::inotify::Events(c).map(|e| e.wd)));
+            n
+        };
+        let fd = Inotify::new().unwrap();
+        let dir = parent.join("late");
+        arm_with(&fd, &dir, DIR_MASK, None, || std::fs::create_dir(&dir).unwrap()).unwrap();
+        events(&fd);
+        std::fs::write(parent.join("x"), b"").unwrap();
+        assert!(events(&fd).is_empty(), "the stray parent watch is gone");
+        // The same parent, watched by another target: kept.
+        let fd = Inotify::new().unwrap();
+        let owned = fd.add(&parent, DIR_MASK).unwrap();
+        let dir2 = parent.join("late2");
+        arm_with(&fd, &dir2, DIR_MASK, Some(owned), || std::fs::create_dir(&dir2).unwrap()).unwrap();
+        events(&fd);
+        std::fs::write(parent.join("y"), b"").unwrap();
+        assert_eq!(events(&fd), vec![owned], "the other target's watch stays");
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// A retry that fails for another reason than "missing" is an error (never a silent wait in the
+    /// parent for a directory that cannot come), and leaves no stray watch.
+    #[test]
+    fn a_retry_failing_for_another_reason_is_an_error_not_a_wait() {
+        let parent = temp("arm-retry-err");
+        std::fs::create_dir_all(&parent).unwrap();
+        let fd = Inotify::new().unwrap();
+        let dir = parent.join("file");
+        // A regular file where the directory should come: IN_ONLYDIR refuses it with ENOTDIR.
+        let r = arm_with(&fd, &dir, DIR_MASK, None, || std::fs::write(&dir, b"").unwrap());
+        assert!(r.is_err(), "{r:?}");
+        fd.drain(|_| {});
+        std::fs::write(parent.join("z"), b"").unwrap();
+        let mut n = 0;
+        fd.drain(|_| n += 1);
+        assert_eq!(n, 0, "no stray watch left");
         let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn the_shield_line_carries_a_reason_never_a_path() {
-        let e = arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/state"), FLAG_DIR_MASK).unwrap_err();
+        let e = arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/state"), FLAG_DIR_MASK, None).unwrap_err();
         let line = shield_unwatched_line(&e);
         assert!(line.starts_with("shield: flag not watched ("), "{line}");
         assert!(!line.contains("nonexistent-alpheus-parent") && !line.contains('/'), "{line}");

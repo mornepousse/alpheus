@@ -90,7 +90,7 @@
 //! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
 //! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
 //! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
-//! # on_text = "Protections for public networks are on."     # the notices' bodies, no control character, at most 256 bytes
+//! # on_text = "Protections for public networks are on."     # the notices' bodies, no control or format character, at most 256 bytes
 //! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
@@ -516,11 +516,18 @@ fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
         }
     }
     for (key, t) in [("shield.on_text", &sh.on_text), ("shield.off_text", &sh.off_text)] {
-        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.chars().any(char::is_control)) {
-            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, no control character"));
+        if t.as_ref().is_some_and(|t| t.len() > SHIELD_TEXT_MAX || t.chars().any(|c| c.is_control() || format_char(c))) {
+            return Err(format!("{key}: at most {SHIELD_TEXT_MAX} bytes, no control or format character"));
         }
     }
     Ok(())
+}
+
+/// A Unicode format character (Cf) that hides or reorders text: bidi controls, zero width, soft
+/// hyphen, word joiner and invisible operators, BOM. (ZWNJ and ZWJ are shaping, but a notice body
+/// has no use for them either.)
+fn format_char(c: char) -> bool {
+    matches!(c, '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
 }
 
 /// `[displays]` (displays spec § 1).

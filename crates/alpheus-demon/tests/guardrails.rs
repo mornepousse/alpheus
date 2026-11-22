@@ -770,6 +770,10 @@ fn only_the_runners_capture_and_never_through_a_shell() {
         if prod.contains(".capture(") {
             assert!(matches!(name.as_str(), "launcher/sources.rs" | "shield_run.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
         }
+        // `run_silent` waits with no bound of its own: the Shield worker's thread alone (and the delegate).
+        if prod.contains(".run_silent(") {
+            assert!(matches!(name.as_str(), "shield_run.rs" | "nonblocking.rs"), ".run_silent( in {name}: it blocks");
+        }
         if name == "launcher/sources.rs" {
             runner = Some(prod);
         } else if name == "shield_run.rs" {
@@ -3734,7 +3738,7 @@ fn the_notes_spawn_only_the_copy_command() {
         }
         seen += 1;
         let prod = production_code(&t);
-        for never in [".spawn(", ".capture(", ".stream(", ".run("] {
+        for never in [".spawn(", ".capture(", ".stream(", ".run(", ".run_silent("] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         let n = prod.matches("spawn_with_input(").count();

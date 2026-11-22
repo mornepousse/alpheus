@@ -889,7 +889,8 @@ fn shield_hard_checks_refuse_the_file() {
     assert!(err(with(&format!("on_text = \"{}\"\n", "a".repeat(300)))).contains("shield.on_text"));
     assert!(err(with("off_text = \"a\\nb\"\n")).contains("shield.off_text"));
     // Every control character, not only the line breaks (the text is shown in a bubble).
-    for c in ["\\t", "\\u001b", "\\u007f", "\\u0085"] {
+    // and the format characters that reorder or hide text (bidi controls, zero width, soft hyphen, BOM).
+    for c in ["\\t", "\\u001b", "\\u007f", "\\u0085", "\\u202e", "\\u2066", "\\u200b", "\\u00ad", "\\ufeff", "\\u2060"] {
         assert!(err(with(&format!("on_text = \"a{c}b\"\n"))).contains("shield.on_text"), "{c}");
         assert!(err(with(&format!("off_text = \"a{c}b\"\n"))).contains("shield.off_text"), "{c}");
     }
