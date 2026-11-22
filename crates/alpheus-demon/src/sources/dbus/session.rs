@@ -54,10 +54,23 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
 /// earlier `Outage::Domain`, stale the moment the connection itself is
 /// gone. Used both for the initial state and for logind's
 /// `PrepareForSleep(false)`, which re-reads all of them at once.
-pub(super) fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState, log_state: &mut DomainLog) -> Option<io::Error> {
+/// `units_ok` is set to whether the count's own read succeeded (an absence is a success): the
+/// aggregate error may belong to another domain.
+pub(super) fn read_all(
+    bus: &mut dyn Bus,
+    domains: &[Domain],
+    s: &mut SystemState,
+    log_state: &mut DomainLog,
+    units_ok: &mut bool,
+) -> Option<io::Error> {
     let mut failed: Option<io::Error> = None;
+    *units_ok = false;
     for d in domains {
-        if let Err(e) = read(bus, *d, s, log_state) {
+        let r = read(bus, *d, s, log_state);
+        if *d == Domain::Units {
+            *units_ok = r.is_ok();
+        }
+        if let Err(e) = r {
             let already_bus = failed.as_ref().is_some_and(|f| outage_of(f) == Outage::Bus);
             if failed.is_none() || (!already_bus && outage_of(&e) == Outage::Bus) {
                 failed = Some(e);
@@ -148,13 +161,6 @@ fn units_done(link: &mut UnitsLink, bus: &mut dyn Bus, count: Option<u32>, units
     Ok(units_read())
 }
 
-/// Whether a failure `e` of a read of `domains` spares the count's own read: it is neither the
-/// count's outage nor the bus going away.
-fn units_read_ok(domains: &[Domain], failed: &Option<io::Error>) -> bool {
-    domains.contains(&Domain::Units)
-        && failed.as_ref().is_none_or(|e| outage_of(e) != Outage::Domain(Domain::Units) && outage_of(e) != Outage::Bus)
-}
-
 /// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
 /// again on each of its pokes and with every network re-read; Closed reads nothing. `units`: the
 /// loop's word "read the failed-units count now"; `opts`: whether to `Subscribe` to systemd and
@@ -180,8 +186,8 @@ pub fn session(
     let mut bt_reader = BtReader::default();
     let mut vpn_reader = VpnReader::default();
     let mut last = None;
-    let mut failed = read_all(bus, domains, &mut s, log_state);
-    let initial_units_ok = units_read_ok(domains, &failed);
+    let mut initial_units_ok = false;
+    let mut failed = read_all(bus, domains, &mut s, log_state, &mut initial_units_ok);
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
@@ -270,7 +276,8 @@ pub fn session(
             // slept (a VPN reconnected, a Bluetooth device, the battery) —
             // re-read every shown domain, not just the one a match rule
             // would otherwise point to.
-            let mut failed = read_all(bus, domains, &mut s, log_state);
+            let mut units_ok = false;
+            let mut failed = read_all(bus, domains, &mut s, log_state, &mut units_ok);
             if let Err(e) = wifi_into(reader.reread(bus), &mut s) {
                 failed = Some(e);
             }
@@ -283,7 +290,7 @@ pub fn session(
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
-            if units_read_ok(domains, &failed) {
+            if units_ok {
                 match units_done(&mut link, bus, s.units, units_read) {
                     Ok(true) => {}
                     Ok(false) => return Ok(()),

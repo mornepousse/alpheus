@@ -189,7 +189,9 @@ impl App {
         true
     }
 
-    /// A click on `[ Copy ]`.
+    /// A click on `[ Copy ]`. Deliberately not gated by `COPY_GRACE`: the grace only guards an
+    /// Enter typed ahead of the text, and a click is a pointing act at a button that is on screen
+    /// (the button is drawn only once the text is there).
     pub(crate) fn report_copy_click(&mut self) {
         let argv = self.config.diagnostics.copy.clone();
         if let (View::Report(r), true) = (&self.diag.view, !argv.is_empty())

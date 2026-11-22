@@ -84,6 +84,8 @@ impl UnitsLink {
         match bus.subscribe_units(&owner) {
             Ok(()) => self.sub = Sub::Done,
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+            // A `daemon-reexec` keeps our subscription: the second `Subscribe` is told so.
+            Err(e) if e.to_string().starts_with("org.freedesktop.systemd1.AlreadySubscribed") => self.sub = Sub::Done,
             Err(_) => {
                 self.sub = Sub::Refused;
                 log("D-Bus Units: Subscribe refused");

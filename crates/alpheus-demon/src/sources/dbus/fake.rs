@@ -104,6 +104,8 @@ pub struct FakeBus {
     pub n_failed: u32,
     /// `Subscribe` is refused (an error reply), as a manager that does not take it would.
     pub refuse_subscribe: bool,
+    /// `Subscribe` fails with this error text (name, then message).
+    pub subscribe_error: Option<&'static str>,
     /// The fake clock the piggyback reads: a script's step moves it (`advance`).
     pub clock: Instant,
     pub script: VecDeque<Step>,
@@ -138,6 +140,7 @@ impl FakeBus {
             units_tap: Arc::default(),
             n_failed: 0,
             refuse_subscribe: false,
+            subscribe_error: None,
             clock: Instant::now(),
             script: VecDeque::new(),
             upower_activatable: false,
@@ -364,6 +367,9 @@ impl Bus for FakeBus {
     fn subscribe_units(&mut self, destination: &str) -> io::Result<()> {
         self.calls.push(format!("Subscribe {destination}"));
         self.reach(destination)?;
+        if let Some(e) = self.subscribe_error {
+            return Err(io::Error::other(e));
+        }
         if self.refuse_subscribe {
             return Err(io::Error::other("AccessDenied: Subscribe"));
         }

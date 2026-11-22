@@ -100,6 +100,30 @@ fn redaction_cases() {
         // UUIDs, plain and in a unit name's escaping.
         ("fs 123e4567-e89b-12d3-a456-426614174000 ok", "fs <uuid> ok"),
         ("dev-disk-by\\x2duuid-123e4567\\x2de89b\\x2d12d3\\x2da456\\x2d426614174000.device", "dev-disk-by\\x2duuid-<uuid>.device"),
+        // An address after a word and a dot (a PipeWire or BlueZ name, a host label) is found.
+        ("bluez_output.AA_BB_CC_DD_EE_FF.1 suspended", "bluez_output.<mac>.1 suspended"),
+        ("bluez_card.aa_bb_cc_dd_ee_ff", "bluez_card.<mac>"),
+        ("dev.aa:bb:cc:dd:ee:ff", "dev.<mac>"),
+        ("eth0.aa:bb:cc:dd:ee:ff", "eth0.<mac>"),
+        ("host.10.0.0.1", "host.<ip>"),
+        ("server.192.168.1.5:22", "server.<ip>:22"),
+        // A UUID after a unit name's escaped dash.
+        (
+            "systemd-cryptsetup@luks\\x2d123e4567\\x2de89b\\x2d12d3\\x2da456\\x2d426614174000.service",
+            "systemd-cryptsetup@luks\\x2d<uuid>.service",
+        ),
+        // A templated unit is not an e-mail address.
+        ("getty@tty1.service", "getty@tty1.service"),
+        ("user@1000.service", "user@1000.service"),
+        ("wg-quick@wg0.service failed", "wg-quick@wg0.service failed"),
+        ("bob@example.org.service2", "<email>"),
+        // Longer chains, a 0x prefix, bare 12 hex digits as a token, Cisco dots, tcpdump's port.
+        ("00:11:22:33:44:55:66", "<mac>"),
+        ("0x00:11:22:33:44:55", "<mac>"),
+        ("id AABBCCDDEEFF.", "id <mac>."),
+        ("AABBCCDDEEFFA 123456789012 aabbccddeeff00", "AABBCCDDEEFFA 123456789012 aabbccddeeff00"),
+        ("aabb.ccdd.eeff", "<mac>"),
+        ("192.168.1.5.443 > 10.0.0.1.52311", "<ip>.443 > <ip>.52311"),
     ];
     for (input, want) in cases {
         assert_eq!(r.apply(input), want, "{input}");
@@ -246,4 +270,13 @@ fn a_cut_that_fell_back_still_says_how_many_errors_there_were() {
         let text = build(&i, &none());
         assert!(text.len() <= 4096 && !text.contains("Errors this boot: unknown"), "{pad}: {text}");
     }
+}
+
+#[test]
+fn the_real_name_gives_each_long_word() {
+    assert_eq!(real_name_words("Alice Marie Dupont,Room 1,,"), ["Alice Marie Dupont", "Alice", "Marie", "Dupont"]);
+    assert_eq!(real_name_words("Al Li Bo"), ["Al Li Bo"]);
+    assert!(real_name_words(" ,x").is_empty());
+    let r = Redactions::new(&real_name_words("Alice Dupont"), &[], None, None);
+    assert_eq!(r.apply("dupont wrote"), "<user> wrote");
 }

@@ -1127,7 +1127,7 @@ fn a_bus_outage_later_in_read_all_overrides_an_earlier_domain_outage() {
     bus.failing.insert(network::PATH.into()); // Network: an ordinary timeout
     bus.disconnecting.insert(upower::DISPLAY_DEVICE.into()); // Battery: the bus itself gone
     let mut s = SystemState::default();
-    let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default()).expect("both reads failed");
+    let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default(), &mut false).expect("both reads failed");
     assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
     assert_eq!(outage_of(&e), Outage::Bus, "the later bus outage must win over the earlier domain one");
 }
@@ -1737,4 +1737,45 @@ fn a_units_outage_hides_the_count_and_tells_nobody() {
     assert_eq!(told, 0, "a read that failed is not a read");
     assert_eq!(outage_of(&r.unwrap_err()), Outage::Domain(Domain::Units));
     assert_eq!(bus.subscribes(), 0);
+}
+
+#[test]
+fn another_domains_failure_does_not_stand_for_the_counts_read() {
+    // Network fails first, the count's own read fails too: nobody is told.
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(network::PATH.into());
+    bus.failing.insert(units::PATH.into());
+    let (_, told, _) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(true, 60));
+    assert_eq!(told, 0, "the count was not read: {:?}", bus.calls);
+    assert_eq!(bus.subscribes(), 0);
+    // The count read fine beside a failed network: told, as before.
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(network::PATH.into());
+    let (_, told, _) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(true, 60));
+    assert_eq!(told, 1);
+}
+
+#[test]
+fn an_already_subscribed_manager_counts_as_subscribed() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.subscribe_error = Some("org.freedesktop.systemd1.AlreadySubscribed: already");
+    let mut link = units::UnitsLink::new(opts(true, 60));
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert!(link.subscribed(), "daemon-reexec keeps our subscription: not a refusal");
+    // Any other error is a refusal.
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.subscribe_error = Some("org.freedesktop.DBus.Error.AccessDenied: no");
+    let mut link = units::UnitsLink::new(opts(true, 60));
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert!(!link.subscribed());
+    // And a refused one is not asked again.
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert_eq!(bus.subscribes(), 1);
 }

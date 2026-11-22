@@ -141,8 +141,14 @@ fn replace_shapes(text: &str) -> String {
             let hit = uuid(&chars[i..])
                 .map(|n| (n, "<uuid>"))
                 .or_else(|| mac(&chars[i..]).map(|n| (n, "<mac>")))
+                .or_else(|| cisco_mac(&chars[i..]).map(|n| (n, "<mac>")))
+                .or_else(|| bare_mac(&chars[i..]).map(|n| (n, "<mac>")))
                 .or_else(|| ipv6(&chars[i..]).map(|n| (n, "<ip>")))
-                .or_else(|| (!after_version(&chars, i)).then(|| ipv4(&chars[i..]).map(|n| (n, "<ip>"))).flatten());
+                .or_else(|| {
+                    (!after_version(&chars, i) && !inside_dotted_number(&chars, i))
+                        .then(|| ipv4(&chars[i..]).map(|n| (n, "<ip>")))
+                        .flatten()
+                });
             if let Some((n, to)) = hit {
                 out.push_str(to);
                 i += n;
@@ -155,13 +161,24 @@ fn replace_shapes(text: &str) -> String {
     redact_emails(&out)
 }
 
-/// Not in the middle of a word or of a dotted number.
+/// Not in the middle of a word. A systemd `\x2d` escape (a dash in a unit name) counts as a
+/// boundary: the text after it starts a new token.
 fn boundary_before(chars: &[char], i: usize) -> bool {
     let Some(&prev) = i.checked_sub(1).map(|p| &chars[p]) else { return true };
-    if prev.is_alphanumeric() {
-        return false;
+    if !prev.is_alphanumeric() {
+        return true;
     }
-    !(prev == '.' && i >= 2 && chars[i - 2].is_alphanumeric())
+    i >= 4
+        && chars[i - 4] == '\\'
+        && chars[i - 3].eq_ignore_ascii_case(&'x')
+        && chars[i - 2] == '2'
+        && chars[i - 1].eq_ignore_ascii_case(&'d')
+}
+
+/// A dot right after a digit: the tail of a longer dotted number (`1.2.3.4.5`), not an address
+/// of its own. Only a dotted quad is held to it, never a MAC or a UUID.
+fn inside_dotted_number(chars: &[char], i: usize) -> bool {
+    i >= 2 && chars[i - 1] == '.' && chars[i - 2].is_ascii_digit()
 }
 
 /// The next character is not part of the same word.
@@ -182,18 +199,43 @@ fn hex_run(s: &[char], n: usize) -> bool {
 
 /// Six pairs of hex digits joined by one of `:`, `-` or `_`. Returns the length.
 fn mac(s: &[char]) -> Option<usize> {
-    let sep = *s.get(2)?;
+    // An optional `0x` prefix.
+    let off = if s.first() == Some(&'0') && s.get(1).is_some_and(|c| c.eq_ignore_ascii_case(&'x')) { 2 } else { 0 };
+    let t = &s[off..];
+    let sep = *t.get(2)?;
     if !matches!(sep, ':' | '-' | '_') {
         return None;
     }
     for g in 0..6 {
-        if !hex_run(&s[g * 3..], 2) || (g < 5 && s.get(g * 3 + 2) != Some(&sep)) {
+        if !hex_run(&t[g * 3..], 2) || (g < 5 && t.get(g * 3 + 2) != Some(&sep)) {
             return None;
         }
     }
-    // Not the head of a longer chain of pairs (an EUI-64 is an IPv6-shaped token instead).
-    let more = s.get(17) == Some(&sep) && hex_run(&s[18.min(s.len())..], 2);
-    (boundary_after(s, 17) && !more).then_some(17)
+    // A longer chain of pairs (an EUI-64, a stray byte) goes with it, whole.
+    let mut n = 17;
+    while t.get(n) == Some(&sep) && hex_run(t.get(n + 1..)?, 2) {
+        n += 3;
+    }
+    boundary_after(t, n).then_some(off + n)
+}
+
+/// Cisco's `aabb.ccdd.eeff`. Returns the length.
+fn cisco_mac(s: &[char]) -> Option<usize> {
+    for g in 0..3 {
+        if !hex_run(s.get(g * 5..)?, 4) || (g < 2 && s.get(g * 5 + 4) != Some(&'.')) {
+            return None;
+        }
+    }
+    boundary_after(s, 14).then_some(14)
+}
+
+/// Twelve hex digits as a token of their own (`AABBCCDDEEFF`), not all decimal (a plain number
+/// is not one). Returns the length.
+fn bare_mac(s: &[char]) -> Option<usize> {
+    if !hex_run(s, 12) || !boundary_after(s, 12) {
+        return None;
+    }
+    s[..12].iter().any(|c| !c.is_ascii_digit()).then_some(12)
 }
 
 /// 8-4-4-4-12 hex digits joined by `-` or by systemd's `\x2d` escape. Returns the length.
@@ -243,9 +285,14 @@ fn ipv4(s: &[char]) -> Option<usize> {
             at += 1;
         }
     }
-    // A fifth part is a longer version number, not an address.
-    let dotted = s.get(at) == Some(&'.') && s.get(at + 1).is_some_and(char::is_ascii_digit);
-    (boundary_after(s, at) && !dotted).then_some(at)
+    // A fifth part of one digit is a longer version number, not an address; tcpdump's `a.b.c.d.443`
+    // has a port of two or more digits there, which stays.
+    if s.get(at) == Some(&'.') && s.get(at + 1).is_some_and(char::is_ascii_digit) {
+        let port = s[at + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        let ends = boundary_after(s, at + 1 + port) && s.get(at + 1 + port) != Some(&'.');
+        return ((2..=5).contains(&port) && ends).then_some(at);
+    }
+    boundary_after(s, at).then_some(at)
 }
 
 /// Hex groups of at most four digits: eight of them, or a `::` somewhere with at least two
@@ -287,6 +334,10 @@ fn ipv6(s: &[char]) -> Option<usize> {
     ok.then_some(n)
 }
 
+/// Last labels of a systemd unit name.
+const UNIT_SUFFIXES: [&str; 11] =
+    ["service", "socket", "mount", "timer", "target", "device", "scope", "slice", "path", "swap", "automount"];
+
 fn redact_emails(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let local = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-');
@@ -312,7 +363,9 @@ fn redact_emails(text: &str) -> String {
             end -= 1;
         }
         let host: String = chars[i + 1..end].iter().collect();
-        if start < i && host.contains('.') && !host.starts_with('.') {
+        // A templated unit (`getty@tty1.service`) is not an address.
+        let unit = host.rsplit('.').next().is_some_and(|l| UNIT_SUFFIXES.iter().any(|u| l.eq_ignore_ascii_case(u)));
+        if start < i && host.contains('.') && !host.starts_with('.') && !unit {
             out.extend(&chars[copied..start]);
             out.push_str("<email>");
             copied = end;
@@ -511,6 +564,18 @@ pub fn os_pretty(os_release: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The real name (the first comma-separated field of GECOS) and each word of it of
+/// `MIN_NAME` characters or more.
+fn real_name_words(gecos: &str) -> Vec<String> {
+    let name = gecos.split(',').next().unwrap_or("").trim();
+    let mut out = Vec::new();
+    if !name.is_empty() {
+        out.push(name.to_string());
+        out.extend(name.split_whitespace().filter(|w| w.chars().count() >= MIN_NAME).map(str::to_string));
+    }
+    out
+}
+
 impl HostFacts {
     /// Reads them: `uname`, `/etc/os-release`, `$USER`, `$HOME`, the passwd entry, the host name and
     /// the machine id. Small files, read once per report.
@@ -537,7 +602,7 @@ impl HostFacts {
                 // The real name (the first comma-separated field of GECOS), when there is one.
                 if !pwd.pw_gecos.is_null() {
                     let gecos = std::ffi::CStr::from_ptr(pwd.pw_gecos).to_string_lossy().into_owned();
-                    users.extend(gecos.split(',').next().map(str::to_string).filter(|n| !n.trim().is_empty()));
+                    users.extend(real_name_words(&gecos));
                 }
             }
         }
