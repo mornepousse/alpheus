@@ -41,6 +41,8 @@ pub enum Target {
     AppearanceColors(ModuleColors),
     /// A chip of the Appearance style row.
     AppearanceStyle(BarStyle),
+    /// The bug report's `[ Copy ]`.
+    ReportCopy,
     /// Inside of an overlay: absorbs the click.
     Overlay,
 }

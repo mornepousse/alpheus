@@ -10,8 +10,8 @@
 use super::{
     APPEARANCE_NAMESPACE, CAPABILITIES, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH,
     MPRIS_PLAYER_INTERFACE, NOTIFICATIONS_INTERFACE, NOTIFICATIONS_NAME, NOTIFICATIONS_PATH, Orientation, PORTAL_NAME, PORTAL_PATH,
-    PROPERTIES_INTERFACE, Prop, SERVER_NAME, SERVER_VENDOR, SETTINGS_INTERFACE, SPEC_VERSION, WATCHER_INTERFACE, WATCHER_NAME,
-    WATCHER_PATH,
+    PROPERTIES_INTERFACE, Prop, SERVER_NAME, SERVER_VENDOR, SETTINGS_INTERFACE, SPEC_VERSION, SYSTEMD_MANAGER, SYSTEMD_PATH,
+    WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
 };
 use crate::media::Control;
 use crate::sources::dbus::BUS_DRIVER;
@@ -64,10 +64,12 @@ pub enum Method {
     PlayPause,
     Next,
     Previous,
+    /// The user manager's `Subscribe` (the one systemd call: it makes the Manager send its changes).
+    Subscribe,
 }
 
 impl Method {
-    pub const ALL: [Method; 20] = [
+    pub const ALL: [Method; 21] = [
         Method::Get,
         Method::Activate,
         Method::SecondaryActivate,
@@ -88,6 +90,7 @@ impl Method {
         Method::PlayPause,
         Method::Next,
         Method::Previous,
+        Method::Subscribe,
     ];
 
     pub fn name(self) -> &'static str {
@@ -112,6 +115,7 @@ impl Method {
             Method::PlayPause => "PlayPause",
             Method::Next => "Next",
             Method::Previous => "Previous",
+            Method::Subscribe => "Subscribe",
         }
     }
 
@@ -129,6 +133,7 @@ impl Method {
             Method::RegisterStatusNotifierHost => WATCHER_INTERFACE,
             Method::ReadOne => SETTINGS_INTERFACE,
             Method::PlayPause | Method::Next | Method::Previous => MPRIS_PLAYER_INTERFACE,
+            Method::Subscribe => SYSTEMD_MANAGER,
         }
     }
 }
@@ -138,6 +143,8 @@ impl Method {
 pub enum Property {
     Item(Prop),
     RegisteredItems,
+    /// The user manager's `NFailedUnits` (the Manager interface).
+    NFailedUnits,
 }
 
 /// One call, with its typed arguments. `destination` is always a unique name (":1.N").
@@ -235,6 +242,10 @@ pub enum Call {
         dest: String,
         member: Control,
     },
+    /// `Subscribe()` on the user manager (its unique name), answered: a refusal is read.
+    SubscribeUnits {
+        dest: String,
+    },
 }
 
 impl Call {
@@ -261,6 +272,7 @@ impl Call {
             Call::PlayerControl { member: Control::PlayPause, .. } => Method::PlayPause,
             Call::PlayerControl { member: Control::Next, .. } => Method::Next,
             Call::PlayerControl { member: Control::Previous, .. } => Method::Previous,
+            Call::SubscribeUnits { .. } => Method::Subscribe,
         }
     }
 
@@ -282,6 +294,7 @@ impl Call {
             | Call::PlayerMetadata { dest }
             | Call::PlayerPosition { dest }
             | Call::PlayerControl { dest, .. } => (dest, MPRIS_PATH),
+            Call::SubscribeUnits { dest } => (dest, SYSTEMD_PATH),
             Call::RequestName
             | Call::RequestNotifications
             | Call::GetNameOwner { .. }
@@ -358,6 +371,7 @@ pub fn message(call: &Call) -> Message {
     let mut m = match call {
         Call::Get { property: Property::Item(p), .. } => m.append2(ITEM_INTERFACE, p.name()),
         Call::Get { property: Property::RegisteredItems, .. } => m.append2(WATCHER_INTERFACE, "RegisteredStatusNotifierItems"),
+        Call::Get { property: Property::NFailedUnits, .. } => m.append2(SYSTEMD_MANAGER, "NFailedUnits"),
         Call::Activate { x, y, .. } | Call::SecondaryActivate { x, y, .. } | Call::ContextMenu { x, y, .. } => m.append2(*x, *y),
         Call::Scroll { delta, orientation, .. } => m.append2(*delta, orientation.name()),
         Call::AboutToShow { id, .. } => m.append1(*id),
@@ -374,7 +388,7 @@ pub fn message(call: &Call) -> Message {
         Call::PlayerIdentity { .. } => m.append2(MPRIS_INTERFACE, "Identity"),
         Call::PlayerMetadata { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Metadata"),
         Call::PlayerPosition { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Position"),
-        Call::PlayerControl { .. } => m,
+        Call::PlayerControl { .. } | Call::SubscribeUnits { .. } => m,
     };
     m.set_auto_start(false);
     if method == Method::Event {

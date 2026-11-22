@@ -258,7 +258,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 19);
+    assert_eq!(ModuleId::ALL.len(), 20);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -274,6 +274,16 @@ fn shield_sits_right_after_privacy_and_is_on_by_default() {
     assert!(BarConfig::default().modules.contains(&ModuleId::Shield), "on by default");
     let c = BarConfig::from_text("modules = [\"shield\", \"clock\"]").unwrap();
     assert_eq!(c.modules, vec![ModuleId::Shield, ModuleId::Clock]);
+}
+
+#[test]
+fn the_failed_module_sits_after_shield_and_is_on_by_default() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Failed), at(ModuleId::Shield) + 1, "right after shield");
+    assert_eq!(ModuleId::Failed.name(), "failed");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Failed));
+    let c = BarConfig::from_text("modules = [\"failed\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Failed, ModuleId::Clock]);
 }
 
 #[test]
@@ -761,6 +771,7 @@ fn hooks_are_read_in_order() {
         "privacy",
         "displays",
         "shield",
+        "failed_units",
     ];
     let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
     let c = BarConfig::from_text(&text).unwrap();
@@ -824,6 +835,17 @@ fn the_timer_module_sits_just_before_the_clock() {
     assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock));
     assert_eq!(ModuleId::Timer.name(), "timer");
     assert!(BarConfig::default().modules.contains(&ModuleId::Timer));
+}
+
+#[test]
+fn failed_defaults_and_settings() {
+    let d = FailedConfig::default();
+    assert_eq!((d.user_units, d.subscribe, d.notify), (true, false, false), "subscribe is off by default; no notice");
+    assert_eq!(BarConfig::default().failed, d);
+    assert_eq!(BarConfig::from_text("height = 22").unwrap().failed, d, "absent: defaults");
+    let c = BarConfig::from_text("[failed]\nsubscribe = true\nnotify = true\n").unwrap();
+    assert_eq!((c.failed.user_units, c.failed.subscribe, c.failed.notify), (true, true, true));
+    assert!(BarConfig::from_text("[failed]\nunits = 3\n").is_err(), "unknown keys are still rejected");
 }
 
 #[test]

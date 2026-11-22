@@ -12,6 +12,10 @@ pub trait Screen {
     fn suspend(&mut self) -> io::Result<()>;
     /// Restores them.
     fn resume(&mut self) -> io::Result<()>;
+    /// Writes one line on the plain terminal (between `suspend` and `resume`).
+    fn say(&mut self, line: &str) -> io::Result<()>;
+    /// Blocks until the user presses Enter (between `suspend` and `resume`).
+    fn wait_enter(&mut self) -> io::Result<()>;
 }
 
 pub trait Launcher {
@@ -25,6 +29,26 @@ pub fn open(screen: &mut dyn Screen, launcher: &mut dyn Launcher, argv: &[String
     }
     screen.suspend().map_err(|e| format!("could not give up the terminal: {e}"))?;
     let ran = launcher.run(argv);
+    match screen.resume() {
+        Err(e) => Err(format!("alpheus's screen was not restored: {e}")),
+        Ok(()) => ran,
+    }
+}
+
+/// `open`, for a command that may need the user's eyes: `intro` is printed before it runs (what is
+/// being run, and how to stop waiting), and a failure is printed and waits for Enter before the
+/// alternate screen comes back, so the error is read rather than wiped.
+pub fn open_noticed(screen: &mut dyn Screen, launcher: &mut dyn Launcher, argv: &[String], intro: &str) -> Result<(), String> {
+    if argv.is_empty() {
+        return Err("empty command".into());
+    }
+    screen.suspend().map_err(|e| format!("could not give up the terminal: {e}"))?;
+    let _ = screen.say(intro);
+    let ran = launcher.run(argv);
+    if let Err(e) = &ran {
+        let _ = screen.say(&format!("{e}. Press Enter to go back to alpheus."));
+        let _ = screen.wait_enter();
+    }
     match screen.resume() {
         Err(e) => Err(format!("alpheus's screen was not restored: {e}")),
         Ok(()) => ran,
@@ -92,6 +116,17 @@ impl Screen for CrosstermScreen {
         terminal::enable_raw_mode()?;
         execute!(io::stdout(), terminal::EnterAlternateScreen, event::EnableMouseCapture, cursor::Hide)
     }
+
+    fn say(&mut self, line: &str) -> io::Result<()> {
+        use std::io::Write;
+        let mut out = io::stdout();
+        writeln!(out, "{line}")?;
+        out.flush()
+    }
+
+    fn wait_enter(&mut self) -> io::Result<()> {
+        io::stdin().read_line(&mut String::new()).map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +148,14 @@ mod tests {
         }
         fn resume(&mut self) -> io::Result<()> {
             self.log.borrow_mut().push("restore screen".into());
+            Ok(())
+        }
+        fn say(&mut self, line: &str) -> io::Result<()> {
+            self.log.borrow_mut().push(format!("say {line}"));
+            Ok(())
+        }
+        fn wait_enter(&mut self) -> io::Result<()> {
+            self.log.borrow_mut().push("wait enter".into());
             Ok(())
         }
     }
@@ -163,6 +206,46 @@ mod tests {
         let (log, mut s, mut l) = fakes(false, Ok(()));
         assert!(open(&mut s, &mut l, &[]).is_err());
         assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_noticed_run_says_what_it_runs_before_running_it() {
+        let (log, mut s, mut l) = fakes(false, Ok(()));
+        let r = open_noticed(
+            &mut s,
+            &mut l,
+            &argv("systemctl restart -- mnt-data.mount"),
+            "Running systemctl restart -- mnt-data.mount (Ctrl+C stops waiting)",
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "leave screen",
+                "say Running systemctl restart -- mnt-data.mount (Ctrl+C stops waiting)",
+                "run systemctl restart -- mnt-data.mount",
+                "restore screen"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_noticed_run_waits_for_enter_before_the_screen_comes_back() {
+        let (log, mut s, mut l) = fakes(false, Err("systemctl exited with an error (exit status: 1)".into()));
+        let r = open_noticed(&mut s, &mut l, &argv("systemctl restart -- a.service"), "Running");
+        assert_eq!(r, Err("systemctl exited with an error (exit status: 1)".into()));
+        let log = log.borrow();
+        let n = log.len();
+        assert_eq!(log[n - 1], "restore screen");
+        assert_eq!(log[n - 2], "wait enter");
+        assert!(log[n - 3].starts_with("say ") && log[n - 3].contains("exited with an error") && log[n - 3].contains("Enter"), "{log:?}");
+    }
+
+    #[test]
+    fn a_successful_noticed_run_does_not_wait() {
+        let (log, mut s, mut l) = fakes(false, Ok(()));
+        let _ = open_noticed(&mut s, &mut l, &argv("systemctl restart -- a.service"), "Running");
+        assert!(!log.borrow().iter().any(|l| l == "wait enter"));
     }
 
     // Real launcher: only `sh` (no session tool).

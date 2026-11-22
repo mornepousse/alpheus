@@ -256,6 +256,9 @@ pub enum Request {
     DndOn(DndEnd),
     /// Empties the notification history (notifications spec): answered Done.
     ClearNotifications,
+    /// Reads the failed-unit counts again now (diagnostics spec § 6): answered Done, also with the
+    /// module off (nothing read). An older daemon refuses it as an unknown request.
+    FailedRefresh,
     /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
     /// module off or no backlight (nothing shown).
     Osd(OsdVerb),
@@ -353,6 +356,7 @@ impl fmt::Display for IpcError {
 /// Wire format (all text UTF-8):
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
+///   "alpheus-launcher/1 failed-refresh\n"
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
 ///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
@@ -385,6 +389,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
         Request::DndOn(DndEnd::Until(at)) => format!("{MAGIC} dnd on until {at}\n").into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
+        Request::FailedRefresh => format!("{MAGIC} failed-refresh\n").into_bytes(),
         Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
         Request::Quick(v) => match v.word() {
             Some(w) => format!("{MAGIC} quick {w}\n").into_bytes(),
@@ -430,6 +435,7 @@ enum Header {
     Dnd(DndVerb),
     DndOn(DndEnd),
     ClearNotifications,
+    FailedRefresh,
     Osd(OsdVerb),
     Quick(QuickVerb),
     Timer(TimerVerb),
@@ -583,6 +589,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::DndOn(end) => Some(Request::DndOn(end)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
+        Header::FailedRefresh => Some(Request::FailedRefresh),
         Header::Osd(v) => Some(Request::Osd(v)),
         Header::Quick(v) => Some(Request::Quick(v)),
         Header::Timer(v) => Some(Request::Timer(v)),
@@ -618,6 +625,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         }
         ["dnd", "on", "until", at] => Ok(Header::DndOn(DndEnd::Until(number(at, "do-not-disturb end")? as u64))),
         ["clear-notifications"] => Ok(Header::ClearNotifications),
+        ["failed-refresh"] => Ok(Header::FailedRefresh),
         ["osd", word] => {
             OsdVerb::parse(word).map(Header::Osd).ok_or_else(|| IpcError::Malformed(format!("unknown osd word {:?}", cut(word))))
         }

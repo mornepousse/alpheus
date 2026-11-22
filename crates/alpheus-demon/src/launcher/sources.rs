@@ -52,11 +52,12 @@ pub struct Entries {
 }
 
 /// Control characters (tab and `\r` included) and the invisible formatting characters the
-/// notifications remove (`text::invisible`: bidi overrides, zero-width space) removed. Not
+/// notifications remove (`text::invisible`: bidi overrides, zero-width space) removed, the line and
+/// paragraph separators turned into a space. Not
 /// `text::clean`: it turns a tab into a space and cuts at 256 characters, and the line is what
 /// `run` receives.
 pub fn clean(text: &str) -> String {
-    text.chars().filter(|&c| !c.is_control() && !invisible(c)).collect()
+    text.chars().filter(|&c| !c.is_control() && !invisible(c)).map(|c| if matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).collect()
 }
 
 /// (path, entry): the last ` · ` segment is the entry, the ones before it the path, joined with
@@ -155,6 +156,13 @@ mod tests {
     use alpheus_commun::exec::{Captured, SystemExecutor};
     use std::path::{Path, PathBuf};
     use std::time::Instant;
+
+    #[test]
+    fn clean_keeps_a_flag_and_turns_separators_into_spaces() {
+        assert_eq!(clean("a\u{2028}b\u{2029}c\td"), "a b cd", "the tab is dropped as before");
+        let flag = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+        assert_eq!(clean(flag), flag);
+    }
 
     /// An `sh` script in `dir`: a fake source's `list` (never tools-menu).
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {

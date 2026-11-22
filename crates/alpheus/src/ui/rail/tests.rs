@@ -116,6 +116,7 @@ fn tab_hues() {
         (Tab::Power, th.red),
         (Tab::Displays, th.green),
         (Tab::Appearance, th.orange),
+        (Tab::Diagnostics, th.yellow),
     ];
     assert_eq!(want.len(), Tab::ALL.len());
     for (t, c) in want {

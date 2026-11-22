@@ -152,6 +152,8 @@ pub enum GroupKind {
     Privacy,
     /// The Shield glyph: a block of its own (shield spec § 4).
     Shield,
+    /// The failed-units count: a block of its own (diagnostics spec § 6).
+    Failed,
     /// The power button: a block of its own (power spec § 1).
     Power,
     /// The focus timer's chip: a block of its own (timer spec § 2).

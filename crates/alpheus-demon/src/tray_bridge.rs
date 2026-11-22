@@ -36,6 +36,9 @@ impl App {
             if self.tray.as_ref().is_some_and(|t| t.notifications().is_some()) {
                 log("notifications: the session bus closed");
             }
+            if self.tray.as_ref().is_some_and(|t| t.failed().is_some()) {
+                log("failed: the session bus closed");
+            }
             self.tray = None;
         }
         if let Some(view) = out.media {
@@ -43,6 +46,9 @@ impl App {
         }
         if let Some(view) = out.notifications {
             self.notify_view(view);
+        }
+        if let Some(count) = out.user_units {
+            self.failed_user(count);
         }
         if out.bubbles {
             self.bubbles_sync();

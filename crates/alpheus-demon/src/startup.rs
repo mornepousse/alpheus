@@ -256,10 +256,17 @@ pub struct Wanted {
     /// The notifications server and the bell: on the tray's connection, or
     /// on the bar's link when the tray is off; false: no RequestName, no surface, no call.
     pub notifications: bool,
+    /// The user manager's failed-units count (the `failed` module): on the tray's connection, or on
+    /// the bar's link when the tray is off; false: no connection, no rule, no call.
+    pub failed: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
-    let needs = Needs::of(modules);
+    wanted_for(Needs::of(modules))
+}
+
+/// What `needs` ask for together (`wanted`; tests give theirs directly).
+pub(crate) fn wanted_for(needs: Needs) -> Wanted {
     // In this order, whichever modules ask: with the network module and the panel both, the
     // network domain is read once.
     let dbus = [
@@ -267,6 +274,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         (Needs::BLUETOOTH, Domain::Bluetooth),
         (Needs::BATTERY, Domain::Battery),
         (Needs::POWER_PROFILE, Domain::Power),
+        (Needs::UNITS, Domain::Units),
     ]
     .into_iter()
     .filter(|(n, _)| needs.contains(*n))
@@ -279,6 +287,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         tray: needs.contains(Needs::TRAY),
         media: needs.contains(Needs::MEDIA),
         notifications: needs.contains(Needs::NOTIFICATIONS),
+        failed: needs.contains(Needs::UNITS),
     }
 }
 
@@ -315,7 +324,18 @@ impl App {
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
+        // The system count was read: the user manager's again (its own link, `failed_app`).
+        if matches!(m, Msg::UnitsRead) {
+            self.failed_units_read();
+        }
+        let units = matches!(m, Msg::Units(_));
         on_message(self, m, || LocalTime::now().0);
+        if units {
+            if let Some(notice) = self.failed_notice.as_mut() {
+                notice.settle_system();
+            }
+            self.failed_notify();
+        }
         if quick {
             self.quick_refresh();
         }
@@ -679,6 +699,12 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
+    // The user manager's failed-units count, on the same connection.
+    if want.failed && state.bar.config.failed.user_units {
+        state.start_failed(true);
+    } else {
+        state.failed_user_never();
+    }
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {
@@ -740,12 +766,23 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no VPN tap ({e})")),
             }
         }
+        // The failed-units count's word (`failed-refresh`), only with its domain.
+        if want.dbus.contains(&Domain::Units) {
+            match sources::dbus::UnitsTap::new() {
+                Ok(t) => state.units_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("failed: no units tap ({e})")),
+            }
+        }
+        let tx_read = tx.clone();
         sources::dbus::start(
             want.dbus.clone(),
             state.quick.wifi_tap.clone(),
             state.quick.bt_tap.clone(),
             state.quick.vpn_tap.clone(),
+            state.units_tap.clone(),
+            sources::dbus::units::UnitsOptions { subscribe: state.bar.config.failed.subscribe, ..Default::default() },
             move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()),
+            move || tx_read.send(Mail::Bar(Msg::UnitsRead)).is_ok(),
         );
     }
 }

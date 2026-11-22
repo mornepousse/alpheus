@@ -16,9 +16,9 @@ macro_rules! rows {
 }
 
 rows! {
-    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Shield => 5, Volume => 6,
-    Network => 7, Bluetooth => 8, Battery => 9, Resources => 10, Tray => 11, Notifications => 12, Osd => 13,
-    Quick => 14, Displays => 15, Timer => 16, Clock => 17, Power => 18,
+    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Shield => 5, Failed => 6, Volume => 7,
+    Network => 8, Bluetooth => 9, Battery => 10, Resources => 11, Tray => 12, Notifications => 13, Osd => 14,
+    Quick => 15, Displays => 16, Timer => 17, Clock => 18, Power => 19,
 }
 
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
@@ -51,6 +51,18 @@ fn segments_and_popups_belong_to_the_right_modules() {
     assert_eq!(gated, [ModuleId::Shield, ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth]);
     assert!(MODULES.iter().filter(|m| m.popup_needs_quick).all(|m| m.popup == Some(ModulePopup::Quick)));
     assert_eq!(ModuleId::Notifications.spec().group, GroupKind::Status, "the bell joins the status block");
+}
+
+/// The failed-units module reads the Units domain, opens the Diag tab, draws its own block and
+/// takes no popup.
+#[test]
+fn the_failed_module_reads_the_units_domain_and_opens_the_diag_tab() {
+    let spec = ModuleId::Failed.spec();
+    assert_eq!((spec.name, spec.group, spec.tab, spec.popup), ("failed", GroupKind::Failed, Some("diagnostics"), None));
+    assert_eq!(spec.hue, None, "its glyph carries the error role");
+    assert!(spec.segment.is_some());
+    assert_eq!(Needs::of(&[ModuleId::Failed]), Needs::UNITS);
+    assert!(!Needs::of(&[ModuleId::Clock]).contains(Needs::UNITS), "nothing else asks for it");
 }
 
 #[test]

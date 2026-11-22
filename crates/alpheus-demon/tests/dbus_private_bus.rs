@@ -4,17 +4,19 @@
 
 mod common;
 
+use alpheus_demon::sources::dbus::UnitsTap;
 use alpheus_demon::sources::dbus::bt::BtTap;
 use alpheus_demon::sources::dbus::dbusrs_bus::{DbusRsBus, WIFI_RULES};
+use alpheus_demon::sources::dbus::units::UnitsOptions;
 use alpheus_demon::sources::dbus::vpn::VpnTap;
 use alpheus_demon::sources::dbus::wifi::WifiTap;
-use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
+use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM};
 use alpheus_demon::system::{
     ActiveVpn, BtState, NetState, PowerState, Profile, ProfileState, SavedWifi, Security, VpnKind, VpnScope, WifiScope,
 };
 use common::{
-    FakeAp, FakeNetworkManager, FakePowerProfiles, FakeVpn, NmChange, Peer, PrivateBus, UUID_HOME, UUID_NEW, Workstation, process_alive,
-    vpn_uuid,
+    FakeAp, FakeNetworkManager, FakePowerProfiles, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus, UUID_HOME, UUID_NEW, Workstation,
+    process_alive, vpn_uuid,
 };
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -109,10 +111,18 @@ fn the_session_on_an_empty_bus_hides_everything() {
     let b = PrivateBus::start("session");
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), &mut |s| {
-        first = Some(s);
-        false
-    });
+    let r = common::session_plain(
+        &mut bus,
+        &DOMAINS,
+        &mut DomainLog::default(),
+        &WifiTap::default(),
+        &BtTap::default(),
+        &VpnTap::default(),
+        &mut |s| {
+            first = Some(s);
+            false
+        },
+    );
     assert!(r.is_ok());
     let s = first.expect("an initial state");
     assert_eq!((s.network, s.bluetooth, s.battery), (Some(NetState::Absent), Some(BtState::Absent), Some(PowerState::default())));
@@ -129,7 +139,7 @@ fn the_power_profile_is_read_followed_and_hidden_on_a_private_bus() {
     let mut bus = DbusRsBus::at(&b.address, &[Domain::Power]).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = session(
+        let _ = common::session_plain(
             &mut bus,
             &[Domain::Power],
             &mut DomainLog::default(),
@@ -208,7 +218,7 @@ fn upower_absent_is_asked_for_once_and_the_battery_comes_in_when_it_appears() {
     let mut bus = DbusRsBus::at(&b.address, &[Domain::Battery]).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = session(
+        let _ = common::session_plain(
             &mut bus,
             &[Domain::Battery],
             &mut DomainLog::default(),
@@ -236,10 +246,18 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
     let _workstation = Workstation::serve(&b);
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), &mut |s| {
-        first = Some(s);
-        false
-    });
+    let r = common::session_plain(
+        &mut bus,
+        &DOMAINS,
+        &mut DomainLog::default(),
+        &WifiTap::default(),
+        &BtTap::default(),
+        &VpnTap::default(),
+        &mut |s| {
+            first = Some(s);
+            false
+        },
+    );
     assert!(r.is_ok(), "{r:?}");
     let s = first.expect("an initial state");
     assert_eq!(s.network, Some(NetState::Online { link: Link::Ethernet, vpns: 2, limited: false }));
@@ -355,9 +373,15 @@ fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &VpnTap::default(), &mut |s| {
-            tx.send(s.wifi).is_ok()
-        });
+        let _ = common::session_plain(
+            &mut bus,
+            &[Domain::Network],
+            &mut DomainLog::default(),
+            &t,
+            &BtTap::default(),
+            &VpnTap::default(),
+            &mut |s| tx.send(s.wifi).is_ok(),
+        );
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     assert_eq!(next(), None, "closed: no Wi-Fi read");
@@ -393,9 +417,15 @@ fn the_wifi_detail_is_read_followed_and_let_go_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &VpnTap::default(), &mut |s| {
-            tx.send(s.wifi).is_ok()
-        });
+        let _ = common::session_plain(
+            &mut bus,
+            &[Domain::Network],
+            &mut DomainLog::default(),
+            &t,
+            &BtTap::default(),
+            &VpnTap::default(),
+            &mut |s| tx.send(s.wifi).is_ok(),
+        );
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let device = |w: Option<alpheus_demon::system::WifiState>| w.and_then(|w| w.device).expect("the Wi-Fi device");
@@ -470,9 +500,15 @@ fn the_vpn_reading_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &t, &mut |s| {
-            tx.send(s.vpn).is_ok()
-        });
+        let _ = common::session_plain(
+            &mut bus,
+            &[Domain::Network],
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &t,
+            &mut |s| tx.send(s.vpn).is_ok(),
+        );
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     assert_eq!(next(), None, "closed: no VPN read");
@@ -506,4 +542,189 @@ fn the_vpn_reading_on_a_private_bus() {
     let actives = since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).count();
     assert_eq!((root, actives), (2, 2), "closed: the domain's own reads only, one per signal: {since:?}");
     assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
+}
+
+// The failed-units count over the wire (diagnostics spec § 6): a fake systemd that, like the real
+// one, sends the Manager's `PropertiesChanged` only while a client has called `Subscribe`.
+
+/// A session over `domains` on the bus, publishing the count it sees; the tap that pokes it.
+fn units_session(b: &PrivateBus, domains: Vec<Domain>, opts: UnitsOptions) -> (mpsc::Receiver<Option<u32>>, Arc<UnitsTap>) {
+    let tap = Arc::new(UnitsTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &domains).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let seen = tap.clone();
+    std::thread::spawn(move || {
+        let _ = alpheus_demon::sources::dbus::session(
+            &mut bus,
+            &domains,
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &seen,
+            opts,
+            &mut |s| tx.send(s.units).is_ok(),
+            &mut || true,
+        );
+    });
+    (rx, tap)
+}
+
+/// The next publication's count within `secs`.
+fn next_units(rx: &mpsc::Receiver<Option<u32>>, secs: u64) -> Option<Option<u32>> {
+    rx.recv_timeout(Duration::from_secs(secs)).ok()
+}
+
+/// Waits (5 s) for a publication whose count is `want`.
+fn units_become(rx: &mpsc::Receiver<Option<u32>>, want: Option<u32>) {
+    let until = Instant::now() + Duration::from_secs(5);
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(n) if n == want => return,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    panic!("the count never became {want:?}");
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn units_follow_a_subscribed_manager() {
+    let b = PrivateBus::start("units-follow");
+    let systemd = FakeSystemd::serve(&b, 0);
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
+    assert_eq!(next_units(&rx, 5), Some(Some(0)), "read at start");
+    systemd.wait_until("the subscription", |s| s.subscribers() == 1);
+    systemd.set_failed(2);
+    assert_eq!(next_units(&rx, 1), Some(Some(2)), "followed within a second, through the one rule");
+    systemd.set_failed(0);
+    assert_eq!(next_units(&rx, 1), Some(Some(0)));
+    assert_eq!(systemd.calls("GetAll"), 0, "the Manager's GetAll carries its Environment: never asked");
+    assert_eq!(systemd.calls("Get "), systemd.calls("Get NFailedUnits"), "no other property was read");
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn without_subscribe_a_change_is_seen_on_the_next_trigger() {
+    let b = PrivateBus::start("units-unsubscribed");
+    let systemd = FakeSystemd::serve(&b, 0);
+    let power = FakePowerProfiles::serve(&b, "balanced");
+    let opts = UnitsOptions { subscribe: false, piggyback: Duration::from_secs(1) };
+    let started = Instant::now();
+    let (rx, tap) = units_session(&b, vec![Domain::Power, Domain::Units], opts);
+    assert_eq!(next_units(&rx, 5), Some(Some(0)));
+    systemd.set_failed(2);
+    // Nobody subscribed: systemd sends nothing, and nothing else wakes the thread.
+    assert_eq!(next_units(&rx, 1).filter(|n| *n == Some(2)), None, "no signal without a subscriber");
+    assert_eq!(systemd.subscribers(), 0);
+    assert_eq!(systemd.calls("Subscribe"), 0, "subscribe = false");
+    // Another domain wakes the thread after the interval: the count rides along.
+    while started.elapsed() < Duration::from_millis(1200) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    power.set_active("performance");
+    units_become(&rx, Some(2));
+    // And a poke from the loop reads it at once.
+    systemd.set_failed(4);
+    assert_eq!(next_units(&rx, 1).filter(|n| *n == Some(4)), None, "still nothing by itself");
+    tap.poke();
+    units_become(&rx, Some(4));
+}
+
+/// A systemd that answers `Get` with an error leaves the count unknown and the session alive: the
+/// other domains keep flowing (diagnostics spec § 6).
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn a_failing_systemd_leaves_the_other_domains_flowing() {
+    let b = PrivateBus::start("units-failing");
+    let systemd = FakeSystemd::serve(&b, 3);
+    systemd.set_get_error(true);
+    let power = FakePowerProfiles::serve(&b, "balanced");
+    let domains = vec![Domain::Power, Domain::Units];
+    let tap = Arc::new(UnitsTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &domains).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let (end_tx, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let r = alpheus_demon::sources::dbus::session(
+            &mut bus,
+            &domains,
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &tap,
+            UnitsOptions { subscribe: false, piggyback: Duration::from_secs(1) },
+            &mut |s| tx.send(s).is_ok(),
+            &mut || true,
+        );
+        let _ = end_tx.send(r.is_ok());
+    });
+    let first = rx.recv_timeout(Duration::from_secs(5)).expect("a first state");
+    assert_eq!((first.units, first.power.is_some()), (None, true), "the count unknown, the profile read");
+    power.set_active("performance");
+    let until = Instant::now() + Duration::from_secs(5);
+    let mut last = first.clone();
+    while last.power == first.power {
+        let left = until.checked_duration_since(Instant::now()).expect("the profile change was never published");
+        last = rx.recv_timeout(left).expect("the profile change was never published");
+    }
+    assert_eq!(last.units, None);
+    assert!(end_rx.try_recv().is_err(), "the session is still alive");
+    // The count comes back once systemd answers again (a piggyback on the next profile change).
+    systemd.set_get_error(false);
+    std::thread::sleep(Duration::from_millis(1200));
+    power.set_active("balanced");
+    let until = Instant::now() + Duration::from_secs(5);
+    while last.units != Some(3) {
+        let left = until.checked_duration_since(Instant::now()).expect("the count never came back");
+        last = rx.recv_timeout(left).expect("the count never came back");
+    }
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn a_refused_subscribe_goes_on_and_a_poke_still_reads() {
+    let b = PrivateBus::start("units-refused");
+    let systemd = FakeSystemd::serve_refusing(&b, 1);
+    let (rx, tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
+    assert_eq!(next_units(&rx, 5), Some(Some(1)));
+    systemd.wait_until("the refused call", |s| s.calls("Subscribe") == 1);
+    systemd.set_failed(3);
+    tap.poke();
+    units_become(&rx, Some(3));
+    assert_eq!(systemd.calls("Subscribe"), 1, "refused once, not asked again for this owner");
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn a_systemd_restart_resubscribes() {
+    let b = PrivateBus::start("units-restart");
+    let systemd = FakeSystemd::serve(&b, 0);
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
+    assert_eq!(next_units(&rx, 5), Some(Some(0)));
+    systemd.wait_until("the first subscription", |s| s.subscribers() == 1);
+    systemd.restart();
+    systemd.wait_until("the subscription to the new owner", |s| s.calls("Subscribe") >= 2 && s.subscribers() == 1);
+    systemd.set_failed(3);
+    units_become(&rx, Some(3));
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn units_rules_name_their_service() {
+    let b = PrivateBus::start("units-rules");
+    let systemd = FakeSystemd::serve(&b, 0);
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
+    assert_eq!(next_units(&rx, 5), Some(Some(0)));
+    systemd.wait_until("the subscription", |s| s.subscribers() == 1);
+    let reads = systemd.calls("Get NFailedUnits");
+    // The same signal from a client that is not systemd1's owner is never delivered: the rule names
+    // its sender.
+    let intruder = Peer::connect(&b);
+    intruder.emit("/org/freedesktop/systemd1", "org.freedesktop.DBus.Properties", "PropertiesChanged", "org.freedesktop.systemd1.Manager");
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(systemd.calls("Get NFailedUnits"), reads, "the daemon woke for a signal that is not systemd's");
+    assert_eq!(next_units(&rx, 0), None);
 }

@@ -21,7 +21,7 @@ expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
                                                                                                                         
   󰏘 Theme    7    DISPLAYS ────────────────────────────────────────                                                     
                     1 Laptop     eDP-1     [■] on        2560×1600@60  scale 1.0    position 0, 1080                    
-                    2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  scale 1.0    origin                              
+  󰃤 Diag     8      2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  scale 1.0    origin                              
                     3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Alpha                      
                                                                                                                         
                                                                                                                         

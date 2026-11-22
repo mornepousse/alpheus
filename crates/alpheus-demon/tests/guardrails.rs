@@ -27,7 +27,8 @@ use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
 use alpheus_demon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_demon::session_bus::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, SYSTEMD_MANAGER,
+    SYSTEMD_NAME, SYSTEMD_PATH, WATCHER_NAME,
 };
 use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
@@ -400,6 +401,67 @@ fn output_power_management_never_appears() {
         }
     }
     assert!(files > 100, "the workspace's sources were not found ({files})");
+}
+
+/// Diagnostics spec § 8: the daemon reads systemd's failed-units count and subscribes to its signals,
+/// and asks it for nothing else. No method that starts, stops, restarts, resets, kills, enables,
+/// masks, reloads or changes anything of systemd's may be named in `sources/dbus/` (the acting
+/// Bluetooth connection excepted: it names none of them either), the count's one `Get` never
+/// becomes a `GetAll` (the Manager's carries its `Environment`), and no unit name is logged.
+#[test]
+fn no_acting_systemd1_method_in_the_daemon() {
+    let mut seen = 0;
+    for (path, text) in source_files() {
+        let name = relative_path(&path);
+        if !name.starts_with("sources/dbus/") {
+            continue;
+        }
+        seen += 1;
+        let prod = production_code(&text);
+        for word in [
+            "StartUnit",
+            "StopUnit",
+            "RestartUnit",
+            "TryRestartUnit",
+            "ReloadUnit",
+            "ReloadOrRestartUnit",
+            "ResetFailed",
+            "KillUnit",
+            "CleanUnit",
+            "FreezeUnit",
+            "StartTransientUnit",
+            "SetUnitProperties",
+            "EnableUnitFiles",
+            "DisableUnitFiles",
+            "MaskUnitFiles",
+            "LinkUnitFiles",
+            "SetEnvironment",
+            "UnsetEnvironment",
+            "Reexecute",
+            "Unsubscribe",
+            "systemd1.Manager.Reload",
+            "\"Reload\"",
+            "\"Halt\"",
+            "\"KExec\"",
+            "\"Exit\"",
+        ] {
+            assert!(!prod.contains(word), "{word} in {name}: the daemon only counts failed units");
+        }
+        // `Subscribe` is built in `dbusrs_bus.rs` and driven from `units.rs`, nowhere else (the
+        // test-only fake answers it).
+        let allowed = ["dbusrs_bus.rs", "units.rs", "mod.rs", "fake.rs"].map(|f| format!("sources/dbus/{f}"));
+        if !allowed.contains(&name) {
+            assert!(!prod.contains("subscribe_units("), "{name} subscribes to systemd");
+        }
+    }
+    assert!(seen >= 10, "sources/dbus/ was not found: {seen} files");
+    let units = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/units.rs").expect("units.rs").1;
+    let prod = production_code(&units);
+    assert!(!prod.contains("get_all(") && !prod.contains("\"Environment\""), "units.rs reads one property, never GetAll");
+    assert_eq!(prod.matches("get_u32(").count(), 1, "one read");
+    // The reader logs a fixed line: no formatting of a name, an owner or a path.
+    assert_eq!(prod.matches("log(").count(), 1, "{prod}");
+    assert!(prod.contains("log(\"D-Bus Units: Subscribe refused\")"), "a fixed line");
 }
 
 /// Review guardrail: only files in `src/sources/` are allowed to open or
@@ -819,6 +881,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
             Request::ClearNotifications => "clear-notifications",
+            Request::FailedRefresh => "failed-refresh",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
             Request::Timer(_) => "timer",
@@ -841,6 +904,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
         Request::ClearNotifications,
+        Request::FailedRefresh,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
         Request::Timer(TimerVerb::Popup),
@@ -864,6 +928,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "dnd",
             "dnd-on",
             "clear-notifications",
+            "failed-refresh",
             "osd",
             "quick",
             "timer",
@@ -1188,7 +1253,9 @@ fn d_bus_is_confined_to_sources_and_read_only() {
             "EnumerateDevices",
             "GetDevices",
             "ListConnections",
-            "GetSettings"
+            "GetSettings",
+            "Get",
+            "Subscribe"
         ]
     );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
@@ -1402,6 +1469,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             "PlayPause",
             "Next",
             "Previous",
+            "Subscribe",
         ]
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
@@ -1444,6 +1512,46 @@ fn the_portal_is_read_through_exactly_two_members() {
     }
 }
 
+/// Diagnostics spec § 8: the user manager is asked for one property and told `Subscribe`, nothing
+/// else of systemd's. `Subscribe` is the only call on the Manager interface the session bus's
+/// allowlist holds; the count is a `Get` of one property, never `GetAll` (its `Environment` may
+/// hold secrets); `failed_app.rs` names no dbus type, builds no call, and logs fixed words (no
+/// owner, no unit name).
+#[test]
+fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
+    let on_manager: Vec<&str> = TrayMethod::ALL.iter().filter(|m| m.interface() == SYSTEMD_MANAGER).map(|m| m.name()).collect();
+    assert_eq!(on_manager, ["Subscribe"], "the only systemd call on the session bus");
+    let get = message(&Call::Get {
+        destination: ":1.9".into(),
+        path: SYSTEMD_PATH.into(),
+        property: alpheus_demon::session_bus::bus::Property::NFailedUnits,
+    });
+    assert_eq!(get.read2::<&str, &str>().unwrap(), (SYSTEMD_MANAGER, "NFailedUnits"), "one property");
+    assert!(!get.get_auto_start(), "never starts the manager");
+    let sub = message(&Call::SubscribeUnits { dest: ":1.9".into() });
+    assert_eq!(sub.destination().as_deref(), Some(":1.9"), "to its unique name, never the well-known one");
+    assert!(!sub.get_auto_start());
+    assert_eq!(SYSTEMD_NAME, "org.freedesktop.systemd1");
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "failed_app.rs").expect("failed_app.rs").1;
+    let prod = production_code(&file);
+    assert!(!uses_crate(&prod, "dbus"), "failed_app.rs goes through the tray's typed calls and codec");
+    assert!(!prod.contains("method_call(") && !prod.contains("get_all") && !prod.contains("GetAll"), "one Get, built by bus::message");
+    assert!(!prod.contains("Environment"), "never the Manager's environment");
+    assert_eq!(
+        prod.matches("Call::").count(),
+        prod.matches("Call::AddMatch").count()
+            + prod.matches("Call::GetNameOwner").count()
+            + prod.matches("Call::Get {").count()
+            + prod.matches("Call::SubscribeUnits").count(),
+        "only the two rules, the owner, the count and the subscription"
+    );
+    for word in ["StartUnit", "StopUnit", "RestartUnit", "ResetFailed", "KillUnit", "Reload", "Unsubscribe", "SetEnvironment"] {
+        assert!(!prod.contains(word), "{word} in failed_app.rs: the daemon only counts failed units");
+    }
+    // Every log line is a fixed word: nothing formatted, so no owner, no unit, no path.
+    assert!(!prod.contains("log(&format!") && !prod.contains("say)(&format!"), "fixed lines only");
+}
+
 /// The files of the tray, the popups and the calendar: they run on the
 /// bar's loop, never on a thread of their own, and never run a command
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
@@ -1470,6 +1578,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "state_file.rs",
     "notify_app.rs",
     "link.rs",
+    "failed_app.rs",
     "background.rs",
     "painter/",
     "placement.rs",

@@ -1,4 +1,7 @@
-//! The system D-Bus, READ ONLY: NetworkManager, UPower, BlueZ, power-profiles-daemon.
+//! The system D-Bus, READ ONLY: NetworkManager, UPower, BlueZ, power-profiles-daemon and
+//! systemd's failed-units count (`units`: `Get` of one property, and `Subscribe` so that systemd
+//! sends its change; the one call of this connection that asks a service to do something, and
+//! it changes nothing on the machine).
 //! One connection on one thread, blocked on the bus while nothing changes; each
 //! signal re-reads the domain it concerns. `Bus` only has reads (checked by
 //! tests/guardrails.rs), and a service is only ever called through the
@@ -24,6 +27,7 @@ mod run;
 mod session;
 mod signal;
 pub mod tap;
+pub mod units;
 pub mod upower;
 pub mod vpn;
 pub mod wifi;
@@ -46,6 +50,7 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use units::UnitsOptions;
 use vpn::{VpnReader, VpnTap};
 use wifi::{WifiReader, WifiTap};
 
@@ -58,12 +63,15 @@ pub use session::{messages, session};
 #[cfg(test)]
 use session::{read, read_all};
 use signal::under;
+pub use tap::UnitsTap;
 
 pub const NM: &str = "org.freedesktop.NetworkManager";
 pub const UPOWER: &str = "org.freedesktop.UPower";
 pub const BLUEZ: &str = "org.bluez";
 /// power-profiles-daemon (quick spec § 5): read, never set (the panel runs powerprofilesctl).
 pub const POWER_PROFILES: &str = "net.hadess.PowerProfiles";
+/// systemd's manager (diagnostics spec § 6): its failed-units count, one property, never `GetAll`.
+pub const SYSTEMD1: &str = "org.freedesktop.systemd1";
 /// The bus driver, which answers `GetNameOwner`, `AddMatch` and the rest.
 pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
 pub const BUS_DRIVER_PATH: &str = "/org/freedesktop/DBus";
@@ -92,6 +100,17 @@ pub trait Bus {
     fn managed_objects(&mut self, destination: &str) -> io::Result<Objects>;
     /// `org.freedesktop.UPower.EnumerateDevices`.
     fn enumerate_devices(&mut self, destination: &str) -> io::Result<Vec<String>>;
+    /// `org.freedesktop.DBus.Properties.Get` of one `u` property, to `destination` (a unique name).
+    /// The daemon reads no other property this way: `dbusrs_bus::message` refuses any pair but
+    /// systemd's Manager `NFailedUnits`.
+    fn get_u32(&mut self, destination: &str, path: &str, interface: &str, property: &str) -> io::Result<u32>;
+    /// `org.freedesktop.systemd1.Manager.Subscribe`, to `destination` (a unique name): systemd
+    /// sends its Manager signals, `PropertiesChanged` among them, only while someone has called it.
+    fn subscribe_units(&mut self, destination: &str) -> io::Result<()>;
+    /// The clock the piggyback reads (tests give their own).
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
     /// `org.freedesktop.NetworkManager.GetDevices` (quick Wi-Fi spec § 5): the devices' paths.
     fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>>;
     /// `org.freedesktop.NetworkManager.Settings.ListConnections`: the saved connections' paths.
@@ -148,10 +167,12 @@ pub enum Domain {
     Bluetooth,
     Battery,
     Power,
+    /// systemd's failed-units count (diagnostics spec § 6).
+    Units,
 }
 
 /// Every domain, in reading order.
-pub const DOMAINS: [Domain; 4] = [Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
+pub const DOMAINS: [Domain; 5] = [Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power, Domain::Units];
 
 /// What the domains say. Per domain, None: "–" — its read failed, or it
 /// isn't read (its module isn't shown, nothing draws it).
@@ -161,6 +182,10 @@ pub struct SystemState {
     pub bluetooth: Option<BtState>,
     pub battery: Option<PowerState>,
     pub power: Option<ProfileState>,
+    /// The system manager's count of failed units (`units::read`); None: not read, nobody owns
+    /// systemd1, or its read failed. When it was last read is not here: it would make every read
+    /// differ and the bar redraw (`Msg::UnitsRead` says it).
+    pub units: Option<u32>,
     /// The quick panel's Wi-Fi, only while it is open (quick Wi-Fi spec § 5); None otherwise.
     pub wifi: Option<WifiState>,
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
@@ -190,13 +215,18 @@ fn wanted(domains: &[Domain]) -> bool {
 /// domain's own outage shows "–" for it alone, the others keep their last
 /// value during the delay (I2); the bus itself going away blanks
 /// all three. `wifi`, `bt`, `vpn`: the quick panel's taps (quick Wi-Fi spec § 5), polled beside the
-/// bus; None: a tap nothing ever sets.
+/// bus; None: a tap nothing ever sets. `units`: the loop's word to read the failed-units count
+/// now, `opts` how that count is followed, `units_read` called after each successful read of it.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     domains: Vec<Domain>,
     wifi: Option<Arc<WifiTap>>,
     bt: Option<Arc<BtTap>>,
     vpn: Option<Arc<VpnTap>>,
+    units: Option<Arc<UnitsTap>>,
+    opts: UnitsOptions,
     send: impl Fn(Option<SystemState>) -> bool + Send + 'static,
+    units_read: impl Fn() -> bool + Send + 'static,
 ) {
     if !wanted(&domains) {
         return;
@@ -209,9 +239,14 @@ pub fn start(
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();
         let vpn_tap = vpn.unwrap_or_default();
+        let units_tap = units.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking(bt_tap.clone()).waking(vpn_tap.clone());
-            session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, &vpn_tap, p)
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?
+                .waking(tap.clone())
+                .waking(bt_tap.clone())
+                .waking(vpn_tap.clone())
+                .waking(units_tap.clone());
+            session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, &vpn_tap, &units_tap, opts, p, &mut || units_read())
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });

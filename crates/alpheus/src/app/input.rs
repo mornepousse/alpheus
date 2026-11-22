@@ -2,7 +2,7 @@
 //! entry, then the configurable key table.
 
 use super::action::{Action, Tab};
-use super::{App, Item, Overlay, Palette, PanelField, Search};
+use super::{App, Confirm, Item, Overlay, Palette, PanelField, Search};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Instant;
 
@@ -26,7 +26,7 @@ impl App {
             return;
         }
         match self.overlay {
-            Overlay::Confirm(_) => return self.key_confirm(e),
+            Overlay::Confirm(_) | Overlay::UnitConfirm { .. } => return self.key_confirm(e),
             Overlay::Palette(_) => return self.key_palette(e, now),
             Overlay::Help => return self.key_help(e),
             Overlay::Keep(_) => return self.key_keep(e),
@@ -36,6 +36,12 @@ impl App {
         }
         if self.search.editing {
             return self.key_search(e);
+        }
+        if self.tab == Tab::Diagnostics {
+            self.diag_touch();
+        }
+        if self.journal_key(e) || self.report_views_key(e, now) {
+            return;
         }
         if let Some(a) = self.keymap.lookup(&e) {
             self.do_action(a, now);
@@ -52,17 +58,20 @@ impl App {
         match action {
             Some(Action::Back | Action::Quit) => self.close_confirm(false),
             Some(Action::Activate) => {
-                let yes = matches!(self.overlay, Overlay::Confirm(c) if c.yes_focused);
+                let yes = matches!(
+                    self.overlay,
+                    Overlay::Confirm(Confirm { yes_focused: true, .. }) | Overlay::UnitConfirm { yes_focused: true, .. }
+                );
                 self.close_confirm(yes);
             }
             // Arrow keys: "Cancel" is on the left, "Confirm" on the right;
             // Tab and Shift+Tab toggle between them.
             Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
-                if let Overlay::Confirm(c) = &mut self.overlay {
-                    c.yes_focused = match a {
+                if let Overlay::Confirm(Confirm { yes_focused, .. }) | Overlay::UnitConfirm { yes_focused, .. } = &mut self.overlay {
+                    *yes_focused = match a {
                         Action::Left => false,
                         Action::Right => true,
-                        _ => !c.yes_focused,
+                        _ => !*yes_focused,
                     };
                 }
             }
@@ -232,6 +241,9 @@ impl App {
         if self.tab == Tab::Appearance && self.appearance_action(a, now) {
             return;
         }
+        if self.diagnostics_action(a, now) {
+            return;
+        }
         match a {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -266,6 +278,8 @@ impl App {
                 _ => {}
             },
             Action::Activate => self.activate(now),
+            Action::UnitRestart | Action::UnitReset => {}
+            Action::Refresh => self.refresh_tab(now),
         }
     }
 }

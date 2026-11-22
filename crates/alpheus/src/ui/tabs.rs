@@ -4,6 +4,7 @@
 use super::Chrome;
 use super::appearance;
 use super::controls;
+use super::diagnostics;
 use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
@@ -33,6 +34,9 @@ enum Row {
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     if app.tab == Tab::Appearance {
         return appearance::render(buf, body, app, hits);
+    }
+    if app.tab == Tab::Diagnostics {
+        return diagnostics::render(buf, body, app, hits, chrome, now);
     }
     // Home as a dashboard beside the rail when its body has room (the classic chrome keeps the rows).
     if app.tab == Tab::Home && chrome == Chrome::Rail && home::fits(body) {
@@ -152,7 +156,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
             rows.push(Row::Blank);
             rows.push(Row::Item(1));
         }
-        Tab::Appearance => {}
+        Tab::Appearance | Tab::Diagnostics => {}
         Tab::Displays => {
             rows.push(Row::Item(0));
             rows.push(Row::Blank);
@@ -277,6 +281,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
         }
         Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits, rail),
         Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits, rail),
+        Item::Diag(_) => {} // drawn by `diagnostics`, which has its own rows
         Item::Button(c) => {
             let w = if rail {
                 controls::button(buf, body, lx, y, c, focused, th, hue)

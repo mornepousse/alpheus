@@ -27,9 +27,9 @@ use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeVpn, NmChange, Peer, PrivateBus, PwDump,
-    SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder, fake_recorder,
-    fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
+    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus,
+    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder,
+    fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
     write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
@@ -512,7 +512,9 @@ fn startup_pss_per_source() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("per-source");
     let _workstation = Workstation::serve(&bus);
-    let cases = [
+    // The system manager at count 0: only the `+ failed` case reads it.
+    let _systemd = FakeSystemd::serve(&bus, 0);
+    let mut cases = vec![
         // The case names are what CLAUDE.md and the README cite next to their figures: keep them.
         ("plan 1", "\"workspaces\", \"window\", \"clock\"", ""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\"", ""),
@@ -523,6 +525,12 @@ fn startup_pss_per_source() {
         ("+ privacy", concat!(every_module!(), ", \"privacy\""), ""),
         ("+ clipboard", every_module!(), "[clipboard]\nenabled = true\n"),
     ];
+    // Another build under test (`ALPHEUS_DEMON_UNDER_TEST`, a base from before the module) does
+    // not know its name.
+    if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none() {
+        // `[failed]` at its defaults: `subscribe = false`.
+        cases.push(("+ failed", concat!(every_module!(), ", \"failed\""), ""));
+    }
     let mut report = Vec::new();
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
         let toml = format!("modules = [{modules}]\n{extra}");
@@ -538,6 +546,10 @@ fn startup_pss_per_source() {
     let kb = |w: &str| report.iter().find(|(what, _)| *what == w).map(|(_, kb)| *kb).unwrap();
     let (everything, privacy) = (kb("everything"), kb("+ privacy"));
     assert!(privacy <= everything + 256, "+ privacy {privacy} KB vs everything {everything} KB: more than 256 KB at rest");
+    // Diagnostics spec: the failed count is a number per manager and a listener, nothing kept.
+    if let Some((_, failed)) = report.iter().find(|(what, _)| *what == "+ failed") {
+        assert!(*failed <= everything + 256, "+ failed {failed} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
     // Clipboard history spec: the history on, nothing copied yet, reports a small step (report, never raise).
     let clipboard = kb("+ clipboard");
     assert!(clipboard <= everything + 256, "+ clipboard {clipboard} KB vs everything {everything} KB: more than 256 KB at rest");
@@ -3727,6 +3739,241 @@ fn timer_popup_ticks_each_second_only_while_open() {
     let closed = d.main_thread_wakeups().saturating_sub(before);
     eprintln!("loop-thread wake-ups right after the close (5 s): {closed}");
     assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 5 s: {:?}", d.log());
+}
+
+// ---- The failed-units module (diagnostics plan 1, task 10). Two private buses, each with a
+// `FakeSystemd` (the system and the user manager), as the headless tests of task 9. ----
+
+const FAILED_ON: &str = "modules = [\"workspaces\", \"window\", \"failed\", \"clock\"]\n";
+const FAILED_OFF: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+
+/// A daemon, the workstation's services and a `FakeSystemd` on the system bus; with `session`, a
+/// second private bus with the user manager's. Dropped in the order the fields are written (the
+/// daemon first, then the fakes, then the buses).
+struct FailedRig {
+    d: Daemon,
+    usr: Option<FakeSystemd>,
+    sys: FakeSystemd,
+    ws: Workstation,
+    sway: Sway,
+    _hypr: FakeHyprland,
+    _user_bus: PrivateBus,
+    _sys_bus: PrivateBus,
+}
+
+/// `wait`: the counts were read before returning (the module is on), else only a 3 s settle.
+fn failed_rig(name: &str, toml: &str, system: u32, user: u32, session: bool, wait: bool) -> FailedRig {
+    let sys_bus = PrivateBus::start(&format!("{name}-sys"));
+    let user_bus = PrivateBus::start(&format!("{name}-user"));
+    let ws = Workstation::serve(&sys_bus);
+    let sys = FakeSystemd::serve(&sys_bus, system);
+    let usr = session.then(|| FakeSystemd::serve(&user_bus, user));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(toml),
+            system_bus: Some(&sys_bus.address),
+            session_bus: session.then_some(user_bus.address.as_str()),
+            pw_dump: PwDump::Silent,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    if wait {
+        sys.wait_until("the system count read", |s| s.calls("Get") >= 1);
+        if let Some(usr) = &usr {
+            usr.wait_until("the user count read", |s| s.calls("Get") >= 1);
+        }
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    FailedRig { d, usr, sys, ws, sway, _hypr: hypr, _user_bus: user_bus, _sys_bus: sys_bus }
+}
+
+/// The daemon's open sockets (Wayland, the launcher's, each D-Bus link, the notify and wake pairs).
+fn sockets(d: &Daemon) -> usize {
+    std::fs::read_dir(format!("/proc/{}/fd", d.pid()))
+        .unwrap()
+        .flatten()
+        .filter(|e| std::fs::read_link(e.path()).is_ok_and(|l| l.to_string_lossy().starts_with("socket:")))
+        .count()
+}
+
+/// PSS, anonymous PSS, threads and sockets at the settled start.
+fn start_figures(r: &FailedRig) -> (u64, u64, usize, usize) {
+    (r.d.pss_kb(), r.d.pss_anon_kb(), r.d.threads(), sockets(&r.d))
+}
+
+/// The default bar, then the same list with and without `failed`, at start, count 0 on both
+/// managers, with `subscribe` stated each way (it defaults to false): PSS printed, the anonymous
+/// memory bounded (+ 256 KB), threads and sockets printed (does a bar without a session bus, or
+/// with one, open a link it did not before?).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_pss_at_start() {
+    require_release(cfg!(debug_assertions));
+    let off = failed_rig("failed-start-off", FAILED_OFF, 0, 0, true, false);
+    let off_figures = start_figures(&off);
+    drop(off);
+    let unsubscribed = format!("{FAILED_ON}[failed]\nsubscribe = false\n");
+    let subscribed = format!("{FAILED_ON}[failed]\nsubscribe = true\n");
+    let on = failed_rig("failed-start-on", &unsubscribed, 0, 0, true, true);
+    let on_figures = start_figures(&on);
+    let both_read = (on.sys.calls("Get"), on.usr.as_ref().map(|u| u.calls("Subscribe")), on.sys.calls("Subscribe"));
+    drop(on);
+    let sub = failed_rig("failed-start-sub", &subscribed, 0, 0, true, true);
+    let sub_figures = start_figures(&sub);
+    let sub_subscribed = (sub.sys.subscribers(), sub.usr.as_ref().map(|u| u.subscribers()));
+    drop(sub);
+    let no_session = failed_rig("failed-start-nosession", &unsubscribed, 0, 0, false, true);
+    let no_session_figures = start_figures(&no_session);
+    drop(no_session);
+    eprintln!(
+        "failed module at start (PSS KB, Pss_Anon KB, threads, sockets): without {off_figures:?}; with, count 0 on both, subscribe false \
+         {on_figures:?} (system Get calls, user and system Subscribe calls: {both_read:?}); subscribe true {sub_figures:?} \
+         (subscribers system, user: {sub_subscribed:?}); subscribe false, no session bus {no_session_figures:?}"
+    );
+    assert_eq!(both_read.1.unwrap_or(0) + both_read.2, 0, "subscribe = false: no Subscribe call");
+    assert_eq!(sub_subscribed, (1, Some(1)), "subscribe = true: one Subscribe on each manager");
+    for (what, figures) in [("subscribe false", on_figures), ("subscribe true", sub_figures)] {
+        assert!(
+            figures.1 <= off_figures.1 + 256,
+            "the module costs {} KB of anonymous memory at start, {what} (bound 256)",
+            figures.1.saturating_sub(off_figures.1)
+        );
+    }
+}
+
+/// The default bar (no `modules`, so `[failed]` at its defaults: `subscribe = false`, the base build
+/// knowing no such table) at start, a system manager and a user manager at count 0 on
+/// their buses: PSS, anonymous PSS, threads and sockets printed. The same test runs against a base
+/// build (`ALPHEUS_DEMON_UNDER_TEST`), which has no failed module: the difference is what the
+/// module's being in the default list costs.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn default_bar_at_start() {
+    require_release(cfg!(debug_assertions));
+    let r = failed_rig("default-start", "", 0, 0, true, false);
+    let (pss, anon, threads, sockets) = start_figures(&r);
+    eprintln!("the default bar at start: PSS {pss} KB, Pss_Anon {anon} KB, {threads} threads, {sockets} sockets");
+    assert!(pss < STARTUP_MAX_KB, "the default bar: {pss} KB >= 15 MB — report to Mae, never raise");
+    drop(r);
+    // The same with no session bus at all: which links are the session bus's.
+    let r = failed_rig("default-start-nosession", "", 0, 0, false, false);
+    let (pss, anon, threads, sockets) = start_figures(&r);
+    eprintln!("the default bar at start, no session bus: PSS {pss} KB, Pss_Anon {anon} KB, {threads} threads, {sockets} sockets");
+}
+
+/// Two managers failing, then twenty changes (each read), with `subscribe` on and off: the
+/// anonymous memory stays within 64 KB of what it was at zero; PSS printed. Unsubscribed, each
+/// change is followed by the verb (`alpheus-launch --failed-refresh`).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_shown_pss() {
+    require_release(cfg!(debug_assertions));
+    for subscribe in [true, false] {
+        let toml = format!("{FAILED_ON}[failed]\nsubscribe = {subscribe}\n");
+        let r = failed_rig(&format!("failed-shown-{subscribe}"), &toml, 0, 0, true, true);
+        let usr = r.usr.as_ref().unwrap();
+        if subscribe {
+            r.sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+            usr.wait_until("the user subscription", |s| s.subscribers() == 1);
+        }
+        let change = |count: u32| {
+            let (gs, gu) = (r.sys.calls("Get"), usr.calls("Get"));
+            r.sys.set_failed(count);
+            usr.set_failed(count);
+            if !subscribe {
+                assert_eq!(launcher(&r.sway, &Request::FailedRefresh), Reply::Done);
+            }
+            r.sys.wait_until("the system count read", |s| s.calls("Get") > gs);
+            usr.wait_until("the user count read", |s| s.calls("Get") > gu);
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let (pss0, anon0) = (r.d.pss_kb(), r.d.pss_anon_kb());
+        change(2);
+        std::thread::sleep(Duration::from_secs(1));
+        let (pss_shown, anon_shown) = (r.d.pss_kb(), r.d.pss_anon_kb());
+        for n in 0..20u32 {
+            change(2 + n % 2);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        let (pss_end, anon_end) = (r.d.pss_kb(), r.d.pss_anon_kb());
+        eprintln!(
+            "failed shown (subscribe {subscribe}): PSS {pss0} KB at 0, {pss_shown} KB with 2 failing (+{}), {pss_end} KB after 20 more changes (+{}); \
+             Pss_Anon {anon0} -> {anon_shown} -> {anon_end} KB",
+            pss_shown.saturating_sub(pss0),
+            pss_end.saturating_sub(pss0)
+        );
+        assert!(
+            anon_shown <= anon0 + 64,
+            "subscribe {subscribe}: shown costs {} KB of anonymous memory (bound 64)",
+            anon_shown.saturating_sub(anon0)
+        );
+        assert!(
+            anon_end <= anon0 + 64,
+            "subscribe {subscribe}: 20 changes cost {} KB of anonymous memory (bound 64)",
+            anon_end.saturating_sub(anon0)
+        );
+        drop(r.ws);
+    }
+}
+
+/// Five seconds at rest after start: no wake-up of the loop, of the D-Bus thread or of the whole
+/// daemon, with `subscribe` on and off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_failed_units() {
+    require_release(cfg!(debug_assertions));
+    for subscribe in [true, false] {
+        let toml = format!("{FAILED_ON}[failed]\nsubscribe = {subscribe}\n");
+        let r = failed_rig(&format!("failed-rest-{subscribe}"), &toml, 0, 0, true, true);
+        const REST: Duration = Duration::from_secs(5);
+        away_from_the_minute(REST);
+        let (all, main, dbus, ticks) =
+            (r.d.wakeups(), r.d.main_thread_wakeups(), r.d.thread_wakeups("D-Bus").expect("the D-Bus thread"), r.d.cpu_ticks());
+        std::thread::sleep(REST);
+        assert_no_spin(r.d.cpu_ticks() - ticks, REST, "the daemon with the failed module");
+        let all = r.d.wakeups().saturating_sub(all);
+        let main = r.d.main_thread_wakeups().saturating_sub(main);
+        let dbus = r.d.thread_wakeups("D-Bus").unwrap().saturating_sub(dbus);
+        eprintln!("wake-ups at rest with failed units (subscribe {subscribe}, 5 s): {all} whole daemon, {main} loop, {dbus} D-Bus thread");
+        assert!(r.d.log().iter().all(|l| !l.contains("source down")), "every source up: {:?}", r.d.log());
+        assert_eq!((all, main, dbus), (0, 0, 0), "subscribe {subscribe}: a wake-up at rest (whole, loop, D-Bus thread)");
+    }
+}
+
+/// `subscribe = false`: the system count rides another domain's wake-up once a minute at most.
+/// A real 61 s wait, then a battery change (one piggybacked read), then five seconds at rest: no
+/// wake-up, the piggyback armed nothing. Slow: run with `--exact`.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop), 61 s wait: run with --exact"]
+fn piggyback_costs_no_wakeup() {
+    require_release(cfg!(debug_assertions));
+    let toml = "modules = [\"workspaces\", \"window\", \"battery\", \"failed\", \"clock\"]\n[failed]\nsubscribe = false\n";
+    let r = failed_rig("failed-piggyback", toml, 0, 0, true, true);
+    // An early change is inside the minute since the first read: no read.
+    let first = r.sys.calls("Get");
+    r.ws.battery_changed();
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(r.sys.calls("Get"), first, "a change within the minute rides nothing");
+    std::thread::sleep(Duration::from_secs(61));
+    r.ws.battery_changed();
+    r.sys.wait_until("the piggybacked read", |s| s.calls("Get") > first);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(r.sys.calls("Get"), first + 1, "one piggybacked read, no more");
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (all, main, dbus, ticks) =
+        (r.d.wakeups(), r.d.main_thread_wakeups(), r.d.thread_wakeups("D-Bus").expect("the D-Bus thread"), r.d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(r.d.cpu_ticks() - ticks, REST, "the daemon after a piggybacked read");
+    let all = r.d.wakeups().saturating_sub(all);
+    let main = r.d.main_thread_wakeups().saturating_sub(main);
+    let dbus = r.d.thread_wakeups("D-Bus").unwrap().saturating_sub(dbus);
+    eprintln!("wake-ups after a piggybacked read (5 s): {all} whole daemon, {main} loop, {dbus} D-Bus thread");
+    assert_eq!((all, main, dbus), (0, 0, 0), "a wake-up at rest after the piggyback");
 }
 
 /// Clipboard history: a daemon on the headless sway with the history on and the three base modules.

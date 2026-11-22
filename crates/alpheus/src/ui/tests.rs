@@ -27,8 +27,12 @@ use std::time::Instant;
 fn home_frame() {
     let (rows, _) = draw(&ready_app(), 80, 24);
     assert!(rows[0].contains(" 1 Home ") && rows[0].contains(" 5 Power "));
-    assert!(rows[0].contains(" 7 Theme ") && rows[0].contains(" 4 BT "), "seven tabs in 80 columns: {:?}", rows[0]);
-    assert!(rows[0].contains("alpheus"), "the brand stays at 80 columns: {:?}", rows[0]);
+    assert!(
+        rows[0].contains(" 7 Theme ") && rows[0].contains(" 8 Diag ") && rows[0].contains(" 4 BT "),
+        "eight tabs in 80 columns: {:?}",
+        rows[0]
+    );
+    assert!(!rows[0].contains("alpheus"), "the brand gives way to the eighth tab at 80 columns: {:?}", rows[0]);
     assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
     assert!(rows[2].contains("  62 %"));
     assert!(rows[4].contains("Brightness") && rows[4].contains("  20 %"));
@@ -247,7 +251,7 @@ fn daemon_absent_shows_its_message() {
     use crate::displays::wire::{Snapshot, Status, TrialState};
     use std::sync::Arc;
     let dir = alpheus_commun::temp_path::TempPath::new("ui-daemon-absent");
-    let mut b = crate::backends::Backends::system(Arc::new(crate::exec::fake::FakeExecutor::new()), dir.to_path_buf());
+    let mut b = crate::backends::Backends::system_isolated(Arc::new(crate::exec::fake::FakeExecutor::new()), dir.to_path_buf());
     let fake = Arc::new(FakeDisplays::default());
     b.displays = fake.clone();
     let off = |status| Ok(Snapshot { status, outputs: Vec::new(), trial: TrialState::None });
@@ -425,8 +429,8 @@ fn full_help_fits_in_80x26() {
     let all = rows.join("\n");
     assert!(all.contains("Help — Esc to close"), "{all}");
     assert!(all.contains("Mouse") && all.contains("click, drag, scroll"), "last row cut off:\n{all}");
-    assert!(all.contains("Tabs 1 to 7") && all.contains("1, 2, 3, 4, 5, 6, 7"), "{all}");
-    assert!(!all.contains("Tab Sound"), "the seven tabs fit on one line");
+    assert!(all.contains("Tabs 1 to 8") && all.contains("1, 2, 3, 4, 5, 6, 7, 8"), "{all}");
+    assert!(!all.contains("Tab Sound"), "the eight tabs fit on one line");
 }
 
 #[test]

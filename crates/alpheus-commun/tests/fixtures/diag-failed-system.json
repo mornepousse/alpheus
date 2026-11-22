@@ -1,0 +1,1 @@
+[{"unit":"example-sync.service","load":"loaded","active":"failed","sub":"failed","description":"Example sync job"},{"unit":"mnt-data.mount","load":"loaded","active":"failed","sub":"failed","description":"/mnt/data"},{"unit":"example-app.service","load":"loaded","active":"failed","sub":"failed","description":"Example app \u001b[2Jwith ‮hostile‬ text"}]

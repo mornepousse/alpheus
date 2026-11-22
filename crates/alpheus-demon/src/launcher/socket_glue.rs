@@ -200,6 +200,8 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 // Shield mode's verbs: answered here; `status` and `allow` keep the connection while
                 // the blocked devices are read (`shield_app.rs`).
                 Route::Shield => state.shield_verb(&request, conn),
+                // The failed-units count's verb: answered here, nothing of the launcher's.
+                Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),
                 Route::Launcher => {
                     // A dmenu request may have buffered up to 4 MiB: once it
                     // reached RELEASE_AFTER, give the pages back as soon as it
@@ -265,6 +267,7 @@ enum Route {
     Clipboard,
     Displays,
     Shield,
+    Failed,
     Launcher,
 }
 
@@ -276,6 +279,7 @@ fn route(request: &Request) -> Route {
         Request::Timer(_) => Route::Timer,
         Request::Notes => Route::Notes,
         Request::ClipboardClear => Route::Clipboard,
+        Request::FailedRefresh => Route::Failed,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
         Request::Shield(_) => Route::Shield,
         Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Clipboard | Request::Dmenu { .. } => Route::Launcher,

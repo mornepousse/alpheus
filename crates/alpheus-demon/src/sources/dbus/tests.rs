@@ -1,4 +1,4 @@
-use super::fake::{AP, BLUEZ_OWNER, FakeBus, NM_OWNER, Step, WIFI_DEVICE, signal, with_names};
+use super::fake::{AP, BLUEZ_OWNER, FakeBus, NM_OWNER, SYSTEMD_OWNER, Step, WIFI_DEVICE, signal, with_names};
 use super::props::Prop;
 use super::wifi::WifiChange;
 use super::*;
@@ -6,6 +6,7 @@ use crate::state::Msg;
 use crate::system::*;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 fn workstation_network() -> NetState {
     NetState::Online { link: Link::Ethernet, vpns: 2, limited: false }
@@ -40,13 +41,27 @@ fn network_breaks(b: &mut FakeBus) {
     b.failing.insert(network::PATH.into());
 }
 
+/// `session` with the failed-units count's defaults and nobody to tell: what every test that is
+/// not about the count uses.
+fn plain_session(
+    bus: &mut dyn Bus,
+    domains: &[Domain],
+    log_state: &mut DomainLog,
+    wifi: &WifiTap,
+    bt: &BtTap,
+    vpn: &VpnTap,
+    publish: &mut dyn FnMut(SystemState) -> bool,
+) -> io::Result<()> {
+    session(bus, domains, log_state, wifi, bt, vpn, &UnitsTap::default(), UnitsOptions::default(), publish, &mut || true)
+}
+
 /// A session over `domains`, every publication accepted.
 fn run_over(bus: &mut FakeBus, domains: &[Domain]) -> (Vec<SystemState>, io::Result<()>) {
     let mut seen = Vec::new();
     let tap = bus.tap.clone();
     let bt_tap = bus.bt_tap.clone();
     let vpn_tap = bus.vpn_tap.clone();
-    let r = session(bus, domains, &mut DomainLog::default(), &tap, &bt_tap, &vpn_tap, &mut |s| {
+    let r = plain_session(bus, domains, &mut DomainLog::default(), &tap, &bt_tap, &vpn_tap, &mut |s| {
         seen.push(s);
         true
     });
@@ -93,6 +108,7 @@ fn initial_state_then_one_publication_per_relevant_signal() {
             bluetooth: Some(BtState::On { devices: vec![] }),
             battery: Some(workstation_battery()),
             power: Some(ProfileState::default()),
+            units: None,
             wifi: None,
             wifi_open: 0,
             bt: None,
@@ -216,8 +232,16 @@ fn stops_when_the_bar_stops() {
     let mut bus = FakeBus::workstation();
     bus.script = VecDeque::from([(signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing as fn(&mut FakeBus))]);
     assert!(
-        session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), &mut |_| false)
-            .is_ok()
+        plain_session(
+            &mut bus,
+            &DOMAINS,
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &mut |_| false
+        )
+        .is_ok()
     );
     assert_eq!(bus.script.len(), 1, "no signal read after the bar said stop");
 }
@@ -259,6 +283,25 @@ fn the_wifi_row_is_read_on_a_poke_followed_while_open_and_dropped_on_close() {
     assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetDevices")).count(), 1, "{:?}", bus.calls);
     let device_reads = bus.calls.iter().filter(|c| c.contains(WIFI_DEVICE)).count();
     assert_eq!(device_reads, 4, "Device and Device.Wireless, at the poke and at the radio's signal; none closed");
+}
+
+fn poke_the_units(b: &mut FakeBus) {
+    b.units_tap.poke();
+}
+
+/// Final review: a poke is each tap's own word. The failed-units count asked for again reads the
+/// count, and nothing of the open Wi-Fi row.
+#[test]
+fn a_units_poke_rereads_no_panel() {
+    let mut bus = FakeBus::workstation();
+    bus.with_wifi();
+    bus.with_systemd(1);
+    let steps: [Step; 2] = [(Signal::poke(), open_the_row), (Signal::poke(), poke_the_units)];
+    bus.script = VecDeque::from(steps);
+    let (_, _, r) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(false, 3600));
+    assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    let device_reads = bus.calls.iter().filter(|c| c.contains(WIFI_DEVICE)).count();
+    assert_eq!(device_reads, 2, "the open at the first poke only: {:?}", bus.calls);
 }
 
 /// A session (re)starting while the panel is open (a reconnection) reads the row at once.
@@ -646,7 +689,8 @@ fn messages_for_the_bar() {
             Msg::Profile(None),
             Msg::Wifi { open: None, state: None },
             Msg::Bt { open: None, state: None },
-            Msg::Vpn { open: None, state: None }
+            Msg::Vpn { open: None, state: None },
+            Msg::Units(None)
         ],
         "bus down: \"–\" everywhere"
     );
@@ -655,6 +699,7 @@ fn messages_for_the_bar() {
         bluetooth: None,
         battery: Some(PowerState::default()),
         power: Some(ProfileState::default()),
+        units: None,
         wifi: None,
         wifi_open: 0,
         bt: None,
@@ -671,7 +716,8 @@ fn messages_for_the_bar() {
             Msg::Profile(Some(ProfileState::default())),
             Msg::Wifi { open: Some(0), state: None },
             Msg::Bt { open: Some(0), state: None },
-            Msg::Vpn { open: Some(0), state: None }
+            Msg::Vpn { open: Some(0), state: None },
+            Msg::Units(None)
         ]
     );
 }
@@ -716,7 +762,13 @@ fn signals_point_to_their_domain() {
     assert_eq!(d("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(BLUEZ)), Some(Domain::Bluetooth));
     assert_eq!(d("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(":1.42")), None);
     assert_eq!(d("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameAcquired", None), None, "sent to every new client");
-    assert_eq!(d("/org/freedesktop/systemd1", PROPERTIES, "PropertiesChanged", None), None);
+    assert_eq!(d("/org/freedesktop/systemd1", PROPERTIES, "PropertiesChanged", None), Some(Domain::Units));
+    assert_eq!(d("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(SYSTEMD1)), Some(Domain::Units));
+    assert_eq!(
+        d("/org/freedesktop/systemd1/unit/example_2eservice", PROPERTIES, "PropertiesChanged", None),
+        None,
+        "a unit's, not the Manager's"
+    );
     assert_eq!(d("/org/bluezz", PROPERTIES, "PropertiesChanged", None), None, "a path prefix, not a string prefix");
 }
 
@@ -922,6 +974,7 @@ fn a_domain_outage_blanks_only_that_domain_during_the_backoff() {
         bluetooth: None,
         battery: Some(PowerState::default()),
         power: None,
+        units: None,
         wifi: None,
         wifi_open: 0,
         bt: None,
@@ -1039,6 +1092,7 @@ fn a_bus_outage_blanks_everything_during_the_backoff() {
         bluetooth: Some(BtState::Absent),
         battery: Some(PowerState::default()),
         power: None,
+        units: None,
         wifi: None,
         wifi_open: 0,
         bt: None,
@@ -1092,7 +1146,7 @@ fn a_bus_outage_later_in_read_all_overrides_an_earlier_domain_outage() {
     bus.failing.insert(network::PATH.into()); // Network: an ordinary timeout
     bus.disconnecting.insert(upower::DISPLAY_DEVICE.into()); // Battery: the bus itself gone
     let mut s = SystemState::default();
-    let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default()).expect("both reads failed");
+    let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default(), &mut false).expect("both reads failed");
     assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
     assert_eq!(outage_of(&e), Outage::Bus, "the later bus outage must win over the earlier domain one");
 }
@@ -1107,7 +1161,15 @@ fn a_wedged_bluez_leaves_network_and_battery_shown_while_bluetooth_shows_dash() 
         |publish: &mut dyn FnMut(SystemState) -> bool| {
             let mut bus = FakeBus::workstation();
             bus.failing.insert("/".into());
-            session(&mut bus, &domains, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), publish)
+            plain_session(
+                &mut bus,
+                &domains,
+                &mut DomainLog::default(),
+                &WifiTap::default(),
+                &BtTap::default(),
+                &VpnTap::default(),
+                publish,
+            )
         },
         &|v: Option<SystemState>| {
             sends.borrow_mut().push(v);
@@ -1133,7 +1195,7 @@ fn bus_loss_blanks_everything_even_after_good_reads() {
         // An empty script: the next (and only) call to `next_signal`
         // ends the session — a real bus going away, untagged.
         |publish: &mut dyn FnMut(SystemState) -> bool| {
-            session(
+            plain_session(
                 &mut FakeBus::workstation(),
                 &domains,
                 &mut DomainLog::default(),
@@ -1177,10 +1239,19 @@ fn wanted_is_false_only_when_no_domain_is_shown() {
 fn start_with_no_domains_connects_nothing() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = calls.clone();
-    start(vec![], None, None, None, move |_| {
-        c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        true
-    });
+    start(
+        vec![],
+        None,
+        None,
+        None,
+        None,
+        UnitsOptions::default(),
+        move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        },
+        || true,
+    );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "no connection, no thread, nothing published");
 }
 
@@ -1282,8 +1353,8 @@ fn a_vpn_close_and_reopen_read_as_one_poke_is_a_new_open() {
 }
 
 #[test]
-fn messages_has_seven_and_vpn_none_when_down() {
-    assert_eq!(messages(None).len(), 7);
+fn messages_has_eight_and_vpn_none_when_down() {
+    assert_eq!(messages(None).len(), 8);
     assert_eq!(messages(None)[6], Msg::Vpn { open: None, state: None });
     let s = SystemState { vpn: Some(VpnState::default()), vpn_open: 3, ..SystemState::default() };
     assert_eq!(messages(Some(s))[6], Msg::Vpn { open: Some(3), state: Some(VpnState::default()) });
@@ -1391,7 +1462,7 @@ fn the_activation_comes_after_the_first_publication() {
     let starts = bus.starts.clone();
     let (tap, bt, vpn) = (bus.tap.clone(), bus.bt_tap.clone(), bus.vpn_tap.clone());
     let mut seen = Vec::new();
-    let _ = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &tap, &bt, &vpn, &mut |_| {
+    let _ = plain_session(&mut bus, &DOMAINS, &mut DomainLog::default(), &tap, &bt, &vpn, &mut |_| {
         seen.push(starts.load(Ordering::SeqCst));
         true
     });
@@ -1446,4 +1517,353 @@ fn the_activation_is_logged_with_fixed_words() {
     lines.clear();
     activate_if_absent(&mut bus, &mut |m| lines.push(m.to_string()));
     assert_eq!(lines, ["upower: activation asked"]);
+}
+
+// The failed-units count (diagnostics spec § 6).
+
+/// A session over `domains` with `opts`: the publications, how many times the loop was told the
+/// count was read, and the session's end.
+fn run_units(bus: &mut FakeBus, domains: &[Domain], opts: UnitsOptions) -> (Vec<SystemState>, usize, io::Result<()>) {
+    let mut seen = Vec::new();
+    let mut told = 0;
+    let (tap, bt_tap, vpn_tap, units_tap) = (bus.tap.clone(), bus.bt_tap.clone(), bus.vpn_tap.clone(), bus.units_tap.clone());
+    let r = session(
+        bus,
+        domains,
+        &mut DomainLog::default(),
+        &tap,
+        &bt_tap,
+        &vpn_tap,
+        &units_tap,
+        opts,
+        &mut |s| {
+            seen.push(s);
+            true
+        },
+        &mut || {
+            told += 1;
+            true
+        },
+    );
+    (seen, told, r)
+}
+
+fn opts(subscribe: bool, piggyback_secs: u64) -> UnitsOptions {
+    UnitsOptions { subscribe, piggyback: Duration::from_secs(piggyback_secs) }
+}
+
+const MANAGER_CHANGED: fn() -> Signal =
+    || with_names(signal(units::PATH, PROPERTIES, "PropertiesChanged", Some(units::MANAGER)), &["NFailedUnits"]);
+
+fn battery_wakes() -> Signal {
+    with_names(signal("/org/freedesktop/UPower/devices/DisplayDevice", PROPERTIES, "PropertiesChanged", None), &["Percentage"])
+}
+
+fn systemd_owner_changes() -> Signal {
+    signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(SYSTEMD1))
+}
+
+#[test]
+fn units_read_never_gets_all() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(3);
+    assert_eq!(units::read(&mut bus).unwrap(), Some(3));
+    assert_eq!(
+        bus.calls,
+        [format!("GetNameOwner {SYSTEMD1}"), format!("Get {SYSTEMD_OWNER} {} {} NFailedUnits", units::PATH, units::MANAGER),],
+        "one property through the owner's unique name: the Manager's GetAll carries its Environment"
+    );
+    assert!(bus.calls.iter().all(|c| !c.starts_with("GetAll")));
+}
+
+#[test]
+fn no_systemd_owner_is_none() {
+    let mut bus = FakeBus::empty();
+    assert_eq!(units::read(&mut bus).unwrap(), None);
+    assert_eq!(bus.calls, [format!("GetNameOwner {SYSTEMD1}")], "nothing called on a name nobody owns");
+}
+
+#[test]
+fn piggyback_rule() {
+    let t0 = Instant::now();
+    let interval = Duration::from_secs(60);
+    assert!(units::should_piggyback(None, t0, interval), "never read: read");
+    assert!(!units::should_piggyback(Some(t0), t0 + interval - Duration::from_secs(1), interval));
+    assert!(units::should_piggyback(Some(t0), t0 + interval, interval));
+    assert!(!units::should_piggyback(Some(t0 + interval), t0, interval), "a clock that went back: not due");
+}
+
+#[test]
+fn the_manager_signal_maps_to_units() {
+    assert_eq!(MANAGER_CHANGED().domain(), Some(Domain::Units));
+    assert_eq!(systemd_owner_changes().domain(), Some(Domain::Units));
+    let other = with_names(signal(units::PATH, PROPERTIES, "PropertiesChanged", Some(units::MANAGER)), &["SystemState"]);
+    assert_eq!(other.domain(), None, "only NFailedUnits emits a change; anything else is not ours");
+}
+
+#[test]
+fn the_first_read_is_published_and_the_loop_told() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(2);
+    let (seen, told, r) = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    assert!(r.is_err(), "the scripted bus ends");
+    assert_eq!(seen[0].units, Some(2));
+    assert_eq!(told, 1);
+    // No systemd1 on the bus: unknown, and the loop told all the same (the read succeeded).
+    let mut bus = FakeBus::empty();
+    let (seen, told, _) = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    assert_eq!((seen[0].units, told), (None, 1));
+    assert_eq!(bus.subscribes(), 0, "nothing to subscribe to");
+}
+
+#[test]
+fn subscribes_unless_turned_off() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    let _ = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    assert_eq!(bus.subscribes(), 1, "once, after the first read: {:?}", bus.calls);
+    let order: Vec<&str> = bus.calls.iter().map(|c| c.split(' ').next().unwrap()).collect();
+    assert_eq!(order, ["GetNameOwner", "Get", "GetNameOwner", "Subscribe"]);
+    assert!(bus.calls.last().unwrap().contains(SYSTEMD_OWNER), "to the owner's unique name");
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    let _ = run_units(&mut bus, &[Domain::Units], opts(false, 60));
+    assert_eq!(bus.subscribes(), 0, "[failed] subscribe = false");
+    // A count read again does not subscribe again.
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.script = VecDeque::from([(MANAGER_CHANGED(), nothing as fn(&mut FakeBus))]);
+    let _ = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    assert_eq!((bus.units_gets(), bus.subscribes()), (2, 1));
+}
+
+fn five_seconds_pass(b: &mut FakeBus) {
+    b.advance(Duration::from_secs(5));
+}
+
+fn six_more_seconds_pass(b: &mut FakeBus) {
+    b.advance(Duration::from_secs(6));
+}
+
+fn a_unit_fails(b: &mut FakeBus) {
+    b.n_failed = 4;
+}
+
+#[test]
+fn a_refused_subscribe_falls_back_to_piggyback() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.refuse_subscribe = true;
+    let steps: [Step; 3] =
+        [(battery_wakes(), five_seconds_pass), (battery_wakes(), a_unit_fails), (battery_wakes(), six_more_seconds_pass)];
+    // Each step's change comes just before its signal: 5 s, then a failure at 5 s, then 11 s.
+    bus.script = VecDeque::from(steps);
+    let (seen, _, _) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 10));
+    assert_eq!(bus.subscribes(), 1, "refused once, never asked again: {:?}", bus.calls);
+    assert_eq!(bus.units_gets(), 2, "a battery signal past the interval reads the count once: {:?}", bus.calls);
+    assert_eq!(seen.last().unwrap().units, Some(4), "and it is the new count");
+}
+
+#[test]
+fn another_domains_signal_piggybacks_once_per_interval() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    // Three signals within the interval, one past it, two more after it: at start, then once at
+    // 11 s, then once at 22 s.
+    let steps: [Step; 6] = [
+        (battery_wakes(), five_seconds_pass),
+        (battery_wakes(), nothing),
+        (battery_wakes(), six_more_seconds_pass),
+        (battery_wakes(), nothing),
+        (battery_wakes(), eleven_more),
+        (battery_wakes(), nothing),
+    ];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 10));
+    assert_eq!(bus.units_gets(), 3, "at start, past 10 s, past 10 s again: {:?}", bus.calls);
+}
+
+/// Final review: a subscribed count is pushed by systemd, so another domain's wake-up never
+/// reads it (the piggyback is the unsubscribed way).
+#[test]
+fn a_subscribed_count_is_not_piggybacked() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    let steps: [Step; 2] = [(battery_wakes(), eleven_more), (battery_wakes(), eleven_more)];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 10));
+    assert_eq!((bus.units_gets(), bus.subscribes()), (1, 1), "only the first read: {:?}", bus.calls);
+}
+
+fn eleven_more(b: &mut FakeBus) {
+    b.advance(Duration::from_secs(11));
+}
+
+#[test]
+fn a_piggyback_needs_the_units_domain() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    let steps: [Step; 1] = [(battery_wakes(), eleven_more)];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery], opts(true, 10));
+    assert_eq!((bus.units_gets(), bus.subscribes()), (0, 0), "the count is not asked for: nothing read, nothing subscribed");
+    assert!(bus.calls.iter().all(|c| !c.contains(SYSTEMD1) && !c.contains(SYSTEMD_OWNER)), "{:?}", bus.calls);
+}
+
+fn systemd_restarts(b: &mut FakeBus) {
+    // A `daemon-reexec` or a restart: the same name, another owner with no subscriber.
+    b.n_failed = 2;
+}
+
+#[test]
+fn a_new_systemd_owner_resubscribes() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    let steps: [Step; 1] = [(systemd_owner_changes(), systemd_restarts)];
+    bus.script = VecDeque::from(steps);
+    let (seen, told, _) = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    assert_eq!(bus.subscribes(), 2, "once per owner: {:?}", bus.calls);
+    assert_eq!(seen.last().unwrap().units, Some(2), "re-read on the new owner");
+    assert_eq!(told, 2);
+}
+
+fn poked(b: &mut FakeBus) {
+    b.n_failed = 5;
+    b.units_tap.poke();
+}
+
+#[test]
+fn a_poke_rereads_units() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.script = VecDeque::from([(Signal::poke(), poked as fn(&mut FakeBus))]);
+    let (seen, told, _) = run_units(&mut bus, &[Domain::Units], opts(false, 60));
+    assert_eq!(seen.last().unwrap().units, Some(5));
+    assert_eq!((bus.units_gets(), told), (2, 2), "{:?}", bus.calls);
+    // A poke of another tap (the panel's) is not a poke of this one.
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.script = VecDeque::from([(Signal::poke(), nothing as fn(&mut FakeBus))]);
+    let _ = run_units(&mut bus, &[Domain::Units], opts(false, 60));
+    assert_eq!(bus.units_gets(), 1, "no word for the count: not read again");
+}
+
+#[test]
+fn units_read_is_sent_outside_the_compared_state() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.script = VecDeque::from([(MANAGER_CHANGED(), nothing as fn(&mut FakeBus))]);
+    let (seen, told, _) = run_units(&mut bus, &[Domain::Units], opts(false, 60));
+    assert_eq!(seen.len(), 1, "the same count twice: one publication");
+    assert_eq!(told, 2, "but two reads, two words");
+}
+
+fn battery_reads(bus: &FakeBus) -> usize {
+    bus.calls.iter().filter(|c| c.starts_with("EnumerateDevices")).count()
+}
+
+/// A read error of the count (systemd1 timing out, an odd reply) is the count's alone: unknown for
+/// that read, and the session, with the other domains, goes on (diagnostics spec § 6).
+#[test]
+fn a_units_read_error_hides_the_count_and_the_session_goes_on() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(units::PATH.into());
+    let steps: [Step; 2] = [(battery_wakes(), nothing), (Signal::poke(), poke_the_units)];
+    bus.script = VecDeque::from(steps);
+    let (seen, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 60));
+    assert_eq!(seen[0].units, None);
+    assert!(seen[0].battery.is_some(), "the other domains are shown: {seen:?}");
+    assert_eq!(told, 1, "a read that failed is not a read, but the poke's word still reaches the loop (the user count)");
+    assert_eq!(bus.subscribes(), 0);
+    // The scripted bus's own end, not the count's outage: both scripted signals were handled.
+    let e = r.unwrap_err();
+    assert_eq!((e.kind(), outage_of(&e)), (io::ErrorKind::UnexpectedEof, Outage::Bus), "{e}");
+    assert_eq!(battery_reads(&bus), 2, "the battery signal was read after the count failed: {:?}", bus.calls);
+}
+
+/// The same on a resume and on the count's own signal.
+#[test]
+fn a_units_read_error_ends_no_session_on_resume_or_its_own_signal() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(units::PATH.into());
+    let steps: [Step; 3] = [(MANAGER_CHANGED(), nothing), (prepare_for_sleep("false"), nothing), (battery_wakes(), nothing)];
+    bus.script = VecDeque::from(steps);
+    let (_, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 60));
+    assert_eq!(told, 0);
+    assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus, "only the scripted end");
+    assert_eq!(battery_reads(&bus), 3, "start, the resume, the signal: {:?}", bus.calls);
+}
+
+/// A systemd that times out is not asked again at every other domain's wake-up: the failed
+/// attempt counts as the last read for the piggyback.
+#[test]
+fn a_failed_count_is_not_piggybacked_before_its_interval() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(units::PATH.into());
+    let steps: [Step; 4] = [
+        (battery_wakes(), five_seconds_pass),
+        (battery_wakes(), nothing),
+        (battery_wakes(), six_more_seconds_pass),
+        (battery_wakes(), nothing),
+    ];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 10));
+    assert_eq!(bus.units_gets(), 2, "at start, then once past 10 s: {:?}", bus.calls);
+}
+
+/// The bus itself going away under the count's read stays the whole session's outage.
+#[test]
+fn the_bus_going_away_under_the_count_ends_the_session() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.disconnecting.insert(units::PATH.into());
+    bus.script = VecDeque::from([(battery_wakes(), nothing as fn(&mut FakeBus))]);
+    let (_, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 60));
+    assert_eq!(told, 0);
+    assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus);
+    assert_eq!(bus.script.len(), 1, "no signal was reached");
+}
+
+#[test]
+fn another_domains_failure_does_not_stand_for_the_counts_read() {
+    // Network fails first, the count's own read fails too: nobody is told.
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(network::PATH.into());
+    bus.failing.insert(units::PATH.into());
+    let (_, told, _) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(true, 60));
+    assert_eq!(told, 0, "the count was not read: {:?}", bus.calls);
+    assert_eq!(bus.subscribes(), 0);
+    // The count read fine beside a failed network: told, as before.
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(network::PATH.into());
+    let (_, told, _) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(true, 60));
+    assert_eq!(told, 1);
+}
+
+#[test]
+fn an_already_subscribed_manager_counts_as_subscribed() {
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.subscribe_error = Some("org.freedesktop.systemd1.AlreadySubscribed: already");
+    let mut link = units::UnitsLink::new(opts(true, 60));
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert!(link.subscribed(), "daemon-reexec keeps our subscription: not a refusal");
+    // Any other error is a refusal.
+    let mut bus = FakeBus::empty();
+    bus.with_systemd(1);
+    bus.subscribe_error = Some("org.freedesktop.DBus.Error.AccessDenied: no");
+    let mut link = units::UnitsLink::new(opts(true, 60));
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert!(!link.subscribed());
+    // And a refused one is not asked again.
+    let now = bus.now();
+    link.read_done(&mut bus, Some(1), now).unwrap();
+    assert_eq!(bus.subscribes(), 1);
 }

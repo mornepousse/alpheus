@@ -41,6 +41,10 @@
 //! ignore = []                                               # apps never shown: names compared whole, case-insensitively
 //! dev_dir = "/dev"                                          # where video devices are listed (watched, never opened)
 //! proc_dir = "/proc"                                        # where processes are listed (a camera opened outside PipeWire)
+//! [failed]                                                  # the failed-units count (systemd's)
+//! user_units = true                                         # also count the user manager's failed units (the session bus)
+//! subscribe = false                                         # true: Subscribe() to systemd so that a change arrives at once (costs systemd and dbus-daemon a signal per unit change); false: read on triggers only
+//! notify = false                                            # a notification when the count rises
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
 //! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
@@ -94,7 +98,7 @@
 //! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
-//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays, failed_units
 //! ```
 
 use crate::clock;
@@ -119,6 +123,9 @@ pub enum ModuleId {
     /// Shield mode (shield spec § 4): a green glyph drawn only while the mode is on; its row and
     /// detail live in the quick panel.
     Shield,
+    /// The failed-units count (diagnostics spec § 6): `󰀦 N` when a unit of the system or the user
+    /// manager is in the failed state; nothing at 0. A left click opens the control center's Diag tab.
+    Failed,
     Volume,
     Network,
     Bluetooth,
@@ -441,6 +448,27 @@ impl Default for PrivacyConfig {
     }
 }
 
+/// `[failed]` (diagnostics spec § 7): how the failed-units count is followed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FailedConfig {
+    /// Also count the user manager's failed units (the session bus).
+    pub user_units: bool,
+    /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
+    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
+    /// until Mae chooses): the count is read on triggers only (a resume, `failed-refresh`, another
+    /// domain's wake-up, a piggyback).
+    pub subscribe: bool,
+    /// A notification when the count rises.
+    pub notify: bool,
+}
+
+impl Default for FailedConfig {
+    fn default() -> Self {
+        FailedConfig { user_units: true, subscribe: false, notify: false }
+    }
+}
+
 /// The longest `[shield] on_text` or `off_text`, in bytes.
 pub const SHIELD_TEXT_MAX: usize = 256;
 
@@ -562,11 +590,12 @@ pub struct HooksConfig {
     pub privacy: Vec<String>,
     pub displays: Vec<String>,
     pub shield: Vec<String>,
+    pub failed_units: Vec<String>,
 }
 
 impl HooksConfig {
     /// Every hook with its TOML key, in field order.
-    pub fn commands(&self) -> [(&'static str, &[String]); 12] {
+    pub fn commands(&self) -> [(&'static str, &[String]); 13] {
         [
             ("started", &self.started),
             ("theme_mode", &self.theme_mode),
@@ -580,6 +609,7 @@ impl HooksConfig {
             ("privacy", &self.privacy),
             ("displays", &self.displays),
             ("shield", &self.shield),
+            ("failed_units", &self.failed_units),
         ]
     }
 
@@ -987,6 +1017,7 @@ pub struct BarConfig {
     pub tray: TrayConfig,
     pub media: MediaConfig,
     pub privacy: PrivacyConfig,
+    pub failed: FailedConfig,
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
@@ -1011,6 +1042,7 @@ impl Default for BarConfig {
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
             privacy: PrivacyConfig::default(),
+            failed: FailedConfig::default(),
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
@@ -1052,6 +1084,8 @@ struct Raw {
     media: MediaConfig,
     #[serde(default)]
     privacy: PrivacyConfig,
+    #[serde(default)]
+    failed: FailedConfig,
     #[serde(default)]
     notifications: NotificationsConfig,
     #[serde(default)]
@@ -1215,6 +1249,7 @@ impl BarConfig {
             tray,
             media: b.media,
             privacy: b.privacy,
+            failed: b.failed,
             notifications: {
                 let mut n = b.notifications.clone();
                 for r in &mut n.rules {

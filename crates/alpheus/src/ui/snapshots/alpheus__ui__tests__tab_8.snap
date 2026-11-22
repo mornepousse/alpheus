@@ -1,0 +1,28 @@
+---
+source: crates/alpheus/src/ui/tests.rs
+expression: "draw(&a, 80, 24).0.join(\"\\n\")"
+---
+  1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        
+                                                                                
+ Session health                                                               … 
+                                                                                
+ Failed units                                                                   
+   …                                                                            
+                                                                                
+ Restarting in a loop                                                           
+   …                                                                            
+                                                                                
+ Crashes (7 days)                                                               
+   …                                                                            
+                                                                                
+ ▶ Boot   …                                                                     
+                                                                                
+ Journal                                                                        
+   [Errors this boot] [USB] [Suspend and resume] [Out of memory]                
+   [Thermal and throttling] [NetworkManager] [Live journal]                     
+   [Logs of a service…]                                                         
+                                                                                
+   [ Bug report… ]                                                              
+                                                                                
+ Diag · ready                                                                   
+ Enter Open  F5 Refresh  q Quit  F1 Help  Ctrl+P Palette  Esc Back

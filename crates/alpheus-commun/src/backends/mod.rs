@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub mod bluetooth;
 pub mod brightness;
+pub mod diagnostics;
 pub mod displays;
 pub mod energy;
 pub mod network;
@@ -18,6 +19,7 @@ pub mod sound;
 
 pub use bluetooth::{Bluetooth, BluetoothCtl, BtDevice, BtStatus};
 pub use brightness::{Brightness, BrightnessCtl};
+pub use diagnostics::{CheckResult, DaemonPoke, Diagnostics, JournalRead, NoPoke, PokeAnswer, SocketPoke, SystemdTools, UnitAction};
 pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
@@ -109,6 +111,8 @@ pub struct Backends {
     pub notifications: Arc<dyn Notifications>,
     pub power: Arc<dyn Power>,
     pub displays: Arc<dyn Displays>,
+    pub diagnostics: Arc<dyn Diagnostics>,
+    pub poke: Arc<dyn DaemonPoke>,
 }
 
 impl Backends {
@@ -122,9 +126,21 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir.clone())),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec)),
+            power: Arc::new(SessionPower::new(exec.clone())),
             displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
+            diagnostics: Arc::new(SystemdTools::new(exec)),
+            poke: Arc::new(SocketPoke::new(crate::launcher_ipc::socket_path(&runtime_dir))),
         }
+    }
+
+    /// The same for tests: the diagnostics look for the journal under `runtime_dir` (where there
+    /// is none) and know no user, host or machine id, so no test reads the machine it runs on.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn system_isolated(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
+        let mut b = Backends::system(exec.clone(), runtime_dir.clone());
+        b.diagnostics =
+            Arc::new(SystemdTools::for_tests(exec, vec![runtime_dir.join("no-journal")], crate::diagnostics::report::HostFacts::default()));
+        b
     }
 }
 

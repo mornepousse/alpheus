@@ -38,6 +38,8 @@ impl Needs {
     /// The sound source publishes for the OSD too (a microphone or a label change), not the sink's
     /// volume alone.
     pub(crate) const OSD_SCOPE: Needs = Needs(1 << 10);
+    /// systemd's failed-units count (the D-Bus `Units` domain): the `failed` module.
+    pub(crate) const UNITS: Needs = Needs(1 << 11);
 
     pub(crate) const fn or(self, other: Needs) -> Needs {
         Needs(self.0 | other.0)
@@ -90,7 +92,7 @@ const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
     ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
 }
 
-pub(crate) const COUNT: usize = 19;
+pub(crate) const COUNT: usize = 20;
 
 pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec { segment: Some(|_, _| Some(segments::launcher())), ..row(ModuleId::Launcher, "launcher", GroupKind::Launcher) },
@@ -122,6 +124,13 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Quick),
         popup_needs_quick: true,
         ..row(ModuleId::Shield, "shield", GroupKind::Shield)
+    },
+    // `󰀦 N` in the error role, nothing at 0 (diagnostics spec § 6); a left click opens the Diag tab.
+    ModuleSpec {
+        tab: Some("diagnostics"),
+        segment: Some(|bar, _| segments::failed(&bar.failed)),
+        needs: Needs::UNITS,
+        ..row(ModuleId::Failed, "failed", GroupKind::Failed)
     },
     ModuleSpec {
         hue: Some(Hue::Blue),

@@ -22,6 +22,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::Shield(ShieldVerb::Status), Route::Shield),
         (Request::Shield(ShieldVerb::Allow), Route::Shield),
         (Request::Clipboard, Route::Launcher),
+        (Request::FailedRefresh, Route::Failed),
         (Request::Toggle, Route::Launcher),
         (Request::Close, Route::Launcher),
         (Request::Calc, Route::Launcher),

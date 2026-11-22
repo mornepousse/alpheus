@@ -269,6 +269,38 @@ fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
     assert!(super::privacy(&shown(false, false, false)).is_none());
 }
 
+/// Diagnostics spec § 6: `󰀦 N` in the error role whatever `module_colors` says; nothing at 0 or
+/// when neither manager's count is known.
+#[test]
+fn failed_two() {
+    let two = Failed { system: Some(1), user: Some(1) };
+    let s = super::failed(&two).unwrap();
+    assert_eq!(draw(&s), ("\u{f0026} 2".into(), "eee".into()));
+    assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Failed, &Some(Target::Module(ModuleId::Failed)), false));
+    assert_eq!(draw(&super::failed(&Failed { system: Some(12), user: None }).unwrap()), ("\u{f0026} 12".into(), "eeee".into()));
+}
+
+/// Under every `module_colors`, `pills` included, the block has no hue: the glyph stays in the error role.
+#[test]
+fn failed_two_pills() {
+    let two = Failed { system: Some(2), user: Some(0) };
+    assert_eq!(ModuleId::Failed.spec().hue, None);
+    let mut b = Bar::new(BarConfig::default());
+    b.failed = two;
+    for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        b.module_colors = mc;
+        let s = (ModuleId::Failed.spec().segment.unwrap())(&b, "HDMI-A-1").unwrap();
+        assert_eq!(draw(&s), ("\u{f0026} 2".into(), "eee".into()), "{mc:?}");
+    }
+}
+
+#[test]
+fn failed_is_hidden_at_zero_and_unknown() {
+    assert!(super::failed(&Failed { system: Some(0), user: Some(0) }).is_none());
+    assert!(super::failed(&Failed { system: Some(0), user: None }).is_none());
+    assert!(super::failed(&Failed::default()).is_none(), "neither known: nothing");
+}
+
 #[test]
 fn media_glyphs_are_one_cell_each() {
     assert_eq!([PLAY, PAUSE, SKIP_PREVIOUS, SKIP_NEXT], ['\u{f040a}', '\u{f03e4}', '\u{f04ae}', '\u{f04ad}']);

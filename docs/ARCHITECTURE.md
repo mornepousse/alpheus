@@ -11,7 +11,7 @@ One Cargo workspace, four crates:
 
 | Crate | What it is | Does not depend on |
 |---|---|---|
-| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
+| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays, diagnostics), compositor detection and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
 | `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
@@ -41,8 +41,14 @@ happened*.
     once from the environment: see [compositors.md](compositors.md)),
   - **sound** (a long-lived `pw-dump -m -N -R` child: volume, default devices,
     the capture graph used by the privacy indicators),
-  - the system **D-Bus** (NetworkManager, UPower, BlueZ, power-profiles-daemon)
-    on one thread blocked on the bus while nothing changes.
+  - the system **D-Bus** (NetworkManager, UPower, BlueZ, power-profiles-daemon
+    and, a fifth domain, systemd's `NFailedUnits` for the `failed` module)
+    on one thread blocked on the bus while nothing changes. The units domain
+    reads one property (`Get`, never `GetAll`: the Manager's carries its
+    environment) and calls `Subscribe()` once per owner only with
+    `[failed] subscribe = true` (off by default); its reads ride the thread's existing
+    wake-ups (a poke from the socket's `failed-refresh`, a resume, another
+    domain's signal after 60 s), never a timer of its own.
   Resources (`/proc`, `/sys`) are a timer on the loop, not a thread. With
   every module on, the daemon measures six threads at rest; they are
   accounted for in the README's memory table. Short-lived workers come on
@@ -55,7 +61,9 @@ happened*.
   keeps a second copy from starting.
 - **Session-bus features run on the loop itself,** through a second,
   non-blocking connection (the tray's StatusNotifierWatcher and dbusmenu,
-  MPRIS, the notification server, the portal's colour scheme; all in `session_bus/`): no new thread.
+  MPRIS, the notification server, the portal's colour scheme, and the user
+  manager's failed-unit count (`failed_app.rs`, the same typed `Get` and
+  `Subscribe` allowlist as the system side); all in `session_bus/`): no new thread.
 - **Timers are deadlines, not ticks.** `deadline::DeadlineTimer` arms one
   calloop timer at the earliest deadline while there is one and nothing
   otherwise: tooltips, notification expiry, the OSD's 1.3 s, popups, the
@@ -74,13 +82,30 @@ happened*.
   back wholly to the defaults, with one log line; `theme.toml` ignores only
   the faulty key.
 
+### The control center's diagnostics backend
+
+The Diag tab does not use D-Bus: its reads are `systemctl`, `journalctl`,
+`coredumpctl` and `systemd-analyze` run through the executor's bounded
+`capture` on the TUI's worker thread, parsed in `alpheus-commun::diagnostics`
+(`serde_json` joined that crate for it), never in a render, and only while the
+tab shows. A restart or reset-failed of a *system* unit is the one thing the
+TUI runs outside the executor, in its own window (`external_tools`), so
+systemd's polkit agent can ask for the password on that terminal; alpheus
+never runs `sudo` or `pkexec`. Compositor detection (`SWAYSOCK`,
+`HYPRLAND_INSTANCE_SIGNATURE`, `MANGO_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) lives
+in `alpheus-commun::compositor`, used by the daemon's sources and by the
+tab's health check (which connects to the compositor's socket and closes it:
+nothing is written). Every string from these tools passes one cleaner
+(`alpheus-commun::text`) before reaching a cell, and the bug report is
+redacted (`diagnostics::report`) before it is shown or copied.
+
 ### The launcher bridge
 
 `alpheus-launch` talks to the daemon over `$XDG_RUNTIME_DIR/alpheus-launcher.sock`
 (mode 0600, peers of another uid refused). The TUI is its second client: the
 Displays tab reads and tries the screens' layout there (`outputs`,
 `outputs-try`, `outputs-keep`, `outputs-revert`), and the daemon holds the 15 s
-trial. The wire protocol lives in
+trial; the Diag tab sends `failed-refresh` there so the bar's count follows. The wire protocol lives in
 `alpheus-commun::launcher_ipc`. The daemon's side is `launcher/socket.rs`, the
 only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
@@ -107,7 +132,11 @@ These are guardrails from the scope document, checked mechanically.
    has only read methods, calls a service through the **unique name** of the
    process that owns it (never the well-known name, which would let D-Bus
    activation start it), and a guardrail test fails if a write word (`Set`,
-   `Connect`, `ActivateConnection`, `GetSecrets`, `Pair`, …) appears there.
+   `Connect`, `ActivateConnection`, `GetSecrets`, `Pair`, …) appears there. The
+   systemd1 calls are `Get` of `NFailedUnits` (the Manager interface only,
+   never `GetAll`) and, with `[failed] subscribe = true`, `Subscribe()`, which makes systemd send its signals; no
+   method of `systemd1` that acts (`StartUnit`, `RestartUnit`, `ResetFailed`,
+   `KillUnit`, …) may appear under `sources/dbus/`.
    **The one named exemption** is the Bluetooth acting connection
    (`sources/dbus/bt_act.rs`), a second system-bus connection opened only
    while the quick panel's Bluetooth detail is open or a call is in flight,

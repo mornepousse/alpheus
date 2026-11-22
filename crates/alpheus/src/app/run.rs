@@ -165,7 +165,7 @@ pub fn run(options: Options) -> io::Result<()> {
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let backends = Backends::system(exec.clone(), runtime_dir());
     let displays = backends.displays.clone();
-    let (tx, rx) = worker::spawn(backends);
+    let (tx, rx) = worker::spawn_with(backends, Arc::new(|k| std::env::var_os(k)));
     spawn_guard(exec.clone());
     let r = {
         let mut terminal = ratatui::init(); // also installs terminal restoration on panic
@@ -203,6 +203,16 @@ fn event_loop(
             app.external_done(ext, r, Instant::now());
             continue;
         }
+        if let Some(job) = app.take_system_unit() {
+            // In the TUI's own window, never through the executor: systemd asks for the password
+            // on the terminal it is given.
+            let argv = App::system_unit_argv(&job);
+            let intro = App::system_unit_intro(&job);
+            let r = external_tools::open_noticed(&mut CrosstermScreen, &mut ProcessLauncher, &argv, &intro);
+            terminal.clear()?;
+            app.system_unit_done(&job, r, Instant::now());
+            continue;
+        }
         if event::poll(Duration::from_millis(100))? {
             let now = Instant::now();
             match event::read()? {
@@ -237,6 +247,8 @@ mod tests {
         assert_eq!(parse_options(&args(&["--tab", "sound"])), Ok(Options { tab: Tab::Sound }));
         assert_eq!(parse_options(&args(&["--tab=Network"])), Ok(Options { tab: Tab::Network }));
         assert_eq!(parse_options(&args(&["--tab", "displays"])), Ok(Options { tab: Tab::Displays }));
+        assert_eq!(parse_options(&args(&["--tab", "diagnostics"])), Ok(Options { tab: Tab::Diagnostics }));
+        assert_eq!(parse_options(&args(&["--tab=diag"])), Ok(Options { tab: Tab::Diagnostics }));
         let e = parse_options(&args(&["--tab", "weather"])).unwrap_err();
         assert!(e.contains("weather") && e.contains("home, sound"), "{e}");
         assert!(parse_options(&args(&["--tab"])).unwrap_err().contains("expects"));
@@ -258,7 +270,7 @@ mod tests {
         let dir = alpheus_commun::temp_path::TempPath::new("run-tab-under-sway");
         let mut a = build_app(&dir, Tab::Displays, Instant::now());
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])]);
-        let mut b = Backends::system(Arc::new(FakeExecutor::new()), dir.to_path_buf());
+        let mut b = Backends::system_isolated(Arc::new(FakeExecutor::new()), dir.to_path_buf());
         let fake = Arc::new(FakeDisplays::default());
         b.displays = fake.clone();
         a.on_update(fetch(&b, Domain::Displays), Instant::now());

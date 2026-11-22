@@ -1,6 +1,6 @@
 //! Mouse: click, drag, wheel, on the regions recorded at render time.
 
-use super::action::Command;
+use super::action::{Command, Tab};
 use super::{App, Item, Overlay, PanelField, STEP};
 use crate::ui::hit::{HitMap, Target, slider_pick};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -42,7 +42,7 @@ impl App {
                 // or an entry; a confirmation and "Keep these settings?"
                 // require an explicit choice.
                 _ => {
-                    if !matches!(self.overlay, Overlay::Confirm(_) | Overlay::Keep(_)) {
+                    if !matches!(self.overlay, Overlay::Confirm(_) | Overlay::UnitConfirm { .. } | Overlay::Keep(_)) {
                         self.overlay = Overlay::None;
                     }
                 }
@@ -53,6 +53,9 @@ impl App {
         match target {
             Target::Tab(t) => self.go_tab(t, now),
             Target::Item(i) => {
+                if self.tab == Tab::Diagnostics && self.diag_click(i) {
+                    return;
+                }
                 self.focus = i;
                 self.activate(now);
             }
@@ -79,6 +82,7 @@ impl App {
                 self.displays.profile_sel = j;
                 self.profile_bar_activate(now);
             }
+            Target::ReportCopy => self.report_copy_click(),
             Target::AppearanceTheme(i) => self.appearance_click_theme(i, now),
             Target::AppearanceMode(m) => self.appearance_click_mode(m, now),
             Target::AppearanceColors(m) => self.appearance_click_colors(m, now),
@@ -96,7 +100,7 @@ impl App {
     /// Yes/no of a dialog, depending on the open overlay.
     fn dialog_answer(&mut self, yes: bool, now: Instant) {
         match self.overlay {
-            Overlay::Confirm(_) => self.close_confirm(yes),
+            Overlay::Confirm(_) | Overlay::UnitConfirm { .. } => self.close_confirm(yes),
             Overlay::Keep(_) => self.keep_answer(yes),
             Overlay::SaveProfile(_) => self.save_answer(yes, now),
             _ => {}
@@ -118,6 +122,9 @@ impl App {
             return;
         }
         if self.overlay != Overlay::None {
+            return;
+        }
+        if self.tab == Tab::Diagnostics && (self.journal_wheel(dir) || self.report_views_wheel(dir)) {
             return;
         }
         match hit.map(|(_, t)| t) {

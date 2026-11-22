@@ -165,6 +165,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             Request::Dnd(_)
             | Request::DndOn(_)
             | Request::ClearNotifications
+            | Request::FailedRefresh
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Timer(_)
@@ -683,6 +684,7 @@ mod tests {
             (dmenu(), Some(Switcher), script.clone(), None),
             (Request::Dnd(DndVerb::Toggle), None, not_ours(), refused()),
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
+            (Request::FailedRefresh, None, not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
             (Request::Notes, Some(Apps), not_ours(), refused()),
             (Request::Clipboard, None, Action::OpenClipboard, done()),

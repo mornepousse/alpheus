@@ -8,9 +8,9 @@
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
-use super::tap::Tap;
+use super::tap::Wake;
 use super::{BUS_DRIVER, BUS_DRIVER_PATH, Bus, Domain, OBJECT_MANAGER, PROPERTIES, Signal, UPOWER, bluez, network, upower};
-use super::{vpn, wifi};
+use super::{units, vpn, wifi};
 use crate::system::Saved;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -29,7 +29,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const MAX_DICTS: usize = 16;
 
 /// Every method the daemon may call: reads, and the subscription to signals (AddMatch, RemoveMatch
-/// for the Wi-Fi detail's rules); `Hello` is libdbus's own, sent once when connecting.
+/// for the Wi-Fi detail's rules, systemd's `Subscribe`); `Hello` is libdbus's own, sent once when
+/// connecting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     GetNameOwner,
@@ -45,10 +46,14 @@ pub enum Method {
     GetDevices,
     ListConnections,
     GetSettings,
+    /// `Properties.Get`, for systemd's Manager `NFailedUnits` alone (`message` refuses any other).
+    Get,
+    /// systemd's `Manager.Subscribe`, for its one object alone (`message` refuses any other).
+    Subscribe,
 }
 
 impl Method {
-    pub const ALL: [Method; 10] = [
+    pub const ALL: [Method; 12] = [
         Method::GetNameOwner,
         Method::StartServiceByName,
         Method::AddMatch,
@@ -59,6 +64,8 @@ impl Method {
         Method::GetDevices,
         Method::ListConnections,
         Method::GetSettings,
+        Method::Get,
+        Method::Subscribe,
     ];
 
     pub fn name(self) -> &'static str {
@@ -73,13 +80,16 @@ impl Method {
             Method::GetDevices => "GetDevices",
             Method::ListConnections => "ListConnections",
             Method::GetSettings => "GetSettings",
+            Method::Get => "Get",
+            Method::Subscribe => "Subscribe",
         }
     }
 
     fn interface(self) -> &'static str {
         match self {
             Method::GetNameOwner | Method::StartServiceByName | Method::AddMatch | Method::RemoveMatch => BUS_DRIVER,
-            Method::GetAll => PROPERTIES,
+            Method::GetAll | Method::Get => PROPERTIES,
+            Method::Subscribe => units::MANAGER,
             Method::GetManagedObjects => OBJECT_MANAGER,
             Method::EnumerateDevices => UPOWER,
             Method::GetDevices => network::INTERFACE,
@@ -94,7 +104,7 @@ impl Method {
 /// NameAcquired every client receives). BlueZ's PropertiesChanged is split
 /// by interface (arg0): a headset's volume (MediaTransport1) or track
 /// (MediaPlayer1) never reaches the daemon.
-pub const MATCH_RULES: [(Domain, &str); 13] = [
+pub const MATCH_RULES: [(Domain, &str); 15] = [
     (
         Domain::Network,
         "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
@@ -145,6 +155,16 @@ pub const MATCH_RULES: [(Domain, &str); 13] = [
     (
         Domain::Power,
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='net.hadess.PowerProfiles'",
+    ),
+    // The only Manager property that emits a change is `NFailedUnits` (spec § 9), so this rule
+    // alone names no unit, and a `daemon-reexec` brings the owner's change.
+    (
+        Domain::Units,
+        "type='signal',sender='org.freedesktop.systemd1',path='/org/freedesktop/systemd1',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.systemd1.Manager'",
+    ),
+    (
+        Domain::Units,
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.systemd1'",
     ),
 ];
 
@@ -490,18 +510,38 @@ pub fn signal(m: &Message) -> Signal {
 /// `destination` or `path` into an `io::Error`, never a panic of the D-Bus
 /// thread.
 pub fn message(destination: &str, path: &str, m: Method, arg: Option<&str>) -> io::Result<Message> {
+    let at_manager = path == units::PATH;
     let destination = BusName::new(destination).map_err(io::Error::other)?;
     let path = Path::new(path).map_err(io::Error::other)?;
     let interface = Interface::new(m.interface()).map_err(io::Error::other)?;
     let mut msg = Message::new_method_call(destination, path, interface, m.name()).map_err(io::Error::other)?;
     msg.set_auto_start(false);
     Ok(match (m, arg) {
+        // One property of one object: systemd's failed-units count (the interface argument is
+        // the Manager's, fixed here), never any other, never `GetAll`.
+        (Method::Get, Some(p)) if p == units::PROPERTY && at_manager => msg.append2(units::MANAGER, p),
+        (Method::Get, _) => return Err(io::Error::other("Get: systemd's NFailedUnits only")),
+        (Method::Subscribe, None) if at_manager => msg,
+        (Method::Subscribe, _) => return Err(io::Error::other("Subscribe: systemd's Manager only")),
         // Flags 0; UPower is the only service this call may name.
         (Method::StartServiceByName, Some(a)) if a == UPOWER => msg.append2(a, 0u32),
         (Method::StartServiceByName, _) => return Err(io::Error::other("StartServiceByName: UPower only")),
         (_, Some(a)) => msg.append1(a),
         (_, None) => msg,
     })
+}
+
+/// A `Properties.Get` reply: one variant holding a `u`.
+pub fn u32_reply(m: &Message) -> io::Result<u32> {
+    let mut it = m.iter_init();
+    if it.arg_type() != ArgType::Variant {
+        return Err(unexpected("not a variant"));
+    }
+    let mut inner = it.recurse(ArgType::Variant).ok_or_else(|| unexpected("an empty variant"))?;
+    if inner.arg_type() != ArgType::UInt32 {
+        return Err(unexpected("not a u"));
+    }
+    inner.get::<u32>().ok_or_else(|| unexpected("a u that does not read"))
 }
 
 /// The answer to a method call addressed to the bar: nobody may call it.
@@ -513,7 +553,7 @@ pub fn refusal(call: &Message) -> Message {
 pub struct DbusRsBus {
     channel: Channel,
     /// The quick panel's taps, polled beside the bus's socket (`waking`); none: libdbus sleeps alone.
-    wakes: Vec<Arc<Tap>>,
+    wakes: Vec<Arc<dyn Wake>>,
     /// The bus's socket then each tap's, as `next_signal` polls them (one buffer, kept).
     fds: Vec<libc::pollfd>,
 }
@@ -535,7 +575,7 @@ impl DbusRsBus {
     /// Also wakes on `tap`'s word (quick Wi-Fi spec § 5): `next_signal` then polls the bus's socket
     /// and every tap's together and returns `Signal::poke()` when the loop asks. A tap without its
     /// socket pair changes nothing.
-    pub fn waking(mut self, tap: Arc<Tap>) -> DbusRsBus {
+    pub fn waking(mut self, tap: Arc<impl Wake + 'static>) -> DbusRsBus {
         if tap.wake_fd().is_some() {
             self.channel.set_watch_enabled(true);
             self.wakes.push(tap);
@@ -612,6 +652,17 @@ impl Bus for DbusRsBus {
 
     fn enumerate_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
         paths_reply(&self.call(destination, upower::PATH, Method::EnumerateDevices, None)?)
+    }
+
+    fn get_u32(&mut self, destination: &str, path: &str, interface: &str, property: &str) -> io::Result<u32> {
+        if interface != units::MANAGER {
+            return Err(io::Error::other("Get: systemd's NFailedUnits only"));
+        }
+        u32_reply(&self.call(destination, path, Method::Get, Some(property))?)
+    }
+
+    fn subscribe_units(&mut self, destination: &str) -> io::Result<()> {
+        self.call(destination, units::PATH, Method::Subscribe, None).map(|_| ())
     }
 
     fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
@@ -952,10 +1003,62 @@ mod tests {
     }
 
     #[test]
+    fn message_builds_get_and_subscribe_for_the_manager_only() {
+        let get = message(":1.14", units::PATH, Method::Get, Some(units::PROPERTY)).unwrap();
+        assert_eq!(
+            (get.destination().as_deref(), get.path().as_deref(), get.interface().as_deref(), get.member().as_deref()),
+            (Some(":1.14"), Some(units::PATH), Some(PROPERTIES), Some("Get"))
+        );
+        assert_eq!(get.read2::<&str, &str>().unwrap(), (units::MANAGER, units::PROPERTY), "the Manager's interface, one property");
+        assert!(!get.get_auto_start());
+        for (path, arg) in [
+            (units::PATH, Some("Environment")),
+            (units::PATH, Some("NJobs")),
+            (units::PATH, Some("")),
+            (units::PATH, None),
+            ("/org/freedesktop/systemd1/unit/example_2eservice", Some(units::PROPERTY)),
+            ("/", Some(units::PROPERTY)),
+        ] {
+            assert!(message(":1.14", path, Method::Get, arg).is_err(), "Get {path} {arg:?}");
+        }
+        let sub = message(":1.14", units::PATH, Method::Subscribe, None).unwrap();
+        assert_eq!((sub.interface().as_deref(), sub.member().as_deref()), (Some(units::MANAGER), Some("Subscribe")));
+        assert_eq!(sub.iter_init().arg_type(), ArgType::Invalid, "no argument");
+        assert!(!sub.get_auto_start());
+        for (path, arg) in [("/", None), ("/org/freedesktop/systemd1/unit/x", None), (units::PATH, Some("x"))] {
+            assert!(message(":1.14", path, Method::Subscribe, arg).is_err(), "Subscribe {path} {arg:?}");
+        }
+    }
+
+    #[test]
+    fn a_get_reply_is_one_variant_holding_a_u() {
+        let reply = |m: Message| m.append1(dbus::arg::Variant(7u32));
+        let call = || Message::new_method_call(":1.10", "/", "org.example.Test", "Get").unwrap();
+        assert_eq!(u32_reply(&reply(call())).unwrap(), 7);
+        assert!(u32_reply(&call().append1(dbus::arg::Variant("text"))).is_err(), "a string is not the count");
+        assert!(u32_reply(&call().append1(7u32)).is_err(), "not in a variant");
+        assert!(u32_reply(&call()).is_err(), "an empty reply");
+    }
+
+    #[test]
+    fn the_units_rules_name_their_service() {
+        let units: Vec<&str> = MATCH_RULES.iter().filter(|(d, _)| *d == Domain::Units).map(|(_, r)| *r).collect();
+        assert_eq!(units.len(), 2);
+        assert!(units.iter().all(|r| r.contains("'org.freedesktop.systemd1'")), "{units:?}");
+        assert!(units[0].contains("path='/org/freedesktop/systemd1'") && units[0].contains("arg0='org.freedesktop.systemd1.Manager'"));
+        assert!(units[0].contains("member='PropertiesChanged'") && units[1].contains("member='NameOwnerChanged'"), "{units:?}");
+    }
+
+    #[test]
     fn every_call_is_flagged_no_auto_start() {
         for m in Method::ALL {
-            let arg = (m == Method::StartServiceByName).then_some(UPOWER);
-            assert!(!message(":1.10", "/", m, arg).unwrap().get_auto_start(), "{m:?}");
+            let arg = match m {
+                Method::StartServiceByName => Some(UPOWER),
+                Method::Get => Some(units::PROPERTY),
+                _ => None,
+            };
+            let path = if matches!(m, Method::Get | Method::Subscribe) { units::PATH } else { "/" };
+            assert!(!message(":1.10", path, m, arg).unwrap().get_auto_start(), "{m:?}");
         }
     }
 

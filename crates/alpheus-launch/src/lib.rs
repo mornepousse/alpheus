@@ -7,8 +7,9 @@
 //! other changes: the chosen line on stdout and exit 0; Escape → nothing,
 //! exit 1; anything wrong (another menu open, bad usage, no answer) → a
 //! message on stderr, exit 2. One code of its own: 3 when the daemon is
-//! unreachable (not running) or too old for `--index`/`--password`/`--visible`, the only
-//! cases where a caller may fall back to another menu.
+//! unreachable (not running) or too old for a flag it was sent (`--index`/`--password`/`--visible`
+//! and the later ones, `--failed-refresh` among them), the only cases where a caller may fall
+//! back to another menu.
 
 use alpheus_commun::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
@@ -35,7 +36,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
                       | --clipboard | --clipboard-clear | --shield on|off|toggle|status|allow | --help]
 
@@ -56,6 +57,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           with --dnd on: end it after 30m, 2h or 1h30m (1m to 24h), or at the
                           next local HH:MM; either one replaces an earlier end
   --clear-notifications   empty the bar's notification history
+  --failed-refresh        read the bar's failed-unit counts again now (the failed module; nothing without it)
   --osd brightness        show the laptop's backlight level (read once; never changed)
   --quick [sound|wifi|bluetooth|vpn]
                           open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
@@ -77,7 +79,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [shield] in bar.toml, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--clipboard/--clipboard-clear/--shield (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--shield (restarted since the upgrade? until then, use another menu).
 
 --shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -98,6 +100,7 @@ pub enum Invocation {
     Dmenu { prompt: Option<String>, flags: DmenuFlags },
     Dnd(DndVerb, Option<EndArg>),
     ClearNotifications,
+    FailedRefresh,
     Osd(OsdVerb),
     Quick(QuickVerb),
     Calc,
@@ -132,6 +135,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() })?,
             "--dnd" => choose(&mut mode, Invocation::Dnd(verb_arg(&mut it, "--dnd", "on, off or toggle", DndVerb::parse)?, None))?,
             "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
+            "--failed-refresh" => choose(&mut mode, Invocation::FailedRefresh)?,
             "--osd" => choose(&mut mode, Invocation::Osd(verb_arg(&mut it, "--osd", "brightness", OsdVerb::parse)?))?,
             "--quick" => {
                 // The one optional word: taken only when it is one of QuickVerb's.
@@ -279,6 +283,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
             Request::DndOn(DndEnd::Until(u64::try_from(at).map_err(|_| "no such local time")?))
         }
         Invocation::ClearNotifications => Request::ClearNotifications,
+        Invocation::FailedRefresh => Request::FailedRefresh,
         Invocation::Osd(v) => Request::Osd(v),
         Invocation::Quick(v) => Request::Quick(v),
         Invocation::Calc => Request::Calc,
@@ -387,7 +392,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --shield, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --shield, --help"
                 .into(),
         );
     }
@@ -485,6 +490,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Close
             | Invocation::Dnd(..)
             | Invocation::ClearNotifications
+            | Invocation::FailedRefresh
             | Invocation::Osd(_)
             | Invocation::Quick(_)
             | Invocation::Calc
@@ -543,6 +549,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Dnd(_)
             | Request::DndOn(_)
             | Request::ClearNotifications
+            | Request::FailedRefresh
             | Request::Osd(_)
             | Request::Quick(_)
             | Request::Calc
@@ -594,6 +601,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
+        Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
         Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
@@ -692,6 +700,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off, None)));
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle, None)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
+        assert_eq!(parse_args(&args(&["--failed-refresh"])), Ok(Invocation::FailedRefresh));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
         assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
         assert_eq!(parse_args(&args(&["--windows"])), Ok(Invocation::Windows));
@@ -774,6 +783,8 @@ mod tests {
             (&["--clear-notifications", "--dnd", "on"], "only one of"),
             (&["--dnd", "on", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--clear-notifications", "now"], "unknown option"),
+            (&["--failed-refresh", "--dnd", "on"], "only one of"),
+            (&["--failed-refresh", "now"], "unknown option"),
             (&["--osd"][..], "--osd needs brightness"),
             (&["--osd", "volume"], "--osd takes brightness"),
             (&["--osd", "brightness", "--close"], "only one of"),
@@ -884,6 +895,17 @@ mod tests {
         assert!(String::from_utf8_lossy(&err).contains("--windows"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
         assert_eq!(reply_to_exit(&Request::Windows, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+    }
+
+    /// A daemon from before `--failed-refresh` refuses the word as an unknown request: exit 3.
+    #[test]
+    fn a_daemon_without_failed_refresh_is_too_old() {
+        let refusal = "malformed request: unknown request \"failed-refresh\"";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--failed-refresh"), "{}", String::from_utf8_lossy(&err));
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut Vec::new()), EXIT_ERROR);
+        assert_eq!(reply_to_exit(&Request::FailedRefresh, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
     }
 
     /// A daemon from before `--notes` refuses the word as an unknown request: exit 3, naming it.

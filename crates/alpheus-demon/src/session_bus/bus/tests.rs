@@ -25,6 +25,7 @@ fn app(method: Method) -> Call {
         Method::PlayPause => Call::PlayerControl { dest: destination, member: Control::PlayPause },
         Method::Next => Call::PlayerControl { dest: destination, member: Control::Next },
         Method::Previous => Call::PlayerControl { dest: destination, member: Control::Previous },
+        Method::Subscribe => Call::SubscribeUnits { dest: destination },
     }
 }
 
@@ -368,4 +369,34 @@ fn session_gives_up_when_the_variable_fails_and_no_runtime_socket_exists() {
         });
     assert!(result.is_err());
     assert_eq!(tried, ["unix:path=/malformed"], "no runtime socket to fall back to: tried once");
+}
+
+/// The user manager's count: one property of the Manager, one `Subscribe`, both to a unique name,
+/// never starting anything, never `GetAll` (its `Environment` may hold secrets).
+#[test]
+fn the_user_manager_is_asked_for_its_count_and_subscribed_to() {
+    use crate::session_bus::{SYSTEMD_MANAGER, SYSTEMD_PATH};
+    let get = message(&Call::Get { destination: ":1.30".into(), path: SYSTEMD_PATH.into(), property: Property::NFailedUnits });
+    assert_eq!(
+        (get.destination().as_deref(), get.path().as_deref(), get.interface().as_deref(), get.member().as_deref()),
+        (Some(":1.30"), Some(SYSTEMD_PATH), Some(PROPERTIES_INTERFACE), Some("Get"))
+    );
+    assert_eq!(get.read2::<&str, &str>().unwrap(), (SYSTEMD_MANAGER, "NFailedUnits"));
+    assert!(!get.get_auto_start());
+    let sub = message(&Call::SubscribeUnits { dest: ":1.30".into() });
+    assert_eq!(
+        (sub.destination().as_deref(), sub.path().as_deref(), sub.interface().as_deref(), sub.member().as_deref()),
+        (Some(":1.30"), Some(SYSTEMD_PATH), Some(SYSTEM_MANAGER_FOR_TEST), Some("Subscribe"))
+    );
+    assert!(signatures(&sub).is_empty());
+    assert!(!sub.get_auto_start() && !sub.get_no_reply(), "its refusal is read");
+    assert_eq!(Call::SubscribeUnits { dest: ":1.30".into() }.method(), Method::Subscribe);
+}
+
+const SYSTEM_MANAGER_FOR_TEST: &str = "org.freedesktop.systemd1.Manager";
+
+#[test]
+#[should_panic(expected = "not a unique name")]
+fn a_subscribe_to_a_well_known_name_is_a_bug() {
+    message(&Call::SubscribeUnits { dest: "org.freedesktop.systemd1".into() });
 }

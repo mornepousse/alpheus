@@ -900,3 +900,10 @@ fn a_mute_replacing_a_live_bubble_closes_it() {
     assert_eq!(c.take_effects(), vec![Effect::Closed(live, CloseReason::Expired)]);
     assert!(c.bubbles().is_empty());
 }
+
+#[test]
+fn a_subdivision_flag_survives_in_the_title_and_the_body() {
+    let flag = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+    assert_eq!(summary_text(&format!("Match {flag}")), format!("Match {flag}"));
+    assert_eq!(body_text(&format!("{flag} wins")), format!("{flag} wins"));
+}
