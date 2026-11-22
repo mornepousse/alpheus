@@ -85,6 +85,9 @@ USB-docked screens reconnect.
   `docs/plans/` for anything multi-step; see [`docs/specs/README.md`](docs/specs/README.md).
 - Each module starts with a `//!` comment saying what it is and what it
   must never do; keep it true.
+- How code is written and commented is in [`docs/STYLE.md`](docs/STYLE.md);
+  settled decisions, which comments point to, are in
+  [`docs/decisions.md`](docs/decisions.md).
 
 ## Commits
 
