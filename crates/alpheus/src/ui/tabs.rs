@@ -11,6 +11,7 @@ use super::hit::{HitMap, Target};
 use super::home::{self, LocalTime};
 use super::rail::tab_hue;
 use super::shape::{self, Ink};
+use super::sound;
 use crate::app::action::{Tab, profile_label};
 use crate::app::{App, Item, Loadable, toggle_label};
 use crate::theme::{Shape, Theme};
@@ -21,7 +22,7 @@ use ratatui::style::{Modifier, Style};
 /// Maximum width of a slider bar.
 const BAR_W: u16 = 24;
 
-enum Row {
+pub(super) enum Row {
     Blank,
     Heading(&'static str),
     Text(String),
@@ -103,29 +104,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
                 rows.push(Row::Item(i));
             }
         }
-        Tab::Sound => {
-            let (sinks, sources) = app.visible_nodes();
-            let mut i = 0;
-            for (title, count) in [("Outputs", sinks.len()), ("Inputs", sources.len())] {
-                rows.push(Row::Heading(title));
-                match &app.data.audio {
-                    Loadable::Loading => rows.push(Row::Text("…".into())),
-                    Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                    Loadable::Ready(_) if count == 0 => rows.push(Row::Text("none".into())),
-                    Loadable::Ready(_) => {
-                        for _ in 0..count {
-                            rows.push(Row::Item(i));
-                            i += 1;
-                        }
-                    }
-                }
-                rows.push(Row::Blank);
-            }
-            // The "Per-app mixer" button is always the last item of the
-            // Sound tab (App::items()); subtraction is guarded so the
-            // render never panics even if that invariant were to change.
-            rows.push(Row::Item(items.len().saturating_sub(1)));
-        }
+        Tab::Sound => sound::rows(app, &items, &mut rows),
         Tab::Network => {
             rows.push(Row::Item(0));
             rows.push(Row::Blank);

@@ -13,6 +13,7 @@ pub mod keymap;
 mod mouse;
 pub mod report_views;
 pub mod run;
+mod sound;
 pub mod tab;
 pub mod worker;
 
@@ -570,12 +571,7 @@ impl App {
                 Item::Toggle(ToggleId::KeepAwake),
                 Item::Profile,
             ],
-            Tab::Sound => {
-                let (sinks, sources) = self.visible_nodes();
-                let mut v: Vec<Item> = sinks.iter().chain(sources.iter()).map(|n| Item::Slider(SliderId::Node(n.id))).collect();
-                v.push(Item::Button(Command::Open(External::Mixer)));
-                v
-            }
+            Tab::Sound => sound::items(self),
             Tab::Network => vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))],
             Tab::Bluetooth => {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
@@ -602,17 +598,6 @@ impl App {
         let n = self.items().len();
         if self.focus >= n {
             self.focus = n.saturating_sub(1);
-        }
-    }
-
-    /// Outputs then inputs, filtered by the search.
-    pub fn visible_nodes(&self) -> (Vec<&AudioNode>, Vec<&AudioNode>) {
-        match self.data.audio.ready() {
-            None => (Vec::new(), Vec::new()),
-            Some(a) => (
-                a.sinks.iter().filter(|n| self.matches_search(&n.name)).collect(),
-                a.sources.iter().filter(|n| self.matches_search(&n.name)).collect(),
-            ),
         }
     }
 
@@ -744,19 +729,6 @@ impl App {
         if let Some(cur) = self.slider_value(id) {
             self.set_slider(id, i32::from(cur) + delta);
         }
-    }
-
-    fn set_default(&mut self, id: u32) {
-        if let Loadable::Ready(a) = &mut self.data.audio {
-            for list in [&mut a.sinks, &mut a.sources] {
-                if list.iter().any(|n| n.id == id) {
-                    for n in list.iter_mut() {
-                        n.default = n.id == id;
-                    }
-                }
-            }
-        }
-        self.send_op(Op::SetDefault(id));
     }
 
     fn cycle_profile(&mut self, dir: i32, now: Instant) {

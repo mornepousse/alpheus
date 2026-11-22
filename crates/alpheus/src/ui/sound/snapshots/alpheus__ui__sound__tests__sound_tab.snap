@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus/src/ui/tests.rs
+source: crates/alpheus/src/ui/sound/tests.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme  8 Diag        

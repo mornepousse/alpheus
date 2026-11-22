@@ -14,6 +14,7 @@ mod overlays;
 pub mod rail;
 mod report_views;
 pub mod shape;
+mod sound;
 mod tabs;
 
 pub use hit::{HitMap, Target};
@@ -123,11 +124,7 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 pairs.push((km.label(Action::Toggle), "Toggle"));
                 pairs.push((adjust, "Adjust"));
             }
-            Tab::Sound => {
-                pairs.push((km.label(Action::Activate), "Default"));
-                pairs.push((adjust, "Volume"));
-                pairs.push((km.label(Action::Search), "Search"));
-            }
+            Tab::Sound => sound::hints(&mut pairs, km, adjust),
             Tab::Network | Tab::Bluetooth => {
                 pairs.push((km.label(Action::Toggle), "Toggle"));
                 pairs.push((km.label(Action::Activate), "Open"));

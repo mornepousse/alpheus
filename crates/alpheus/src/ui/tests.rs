@@ -404,7 +404,8 @@ fn displays_snapshots() {
 #[test]
 fn tab_snapshots() {
     let mut a = ready_app();
-    for t in Tab::ALL {
+    // The Sound tab's snapshot lives in `sound/tests.rs`.
+    for t in Tab::ALL.into_iter().filter(|t| *t != Tab::Sound) {
         a.go_tab(t, Instant::now());
         insta::assert_snapshot!(format!("tab_{}", t.index() + 1), draw(&a, 80, 24).0.join("\n"));
     }
