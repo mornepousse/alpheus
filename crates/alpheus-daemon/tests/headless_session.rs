@@ -4413,11 +4413,10 @@ fn osd_the_pill_stays_put_when_the_focus_moves_until_its_content_changes() {
     assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_none()), "and only there");
 }
 
-/// An output going away takes the pill with it only when the pill is on that output: the other
-/// output's unplugging leaves it where it is.
+/// Another output's unplugging leaves the pill where it is.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
-fn osd_an_output_going_away_hides_the_pill_only_when_it_is_on_that_output() {
+fn osd_another_output_going_away_leaves_the_pill() {
     let (sway, _hypr, mut d) = osd_daemon("osd-unplug", 2, "timeout_ms = 5000\n", |_| ());
     sway.command("output HEADLESS-1 pos 0 0");
     sway.command("output HEADLESS-2 pos 3000 0");
@@ -4428,6 +4427,27 @@ fn osd_an_output_going_away_hides_the_pill_only_when_it_is_on_that_output() {
     assert_eq!(d.count("osd surface dropped"), 0, "the pill was on the other output: {:?}", d.log());
     assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_some()), "{:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {:?}", d.log());
+}
+
+/// The output the pill is on going away drops it. Sway may send the layer surface's `closed`
+/// before the daemon sees the output removed, so either reason is accepted.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_pills_own_output_going_away_drops_it() {
+    let (sway, _hypr, mut d) = osd_daemon("osd-unplug-own", 2, "timeout_ms = 5000\n", |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-2: volume 90%", DELAY), "the fixture's focused output: {:?}", d.log());
+    sway.command("output HEADLESS-2 disable");
+    assert!(d.wait_for("osd surface dropped (", DELAY), "the pill's own output went: {:?}", d.log());
+    let log = d.log().join("\n");
+    assert!(
+        log.contains("osd surface dropped (output gone") || log.contains("osd surface dropped (closed by the compositor"),
+        "either the output's removal or the compositor's close: {log}"
+    );
+    assert_eq!(d.count("osd surface dropped"), 1, "dropped once: {log}");
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {log}");
 }
 
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";

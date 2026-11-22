@@ -200,6 +200,21 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
+/// The media model parses what a player publishes over D-Bus (titles, positions, lengths): no
+/// path in `media/mod.rs`, `media/popup.rs` or `media/app.rs` may panic. Production code only.
+#[test]
+fn the_media_files_have_no_panicking_path() {
+    for file in ["media/mod.rs", "media/popup.rs", "media/app.rs"] {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file)).unwrap();
+        let prod = production_code(&text);
+        for never in [".unwrap()", ".expect(", "panic!(", "unreachable!(", "[0]", "[1]", "[..n]"] {
+            assert!(!prod.contains(never), "{never} in {file}");
+        }
+        // `[i]` indexes unless it is `vec![i]`, the one-element vector popup.rs builds.
+        assert!(!prod.replace("vec![i]", "").contains("[i]"), "[i] in {file}");
+    }
+}
+
 /// Small features 1, notification rules: the rules never name an app or a text in a log, and
 /// notify.rs, the pure model, logs nothing.
 #[test]
