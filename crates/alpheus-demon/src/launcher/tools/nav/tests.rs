@@ -631,3 +631,33 @@ fn a_right_click_on_another_row_cancels_the_question() {
     assert_eq!(l.click(0, true), Outcome::Redraw, "another row's cancels it");
     assert!(l.tools().unwrap().next_deadline().is_none());
 }
+
+/// A jump while a read is out drops it: its late delivery is stale.
+#[test]
+fn a_jump_cancels_the_pending_choices_read() {
+    let (config, catalog) = catalog(CFG);
+    let pick = catalog.entries.iter().position(|e| e.name == "Pick").unwrap();
+    let mut t = ToolsState::new(catalog);
+    let Step::Drill(Some(Job::Choices { token, .. })) = t.goto_choices(&config.tools, pick) else { panic!() };
+    assert!(t.reading);
+    t.goto_entry(pick);
+    assert!(!t.reading, "the read is no longer waited for");
+    assert!(!t.adopt_choices(pick, token, vec!["late".into()], false));
+}
+
+/// Leaving the Tools mode for another drops a pending read, so All never holds a stale level.
+#[test]
+fn leaving_tools_by_a_mode_click_cancels_the_pending_read() {
+    let (config, catalog) = catalog(CFG);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l.key(Key::Char('/'));
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    select(&mut l, "Pick");
+    let Outcome::ReadChoices(Job::Choices { entry, token, .. }) = l.key(Key::Enter) else { panic!() };
+    l.click_mode(Mode::All);
+    assert!(!l.tools().unwrap().reading);
+    assert!(!l.adopt_choices(entry, token, vec!["late".into()], false));
+    assert_eq!(l.message, None, "no message nor refilter in All");
+}

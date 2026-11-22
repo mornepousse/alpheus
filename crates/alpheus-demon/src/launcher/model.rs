@@ -187,6 +187,11 @@ pub struct Launcher {
     /// The Tools mode's rows of the open level (the flat search's are the state's own).
     tool_level: Vec<ToolRow>,
     tool_level_hits: Vec<ToolHitRow>,
+    /// The `ToolsState::rev` the level's rows were built at (None: not built).
+    tool_level_rev: Option<u64>,
+    /// How many times the level's rows were built (tests: a keystroke builds none).
+    #[cfg(test)]
+    tool_level_builds: u32,
     /// Whether `Source::Tool` hits index the flat search's rows (All, and a typed root query).
     tool_flat_shown: bool,
     /// When the Clear row asked `Clear? ⏎`: it never expires (no timer), only another key or click cancels it.
@@ -243,6 +248,9 @@ impl Launcher {
             tools: None,
             tool_level: Vec::new(),
             tool_level_hits: Vec::new(),
+            tool_level_rev: None,
+            #[cfg(test)]
+            tool_level_builds: 0,
             tool_flat_shown: true,
             clear_asked: None,
             at: None,
@@ -335,6 +343,7 @@ impl Launcher {
         }
         let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.tools = Some(ToolsState::new(catalog));
+        self.tool_level_rev = None;
         self.ranker.forget();
         self.refilter_keeping(kept);
     }
@@ -697,8 +706,15 @@ impl Launcher {
     fn tools_activate(&mut self, row: RowId) -> Outcome {
         let now = self.at.unwrap_or_else(Instant::now);
         // The flat search's index means nothing in the level it drills into: restore the top.
-        let selected = if self.query.is_empty() { self.selected } else { 0 };
-        let Some(step) = self.tools.as_mut().map(|t| t.enter(&self.config.tools, row, selected, now)) else { return Outcome::Nothing };
+        let query_empty = self.query.is_empty();
+        let selected = self.selected;
+        let Some(step) = self.tools.as_mut().map(|t| {
+            // A typed query's index means nothing in the level: `up` restores the row's real place.
+            let selected = if query_empty { selected } else { t.here(row) };
+            t.enter(&self.config.tools, row, selected, now)
+        }) else {
+            return Outcome::Nothing;
+        };
         match step {
             Step::Drill(job) => {
                 self.level_changed();
@@ -779,6 +795,9 @@ impl Launcher {
         if self.mode == Mode::Tools {
             // The Tools list's prepared facts are not another mode's, whatever its row count.
             self.ranker.forget();
+            if let Some(t) = self.tools.as_mut() {
+                t.cancel_read();
+            }
         }
         self.mode = m;
         self.by_prefix = false;
@@ -888,7 +907,13 @@ impl Launcher {
             self.ranker.forget();
         }
         self.tool_flat_shown = flat;
-        if !flat {
+        let rev = t.rev();
+        if !flat && self.tool_level_rev != Some(rev) {
+            self.tool_level_rev = Some(rev);
+            #[cfg(test)]
+            {
+                self.tool_level_builds += 1;
+            }
             let rows = t.rows();
             self.tool_level_hits = rows.iter().map(|r| t.hit_row(r)).collect();
             self.tool_level = rows;

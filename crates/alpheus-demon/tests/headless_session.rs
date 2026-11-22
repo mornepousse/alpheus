@@ -606,6 +606,35 @@ fn tools_clipboard_builtin_opens_the_history() {
     assert_eq!(d.count("launcher closed (activated)"), 0, "{:?}", d.log());
 }
 
+/// The Emoji built-in reopens Mod+Space with `:` typed: an apps open (the scan runs), the emoji rows
+/// shown, and Enter on one copies it through `copy` (a stub, never `wl-copy`).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_emoji_builtin_opens_the_picker() {
+    use std::os::unix::fs::PermissionsExt;
+    let sway = Sway::start("tools-emoji", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let copied = sway.runtime.join("copied");
+    let stub = sway.runtime.join("fake-copy");
+    std::fs::write(&stub, format!("#!/bin/sh\ncat > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", copied.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = format!("copy = [\"{}\"]\n", stub.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the Tools box scans nothing: {:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "emoji", "-k", "Return"]).success());
+    assert!(d.wait_for("tools: built-in emoji", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "the picker shown: {:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "a full apps open, so erasing `:` shows the apps: {:?}", d.log());
+    // `:` is typed for the user: a name alone finds an emoji row, and Enter copies that emoji.
+    assert!(wtype(&sway, &["-s", "300", "abacus", "-k", "Return"]).success());
+    wait_for_file(&copied, DELAY);
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), "\u{1F9EE}", "the emoji row's Enter copied the abacus: {:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+}
+
 /// `/` in Mod+Space jumps into the Tools menu (its states are read); Backspace returns to All with
 /// the apps the scan delivered, and a slow source's entries, still there.
 #[test]

@@ -185,10 +185,12 @@ impl LauncherConfig {
     /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
     /// - prefixes non-empty (`tools` may be empty: off), not starting with whitespace, none a
     ///   prefix of another (equal included);
+    ///   a `tools` the file never sets (default `/`) that clashes is turned off with a note, one it sets is refused;
     /// - sources: `check_sources`;
     /// - tools: `tools_config::validate` on the whole file, then `tools_config::bounded` (its notes go to `notes`).
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
-        let r: Raw = toml::from_str(s).map_err(|e| with_line(s, &e))?;
+        let mut r: Raw = toml::from_str(s).map_err(|e| with_line(s, &e))?;
+        let mut notes = Vec::new();
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
@@ -236,6 +238,20 @@ impl LauncherConfig {
                 .map_or("commands", |(k, _)| k);
             return Err(format!("prefixes.{key} starts with a space"));
         }
+        // The default `/` the file never set gives way to a prefix of the user's own, with a note:
+        // an old file stays valid. One written in the file is the user's word, refused below.
+        let tools_set = toml::from_str::<toml::Table>(s).ok().is_some_and(|t| t.get("prefixes").and_then(|p| p.get("tools")).is_some());
+        let tools_clash = |t: &str, p: &str| t.starts_with(p) || p.starts_with(t);
+        if !tools_set
+            && !r.prefixes.tools.is_empty()
+            && (tools_clash(&r.prefixes.tools, &r.prefixes.commands) || tools_clash(&r.prefixes.tools, &r.prefixes.windows))
+        {
+            notes.push(format!(
+                "prefixes.tools {:?} clashes with prefixes.commands or prefixes.windows: the Tools jump is off (set prefixes.tools to turn it on)",
+                r.prefixes.tools
+            ));
+            r.prefixes.tools.clear();
+        }
         // One a prefix of another ("w" and "w "): a query starting with the longer one
         // would match both modes. An empty `tools` is off and takes part in no pair.
         let named = [("commands", &r.prefixes.commands), ("windows", &r.prefixes.windows), ("tools", &r.prefixes.tools)];
@@ -249,7 +265,6 @@ impl LauncherConfig {
         check_sources(&r.sources)?;
         let mut tools = r.tools;
         tools_config::number(&mut tools);
-        let mut notes = Vec::new();
         // Everything the file holds is checked, then the bounds cut.
         tools_config::validate(&tools)?;
         let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
@@ -364,6 +379,22 @@ pub fn config_path(config_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::launcher::testing::TempDir;
+
+    #[test]
+    fn a_default_tools_prefix_that_clashes_is_turned_off_with_a_note() {
+        let c = LauncherConfig::from_text("[prefixes]\ncommands = \"/run \"\n").unwrap();
+        assert_eq!(c.prefixes.tools, "", "the default `/` clashes with `/run `: the jump is off");
+        assert!(c.notes.iter().any(|n| n.contains("prefixes.tools")), "said once: {:?}", c.notes);
+        assert_eq!(c.prefixes.commands, "/run ", "the user's own prefix is kept");
+        let c = LauncherConfig::from_text("[prefixes]\nwindows = \"/\"\n").unwrap();
+        assert_eq!(c.prefixes.tools, "");
+    }
+
+    #[test]
+    fn an_explicit_tools_prefix_that_clashes_is_still_refused() {
+        let e = LauncherConfig::from_text("[prefixes]\ncommands = \"/run \"\ntools = \"/\"\n").unwrap_err();
+        assert!(e.contains("ambiguous"), "{e}");
+    }
 
     /// A launcher.toml in its own temporary dir (keep the TempDir alive while using the path).
     fn file(name: &str, content: &str) -> (TempDir, PathBuf) {

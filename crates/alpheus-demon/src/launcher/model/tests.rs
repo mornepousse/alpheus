@@ -1427,3 +1427,65 @@ fn a_state_adopted_after_the_slash_jump_sticks() {
     l.key(Key::Left);
     assert_eq!(l.tools().and_then(|t| t.state_of(entry)), Some(true));
 }
+
+const CHOICES_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Nix"
+[[tools.entry]]
+name = "One"
+category = "Nix"
+run = ["x"]
+[[tools.entry]]
+name = "Root a"
+run = ["x"]
+[[tools.entry]]
+name = "Root b"
+run = ["x", "{choice}"]
+choices = ["p", "q"]
+"#;
+
+fn choices_launcher() -> Launcher {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let config = LauncherConfig::from_text(CHOICES_CFG).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l
+}
+
+/// Drilling from a typed query of the root restores the entry's real row on the way up, not 0.
+#[test]
+fn drilling_from_a_typed_query_restores_the_entrys_real_position() {
+    let mut l = choices_launcher();
+    typed(&mut l, "/");
+    typed(&mut l, "root b");
+    l.key(Key::Enter);
+    l.key(Key::Left);
+    // The root lists Nix, Root a, Root b.
+    assert_eq!(l.selected, 2, "Root b's row in the root");
+}
+
+/// The level's rows are built on a level change or a delivery, not on every keystroke.
+#[test]
+fn typing_in_a_tools_level_does_not_rebuild_its_rows() {
+    let mut l = choices_launcher();
+    typed(&mut l, "/");
+    let built = l.tool_level_builds;
+    typed(&mut l, "ab");
+    l.key(Key::Backspace);
+    l.key(Key::Backspace);
+    assert_eq!(l.tool_level_builds, built, "keystrokes only rank");
+    l.key(Key::Enter); // into Nix
+    assert!(l.tool_level_builds > built, "a level change rebuilds");
+}
+
+#[test]
+fn a_state_delivery_rebuilds_the_level() {
+    let mut l = choices_launcher();
+    typed(&mut l, "/");
+    let built = l.tool_level_builds;
+    l.adopt_state(1, Some(true));
+    assert!(l.tool_level_builds > built);
+}

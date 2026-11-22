@@ -118,6 +118,9 @@ pub struct ToolsState {
     question: Option<(RowId, Instant)>,
     /// The token of the choices read the open level waits for.
     token: u64,
+    /// Bumped by everything that changes the rows a level lists (level, lines, states): the
+    /// model rebuilds its copy of them only when it moved.
+    rev: u64,
     /// The flat search's rows and their candidates, built once: every entry, then every fixed
     /// choice. Never a dynamic choice.
     flat: Vec<ToolRow>,
@@ -136,6 +139,7 @@ impl ToolsState {
             reading: false,
             question: None,
             token: 0,
+            rev: 0,
             flat: Vec::new(),
             flat_hits: Vec::new(),
         };
@@ -162,6 +166,11 @@ impl ToolsState {
         }
         self.flat = flat;
         self.flat_hits = hits;
+    }
+
+    /// See `rev`.
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     pub fn level(&self) -> Level {
@@ -292,6 +301,7 @@ impl ToolsState {
     pub fn adopt_state(&mut self, entry: usize, on: Option<bool>) {
         if let Some(slot) = self.states.get_mut(entry) {
             *slot = on;
+            self.rev += 1;
         }
     }
 
@@ -307,6 +317,13 @@ impl ToolsState {
         self.dynamic = None;
         self.reading = false;
         self.token += 1;
+        self.rev += 1;
+    }
+
+    /// Drops the choices read the open level waits for: its late delivery is stale.
+    pub fn cancel_read(&mut self) {
+        self.reading = false;
+        self.token += 1;
     }
 
     /// Opens the level of `row` (`selected`: the row's index, restored by `up`).
@@ -314,6 +331,7 @@ impl ToolsState {
         self.stack.push((self.level, selected));
         self.level = level;
         self.question = None;
+        self.rev += 1;
     }
 
     /// Goes up one level: the selection to restore, or None at the root. A choices level that is
@@ -327,6 +345,7 @@ impl ToolsState {
         }
         self.level = level;
         self.question = None;
+        self.rev += 1;
         Some(selected)
     }
 
@@ -336,6 +355,7 @@ impl ToolsState {
         self.dynamic = None;
         self.reading = false;
         self.token += 1;
+        self.rev += 1;
         let Some(e) = self.catalog.entries.get(entry) else { return Step::Drill(None) };
         let job = match (&e.choices, e.kind) {
             (Choices::Command, EntryKind::User(i)) => config.entries.get(i).map(|c| {
@@ -423,7 +443,14 @@ impl ToolsState {
         }
         self.reading = false;
         self.dynamic = (!failed).then_some((entry, lines));
+        self.rev += 1;
         true
+    }
+
+    /// The index of `row` among the rows the open level lists (0 when absent).
+    pub fn here(&mut self, row: RowId) -> usize {
+        let level = self.level;
+        self.position(level, row)
     }
 
     /// The index of `id` among the rows `level` lists (0 when absent).
@@ -441,6 +468,8 @@ impl ToolsState {
         self.stack.clear();
         self.level = Level::Root;
         self.question = None;
+        self.cancel_read();
+        self.rev += 1;
         if let Some(c) = self.catalog.entries.get(entry).and_then(|e| e.category) {
             let at = self.position(Level::Root, RowId::Category(c));
             self.stack.push((Level::Root, at));
