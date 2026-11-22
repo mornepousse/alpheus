@@ -1,4 +1,19 @@
-//! The quick panel's cells.
+//! The quick settings panel as cells: one `Grid` per line shown, ready for the painter.
+//!
+//! This is the drawing half of the panel's model (`mod.rs`). `rows` takes the panel's state and
+//! what the daemon knows (`Quick` and `Live`) and gives the lines in the window; each row of the
+//! table has a `draw_*` function, and the small pieces they share (the switch, the slider, a text
+//! row, the session buttons) live here too. The lists with a detail (`wifi.rs`, `bt.rs`, `vpn.rs`,
+//! `dnd.rs`, `shield.rs`) draw their own lines and use `text_row` and `note_row` from here.
+//!
+//! Never:
+//! - change the panel's state, decide what a key does or run anything: every function here takes
+//!   `&Quick` and returns or fills cells;
+//! - read a file or a clock, start a thread, or panic (the guardrails that cover `mod.rs` list this
+//!   file too).
+//!
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md (§ 2, the rows),
+//! docs/decisions.md ("A click on a slider's bar sets the level of the cell", "The selected slider row is banded across the whole row").
 
 use super::{FAILED_TAG, GLYPH_AT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines};
 use crate::grid::{Grid, Style, text_width};
@@ -14,6 +29,8 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
     let visible = q.visible();
     let top = q.top.min(all.len().saturating_sub(visible));
     let mut out = Boxed::default();
+    // The entries of the lists with a detail, read once for the whole window (empty while their
+    // detail is closed).
     let nets = if q.wifi.open { q.wifi.networks() } else { Vec::new() };
     let devices = if q.bt.open { q.bt.devices() } else { Vec::new() };
     let profiles = if q.vpn.open { q.vpn.listed() } else { Vec::new() };
@@ -28,6 +45,8 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
                 }
             }
             Line::Row(row) => draw(&mut g, row, live, q),
+            // `l @ (A | B)` binds the whole line to `l` when it is one of those variants, so the
+            // list can draw the line it was given.
             l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password) => {
                 q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
             }
@@ -49,10 +68,14 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
     out
 }
 
+/// The cells of one row of the table: its `draw` function, `selected` when it is the selected row.
+/// Every `draw_*` below has the same four parameters because `RowSpec::draw` holds them as one
+/// function type; a `_` marks a parameter that row does not use.
 pub(super) fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
     (row.spec().draw)(g, live, q, q.selected == row);
 }
 
+/// The volume row: the slider, at the level the panel shows (`volume_level` while one is held).
 pub(super) fn draw_volume(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     if let Some(v) = live.sound.and_then(|s| s.sink) {
         let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
@@ -60,6 +83,7 @@ pub(super) fn draw_volume(g: &mut Grid, live: &Live, q: &Quick, selected: bool) 
     }
 }
 
+/// The headset row: its name and its mode, `‹ Hi-Fi ›` or `‹ Mic ›`.
 pub(super) fn draw_headset(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     if let Some(h) = &q.headset {
         let mode = if h.active == HeadsetMode::HiFi { "‹ Hi-Fi ›" } else { "‹ Mic ›" };
@@ -67,26 +91,31 @@ pub(super) fn draw_headset(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     }
 }
 
+/// The brightness row: the slider, never muted, with no `›`.
 pub(super) fn draw_brightness(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     if let Some(b) = &q.backlight {
         slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
     }
 }
 
+/// The Wi-Fi row: its glyph by signal and its value, with `›` for the detail.
 pub(super) fn draw_wifi(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     text_row(g, Some(q.wifi.glyph()), "Wi-Fi", &format!("{} ›", q.wifi.value()), Style::NORMAL, selected);
 }
 
+/// The Bluetooth row: its glyph and value, with `›` for the detail.
 pub(super) fn draw_bluetooth(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     if let Some(s) = live.bluetooth {
         text_row(g, Some(q.bt.glyph(s)), "Bluetooth", &format!("{} ›", q.bt.value(s)), Style::NORMAL, selected);
     }
 }
 
+/// The VPN row: its value, with `›` for the detail.
 pub(super) fn draw_vpn(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     text_row(g, Some(crate::segments::VPN), "VPN", &format!("{} ›", q.vpn.value()), Style::NORMAL, selected);
 }
 
+/// The Shield row: `failed` in warn after a failed switch, `…` while one runs, else the switch.
 pub(super) fn draw_shield(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     let Some(v) = live.shield else { return };
     text_row(g, Some(SHIELD), "Shield", "", Style::NORMAL, selected);
@@ -100,6 +129,7 @@ pub(super) fn draw_shield(g: &mut Grid, live: &Live, _: &Quick, selected: bool) 
     write_cell(g, text, style);
 }
 
+/// The microphone row: its glyph by mute state and the switch.
 pub(super) fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     if let Some(v) = live.sound.and_then(|s| s.source) {
         text_row(g, Some(if v.muted { MIC_OFF } else { MIC_ON }), "Microphone", "", Style::NORMAL, selected);
@@ -107,6 +137,7 @@ pub(super) fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     }
 }
 
+/// The power profile row: the active profile's label, with `›`.
 pub(super) fn draw_profile(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     if let Some(p) = live.profile.and_then(|p| p.active) {
         text_row(g, Some(PROFILE), "Power profile", &format!("{} ›", p.label()), Style::NORMAL, selected);

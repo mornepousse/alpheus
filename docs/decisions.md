@@ -1108,3 +1108,90 @@ that output is known by name and is not the one they are on. The code gives the 
 never jump under the pointer because the focus followed the mouse.
 
 Date: 2026-10-09 · Source: notifications plan 1, Task 6; `bubbles::moves`
+
+### The quick panel keeps its selection on a row, not on a position
+
+The selected row is kept by which row it is. A row appearing or going above it (the Wi-Fi row when
+NetworkManager answers, the backlight when its device goes) never moves the selection. When its own
+row goes, the selection falls to the next row down the table, else to the nearest one above.
+
+Date: 2026-10-11 · Source: quick settings spec § 5 and § 7 ("the selection kept by identity when rows appear or vanish"); `Quick::fit`
+
+### A slider sends one level per 150 ms window and keeps showing it
+
+The volume and the brightness send absolute levels that the panel works out from the level it shows,
+at most one command per 150 ms window. A key, a wheel notch or a click inside a window only moves the
+level shown; the latest level goes when the window ends, and a level still waiting when the panel
+closes is sent then. After a quiet window the level sent stays shown, and is stepped from, until
+pw-dump reports it or 1 s has passed; the backlight is re-read after the last command, and a reading
+that differs from the level sent is held back until that second ends. A default sink switch drops a
+held volume level: it is never sent to the new sink. The levels stay shown because a slow `wpctl` or
+`brightnessctl` would otherwise make the next press step from a stale level (commit 0a69573). Why
+commands are paced to one per window, and why 150 ms, is not recorded.
+
+Date: 2026-10-11 · Source: commits 9347a3c and 0a69573; `Pace`, `COALESCE`, `SETTLE`, `Quick::fit`
+
+### The quick panel never sets the backlight below 1 %
+
+A slider move on the brightness row stops at 1 %: the code gives the reason as "never a black
+screen". The guardrail on the commands the panel may run pins the same floor.
+
+Date: 2026-10-11 · Source: commit 9347a3c; `BRIGHTNESS_MIN`
+
+### A click on a slider's bar sets the level of the cell
+
+The bar is 22 cells. A press on a cell sets `(column − bar start + 1) × 100 / 22` percent: the first
+cell is 4 % and the last 100 %. Why the first cell is not 0 % is not recorded.
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 10; `bar_value`
+
+Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+
+### The selected slider row is banded across the whole row
+
+The selection band covers a slider's whole row, the bar included; the bar's cells keep their own
+foreground colours on it (accent, dim, warning), so the level stays readable. A band that skipped the
+bar looked broken (the plan's note on its amendment at the final review).
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 6 (amended at the final review); `slider` in `draw.rs`
+
+Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+
+### Only the arrow keys repeat in the quick panel
+
+Held down, only ↑ ↓ ← → (and Ctrl+P, Ctrl+N) repeat, and Backspace in the Wi-Fi password field. A held
+Space or Enter acts once: the plan expects one action, never a flapping mute or a confirmed reboot. A
+held ← or → on the headset row sends nothing more, because it would send `wpctl set-profile` again
+before pw-dump reports the switch; a held key never answers a Bluetooth code question, which a key
+pressed before the question arrived would otherwise reject (both reasons from the code's comments).
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Review Focus" 5 and "Decisions written down" 8; `Quick::key`
+
+Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+
+### The quick panel's outputs detail stays open after a choice
+
+The outputs detail opens on the default sink and stays open after Enter: the `●` moves when pw-dump
+reports the switch. Why it does not close is not recorded.
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 5; `Quick::choose_sink`
+
+Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+
+### A session button closes the quick panel
+
+A session button (lock, log out, and reboot or power off after the second activation) closes the panel
+once its command is spawned. Why is not recorded; the plan's closing note lists it for confirmation.
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 7; `Quick::activate`
+
+Status: awaiting confirmation at the trial (quick settings plan 1, closing note: decision 7 listed for confirmation)
+
+### Do not disturb shows in the quick panel only with the notifications module
+
+The do-not-disturb row exists only when the `notifications` module runs: without it there is no bell,
+no server and nothing to mute.
+
+Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 4; `quick::live`
+
+Status: awaiting confirmation at the trial (quick settings plan 1, closing note: decision 4 listed for confirmation)

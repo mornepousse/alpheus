@@ -1,14 +1,33 @@
-//! The quick settings panel (quick spec), pure: which rows show for the hardware and the
-//! configuration, the selection kept by identity, the keys, the clicks and the wheel, the outputs
-//! detail, the reboot and power-off confirmation, the re-reads it waits for, and the exact commands
-//! to run. The popup (`PopupBody::Quick`), the reads (sysfs, `/proc`: `quick_state.rs`) and the
-//! commands themselves are the wiring's (`quick_app.rs`): nothing here reads a file, starts a
-//! thread or runs a command.
+//! The quick settings panel's model: which rows it shows, what a key, a click or the wheel does to
+//! them, and the commands it asks for.
 //!
-//! A list with a detail (`quick_wifi.rs`, `quick_bt.rs`) is its own struct and file: its state, rows,
-//! keys and safety rules. This file only hands it its turn (`Row`, `ROWS`, `Line`, `lines`,
-//! `selected_line`, `key`, `press`, `rows`, `fit`), and gives it `nav`, `moved`, `text_row`, `note_row`,
-//! `FAILED_SHOWN` and the tags.
+//! This is the pure half of the panel. `Quick` is the open panel's own state, dropped with its
+//! popup; `Live` borrows what the rest of the daemon knows (the sound state, do-not-disturb, the
+//! power profile, the configuration) each time it is used; `QuickAction` is what a key or a click
+//! asks the wiring to do (run a command, close the panel, repaint). `ROWS` says which rows exist
+//! and when each shows, and the selection is kept by the row it is on, not by its position.
+//! The other files of this folder: `app.rs` is the wiring (the popup, the reads, spawning the
+//! commands), `state.rs` reads a configured toggle's state, `draw.rs` turns the state into cells,
+//! and `wifi.rs`, `bt.rs`, `vpn.rs`, `dnd.rs` and `shield.rs` are the lists with a detail: each
+//! is its own struct with its own state, rows, keys and safety rules. This file only hands such a
+//! list its turn (`Row`, `ROWS`, `Line`, `lines`, `selected_line`, `key`, `press`, `fit`) and
+//! gives it the helpers they share (`nav`, `moved`, `run`, `argv`, `FAILED_SHOWN` and the tags).
+//!
+//! Never:
+//! - read a file or a clock, or start a thread, a process or a timer: the wiring passes `now` and
+//!   `Live`, and gets the commands back as `QuickAction` (guardrails
+//!   `the_quick_model_and_its_state_reader_only_read` and `NO_THREAD_NOR_COMMAND`);
+//! - put a configured command's argv in a log line: a command carries a short `what` word to log
+//!   instead;
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
+//!
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/decisions.md ("The quick
+//! panel keeps its selection on a row, not on a position", "A slider sends one level per
+//! 150 ms window and keeps showing it", "The quick panel never sets the backlight below 1 %",
+//! "A click on a slider's bar sets the level of the cell", "Only the arrow keys repeat in the quick
+//! panel", "The quick panel's outputs detail stays open after a choice", "A session button closes the
+//! quick panel", "Do not disturb shows in the quick panel only with the notifications module",
+//! "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s").
 
 use crate::actions::Button;
 use crate::backlight::Reread;
@@ -50,14 +69,15 @@ pub const BAR: u16 = 22;
 /// The percentage's first cell ("{:>3}%", `osd::PERCENT_CELLS`).
 pub const PERCENT_AT: u16 = 26;
 // `osd::level(g, GLYPH_AT, PERCENT_AT + PERCENT_CELLS, …)` draws `end − at − 3 − PERCENT_CELLS`
-// bar cells: the click mapping (`bar_value`) counts on BAR being that width.
+// bar cells: the click mapping (`bar_value`) counts on BAR being that width. The `const _` line
+// is checked when the program is built, so changing one number without the others does not compile.
 const _: () = assert!(PERCENT_AT + PERCENT_CELLS - GLYPH_AT - 3 - PERCENT_CELLS == BAR);
 /// The volume's `›` (the outputs detail), on the column where the text rows end.
 pub const MORE_AT: u16 = 32;
 /// wpctl's targets: the default output, as the bar's own clicks name it, and the default input.
 pub const SINK: &str = crate::actions::SINK;
 pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
-// The mockup's glyphs (spec § 2): Nerd Font Material Design icons; the session row's are
+// The row glyphs (spec § 2): Nerd Font Material Design icons; the session row's are
 // session.rs's (shared with the power menu, power spec § 4).
 pub const PROFILE: char = '\u{f0f85}';
 pub const KEEP_AWAKE: char = '\u{f0176}';
@@ -66,16 +86,22 @@ pub const MIXER: char = '\u{f066a}'; // md-tune_vertical
 /// Re-reads after a command (spec § 5): the backlight, a configured toggle's state.
 pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
-/// A slider sends at most one command per window this long (fix S1): a held key, the wheel or
-/// clicks in a row coalesce into the latest level, sent when the window ends.
+/// A slider sends at most one command per window this long: a held key, the wheel or clicks in a
+/// row coalesce into the latest level, sent when the window ends. See docs/decisions.md, "A slider
+/// sends one level per 150 ms window and keeps showing it". The window is the length of the
+/// backlight's re-read delay; why 150 ms is not recorded.
 pub const COALESCE: Duration = BRIGHTNESS_REREAD;
-/// The backlight's floor from the panel (Mae, 2026-10-11): never a black screen.
+/// The backlight's floor from the panel: never a black screen. See docs/decisions.md, "The quick
+/// panel never sets the backlight below 1 %".
 pub const BRIGHTNESS_MIN: u8 = 1;
 /// How long a slider keeps showing (and stepping from) the level it sent while the live source
-/// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may lag a window under load.
+/// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may take longer than a window
+/// to apply it.
 pub const SETTLE: Duration = Duration::from_secs(1);
 /// How long a list's entry shows `failed` after what ran on it failed; the tags of both.
 pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
+// `pub(crate)`: visible inside the daemon, not outside it.
+/// The tag a list's entry shows while what was asked of it runs, and after it failed.
 pub(crate) const RUNNING_TAG: &str = "…";
 pub(crate) const FAILED_TAG: &str = "failed";
 
@@ -112,7 +138,8 @@ impl Focus {
     }
 }
 
-/// The declaration order is the panel's top-to-bottom order (and `ROWS`' index).
+/// One row of the panel. The declaration order is the panel's top-to-bottom order, and `ROWS` is
+/// indexed by the variant (`Row::spec`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Volume,
@@ -232,7 +259,7 @@ pub enum Line {
     ShieldNote(&'static str),
     /// The do-not-disturb detail's "‹ Do not disturb".
     DndHeader,
-    /// The n-th of the do-not-disturb detail's choices (`quick_dnd::CHOICES`).
+    /// The n-th of the do-not-disturb detail's choices (`dnd::CHOICES`).
     DndChoice(usize),
 }
 
@@ -263,12 +290,17 @@ pub struct Live<'a> {
 
 /// The bar's state as the panel reads it.
 pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
+    // Do-not-disturb has a row only when the notifications module runs: without it there is no
+    // server to mute. See docs/decisions.md, "Do not disturb shows in the quick panel only with the
+    // notifications module".
+    let dnd_shown = if bar.config.modules.contains(&ModuleId::Notifications) { Some(dnd.on) } else { None };
     Live {
         sound: match &bar.sound {
             Feed::Ready(s) => Some(s),
             _ => None,
         },
-        dnd: bar.config.modules.contains(&ModuleId::Notifications).then_some(dnd.on),
+        dnd: dnd_shown,
+        // A do-not-disturb switched on by a capture (`by_sharing`) has no end time to show.
         dnd_end: match dnd.until {
             Some(until) if dnd.on && !dnd.by_sharing => {
                 let t = LocalTime::from_epoch(until as i64);
@@ -315,9 +347,9 @@ pub enum QuickAction {
         argv: Vec<String>,
         what: String,
     },
-    /// Calls on BlueZ's acting connection, or the agent's answers (quick_bt.rs), in order.
+    /// Calls on BlueZ's acting connection, or the agent's answers (`bt.rs`), in order.
     Bluetooth(Vec<BtOrder>),
-    /// A choice of the do-not-disturb detail: the wiring applies it (`quick_app::dnd_request`).
+    /// A choice of the do-not-disturb detail: the wiring applies it (`app.rs`, `dnd_request`).
     Dnd(DndChoice),
     /// Shield mode's row or detail asks for a switch or an allow (`App::shield_switch`, `shield_allow`).
     Shield(ShieldAsk),
@@ -379,8 +411,8 @@ impl Level {
     }
 }
 
-/// A slider's pace (fix S1): the window opened by the last command it sent, and whether a newer
-/// level waits for that window's end. Only the latest level goes, one command per window.
+/// A slider's pace: the window opened by the last command it sent, and whether a newer level
+/// waits for that window's end. Only the latest level goes, one command per window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pace {
     pub until: Option<Instant>,
@@ -456,7 +488,11 @@ fn brightness_command(b: &Backlight) -> QuickAction {
 
 /// The percent a press on a slider's bar sets; None off the bar.
 fn bar_value(col: u16) -> Option<u8> {
-    (BAR_START..BAR_START + BAR).contains(&col).then(|| ((u32::from(col - BAR_START) + 1) * 100 / u32::from(BAR)) as u8)
+    if !(BAR_START..BAR_START + BAR).contains(&col) {
+        return None;
+    }
+    // Cell 0 of the bar is 1/22 of the way: 4 %, the last cell 100 %.
+    Some(((u32::from(col - BAR_START) + 1) * 100 / u32::from(BAR)) as u8)
 }
 
 /// A configured command (`More…`, `Mixer…`) run as given, then the panel closes; nothing when it
@@ -498,7 +534,7 @@ pub struct Quick {
     pub toggles: [Option<bool>; Toggle::ALL.len()],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
     pub confirm: Option<(Question, Instant)>,
-    /// The volume shown and sent while its slider moves (fix S1), and the default sink's node it
+    /// The volume shown and sent while its slider moves, and the default sink's node it
     /// was set for; None: pw-dump's own level. Kept until pw-dump reports it, or SETTLE passes.
     pub volume_level: Option<u8>,
     pub volume_sink: Option<String>,
@@ -518,15 +554,15 @@ pub struct Quick {
     pub kept_at: Option<usize>,
     /// Programs that failed to start during this open: each logged once (spec § 6).
     pub failed: Vec<String>,
-    /// The Wi-Fi row and its detail (quick_wifi.rs).
+    /// The Wi-Fi row and its detail (`wifi.rs`).
     pub wifi: Wifi,
-    /// The Bluetooth row and its detail (quick_bt.rs).
+    /// The Bluetooth row and its detail (`bt.rs`).
     pub bt: Bt,
-    /// The VPN row and its detail (quick_vpn.rs).
+    /// The VPN row and its detail (`vpn.rs`).
     pub vpn: Vpn,
-    /// The do-not-disturb detail (quick_dnd.rs).
+    /// The do-not-disturb detail (`dnd.rs`).
     pub dnd: DndDetail,
-    /// The Shield detail (quick_shield.rs).
+    /// The Shield detail (`shield.rs`).
     pub shield: ShieldPanel,
 }
 
@@ -536,7 +572,10 @@ pub(crate) fn argv(parts: &[&str]) -> Vec<String> {
 
 /// The sink the outputs detail chooses when it has none of its own: the default, else the first.
 fn default_sink(sinks: &[Sink]) -> Option<u32> {
-    sinks.iter().find(|s| s.default).or(sinks.first()).map(|s| s.id)
+    match sinks.iter().find(|s| s.default) {
+        Some(s) => Some(s.id),
+        None => sinks.first().map(|s| s.id),
+    }
 }
 
 /// One row of the panel's table.
@@ -559,7 +598,7 @@ struct RowSpec {
 ///   place, one entry here (its `draw_mark` for a ●/○ state), its Space/Enter arm in `Quick::act`;
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
-///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
+///   header) and its state read in `app.rs`. The per-toggle arrays follow `Toggle::ALL`.
 const ROWS: [RowSpec; 14] = [
     RowSpec {
         row: Row::Volume,
@@ -784,6 +823,8 @@ impl Quick {
         }
         let rows = shown(live, self);
         if !rows.contains(&self.selected) {
+            // The selected row went. `self.selected as usize` is its index in `ROWS` (the variant's
+            // number); the slices are the table from that row down, and up to it.
             let at = self.selected as usize;
             let below = ROWS[at..].iter().find(|s| rows.contains(&s.row));
             let above = ROWS[..at].iter().rev().find(|s| rows.contains(&s.row));
@@ -805,6 +846,7 @@ impl Quick {
         self.top = 0;
     }
 
+    /// How many lines the window shows: the room the popup has under the bar, at least 3.
     fn visible(&self) -> usize {
         usize::from(self.room).max(3)
     }
@@ -842,8 +884,8 @@ impl Quick {
     }
 
     /// A key (spec § 3). `repeat`: the keyboard's auto-repeat, which only ↑ ↓ ← → (and Ctrl+P,
-    /// Ctrl+N) follow, and Backspace in the password field: a held Space or Enter acts once (Review
-    /// Focus 5).
+    /// Ctrl+N) follow, and Backspace in the password field: a held Space or Enter acts once. See
+    /// docs/decisions.md, "Only the arrow keys repeat in the quick panel".
     pub fn key(&mut self, live: &Live, k: Key, repeat: bool, now: Instant) -> QuickAction {
         let erasing = k == Key::Backspace && self.wifi.field.is_some();
         if repeat && !erasing && !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::CtrlP | Key::CtrlN) {
@@ -912,7 +954,10 @@ impl Quick {
             _ => {}
         }
         let Some(to) = nav(k, Some(at), rows.len()) else { return self.act(live, k, now) };
-        rows.get(to).map_or(QuickAction::Nothing, |r| moved(&mut self.selected, *r))
+        match rows.get(to) {
+            Some(row) => moved(&mut self.selected, *row),
+            None => QuickAction::Nothing,
+        }
     }
 
     /// Space, Enter and ← → on a row (spec § 3).
@@ -954,7 +999,7 @@ impl Quick {
         }
     }
 
-    /// The volume by a step or to a level, from the level shown (fix S1): shown at once, sent as an
+    /// The volume by a step or to a level, from the level shown: shown at once, sent as an
     /// absolute level now or when its window ends.
     fn volume(&mut self, live: &Live, to: Level, now: Instant) -> QuickAction {
         let Some(from) = self.volume_level.or(live.sound.and_then(|s| s.sink).map(|v| v.percent)) else {
@@ -992,7 +1037,10 @@ impl Quick {
     fn move_button(&mut self, live: &Live, delta: i32) -> QuickAction {
         let drawn = self.buttons(live);
         let at = drawn.iter().position(|b| *b == self.button).unwrap_or(0);
-        drawn.get(list::step(at, delta, drawn.len(), |_| true)).map_or(QuickAction::Nothing, |b| moved(&mut self.button, *b))
+        match drawn.get(list::step(at, delta, drawn.len(), |_| true)) {
+            Some(button) => moved(&mut self.button, *button),
+            None => QuickAction::Nothing,
+        }
     }
 
     /// A session button (spec § 2): lock and log out at once; reboot and power off on a second
@@ -1009,7 +1057,9 @@ impl Quick {
             Activation::Run
         };
         match activation {
-            // Too soon after the question (Mae): a double activation; the question stays.
+            // Too soon after the question: a double activation, which never confirms; the question
+            // stays. See docs/decisions.md, "Reboot and power off ask first, and a second activation
+            // confirms from 0.4 s to 3 s".
             Activation::Wait => QuickAction::Nothing,
             Activation::Ask => QuickAction::Redraw,
             Activation::Run => QuickAction::RunAndClose { argv, what: s.word().to_string() },
@@ -1022,6 +1072,8 @@ impl Quick {
         self.vpn.focus_pending = false;
         self.fit(live);
         let all = lines(live, self);
+        // The window may start below where the lines now end (a list shrank): it is cut to the last
+        // window that fits.
         let top = self.top.min(all.len().saturating_sub(self.visible()));
         let Some(line) = all.get(top + usize::from(cell.1)).copied() else { return QuickAction::Nothing };
         // A press anywhere but the question's own line cancels it: the session row for a session
@@ -1181,6 +1233,8 @@ impl Quick {
             self.shield.deadline(),
         ]
         .into_iter()
+        // The per-toggle deadlines join the same sequence; `flatten` drops the `None`s, so `min`
+        // is the earliest one set, or `None` when nothing waits.
         .chain(self.reread_toggles)
         .flatten()
         .min()
@@ -1189,6 +1243,7 @@ impl Quick {
     /// At `now`: what is due, cleared (the levels that waited, the re-reads to do, the question gone).
     pub fn due(&mut self, now: Instant) -> Due {
         let mut d = Due::default();
+        // `extend` on an `Option` adds its one command, or nothing when it is `None`.
         match self.volume.due(now) {
             Some(true) => d.run.extend(self.volume_level.map(volume_command)),
             // Quiet: the level sent stands until pw-dump reports it (`fit`), SETTLE at most.
@@ -1252,7 +1307,8 @@ impl Quick {
         v
     }
 
-    /// `program` failed to start: true the first time this open (log it), false after (spec § 6).
+    /// `program` failed to start: true the first time this open (log it), false after, so a program
+    /// that is missing is logged once (spec § 6).
     pub fn note_failure(&mut self, program: &str) -> bool {
         if self.failed.iter().any(|p| p == program) {
             return false;
@@ -1283,8 +1339,9 @@ impl Quick {
         self.wifi.open_detail()
     }
 
-    /// The D-Bus thread's Wi-Fi state, while open (`quick_take`). Asked for from the network module
-    /// or `--quick wifi`, the first state with a device selects the row and opens the detail.
+    /// The D-Bus thread's Wi-Fi state, while open (`app.rs`, `quick_take`). Asked for from the
+    /// network module or `--quick wifi`, the first state with a device selects the row and opens the
+    /// detail.
     pub fn set_wifi(&mut self, state: Option<WifiState>, now: Instant) -> WifiNews {
         let (action, failed) = self.wifi.set_state(state, now);
         WifiNews { action: self.spend_wifi_focus().unwrap_or(action), failed }
@@ -1295,21 +1352,24 @@ impl Quick {
     /// (NetworkManager not read yet is no reason to give up); the user's first key, click or
     /// wheel notch drops it (the panel never jumps under them).
     fn spend_wifi_focus(&mut self) -> Option<QuickAction> {
-        (self.wifi.shows() && std::mem::take(&mut self.wifi.focus_pending)).then(|| {
-            self.selected = Row::Wifi;
-            self.open_wifi()
-        })
+        // `std::mem::take` reads the flag and leaves `false` behind in one step, so the focus is
+        // spent at most once. It runs only when the row shows (`&&` stops at the first `false`).
+        if !(self.wifi.shows() && std::mem::take(&mut self.wifi.focus_pending)) {
+            return None;
+        }
+        self.selected = Row::Wifi;
+        Some(self.open_wifi())
     }
 
-    /// A followed attempt was just taken back with the state it saw (`quick_app::resumed`): the
+    /// A followed attempt was just taken back with the state it saw (`app.rs`, `resumed`): the
     /// focus asked at open spent on that state, since none is coming. None: nothing to open.
     pub fn resumed_wifi_focus(&mut self) -> Option<QuickAction> {
         self.wifi.state.as_ref()?;
         self.spend_wifi_focus()
     }
 
-    /// The D-Bus thread's Wi-Fi state for the open panel (`quick_take`): `set_wifi`, then fitted. The
-    /// window follows the selection only when the state moved it (a reorder, the detail opened),
+    /// The D-Bus thread's Wi-Fi state for the open panel (`app.rs`, `quick_take`): `set_wifi`, then
+    /// fitted. The window follows the selection only when the state moved it (a reorder, the detail opened),
     /// never undoing a wheel scroll on a mere strength change.
     pub fn follow_wifi(&mut self, live: &Live, state: Option<WifiState>, now: Instant) -> WifiNews {
         let news = self.set_wifi(state, now);
@@ -1355,8 +1415,8 @@ impl Quick {
         self.vpn.open_detail()
     }
 
-    /// The D-Bus thread's VPN state, while open (`quick_take`). Asked for by `--quick vpn`, the first
-    /// state with a profile selects the row and opens the detail. Returns why a connection failed,
+    /// The D-Bus thread's VPN state, while open (`app.rs`, `quick_take`). Asked for by `--quick vpn`,
+    /// the first state with a profile selects the row and opens the detail. Returns why a connection failed,
     /// for the log (`WifiNews`' shape, no action: nothing is cleaned up).
     pub fn set_vpn(&mut self, state: Option<VpnState>, now: Instant) -> WifiNews {
         let failed = self.vpn.set_state(state, now);
@@ -1497,12 +1557,12 @@ impl Quick {
         run(&["wpctl", "set-profile", &h.device.to_string(), &index.to_string()], what)
     }
 
-    /// The sound thread's headset, while open (`quick_take`).
+    /// The sound thread's headset, while open (`app.rs`, `quick_take`).
     pub fn set_headset(&mut self, h: Option<Headset>) {
         self.headset = h;
     }
 
-    /// The sound thread's list, while open (`quick_take`).
+    /// The sound thread's list, while open (`app.rs`, `quick_take`).
     pub fn set_sinks(&mut self, sinks: Vec<Sink>) {
         self.sinks = sinks;
     }

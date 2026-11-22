@@ -1,3 +1,9 @@
+//! Tests of the quick panel's model (`mod.rs`) and its cells (`draw.rs`): the rows and their
+//! order, the selection, every key, click and wheel notch, the sliders' pacing, the confirmation,
+//! and what each list's row and detail (Wi-Fi, Bluetooth, VPN, Shield, do-not-disturb) do inside the
+//! panel. No clock, file or command: each test passes the time it wants and reads the actions the
+//! panel returns.
+
 use super::draw::{LabelForm, session_form, session_label, slider};
 use super::*;
 use crate::grid::Tint;
@@ -13,20 +19,23 @@ use crate::system::{
     WifiDevice, WifiState,
 };
 
-fn vol(percent: u8, muted: bool) -> Option<Volume> {
+/// A volume at `percent`, muted or not.
+fn a_volume_of(percent: u8, muted: bool) -> Option<Volume> {
     Some(Volume { percent, muted })
 }
 
-fn sink(id: u32, label: &str, default: bool) -> Sink {
+/// An output (a sink) with the id and label wpctl would give it, the default or not.
+fn an_output(id: u32, label: &str, default: bool) -> Sink {
     Sink { id, label: label.into(), default }
 }
 
 /// Speaker (99) and the default AG06 (122).
 fn two_sinks() -> Vec<Sink> {
-    vec![sink(99, "Speaker", false), sink(122, "AG06/AG03", true)]
+    vec![an_output(99, "Speaker", false), an_output(122, "AG06/AG03", true)]
 }
 
-fn backlight(percent: u8) -> Option<Backlight> {
+/// A backlight at `percent`.
+fn a_backlight(percent: u8) -> Option<Backlight> {
     Some(Backlight { device: "intel_backlight".into(), percent })
 }
 
@@ -46,7 +55,7 @@ impl World {
     /// profile of three, the default config (lock, reboot, power off; no toggle).
     fn full() -> World {
         World {
-            sound: SoundState { sink: vol(64, false), source: vol(100, false), ..SoundState::default() },
+            sound: SoundState { sink: a_volume_of(64, false), source: a_volume_of(100, false), ..SoundState::default() },
             dnd: Some(false),
             dnd_end: None,
             profile: ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() },
@@ -70,11 +79,12 @@ impl World {
 }
 
 /// The panel as it opens on `w`: two sinks, the backlight at 75 %, toggles unknown, room for 40 rows.
-fn quick(w: &World, focus: Focus) -> Quick {
-    Quick::new(focus, &w.live(), two_sinks(), backlight(75), [None, None], 40)
+fn panel_opened_on(w: &World, focus: Focus) -> Quick {
+    Quick::new(focus, &w.live(), two_sinks(), a_backlight(75), [None, None], 40)
 }
 
-fn texts(b: &Boxed) -> Vec<String> {
+/// The text of each row, trailing spaces trimmed.
+fn row_texts(b: &Boxed) -> Vec<String> {
     b.rows.iter().map(|g| g.text().trim_end().to_string()).collect()
 }
 
@@ -108,7 +118,7 @@ fn session_cells_split_the_row() {
 }
 
 #[test]
-fn one_label_form_for_every_cell() {
+fn every_session_button_takes_the_same_label_form() {
     let all = Session::ALL;
     let widths = |w: u16| -> Vec<(u16, u16)> { all.iter().map(|_| (0, w)).collect() };
     // Room for every glyph and word: all of them carry both.
@@ -148,7 +158,7 @@ fn a_press_hits_the_button_drawn_under_it() {
         let cells = session_cells(WIDTH + 2, buttons.len());
         assert_eq!(cells.len(), buttons.len());
         for col in 0..WIDTH + 2 {
-            let mut q = quick(&w, Focus::Top);
+            let mut q = panel_opened_on(&w, Focus::Top);
             q.selected = Row::Session;
             let drawn = rows(&l, &q).rows[SESSION_LINE as usize].styles().chars().nth(usize::from(col)).unwrap();
             let got = q.press(&l, (col, SESSION_LINE), Button::Left, now);
@@ -176,7 +186,7 @@ fn a_press_hits_the_button_drawn_under_it() {
 fn a_gap_press_on_an_unselected_session_row_selects_it() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_ne!(q.selected, Row::Session);
     let got = q.press(&l, (0, SESSION_LINE), Button::Left, Instant::now());
     assert_eq!(got, QuickAction::Redraw, "the press lands in a gap of the row");
@@ -188,9 +198,9 @@ fn a_gap_press_on_an_unselected_session_row_selects_it() {
 fn the_session_row_draws_its_cells() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let b = rows(&l, &q);
-    assert_eq!(texts(&b)[7], session_text(&[Session::Lock, Session::Reboot, Session::Poweroff]));
+    assert_eq!(row_texts(&b)[7], session_text(&[Session::Lock, Session::Reboot, Session::Poweroff]));
     assert_eq!(b.rows[7].styles(), format!(".{}.{}.{}.", "s".repeat(10), "s".repeat(10), "s".repeat(10)));
     assert_eq!(b.rows[7].styles().len(), 34);
     q.selected = Row::Session;
@@ -203,7 +213,7 @@ fn the_session_row_draws_its_cells() {
 fn toggle_rows_end_in_a_switch() {
     let mut w = World::full();
     let l = w.live();
-    let q = quick(&w, Focus::Top);
+    let q = panel_opened_on(&w, Focus::Top);
     let b = rows(&l, &q);
     let dnd = b.rows[4].text();
     assert_eq!(dnd, format!(" {BELL} Do not disturb{} ○ off  ", " ".repeat(9)));
@@ -215,7 +225,7 @@ fn toggle_rows_end_in_a_switch() {
     let mut c = QuickConfig::default();
     c.night_light.toggle = vec!["fake-night".into()];
     w.config = c;
-    let q = quick(&w, Focus::Top);
+    let q = panel_opened_on(&w, Focus::Top);
     let b = rows(&w.live(), &q);
     let night = b.rows.iter().find(|g| g.text().contains("Night light")).unwrap();
     assert_eq!(night.styles().chars().nth(32), Some('m'));
@@ -223,7 +233,7 @@ fn toggle_rows_end_in_a_switch() {
     // The microphone: live is on, muted is off.
     let live = rows(&w.live(), &q);
     assert!(live.rows[3].text().contains(" ON  ●"));
-    w.sound.source = vol(100, true);
+    w.sound.source = a_volume_of(100, true);
     let muted = rows(&w.live(), &q);
     assert!(muted.rows[3].text().contains(" ○ off"));
 }
@@ -232,7 +242,7 @@ fn toggle_rows_end_in_a_switch() {
 fn every_row_shows_in_the_spec_order_with_its_separators() {
     let w = World::full();
     let l = w.live();
-    let q = quick(&w, Focus::Top);
+    let q = panel_opened_on(&w, Focus::Top);
     assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
     assert_eq!(
         lines(&l, &q),
@@ -250,7 +260,7 @@ fn every_row_shows_in_the_spec_order_with_its_separators() {
     let b = rows(&l, &q);
     assert_eq!(b.cells(), (WIDTH + 2, 8));
     assert_eq!(b.separators, [2, 6]);
-    let t = texts(&b);
+    let t = row_texts(&b);
     assert_eq!(t[0], format!(" {VOLUME_MEDIUM} {}{}  64%  ›", "━".repeat(14), "─".repeat(8)), "64 % of 22 cells: 14; › with two sinks");
     assert_eq!(t[1], format!(" {BRIGHTNESS} {}{}  75%", "━".repeat(16), "─".repeat(6)));
     assert_eq!(t[3], format!(" {MIC_ON} Microphone{} ON  ●", " ".repeat(13)), "the microphone is a switch, on while live");
@@ -286,18 +296,22 @@ fn every_row_shows_in_the_spec_order_with_its_separators() {
 }
 
 #[test]
-fn marks_warn_and_dim() {
+fn the_rows_style_their_switches_and_tracks_in_warn_accent_and_dim() {
     let mut w = World::full();
-    w.sound.source = vol(100, true);
-    w.sound.sink = vol(120, false);
+    w.sound.source = a_volume_of(100, true);
+    w.sound.sink = a_volume_of(120, false);
     w.dnd = Some(true);
     w.config.keep_awake.toggle = vec!["fake-keep-awake".into()];
     w.config.night_light.toggle = vec!["fake-night".into()];
-    let q = Quick::new(Focus::Top, &w.live(), two_sinks(), backlight(75), [Some(true), None], 40);
+    let q = Quick::new(Focus::Top, &w.live(), two_sinks(), a_backlight(75), [Some(true), None], 40);
     let b = rows(&w.live(), &q);
-    let t = texts(&b);
+    let t = row_texts(&b);
     // Volume, brightness, separator, mic, DND, profile, keep awake, night light, separator, session.
-    assert_eq!(t[3], format!(" {MIC_OFF} Microphone{} ○ off", " ".repeat(13)), "Decision 8: a muted microphone is the off switch");
+    assert_eq!(
+        t[3],
+        format!(" {MIC_OFF} Microphone{} ○ off", " ".repeat(13)),
+        "a muted microphone is the off switch (UI refresh plan 1, Decision 8)"
+    );
     assert_eq!(&b.rows[3].styles()[26..33], "sssssss", "no longer warn");
     assert_eq!(t[4], format!(" {BELL} Do not disturb{} ON  ●", " ".repeat(9)));
     assert_eq!(&b.rows[4].styles()[26..33], "AAAAAAA", "ON filled in the accent");
@@ -307,8 +321,8 @@ fn marks_warn_and_dim() {
     let track = |b: &Boxed| b.rows[0].cells()[3..25].iter().map(|c| c.style.fg).collect::<Vec<_>>();
     assert!(track(&b).iter().all(|f| *f == Tint::Warn), "above 100 %: the whole bar in warn: {:?}", track(&b));
     let mut muted = World::full();
-    muted.sound.sink = vol(64, true);
-    let b = rows(&muted.live(), &quick(&muted, Focus::Top));
+    muted.sound.sink = a_volume_of(64, true);
+    let b = rows(&muted.live(), &panel_opened_on(&muted, Focus::Top));
     assert!(track(&b).iter().all(|f| *f == Tint::FgDim), "muted: the bar dimmed: {:?}", track(&b));
 }
 
@@ -319,22 +333,22 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
     let rows_of = |l: &Live, b: Option<Backlight>| shown(l, &Quick::new(Focus::Top, l, two_sinks(), b, [None, None], 40));
     assert!(!rows_of(&l, None).contains(&Row::Brightness), "no backlight");
     let no_daemon = ProfileState::default();
-    assert!(!rows_of(&Live { profile: Some(&no_daemon), ..l }, backlight(75)).contains(&Row::Profile), "no power-profiles-daemon");
-    assert!(!rows_of(&Live { profile: None, ..l }, backlight(75)).contains(&Row::Profile), "the system bus down");
+    assert!(!rows_of(&Live { profile: Some(&no_daemon), ..l }, a_backlight(75)).contains(&Row::Profile), "no power-profiles-daemon");
+    assert!(!rows_of(&Live { profile: None, ..l }, a_backlight(75)).contains(&Row::Profile), "the system bus down");
     let no_mic = SoundState { source: None, ..w.sound.clone() };
     assert_eq!(
-        rows_of(&Live { sound: Some(&no_mic), ..l }, backlight(75))[..3],
+        rows_of(&Live { sound: Some(&no_mic), ..l }, a_backlight(75))[..3],
         [Row::Volume, Row::Brightness, Row::Dnd],
         "no default source"
     );
-    assert_eq!(rows_of(&Live { sound: None, ..l }, backlight(75))[0], Row::Brightness, "pw-dump down: no volume, no microphone");
-    assert!(!rows_of(&Live { dnd: None, ..l }, backlight(75)).contains(&Row::Dnd), "no notifications module");
+    assert_eq!(rows_of(&Live { sound: None, ..l }, a_backlight(75))[0], Row::Brightness, "pw-dump down: no volume, no microphone");
+    assert!(!rows_of(&Live { dnd: None, ..l }, a_backlight(75)).contains(&Row::Dnd), "no notifications module");
     let mut c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
-    assert!(!rows_of(&Live { config: &c, ..l }, backlight(75)).contains(&Row::Session), "every session command empty");
+    assert!(!rows_of(&Live { config: &c, ..l }, a_backlight(75)).contains(&Row::Session), "every session command empty");
     c.logout = vec!["fake-logout".into()];
     let one = Live { config: &c, ..l };
     let b = rows(&one, &Quick::new(Focus::Top, &one, two_sinks(), None, [None, None], 40));
-    assert_eq!(texts(&b).last().cloned(), Some(session_text(&[Session::Logout])), "one button: log out");
+    assert_eq!(row_texts(&b).last().cloned(), Some(session_text(&[Session::Logout])), "one button: log out");
     let k =
         QuickConfig { keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() }, ..QuickConfig::default() };
     assert_eq!(
@@ -354,21 +368,25 @@ fn with_nothing_to_show_the_panel_is_empty() {
     assert!(lines(&l, &q).is_empty());
     assert_eq!(rows(&l, &q).cells(), (0, 0));
     let w = World::full();
-    assert!(!quick(&w, Focus::Top).is_empty(&w.live()));
+    assert!(!panel_opened_on(&w, Focus::Top).is_empty(&w.live()));
 }
 
 #[test]
 fn the_section_asked_for_is_selected_at_open() {
     assert_eq!(Focus::of(&Target::Module(ModuleId::Volume)), Focus::Sound);
     assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "quick Wi-Fi spec § 1");
-    assert_eq!(quick(&World::full(), Focus::Wifi).selected, Row::Volume, "no Wi-Fi state read yet, so no Wi-Fi row: the first row");
+    assert_eq!(
+        panel_opened_on(&World::full(), Focus::Wifi).selected,
+        Row::Volume,
+        "no Wi-Fi state read yet, so no Wi-Fi row: the first row"
+    );
     assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Bluetooth, "quick Bluetooth spec § 1");
     let w = World::full();
-    assert_eq!(quick(&w, Focus::Sound).selected, Row::Volume);
-    assert_eq!(quick(&w, Focus::Top).selected, Row::Volume, "the volume is the first row");
+    assert_eq!(panel_opened_on(&w, Focus::Sound).selected, Row::Volume);
+    assert_eq!(panel_opened_on(&w, Focus::Top).selected, Row::Volume, "the volume is the first row");
     let l = Live { sound: None, ..w.live() };
     assert_eq!(
-        Quick::new(Focus::Sound, &l, two_sinks(), backlight(75), [None, None], 40).selected,
+        Quick::new(Focus::Sound, &l, two_sinks(), a_backlight(75), [None, None], 40).selected,
         Row::Brightness,
         "no volume row: the first"
     );
@@ -380,15 +398,15 @@ fn the_section_asked_for_is_selected_at_open() {
 fn focus_bluetooth_opens_the_detail() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(80) }] });
-    let q = quick(&w, Focus::Bluetooth);
+    let q = panel_opened_on(&w, Focus::Bluetooth);
     assert!(q.bt.open);
     assert_eq!(q.selected, Row::Bluetooth);
     assert_eq!(lines(&w.live(), &q)[..2], [Line::BtHeader, Line::Separator]);
     assert_eq!(q.bt_scope(), BtScope::Detail);
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Bluetooth, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
-    assert_eq!(texts(&rows(&l, &q))[3], format!(" {BLUETOOTH_CONNECTED} Bluetooth{}CasqueBT ›", " ".repeat(11)));
+    assert_eq!(row_texts(&rows(&l, &q))[3], format!(" {BLUETOOTH_CONNECTED} Bluetooth{}CasqueBT ›", " ".repeat(11)));
     q.selected = Row::Bluetooth;
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "no view read yet: no discovery");
@@ -397,7 +415,7 @@ fn focus_bluetooth_opens_the_detail() {
     assert!(!q.bt.open);
     assert_eq!(q.selected, Row::Bluetooth, "back on its row");
     w.bluetooth = Some(BtState::Absent);
-    let q = quick(&w, Focus::Bluetooth);
+    let q = panel_opened_on(&w, Focus::Bluetooth);
     assert!(!q.bt.open, "no Bluetooth row: nothing opens");
     assert_eq!(q.selected, Row::Volume, "the first row");
 }
@@ -424,7 +442,7 @@ fn the_bluetooth_detail_follows_its_view() {
         nearby: vec![],
     };
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     assert_eq!(
         q.follow_bt(&w.live(), Some(view()), t),
         QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::StartDiscovery { adapter: adapter.into() })])
@@ -433,7 +451,7 @@ fn the_bluetooth_detail_follows_its_view() {
     assert_eq!(q.follow_bt(&w.live(), None, t), QuickAction::Redraw, "BlueZ lost: its orders dropped");
     assert!(!q.bt.open);
     assert_eq!(q.selected, Row::Bluetooth, "back on the row");
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(view()), t);
     w.bluetooth = Some(BtState::Absent);
     q.fit(&w.live());
@@ -467,7 +485,7 @@ fn a_double_enter_on_a_device_calls_once() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(clavier_view()), t);
     let l = w.live();
     let connect = ActCall::Connect { device: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into() };
@@ -485,7 +503,7 @@ fn a_held_key_never_answers_a_code_question() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(clavier_view()), t);
     let l = w.live();
     let pairing = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".to_string();
@@ -512,7 +530,7 @@ fn the_question_cancels_forget() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(clavier_view()), t);
     let l = w.live();
     let pairing = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".to_string();
@@ -545,7 +563,7 @@ fn bluetooth_deadlines_and_logs_go_through_due() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(clavier_view()), t);
     q.key(&w.live(), Key::Enter, false, t);
     assert_eq!(q.deadline(), Some(t + CALL_DEADLINE));
@@ -576,7 +594,7 @@ fn a_press_on_the_asking_device_confirms_forget() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Bluetooth);
+    let mut q = panel_opened_on(&w, Focus::Bluetooth);
     q.follow_bt(&w.live(), Some(clavier_view()), t);
     let l = w.live();
     let clavier = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".to_string();
@@ -598,7 +616,7 @@ fn a_left_click_on_the_bluetooth_row_opens_the_detail() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Bluetooth)).unwrap();
     assert_eq!(q.press(&l, (3, at as u16), Button::Left, Instant::now()), QuickAction::Redraw, "no view read yet");
     assert!(q.bt.open);
@@ -612,7 +630,7 @@ fn the_rows_power_toggle_is_armed() {
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.bt.view = Some(clavier_view());
     q.selected = Row::Bluetooth;
     q.key(&w.live(), Key::Char(' '), false, t);
@@ -622,12 +640,12 @@ fn the_rows_power_toggle_is_armed() {
 #[test]
 fn the_selection_stays_on_its_row_when_rows_come_and_go() {
     let mut w = World::full();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Mic;
     w.sound.source = None;
     q.fit(&w.live());
     assert_eq!(q.selected, Row::Dnd, "the microphone unplugged: the next row down");
-    w.sound.source = vol(100, false);
+    w.sound.source = a_volume_of(100, false);
     q.fit(&w.live());
     assert_eq!(q.selected, Row::Dnd, "it stays where it went: by identity, never by line");
     q.selected = Row::Session;
@@ -638,9 +656,9 @@ fn the_selection_stays_on_its_row_when_rows_come_and_go() {
     assert_eq!(q.selected, Row::Profile, "the last row gone: the one above");
     let mut w = World::full();
     w.sound.source = None;
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Dnd;
-    w.sound.source = vol(100, false);
+    w.sound.source = a_volume_of(100, false);
     q.fit(&w.live());
     assert_eq!(q.selected, Row::Dnd, "a row appearing above never moves it");
 }
@@ -649,7 +667,7 @@ fn the_selection_stays_on_its_row_when_rows_come_and_go() {
 fn arrows_home_and_end_move_over_the_rows_never_wrapping() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Up, false, t), QuickAction::Nothing, "the first row: clamped");
     assert_eq!(q.key(&l, Key::Down, false, t), QuickAction::Redraw);
@@ -671,7 +689,7 @@ fn arrows_home_and_end_move_over_the_rows_never_wrapping() {
 fn a_held_space_or_enter_acts_once() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "a repeated Enter: nothing");
     assert!(!q.detail);
@@ -685,13 +703,13 @@ fn a_held_space_or_enter_acts_once() {
 fn the_outputs_detail_lists_every_sink_and_sets_the_default() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
     assert!(q.detail);
     assert_eq!(q.sink, Some(122), "the default chosen at open");
     let b = rows(&l, &q);
-    assert_eq!(texts(&b), [" ‹ Outputs".to_string(), String::new(), "   Speaker".to_string(), " ● AG06/AG03".to_string()]);
+    assert_eq!(row_texts(&b), [" ‹ Outputs".to_string(), String::new(), "   Speaker".to_string(), " ● AG06/AG03".to_string()]);
     assert_eq!(b.separators, [1]);
     assert_eq!(&b.rows[3].styles()[..3], "SSS", "the chosen sink on the band");
     assert_eq!(q.key(&l, Key::Up, false, t), QuickAction::Redraw);
@@ -716,13 +734,13 @@ fn a_single_sink_draws_no_arrow_and_opens_no_detail() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = Quick::new(Focus::Sound, &l, vec![sink(122, "AG06/AG03", true)], backlight(75), [None, None], 40);
-    assert!(texts(&rows(&l, &q))[0].ends_with("64%"), "no ›");
+    let mut q = Quick::new(Focus::Sound, &l, vec![an_output(122, "AG06/AG03", true)], a_backlight(75), [None, None], 40);
+    assert!(row_texts(&rows(&l, &q))[0].ends_with("64%"), "no ›");
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing);
     assert!(!q.detail);
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     q.key(&l, Key::Enter, false, t);
-    q.set_sinks(vec![sink(122, "AG06/AG03", true)]);
+    q.set_sinks(vec![an_output(122, "AG06/AG03", true)]);
     q.fit(&l);
     assert!(!q.detail, "a sink unplugged under the detail: back to the rows");
 }
@@ -732,15 +750,15 @@ fn the_detail_keeps_its_sink_by_id() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     q.key(&l, Key::Enter, false, t);
     q.key(&l, Key::Up, false, t);
     assert_eq!(q.sink, Some(99));
-    q.set_sinks(vec![sink(64, "HDMI", false), sink(99, "Speaker", false), sink(122, "AG06/AG03", true)]);
+    q.set_sinks(vec![an_output(64, "HDMI", false), an_output(99, "Speaker", false), an_output(122, "AG06/AG03", true)]);
     q.fit(&l);
     assert_eq!(q.sink, Some(99), "a sink arriving above it moves its line, never the choice");
     assert_eq!(&rows(&l, &q).rows[3].styles()[..3], "SSS", "Speaker is now on line 3");
-    q.set_sinks(vec![sink(64, "HDMI", false), sink(122, "AG06/AG03", true)]);
+    q.set_sinks(vec![an_output(64, "HDMI", false), an_output(122, "AG06/AG03", true)]);
     q.fit(&l);
     assert_eq!(q.sink, Some(122), "its sink gone: the default");
 }
@@ -750,12 +768,12 @@ fn the_window_follows_the_selection_when_the_lines_do_not_fit() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 3);
+    let mut q = Quick::new(Focus::Top, &l, two_sinks(), a_backlight(75), [None, None], 3);
     assert_eq!(rows(&l, &q).rows.len(), 3, "three rows of room");
     q.key(&l, Key::End, false, t);
     assert_eq!(q.top, 5, "8 lines, 3 shown: the last three");
     assert_eq!(
-        texts(&rows(&l, &q)).last().cloned(),
+        row_texts(&rows(&l, &q)).last().cloned(),
         Some(session_text(&[Session::Lock, Session::Reboot, Session::Poweroff])),
         "the session row in view"
     );
@@ -766,11 +784,11 @@ fn the_window_follows_the_selection_when_the_lines_do_not_fit() {
 #[test]
 fn re_reads_replace_the_backlight_and_the_toggles() {
     let w = World::full();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_backlight(Reread::Level(40));
-    assert_eq!(q.backlight, backlight(40));
+    assert_eq!(q.backlight, a_backlight(40));
     q.set_backlight(Reread::Unreadable);
-    assert_eq!(q.backlight, backlight(40), "one failed read: the row and its last level stay");
+    assert_eq!(q.backlight, a_backlight(40), "one failed read: the row and its last level stay");
     q.set_backlight(Reread::Gone);
     assert!(!shown(&w.live(), &q).contains(&Row::Brightness), "the device went: its row with it");
     q.set_toggle(Toggle::NightLight, Some(true));
@@ -793,16 +811,16 @@ fn set_brightness(n: u8) -> QuickAction {
     run(&["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", &format!("{n}%")], &format!("brightness {n}%"))
 }
 
-/// Fix S1: every volume command an absolute level the model computed from what it shows.
+/// Every volume command is an absolute level the model computed from what it shows.
 #[test]
 fn volume_steps_mutes_and_takes_a_click_on_its_bar() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     let mute = run(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], "mute");
     assert_eq!(q.key(&l, Key::Right, false, later(t, 0)), set_volume(69), "64 % + 5");
-    assert!(texts(&rows(&l, &q))[0].contains(" 69%"), "the expected level shown at once");
+    assert!(row_texts(&rows(&l, &q))[0].contains(" 69%"), "the expected level shown at once");
     assert_eq!(q.key(&l, Key::Left, false, later(t, 1)), set_volume(64), "from the level shown, not pw-dump's");
     assert_eq!(q.key(&l, Key::Right, true, later(t, 2)), set_volume(69), "← → repeat");
     assert_eq!(q.key(&l, Key::Char(' '), false, later(t, 2)), mute);
@@ -815,37 +833,50 @@ fn volume_steps_mutes_and_takes_a_click_on_its_bar() {
     assert_eq!(q.press(&l, (MORE_AT, 0), Button::Left, later(t, 8)), QuickAction::Redraw, "› opens the outputs");
     assert!(q.detail);
     let ten = World { config: QuickConfig { step: 10, ..QuickConfig::default() }, ..World::full() };
-    let mut q = quick(&ten, Focus::Sound);
+    let mut q = panel_opened_on(&ten, Focus::Sound);
     assert_eq!(q.key(&ten.live(), Key::Right, false, t), set_volume(74), "[quick] step");
     let mut loud = World::full();
-    loud.sound.sink = vol(97, false);
-    let mut q = quick(&loud, Focus::Sound);
+    loud.sound.sink = a_volume_of(97, false);
+    let mut q = panel_opened_on(&loud, Focus::Sound);
     assert_eq!(q.key(&loud.live(), Key::Right, false, t), set_volume(100), "never beyond 100 %");
 }
 
-/// Fix S1: a held → sends at most one command per COALESCE, each the latest level; a burst
+/// A press on the cell either side of the bar is not a level: it opens the outputs, as `›` does.
+#[test]
+fn a_click_beside_the_volume_bar_sets_no_level() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    for col in [BAR_START - 1, BAR_START + BAR] {
+        let mut q = panel_opened_on(&w, Focus::Sound);
+        assert_eq!(q.press(&l, (col, 0), Button::Left, t), QuickAction::Redraw, "column {col}: no level");
+        assert!(q.detail, "column {col} opens the outputs");
+    }
+}
+
+/// A held → sends at most one command per COALESCE, each the latest level; a burst
 /// inside one window is two commands, the second the level the burst ended on.
 #[test]
 fn a_held_slider_key_sends_the_latest_level_once_per_window() {
     let mut w = World::full();
-    w.sound.sink = vol(30, false);
+    w.sound.sink = a_volume_of(30, false);
     let l = w.live();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     let burst: Vec<QuickAction> = (0..10).map(|i| q.key(&l, Key::Right, i > 0, t + Duration::from_millis(15 * i))).collect();
     assert_eq!(burst[0], set_volume(35), "the first goes at once");
     assert!(burst[1..].iter().all(|a| *a == QuickAction::Redraw), "the rest wait: {burst:?}");
-    assert!(texts(&rows(&l, &q))[0].contains(" 80%"), "the level shown follows every key");
+    assert!(row_texts(&rows(&l, &q))[0].contains(" 80%"), "the level shown follows every key");
     assert_eq!(q.deadline(), Some(t + COALESCE), "the window's end");
     assert_eq!(q.due(t + COALESCE), Due { run: vec![set_volume(80)], ..Due::default() }, "the latest level, once");
     assert_eq!(q.deadline(), Some(t + COALESCE * 2), "a new window after it");
     assert_eq!(q.due(t + COALESCE * 2), Due::default(), "quiet, pw-dump still at 30 %: the level sent stays");
-    assert!(texts(&rows(&l, &q))[0].contains(" 80%"));
+    assert!(row_texts(&rows(&l, &q))[0].contains(" 80%"));
     assert_eq!(q.deadline(), Some(t + COALESCE * 2 + SETTLE), "for SETTLE at most");
     assert_eq!(q.due(t + COALESCE * 2 + SETTLE), Due { redraw: true, ..Due::default() }, "then pw-dump's level");
     assert_eq!(q.deadline(), None, "nothing pending: no timer");
-    assert!(texts(&rows(&l, &q))[0].contains(" 30%"), "pw-dump's own level again");
-    let mut q = quick(&w, Focus::Top);
+    assert!(row_texts(&rows(&l, &q))[0].contains(" 30%"), "pw-dump's own level again");
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Brightness;
     let burst: Vec<QuickAction> = (0..10).map(|i| q.key(&l, Key::Right, i > 0, t + Duration::from_millis(15 * i))).collect();
     assert_eq!(burst[0], set_brightness(80), "75 % + 5");
@@ -864,19 +895,19 @@ fn a_held_slider_key_sends_the_latest_level_once_per_window() {
 #[test]
 fn a_stale_live_level_never_makes_the_next_press_step_backwards() {
     let mut w = World::full();
-    w.sound.sink = vol(30, false);
-    let mut q = quick(&w, Focus::Sound);
+    w.sound.sink = a_volume_of(30, false);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     assert_eq!(q.key(&w.live(), Key::Right, false, t), set_volume(35));
     assert_eq!(q.key(&w.live(), Key::Right, true, t + Duration::from_millis(10)), QuickAction::Redraw);
     assert_eq!(q.due(later(t, 1)).run, vec![set_volume(40)]);
-    w.sound.sink = vol(35, false); // pw-dump one command behind
+    w.sound.sink = a_volume_of(35, false); // pw-dump one command behind
     q.fit(&w.live());
     assert_eq!(q.due(later(t, 2)), Due::default(), "quiet, pw-dump still behind");
     q.fit(&w.live());
     assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 2)), set_volume(45), "from 40 % shown, never 35 %");
     q.due(later(t, 3));
-    w.sound.sink = vol(45, false);
+    w.sound.sink = a_volume_of(45, false);
     q.fit(&w.live());
     assert_eq!(q.volume_level, None, "pw-dump caught up: its level from now on");
     assert_eq!(q.deadline(), None, "and nothing left to wait for");
@@ -893,16 +924,16 @@ fn a_stale_live_level_never_makes_the_next_press_step_backwards() {
 fn a_default_sink_switch_drops_the_held_volume() {
     let mut w = World::full();
     w.sound.sink_name = Some(crate::system::DeviceName { node: "alsa_output.ag06".into(), label: "AG06/AG03".into() });
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     assert_eq!(q.key(&w.live(), Key::Right, false, t), set_volume(69));
     assert_eq!(q.key(&w.live(), Key::Right, true, t + Duration::from_millis(10)), QuickAction::Redraw, "74 % waits");
     w.sound.sink_name = Some(crate::system::DeviceName { node: "alsa_output.speaker".into(), label: "Speaker".into() });
-    w.sound.sink = vol(40, false);
+    w.sound.sink = a_volume_of(40, false);
     q.fit(&w.live());
     assert_eq!(q.due(later(t, 1)).run, vec![], "never sent to the new sink");
     assert_eq!(q.flush(), vec![]);
-    assert!(texts(&rows(&w.live(), &q))[0].contains(" 40%"), "the new sink's level");
+    assert!(row_texts(&rows(&w.live(), &q))[0].contains(" 40%"), "the new sink's level");
     assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 2)), set_volume(45), "stepped from it");
 }
 
@@ -910,11 +941,11 @@ fn a_default_sink_switch_drops_the_held_volume() {
 fn brightness_shows_the_expected_level_until_its_re_read() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Brightness;
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Right, false, t), set_brightness(80));
-    assert_eq!(q.backlight, backlight(80), "the expected level at once");
+    assert_eq!(q.backlight, a_backlight(80), "the expected level at once");
     assert_eq!(q.deadline(), Some(t + BRIGHTNESS_REREAD));
     assert_eq!(q.due(t + Duration::from_millis(149)), Due::default(), "not yet");
     assert_eq!(q.due(t + BRIGHTNESS_REREAD), Due { backlight: true, ..Due::default() });
@@ -923,35 +954,35 @@ fn brightness_shows_the_expected_level_until_its_re_read() {
     q.key(&l, Key::Left, false, later(t, 1));
     q.due(later(t, 2));
     q.set_backlight(Reread::Level(78));
-    assert_eq!(q.backlight, backlight(75), "a re-read that disagrees is kept back for SETTLE");
+    assert_eq!(q.backlight, a_backlight(75), "a re-read that disagrees is kept back for SETTLE");
     assert_eq!(q.due(later(t, 2) + SETTLE), Due { backlight: true, ..Due::default() }, "one more re-read");
     q.set_backlight(Reread::Level(78));
-    assert_eq!(q.backlight, backlight(78), "then the re-read wins");
+    assert_eq!(q.backlight, a_backlight(78), "then the re-read wins");
     assert_eq!(q.deadline(), None);
-    q.backlight = backlight(98);
+    q.backlight = a_backlight(98);
     q.key(&l, Key::Right, false, later(t, 2));
-    assert_eq!(q.backlight, backlight(100), "never above 100");
+    assert_eq!(q.backlight, a_backlight(100), "never above 100");
     assert_eq!(q.press(&l, (BAR_START + 10, 1), Button::Left, later(t, 3)), set_brightness(50), "a click on its bar");
     assert_eq!(q.scroll(&l, Some((5, 1)), -2, later(t, 4)), set_brightness(60));
 }
 
-/// Mae's ruling M2: the panel never takes the backlight below 1 % (a black screen), by a key,
+/// The panel never takes the backlight below 1 % (a black screen), by a key,
 /// the wheel or a click.
 #[test]
 fn brightness_never_goes_below_one_percent() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Brightness;
     let t = Instant::now();
-    q.backlight = backlight(3);
+    q.backlight = a_backlight(3);
     assert_eq!(q.key(&l, Key::Left, false, later(t, 0)), set_brightness(1), "3 % − 5: 1 %");
-    assert_eq!(q.backlight, backlight(1));
+    assert_eq!(q.backlight, a_backlight(1));
     assert_eq!(q.key(&l, Key::Left, false, later(t, 1)), set_brightness(1), "at 1 %: stays");
-    q.backlight = backlight(40);
+    q.backlight = a_backlight(40);
     assert_eq!(q.scroll(&l, Some((5, 1)), 10, later(t, 2)), set_brightness(1), "ten notches down");
     assert_eq!(q.press(&l, (BAR_START, 1), Button::Left, later(t, 3)), set_brightness(4), "the bar's first cell");
-    q.backlight = backlight(0);
+    q.backlight = a_backlight(0);
     assert_eq!(q.key(&l, Key::Right, false, later(t, 4)), set_brightness(5), "from a dark backlight, up");
 }
 
@@ -959,13 +990,13 @@ fn brightness_never_goes_below_one_percent() {
 #[test]
 fn the_wheel_takes_ten_notches_at_most() {
     let mut w = World::full();
-    w.sound.sink = vol(30, false);
+    w.sound.sink = a_volume_of(30, false);
     let l = w.live();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     let t = Instant::now();
     assert_eq!(q.scroll(&l, Some((5, 0)), -15, t), set_volume(80), "15 notches of 5: 50, not 75");
     q.selected = Row::Brightness;
-    q.backlight = backlight(80);
+    q.backlight = a_backlight(80);
     assert_eq!(q.scroll(&l, Some((5, 1)), 15, t), set_brightness(30), "15 notches down: 50");
 }
 
@@ -987,7 +1018,7 @@ fn the_toggles_run_their_command_and_re_read_their_state() {
     w.config.keep_awake.toggle = vec!["fake-keep-awake".into()];
     w.config.night_light.toggle = vec!["fake-night".into(), "--toggle".into()];
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let t = Instant::now();
     let mic = run(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], "microphone mute");
     q.selected = Row::Mic;
@@ -1012,7 +1043,7 @@ fn the_toggles_run_their_command_and_re_read_their_state() {
 fn enter_cycles_the_power_profile_and_space_does_not() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Profile;
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Enter, false, t), run(&["powerprofilesctl", "set", "performance"], "profile performance"));
@@ -1035,7 +1066,7 @@ fn enter_cycles_the_power_profile_and_space_does_not() {
 fn reboot_and_power_off_ask_first_and_the_question_expires() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Session;
     let t = Instant::now();
     let lock = QuickAction::RunAndClose { argv: argv(&["loginctl", "lock-session"]), what: "lock".into() };
@@ -1044,11 +1075,11 @@ fn reboot_and_power_off_ask_first_and_the_question_expires() {
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "the first activation asks");
     assert_eq!(q.confirm, Some((Question::Session(Session::Reboot), t + CONFIRM)));
     let b = rows(&l, &q);
-    assert_eq!(texts(&b)[7], format!(" {REBOOT} Reboot? ⏎"));
+    assert_eq!(row_texts(&b)[7], format!(" {REBOOT} Reboot? ⏎"));
     assert_eq!(b.rows[7].styles()[1..12], "w".repeat(11), "in warn");
     assert_eq!(q.deadline(), Some(t + CONFIRM), "the timer waits for it");
     let early = t + Duration::from_millis(200);
-    assert_eq!(q.key(&l, Key::Enter, false, early), QuickAction::Nothing, "Mae (M1): a double activation never confirms");
+    assert_eq!(q.key(&l, Key::Enter, false, early), QuickAction::Nothing, "a double activation never confirms");
     assert_eq!(q.press(&l, (20, SESSION_LINE), Button::Left, early), QuickAction::Nothing, "nor a double click");
     assert_eq!(q.confirm, Some((Question::Session(Session::Reboot), t + CONFIRM)), "the question stays, its 3 s unchanged");
     assert_eq!(
@@ -1068,14 +1099,14 @@ fn reboot_and_power_off_ask_first_and_the_question_expires() {
     assert_eq!(q.due(t + CONFIRM), Due { redraw: true, ..Due::default() }, "3 s later the question goes");
     assert_eq!(q.confirm, None);
     assert_eq!(q.key(&l, Key::Enter, false, t + CONFIRM), QuickAction::Redraw, "the next Enter asks again");
-    assert_eq!(texts(&rows(&l, &q))[7], format!(" {POWER} Power off? ⏎"));
+    assert_eq!(row_texts(&rows(&l, &q))[7], format!(" {POWER} Power off? ⏎"));
 }
 
 #[test]
 fn moving_away_cancels_the_confirmation_and_coming_back_asks_again() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Session;
     q.button = Session::Reboot;
     let t = Instant::now();
@@ -1107,9 +1138,9 @@ fn the_wheel_elsewhere_moves_the_window_only_when_the_lines_do_not_fit() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_eq!(q.scroll(&l, Some((10, 4)), 1, t), QuickAction::Nothing, "everything fits");
-    let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 3);
+    let mut q = Quick::new(Focus::Top, &l, two_sinks(), a_backlight(75), [None, None], 3);
     assert_eq!(q.scroll(&l, Some((10, 2)), 1, t), QuickAction::Redraw, "on the separator, three rows of room");
     assert_eq!(q.top, 1);
     assert_eq!(q.scroll(&l, Some((10, 2)), 10, t), QuickAction::Redraw);
@@ -1122,7 +1153,7 @@ fn the_wheel_elsewhere_moves_the_window_only_when_the_lines_do_not_fit() {
 #[test]
 fn a_program_that_fails_is_noted_once_per_open() {
     let w = World::full();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert!(q.note_failure("wpctl"));
     assert!(!q.note_failure("wpctl"), "logged once");
     assert!(q.note_failure("brightnessctl"));
@@ -1159,18 +1190,18 @@ fn run_of(parts: &[&str], what: &str) -> QuickAction {
 fn the_wifi_row_in_every_state() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert!(!shown(&l, &q).contains(&Row::Wifi), "nothing read yet: hidden");
     q.set_wifi(Some(WifiState { enabled: true, device: None, stale: false }), t);
     assert!(!shown(&l, &q).contains(&Row::Wifi), "no Wi-Fi device: hidden");
     q.set_wifi(Some(wifi_state(true, true, false)), t);
     assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Wifi, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
     assert_eq!(lines(&l, &q)[2..4], [Line::Separator, Line::Row(Row::Wifi)], "first under the sliders' separator");
-    assert_eq!(texts(&rows(&l, &q))[3], format!(" {} Wi-Fi{}Maison-Test ›", STRENGTH[3], " ".repeat(12)), "80 %: four steps");
+    assert_eq!(row_texts(&rows(&l, &q))[3], format!(" {} Wi-Fi{}Maison-Test ›", STRENGTH[3], " ".repeat(12)), "80 %: four steps");
     q.set_wifi(Some(wifi_state(true, false, false)), t);
-    assert_eq!(texts(&rows(&l, &q))[3], format!(" {WIFI_ON} Wi-Fi{}on ›", " ".repeat(21)));
+    assert_eq!(row_texts(&rows(&l, &q))[3], format!(" {WIFI_ON} Wi-Fi{}on ›", " ".repeat(21)));
     q.set_wifi(Some(wifi_state(false, false, false)), t);
-    assert_eq!(texts(&rows(&l, &q))[3], format!(" {WIFI_OFF} Wi-Fi{}off ›", " ".repeat(20)));
+    assert_eq!(row_texts(&rows(&l, &q))[3], format!(" {WIFI_OFF} Wi-Fi{}off ›", " ".repeat(20)));
     assert!(describe(&l, &q).starts_with("rows: volume brightness wifi mic"), "{}", describe(&l, &q));
     q.set_wifi(None, t);
     assert!(!shown(&l, &q).contains(&Row::Wifi), "NetworkManager gone: hidden");
@@ -1181,7 +1212,7 @@ fn space_toggles_the_radio_and_enter_right_or_a_click_open_the_detail() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
     let rescan = run_of(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_wifi(Some(wifi_state(true, true, true)), t);
     q.selected = Row::Wifi;
     assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "off"], "wifi off"));
@@ -1201,7 +1232,7 @@ fn space_toggles_the_radio_and_enter_right_or_a_click_open_the_detail() {
     q.set_wifi(Some(wifi_state(false, false, false)), t);
     assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "on"], "wifi on"));
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "off: the detail opens, no rescan");
-    assert_eq!(texts(&rows(&l, &q))[2].trim(), OFF_NOTE);
+    assert_eq!(row_texts(&rows(&l, &q))[2].trim(), OFF_NOTE);
 }
 
 /// Quick Wi-Fi spec § 1: from the network module (or `--quick wifi`), the first Wi-Fi
@@ -1211,19 +1242,19 @@ fn the_network_module_opens_the_detail_once_the_state_arrives() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
     let rescan = run_of(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
-    let mut q = quick(&w, Focus::Wifi);
+    let mut q = panel_opened_on(&w, Focus::Wifi);
     assert_eq!(q.selected, Row::Volume, "nothing read yet: the first row");
     assert_eq!(q.set_wifi(Some(wifi_state(true, true, false)), t), WifiNews { action: rescan, failed: None });
     assert!(q.wifi.open && q.selected == Row::Wifi);
     q.key(&l, Key::Escape, false, t);
     assert_eq!(q.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "once only");
     assert!(!q.wifi.open);
-    let mut none = quick(&w, Focus::Wifi);
+    let mut none = panel_opened_on(&w, Focus::Wifi);
     assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None, stale: false }), t).action, QuickAction::Redraw);
     assert!(!none.wifi.open && none.selected == Row::Volume, "no device: nothing to open");
     none.set_wifi(Some(wifi_state(true, true, false)), t);
     assert!(none.wifi.open && none.selected == Row::Wifi, "spent only on a state with a device");
-    let mut top = quick(&w, Focus::Top);
+    let mut top = panel_opened_on(&w, Focus::Top);
     assert_eq!(top.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "the top: no detail");
 }
 
@@ -1234,24 +1265,24 @@ fn the_users_first_key_or_click_drops_a_pending_wifi_focus() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
     let no_device = || Some(WifiState { enabled: true, device: None, stale: false });
-    let mut keyed = quick(&w, Focus::Wifi);
+    let mut keyed = panel_opened_on(&w, Focus::Wifi);
     keyed.set_wifi(no_device(), t);
     keyed.key(&l, Key::Down, false, t);
     let chosen = keyed.selected;
     assert_eq!(keyed.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "a key: no rescan");
     assert!(!keyed.wifi.open && keyed.selected == chosen, "a key: the selection stays the user's");
-    let mut clicked = quick(&w, Focus::Wifi);
+    let mut clicked = panel_opened_on(&w, Focus::Wifi);
     clicked.set_wifi(no_device(), t);
     clicked.press(&l, (5, 1), Button::Left, t);
     let chosen = clicked.selected;
     assert_eq!(clicked.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "a click: no rescan");
     assert!(!clicked.wifi.open && clicked.selected == chosen, "a click: the selection stays the user's");
-    let mut wheeled = quick(&w, Focus::Wifi);
+    let mut wheeled = panel_opened_on(&w, Focus::Wifi);
     wheeled.set_wifi(no_device(), t);
     wheeled.scroll(&l, Some((5, 1)), 1, t);
     wheeled.set_wifi(Some(wifi_state(true, true, false)), t);
     assert!(!wheeled.wifi.open, "a wheel notch: no detail");
-    let mut untouched = quick(&w, Focus::Wifi);
+    let mut untouched = panel_opened_on(&w, Focus::Wifi);
     untouched.set_wifi(no_device(), t);
     untouched.key(&l, Key::Enter, true, t);
     untouched.set_wifi(Some(wifi_state(true, true, false)), t);
@@ -1268,14 +1299,14 @@ fn the_window_follows_the_selection_in_the_wifi_detail() {
     let aps: Vec<AccessPoint> =
         (0..20).map(|n| AccessPoint { ssid: format!("Reseau-Test-{n:02}").into_bytes(), strength: 50, security: Security::Psk }).collect();
     s.device.as_mut().expect("a device").access_points = Some(aps);
-    let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 6);
+    let mut q = Quick::new(Focus::Top, &l, two_sinks(), a_backlight(75), [None, None], 6);
     q.set_wifi(Some(s), t);
     q.selected = Row::Wifi;
     q.key(&l, Key::Enter, false, t);
     q.key(&l, Key::End, false, t);
     let b = rows(&l, &q);
     assert_eq!(b.rows.len(), 6, "the room under the bar");
-    assert_eq!(texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", texts(&b));
+    assert_eq!(row_texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", row_texts(&b));
 }
 
 /// A Wi-Fi state while open (`follow_wifi`) goes through `fit`; the window
@@ -1298,13 +1329,13 @@ fn a_wifi_state_moves_the_window_with_the_selection_and_a_closed_detail_goes_bac
         let device = WifiDevice { state: 30, active: None, active_uuid: None, access_points: Some(aps), saved: Some(vec![]) };
         WifiState { enabled: true, device: Some(device), stale: false }
     };
-    let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 6);
+    let mut q = Quick::new(Focus::Top, &l, two_sinks(), a_backlight(75), [None, None], 6);
     q.follow_wifi(&l, Some(around(90)), t);
     q.selected = Row::Wifi;
     q.key(&l, Key::Enter, false, t);
     q.key(&l, Key::Home, false, t);
     assert_eq!(q.top, 0);
-    let picked = |q: &Quick| texts(&rows(&l, q)).iter().any(|r| r.contains("Labo-Test"));
+    let picked = |q: &Quick| row_texts(&rows(&l, q)).iter().any(|r| r.contains("Labo-Test"));
     assert!(picked(&q), "first: in view");
     q.follow_wifi(&l, Some(around(10)), t);
     assert!(q.top > 0 && picked(&q), "moved to the end by the state: the window follows it ({})", q.top);
@@ -1323,7 +1354,7 @@ fn a_wifi_state_moves_the_window_with_the_selection_and_a_closed_detail_goes_bac
 fn the_wifi_attempt_rides_the_panel_s_one_timer() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_wifi(Some(wifi_state(true, true, true)), t);
     q.selected = Row::Wifi;
     q.key(&l, Key::Enter, false, t);
@@ -1345,7 +1376,7 @@ fn the_wifi_attempt_rides_the_panel_s_one_timer() {
 fn backspace_repeats_in_the_password_field_only() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_wifi(Some(wifi_state(true, true, true)), t);
     q.selected = Row::Wifi;
     q.key(&l, Key::Enter, false, t);
@@ -1370,7 +1401,7 @@ fn the_headset_row_switches_to_the_other_kind() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Sound);
+    let mut q = panel_opened_on(&w, Focus::Sound);
     q.set_headset(casque(HeadsetMode::HiFi));
     q.selected = Row::Headset;
     let to_mic = QuickAction::Run { argv: argv(&["wpctl", "set-profile", "61", "3"]), what: "headset mode mic".into() };
@@ -1389,15 +1420,15 @@ fn the_headset_row_switches_to_the_other_kind() {
 fn the_headset_row_shows_under_the_volume_only_with_a_headset() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert!(!shown(&l, &q).contains(&Row::Headset));
     q.set_headset(casque(HeadsetMode::HiFi));
     assert_eq!(shown(&l, &q)[..3], [Row::Volume, Row::Headset, Row::Brightness]);
     assert_eq!(lines(&l, &q)[..4], [Line::Row(Row::Volume), Line::Row(Row::Headset), Line::Row(Row::Brightness), Line::Separator]);
-    let t = texts(&rows(&l, &q));
+    let t = row_texts(&rows(&l, &q));
     assert!(t[1].contains("CasqueBT") && t[1].ends_with("‹ Hi-Fi ›"), "{:?}", t[1]);
     q.set_headset(casque(HeadsetMode::Mic));
-    assert!(texts(&rows(&l, &q))[1].ends_with("‹ Mic ›"));
+    assert!(row_texts(&rows(&l, &q))[1].ends_with("‹ Mic ›"));
     assert!(describe(&l, &q).contains("rows: volume headset brightness"));
     q.selected = Row::Headset;
     q.set_headset(None);
@@ -1462,7 +1493,7 @@ fn a_pending_toggle_reread_is_the_deadline_whichever_toggle() {
     let w = World::full();
     let at = Instant::now() + Duration::from_millis(300);
     for t in Toggle::ALL {
-        let mut q = quick(&w, Focus::Top);
+        let mut q = panel_opened_on(&w, Focus::Top);
         assert_eq!(q.deadline(), None, "{t:?}: nothing pending");
         q.reread_toggles[t.index()] = Some(at);
         assert_eq!(q.deadline(), Some(at), "{t:?}");
@@ -1476,26 +1507,26 @@ fn the_mixer_row_runs_its_command_then_closes() {
     let command = vec!["fake-term".to_string(), "-e".into(), "fake-mixer".into()];
     let mut w = World::full();
     let t = Instant::now();
-    assert!(!shown(&w.live(), &quick(&w, Focus::Top)).contains(&Row::Mixer), "unresolved: no row");
+    assert!(!shown(&w.live(), &panel_opened_on(&w, Focus::Top)).contains(&Row::Mixer), "unresolved: no row");
     w.config.mixer = Some(vec![]);
-    assert!(!shown(&w.live(), &quick(&w, Focus::Top)).contains(&Row::Mixer), "[] hides it");
+    assert!(!shown(&w.live(), &panel_opened_on(&w, Focus::Top)).contains(&Row::Mixer), "[] hides it");
     w.config.mixer = Some(command.clone());
     let l = w.live();
-    let q = quick(&w, Focus::Top);
+    let q = panel_opened_on(&w, Focus::Top);
     assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Mic, Row::Mixer, Row::Dnd, Row::Profile, Row::Session]);
     let b = rows(&l, &q);
-    assert_eq!(texts(&b)[4], format!(" {MIXER} Mixer…"), "{:?}", texts(&b));
+    assert_eq!(row_texts(&b)[4], format!(" {MIXER} Mixer…"), "{:?}", row_texts(&b));
     assert_eq!(b.separators, [2, 7], "in the microphone's group");
     let run = QuickAction::RunAndClose { argv: command, what: "mixer".into() };
     for k in [Key::Enter, Key::Char(' ')] {
-        let mut q = quick(&w, Focus::Top);
+        let mut q = panel_opened_on(&w, Focus::Top);
         q.selected = Row::Mixer;
         assert_eq!(q.key(&l, k, false, t), run, "{k:?}");
     }
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_eq!(q.press(&l, (5, 4), Button::Left, t), run, "a left click");
     assert_eq!(q.selected, Row::Mixer);
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Mixer;
     assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Nothing, "arrows do nothing");
 }
@@ -1504,7 +1535,7 @@ fn the_mixer_row_runs_its_command_then_closes() {
 fn enter_and_right_open_the_dnd_detail_and_space_still_toggles() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let t = Instant::now();
     q.selected = Row::Dnd;
     assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::ToggleDnd);
@@ -1512,7 +1543,7 @@ fn enter_and_right_open_the_dnd_detail_and_space_still_toggles() {
     assert!(q.dnd.open);
     assert_eq!(q.dnd.selected, 1, "off: opens on 30 minutes");
     let b = rows(&l, &q);
-    let t_ = texts(&b);
+    let t_ = row_texts(&b);
     assert!(t_[0].trim_start().starts_with("‹ Do not disturb"), "{:?}", t_[0]);
     assert_eq!(b.separators, [1]);
     let labels = ["Off", "30 minutes", "1 hour", "2 hours", "Until 08:00", "Until I turn it off"];
@@ -1528,10 +1559,10 @@ fn enter_and_right_open_the_dnd_detail_and_space_still_toggles() {
 }
 
 #[test]
-fn a_choice_applies_and_goes_back() {
+fn a_do_not_disturb_choice_applies_and_goes_back() {
     let w = World::full();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     let t = Instant::now();
     q.selected = Row::Dnd;
     q.key(&l, Key::Enter, false, t);
@@ -1558,15 +1589,15 @@ fn a_press_on_the_switch_opens_the_detail() {
     let w = World::full();
     let l = w.live();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_eq!(q.press(&l, (10, DND_LINE), Button::Left, t), QuickAction::ToggleDnd);
     assert!(!q.dnd.open);
     assert_eq!(q.press(&l, (27, DND_LINE), Button::Left, t), QuickAction::Redraw);
     assert!(q.dnd.open);
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert_eq!(q.press(&l, (25, DND_LINE), Button::Left, t), QuickAction::ToggleDnd, "just left of the switch");
     for col in [26, 33] {
-        let mut q = quick(&w, Focus::Top);
+        let mut q = panel_opened_on(&w, Focus::Top);
         assert_eq!(q.press(&l, (col, DND_LINE), Button::Left, t), QuickAction::Redraw, "column {col} is the switch's");
         assert!(q.dnd.open);
     }
@@ -1579,12 +1610,12 @@ fn a_press_on_the_switch_opens_the_detail() {
 fn the_marks_follow_the_state_while_open() {
     let mut w = World::full();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Dnd;
     q.key(&w.live(), Key::Enter, false, t);
     w.dnd = Some(true);
     let b = rows(&w.live(), &q);
-    let t_ = texts(&b);
+    let t_ = row_texts(&b);
     assert!(t_[7].contains("● ") && t_[7].ends_with("Until I turn it off"), "{:?}", t_[7]);
     assert!(!t_[2].contains('●'), "{:?}", t_[2]);
     assert!(q.dnd.open, "still open");
@@ -1592,7 +1623,7 @@ fn the_marks_follow_the_state_while_open() {
     assert!(q.dnd.open);
     // A timed end at the configured time marks `Until`.
     w.dnd_end = Some((8, 0));
-    let timed = texts(&rows(&w.live(), &q));
+    let timed = row_texts(&rows(&w.live(), &q));
     assert!(timed[6].contains("● ") && timed[6].ends_with("Until 08:00"), "{:?}", timed[6]);
     assert!(!timed[7].contains('●'), "{:?}", timed[7]);
     // The row going (no notifications module) closes it.
@@ -1603,16 +1634,16 @@ fn the_marks_follow_the_state_while_open() {
 }
 
 #[test]
-fn left_goes_back_and_the_header_shows_a_timed_end() {
+fn left_goes_back_from_the_do_not_disturb_detail_and_its_header_shows_a_timed_end() {
     let mut w = World::full();
     let t = Instant::now();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.selected = Row::Dnd;
     q.key(&w.live(), Key::Enter, false, t);
-    assert!(!texts(&rows(&w.live(), &q))[0].contains("until"), "untimed: no end on the header");
+    assert!(!row_texts(&rows(&w.live(), &q))[0].contains("until"), "untimed: no end on the header");
     w.dnd = Some(true);
     w.dnd_end = Some((7, 5));
-    let header = texts(&rows(&w.live(), &q))[0].clone();
+    let header = row_texts(&rows(&w.live(), &q))[0].clone();
     assert!(header.ends_with("until 07:05"), "{header:?}");
     assert_eq!(q.key(&w.live(), Key::Left, false, t), QuickAction::Redraw);
     assert!(!q.dnd.open);
@@ -1625,19 +1656,19 @@ fn a_timed_dnd_shows_its_end_in_the_switch() {
     let t = Instant::now();
     w.dnd = Some(true);
     w.dnd_end = Some((14, 30));
-    let q = quick(&w, Focus::Top);
+    let q = panel_opened_on(&w, Focus::Top);
     let b = rows(&w.live(), &q);
     let row = b.rows[DND_LINE as usize].text();
     assert!(row.ends_with(" until 14:30 ●  "), "{row:?}");
     assert_eq!(b.rows[DND_LINE as usize].styles()[18..33], *"AAAAAAAAAAAAAAA");
     // The press area is the drawn pill: its first cell opens the detail, the cell before toggles.
-    let mut q2 = quick(&w, Focus::Top);
+    let mut q2 = panel_opened_on(&w, Focus::Top);
     assert_eq!(q2.press(&w.live(), (19, DND_LINE), Button::Left, t), QuickAction::Redraw);
     assert!(q2.dnd.open);
-    let mut q3 = quick(&w, Focus::Top);
+    let mut q3 = panel_opened_on(&w, Focus::Top);
     assert_eq!(q3.press(&w.live(), (17, DND_LINE), Button::Left, t), QuickAction::ToggleDnd);
     assert!(!q3.dnd.open);
-    let header = texts(&rows(&w.live(), &q2))[0].clone();
+    let header = row_texts(&rows(&w.live(), &q2))[0].clone();
     assert!(header.trim_start().starts_with("‹ Do not disturb") && header.ends_with("until 14:30"), "{header:?}");
     w.dnd_end = None;
     let b = rows(&w.live(), &q);
@@ -1689,7 +1720,7 @@ fn the_vpn_row_sits_under_bluetooth_and_hides_without_profiles() {
     let (mut w, t) = (World::full(), Instant::now());
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     assert!(!shown(&l, &q).contains(&Row::Vpn), "nothing read yet: hidden");
     q.set_vpn(Some(VpnState { profiles: vec![], active: vec![] }), t);
     assert!(!shown(&l, &q).contains(&Row::Vpn), "no profile: hidden");
@@ -1697,10 +1728,10 @@ fn the_vpn_row_sits_under_bluetooth_and_hides_without_profiles() {
     assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Bluetooth, Row::Vpn, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
     let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Vpn)).expect("the row");
     assert_eq!(lines(&l, &q)[at - 1], Line::Row(Row::Bluetooth), "right under Bluetooth, one block with it");
-    assert_eq!(texts(&rows(&l, &q))[at], format!(" {} VPN{}VPN-Test-2 ›", crate::segments::VPN, " ".repeat(15)));
+    assert_eq!(row_texts(&rows(&l, &q))[at], format!(" {} VPN{}VPN-Test-2 ›", crate::segments::VPN, " ".repeat(15)));
     assert!(describe(&l, &q).starts_with("rows: volume brightness bluetooth vpn mic"), "{}", describe(&l, &q));
     q.set_vpn(Some(vpn_state(2, &[])), t);
-    assert_eq!(texts(&rows(&l, &q))[at], format!(" {} VPN{}off ›", crate::segments::VPN, " ".repeat(22)));
+    assert_eq!(row_texts(&rows(&l, &q))[at], format!(" {} VPN{}off ›", crate::segments::VPN, " ".repeat(22)));
     q.set_vpn(None, t);
     assert!(!shown(&l, &q).contains(&Row::Vpn), "NetworkManager gone: hidden");
 }
@@ -1709,7 +1740,7 @@ fn the_vpn_row_sits_under_bluetooth_and_hides_without_profiles() {
 fn space_on_the_vpn_row_toggles() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_vpn(Some(vpn_state(3, &[])), t);
     q.selected = Row::Vpn;
     // The last used (WG-Test, 300) comes up; an attempt then blocks a second Space.
@@ -1721,11 +1752,11 @@ fn space_on_the_vpn_row_toggles() {
 }
 
 #[test]
-fn enter_opens_the_detail_and_escape_comes_back() {
+fn enter_on_the_vpn_row_opens_the_detail_and_escape_comes_back() {
     let (mut w, t) = (World::full(), Instant::now());
     w.config = vpn_config();
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     q.selected = Row::Vpn;
     assert_eq!(q.vpn_scope(), VpnScope::Row);
@@ -1733,7 +1764,7 @@ fn enter_opens_the_detail_and_escape_comes_back() {
     assert!(q.vpn.open);
     assert_eq!(q.vpn_scope(), VpnScope::Detail);
     assert_eq!(lines(&l, &q)[..3], [Line::VpnHeader, Line::Separator, Line::VpnProfile(0)]);
-    assert_eq!(texts(&rows(&l, &q))[0], " ‹ VPN");
+    assert_eq!(row_texts(&rows(&l, &q))[0], " ‹ VPN");
     assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
     assert!(!q.vpn.open && q.selected == Row::Vpn, "back on the VPN row, the panel open");
     assert_eq!(q.key(&l, Key::Right, false, t), QuickAction::Redraw, "→ opens it too");
@@ -1762,7 +1793,7 @@ fn enter_opens_the_detail_and_escape_comes_back() {
 fn opening_the_vpn_closes_the_other_details() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_wifi(Some(wifi_state(true, true, true)), t);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     q.wifi.open_detail();
@@ -1770,16 +1801,16 @@ fn opening_the_vpn_closes_the_other_details() {
     q.top = 3;
     assert_eq!(q.open_vpn(&l), QuickAction::Redraw);
     assert!(q.vpn.open && !q.detail && q.top == 0 && !q.wifi.open);
-    let mut none = quick(&w, Focus::Top);
+    let mut none = panel_opened_on(&w, Focus::Top);
     assert_eq!(none.open_vpn(&l), QuickAction::Nothing, "no VPN row: nothing opens");
     assert!(!none.vpn.open);
 }
 
 #[test]
-fn a_repeat_enter_runs_nothing() {
+fn a_held_enter_on_the_vpn_row_runs_nothing() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     q.selected = Row::Vpn;
     assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "a held Enter does not even open it");
@@ -1796,7 +1827,7 @@ fn a_repeat_enter_runs_nothing() {
 fn the_vpn_focus_opens_the_detail_on_the_first_state_with_a_profile() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Vpn);
+    let mut q = panel_opened_on(&w, Focus::Vpn);
     assert_eq!(q.selected, Row::Volume, "nothing read yet: the first row");
     assert_eq!(q.set_vpn(Some(VpnState { profiles: vec![], active: vec![] }), t).action, QuickAction::Redraw);
     assert!(!q.vpn.open, "no profile: kept");
@@ -1806,23 +1837,23 @@ fn the_vpn_focus_opens_the_detail_on_the_first_state_with_a_profile() {
     q.key(&l, Key::Escape, false, t);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     assert!(!q.vpn.open, "once only");
-    let mut top = quick(&w, Focus::Top);
+    let mut top = panel_opened_on(&w, Focus::Top);
     top.set_vpn(Some(vpn_state(2, &[])), t);
     assert!(!top.vpn.open, "the top: no detail");
-    let mut keyed = quick(&w, Focus::Vpn);
+    let mut keyed = panel_opened_on(&w, Focus::Vpn);
     keyed.key(&l, Key::Down, false, t);
     keyed.set_vpn(Some(vpn_state(2, &[])), t);
     assert!(!keyed.vpn.open, "a key drops it");
-    let mut clicked = quick(&w, Focus::Vpn);
+    let mut clicked = panel_opened_on(&w, Focus::Vpn);
     clicked.press(&l, (5, 1), Button::Left, t);
     clicked.set_vpn(Some(vpn_state(2, &[])), t);
     assert!(!clicked.vpn.open, "a click drops it");
-    let mut wheeled = quick(&w, Focus::Vpn);
+    let mut wheeled = panel_opened_on(&w, Focus::Vpn);
     wheeled.scroll(&l, Some((5, 1)), 1, t);
     wheeled.set_vpn(Some(vpn_state(2, &[])), t);
     assert!(!wheeled.vpn.open, "a wheel notch drops it");
     // follow_vpn: the same, then fitted and the window on the selection.
-    let mut f = quick(&w, Focus::Vpn);
+    let mut f = panel_opened_on(&w, Focus::Vpn);
     f.follow_vpn(&l, Some(vpn_state(2, &[])), t);
     assert!(f.vpn.open && f.selected == Row::Vpn);
 }
@@ -1832,7 +1863,7 @@ fn the_last_profile_gone_closes_the_detail() {
     let (mut w, t) = (World::full(), Instant::now());
     w.config = vpn_config();
     let l = w.live();
-    let mut q = quick(&w, Focus::Vpn);
+    let mut q = panel_opened_on(&w, Focus::Vpn);
     q.follow_vpn(&l, Some(vpn_state(3, &[])), t);
     assert!(q.vpn.open);
     q.key(&l, Key::Down, false, t);
@@ -1851,7 +1882,7 @@ fn the_last_profile_gone_closes_the_detail() {
     assert!(shown(&l, &q).contains(&q.selected), "{:?}", q.selected);
     assert_eq!(q.top, 0);
     // NetworkManager gone closes it too.
-    let mut g = quick(&w, Focus::Vpn);
+    let mut g = panel_opened_on(&w, Focus::Vpn);
     g.follow_vpn(&l, Some(vpn_state(2, &[])), t);
     assert!(g.vpn.open);
     g.follow_vpn(&l, None, t);
@@ -1862,7 +1893,7 @@ fn the_last_profile_gone_closes_the_detail() {
 fn the_vpn_rides_the_panel_s_one_timer() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     assert_eq!(q.deadline(), None);
     q.selected = Row::Vpn;
@@ -1882,7 +1913,7 @@ fn the_vpn_rides_the_panel_s_one_timer() {
 fn a_vpn_state_attempt_failure_reaches_the_news() {
     let (w, t) = (World::full(), Instant::now());
     let l = w.live();
-    let mut q = quick(&w, Focus::Top);
+    let mut q = panel_opened_on(&w, Focus::Top);
     q.set_vpn(Some(vpn_state(2, &[])), t);
     q.selected = Row::Vpn;
     q.key(&l, Key::Char(' '), false, t);
@@ -1900,7 +1931,7 @@ fn the_window_follows_the_selection_in_the_vpn_detail() {
     s.profiles = (0..16)
         .map(|n| VpnProfile { uuid: vpn_uuid(n), name: format!("VPN-Test-{n:02}"), kind: VpnKind::Plugin, last_used: 0, asks: false })
         .collect();
-    let mut q = Quick::new(Focus::Vpn, &l, two_sinks(), backlight(75), [None, None], 6);
+    let mut q = Quick::new(Focus::Vpn, &l, two_sinks(), a_backlight(75), [None, None], 6);
     q.follow_vpn(&l, Some(s), t);
     assert!(q.vpn.open && q.top == 0);
     for _ in 0..10 {
@@ -1914,7 +1945,7 @@ fn the_window_follows_the_selection_in_the_vpn_detail() {
     let all = lines(&l, &q);
     assert_eq!(all[q.selected_line(&all).expect("selected")], Line::VpnMore);
     assert_eq!(q.top, all.len() - 6, "More… at the bottom of the window");
-    assert_eq!(texts(&rows(&l, &q)).last().map(|s| s.trim()), Some("More…"));
+    assert_eq!(row_texts(&rows(&l, &q)).last().map(|s| s.trim()), Some("More…"));
 }
 
 #[test]
@@ -1937,26 +1968,26 @@ fn shield_world(view: crate::shield::ShieldView) -> World {
 #[test]
 fn the_shield_row_sits_under_vpn_and_needs_shield() {
     let none = World::full();
-    assert!(!shown(&none.live(), &quick(&none, Focus::Top)).contains(&Row::Shield), "no [shield]: no row");
+    assert!(!shown(&none.live(), &panel_opened_on(&none, Focus::Top)).contains(&Row::Shield), "no [shield]: no row");
     let w = shield_world(shield_view(Some(false), true, true));
-    let (l, q) = (w.live(), quick(&w, Focus::Top));
+    let (l, q) = (w.live(), panel_opened_on(&w, Focus::Top));
     let all = shown(&l, &q);
     let at = all.iter().position(|r| *r == Row::Shield).expect("the row");
     assert_eq!(all[at + 1], Row::Mic);
     assert_eq!(ROWS[Row::Shield as usize].group, 1);
     assert_eq!(Row::Shield as usize, Row::Vpn as usize + 1, "right under the VPN row");
-    assert_eq!(quick(&w, Focus::Shield).selected, Row::Shield, "a click on the glyph selects the row");
-    assert!(!quick(&w, Focus::Shield).shield.open, "and opens nothing");
-    assert_eq!(quick(&none, Focus::Shield).selected, Row::Volume, "no row: the first one");
+    assert_eq!(panel_opened_on(&w, Focus::Shield).selected, Row::Shield, "a click on the glyph selects the row");
+    assert!(!panel_opened_on(&w, Focus::Shield).shield.open, "and opens nothing");
+    assert_eq!(panel_opened_on(&none, Focus::Shield).selected, Row::Volume, "no row: the first one");
 }
 
 #[test]
 fn the_shield_row_draws_its_switch() {
     let text = |v: crate::shield::ShieldView| {
         let w = shield_world(v);
-        let (l, q) = (w.live(), quick(&w, Focus::Shield));
+        let (l, q) = (w.live(), panel_opened_on(&w, Focus::Shield));
         let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Shield)).unwrap();
-        texts(&rows(&l, &q))[at].clone()
+        row_texts(&rows(&l, &q))[at].clone()
     };
     let glyph = crate::segments::SHIELD;
     assert_eq!(text(shield_view(Some(true), true, true)), format!(" {glyph} Shield{} ON  ●", " ".repeat(17)));
@@ -1971,49 +2002,49 @@ fn the_shield_row_draws_its_switch() {
 }
 
 #[test]
-fn space_toggles_and_a_repeat_runs_nothing() {
+fn space_on_the_shield_row_toggles_unless_held_switching_or_unknown() {
     let t = Instant::now();
     let w = shield_world(shield_view(Some(false), true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Shield(ShieldAsk::Toggle));
     assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space starts one command");
     let mut v = shield_view(Some(false), true, true);
     v.switching = true;
     let w = shield_world(v);
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "while a command runs");
     let w = shield_world(shield_view(None, true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "unknown state");
 }
 
 #[test]
-fn enter_opens_the_detail_unless_blocked_is_empty() {
+fn enter_on_the_shield_row_opens_its_detail_unless_blocked_is_empty() {
     let t = Instant::now();
     for key in [Key::Enter, Key::Right] {
         let w = shield_world(shield_view(Some(true), true, true));
-        let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+        let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
         assert_eq!(q.key(&l, key, false, t), QuickAction::Redraw);
         assert!(q.shield.open && q.shield.read_wanted, "{key:?}");
         assert_eq!(lines(&l, &q)[0], Line::ShieldHeader);
     }
     let w = shield_world(shield_view(Some(true), false, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing);
     assert!(!q.shield.open);
     // A left click on the row is Enter.
     let w = shield_world(shield_view(Some(true), true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Shield)).unwrap() as u16;
     q.press(&l, (5, at), Button::Left, t);
     assert!(q.shield.open);
 }
 
 #[test]
-fn escape_comes_back_to_the_row() {
+fn escape_in_the_shield_detail_comes_back_to_the_shield_row() {
     let t = Instant::now();
     let w = shield_world(shield_view(Some(true), true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     q.key(&l, Key::Enter, false, t);
     assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
     assert!(!q.shield.open && q.selected == Row::Shield, "back on the row, the panel open");
@@ -2029,7 +2060,7 @@ fn escape_comes_back_to_the_row() {
 fn a_device_row_is_reached_through_the_panels_keys() {
     let t = Instant::now();
     let w = shield_world(shield_view(Some(true), true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     q.key(&l, Key::Enter, false, t);
     q.shield.set_listing(
         &l.shield.unwrap(),
@@ -2041,12 +2072,12 @@ fn a_device_row_is_reached_through_the_panels_keys() {
 }
 
 #[test]
-fn failed_ends_with_a_redraw_and_is_not_stale() {
+fn the_shield_rows_failed_tag_ends_at_its_deadline_with_a_redraw() {
     let t = Instant::now();
     let mut v = shield_view(Some(false), true, true);
     v.failed_until = Some(t + Duration::from_secs(4));
     let w = shield_world(v);
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     q.fit(&l);
     assert_eq!(q.deadline(), Some(t + Duration::from_secs(4)));
     let d = q.due(t + Duration::from_secs(1));
@@ -2057,28 +2088,27 @@ fn failed_ends_with_a_redraw_and_is_not_stale() {
 }
 
 #[test]
-fn shield_open_detail_opens_on_the_detail() {
+fn open_shield_selects_the_row_and_opens_its_detail() {
     // What `App::shield_open_detail` does inside the panel: the row selected, its detail open and
-    // one read asked, the focus asked at open honoured (no caller reaches it end to end before the
-    // tools menu delivery).
+    // one read asked,.
     let w = shield_world(shield_view(Some(true), true, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.selected, Row::Shield);
     assert_eq!(q.open_shield(&l), QuickAction::Redraw);
     assert!(q.shield.open && q.shield.read_wanted);
     assert_eq!(lines(&l, &q)[0], Line::ShieldHeader);
     // Without a listable `blocked` nothing opens.
     let w = shield_world(shield_view(Some(true), false, true));
-    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.open_shield(&l), QuickAction::Nothing);
     assert!(!q.shield.open);
 }
 
 #[test]
-fn one_detail_at_a_time() {
+fn opening_the_shield_detail_closes_the_vpn_and_do_not_disturb_ones_in_place() {
     let w = shield_world(shield_view(Some(true), true, true));
     let l = w.live();
-    let mut q = quick(&w, Focus::Shield);
+    let mut q = panel_opened_on(&w, Focus::Shield);
     assert!(!q.other_detail_open());
     q.vpn.open = true;
     assert!(!q.other_detail_open(), "the VPN detail closes in place: no panel re-open");
