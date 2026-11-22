@@ -380,6 +380,23 @@ mod tests {
     use super::*;
     use crate::launcher::testing::TempDir;
 
+    /// The README's `launcher.toml` block (the one holding the Tools menu's keys) is valid as
+    /// written: the test reads the README itself, so the example cannot drift (plan Task 10).
+    #[test]
+    fn the_readmes_tools_example_parses() {
+        let readme = include_str!("../../../../README.md");
+        let block = readme
+            .split("```toml\n")
+            .skip(1)
+            .map(|b| b.split("```").next().unwrap_or(""))
+            .find(|b| b.contains("[[tools.entry]]"))
+            .expect("a toml block with [[tools.entry]] in the README");
+        let c = LauncherConfig::from_text(block).unwrap();
+        assert_eq!(c.prefixes.tools, "/");
+        assert_eq!((c.tools.categories.len(), c.tools.entries.len()), (1, 3));
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+    }
+
     #[test]
     fn a_default_tools_prefix_that_clashes_is_turned_off_with_a_note() {
         let c = LauncherConfig::from_text("[prefixes]\ncommands = \"/run \"\n").unwrap();

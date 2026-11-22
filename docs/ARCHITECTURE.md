@@ -111,6 +111,12 @@ only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
 bounded `capture`.
 
+The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `tools_app.rs`:
+the glue) is a launcher mode with no scan. Built-ins replay the daemon's own verbs
+inside the process; the entry states and dynamic choices are read one at a time on a
+short-lived `alpheus-tools` thread through `capture`; `tools_join.rs` is the only file
+that names the clipboard, Shield and Diagnostics for it.
+
 ## Policy: what the daemon may touch
 
 These are guardrails from the scope document, checked mechanically.

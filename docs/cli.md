@@ -71,6 +71,8 @@ alpheus-launch [--toggle | --close
                | --failed-refresh
                | --osd brightness
                | --quick [sound|wifi|bluetooth]
+               | --tools
+               | --power
                | -h|--help]
 ```
 
@@ -88,6 +90,8 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--failed-refresh` | read the failed-unit counts again now (the system manager's through the D-Bus thread, the user manager's on the loop), whatever `[failed] subscribe` says; the control center sends it itself after a unit action and when the Diag tab shows |
 | `--osd brightness` | show the laptop backlight's level in the OSD (read once, never changed) |
 | `--quick [sound\|wifi\|bluetooth]` | open or close the quick settings panel on the focused output; the word opens it on that detail (`sound`: at the volume) |
+| `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
+| `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
 
 `--dmenu` options:
@@ -109,7 +113,7 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words): restart it after an upgrade. The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words), `--tools` or `--power`: restart it after an upgrade. The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. A `--quick`
 arriving less than 250 ms after the one that opened the panel is ignored, so a
@@ -121,4 +125,5 @@ Examples:
 printf 'one\ntwo\nthree\n' | alpheus-launch --dmenu -p 'Pick' || echo "cancelled or not running"
 alpheus-launch --dnd toggle
 alpheus-launch --quick wifi
+alpheus-launch --tools; [ $? -eq 3 ] && tools-menu   # fall back to a menu script only when the daemon is too old or not running
 ```
