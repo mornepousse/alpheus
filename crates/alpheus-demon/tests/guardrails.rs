@@ -1568,7 +1568,8 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
 /// bar's loop, never on a thread of their own, and never run a command
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
-/// Files named before they exist are checked once they do.
+/// Every entry must name something that exists (a file, or a folder ending in `/`): a misspelt
+/// entry would otherwise skip its file without a word (`unmatched_entries`).
 const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
     "media.rs",
@@ -1644,12 +1645,46 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/tools/nav.rs",
 ];
 
+/// Whether the list entry `entry` names the file `name`: a folder entry (ending in `/`) names every
+/// file under it, any other entry names one file exactly.
+fn entry_names(entry: &str, name: &str) -> bool {
+    if entry.ends_with('/') { name.starts_with(entry) } else { name == entry }
+}
+
+/// The entries of `list` that do not name what they should among the source files `names`: a file
+/// entry must match exactly one of them, a folder entry (ending in `/`) at least one. A list that
+/// is checked by matching its entries against the files would otherwise skip a misspelt entry in
+/// silence, and the file it was meant for would stop being checked.
+fn unmatched_entries<'a>(list: &[&'a str], names: &[String]) -> Vec<&'a str> {
+    list.iter()
+        .copied()
+        .filter(|entry| {
+            let hits = names.iter().filter(|name| entry_names(entry, name)).count();
+            if entry.ends_with('/') { hits == 0 } else { hits != 1 }
+        })
+        .collect()
+}
+
+#[test]
+fn unmatched_entries_names_a_misspelt_entry() {
+    let names: Vec<String> = ["timer/mod.rs", "timer/app.rs", "media.rs"].map(String::from).to_vec();
+    assert!(unmatched_entries(&["timer/", "media.rs", "timer/mod.rs"], &names).is_empty());
+    assert_eq!(unmatched_entries(&["media.rs", "midea.rs"], &names), ["midea.rs"], "a misspelt file");
+    assert_eq!(unmatched_entries(&["timer/mod.rs", "timer/ap.rs"], &names), ["timer/ap.rs"], "a misspelt file in a folder");
+    assert_eq!(unmatched_entries(&["timers/"], &names), ["timers/"], "a folder with no file");
+    let twice: Vec<String> = ["media.rs", "media.rs"].map(String::from).to_vec();
+    assert_eq!(unmatched_entries(&["media.rs"], &twice), ["media.rs"], "a file entry matching two files");
+}
+
 #[test]
 fn the_tray_spawns_no_thread() {
+    let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
+    let unmatched = unmatched_entries(NO_THREAD_NOR_COMMAND, &names);
+    assert!(unmatched.is_empty(), "NO_THREAD_NOR_COMMAND names no existing file or folder: {unmatched:?}");
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !NO_THREAD_NOR_COMMAND.iter().any(|f| if f.ends_with('/') { name.starts_with(f) } else { name == *f }) {
+        if !NO_THREAD_NOR_COMMAND.iter().any(|f| entry_names(f, &name)) {
             continue;
         }
         checked += 1;
