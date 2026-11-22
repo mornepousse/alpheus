@@ -1774,7 +1774,7 @@ fn a_units_read_error_hides_the_count_and_the_session_goes_on() {
     let (seen, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 60));
     assert_eq!(seen[0].units, None);
     assert!(seen[0].battery.is_some(), "the other domains are shown: {seen:?}");
-    assert_eq!(told, 0, "a read that failed is not a read");
+    assert_eq!(told, 1, "a read that failed is not a read, but the poke's word still reaches the loop (the user count)");
     assert_eq!(bus.subscribes(), 0);
     // The scripted bus's own end, not the count's outage: both scripted signals were handled.
     let e = r.unwrap_err();

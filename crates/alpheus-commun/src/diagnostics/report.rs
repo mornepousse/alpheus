@@ -191,23 +191,56 @@ fn escaped_before(chars: &[char], i: usize) -> bool {
         && chars[i - 1].is_ascii_hexdigit()
 }
 
-/// Everything after `COMMAND=` (sudo's and pkexec's own field) is replaced by `<command>`, up to
-/// the end of the line, or up to a closing `]` when pkexec brackets it: the arguments are
+/// The command of a sudo, pkexec or doas line is replaced by `<command>`: everything after
+/// `COMMAND=` up to the end of the line (or a closing `]` when pkexec brackets it), and what
+/// doas puts between `ran command` and the last ` as ` of the line. sudo's `ENV=` field before
+/// `COMMAND=` (variables the user set: a token, a key) becomes `ENV=<env>`. The arguments are
 /// anything the user typed, a password included.
 fn cut_commands(text: &str) -> String {
     const MARK: &str = "COMMAND=";
-    if !text.contains(MARK) {
+    const DOAS: &str = "ran command ";
+    if !text.contains(MARK) && !text.contains(DOAS) {
         return text.to_string();
     }
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(MARK) {
-        out.push_str(&rest[..at + MARK.len()]);
+        let prefix = &rest[..at];
+        let line = prefix.rfind('\n').map_or(0, |n| n + 1);
+        match prefix[line..].find(" ENV=").map(|e| line + e + 1) {
+            Some(e) => {
+                let end = prefix[e..].find(" ; ").map_or(prefix.len(), |n| e + n);
+                out.push_str(&prefix[..e]);
+                out.push_str("ENV=<env>");
+                out.push_str(&prefix[end..]);
+            }
+            None => out.push_str(prefix),
+        }
+        out.push_str(MARK);
         out.push_str("<command>");
         let tail = &rest[at + MARK.len()..];
-        let bracketed = rest[..at].ends_with('[');
+        let bracketed = prefix.ends_with('[');
         let line_end = tail.find('\n').unwrap_or(tail.len());
         let stop = if bracketed { tail[..line_end].rfind(']').unwrap_or(line_end) } else { line_end };
+        rest = &tail[stop..];
+    }
+    out.push_str(rest);
+    cut_doas(&out)
+}
+
+/// doas: `ran command <anything> as root from <cwd>`: the command goes, up to the line's last
+/// ` as ` (the command may hold one itself), or to the line's end without one.
+fn cut_doas(text: &str) -> String {
+    const DOAS: &str = "ran command ";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(DOAS) {
+        let start = at + DOAS.len();
+        out.push_str(&rest[..start]);
+        out.push_str("<command>");
+        let tail = &rest[start..];
+        let line_end = tail.find('\n').unwrap_or(tail.len());
+        let stop = tail[..line_end].rfind(" as ").unwrap_or(line_end);
         rest = &tail[stop..];
     }
     out.push_str(rest);
@@ -233,8 +266,8 @@ fn replace_shapes(text: &str) -> String {
                 .or_else(|| bare_mac(&chars[i..]).map(|n| (n, "<mac>")))
                 .or_else(|| ipv6(&chars[i..]).map(|n| (n, "<ip>")))
                 .or_else(|| {
-                    (!after_version_word(&chars, i) && !inside_dotted_number(&chars, i) && !after_port_digit(&chars, i))
-                        .then(|| ipv4(&chars[i..]).map(|n| (n, "<ip>")))
+                    (!inside_dotted_number(&chars, i) && !after_port_digit(&chars, i))
+                        .then(|| ipv4(&chars[i..]).filter(|&n| !version_token(&chars, i, n)).map(|n| (n, "<ip>")))
                         .flatten()
                 });
             if let Some((n, to)) = hit {
@@ -283,17 +316,34 @@ fn boundary_after(chars: &[char], n: usize) -> bool {
     chars.get(n).is_none_or(|c| !c.is_alphanumeric())
 }
 
-/// A digit and a dash right before `i`: a USB port path (`usb 2-1.2.1.3:`), not an address.
+/// A digit and a dash right before `i`: the tail of a USB port path (`usb 2-1.2.1.3:`, `hub
+/// 2-1.2.1.3:1.0`), not an address. Only when the token that holds the dash follows `usb` or
+/// `hub`: `range 10.0.0.1-10.0.0.9` is two addresses.
 fn after_port_digit(chars: &[char], i: usize) -> bool {
-    i >= 2 && chars[i - 1] == '-' && chars[i - 2].is_ascii_digit()
+    if !(i >= 2 && chars[i - 1] == '-' && chars[i - 2].is_ascii_digit()) {
+        return false;
+    }
+    let start = (0..i).rev().find(|&k| !(chars[k].is_ascii_digit() || matches!(chars[k], '.' | '-'))).map_or(0, |k| k + 1);
+    previous_word(chars, start).is_some_and(|w| w.eq_ignore_ascii_case("usb") || w.eq_ignore_ascii_case("hub"))
 }
 
-/// The word before `i` (after one space) is one that introduces a version number.
-fn after_version_word(chars: &[char], i: usize) -> bool {
-    let end = if i > 0 && chars[i - 1] == ' ' { i - 1 } else { return false };
+/// The alphabetic word right before `end` (after one space).
+fn previous_word(chars: &[char], end: usize) -> Option<String> {
+    let end = end.checked_sub(1).filter(|&e| chars[e] == ' ')?;
     let start = (0..end).rev().find(|&k| !chars[k].is_alphabetic()).map_or(0, |k| k + 1);
-    let word: String = chars[start..end].iter().collect();
-    ["version", "firmware", "kernel"].iter().any(|w| word.eq_ignore_ascii_case(w))
+    Some(chars[start..end].iter().collect())
+}
+
+/// The dotted quad at `i` (`n` characters) is a version, not an address: right after `version`,
+/// or after `firmware` or `kernel` when a suffix follows it (`6.1.2.3-rc1`, `5.15.153.1-generic`:
+/// a real release string); a bare quad after those two words is an address.
+fn version_token(chars: &[char], i: usize, n: usize) -> bool {
+    let Some(word) = previous_word(chars, i) else { return false };
+    if word.eq_ignore_ascii_case("version") {
+        return true;
+    }
+    (word.eq_ignore_ascii_case("firmware") || word.eq_ignore_ascii_case("kernel"))
+        && chars.get(i + n).is_some_and(|c| matches!(c, '-' | '+' | '_') || c.is_alphabetic())
 }
 
 /// Thirty-two hex digits as a token of their own: a boot, invocation or machine id. Returns the

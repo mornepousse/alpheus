@@ -71,7 +71,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, _hits: &mut HitMap, chrom
         Some((Scope::System, u)) => cut(u),
         None => "any".to_string(),
     };
-    let mut parts = vec![format!("unit: {unit}"), format!("priority: {}", priority_word(j.query.priority))];
+    let mut parts = vec![format!("unit: {unit}"), format!("level: {}", priority_word(j.query.priority))];
     if j.query.since_until.is_none() {
         parts.push(format!("follow: {}", if j.follow { "on" } else { "off" }));
     }

@@ -352,6 +352,14 @@ fn a_sudo_line_keeps_no_command_arguments() {
     assert!(out.contains("COMMAND=<command>") && !out.contains("abc123"), "{out}");
     // Nothing after the marker survives either, whatever it holds.
     assert_eq!(none().apply("COMMAND=x ; more"), "COMMAND=<command>");
+    // sudo's ENV field before it holds variables the user set: a token, a key.
+    let env = "sudo: jdoe : TTY=pts/1 ; PWD=/home/jdoe ; USER=root ; ENV=API_TOKEN=s3cr3t ; COMMAND=/bin/curl -u a:b";
+    let out = none().apply(env);
+    assert!(!out.contains("s3cr3t") && !out.contains("API_TOKEN"), "{out}");
+    assert!(out.contains("ENV=<env> ; COMMAND=<command>"), "{out}");
+    // doas names the command between `ran command` and `as`.
+    let out = none().apply("doas: jdoe ran command passwd --stdin secret as root from /home/jdoe");
+    assert!(!out.contains("secret") && out.contains("ran command <command> as root"), "{out}");
     assert_eq!(none().apply("no marker here"), "no marker here");
 }
 
@@ -373,9 +381,17 @@ fn any_hex_escape_is_a_word_edge() {
 fn a_dotted_quad_after_a_port_path_or_a_firmware_word_is_not_an_address() {
     let r = none();
     assert_eq!(r.apply("usb 2-1.2.1.3: new device"), "usb 2-1.2.1.3: new device");
-    assert_eq!(r.apply("Firmware 1.2.3.4 loaded"), "Firmware 1.2.3.4 loaded");
-    assert_eq!(r.apply("kernel 5.6.7.8 booted"), "kernel 5.6.7.8 booted");
+    assert_eq!(r.apply("Firmware 1.2.3.4-rc1 loaded"), "Firmware 1.2.3.4-rc1 loaded");
+    assert_eq!(r.apply("Linux kernel 5.15.153.1-generic booted"), "Linux kernel 5.15.153.1-generic booted");
+    assert_eq!(r.apply("version 1.2.3.4 loaded"), "version 1.2.3.4 loaded");
+    // A bare dotted quad after those words is an address.
+    assert_eq!(r.apply("kernel 192.168.0.1 booted"), "kernel <ip> booted");
+    assert_eq!(r.apply("firmware 10.1.2.3 loaded"), "firmware <ip> loaded");
     assert_eq!(r.apply("from 10.1.2.3 ok"), "from <ip> ok");
+    // A range of addresses redacts both ends; a USB port path elsewhere stays.
+    assert_eq!(r.apply("range 10.0.0.1-10.0.0.9 ok"), "range <ip>-<ip> ok");
+    assert_eq!(r.apply("192.168.1.2-192.168.1.50"), "<ip>-<ip>");
+    assert_eq!(r.apply("hub 2-1.2.1.3:1.0: ok"), "hub 2-1.2.1.3:1.0: ok");
 }
 
 #[test]

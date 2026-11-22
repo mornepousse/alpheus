@@ -1,5 +1,6 @@
 ---
 source: crates/alpheus/src/ui/journal/tests.rs
+assertion_line: 93
 expression: "rows(&a, 87, 26)"
 ---
                                                                                        
@@ -8,7 +9,7 @@ expression: "rows(&a, 87, 26)"
                   ━━━━━━━━━━━━───────────────────────────────────────────────────────  
                                                                                        
   󰋜 Home     1    Journal · Errors this boot                                 Esc back  
-                  unit: any  ·  priority: err and worse  ·  follow: off  ·  / filter   
+                  unit: any  ·  level: err and worse  ·  follow: off  ·  / filter      
   󰕾 Sound    2    01:00:00 evil: tidy live  reorderd                                   
                                                                                        
   󰖩 Network  3                                                                         

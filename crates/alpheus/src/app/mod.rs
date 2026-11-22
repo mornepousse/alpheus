@@ -549,6 +549,7 @@ impl App {
                 self.appearance_open();
             }
             if t == Tab::Diagnostics {
+                self.diag.touched = false; // the first click on a returning visit only selects
                 self.diagnostics_reads();
             }
         }

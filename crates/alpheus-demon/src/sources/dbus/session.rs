@@ -303,12 +303,16 @@ pub fn session(
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
-            if let Some(Ok(true)) = u {
-                match units_done(&mut link, bus, s.units, units_read) {
+            match u {
+                Some(Ok(true)) => match units_done(&mut link, bus, s.units, units_read) {
                     Ok(true) => {}
                     Ok(false) => return Ok(()),
                     Err(e) => u = Some(Err(e)),
-                }
+                },
+                // A failed or skipped system read: the user manager's count is its own link's, so
+                // `--failed-refresh` still reads it (the loop's word, no D-Bus state touched).
+                Some(_) if !units_read() => return Ok(()),
+                _ => {}
             }
             // The panel closed: what this thread's arena held for it goes back, as at startup.
             if reader.scope() == WifiScope::Closed && bt_reader.scope() == BtScope::Closed && vpn_reader.scope() == VpnScope::Closed {

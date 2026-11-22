@@ -55,6 +55,18 @@ fn opening_on_the_diag_tab_reads_only_its_domains() {
     }
 }
 
+/// A selection touched before leaving the tab is fresh again on return: the first click only selects.
+#[test]
+fn coming_back_to_the_tab_is_untouched() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    a.diag_touch();
+    assert!(a.diag.touched);
+    a.go_tab(Tab::Power, at(1, t0));
+    a.go_tab(Tab::Diagnostics, at(2, t0));
+    assert!(!a.diag.touched, "a returning visit starts untouched");
+}
+
 #[test]
 fn another_tab_reads_nothing_of_diagnostics() {
     let t0 = Instant::now();

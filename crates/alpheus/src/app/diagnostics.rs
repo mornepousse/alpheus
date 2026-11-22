@@ -93,7 +93,7 @@ pub struct DiagnosticsTab {
     pub saved_focus: usize,
     /// A key or a click has moved the selection since the view was shown: until then the row that
     /// is focused by default is not "already selected", so a first click only selects it.
-    touched: bool,
+    pub(super) touched: bool,
 }
 
 /// One focusable row of the overview, in display order.
