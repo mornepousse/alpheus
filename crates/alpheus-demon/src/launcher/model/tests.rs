@@ -1354,3 +1354,61 @@ fn set_tools_forgets_the_prepared_catalog() {
     assert_eq!(l.ranker.preparations(), after_first + 1, "the new catalog is prepared once");
     assert!(sources(&l).iter().all(|s| !matches!(s, Source::Tool(_))), "Omega does not match \"al\": no stale row from Alpha");
 }
+
+const FORGET_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Nix"
+[[tools.entry]]
+name = "One"
+category = "Nix"
+run = ["x"]
+[[tools.entry]]
+name = "Two"
+category = "Nix"
+run = ["x"]
+[[tools.entry]]
+name = "Three"
+category = "Nix"
+run = ["x"]
+[[tools.entry]]
+name = "Root a"
+run = ["x"]
+[[tools.entry]]
+name = "Root b"
+run = ["x"]
+"#;
+
+fn tools_launcher() -> Launcher {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let config = LauncherConfig::from_text(FORGET_CFG).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l
+}
+
+#[test]
+fn going_up_in_tools_forgets_the_prepared_facts() {
+    let mut l = tools_launcher();
+    typed(&mut l, "/");
+    // The root lists Nix, Root a, Root b; Nix lists One, Two, Three: three rows each.
+    assert_eq!(l.results.len(), 3);
+    l.key(Key::Enter);
+    assert_eq!(l.results.len(), 3);
+    let before = l.ranker.preparations();
+    l.key(Key::Left);
+    assert_eq!(l.ranker.preparations(), before + 1, "the root's list is another list with as many rows");
+}
+
+#[test]
+fn leaving_tools_by_a_mode_click_forgets_the_prepared_facts() {
+    let mut l = tools_launcher();
+    typed(&mut l, "/");
+    typed(&mut l, "o");
+    let before = l.ranker.preparations();
+    l.click_mode(Mode::All);
+    assert_eq!(l.mode, Mode::All);
+    assert!(l.ranker.preparations() > before, "the Tools list's facts are not All's");
+}

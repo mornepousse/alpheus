@@ -153,7 +153,7 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         check_argv("tools.reload", "reload", &t.reload)
             .map_err(|_| "tools.reload: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
     }
-    // Called on a bounded config (at most 16 and 128): the sets keep it linear all the same.
+    // Called before `bounded`: what a bound would cut is checked all the same (the sets keep it linear).
     let mut category_names = HashSet::new();
     for (i, c) in t.categories.iter().enumerate() {
         let at = format!("tools.category {}", i + 1);
@@ -166,7 +166,8 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     }
     let mut entry_names = HashSet::new();
     for (i, e) in t.entries.iter().enumerate() {
-        let at = format!("tools.entry {}", i + 1);
+        // The place in the file (set by `number`); a hand-built config has none: its index.
+        let at = format!("tools.entry {}", if e.position > 0 { e.position } else { i + 1 });
         check_name(&at, &e.name)?;
         if let Some(cat) = &e.category
             && !category_names.contains(cat.as_str())
@@ -217,8 +218,10 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
 /// Cuts what is past a bound, with one `note` per bound (counts only, spec § 4): categories
 /// (an entry of a category cut is dropped, not moved to the root, and counted in the same
 /// note), entries, the fixed choices past `MAX_CHOICES` (one note for all the entries), and the
-/// `state` past the 16th entry that has one. Run before `validate`: what is cut is never checked.
+/// `state` past the 16th entry that has one. Run after `validate`: what is cut was checked.
 pub fn bounded(mut t: ToolsConfig, note: &mut dyn FnMut(&str)) -> ToolsConfig {
+    // What launcher.toml held, before an entry of a cut category is dropped.
+    let file_entries = t.entries.len();
     if t.categories.len() > MAX_CATEGORIES {
         let cut: HashSet<String> = t.categories.iter().skip(MAX_CATEGORIES).map(|c| c.name.clone()).collect();
         let total = t.categories.len();
@@ -236,7 +239,7 @@ pub fn bounded(mut t: ToolsConfig, note: &mut dyn FnMut(&str)) -> ToolsConfig {
         note(&line);
     }
     if t.entries.len() > MAX_ENTRIES {
-        note(&format!("tools: {} entries in launcher.toml, the first {MAX_ENTRIES} kept", t.entries.len()));
+        note(&format!("tools: {file_entries} entries in launcher.toml, the first {MAX_ENTRIES} kept"));
         t.entries.truncate(MAX_ENTRIES);
     }
     let long = t.entries.iter().filter(|e| e.choices.len() > MAX_CHOICES).count();

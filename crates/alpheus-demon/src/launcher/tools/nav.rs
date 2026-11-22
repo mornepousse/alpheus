@@ -343,6 +343,14 @@ impl ToolsState {
             RowId::Entry(e) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 if !matches!(entry.choices, Choices::None) {
+                    // From the root's flat search an entry of a category goes down through that
+                    // category, as the breadcrumb shows: ← and Esc land on it.
+                    if let (Level::Root, Some(c)) = (self.level, entry.category) {
+                        let from = self.position(Level::Root, RowId::Category(c));
+                        self.open(Level::Category(c), from);
+                        let at = self.position(Level::Category(c), RowId::Entry(e));
+                        return self.drill_choices(config, e, at);
+                    }
                     return self.drill_choices(config, e, selected);
                 }
                 let action = match entry.kind {
@@ -403,14 +411,24 @@ impl ToolsState {
         true
     }
 
+    /// The index of `id` among the rows `level` lists (0 when absent).
+    fn position(&mut self, level: Level, id: RowId) -> usize {
+        let saved = std::mem::replace(&mut self.level, level);
+        let at = self.rows().iter().position(|r| r.id == id).unwrap_or(0);
+        self.level = saved;
+        at
+    }
+
     /// Jumps straight to `entry`'s level (a Mod+Space hit that must ask or drill): its category
-    /// with the root above, or the root. The caller selects the row.
+    /// with the root above, or the root. The stack holds the row each level came through, so up
+    /// lands on it. The caller selects the row.
     pub fn goto_entry(&mut self, entry: usize) {
         self.stack.clear();
         self.level = Level::Root;
         self.question = None;
         if let Some(c) = self.catalog.entries.get(entry).and_then(|e| e.category) {
-            self.stack.push((Level::Root, 0));
+            let at = self.position(Level::Root, RowId::Category(c));
+            self.stack.push((Level::Root, at));
             self.level = Level::Category(c);
         }
     }
@@ -419,7 +437,8 @@ impl ToolsState {
     /// start for a `choices_cmd` entry.
     pub fn goto_choices(&mut self, config: &ToolsConfig, entry: usize) -> Step {
         self.goto_entry(entry);
-        self.drill_choices(config, entry, 0)
+        let at = self.position(self.level, RowId::Entry(entry));
+        self.drill_choices(config, entry, at)
     }
 }
 

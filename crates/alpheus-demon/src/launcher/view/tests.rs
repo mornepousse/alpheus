@@ -956,11 +956,37 @@ fn tools_empty_level_says_nothing_here_and_a_missed_search_no_match() {
 fn tools_help_rows() {
     let mut l = tools_box(TOOLS_CFG);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ← back · esc close")));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · esc close")));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("⌫") || t.contains("← back")), "← does nothing at the root");
     keys(&mut l, &[Key::Down, Key::Enter]);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · esc back")));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ← esc back")));
     assert!(!tool_text(&rows).iter().any(|t| t.contains("esc close")));
+}
+
+#[test]
+fn the_help_row_of_an_apps_origin_root_offers_backspace_to_all() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let catalog = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(catalog);
+    typed(&mut l, "/");
+    let (_, rows) = draw(&mut l, 100);
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ⌫ all · esc close")), "{}", snapshot(&rows));
+}
+
+#[test]
+fn a_switch_row_cuts_a_long_name_before_the_switch() {
+    let name = "A very long entry name that cannot fit at all";
+    let text = format!("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"{name}\"\nrun = [\"x\"]\nstate = [\"s\"]\n");
+    let mut l = tools_box(&text);
+    l.adopt_state(0, Some(true));
+    let (_, rows) = draw(&mut l, 40);
+    let line = tool_text(&rows).into_iter().find(|t| t.contains("A very")).unwrap_or_default();
+    let (switch, _) = crate::quick::switch(Some(true));
+    assert!(line.contains(&format!("…  {switch}")) || line.contains(&format!("… {switch}")), "{line:?}");
+    assert!(!line.contains("all"), "the name is cut, not drawn over the switch: {line:?}");
 }
 
 #[test]

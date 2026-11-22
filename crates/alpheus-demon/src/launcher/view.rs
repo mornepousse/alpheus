@@ -15,7 +15,7 @@ use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
 use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
-use crate::launcher::model::Launcher;
+use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::tools::catalog::Choices;
 use crate::launcher::tools::nav::{RowId, Trail};
@@ -238,14 +238,20 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
         Trail::Category(category) => entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected),
         Trail::None | Trail::Chevron | Trail::Switch(_) => {
             let right = if row.trail == Trail::Chevron { "›" } else { "" };
-            list::row(
-                g,
-                1,
-                end,
-                &Row { icon: row.icon, icon_style: Style::ACCENT, text: &row.text, right, style: Style::NORMAL, selected },
-            );
-            if let Trail::Switch(on) = row.trail {
-                let (text, style) = quick::switch(Some(on));
+            // A switch is drawn over the row's right edge: the name is cut before it, ellipsis
+            // included, with one blank cell between.
+            let (switch, shown) = match row.trail {
+                Trail::Switch(on) => {
+                    let (text, style) = quick::switch(Some(on));
+                    (
+                        Some((text, style)),
+                        truncate(&row.text, end.saturating_sub(text_width(text) + 3 + 2 * u16::from(row.icon.is_some()) + 1)),
+                    )
+                }
+                _ => (None, row.text.clone()),
+            };
+            list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &shown, right, style: Style::NORMAL, selected });
+            if let Some((text, style)) = switch {
                 g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
             }
         }
@@ -288,8 +294,10 @@ fn help_text(l: &Launcher) -> &'static str {
         return "enter focus · tab next · esc close";
     }
     match l.mode {
-        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · ← back · esc close",
-        Mode::Tools => "⏎ open/run · esc back",
+        // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
+        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) && l.origin == Origin::Apps => "⏎ open/run · ⌫ all · esc close",
+        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · esc close",
+        Mode::Tools => "⏎ open/run · ← esc back",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
         Mode::Calc if l.config.copy.is_empty() => "esc close",

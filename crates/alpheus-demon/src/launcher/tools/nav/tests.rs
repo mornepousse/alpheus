@@ -558,3 +558,60 @@ fn a_confirm_choice_from_all_asks_at_its_own_row() {
     assert_eq!(selected_text(&l), "diff");
     assert!(l.tools().unwrap().asking(RowId::Choice(generation, 1)));
 }
+
+#[test]
+fn drilling_from_a_flat_search_pushes_the_category_level() {
+    for mut l in [tools(CFG), apps(CFG)] {
+        if l.origin == crate::launcher::model::Origin::Apps {
+            typed(&mut l, "/");
+        }
+        typed(&mut l, "generation");
+        assert_eq!(selected_text(&l), "Generation");
+        assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools › Nix › Generation");
+        assert_eq!(l.key(Key::Left), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools › Nix", "← lands on the category the breadcrumb shows");
+        assert_eq!(selected_text(&l), "Generation", "on the row it came through");
+        assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools");
+        assert_eq!(selected_text(&l), "Nix");
+    }
+}
+
+#[test]
+fn a_jump_from_all_restores_the_row_it_came_through() {
+    let mut l = apps(CFG);
+    typed(&mut l, "pick");
+    l.key(Key::Enter);
+    assert_eq!(breadcrumb(&l), "Tools › Zed › Pick");
+    l.key(Key::Left);
+    assert_eq!(selected_text(&l), "Pick");
+    l.key(Key::Left);
+    assert_eq!(selected_text(&l), "Zed");
+    // An entry with choices that is not first in its category.
+    let mut l = apps(CFG);
+    typed(&mut l, "generation");
+    l.key(Key::Enter);
+    l.key(Key::Left);
+    assert_eq!((breadcrumb(&l), selected_text(&l)), ("Tools › Nix".to_string(), "Generation".to_string()));
+    // A confirm entry asked from All: up lands on its own row too.
+    let mut l = apps(CFG);
+    typed(&mut l, "collect");
+    l.key(Key::Enter);
+    l.key(Key::Left);
+    assert_eq!((breadcrumb(&l), selected_text(&l)), ("Tools".to_string(), "Nix".to_string()));
+}
+
+#[test]
+fn a_right_click_on_another_row_cancels_the_question() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Collect");
+    let collect = l.selected;
+    assert_eq!(l.key(Key::Enter), Outcome::Asked);
+    assert_eq!(l.click(collect, true), Outcome::Nothing, "its own row's right click leaves the question");
+    assert!(l.tools().unwrap().next_deadline().is_some());
+    assert_eq!(l.click(0, true), Outcome::Redraw, "another row's cancels it");
+    assert!(l.tools().unwrap().next_deadline().is_none());
+}

@@ -186,9 +186,9 @@ impl LauncherConfig {
     /// - prefixes non-empty (`tools` may be empty: off), not starting with whitespace, none a
     ///   prefix of another (equal included);
     /// - sources: `check_sources`;
-    /// - tools: `tools_config::bounded` (its notes go to `notes`), then `tools_config::validate`.
+    /// - tools: `tools_config::validate` on the whole file, then `tools_config::bounded` (its notes go to `notes`).
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
-        let r: Raw = toml::from_str(s).map_err(|e| unquoted(e.message()))?;
+        let r: Raw = toml::from_str(s).map_err(|e| with_line(s, &e))?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
@@ -250,8 +250,9 @@ impl LauncherConfig {
         let mut tools = r.tools;
         tools_config::number(&mut tools);
         let mut notes = Vec::new();
-        let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
+        // Everything the file holds is checked, then the bounds cut.
         tools_config::validate(&tools)?;
+        let tools = tools_config::bounded(tools, &mut |n| notes.push(n.to_string()));
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
@@ -266,6 +267,19 @@ impl LauncherConfig {
             tools,
             notes,
         })
+    }
+}
+
+/// A TOML error as logged: its message unquoted and the line it is on (from its span; no text of
+/// the file).
+fn with_line(text: &str, e: &toml::de::Error) -> String {
+    let message = unquoted(e.message());
+    match e.span() {
+        Some(span) => {
+            let line = 1 + text.as_bytes().iter().take(span.start).filter(|b| **b == b'\n').count();
+            format!("{message}, line {line}")
+        }
+        None => message,
     }
 }
 

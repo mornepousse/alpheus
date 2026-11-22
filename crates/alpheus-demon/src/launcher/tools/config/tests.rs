@@ -365,16 +365,61 @@ fn an_unknown_category_still_fails_when_categories_were_cut() {
 }
 
 #[test]
-fn a_file_past_the_bounds_is_cut_before_it_is_checked() {
-    // The 129th entry and the 17th category are invalid (blank names) but never looked at.
+fn an_invalid_entry_or_category_past_a_bound_is_still_refused() {
+    let base = |extra_category: &str, extra_entry: &str| {
+        let mut text = String::new();
+        for i in 0..16 {
+            text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
+        }
+        text.push_str(extra_category);
+        for i in 0..128 {
+            text.push_str(&format!("[[tools.entry]]\nname = \"e{i}\"\nrun = [\"x\"]\n"));
+        }
+        text.push_str(extra_entry);
+        text
+    };
+    // The 17th category and the 129th entry would be cut, but the file is wrong all the same.
+    let err = parse(&base("[[tools.category]]\nname = \" \"\n", "")).unwrap_err();
+    assert!(err.starts_with("tools.category 17:"), "{err}");
+    let err = parse(&base("", "[[tools.entry]]\nname = \"e\"\nrun = []\n")).unwrap_err();
+    assert!(err.starts_with("tools.entry 129:"), "{err}");
+    assert!(parse(&base("", "")).is_ok());
+}
+
+#[test]
+fn the_entries_note_counts_what_the_file_holds() {
     let mut text = String::new();
-    for i in 0..16 {
+    for i in 0..17 {
         text.push_str(&format!("[[tools.category]]\nname = \"c{i}\"\n"));
     }
-    text.push_str("[[tools.category]]\nname = \" \"\n");
-    for i in 0..128 {
-        text.push_str(&format!("[[tools.entry]]\nname = \"e{i}\"\nrun = [\"x\"]\n"));
+    // 130 entries, two in the cut 17th category: 128 are left, and the file holds 130.
+    for i in 0..130 {
+        let cat = if i < 2 { "category = \"c16\"\n" } else { "" };
+        text.push_str(&format!("[[tools.entry]]\nname = \"e{i}\"\nrun = [\"x\"]\n{cat}"));
     }
-    text.push_str("[[tools.entry]]\nname = \" \"\nrun = [\"x\"]\n");
-    assert!(parse(&text).is_ok());
+    let c = parse(&text).unwrap();
+    assert_eq!(c.notes, ["tools: 17 categories in launcher.toml, the first 16 kept, 2 entries of the others dropped"]);
+    assert_eq!(c.tools.entries.len(), 128);
+    // 131 entries, two dropped with their category: 129 left, past the bound; the note says 131.
+    let text = format!("{text}[[tools.entry]]\nname = \"last\"\nrun = [\"x\"]\n");
+    let c = parse(&text).unwrap();
+    assert_eq!(c.notes[1], "tools: 131 entries in launcher.toml, the first 128 kept");
+}
+
+#[test]
+fn an_error_names_the_entry_by_its_place_in_the_file() {
+    let mut cfg = ToolsConfig::default();
+    cfg.entries.push(EntryConfig { name: "ok".into(), run: v(&["x"]), position: 1, ..EntryConfig::default() });
+    cfg.entries.push(EntryConfig { name: " ".into(), run: v(&["x"]), position: 9, ..EntryConfig::default() });
+    assert!(validate(&cfg).unwrap_err().starts_with("tools.entry 9:"), "its file position, not its index");
+}
+
+#[test]
+fn a_toml_error_names_its_line_and_never_the_value() {
+    let err = parse("# a comment\nrows = 5\nterminal = \"secret-value\"\n").unwrap_err();
+    assert!(err.ends_with("line 3"), "{err}");
+    assert!(!err.contains("secret-value"), "{err}");
+    let err = parse("[[tools.entry]]\nname = \"x\"\nrun = \"hunter2 --flag\"\n").unwrap_err();
+    assert!(err.ends_with("line 3"), "{err}");
+    assert!(!err.contains("hunter2"), "{err}");
 }

@@ -91,7 +91,8 @@ pub enum Outcome {
     Activate(Activation),
     /// The history changed (pin, delete, clear): the box stays open.
     Edit(ClipEdit),
-    /// The Tools mode was entered (the `/` prefix, a drill from All): the reader reads these states.
+    /// The Tools mode was entered by the `/` prefix: the reader reads these states. A drill or a
+    /// confirm from a Mod+Space hit reads none (the rows show no switch there; spec § 1 allows it).
     ReadStates(Job),
     /// A `choices_cmd` level was opened: the reader reads its lines.
     ReadChoices(Job),
@@ -636,6 +637,8 @@ impl Launcher {
         let Some(selected) = self.tools.as_mut().and_then(ToolsState::up) else { return false };
         self.query.clear();
         self.message = None;
+        // The parent's list may have as many rows as the one left: its facts are not that list's.
+        self.ranker.forget();
         self.refilter();
         self.selected = selected.min(self.results.len().saturating_sub(1));
         self.keep_visible();
@@ -760,6 +763,10 @@ impl Launcher {
     fn switch_mode(&mut self, m: Mode) -> Outcome {
         if self.is_bare() || self.switcher || m == self.mode {
             return Outcome::Nothing;
+        }
+        if self.mode == Mode::Tools {
+            // The Tools list's prepared facts are not another mode's, whatever its row count.
+            self.ranker.forget();
         }
         self.mode = m;
         self.by_prefix = false;
@@ -1147,8 +1154,16 @@ impl Launcher {
         }
         let had_message = self.message.take().is_some();
         let on_clear = matches!(self.results[index].source, Source::ClipClear);
-        // Another row's click cancels a Tools question; the same row's is its answer (`ask`).
-        let cancelled = !on_clear && self.clear_asked.take().is_some();
+        // Another row's click cancels the Clear question; the same row's is its answer (`ask`).
+        let mut cancelled = !on_clear && self.clear_asked.take().is_some();
+        // A right click on another row cancels a Tools question (a left click re-asks or runs:
+        // `ToolsState::enter` replaces it); its own row's right click leaves it, like Ctrl+Enter
+        // never confirming.
+        if secondary && self.mode == Mode::Tools {
+            let row = self.results[index].source;
+            let own = matches!(row, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| self.tools.as_ref().is_some_and(|t| t.asking(r.id))));
+            cancelled |= !own && self.tools.as_mut().is_some_and(ToolsState::cancel);
+        }
         self.moved = true;
         self.selected = index;
         self.keep_visible();
