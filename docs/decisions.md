@@ -17,8 +17,9 @@ One or two sentences: what is decided, and why.
 Date: <YYYY-MM-DD> · Source: <the spec section, plan decision or commit it comes from>
 ```
 
-This first batch holds the focus timer's decisions only (`docs/features/timer.md`). The rest of
-the project's decisions are added as each feature's code is brought to the same standard.
+Each feature's decisions are added when its code is brought to the house standard
+(`docs/STYLE.md`), so the file does not yet cover every feature: the ones it covers have a page in
+`docs/features/`, and the older decisions of the rest are still in `docs/specs/` and `docs/plans/`.
 
 ---
 
