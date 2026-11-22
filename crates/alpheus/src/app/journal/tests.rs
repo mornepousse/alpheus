@@ -180,12 +180,32 @@ fn follow_reads_after_the_last_cursor_once_a_second() {
 }
 
 #[test]
-fn an_empty_journal_follows_by_asking_again() {
+fn an_empty_journal_follows_from_a_time_not_from_the_start_of_the_boot() {
     let t0 = Instant::now();
     let mut a = on_diag(t0);
     let first = opened(&mut a, Preset::Live, vec![], t0);
+    assert_eq!(first.since, None);
     a.on_tick(at(1, t0));
-    assert_eq!(journal_reads(&mut a), [first], "no cursor to go on from: the first read again");
+    let q = journal_reads(&mut a).pop().expect("a follow read");
+    assert_eq!(q.after_cursor, None);
+    assert!(q.since.is_some_and(|s| s > 1_000_000_000), "from a wall-clock time: {q:?}");
+    // It comes back empty: asked again from a time, still not a cursor.
+    a.on_update(Update::Diag(DiagRead::Journal(q), read(vec![])), at(1, t0));
+    a.on_tick(at(2, t0));
+    assert!(journal_reads(&mut a).pop().unwrap().since.is_some());
+}
+
+#[test]
+fn the_first_entry_of_an_empty_view_switches_to_the_cursor() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    opened(&mut a, Preset::Live, vec![], t0);
+    a.on_tick(at(1, t0));
+    let q = journal_reads(&mut a).pop().unwrap();
+    a.on_update(Update::Diag(DiagRead::Journal(q), read(vec![entry(5, "late")])), at(1, t0));
+    a.on_tick(at(2, t0));
+    let q = journal_reads(&mut a).pop().unwrap();
+    assert_eq!((q.after_cursor.as_deref(), q.since), (Some("s=0;i=5"), None));
 }
 
 #[test]
@@ -316,9 +336,10 @@ fn scrolling_up_pauses_and_counts_new() {
     assert_eq!((view(&a).scroll, view(&a).new_below), (Scroll::Tail, 0));
     // The wheel and Home reach the oldest entry and no further.
     key(&mut a, KeyCode::Home, t0);
-    assert_eq!(view(&a).scroll, Scroll::At(view(&a).visible().len() - 1));
+    let top = view(&a).visible().len() - view(&a).page.get();
+    assert_eq!(view(&a).scroll, Scroll::At(top), "the oldest entry is the top row, not scrolled off");
     key(&mut a, KeyCode::PageUp, t0);
-    assert_eq!(view(&a).scroll, Scroll::At(view(&a).visible().len() - 1));
+    assert_eq!(view(&a).scroll, Scroll::At(top));
 }
 
 #[test]
@@ -391,4 +412,63 @@ fn the_views_letters_never_shadow_a_users_binding() {
     let q = opened(&mut a, Preset::Live, vec![entry(1, "x")], t0);
     key(&mut a, KeyCode::Char('p'), t0);
     assert_ne!(view(&a).query.priority, q.priority);
+}
+
+fn held_view(n: u32) -> JournalView {
+    let mut j = JournalView::new(JournalQuery::new(Preset::Live, 500));
+    j.push((0..n).map(|i| entry(i, "x")).collect());
+    j
+}
+
+#[test]
+fn a_paused_view_counts_only_the_entries_it_kept() {
+    let mut j = held_view(10);
+    j.scroll = Scroll::At(1);
+    j.push((0..(MAX_ENTRIES as u32 + 500)).map(|i| entry(100 + i, "y")).collect());
+    assert_eq!(j.entries.len(), MAX_ENTRIES);
+    assert!(j.new_below <= MAX_ENTRIES, "{}", j.new_below);
+    assert!(matches!(j.scroll, Scroll::At(k) if k <= MAX_ENTRIES), "{:?}", j.scroll);
+}
+
+#[test]
+fn a_failed_read_restarts_when_follow_is_asked_again() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    opened(&mut a, Preset::Live, vec![entry(1, "a")], t0);
+    a.on_tick(at(1, t0));
+    let q = journal_reads(&mut a).pop().unwrap();
+    a.on_update(
+        Update::Diag(DiagRead::Journal(q), DiagResult::Journal(Err(BackendError::Missing { tool: "journalctl".into() }))),
+        at(1, t0),
+    );
+    assert!(matches!(view(&a).load, Load::Failed(_)) && !view(&a).follow);
+    key(&mut a, KeyCode::Char('f'), at(2, t0));
+    assert!(view(&a).follow && view(&a).load == Load::Reading);
+    assert_eq!(journal_reads(&mut a).len(), 1, "one new read");
+}
+
+#[test]
+fn esc_in_the_service_picker_goes_back_to_the_overview() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    a.diag_activate(DiagItem::Preset(Preset::ServiceLogs));
+    assert!(view(&a).picker.is_some());
+    key(&mut a, KeyCode::Esc, t0);
+    assert_eq!(a.diag.view, View::Overview);
+    // From `u` inside a journal that has a unit, Esc only closes the picker.
+    let mut b = on_diag(t0);
+    opened(&mut b, Preset::Live, vec![entry(1, "a")], t0);
+    key(&mut b, KeyCode::Char('u'), t0);
+    key(&mut b, KeyCode::Esc, t0);
+    assert!(matches!(b.diag.view, View::Journal(_)) && view(&b).picker.is_none());
+}
+
+#[test]
+fn a_tab_key_on_the_journal_view_queues_nothing() {
+    let t0 = Instant::now();
+    let mut a = on_diag(t0);
+    opened(&mut a, Preset::Live, vec![entry(1, "a")], t0);
+    a.take_requests();
+    a.go_tab(Tab::Diagnostics, at(5, t0));
+    assert!(a.take_requests().is_empty(), "the view reads for itself");
 }

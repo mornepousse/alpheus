@@ -1,6 +1,6 @@
 //! The boot report and the bug report: two read-only views of the Diag tab. The boot report
 //! shows what `systemd-analyze` says; the bug report builds a redacted text, shows it in full and
-//! copies it only when Enter is pressed on Copy (Esc closes, nothing copied). What is copied is
+//! copies it only on Enter or a click on `[ Copy ]` (Esc closes, nothing copied). What is copied is
 //! exactly the text on screen: it is built once, redacted, then held.
 
 use super::action::Action;
@@ -59,7 +59,7 @@ pub fn wrap_rows(text: &str, width: usize) -> Vec<String> {
         let line = clean_line(line, usize::MAX);
         let (mut row, mut used) = (String::new(), 0);
         for c in line.chars() {
-            let w = Span::raw(c.to_string()).width();
+            let w = Span::raw(&*c.encode_utf8(&mut [0u8; 4])).width();
             if used + w > width && !row.is_empty() {
                 rows.push(std::mem::take(&mut row));
                 used = 0;
@@ -128,7 +128,7 @@ impl App {
         None
     }
 
-    /// Scrolling in the two views, and Enter on Copy. False for anything else (Esc goes back).
+    /// Scrolling in the two views, and Enter (copy) in the report. False for anything else (Esc goes back).
     pub(crate) fn report_views_key(&mut self, e: KeyEvent, now: Instant) -> bool {
         if self.tab != Tab::Diagnostics || e.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
             return false;

@@ -27,4 +27,4 @@ expression: "rows(&a, 87, 26)"
                                                                                        
   ● ready                                                                              
                                                                                        
-                   /  Filter    u  Unit    p  Priority    f  Follow
+                   /  Filter    u  Unit    p  Level    f  Follow    PgUp/Dn/End  Scroll

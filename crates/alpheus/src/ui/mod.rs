@@ -145,10 +145,9 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 } else {
                     pairs.push(("/".into(), "Filter"));
                     pairs.push(("u".into(), "Unit"));
-                    pairs.push(("p".into(), "Priority"));
+                    pairs.push(("p".into(), "Level"));
                     pairs.push(("f".into(), "Follow"));
-                    pairs.push(("PgUp/PgDn".into(), "Scroll"));
-                    pairs.push(("End".into(), "Tail"));
+                    pairs.push(("PgUp/Dn/End".into(), "Scroll"));
                 }
             }
             Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Report(_)) => {

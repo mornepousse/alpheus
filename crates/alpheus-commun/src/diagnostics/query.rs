@@ -99,6 +99,9 @@ pub struct JournalQuery {
     pub lines: u32,
     /// Follow reads: everything after this cursor, no line count.
     pub after_cursor: Option<String>,
+    /// A follow read of a view that holds nothing yet (so no cursor): entries from this time on,
+    /// in seconds since the epoch, so the whole boot is not read again each second.
+    pub since: Option<u64>,
     /// The bug report's read: only the three fields it prints (never a command line, an
     /// environment or an id), not the view's seven.
     pub report_fields: bool,
@@ -114,6 +117,7 @@ impl JournalQuery {
             since_until: None,
             lines,
             after_cursor: None,
+            since: None,
             report_fields: false,
         }
     }
@@ -164,6 +168,9 @@ pub fn journal_args(q: &JournalQuery) -> Result<Vec<String>, String> {
     if let Some((since, until)) = q.since_until {
         a.push(format!("--since=@{since}"));
         a.push(format!("--until=@{until}"));
+    }
+    if let (Some(since), None) = (q.since, q.since_until) {
+        a.push(format!("--since=@{since}"));
     }
     if let Some(cursor) = &q.after_cursor {
         if !valid_cursor(cursor) {
@@ -253,6 +260,13 @@ mod tests {
         let a = args(&q);
         assert!(!a.contains(&"-n".to_string()), "{a:?}");
         assert_eq!(a, with_prefix(&["--after-cursor=s=abc;i=1"]));
+    }
+
+    #[test]
+    fn a_follow_read_with_nothing_held_goes_from_a_time() {
+        let mut q = JournalQuery::new(Preset::Live, 500);
+        q.since = Some(1_763_700_000);
+        assert_eq!(args(&q), with_prefix(&["-n", "500", "--since=@1763700000"]));
     }
 
     #[test]

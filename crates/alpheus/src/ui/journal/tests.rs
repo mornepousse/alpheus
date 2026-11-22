@@ -205,7 +205,7 @@ fn the_keycap_row_follows_the_journal_view() {
     let mut a = open(Preset::Live, sample());
     let keys = |a: &App| shortcut_pairs(a).into_iter().map(|(k, w)| format!("{k} {w}")).collect::<Vec<_>>();
     let k = keys(&a);
-    for want in ["/ Filter", "u Unit", "p Priority", "f Follow", "PgUp/PgDn Scroll", "End Tail"] {
+    for want in ["/ Filter", "u Unit", "p Level", "f Follow", "PgUp/Dn/End Scroll"] {
         assert!(k.contains(&want.to_string()), "{want} missing in {k:?}");
     }
     assert!(!k.iter().any(|p| p.ends_with("Refresh")), "the overview's keys are not offered here");
@@ -214,4 +214,24 @@ fn the_keycap_row_follows_the_journal_view() {
     press(&mut a, ratatui::crossterm::event::KeyCode::Char('/'));
     let k = keys(&a);
     assert!(k.contains(&"Enter Keep".to_string()) && k.contains(&"Esc Clear".to_string()), "{k:?}");
+}
+
+#[test]
+fn a_long_unit_name_is_cut_in_the_middle_in_the_header() {
+    let mut a = open(Preset::Live, sample());
+    let unit = format!("{}-tail.service", "head-of-a-very-long-unit-name".repeat(4));
+    if let crate::app::diagnostics::View::Journal(j) = &mut a.diag.view {
+        j.query.unit = Some((Scope::System, unit));
+    }
+    let all = rows(&a, 87, 26);
+    assert!(all.contains("unit: head-of-") && all.contains("tail.service"), "{all}");
+}
+
+#[test]
+fn the_journal_hints_fit_the_rail_layout_at_87_columns() {
+    let a = open(Preset::Live, sample());
+    let last = draw(&a, 87, 26).0.pop().unwrap();
+    for hint in ["Filter", "Unit", "Level", "Follow", "Scroll"] {
+        assert!(last.contains(hint), "{hint} dropped from the bar at 87 columns: {last:?}");
+    }
 }

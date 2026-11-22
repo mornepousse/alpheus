@@ -25,4 +25,4 @@ expression: "rows(&a, 80, 24)"
                                                                                 
                                                                                 
  Diag · ready                                                                   
- / Filter  u Unit  p Priority  f Follow  PgUp/PgDn Scroll  End Tail  q Quit
+ / Filter  u Unit  p Level  f Follow  PgUp/Dn/End Scroll  q Quit  F1 Help

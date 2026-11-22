@@ -91,6 +91,9 @@ pub struct DiagnosticsTab {
     pub view: View,
     /// The overview's selection, kept while a view covers it.
     pub saved_focus: usize,
+    /// A key or a click has moved the selection since the view was shown: until then the row that
+    /// is focused by default is not "already selected", so a first click only selects it.
+    touched: bool,
 }
 
 /// One focusable row of the overview, in display order.
@@ -109,7 +112,7 @@ pub enum DiagItem {
 
 /// `s` cut to `max` characters in the middle (`head…tail`): a unit's end (`-a.service`) is what tells
 /// two long names apart.
-fn middle_cut(s: &str, max: usize) -> String {
+pub fn middle_cut(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
         return s.to_string();
@@ -124,11 +127,17 @@ fn middle_cut(s: &str, max: usize) -> String {
 
 /// "Restart mnt-data.mount (system)?": what the unit confirmation asks.
 pub fn unit_question(scope: Scope, unit: &str, action: UnitAction) -> String {
+    unit_question_cut(scope, unit, action, 80)
+}
+
+/// The same with the unit name cut in the middle to `max_unit` characters: the dialog passes its
+/// own width, so the wrapping never has to cut the name's end off.
+pub fn unit_question_cut(scope: Scope, unit: &str, action: UnitAction, max_unit: usize) -> String {
     let verb = match action {
         UnitAction::Restart => "Restart",
         UnitAction::ResetFailed => "Clear the failed state of",
     };
-    let unit = middle_cut(&clean_line(unit, 256), 80);
+    let unit = middle_cut(&clean_line(unit, 256), max_unit);
     match scope {
         Scope::User => format!("{verb} {unit} (user)?"),
         Scope::System => format!("{verb} {unit} (system)? systemd will ask for your password in this window."),
@@ -415,16 +424,23 @@ impl App {
         self.diag.saved_focus = self.focus;
         self.focus = 0;
         self.diag.view = view;
+        self.diag.touched = false;
     }
 
     /// Esc in a view: back to the overview, its selection where it was.
-    fn close_diag_view(&mut self) {
+    pub(super) fn close_diag_view(&mut self) {
         self.diag.view = View::Overview;
+        self.diag.touched = true; // the selection is where the person left it
         self.focus = self.diag.saved_focus;
         self.clamp_focus();
     }
 
     /// Enter on an overview row.
+    /// A key was pressed on the tab.
+    pub(crate) fn diag_touch(&mut self) {
+        self.diag.touched = true;
+    }
+
     pub(crate) fn diag_activate(&mut self, item: DiagItem) {
         let lines = self.config.diagnostics.journal_lines;
         match item {
@@ -449,7 +465,8 @@ impl App {
     /// A click on an overview row. A unit is selected first (its keys then apply), and a second
     /// click opens its journal; the other rows act at once. True when it was handled here.
     pub(crate) fn diag_click(&mut self, i: usize) -> bool {
-        let was = self.focus == i;
+        let was = self.focus == i && self.diag.touched;
+        self.diag.touched = true;
         self.focus = i;
         match self.focused() {
             Some(Item::Diag(DiagItem::HealthRow(_))) => {}

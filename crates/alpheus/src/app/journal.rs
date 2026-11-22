@@ -21,6 +21,11 @@ use std::time::{Duration, Instant};
 pub const MAX_ENTRIES: usize = 2000;
 /// A follow read is asked this long after the previous one ended.
 pub const POLL: Duration = Duration::from_secs(1);
+/// The wall clock, in seconds since the epoch.
+fn wall_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// How far the wheel moves, in entries.
 const WHEEL: usize = 3;
 /// A page, until the view has been drawn once and knows its height.
@@ -102,6 +107,11 @@ pub struct JournalView {
     pub last_poll: Option<Instant>,
     /// None until the once-per-view check answers.
     pub system_readable: Option<bool>,
+    /// Wall clock (seconds since the epoch) when the read that is out was sent.
+    sent_wall: Option<u64>,
+    /// Set by a read that came back empty on an empty view: the next follow read goes from here,
+    /// not from the start of the boot.
+    since: Option<u64>,
     /// The last follow read was cut short: more entries are waiting, read on the next turn.
     pub more_waiting: bool,
     /// The first read stopped at its size or time limit.
@@ -125,6 +135,8 @@ impl JournalView {
             pending: None,
             last_poll: None,
             system_readable: None,
+            sent_wall: None,
+            since: None,
             more_waiting: false,
             first_cut: false,
             page: Cell::new(DEFAULT_PAGE),
@@ -154,32 +166,32 @@ impl JournalView {
     }
 
     fn push(&mut self, entries: Vec<Entry>) {
-        let mut shown = 0;
         let needle = self.needle();
+        let batch = entries.len();
         for e in entries {
-            let h = Held::new(e);
-            if self.passes(&h, &needle) {
-                shown += 1;
-            }
-            self.entries.push_back(h);
+            self.entries.push_back(Held::new(e));
         }
         while self.entries.len() > MAX_ENTRIES {
             self.entries.pop_front();
         }
         if let Scroll::At(k) = self.scroll {
-            // Paused: what is on screen stays where it is.
-            self.scroll = Scroll::At(k + shown);
-            self.new_below += shown;
+            // Paused: what is on screen stays where it is. Only the new entries still held count
+            // (a batch longer than the buffer pushed some of itself out).
+            let kept = batch.min(self.entries.len());
+            let shown = self.entries.iter().rev().take(kept).filter(|h| self.passes(h, &needle)).count();
+            self.scroll = Scroll::At((k + shown).min(MAX_ENTRIES));
+            self.new_below = (self.new_below + shown).min(MAX_ENTRIES);
         }
     }
 
-    /// Moves the window `by` entries towards the past (negative: the present), clamped.
+    /// Moves the window `by` entries towards the past (negative: the present), clamped so that the
+    /// oldest entry is the top of a screenful (`rows` entries), never above it.
     pub fn scroll_by(&mut self, by: isize, shown: usize) {
         let now = match self.scroll {
             Scroll::Tail => 0,
             Scroll::At(k) => k,
         };
-        let top = shown.saturating_sub(1);
+        let top = shown.saturating_sub(self.page.get().max(1));
         let next = now.saturating_add_signed(by).min(top);
         self.set_offset(next);
     }
@@ -214,6 +226,7 @@ impl App {
         } else {
             let first = JournalQuery { lines: self.config.diagnostics.journal_lines, ..view.query.clone() };
             view.load = Load::Reading;
+            view.sent_wall = Some(wall_secs());
             view.pending = Some(first.clone());
             self.requests.push(Request::Diag(DiagRead::Journal(first)));
         }
@@ -229,6 +242,8 @@ impl App {
         j.more_waiting = false;
         j.first_cut = false;
         j.load = Load::Reading;
+        j.since = None;
+        j.sent_wall = Some(wall_secs());
         let q = JournalQuery { lines, after_cursor: None, ..j.query.clone() };
         j.pending = Some(q.clone());
         self.requests.push(Request::Diag(DiagRead::Journal(q)));
@@ -246,8 +261,12 @@ impl App {
         if !j.follow || j.pending.is_some() || j.picker.is_some() || !due || !matches!(j.load, Load::Ready) {
             return;
         }
-        // Nothing held yet: no cursor to go on from, so the first read is made again.
-        let q = JournalQuery { lines, after_cursor: j.last_cursor().map(str::to_string), ..j.query.clone() };
+        // Nothing held yet: no cursor to go on from, so the read goes from the time the last empty
+        // one was sent (or from the start, when none has answered yet).
+        let cursor = j.last_cursor().map(str::to_string);
+        let since = if cursor.is_none() { j.since } else { None };
+        j.sent_wall = Some(wall_secs());
+        let q = JournalQuery { lines, after_cursor: cursor, since, ..j.query.clone() };
         j.pending = Some(q.clone());
         self.requests.push(Request::Diag(DiagRead::Journal(q)));
     }
@@ -299,6 +318,9 @@ impl App {
                     j.push(read.entries);
                     j.more_waiting = read.capped;
                 }
+                // Two seconds of overlap: an entry stamped just before the read left may not have
+                // been visible to it. Nothing is held then, so nothing can show twice.
+                j.since = if j.entries.is_empty() { j.sent_wall.map(|t| t.saturating_sub(2)) } else { None };
                 j.load = Load::Ready;
             }
         }
@@ -355,6 +377,10 @@ impl App {
             (KeyCode::Char('f'), None) => {
                 if j.query.since_until.is_none() {
                     j.follow = !j.follow;
+                    // A read that failed stopped the follow: asking for it again reads again.
+                    if j.follow && matches!(j.load, Load::Failed(_)) {
+                        self.journal_reread();
+                    }
                 }
             }
             (_, Some(Action::Up)) => j.scroll_by(1, shown),
@@ -373,7 +399,13 @@ impl App {
         let Some(p) = j.picker.as_mut() else { return };
         let count = p.matches().len();
         match e.code {
-            KeyCode::Esc => j.picker = None,
+            KeyCode::Esc => {
+                j.picker = None;
+                // Opened from "Logs of a service…" with no unit chosen: nothing to show here.
+                if j.query.unit.is_none() && j.query.preset == Preset::ServiceLogs && j.load == Load::Idle {
+                    self.close_diag_view();
+                }
+            }
             KeyCode::Up => p.selected = p.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Tab => p.selected = (p.selected + 1).min(count.saturating_sub(1)),
             KeyCode::Enter => {

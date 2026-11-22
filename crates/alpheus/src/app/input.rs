@@ -37,6 +37,9 @@ impl App {
         if self.search.editing {
             return self.key_search(e);
         }
+        if self.tab == Tab::Diagnostics {
+            self.diag_touch();
+        }
         if self.journal_key(e) || self.report_views_key(e, now) {
             return;
         }

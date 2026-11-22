@@ -818,6 +818,28 @@ mod overview {
     }
 
     #[test]
+    fn the_first_click_on_a_failed_row_focused_by_default_only_selects_it() {
+        use crate::app::worker::Update;
+        use crate::diagnostics::units::FailedUnit;
+        let mut a = diag_app(false);
+        let unit = FailedUnit {
+            unit: "first.service".into(),
+            load: "loaded".into(),
+            active: "failed".into(),
+            sub: "failed".into(),
+            description: "d".into(),
+        };
+        a.on_update(Update::Failed(Scope::System, Ok(vec![unit])), Instant::now());
+        assert_eq!((a.focus, a.items()[0].clone()), (0, Item::Diag(DiagItem::Failed(Scope::System, "first.service".into()))));
+        let (_, hits) = draw(&a, 87, 26);
+        click(&mut a, &hits, Target::Item(0));
+        assert_eq!(a.diag.view, View::Overview, "focused by default is not selected by the person");
+        let (_, hits) = draw(&a, 87, 26);
+        click(&mut a, &hits, Target::Item(0));
+        assert!(matches!(a.diag.view, View::Journal(_)));
+    }
+
+    #[test]
     fn a_click_on_the_bug_report_and_on_a_preset_opens_them() {
         let mut a = diag_app(true);
         let (_, hits) = draw(&a, 120, 70);

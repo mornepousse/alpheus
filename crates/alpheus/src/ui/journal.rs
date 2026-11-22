@@ -8,7 +8,7 @@ use super::hit::HitMap;
 use super::home::LocalTime;
 use super::rail::tab_hue;
 use crate::app::App;
-use crate::app::diagnostics::View;
+use crate::app::diagnostics::{View, middle_cut};
 use crate::app::journal::{JournalView, Load, Picker, Scroll};
 use crate::diagnostics::journal::Entry;
 use crate::diagnostics::query::{Priority, Scope};
@@ -64,9 +64,11 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, _hits: &mut HitMap, chrom
     y += 1;
 
     // What is asked and the filters.
+    let room = 60.min(usize::from(body.width).saturating_sub(12)).max(8);
+    let cut = |u: &str| middle_cut(&clean_line(u, 256), room);
     let unit = match &j.query.unit {
-        Some((Scope::User, u)) => format!("{} (user)", clean_line(u, 60)),
-        Some((Scope::System, u)) => clean_line(u, 60),
+        Some((Scope::User, u)) => format!("{} (user)", cut(u)),
+        Some((Scope::System, u)) => cut(u),
         None => "any".to_string(),
     };
     let mut parts = vec![format!("unit: {unit}"), format!("priority: {}", priority_word(j.query.priority))];

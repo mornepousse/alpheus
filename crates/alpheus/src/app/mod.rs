@@ -552,7 +552,10 @@ impl App {
                 self.diagnostics_reads();
             }
         }
-        self.refresh_tab(now);
+        // The journal view reads for itself: a tab key pressed on it queues nothing behind it.
+        if !self.diagnostics_refresh_held() {
+            self.refresh_tab(now);
+        }
     }
 
     pub fn items(&self) -> Vec<Item> {

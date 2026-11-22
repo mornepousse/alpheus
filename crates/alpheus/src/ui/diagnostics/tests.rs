@@ -202,3 +202,43 @@ fn the_rail_heading_keeps_one_space_between_its_rule_and_the_summary() {
         assert!(!line.contains("─  ✓ all good"), "two spaces: {line}");
     }
 }
+
+/// Final review I1: two long unit names sharing their first 50 characters stay apart in the
+/// confirm dialog and in the failed-unit rows (the end is what differs).
+fn long_unit(tail: &str) -> String {
+    format!("{}-{tail}.service", "very-long-shared-prefix-of-a-generated-unit-name-0123456789".repeat(2))
+}
+
+#[test]
+fn long_unit_names_stay_apart_in_the_confirm_dialog() {
+    let mut a = diag_app(false);
+    let mut shown = Vec::new();
+    for tail in ["alpha", "bravo"] {
+        a.overlay = Overlay::UnitConfirm { scope: Scope::System, unit: long_unit(tail), action: UnitAction::Restart, yes_focused: false };
+        let all = rows(&a, 87, 26);
+        assert!(all.contains(&format!("{tail}.service")), "the end of the name is drawn: {all}");
+        assert!(all.contains('…'), "{all}");
+        shown.push(all);
+    }
+    assert_ne!(shown[0], shown[1]);
+    // A narrow dialog still shows the end.
+    a.overlay = Overlay::UnitConfirm { scope: Scope::User, unit: long_unit("alpha"), action: UnitAction::Restart, yes_focused: false };
+    let all = rows(&a, 40, 12);
+    assert!(all.contains("alpha.service"), "{all}");
+}
+
+#[test]
+fn long_unit_names_stay_apart_in_the_rows() {
+    let mut a = diag_app(false);
+    let t = Instant::now();
+    let mk = |tail: &str| FailedUnit {
+        unit: long_unit(tail),
+        load: "loaded".into(),
+        active: "failed".into(),
+        sub: "failed".into(),
+        description: "d".into(),
+    };
+    a.on_update(Update::Failed(Scope::System, Ok(vec![mk("alpha"), mk("bravo")])), t);
+    let all = rows(&a, 120, 60);
+    assert!(all.contains("alpha.service") && all.contains("bravo.service"), "{all}");
+}

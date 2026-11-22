@@ -10,7 +10,7 @@ use super::home::LocalTime;
 use super::overlays::frame;
 use super::rail::tab_hue;
 use super::shape::{self, Ink};
-use crate::app::diagnostics::{DiagItem, Section, View, unit_question};
+use crate::app::diagnostics::{DiagItem, Section, View, middle_cut, unit_question_cut};
 use crate::app::{App, Item, Loadable};
 use crate::backends::UnitAction;
 use crate::diagnostics::crashes::signal_name;
@@ -28,6 +28,11 @@ const UNIT_W: usize = 30;
 /// Outside text, made safe for a cell and cut to `max` characters.
 fn cell(s: &str, max: usize) -> String {
     clean_line(s, max)
+}
+
+/// Like `cell`, but a name too long is cut in the middle: the end of a unit name tells two apart.
+fn cell_mid(s: &str, max: usize) -> String {
+    middle_cut(&clean_line(s, 256), max)
 }
 
 /// "Nov 20 14:02" for a time in microseconds since the epoch. In the tests the zone is UTC, so a
@@ -150,7 +155,7 @@ fn lines(app: &App, width: u16) -> Vec<Ln> {
             out.push(plain(
                 vec![
                     seg("● ", Tone::Err),
-                    seg(pad(&cell(&u.unit, UNIT_W), UNIT_W), dim),
+                    seg(pad(&cell_mid(&u.unit, UNIT_W), UNIT_W), dim),
                     seg(format!("  {label:<6}  "), Tone::Muted),
                     seg(cell(&u.description, 120), Tone::Muted),
                 ],
@@ -184,7 +189,7 @@ fn lines(app: &App, width: u16) -> Vec<Ln> {
             out.push(plain(
                 vec![
                     seg("↻ ", Tone::Warn),
-                    seg(pad(&cell(&l.unit, UNIT_W), UNIT_W), dim),
+                    seg(pad(&cell_mid(&l.unit, UNIT_W), UNIT_W), dim),
                     seg(format!("  {label:<6}  "), Tone::Muted),
                     seg(format!("{} restarts, {}", l.restarts, cell(&l.active, 24)), Tone::Muted),
                 ],
@@ -405,7 +410,8 @@ pub fn unit_confirm(
 ) {
     let th = &app.theme;
     let width = 60.min(area.width);
-    let text = wrap(&unit_question(scope, unit, action), usize::from(width.saturating_sub(4)));
+    let room = usize::from(width.saturating_sub(4));
+    let text = wrap(&unit_question_cut(scope, unit, action, room.max(8)), room);
     let r = centered(area, width, (text.len() as u16 + 4).min(area.height));
     let inner = frame(buf, r, " Confirmation ", app, hits);
     for (n, line) in text.iter().enumerate() {
