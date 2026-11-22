@@ -296,3 +296,16 @@ fn a_failed_owner_lookup_is_one_line_per_episode() {
     u.answer(&mut out, who, Err(CallError::Timeout));
     assert_eq!(lines_logged("could not be found"), 2);
 }
+
+/// A read cut short because the connection closed says nothing in the log (the bus going away is
+/// not this client's failure), and the count is unknown all the same.
+#[test]
+fn a_read_cut_by_a_closed_connection_logs_nothing() {
+    let (mut out, mut u) = running(false, 2);
+    u.take_change();
+    u.on_units_read(&mut out);
+    let get = latest_call_id(&out, &count_call(USER));
+    u.answer(&mut out, get, Err(CallError::Disconnected));
+    assert_eq!(lines_logged("count could not be read"), 0);
+    assert_eq!((u.count(), u.take_change()), (None, Some(None)));
+}
