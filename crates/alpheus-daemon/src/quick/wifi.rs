@@ -16,7 +16,8 @@
 //! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
 //!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
 //!   `nothing_resident_while_the_launcher_is_closed`): a command is handed back as a
-//!   `QuickAction`, and the wiring arms the panel's one timer from `Quick::deadline`, which includes `Wifi::deadline`;
+//!   `QuickAction`, and the wiring arms the panel's one timer from `Quick::deadline`, which
+//!   includes `Wifi::deadline` (after a close, `WifiFollow::deadline`);
 //! - format the password, a key or the field with `Debug` (guardrail
 //!   `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`);
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
@@ -364,7 +365,8 @@ impl Attempt {
     /// attempt, only when the attempt could make one (`nmcli device wifi connect`, never a
     /// `connection up`) and while `state` still lists it (nmcli may have deleted it itself). On a
     /// state kept through another domain's outage nothing is deleted, because NetworkManager may
-    /// have connected since; the log says so (`STALE`).
+    /// have connected since; the log says so (`STALE`, when a profile would otherwise have been
+    /// deleted).
     fn failure(&self, state: Option<&WifiState>, why: &'static str) -> Outcome {
         let mut cleanup = None;
         if self.creates
@@ -466,7 +468,7 @@ impl Wifi {
         }
         let connected = self.connected().map(|a| a.ssid.as_slice());
         let mut best: Vec<&AccessPoint> = Vec::new();
-        // The access points read (`iter().flatten()` is none when they were not read), then the
+        // The access points read (`iter().flatten()` yields nothing when they were not read), then the
         // connected one, so that it is listed even when the list misses it.
         for ap in d.access_points.iter().flatten().chain(self.connected()) {
             if hidden(&ap.ssid) {

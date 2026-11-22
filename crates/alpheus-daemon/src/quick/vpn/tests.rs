@@ -568,4 +568,8 @@ fn only_an_activating_connection_makes_an_attempt_wait_past_20_s() {
     let mut v = attempt();
     v.state = None;
     assert_eq!(v.due(t + CONNECT_TIMEOUT), (Some("no answer in 20 s"), true), "no state: not waiting either");
+    let mut v = attempt();
+    v.state = Some(VpnState { active: vec![ActiveVpn { uuid: uuid(1), state: ACTIVATING }], ..v.state.clone().expect("a state") });
+    assert_eq!(v.due(t + CONNECT_TIMEOUT), (None, false), "activating waits past 20 s");
+    assert_eq!(v.due(t + ACTIVATION_BOUND), (Some("still activating after 60 s"), true), "and ends at the bound");
 }

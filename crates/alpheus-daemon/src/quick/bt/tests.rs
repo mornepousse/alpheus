@@ -1,6 +1,7 @@
 //! Tests of the quick panel's Bluetooth model (`bt.rs`): the row, the detail's devices, the keys and
 //! clicks, the actions and their deadlines, the pairing codes and the forget question. No clock and
-//! no D-Bus: each test passes the time it wants and answers the calls itself.
+//! no D-Bus: each test takes one `Instant` as its start, adds the delays it wants and answers the
+//! calls itself.
 
 use super::*;
 use crate::quick::{WIDTH, argv};

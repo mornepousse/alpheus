@@ -66,7 +66,7 @@ left press on a network chooses and enters it, a press on the header goes back.
 | saved | `nmcli connection up uuid <uuid>`, whatever its SSID |
 | open | `nmcli device wifi connect <ssid>` |
 | WPA-personal and new | opens a `Password` row under it |
-| 802.1X, WEP, other, or an SSID nmcli would misread | moves the selection to `More…` |
+| 802.1X, WEP, other, or an SSID nmcli would misread | moves the selection to `More…` (nothing when `More…` is turned off) |
 
 **The password field.** One dot per character, the end kept when the password is longer than the
 row; Backspace erases a character, Ctrl+U the whole password, Space is a character. A character that
@@ -76,8 +76,9 @@ empty field, after `too long`, or during an attempt does nothing; otherwise it r
 input: never an argument, never a log line, never `Debug`. The field then closes and its buffer is
 wiped. Esc closes the field and keeps the detail; moving away, a press anywhere but on the field or
 leaving the detail closes it too. A field whose network leaves the list stays 10 s. The password is
-the one place a secret is typed; the per-key string SCTK builds for each typed key is not wiped
-(`secret.rs` says what is and is not covered).
+the one place a secret is typed; the per-key string SCTK builds for each typed key, and the
+`Key::Char` that carries each character to the panel, are not wiped (`secret.rs` says what is and is
+not covered).
 
 **An attempt.** One at a time: while one is under way only `More…` acts. It ends `●` when
 NetworkManager reports the device activated on that network; it fails when the device state is 120
@@ -92,10 +93,11 @@ marked stale until a fresh read.
 **What outlives the panel.** An attempt on a new network (`nmcli device wifi connect`, with or without
 a password) is followed after the panel closes, up to 20 s (60 s while the device is still
 activating), so that the profile that appeared during a failed attempt is deleted if it is still
-saved. The profile is never deleted when the attempt is in doubt: still activating at 60 s, the
-device activated on what may be the new profile, a state kept through an outage, a NetworkManager
-restart, a profile reserved to another user, or a network-domain outage during the attempt. A
-wrong-password profile may then remain; remove it through `More…`. Residual: while the list of saved
+saved. Whether the attempt ends in the panel or after it, the profile is never deleted when the
+attempt is in doubt: still activating at 60 s, the device activated on what may be the new profile, a
+state kept through an outage, a NetworkManager restart, a profile reserved to another user, or a
+network-domain outage during the attempt. A wrong-password profile may then remain; remove it through
+`More…`. Residual: while the list of saved
 networks is unknown (a failed listing, an unreadable profile, more than 64 profiles), Enter on an
 already-saved network may create a duplicate profile, which is never deleted.
 
@@ -110,7 +112,7 @@ outlives the quick panel" and "The Wi-Fi password lives in one boxed buffer that
 **The row.** A Bluetooth row under the Wi-Fi row: the first connected device's name (cut to 16
 cells, `?` when nothing is left of it once cleaned), else `on`, `off` or `blocked` (rfkill holds the
 adapter off). The glyph is the bar module's own for on and connected, and a Material Design
-bluetooth-off glyph for off. Space powers the adapter the other way; on a blocked radio it runs
+bluetooth-off glyph for off and blocked. Space powers the adapter the other way; on a blocked radio it runs
 `rfkill unblock bluetooth` first, and the adapter is powered on once BlueZ reports it unblocked. The
 row is hidden without BlueZ or an adapter.
 
@@ -120,11 +122,13 @@ connected first, then by name), then a `Nearby` heading and the devices found wh
 most 32 rows in all (BlueZ's list is read up to 64 devices, names cleaned). Each row is a glyph by the
 device's kind (headphones, keyboard, mouse, speaker, phone, a generic one), its name and a tag:
 `paired`, `…` while an action runs on it, `failed` for 4 s after one failed. A nearby device is
-inserted once, by its signal strength, and never moves; a device with no name of its own is not
-listed. Discovery runs only while the detail is open. The header reads `on` or `off`; with the adapter
-off the list reads `Bluetooth is off`, and Space on the header powers it on. ↑ ↓ Home End walk the
-header and the devices without wrapping, Esc or ← go back to the rows. A left press on a device
-selects it and then acts as Enter; a left press on the header goes back.
+inserted once, by its signal strength, and never moves; a device with no name of its own, or not heard
+advertising during this open (no signal reading), is not listed. Discovery runs only while the detail
+is open. The header reads `on` or `off`; with the adapter off the list reads `Bluetooth is off`, and
+Space on the header powers it on. ↑ ↓ Home End walk the header and the devices without wrapping, Esc
+or ← go back to the rows. A left press on a device selects it and then acts as Enter; a left press on
+the header goes back. While a `Code …? ⏎` question shows, a press on a device does nothing, and a left
+press on the header goes back and rejects the code.
 
 **Acting on a device.** Enter on a connected device disconnects it (no question), on a paired one
 connects it, on a nearby one pairs it, then sets it `Trusted`, then connects it unless the pairing
@@ -139,12 +143,13 @@ from 0.4 s to 3 s later removes the device, and any other key, another row or 3 
 question (the power menu's rule). A nearby device cannot be forgotten.
 
 **Pairing codes.** alpheus registers its own BlueZ agent (`KeyboardDisplay`) and answers only for the
-device being paired. A passkey or a PIN to type on the device shows under it as
-`Type 482 913 then ⏎` (a PIN as BlueZ gives it); a code to compare shows as the device's tag,
-`Code 482 913? ⏎`: Enter says yes, any other key, or closing the panel, rejects it. The code has no
-timeout; BlueZ's own pairing timeout ends it. A code to type into alpheus, an authorization and a
-service are rejected. Closing the panel or leaving the detail during a pairing replies to the
-question, cancels the pairing and unregisters the agent, in that order.
+device being paired. A passkey or a PIN to type on the device shows under it as `Type 482 913 then ⏎`
+(a PIN as BlueZ gives it, cleaned and cut to 16 characters); a code to compare shows as the device's
+tag, `Code 482 913? ⏎`: Enter says yes; any other key, a left press on the header, leaving the detail
+or closing the panel rejects it. The code has no timeout; BlueZ's own pairing timeout ends it. A code
+to type into alpheus, an authorization and a service are rejected. Closing the panel or leaving the
+detail during a pairing replies to the question, cancels the pairing and unregisters the agent, in
+that order.
 
 **The headset row.** When the default sink is a Bluetooth device that offers both kinds of profile,
 a `‹ Hi-Fi ›` / `‹ Mic ›` row sits between the volume and the brightness; Space, Enter, ← → or a click
@@ -161,41 +166,45 @@ a reader that adds no match rule. What the panel changes goes through `bt_act.rs
 `sources/dbus/`, a second connection to the system bus on the event loop, opened only while the detail
 is open or a call is in flight and closed with its agent unregistered first. Its calls are a pinned
 list (the power and trust properties, discovery, removal, connect, disconnect, pair, cancel, and the
-agent's registration), each sent to BlueZ's unique name with auto-start off. When BlueZ goes or its
+agent's registration), each sent to BlueZ's unique name with auto-start off, plus `GetNameOwner` to
+the bus driver to learn that name. When BlueZ goes or its
 owner changes, the connection is let go without a word. The model is `bt.rs` (pure) and the wiring is
 `bt_app.rs`; no thread, no timer of its own: the 30 s deadlines, the 4 s `failed` and the 3 s question
 use the panel's one timer. The guardrails are `the_bluetooth_connection_acts_only_through_act_method`,
-`the_bluetooth_connection_goes_with_the_panel`, `only_bt_app_and_bt_act_name_btact` and
-`the_bluetooth_logs_name_no_device`.
+`the_bluetooth_connection_goes_with_the_panel`, `the_bluetooth_connection_serves_only_the_agent`,
+`only_bt_app_and_bt_act_name_btact` and `the_bluetooth_logs_name_no_device`.
 
 **Not yet verified.** At the trial: BlueZ's D-Bus policy on NixOS (`bluetooth.conf`, no polkit)
 letting the session user call `Pair`, `Connect` and `RegisterAgent` with no `AccessDenied`; a real
-pairing of a keyboard (a passkey to type); the headset switch with WirePlumber's real profile names;
-that a left click on a connected device disconnects it with no question; and that the switch from Hi-Fi
-to Mic makes the headset row flicker (the sink goes and comes back). See the decisions "Space on a
-blocked Bluetooth radio unblocks it, then powers it on", "Nearby Bluetooth devices are inserted once,
-by signal strength", "A paired Bluetooth device is trusted, and a connect that is already done counts
-as done", "Forgetting a Bluetooth device asks first, as the power menu does", "Bluetooth deadlines
-live in the panel, and a late answer is forgotten", "A pairing is answered by alpheus's own agent, for
-that device only" and "A pairing code has no timeout, and leaving the detail cancels the pairing".
+pairing of a keyboard (a passkey to type); the headset switch with WirePlumber's real profile names.
+To judge at the trial: whether one left click should disconnect a connected device with no question,
+and whether the headset row's flicker during a Hi-Fi to Mic switch (the sink goes and comes back) is
+acceptable. See the decisions "Space on a blocked Bluetooth radio unblocks it, then powers it on",
+"Nearby Bluetooth devices are inserted once, by signal strength", "A paired Bluetooth device is
+trusted, and a connect that is already done counts as done", "Forgetting a Bluetooth device asks
+first, as the power menu does", "Bluetooth deadlines live in the panel, and a late answer is
+forgotten", "A pairing is answered by alpheus's own agent, for that device only", "A pairing code has
+no timeout, and leaving the detail cancels the pairing" and "The Bluetooth acting connection opens
+with one blocking connect and asks for BlueZ's owner itself".
 
 ### VPN
 
 **The row.** A VPN row under the Bluetooth row: the first activated profile's name (cut to 16 cells),
-`…` while one is activating or deactivating, `failed` for 4 s after a failed attempt, else `off`. It is hidden when NetworkManager has no VPN or WireGuard profile; for that,
-each open of the panel lists the saved profiles and reads their settings (at most 64 are read). Space
-takes the first activating or activated profile down, else brings the last used one up (the highest
-`connection.timestamp`, over every profile read, even past the 16 listed).
+`…` while one is activating or deactivating, `failed` for 4 s after a failed attempt, else `off`. It
+is hidden when NetworkManager has no VPN or WireGuard profile; for that, each open of the panel lists
+the saved profiles and reads their settings (at most 64 are read). Space takes the first activating or
+activated profile down, else brings the last used one up (the highest `connection.timestamp`, over
+every profile read, even past the 16 listed).
 
 **The detail.** Enter, →, a click on the row or `alpheus-launch --quick vpn` opens it. It lists at
-most 16 profiles, the active ones first with `●`, then by name; a WireGuard profile has its own
-glyph in front of the name, any other the VPN glyph of the `network` module. Enter on a profile brings it down when it is
-activating or activated (`nmcli connection down uuid <uuid>`), does nothing while it deactivates,
-and otherwise brings it up (`nmcli connection up uuid <uuid>`). The tag after a name is `…` while an
-attempt is under way on it or NetworkManager activates or deactivates it, `failed` for 4 s after a
-failure. One attempt at a time: during one only `More…` acts. `More…` runs `[quick] vpn_more` and
-closes the panel. ↑ ↓ Home End walk the profiles and `More…` without wrapping, Esc or ← go back, a
-left press chooses and enters, a press on the header goes back.
+most 16 profiles, the active ones first with `●`, then by name; a WireGuard profile has its own glyph
+in front of the name, any other the VPN glyph of the `network` module. Enter on a profile brings it
+down when it is activating or activated (`nmcli connection down uuid <uuid>`), does nothing while it
+deactivates, and otherwise brings it up (`nmcli connection up uuid <uuid>`). The tag after a name is
+`…` while an attempt is under way on it or NetworkManager activates or deactivates it, `failed` for 4
+s after a failure. One attempt at a time: during one only `More…` acts. `More…` runs `[quick]
+vpn_more` and closes the panel. ↑ ↓ Home End walk the profiles and `More…` without wrapping, Esc or ←
+go back, a left press chooses and enters, a press on the header goes back.
 
 **An attempt** ends when NetworkManager reports the profile activated. It fails when the connection
 is deactivating or deactivated, when an activation that was under way is left with no active
@@ -206,14 +215,19 @@ for, the reason says the connection may need a secret. NetworkManager going away
 disappearing, ends the attempt with no `failed` mark. A NetworkManager-domain outage drops the VPN
 the way it drops Wi-Fi: the row hides and an open detail closes.
 
-**Secrets.** alpheus never handles a VPN secret: no `nmcli --ask`, no password field, no
-`GetSecrets`. A profile that needs one is answered by NetworkManager's stored secrets or a desktop's
-secret agent, else it fails, and `More…` is the way. Known limit: a non-zero exit of `nmcli` is not
-seen (the executor's `spawn` is detached), so a failed command shows `…` until NetworkManager's state
-says otherwise or after 20 s. A VPN profile past the 64th saved connection is not seen. See the
-decisions "alpheus never handles a VPN secret", "Space on the VPN row takes the active profile down,
-else brings the last used one up", "A VPN attempt lives in the panel only, and taking a profile down
-is no attempt" and "Several active connections for one VPN profile count by the most advanced state".
+**Secrets.** alpheus never handles a VPN secret: no `nmcli --ask`, no password field, no `GetSecrets`.
+A profile that needs one is answered by NetworkManager's stored secrets or a desktop's secret agent,
+else it fails, and `More…` is the way. Known limit: a non-zero exit of `nmcli` is not seen (the
+executor's `spawn` is detached), so a failed command shows `…` until NetworkManager's state says
+otherwise or after 20 s. A VPN profile past the 64th saved connection is not seen. Any listing or
+settings error other than a gone service or an absent or denied profile ends the read and keeps the
+last state, so a persistent odd error on one profile freezes the VPN view. A snapshot holding only a
+stale deactivated entry for a fresh attempt, before NetworkManager lists the new one, fails that
+attempt at once. **Not yet verified.** Whether `nmcli connection up` finds a VPN's stored secrets
+without `--ask` is checked at the trial. See the decisions "alpheus never handles a VPN secret",
+"Space on the VPN row takes the active profile down, else brings the last used one up", "A VPN attempt
+lives in the panel only, and taking a profile down is no attempt" and "Several active connections for
+one VPN profile count by the most advanced state".
 
 ## Using it
 
@@ -329,8 +343,8 @@ polls beside the bus). A state read for an earlier open is dropped.
    `spawn_logged`, `RunSecret` hands the password to `quick_spawn_secret`, and `Redraw` repaints.
 
 The "why" behind several of these choices is in [decisions.md](../decisions.md): the entries from
-"A slider sends one level per 150 ms window and keeps showing it" to "The do-not-disturb detail marks
-and opens by the current state".
+"A slider sends one level per 150 ms window and keeps showing it" to "The Bluetooth acting connection
+opens with one blocking connect and asks for BlueZ's owner itself".
 
 ## Rules it keeps
 

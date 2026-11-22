@@ -1224,9 +1224,9 @@ Status: awaiting confirmation at the trial (quick settings plan 1, closing note:
 
 When the panel closes during an attempt on a network with no saved profile, the attempt is handed to
 a follower (`WifiFollow`) that keeps the Wi-Fi read, and the panel's timer stays armed for it alone,
-up to 20 s (60 s while the device is still activating). If the attempt fails, the profile that
-appeared during it is deleted, but only if it is still saved. A panel opened meanwhile takes the
-attempt back. This replaces the Wi-Fi plan's rule that closing the panel abandons the attempt.
+up to 20 s (60 s while the device is still activating). What a failed attempt then deletes is the
+rule of "A failed Wi-Fi attempt deletes its new profile only when sure". A panel opened meanwhile
+takes the attempt back. This replaces the Wi-Fi plan's rule that closing the panel abandons the attempt.
 
 Date: 2026-10-13 (the merge of Wi-Fi delivery 2, CLAUDE.md) · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); quick Wi-Fi plan 2, "Decisions written down" 10 (the sentence it replaces); commit 750810e (2026-10-11); `WifiFollow`, `quick_flush`
 
@@ -1249,10 +1249,10 @@ Status: awaiting confirmation at the trial (Wi-Fi plan 2's closing report lists 
 
 `nmcli device wifi connect <ssid>` takes the SSID as an argument, so the panel refuses one it cannot
 pass as it is: empty, holding a NUL, starting with `-` (read as an option), not UTF-8 (an argument is
-a string), `h`, `he`, `hel` or `help`, or six groups of hexadecimal digits (read as a BSSID) (commit
-750810e: nmcli would read the last two otherwise). Enter on such a network, or on an 802.1X, WEP or
-other secured one, moves the selection to `More…`. A saved or connected network is reached by its
-uuid, whatever its SSID.
+a string), `h`, `he`, `hel` or `help`, or six groups of hexadecimal digits (`refused`: nmcli reads
+those as the word help and as a BSSID; commit 750810e). Enter on such a network moves the selection to
+`More…`, as it does on any network the panel does not handle (it handles only open and WPA-personal
+networks: spec §§ 2 and 8). A saved or connected network is reached by its uuid, whatever its SSID.
 
 Date: 2026-10-11 · Source: quick Wi-Fi spec § 5 (the SSID is one argument); plan 2, "Decisions written down" 7; commit 750810e; `refused`, `Wifi::kind`
 
@@ -1268,18 +1268,19 @@ at the 60 s bound (a slow network keeps its profile; commit b2223e0), when the d
 activated on what may be the new profile, or when the state the failure rests on was kept through
 another domain's outage (NetworkManager may have connected since; commit 5857c86). The cleanup
 also deletes nothing after a NetworkManager restart, for a profile reserved to another user, or
-after an outage of the network domain during a followed attempt (CLAUDE.md). A wrong-password
-profile may then remain, and `More…` is the way to remove it.
+after an outage of the network domain during a followed attempt (CLAUDE.md).
 
 Date: 2026-10-13 (the merge of Wi-Fi delivery 2, CLAUDE.md) · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); plan 2, "Decisions written down" 9; commits b2223e0 and 5857c86; `Attempt::failure`, `Attempt::expired`
+
+Status: awaiting confirmation at the trial (Wi-Fi plan 2's closing report lists every Decision written down, 9 among them)
 
 ### A row under connection reads `…`
 
 A Wi-Fi network being connected, and a VPN profile being brought up, show `…` after their name, not
-`connecting…`. `failed` is the longest tag, so the tag column is `failed`'s width and an SSID keeps 16
+`connecting…`. It is short, so the tag column can be `failed`'s six cells wide and an SSID keeps 16
 cells (commit e711bb8).
 
-Date: 2026-10-12 · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); commit e711bb8 ("short tags"); `RUNNING_TAG`, `Wifi::tag`, `Vpn::tag`
+Date: 2026-10-12 · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); commit e711bb8 ("short tags"); quick VPN spec ("What": `…` while activating); `RUNNING_TAG`, `Wifi::tag`, `Vpn::tag`
 
 ### alpheus never handles a VPN secret
 
@@ -1287,12 +1288,13 @@ The VPN detail brings a profile up with `nmcli connection up uuid <uuid>`, never
 has no password field. `--ask` reads its secrets from standard input, which alpheus never feeds, so
 the stored secrets in NetworkManager and any secret agent already registered (a desktop's) answer as
 they usually do. A profile whose settings mark a secret as agent-owned or not saved (and not "not
-required") fails with a hedged reason (`the connection may need a secret`), and `More…` is the way.
+required") does not fail because of it; when its attempt fails, the reason is the hedged
+`the connection may need a secret` instead of `the activation failed`, and `More…` is the way.
 `GetSecrets` is never called.
 
-Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 1; quick VPN spec ("What", "How")
+Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 1 (it replaces the spec's "What" line on `nmcli --ask`); quick VPN spec ("Constraints": `GetSecrets` never)
 
-Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 4 (VPN)": does `nmcli connection up` find her VPNs' secrets without `--ask`?)
+Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 4 (VPN)": does `nmcli connection up` find the VPNs' stored secrets without `--ask`?)
 
 ### Space on the VPN row takes the active profile down, else brings the last used one up
 
@@ -1303,7 +1305,7 @@ detail's order. Nothing happens while an attempt runs.
 
 Date: 2026-11-15 · Source: quick VPN spec ("What"); plan 1, "Rulings" 2 and 3; CLAUDE.md, "Quick settings, delivery 4 (VPN)"; `Vpn::toggle`
 
-Status: awaiting confirmation at the trial (the plan's rulings are to be confirmed at the trial, CLAUDE.md)
+Status: awaiting confirmation at the trial (quick VPN plan 1: its Rulings are to be confirmed at the trial)
 
 ### A VPN attempt lives in the panel only, and taking a profile down is no attempt
 
@@ -1311,19 +1313,20 @@ Status: awaiting confirmation at the trial (the plan's rulings are to be confirm
 closing drops it and `nmcli` carries on (the Wi-Fi attempt on a new network, which may leave a
 profile behind, is followed after the close instead; see "A Wi-Fi attempt on a new network outlives
 the quick panel"). A `connection down` is not followed: an active connection that NetworkManager
-reports as activating or deactivating reads `…` from the state itself. During an attempt only
-`More…` acts in the detail. A non-zero exit of `nmcli` is not seen (the executor's `spawn` is
-detached), so a failed command shows `…` until NetworkManager's state says otherwise or after 20 s.
+reports as activating or deactivating reads `…` from the state itself.
 
-Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 5 and 6; CLAUDE.md, "Quick settings, delivery 4 (VPN)" ("Known limit"); `Vpn::act`, `Vpn::value`
+Date: 2026-11-15 · Source: quick VPN plan 1, "Rulings" 5 and 6; `Vpn::act`, `Vpn::value`
 
-Status: awaiting confirmation at the trial (the plan's rulings are to be confirmed at the trial, CLAUDE.md)
+Status: awaiting confirmation at the trial (quick VPN plan 1: its Rulings are to be confirmed at the trial)
 
 ### Several active connections for one VPN profile count by the most advanced state
 
 After a down then an up, NetworkManager may still list the old active connection, deactivated, beside
 the new one. A profile's state is the most advanced of its entries (activated, then activating, then
-deactivating, then deactivated), so a stale deactivated entry never fails a fresh attempt.
+deactivating, then deactivated), so a stale deactivated entry no longer fails a fresh attempt once the
+new entry is listed. A known limit (CLAUDE.md, parked minors): a snapshot holding only the stale
+deactivated entry still fails the attempt at once; the parked fix is to treat that state as waiting
+until `activating` was seen.
 
 Date: 2026-11-16 · Source: CLAUDE.md, "Quick settings, delivery 4 (VPN)" ("Final fix wave"); `active_state`
 
@@ -1354,18 +1357,17 @@ Status: awaiting confirmation at the trial (small features 2 plan: its "Decision
 
 When rfkill holds the adapter off (`blocked` on the row), Space first runs `rfkill unblock bluetooth`
 through the executor, and the adapter is powered on once BlueZ reports it unblocked, as soon as no
-other action runs. The spec leaves the choice to the implementation and notes that GNOME does the same.
+other action runs. The spec makes this choice (the question was left open at its review); its reason
+is that GNOME does the same.
 
 Date: 2026-10-22 · Source: quick Bluetooth spec § 1 (the `rfkill` sentence); `Bt::toggle`, `power_after_unblock`, `Bt::set_view`
-
-Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 3 (Bluetooth)": the trial is pending)
 
 ### Nearby Bluetooth devices are inserted once, by signal strength
 
 A device found while the detail is open is inserted by its signal strength at that moment and never
-moves; later changes of signal are not followed. A device with no signal reading, or with no name of
-its own, is not listed. The spec's reason is that a scan then does not wake the loop several times a
-second, and nothing moves under the selection. The cost, recorded in the plan, is that a device
+moves; later changes of signal are not followed. A device with no signal reading during this open, or
+with no name of its own, is not listed. The spec's reason is that a scan then does not wake the loop
+several times a second, and nothing moves under the selection. The cost, recorded in the plan, is that a device
 advertising without a signal reading is never listed.
 
 Date: 2026-10-20 · Source: quick Bluetooth spec § 2 (the `Nearby` rows); plan 3, "Decisions written down" 3; `BtReader`, `Bt::devices`
@@ -1383,12 +1385,12 @@ Date: 2026-10-20 · Source: quick Bluetooth spec § 2 (Enter on a nearby device)
 
 ### Forgetting a Bluetooth device asks first, as the power menu does
 
-Delete, or a right click, on a paired device turns its tag into `Forget? ⏎`; Enter from 0.4 s to 3 s
-later removes the device, and any other key, another row or 3 s cancels. The timing and the cancel
-rules are the power menu's (`session::CONFIRM_AFTER`, `session::CONFIRM`), through the panel's one
-confirmation state, which now holds either a session question or a forget question. A nearby device
-cannot be forgotten. The spec records the choice (an asked removal) but not why it was preferred to
-other forms.
+Delete, or a right click, on a paired device turns its tag into `Forget? ⏎`; Enter then removes the
+device. The timing and the cancel rules are those of "Reboot and power off ask first, and a second
+activation confirms from 0.4 s to 3 s" (`session::CONFIRM_AFTER`, `session::CONFIRM`), through the
+panel's one confirmation state, which holds either a session question or a forget question. A nearby
+device cannot be forgotten. The asked form was chosen from mockups when the spec was written (spec
+Goal, choice A); why it was preferred to other forms is not recorded.
 
 Date: 2026-10-20 · Source: quick Bluetooth spec § 2 ("Forgetting"); plan 3, "Decisions written down" 10; `Bt::ask_forget`, `Bt::activate`, `session::ask`
 
@@ -1406,10 +1408,11 @@ Date: 2026-10-22 · Source: plan 3, "Decisions written down" 7; quick Bluetooth 
 alpheus registers its own `org.bluez.Agent1` with the `KeyboardDisplay` capability (`RegisterAgent`,
 never `RequestDefaultAgent`). The spec's reason is that BlueZ routes a pairing to the agent of the
 client that asked for it, so alpheus answers only the pairings it starts and never takes over another
-tool's. The agent answers BlueZ's unique name only, and for the device being paired only: a code to
-show or to compare is handled; a code to type into alpheus, an authorization, or a service is
-rejected (a code to type into alpheus also shows `failed`). The spec puts incoming pairings and codes
-to type into alpheus (very old devices) out of scope, and alpheus authorizes no incoming service.
+tool's. The agent answers BlueZ's unique name only, and for the device being paired only. The spec
+puts incoming pairings and codes to type into alpheus (very old devices) out of scope, and alpheus
+authorizes no incoming service. Every agent call goes to the panel for its reply, and only the
+acting connection refuses strangers and unknown members, so each reply is a pure decision that a unit
+test checks; the cost is that a `Display*` reply waits one loop turn.
 
 Date: 2026-10-20 · Source: quick Bluetooth spec §§ 3 and 5 ("Served"); plan 3, "Decisions written down" 9; `Bt::agent`, `CAPABILITY`
 
@@ -1425,19 +1428,17 @@ shown; unlike a Wi-Fi attempt, a pairing does not outlive the panel.
 
 Date: 2026-10-20 · Source: quick Bluetooth spec § 3 (the paragraph after the table); `Bt::key`, `Bt::leaving`
 
-### Opening the Bluetooth acting connection blocks the loop once
+### The Bluetooth acting connection opens with one blocking connect and asks for BlueZ's owner itself
 
-The acting connection's connect and `Hello` are blocking, on the event loop, once each time the
-connection is opened (when the detail opens or a call goes out); after that it never blocks. The plan
-accepts this as it accepts the same cost for the tray's session connection.
+The acting connection's connect and `Hello` block the event loop once each time the connection is
+opened (when the detail opens or a call goes out). Reads never block; writes flush libdbus's queue,
+blocking as the tray's session connection does (`BtAct::flush`, called from `bt_run`, and
+`BtAct::close`). This departs from the spec's "Non-blocking, on the event loop", which the plan
+accepts, as it accepts the same cost for the tray. The connection also sends its own `GetNameOwner` for
+`org.bluez` at each open, and holds the calls made meanwhile until the answer; the plan's reason is
+that the read thread's idea of the owner is not shared with the loop, and the cost is one extra round
+trip per open. It asks again after a `NoReply` (commit 97fbbd0, `BtAct::recheck`): the same owner
+keeps the failure; no owner or a new one answers `Gone` and forgets the owner, so nothing later goes
+to an old unique name. When BlueZ goes or its owner changes, the connection is let go without a word.
 
-Date: 2026-10-22 · Source: plan 3, "Decisions written down" 19; quick Bluetooth spec § 5 ("Non-blocking, on the event loop"); `BtAct::system`, `App::bt_open`
-
-### The Bluetooth acting connection finds BlueZ's owner itself
-
-The acting connection sends its own `GetNameOwner` for `org.bluez` when it opens, and holds the calls
-made meanwhile until the answer. The plan's reason is that the read thread's idea of the owner is not
-shared with the loop. The cost is one extra round trip at each open. When BlueZ goes or its owner
-changes, the connection is let go without a word, so nothing is sent to an old unique name.
-
-Date: 2026-10-22 · Source: plan 3, "Decisions written down" 8; quick Bluetooth spec § 5 ("Lifetime", "Calls"), § 6; `BtAct`, `App::bt_let_go`
+Date: 2026-10-22 · Source: plan 3, "Decisions written down" 8 and 19; quick Bluetooth spec § 5 ("Non-blocking, on the event loop", "Lifetime", "Calls"), § 6; commit 97fbbd0; `BtAct::system`, `BtAct::flush`, `BtAct::recheck`, `App::bt_open`, `App::bt_let_go`

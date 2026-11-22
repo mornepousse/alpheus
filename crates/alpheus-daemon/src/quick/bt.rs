@@ -8,7 +8,8 @@
 //! while the panel is open. One action runs at a time (a power toggle, a connect, a disconnect, a
 //! pairing, a forget), each call with its own `CALL_DEADLINE`, which waits while a pairing code
 //! shows. BlueZ's agent requests are answered for the device being paired only. The row's place on
-//! the panel and the window over the lines belong to `mod.rs`, which hands this file its turn.
+//! the panel and the window over the lines belong to `mod.rs`, which calls into this file for the
+//! Bluetooth row and the detail's lines.
 //!
 //! Never:
 //! - write or create a file, or make a raw system call (guardrail
@@ -272,8 +273,8 @@ impl Bt {
 
     /// Leaving the detail or closing the panel, in order: a pending code question rejected, a
     /// pairing cancelled and its call forgotten (the code could no longer show: spec § 3),
-    /// discovery stopped if this open started it. A connect, disconnect, trust or forget outlives
-    /// the detail.
+    /// discovery stopped if this open started it. Any action but a pairing's Pair step outlives the
+    /// detail.
     pub fn leaving(&mut self) -> Vec<BtOrder> {
         let mut v = Vec::new();
         if let Some(Code::Question { id, .. }) = self.code.take() {
@@ -298,7 +299,7 @@ impl Bt {
 
     /// What the D-Bus thread is to read: the detail's lists while it is open (or while an action on
     /// a device runs: a row reading would look like that device gone), the adapter while the row
-    /// shows, nothing otherwise. The panel's taps follow this at each sync.
+    /// shows, nothing otherwise. The panel's Bluetooth tap follows this at each sync.
     pub fn scope(&self, row_shown: bool) -> BtScope {
         if self.open || self.action.as_ref().is_some_and(|a| a.device.is_some()) {
             BtScope::Detail
@@ -499,7 +500,8 @@ impl Bt {
 
     /// One of BlueZ's agent requests (spec § 3), for the device being paired only: a code shown, a
     /// code question, a code to type in (refused: `failed`), BlueZ cancelling. Anything else, or for
-    /// any other device, is rejected. The answer is an order, the same for every arm.
+    /// any other device, is rejected. Every request but BlueZ's own Cancel and Release (already
+    /// answered by the connection) gets its reply as a `BtOrder::Reply`.
     pub fn agent(&mut self, id: AgentId, request: AgentRequest, now: Instant) -> QuickAction {
         use AgentRequest::*;
         // A closure that captures `id` and builds the rejection; the last arm below uses it.
@@ -646,8 +648,9 @@ impl Bt {
 
     /// The view's adapter powered the other way (the row's and the header's Space): an action until
     /// its answer (`arm` gives it its deadline); nothing while another action runs. When rfkill
-    /// holds the adapter off, it runs `rfkill unblock bluetooth` instead and notes that the adapter is
-    /// to be powered on once BlueZ reports it unblocked (`power_after_unblock`).
+    /// holds the adapter off, it hands back `rfkill unblock bluetooth` for the wiring to run instead
+    /// and notes that the adapter is to be powered on once BlueZ reports it unblocked
+    /// (`power_after_unblock`).
     fn toggle(&mut self) -> QuickAction {
         let Some(a) = self.adapter().cloned() else { return QuickAction::Nothing };
         if self.action.is_some() {
@@ -709,11 +712,11 @@ impl Bt {
     }
 
     /// A code question first takes the key: Enter replies OK (the action's deadline runs again),
-    /// any other key rejects it and ends the pairing silently. The question is no forget-style
-    /// question: it has no 0.4 s wait and no 3 s expiry. Otherwise: Escape or ← back to the rows; ↑ ↓ Home End over the header and
-    /// the devices, never wrapping; Space on the header powers the adapter; Enter acts on the device
-    /// (or confirms its forget question); Delete asks to forget it. Any key but Enter drops the
-    /// question.
+    /// any other key rejects it and ends the pairing silently. The code question is not a
+    /// forget-style question: it has no 0.4 s wait and no 3 s expiry. Otherwise: Escape or ← back to
+    /// the rows; ↑ ↓ Home End over the header and the devices, never wrapping; Space on the header
+    /// powers the adapter; Enter acts on the device (or confirms its forget question); Delete asks
+    /// to forget it. Any key but Enter drops the forget question.
     pub fn key(&mut self, k: Key, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
         if let Some(Code::Question { id, .. }) = self.code {
             if k == Key::Enter {
@@ -867,7 +870,7 @@ impl Bt {
     }
 }
 
-/// One device's row, as "● 󰋋 CasqueBT" or "  󰌌 ClavierBT      paired" (spec § 2): ● on a connected one
+/// One device's row, as "● 󰋋 Headset" or "  󰌌 Keyboard      paired" (spec § 2): ● on a connected one
 /// in the accent, the kind's glyph, the label cut to fit (`?` when empty), the tag right-aligned
 /// one cell from the end. Selected: the band across the whole row.
 fn device_row(g: &mut Grid, d: &BtEntry, tag: &str, tag_style: Style, selected: bool) {

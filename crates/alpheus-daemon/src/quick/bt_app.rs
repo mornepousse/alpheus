@@ -1,4 +1,4 @@
-//! The quick panel's acting Bluetooth connection on the event loop: opening it, driving it, letting it go.
+//! The quick panel's acting Bluetooth connection, on the event loop: its whole life.
 //!
 //! This is the wiring half of the Bluetooth list; the model is `bt.rs`. The acting connection
 //! (`sources/dbus/bt_act.rs`) is opened when the detail opens or a call goes out with an adapter
@@ -12,9 +12,10 @@
 //! - reach BlueZ except through that connection: it is named only here, in `quick/app.rs` (for its
 //!   field) and in `bt_act.rs` (guardrail `only_bt_app_and_bt_act_name_btact`), and what it can call
 //!   is a pinned list (guardrail `the_bluetooth_connection_acts_only_through_act_method`);
-//! - keep the connection beyond the panel's need, or send anything to a BlueZ that went (guardrail
-//!   `the_bluetooth_connection_goes_with_the_panel`, which reads `bt_close`, `bt_let_go`,
-//!   `bt_readable` and `bt_run`);
+//! - keep the connection beyond the panel's need, or unregister the agent from a BlueZ that went
+//!   (guardrail `the_bluetooth_connection_goes_with_the_panel`: it reads `bt_close`, `bt_drop`,
+//!   `bt_let_go`, `bt_readable` and `bt_run` here, and the panel's open, flush, tick and close paths
+//!   in `quick/app.rs`; `bt_let_go` removes the source without closing);
 //! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
 //!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
 //!   `nothing_resident_while_the_launcher_is_closed`, where this file's one entry is the
@@ -25,9 +26,9 @@
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
 //! See: docs/specs/2026-10-20-alpheus-quick-settings-bluetooth-design.md,
-//! docs/features/quick-settings.md, and docs/decisions.md ("Opening the Bluetooth acting connection
-//! blocks the loop once", "The Bluetooth acting connection finds BlueZ's owner itself", "Bluetooth
-//! deadlines live in the panel, and a late answer is forgotten").
+//! docs/features/quick-settings.md, and docs/decisions.md ("The Bluetooth acting connection opens
+//! with one blocking connect and asks for BlueZ's owner itself", "Bluetooth deadlines live in the
+//! panel, and a late answer is forgotten").
 
 use crate::log::write as log;
 use crate::popup::PopupBody;

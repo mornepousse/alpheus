@@ -17,10 +17,12 @@
 //!   `QuickAction`, and the wiring arms the panel's one timer from `Quick::deadline`, which includes
 //!   `Vpn::deadline`;
 //! - build a command other than `nmcli connection up|down uuid <uuid>` and the configured
-//!   `vpn_more` (guardrail `every_quick_command_stays_on_the_allowlist`, which pins the exact shape of
-//!   every command the panel builds): no `--ask`, no secret;
-//! - put a profile's name, label or uuid in a log line (guardrail `the_vpn_logs_name_no_profile`,
-//!   which reads this file's log calls): an attempt's `why` is a fixed phrase;
+//!   `vpn_more` (guardrail `every_quick_command_stays_on_the_allowlist`, which checks every command
+//!   the panel builds against one allowlist; its VPN shapes are `connection up|down uuid`): no
+//!   `--ask`, no secret;
+//! - write a log line here: an attempt's `why` is a fixed phrase that the wiring logs, and a profile's
+//!   name, label or uuid is never in one (guardrail `the_vpn_logs_name_no_profile`, which reads the
+//!   VPN log lines of `sources/dbus/vpn.rs` and `quick/app.rs`, and this file);
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
 //! - read a clock: the caller passes `now` (no guardrail checks it).
 //!
@@ -111,8 +113,9 @@ fn advance_rank(state: u32) -> u8 {
 }
 
 /// The state of `uuid`'s active connection, if it has one. Several (a down then an up: the old one
-/// may still be listed, deactivated, beside the new): the most advanced, so a stale entry never
-/// fails a fresh attempt. See docs/decisions.md, "Several active connections for one VPN profile
+/// may still be listed, deactivated, beside the new): the most advanced, so a stale entry no longer
+/// fails a fresh attempt once the new entry is listed. Known limit: a snapshot holding only the stale
+/// deactivated entry still fails the attempt at once. See docs/decisions.md, "Several active connections for one VPN profile
 /// count by the most advanced state".
 fn active_state(state: &VpnState, uuid: &str) -> Option<u32> {
     state.active.iter().filter(|a| a.uuid == uuid).map(|a| a.state).min_by_key(|s| advance_rank(*s))
@@ -207,8 +210,8 @@ impl Vpn {
         self.state.as_ref().is_some_and(|s| !s.profiles.is_empty())
     }
 
-    /// The row's value: `failed` while an attempt's failure is shown (`FAILED_SHOWN`: one started by
-    /// Space on the row shows there), else the first activated profile's name (16 cells), `…` while
+    /// The row's value: `failed` for `FAILED_SHOWN` after any failed attempt, including one started
+    /// by Space on the row, else the first activated profile's name (16 cells), `…` while
     /// one is under way (activating or deactivating, from the state itself: see docs/decisions.md,
     /// "A VPN attempt lives in the panel only, and taking a profile down is no attempt"), else `off`.
     pub fn value(&self) -> String {
