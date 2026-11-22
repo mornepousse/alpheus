@@ -1349,3 +1349,95 @@ otherwise on nothing. The detail opens on the ● entry, else on `30 minutes`, a
 Date: 2026-11-15 · Source: small features 2 plan 1, "Decisions written down" 8; commit b06e745 (the `Off` case and its reason); `marked`, `DndDetail::open`
 
 Status: awaiting confirmation at the trial (small features 2 plan: its "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+
+### Space on a blocked Bluetooth radio unblocks it, then powers it on
+
+When rfkill holds the adapter off (`blocked` on the row), Space first runs `rfkill unblock bluetooth`
+through the executor, and the adapter is powered on once BlueZ reports it unblocked, as soon as no
+other action runs. The spec leaves the choice to the implementation and notes that GNOME does the same.
+
+Date: 2026-10-22 · Source: quick Bluetooth spec § 1 (the `rfkill` sentence); `Bt::toggle`, `power_after_unblock`, `Bt::set_view`
+
+Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 3 (Bluetooth)": the trial is pending)
+
+### Nearby Bluetooth devices are inserted once, by signal strength
+
+A device found while the detail is open is inserted by its signal strength at that moment and never
+moves; later changes of signal are not followed. A device with no signal reading, or with no name of
+its own, is not listed. The spec's reason is that a scan then does not wake the loop several times a
+second, and nothing moves under the selection. The cost, recorded in the plan, is that a device
+advertising without a signal reading is never listed.
+
+Date: 2026-10-20 · Source: quick Bluetooth spec § 2 (the `Nearby` rows); plan 3, "Decisions written down" 3; `BtReader`, `Bt::devices`
+
+### A paired Bluetooth device is trusted, and a connect that is already done counts as done
+
+After a pairing succeeds, the device's `Trusted` property is set, then a connect follows unless the
+device is already connected. The spec's reason for trusting is that the device can then reconnect by
+itself next time (the usual behaviour of GNOME and blueman). A Bluetooth LE device is often connected
+by the pairing itself, so BlueZ's `AlreadyConnected` answer to a connect counts as a success. A failed
+`Trusted` step shows `failed` and stops, with no connect; the device stays paired but untrusted, and
+the next Enter connects it.
+
+Date: 2026-10-20 · Source: quick Bluetooth spec § 2 (Enter on a nearby device); plan 3, "Decisions written down" 17; `Bt::answered`, `ALREADY_CONNECTED`
+
+### Forgetting a Bluetooth device asks first, as the power menu does
+
+Delete, or a right click, on a paired device turns its tag into `Forget? ⏎`; Enter from 0.4 s to 3 s
+later removes the device, and any other key, another row or 3 s cancels. The timing and the cancel
+rules are the power menu's (`session::CONFIRM_AFTER`, `session::CONFIRM`), through the panel's one
+confirmation state, which now holds either a session question or a forget question. A nearby device
+cannot be forgotten. The spec records the choice (an asked removal) but not why it was preferred to
+other forms.
+
+Date: 2026-10-20 · Source: quick Bluetooth spec § 2 ("Forgetting"); plan 3, "Decisions written down" 10; `Bt::ask_forget`, `Bt::activate`, `session::ask`
+
+### Bluetooth deadlines live in the panel, and a late answer is forgotten
+
+Each call of an action has a 30 s deadline (`CALL_DEADLINE`) kept in the panel's `Action`, not on the
+acting connection. The plan's reason is the spec's single panel timer, and the suspension of the
+deadline while a pairing code shows. The cost is that an answer arriving after the deadline has to be
+dropped explicitly, which the panel does by sending the connection a `BtOrder::Forget` for that call.
+
+Date: 2026-10-22 · Source: plan 3, "Decisions written down" 7; quick Bluetooth spec § 2 ("Failure") and § 5 ("Timers"); `Action::deadline`, `Bt::due`
+
+### A pairing is answered by alpheus's own agent, for that device only
+
+alpheus registers its own `org.bluez.Agent1` with the `KeyboardDisplay` capability (`RegisterAgent`,
+never `RequestDefaultAgent`). The spec's reason is that BlueZ routes a pairing to the agent of the
+client that asked for it, so alpheus answers only the pairings it starts and never takes over another
+tool's. The agent answers BlueZ's unique name only, and for the device being paired only: a code to
+show or to compare is handled; a code to type into alpheus, an authorization, or a service is
+rejected (a code to type into alpheus also shows `failed`). The spec puts incoming pairings and codes
+to type into alpheus (very old devices) out of scope, and alpheus authorizes no incoming service.
+
+Date: 2026-10-20 · Source: quick Bluetooth spec §§ 3 and 5 ("Served"); plan 3, "Decisions written down" 9; `Bt::agent`, `CAPABILITY`
+
+Status: awaiting confirmation at the trial (CLAUDE.md, "Quick settings, delivery 3 (Bluetooth)": BlueZ's D-Bus policy on NixOS and a real pairing are unverified)
+
+### A pairing code has no timeout, and leaving the detail cancels the pairing
+
+A code to compare (`Code 482 913? ⏎`) is not a forget-style question: it has no 0.4 s wait and no 3 s
+expiry, since comparing a code takes longer, and it stays until it is answered, BlueZ cancels, or the
+panel closes. It is the answer to the running pairing, not a new action. Closing the panel or leaving
+the detail during a pairing cancels it (`Device1.CancelPairing`), because the code could no longer be
+shown; unlike a Wi-Fi attempt, a pairing does not outlive the panel.
+
+Date: 2026-10-20 · Source: quick Bluetooth spec § 3 (the paragraph after the table); `Bt::key`, `Bt::leaving`
+
+### Opening the Bluetooth acting connection blocks the loop once
+
+The acting connection's connect and `Hello` are blocking, on the event loop, once each time the
+connection is opened (when the detail opens or a call goes out); after that it never blocks. The plan
+accepts this as it accepts the same cost for the tray's session connection.
+
+Date: 2026-10-22 · Source: plan 3, "Decisions written down" 19; quick Bluetooth spec § 5 ("Non-blocking, on the event loop"); `BtAct::system`, `App::bt_open`
+
+### The Bluetooth acting connection finds BlueZ's owner itself
+
+The acting connection sends its own `GetNameOwner` for `org.bluez` when it opens, and holds the calls
+made meanwhile until the answer. The plan's reason is that the read thread's idea of the owner is not
+shared with the loop. The cost is one extra round trip at each open. When BlueZ goes or its owner
+changes, the connection is let go without a word, so nothing is sent to an old unique name.
+
+Date: 2026-10-22 · Source: plan 3, "Decisions written down" 8; quick Bluetooth spec § 5 ("Lifetime", "Calls"), § 6; `BtAct`, `App::bt_let_go`

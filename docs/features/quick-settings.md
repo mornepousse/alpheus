@@ -107,17 +107,77 @@ outlives the quick panel" and "The Wi-Fi password lives in one boxed buffer that
 
 ### Bluetooth
 
-A Bluetooth row under the Wi-Fi row: the first connected device, else `on`, `off` or `blocked`
-(rfkill). Space powers the adapter; on a blocked radio it runs `rfkill unblock bluetooth` first. The
-row is hidden without BlueZ or an adapter. A left click on the `bluetooth` module, or
-`alpheus-launch --quick bluetooth`, opens the detail: the paired devices (● connected), then
-`Nearby` and the named devices found while it is open, at most 32 rows. Enter disconnects a
-connected device, connects a paired one, or pairs a nearby one; Delete or a right click asks
-`Forget? ⏎`. Discovery runs only while the detail is open. alpheus answers a pairing code through its
-own BlueZ agent: a code to confirm shows as `Code 482 913? ⏎`, a code to type shows as
-`Type 482 913 then ⏎`; anything else is rejected. With a Bluetooth headset as the default sink, a
-`‹ Hi-Fi ›` / `‹ Mic ›` row between the volume and the brightness switches its profile with
-`wpctl set-profile`.
+**The row.** A Bluetooth row under the Wi-Fi row: the first connected device's name (cut to 16
+cells, `?` when nothing is left of it once cleaned), else `on`, `off` or `blocked` (rfkill holds the
+adapter off). The glyph is the bar module's own for on and connected, and a Material Design
+bluetooth-off glyph for off. Space powers the adapter the other way; on a blocked radio it runs
+`rfkill unblock bluetooth` first, and the adapter is powered on once BlueZ reports it unblocked. The
+row is hidden without BlueZ or an adapter.
+
+**The detail.** Enter, →, a click on the row, a left click on the `bluetooth` module or
+`alpheus-launch --quick bluetooth` opens it. It lists the paired devices (● on a connected one,
+connected first, then by name), then a `Nearby` heading and the devices found while it is open, at
+most 32 rows in all (BlueZ's list is read up to 64 devices, names cleaned). Each row is a glyph by the
+device's kind (headphones, keyboard, mouse, speaker, phone, a generic one), its name and a tag:
+`paired`, `…` while an action runs on it, `failed` for 4 s after one failed. A nearby device is
+inserted once, by its signal strength, and never moves; a device with no name of its own is not
+listed. Discovery runs only while the detail is open. The header reads `on` or `off`; with the adapter
+off the list reads `Bluetooth is off`, and Space on the header powers it on. ↑ ↓ Home End walk the
+header and the devices without wrapping, Esc or ← go back to the rows. A left press on a device
+selects it and then acts as Enter; a left press on the header goes back.
+
+**Acting on a device.** Enter on a connected device disconnects it (no question), on a paired one
+connects it, on a nearby one pairs it, then sets it `Trusted`, then connects it unless the pairing
+already did. One action runs at a time: while one shows `…`, Enter on another device does nothing. A
+failure, or no answer from BlueZ within 30 s for one call (each call of a sequence has its own),
+shows `failed` for 4 s and writes one line, `quick: bluetooth <action> failed (<D-Bus error name>)`
+(`(timeout)` after 30 s), never a name, an address or an object path. A device that vanishes during
+its action, or an adapter switched off meanwhile, ends the action with no `failed`.
+
+**Forgetting.** Delete, or a right click, on a paired device turns its tag into `Forget? ⏎`; Enter
+from 0.4 s to 3 s later removes the device, and any other key, another row or 3 s cancels the
+question (the power menu's rule). A nearby device cannot be forgotten.
+
+**Pairing codes.** alpheus registers its own BlueZ agent (`KeyboardDisplay`) and answers only for the
+device being paired. A passkey or a PIN to type on the device shows under it as
+`Type 482 913 then ⏎` (a PIN as BlueZ gives it); a code to compare shows as the device's tag,
+`Code 482 913? ⏎`: Enter says yes, any other key, or closing the panel, rejects it. The code has no
+timeout; BlueZ's own pairing timeout ends it. A code to type into alpheus, an authorization and a
+service are rejected. Closing the panel or leaving the detail during a pairing replies to the
+question, cancels the pairing and unregisters the agent, in that order.
+
+**The headset row.** When the default sink is a Bluetooth device that offers both kinds of profile,
+a `‹ Hi-Fi ›` / `‹ Mic ›` row sits between the volume and the brightness; Space, Enter, ← → or a click
+switch to the other kind, with `wpctl set-profile <device id> <index>`, choosing that kind's
+available profile of the highest priority (Hi-Fi: names starting `a2dp-sink`; Mic: `headset-head-unit`).
+The row is hidden for a device whose active profile is of neither kind (LE Audio, for instance), and
+it follows the profile when WirePlumber switches it on its own. The device and its profiles
+(at most 8 devices of 32 profiles) are kept from the `pw-dump` child the sound source already runs
+(`pipewire.rs`): no process is started when the panel opens.
+
+**How it talks to BlueZ.** What the panel shows is read on the D-Bus thread's read-only connection,
+only while the panel is open: a tap with a scope (Closed, Row or Detail) and its own socket pair, and
+a reader that adds no match rule. What the panel changes goes through `bt_act.rs` in
+`sources/dbus/`, a second connection to the system bus on the event loop, opened only while the detail
+is open or a call is in flight and closed with its agent unregistered first. Its calls are a pinned
+list (the power and trust properties, discovery, removal, connect, disconnect, pair, cancel, and the
+agent's registration), each sent to BlueZ's unique name with auto-start off. When BlueZ goes or its
+owner changes, the connection is let go without a word. The model is `bt.rs` (pure) and the wiring is
+`bt_app.rs`; no thread, no timer of its own: the 30 s deadlines, the 4 s `failed` and the 3 s question
+use the panel's one timer. The guardrails are `the_bluetooth_connection_acts_only_through_act_method`,
+`the_bluetooth_connection_goes_with_the_panel`, `only_bt_app_and_bt_act_name_btact` and
+`the_bluetooth_logs_name_no_device`.
+
+**Not yet verified.** At the trial: BlueZ's D-Bus policy on NixOS (`bluetooth.conf`, no polkit)
+letting the session user call `Pair`, `Connect` and `RegisterAgent` with no `AccessDenied`; a real
+pairing of a keyboard (a passkey to type); the headset switch with WirePlumber's real profile names;
+that a left click on a connected device disconnects it with no question; and that the switch from Hi-Fi
+to Mic makes the headset row flicker (the sink goes and comes back). See the decisions "Space on a
+blocked Bluetooth radio unblocks it, then powers it on", "Nearby Bluetooth devices are inserted once,
+by signal strength", "A paired Bluetooth device is trusted, and a connect that is already done counts
+as done", "Forgetting a Bluetooth device asks first, as the power menu does", "Bluetooth deadlines
+live in the panel, and a late answer is forgotten", "A pairing is answered by alpheus's own agent, for
+that device only" and "A pairing code has no timeout, and leaving the detail cancels the pairing".
 
 ### VPN
 
