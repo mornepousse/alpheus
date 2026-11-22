@@ -1,7 +1,24 @@
-//! alpheus's state and logic, with no terminal or thread: every input (key,
-//! mouse, worker response, tick) changes the state; requests to the worker
-//! and the external tool to open are left in boxes that the real loop
-//! (run.rs) drains. Everything is tested by calling methods.
+//! The control center's state and logic: the `App` that every input changes.
+//!
+//! A key, a mouse event, a worker answer or a clock tick each arrives as a method call on `App`
+//! and changes its state. What has to reach the outside is left in boxes that the real loop
+//! (`run.rs`) empties: requests for the worker (`take_requests`), an external tool to open
+//! (`take_external`) and a system unit's action (`take_system_unit`, in `diagnostics.rs`). So every
+//! behaviour is tested by calling methods, with no terminal.
+//!
+//! This file holds what every tab shares: the data types (`Data`, `Item`, `Overlay`), the focus,
+//! the sliders and toggles, the commands, the palette and the rule that decides what is read again
+//! and when (`on_tick`). A tab's own state is in the file of its name (`sound.rs`, `displays.rs`,
+//! ...); keys are in `input.rs`, the mouse in `mouse.rs`.
+//!
+//! Never:
+//! - touch the terminal or draw: `ui/` draws from this state;
+//! - start a thread or run a tool: a change is queued with `send_op` and the worker runs it
+//!   (`worker.rs`);
+//! - read the clock: every method that needs the time takes `now` from its caller, so a test can
+//!   pick any time it likes.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, "Refresh"), docs/features/control-center.md.
 
 pub mod action;
 pub mod appearance;
@@ -43,9 +60,12 @@ use worker::{Domain, Op, Request, Update};
 pub const STEP: i32 = 5;
 /// Lifetime of an ephemeral message.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
-/// A failed domain is re-read at most once per this period.
+/// A failed domain is re-read at most once per this period (spec § 3: "a failing domain is
+/// retried at most every 15 s"). Without it a broken tool would be launched again at every tick.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
+/// A value the worker may not have read yet: `Loading` before the first answer, `Ready` once read,
+/// `Failed` with the message the tab shows when the read failed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Loadable<T> {
     #[default]
@@ -84,6 +104,8 @@ impl<T> From<BResult<T>> for Loadable<T> {
     }
 }
 
+/// What the worker has read, one field per domain that the Home, Sound, Network, Bluetooth and
+/// Displays tabs show.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Data {
     pub volume: Loadable<Volume>,
@@ -97,6 +119,7 @@ pub struct Data {
     pub displays: Loadable<Vec<Output>>,
 }
 
+/// A slider: the default output's volume, the backlight, or one node of the Sound tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SliderId {
     Volume,
@@ -104,6 +127,7 @@ pub enum SliderId {
     Node(u32),
 }
 
+/// A switch with two states, shown on Home and on the tab of its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToggleId {
     Wifi,
@@ -127,12 +151,14 @@ pub enum Item {
     Diag(DiagItem),
 }
 
+/// The command palette's state: the text typed and the entry under the cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Palette {
     pub query: String,
     pub selected: usize,
 }
 
+/// The power confirmation box (`Overlay::Confirm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Confirm {
     pub action: PowerAction,
@@ -140,6 +166,7 @@ pub struct Confirm {
     pub yes_focused: bool,
 }
 
+/// What is drawn over the tab and takes the keys first; at most one at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     None,
@@ -161,12 +188,14 @@ pub enum Overlay {
     },
 }
 
+/// The text typed after `/`, and whether the search box still has the keys (`editing`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Search {
     pub text: String,
     pub editing: bool,
 }
 
+/// A corner message that disappears at `until` (see `TOAST_TTL`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub text: String,
@@ -174,6 +203,8 @@ pub struct Toast {
     pub until: Instant,
 }
 
+/// What the status line (classic layout) and the rail's header say: the last message, the last
+/// action's error and the startup warning.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Status {
     pub last: Option<String>,
@@ -183,6 +214,7 @@ pub struct Status {
     pub warning: Option<String>,
 }
 
+/// The name a toggle goes by, in its row, its toast and the palette.
 pub fn toggle_label(id: ToggleId) -> &'static str {
     match id {
         ToggleId::Wifi => "Wi-Fi",
@@ -192,6 +224,7 @@ pub fn toggle_label(id: ToggleId) -> &'static str {
     }
 }
 
+/// The word that starts an action's failure message (`Volume: ...`).
 fn op_label(op: &Op) -> String {
     match op {
         Op::SetVolume(..) => "Volume".into(),
@@ -229,9 +262,12 @@ fn update_domain(u: &Update) -> Option<Domain> {
     })
 }
 
+/// Everything the control center remembers. The real loop (`run.rs`) owns one.
 pub struct App {
+    /// The tab shown.
     pub tab: Tab,
     pub data: Data,
+    /// Index of the focused item in `items()`.
     pub focus: usize,
     pub overlay: Overlay,
     pub search: Search,
@@ -240,14 +276,19 @@ pub struct App {
     pub keymap: Keymap,
     pub config: Config,
     pub theme: Theme,
+    /// Set by the Quit action; `run.rs` leaves its loop when it sees it.
     pub should_quit: bool,
     pub displays: DisplaysTab,
     pub appearance: AppearanceTab,
     pub diag: DiagnosticsTab,
     /// Slider currently being dragged with the mouse, and its bar.
     pub(crate) dragging: Option<(SliderId, Rect)>,
+    /// When the shown tab was last asked for a whole refresh (`on_tick` compares it with the
+    /// tab's period).
     last_refresh: Instant,
+    /// Requests for the worker, emptied by `take_requests`.
     requests: Vec<Request>,
+    /// An external tool to open, emptied by `take_external`.
     external: Option<External>,
     /// A system unit's action waiting to run in the TUI's own window (see `take_system_unit`).
     system_unit: Option<(UnitAction, String)>,
@@ -267,7 +308,8 @@ impl App {
         App::with_tab(config, theme, keymap, Tab::Home, now)
     }
 
-    /// Opens directly on `tab`: only its domains are read.
+    /// Opens directly on `tab`: only its domains are read (the refresh rule: only the shown tab is
+    /// read).
     pub fn with_tab(config: Config, theme: Theme, keymap: Keymap, tab: Tab, now: Instant) -> App {
         let mut app = App {
             tab,
@@ -309,7 +351,8 @@ impl App {
         self.external.take()
     }
 
-    /// Startup warning (config, theme, keys): status line.
+    /// Adds a startup warning (config, theme, keys), kept for the whole run and shown on the
+    /// status line.
     pub fn warn(&mut self, msg: String) {
         self.status.warning = Some(match self.status.warning.take() {
             Some(prev) => format!("{prev} ; {msg}"), // several faulty files
@@ -317,6 +360,7 @@ impl App {
         });
     }
 
+    /// The command that opens `e`, from `[commands]` in config.toml (or its default).
     pub fn external_argv(&self, e: External) -> Vec<String> {
         let c = &self.config.commands;
         match e {
@@ -326,13 +370,15 @@ impl App {
         }
     }
 
+    /// The external tool has returned: an error becomes a message, and the tab is read again
+    /// because the tool may have changed anything.
     pub fn external_done(&mut self, e: External, r: Result<(), String>, now: Instant) {
         if let Err(msg) = r {
             let msg = format!("{}: {msg}", e.label());
             self.status.error = Some(msg.clone());
             self.toast(msg, true, now);
         }
-        self.refresh_tab(now); // the tool may have changed anything
+        self.refresh_tab(now);
     }
 
     // ── Worker responses ─────────────────────────────────────────────
@@ -357,10 +403,12 @@ impl App {
         }
     }
 
+    /// Whether an action on `d` is still waiting for its answer (see the `pending` field).
     fn is_pending(&self, d: Domain) -> bool {
         self.pending.contains_key(&d)
     }
 
+    /// Applies one answer from the worker: stores a read, or finishes an action.
     pub fn on_update(&mut self, u: Update, now: Instant) {
         if let Some(d) = update_domain(&u) {
             if self.is_pending(d) {
@@ -404,12 +452,15 @@ impl App {
             }
             Update::Superseded(op) => self.op_answered(&op),
         }
-        if let Some(i) = keep.and_then(|k| self.items().iter().position(|i| *i == k)) {
-            self.focus = i;
+        if let Some(kept) = keep {
+            if let Some(i) = self.items().iter().position(|i| *i == kept) {
+                self.focus = i;
+            }
         }
         self.clamp_focus();
     }
 
+    /// An action got its answer: a message, and (except for a slider) a new read of the tab.
     fn op_done(&mut self, op: Op, r: BResult<()>, now: Instant) {
         match r {
             Ok(()) => {
@@ -442,6 +493,7 @@ impl App {
         }
     }
 
+    /// The toast an action's success shows; none for the ones that have nothing to say.
     fn success_message(&self, op: &Op) -> Option<String> {
         let onoff = |id: ToggleId, b: bool| format!("{}: {}", toggle_label(id), if b { "on" } else { "off" });
         Some(match op {
@@ -467,6 +519,7 @@ impl App {
         })
     }
 
+    /// Shows `text` in the corner; at most three at once, the oldest goes first.
     fn toast(&mut self, text: String, error: bool, now: Instant) {
         self.toasts.push(Toast { text, error, until: now + TOAST_TTL });
         if self.toasts.len() > 3 {
@@ -476,6 +529,9 @@ impl App {
 
     // ── Time ─────────────────────────────────────────────────────────
 
+    /// The clock tick (the real loop calls it each turn): drops expired toasts, then asks the
+    /// worker to read the shown tab again once its period has passed (`TabSpec::refresh`). A tab
+    /// with no period (Power, Theme) is never read on a tick.
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
@@ -489,15 +545,20 @@ impl App {
         // (shell-ctl reports every one of its failures) must not be
         // relaunched every second. It's re-read at most every 15 s, and on
         // entering the tab or after an action.
-        let ds: Vec<Domain> =
-            self.tab
-                .domains()
-                .iter()
-                .copied()
-                .filter(|d| {
-                    if self.domain_failed(*d) { self.last_read.get(d).is_none_or(|t| now.duration_since(*t) >= FAILED_RETRY) } else { due }
-                })
-                .collect();
+        let mut ds: Vec<Domain> = Vec::new();
+        for d in self.tab.domains() {
+            let read_now = if self.domain_failed(*d) {
+                match self.last_read.get(d) {
+                    Some(t) => now.duration_since(*t) >= FAILED_RETRY,
+                    None => true,
+                }
+            } else {
+                due
+            };
+            if read_now {
+                ds.push(*d);
+            }
+        }
         if due {
             self.last_refresh = now;
         }
@@ -515,6 +576,8 @@ impl App {
         self.requests.push(Request::Refresh(ds));
     }
 
+    /// Whether the last read of `d` failed. The health read (`Domain::Health`) never counts as
+    /// failed.
     fn domain_failed(&self, d: Domain) -> bool {
         match d {
             Domain::Volume => self.data.volume.is_failed(),
@@ -531,6 +594,7 @@ impl App {
         }
     }
 
+    /// Asks for all of the shown tab's domains now (entering the tab, after an action).
     fn refresh_tab(&mut self, now: Instant) {
         self.push_refresh(self.tab.domains().to_vec(), now);
         self.last_refresh = now;
@@ -538,6 +602,7 @@ impl App {
 
     // ── Navigation ───────────────────────────────────────────────────
 
+    /// Shows tab `t` (the focus goes back to the top and the search is cleared) and reads it.
     pub fn go_tab(&mut self, t: Tab, now: Instant) {
         if t != self.tab {
             if self.tab == Tab::Displays {
@@ -564,6 +629,7 @@ impl App {
         }
     }
 
+    /// The focusable items of the shown tab, in drawing order: each tab's own file builds its list.
     pub fn items(&self) -> Vec<Item> {
         match self.tab {
             Tab::Home => home::items(),
@@ -577,15 +643,18 @@ impl App {
         }
     }
 
+    /// The item under the focus, if the tab has any.
     pub fn focused(&self) -> Option<Item> {
         self.items().get(self.focus).cloned()
     }
 
+    /// Moves the focus by `delta` items and stops at the first or the last.
     pub(crate) fn move_focus(&mut self, delta: i32) {
         let n = self.items().len() as i32;
         self.focus = if n == 0 { 0 } else { (self.focus as i32 + delta).clamp(0, n - 1) as usize };
     }
 
+    /// Brings the focus back inside the list when the list has become shorter.
     pub(crate) fn clamp_focus(&mut self) {
         let n = self.items().len();
         if self.focus >= n {
@@ -593,12 +662,14 @@ impl App {
         }
     }
 
+    /// Whether `label` passes the search (everything does while the search is empty).
     pub fn matches_search(&self, label: &str) -> bool {
         self.search.text.is_empty() || fuzzy::score(&self.search.text, label).is_some()
     }
 
     // ── Commands ─────────────────────────────────────────────────────
 
+    /// Does what a command says: a button, a palette entry or a key reaches it.
     pub fn run_command(&mut self, c: Command, now: Instant) {
         match c {
             Command::ToggleWifi => self.toggle(ToggleId::Wifi, now),
@@ -626,6 +697,8 @@ impl App {
         }
     }
 
+    /// Flips a toggle. The new state is shown at once and the action is queued; reads of that
+    /// domain are then ignored until the action is answered (see `pending`).
     pub(crate) fn toggle(&mut self, id: ToggleId, now: Instant) {
         let Some(on) = self.toggle_loadable(id).ready().copied() else {
             self.toast(format!("{}: unknown state", toggle_label(id)), true, now);
@@ -679,6 +752,9 @@ impl App {
         }
     }
 
+    /// Sets a slider to `value` percent: shown at once, queued for the worker. Nothing is sent when
+    /// the state is unknown or already equal. Brightness never goes below `brightness::MIN_PERCENT`
+    /// (0 % would turn the screen off, which alpheus never does).
     pub fn set_slider(&mut self, id: SliderId, value: i32) {
         let min = if id == SliderId::Brightness { i32::from(brightness::MIN_PERCENT) } else { 0 };
         let v = value.clamp(min, 100) as u8;
@@ -717,12 +793,14 @@ impl App {
         self.send_op(op);
     }
 
+    /// Moves a slider by `delta` percent.
     pub fn nudge_slider(&mut self, id: SliderId, delta: i32) {
         if let Some(cur) = self.slider_value(id) {
             self.set_slider(id, i32::from(cur) + delta);
         }
     }
 
+    /// Moves the energy profile one step along the machine's list and stops at its ends.
     fn cycle_profile(&mut self, dir: i32, now: Instant) {
         let Some(p) = self.data.profiles.ready() else { return };
         let Some(cur) = p.available.iter().position(|n| *n == p.active) else { return };
@@ -733,6 +811,7 @@ impl App {
         }
     }
 
+    /// Closes a confirmation box; `yes` runs what it asked about.
     pub(crate) fn close_confirm(&mut self, yes: bool) {
         match std::mem::replace(&mut self.overlay, Overlay::None) {
             Overlay::Confirm(c) => {
@@ -749,12 +828,16 @@ impl App {
         }
     }
 
+    /// The palette entries that match what is typed, best first (all of them when nothing is typed).
     pub fn palette_matches(&self) -> Vec<(String, Command)> {
         let query = match &self.overlay {
             Overlay::Palette(p) => p.query.as_str(),
             _ => "",
         };
-        let profiles = self.data.profiles.ready().map(|p| p.available.clone()).unwrap_or_default();
+        let profiles = match self.data.profiles.ready() {
+            Some(p) => p.available.clone(),
+            None => Vec::new(),
+        };
         let display_profiles: Vec<String> = self.displays.profiles.iter().map(|p| p.name.clone()).collect();
         let entries = palette_entries(&profiles, &display_profiles);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
@@ -776,25 +859,34 @@ impl App {
 
     // ── Views for rendering ──────────────────────────────────────────
 
+    /// The audio node `id`, an output or an input, once the audio data has loaded.
     fn node(&self, id: u32) -> Option<&AudioNode> {
-        self.data.audio.ready()?.sinks.iter().chain(&self.data.audio.ready()?.sources).find(|n| n.id == id)
+        let audio = self.data.audio.ready()?;
+        audio.sinks.iter().chain(&audio.sources).find(|n| n.id == id)
     }
 
+    /// A slider's value as a `Loadable`, so the drawing can say loading or failed.
     pub fn slider_loadable(&self, id: SliderId) -> Loadable<u8> {
         match id {
             SliderId::Volume => self.data.volume.map(|v| v.percent),
             SliderId::Brightness => self.data.brightness.clone(),
             SliderId::Node(n) => match &self.data.audio {
-                Loadable::Ready(_) => self.node(n).map_or(Loadable::Loading, |x| Loadable::Ready(x.volume.percent)),
+                // The data is read but holds no such node (it left between two reads): loading.
+                Loadable::Ready(_) => match self.node(n) {
+                    Some(x) => Loadable::Ready(x.volume.percent),
+                    None => Loadable::Loading,
+                },
                 other => other.map(|_| 0),
             },
         }
     }
 
+    /// A slider's value, when it is known.
     pub fn slider_value(&self, id: SliderId) -> Option<u8> {
         self.slider_loadable(id).ready().copied()
     }
 
+    /// Whether the slider's node is muted (brightness never is).
     pub fn slider_muted(&self, id: SliderId) -> bool {
         match id {
             SliderId::Volume => self.data.volume.ready().is_some_and(|v| v.muted),
@@ -803,6 +895,7 @@ impl App {
         }
     }
 
+    /// The slider's row label; a node's carries a `●` when it is the default.
     pub fn slider_label(&self, id: SliderId) -> String {
         match id {
             SliderId::Volume => "Volume".into(),
@@ -814,6 +907,7 @@ impl App {
         }
     }
 
+    /// A toggle's state as a `Loadable`.
     pub fn toggle_loadable(&self, id: ToggleId) -> Loadable<bool> {
         match id {
             ToggleId::Wifi => self.data.network.map(|n| n.wifi_enabled),

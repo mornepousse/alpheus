@@ -1,3 +1,7 @@
+//! Tests of the shared `App` (`mod.rs`): the worker's answers, the refresh rule, the focus, the
+//! sliders and toggles, the palette and the toasts. No terminal, no worker thread: each test calls
+//! the methods and passes the time it wants.
+
 use super::testing::*;
 use super::*;
 use crate::backends::BackendError;
@@ -393,6 +397,43 @@ fn failed_domain_reread_every_fifteen_seconds() {
     assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "the 15 s period restarts");
     a.on_tick(at(30_200));
     assert!(refreshed(&a.take_requests()).contains(&Domain::Dnd));
+}
+
+/// A node slider reads as loading while the audio data is not there, and when the data is there
+/// but holds no such node; a failed read shows as failed.
+#[test]
+fn a_node_slider_is_loading_until_its_node_is_in_the_data() {
+    let mut a = ready_app();
+    assert_eq!(a.slider_loadable(SliderId::Node(116)), Loadable::Ready(62));
+    assert_eq!(a.slider_loadable(SliderId::Node(999)), Loadable::Loading);
+    a.data.audio = Loadable::Failed("wpctl not found".into());
+    assert_eq!(a.slider_loadable(SliderId::Node(116)), Loadable::Failed("wpctl not found".into()));
+    a.data.audio = Loadable::Loading;
+    assert_eq!(a.slider_loadable(SliderId::Node(116)), Loadable::Loading);
+}
+
+/// The palette lists the energy profiles only once the machine has told which it has.
+#[test]
+fn the_palette_lists_energy_profiles_only_once_they_are_read() {
+    let mut a = ready_app();
+    let labels = |a: &App| a.palette_matches().into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    assert!(labels(&a).contains(&"Profile: Balanced".to_string()));
+    a.data.profiles = Loadable::Loading;
+    assert!(labels(&a).iter().all(|l| !l.starts_with("Profile: ")), "{:?}", labels(&a));
+}
+
+/// A failed domain that has no recorded read yet is read at the next tick, without waiting for the
+/// tab's period (the 15 seconds only space out reads that did happen).
+#[test]
+fn a_failed_domain_never_read_is_read_at_the_next_tick() {
+    let mut a = ready_app();
+    let t0 = Instant::now();
+    a.go_tab(Tab::Home, t0);
+    a.take_requests();
+    a.data.dnd = Loadable::Failed("shell-ctl failed (code 1)".into());
+    a.last_read.remove(&Domain::Dnd);
+    a.on_tick(t0 + Duration::from_millis(100));
+    assert_eq!(refreshed(&a.take_requests()), vec![Domain::Dnd]);
 }
 
 #[test]

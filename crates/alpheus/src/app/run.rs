@@ -1,6 +1,20 @@
-//! Real loop: terminal, worker thread, events, external tools. The loop
-//! itself has no unit test (covered by tests/first_render.rs and the real
-//! trial run); its exit decision and what closing does with a display trial do.
+//! The real program: the terminal, the worker thread, the event loop and the external tools.
+//!
+//! `run` reads the options and the config files (`build_app`), starts the worker (`worker::spawn_with`)
+//! and a guard thread, then runs `event_loop`: each turn it sends the requests the `App` queued,
+//! draws, opens an external tool if one is asked for, waits up to 100 ms for a key or mouse event,
+//! hands over the worker's answers and calls `App::on_tick`. The loop itself has no unit test
+//! (`tests/first_render.rs` covers the first render, and a real run covers the rest); its exit
+//! decision, `parse_options` and what closing does with a display trial are tested.
+//!
+//! Never:
+//! - decide anything about a tab: every decision is in `App`; this file only moves things between
+//!   the `App`, the worker, the terminal and the tools;
+//! - leave the terminal broken or a tool running: `Cleanup` restores the one and kills the other
+//!   on every way out, and the guard thread ends the process after a stop signal if the loop is
+//!   stuck.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 6, "Guardrails"), docs/features/control-center.md.
 
 use super::App;
 use super::action::Tab;
@@ -114,6 +128,8 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
     Ok(Options { tab })
 }
 
+/// Builds the `App` from the files in `dir`: config.toml, the theme, the keys and displays.toml. A
+/// file that cannot be read or is invalid gives its default and a startup warning, never an error.
 pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     let (config, w_config) = Config::load(&dir.join("config.toml"));
     // The mode the daemon publishes (read from `$XDG_RUNTIME_DIR/alpheus/mode`), read only in mode auto; no D-Bus here.
@@ -129,7 +145,7 @@ pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     app.displays.profiles = display_profiles;
     app.displays.profiles_path = Some(displays_toml);
     // Unreadable or invalid file: saving would overwrite it without having
-    // read it, refused until Mae has fixed it.
+    // read it, so saving is refused until the file has been fixed.
     app.displays.profiles_invalid = w_displays.is_some();
     app.appearance.dir = Some(dir.to_path_buf());
     app.appearance.runtime = runtime;
@@ -159,6 +175,7 @@ impl Drop for Cleanup {
     }
 }
 
+/// Runs the control center until the user quits or a stop signal arrives.
 pub fn run(options: Options) -> io::Result<()> {
     install_signals()?;
     let app = build_app(&config_dir(), options.tab, Instant::now());
@@ -176,6 +193,8 @@ pub fn run(options: Options) -> io::Result<()> {
     r
 }
 
+/// The loop: see the header. It returns when `should_exit` says so; the `Cleanup` guard restores the
+/// terminal after it.
 fn event_loop(
     terminal: &mut DefaultTerminal,
     mut app: App,
@@ -307,7 +326,7 @@ mod tests {
         assert!(fake.calls().is_empty(), "no trial, or kept: {:?}", fake.calls());
     }
 
-    /// Final review (B-M3): closing with a displays action still in the worker sends what is
+    /// Closing with a displays action still in the worker sends what is
     /// queued and waits for its answer before deciding on the revert: a Keep pressed just before
     /// quitting reaches the daemon, a try is answered before the close-time revert follows it.
     #[test]

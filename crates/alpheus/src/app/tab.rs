@@ -1,18 +1,26 @@
-//! The per-tab facts that are plain data: one `TabSpec` row per `Tab`, in
-//! tab order. To add a tab: add its `Tab` variant (action.rs) and one row
-//! here (a test checks there is exactly one, in variant order), then its
-//! items (`App::items`), its view (`ui/tabs.rs`) and its shortcut hints
-//! (`ui/mod.rs`), which are code, not data. A tab's own code goes in `app/<tab>.rs` and
-//! `ui/<tab>.rs`, which every tab has.
+//! The per-tab facts that are plain data: one `TabSpec` row per `Tab`, in tab order.
+//!
+//! To add a tab: add its `Tab` variant (`action.rs`) and one row here (a test checks there is
+//! exactly one, in variant order), then its items (`App::items`), its view (`ui/tabs.rs`) and its
+//! shortcut hints (`ui/mod.rs`), which are code, not data. A tab's own code goes in `app/<tab>.rs`
+//! and `ui/<tab>.rs`, which every tab has.
+//!
+//! Never:
+//! - read anything or draw anything: this file is constants and one function (`digit`);
+//! - hold a tab's state: that is in `app/<tab>.rs`.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, "Refresh": the periods), docs/features/control-center.md.
 
 use super::action::Tab;
 use super::worker::Domain;
 use std::time::Duration;
 
+/// What is known about one tab without running anything; see `TABS`.
 pub struct TabSpec {
     /// The tab this row describes; equals the row's index in `TABS`.
     pub tab: Tab,
-    /// Label in the tab bar, the status line, the palette and the help.
+    /// Label in the tab bar, the status line, the palette and the help (the rail's entries and
+    /// header use it too).
     pub title: &'static str,
     /// Name on the command line (`alpheus --tab <slug>`).
     pub slug: &'static str,
@@ -28,7 +36,8 @@ pub struct TabSpec {
     pub label_width: u16,
 }
 
-/// One row per tab, in tab order.
+/// One row per tab, in tab order. The order is the order of the tab bar and of the keys 1 to 8,
+/// so Displays comes before Theme and Diag, as in `Tab`.
 pub const TABS: [TabSpec; 8] = [
     TabSpec {
         tab: Tab::Home,

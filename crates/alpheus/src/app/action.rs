@@ -1,5 +1,14 @@
-//! Vocabulary of the application: tabs, keyboard intents (Action), business
-//! effects (Command), external tools, palette entries.
+//! The control center's vocabulary: tabs, keyboard intents (`Action`), what a button or a palette
+//! entry does (`Command`), the external tools, and the palette's entries.
+//!
+//! These are closed sets, so every place that handles one is a `match` the compiler checks is
+//! complete. The per-tab plain data (`TabSpec`) is in `tab.rs`; what an `Action` or a `Command`
+//! does to the state is in `mod.rs` (`run_command`) and `input.rs` (`do_action`).
+//!
+//! Never:
+//! - change any state or read anything: every function here is a pure lookup or a name.
+//!
+//! See: docs/features/control-center.md.
 
 use super::tab::{TABS, TabSpec};
 use super::worker::Domain;
@@ -7,6 +16,7 @@ use super::{ToggleId, toggle_label};
 use crate::backends::PowerAction;
 use std::time::Duration;
 
+/// One of the eight tabs, in tab order (the order of `TABS` in `tab.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     Home,
@@ -36,19 +46,23 @@ impl Tab {
         &TABS[self.index()]
     }
 
+    /// The tab's label.
     pub fn title(self) -> &'static str {
         self.spec().title
     }
 
+    /// The tab's position, from 0, in tab order.
     pub fn index(self) -> usize {
         // The enum is `repr`-ordered like `TABS` (checked by a test).
         self as usize
     }
 
+    /// The tab to the right; the last one wraps to the first.
     pub fn next(self) -> Tab {
         Tab::ALL[(self.index() + 1) % Tab::ALL.len()]
     }
 
+    /// The tab to the left; the first one wraps to the last.
     pub fn prev(self) -> Tab {
         Tab::ALL[(self.index() + Tab::ALL.len() - 1) % Tab::ALL.len()]
     }
@@ -89,6 +103,7 @@ pub enum External {
 }
 
 impl External {
+    /// The button's label, and the palette entry's.
     pub fn label(self) -> &'static str {
         match self {
             External::Mixer => "Per-app mixer",
@@ -114,6 +129,7 @@ pub enum Command {
 }
 
 impl Command {
+    /// The text of the button or the palette entry.
     pub fn label(&self) -> String {
         match self {
             Command::ToggleWifi => toggle_label(ToggleId::Wifi).into(),
@@ -196,6 +212,8 @@ impl Action {
         Action::Refresh,
     ];
 
+    /// The action's name in `[keys]` of config.toml. The tab keys are `tab_1` to `tab_8`, numbered
+    /// as the tab bar is.
     pub fn name(self) -> String {
         match self {
             Action::Quit => "quit".into(),
@@ -224,6 +242,7 @@ impl Action {
         }
     }
 
+    /// The action called `s` in config.toml, if there is one.
     pub fn from_name(s: &str) -> Option<Action> {
         Action::ALL.into_iter().find(|a| a.name() == s)
     }
@@ -258,6 +277,7 @@ impl Action {
     }
 }
 
+/// The energy profile's name as shown; a name the machine invents is shown as it is.
 pub fn profile_label(p: &str) -> String {
     match p {
         "performance" => "Performance",
