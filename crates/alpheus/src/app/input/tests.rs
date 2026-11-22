@@ -1,3 +1,6 @@
+//! Tests of the keyboard (`input.rs`): each overlay, the search box and the key-table actions,
+//! driven by key events on an `App` with ready data.
+
 use super::super::testing::*;
 use super::super::worker::{Op, Request};
 use super::super::{Confirm, SliderId, ToggleId};

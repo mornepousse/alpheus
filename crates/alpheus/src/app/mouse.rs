@@ -1,4 +1,16 @@
-//! Mouse: click, drag, wheel, on the regions recorded at render time.
+//! The mouse: a click, a drag or a wheel turn, looked up in the regions recorded when the screen
+//! was last drawn.
+//!
+//! `ui::render` returns a `HitMap` (rectangles with a `Target` each); `on_mouse` finds the one
+//! under the pointer and calls the same `App` methods the keys call, so a click and a key do the
+//! same thing. A press on a slider also starts a drag that `set_slider` follows until the button
+//! goes up. The keyboard equivalent is `input.rs`.
+//!
+//! Never:
+//! - draw or know a layout: the regions come in as an argument;
+//! - read the clock: `on_mouse` takes `now` from its caller.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Mouse (everywhere)"), docs/features/control-center.md.
 
 use super::action::{Command, Tab};
 use super::{App, Item, Overlay, PanelField, STEP};
@@ -8,6 +20,8 @@ use ratatui::layout::Rect;
 use std::time::Instant;
 
 impl App {
+    /// Handles one mouse event over the regions of the last drawn screen (`hits`). Only the left
+    /// button acts, with the wheel; anything else is ignored.
     pub fn on_mouse(&mut self, e: MouseEvent, hits: &HitMap, now: Instant) {
         let hit = hits.at(e.column, e.row);
         match e.kind {
@@ -24,6 +38,8 @@ impl App {
         }
     }
 
+    /// A left press at column `x` on `hit`. With an overlay open the press belongs to it and
+    /// nothing below it is reached.
     fn click(&mut self, hit: Option<(Rect, Target)>, x: u16, now: Instant) {
         if self.overlay != Overlay::None {
             match hit.map(|(_, t)| t) {
@@ -70,7 +86,15 @@ impl App {
                 if let Some(i) = self.items().iter().position(|it| *it == Item::Profile) {
                     self.focus = i;
                 }
-                let choice = self.data.profiles.ready().and_then(|p| p.available.get(j).filter(|name| **name != p.active)).cloned();
+                // The profile at position `j`, unless it is the one already active.
+                let mut choice = None;
+                if let Some(p) = self.data.profiles.ready() {
+                    if let Some(name) = p.available.get(j) {
+                        if *name != p.active {
+                            choice = Some(name.clone());
+                        }
+                    }
+                }
                 if let Some(name) = choice {
                     self.run_command(Command::SetProfile(name), now);
                 }
@@ -107,12 +131,15 @@ impl App {
         }
     }
 
+    /// A press on a field of an output's settings panel puts the focus on it.
     fn panel_focus(&mut self, f: PanelField) {
         if let Overlay::Panel(p) = &mut self.overlay {
             p.field = f;
         }
     }
 
+    /// A wheel turn: `dir` is 1 for up, -1 for down. On the palette it moves the cursor; with any
+    /// other overlay open it does nothing; on a slider it adjusts it; elsewhere it moves the focus.
     fn wheel(&mut self, hit: Option<(Rect, Target)>, dir: i32) {
         if matches!(self.overlay, Overlay::Palette(_)) {
             let count = self.palette_matches().len();
@@ -141,6 +168,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the mouse (`mouse.rs`): the screen is drawn at 80 by 24, then events are sent onto
+    //! the regions that drawing recorded.
+
     use super::super::testing::*;
     use super::super::worker::{Op, Request};
     use super::super::{Confirm, Palette, SliderId};

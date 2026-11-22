@@ -1,11 +1,23 @@
-//! Keyboard: overlays first (confirmation, palette, help), then search
-//! entry, then the configurable key table.
+//! The keyboard: which part of the `App` a key press goes to, and what the keys mean there.
+//!
+//! A key goes to the first of these that is open: an overlay (a confirmation, the palette, help,
+//! the display trial's Keep box, an output's settings panel, the save-profile box), then the
+//! search box, then the Diag tab's own views, then the key table (`keymap.rs`), whose `Action`
+//! `do_action` carries out. The mouse equivalent is in `mouse.rs`.
+//!
+//! Never:
+//! - run a tool or read anything: a key only changes the `App` (and queues requests, through the
+//!   methods it calls);
+//! - read the clock: `on_key` takes `now` from its caller.
+//!
+//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Keyboard").
 
 use super::action::{Action, Tab};
 use super::{App, Confirm, Item, Overlay, Palette, PanelField, Search};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Instant;
 
+/// What one key press means inside the command palette; see `key_palette`.
 enum PaletteKey {
     Close,
     Run,
@@ -16,15 +28,19 @@ enum PaletteKey {
     Ignore,
 }
 
+/// A key with no Ctrl or Alt held: a character typed, not a shortcut.
 fn plain(e: &KeyEvent) -> bool {
     !e.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 impl App {
+    /// Handles one key. A release is ignored (only presses and repeats act).
     pub fn on_key(&mut self, e: KeyEvent, now: Instant) {
         if e.kind == KeyEventKind::Release {
             return;
         }
+        // `return self.key_x(e)` ends this function with what `key_x` returns (nothing): an open
+        // overlay takes the key and nothing below sees it.
         match self.overlay {
             Overlay::Confirm(_) | Overlay::UnitConfirm { .. } => return self.key_confirm(e),
             Overlay::Palette(_) => return self.key_palette(e, now),
@@ -53,6 +69,9 @@ impl App {
         self.do_action(a, Instant::now());
     }
 
+    /// A power or unit confirmation: Esc, Back and Quit cancel; Enter answers with the focused
+    /// button. A confirmation starts on "Cancel" (`Confirm::yes_focused`), so Enter by reflex
+    /// powers nothing off.
     fn key_confirm(&mut self, e: KeyEvent) {
         let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
         match action {
@@ -142,7 +161,8 @@ impl App {
         }
     }
 
-    /// Name of the profile to save, then confirmation if it already exists.
+    /// The save-profile box: the name is typed, then, if that name already exists, a replace
+    /// confirmation (`SaveDialog::replace`) with the same buttons as the other boxes.
     fn key_save(&mut self, e: KeyEvent, now: Instant) {
         let replace = matches!(&self.overlay, Overlay::SaveProfile(d) if d.replace);
         if replace {
@@ -180,6 +200,7 @@ impl App {
         }
     }
 
+    /// The help box: Esc, Back, Help or Quit close it; every other key is ignored.
     fn key_help(&mut self, e: KeyEvent) {
         let a = self.keymap.lookup(&e);
         if e.code == KeyCode::Esc || matches!(a, Some(Action::Back | Action::Help | Action::Quit)) {
@@ -187,6 +208,9 @@ impl App {
         }
     }
 
+    /// The command palette: text typed filters the entries and puts the cursor on the first; Up,
+    /// Down and Tab move it; Enter runs the entry; Esc or the palette key closes. A key with Ctrl or
+    /// Alt is no text.
     fn key_palette(&mut self, e: KeyEvent, now: Instant) {
         let k = match e.code {
             KeyCode::Esc => PaletteKey::Close,
@@ -223,6 +247,8 @@ impl App {
         }
     }
 
+    /// The search box after `/`: text filters the tab's list; Enter keeps the filter and gives the
+    /// keys back; Esc clears it. Any other key is ignored and does not move the focus.
     fn key_search(&mut self, e: KeyEvent) {
         match e.code {
             KeyCode::Esc => self.search = Search::default(),
@@ -237,6 +263,8 @@ impl App {
         self.clamp_focus();
     }
 
+    /// Carries out a key-table action. The Theme tab and the Diag tab, when shown, get the first
+    /// try (`appearance_action`, `diagnostics_action`): an action they handle stops here.
     fn do_action(&mut self, a: Action, now: Instant) {
         if self.tab == Tab::Appearance && self.appearance_action(a, now) {
             return;
@@ -246,6 +274,7 @@ impl App {
         }
         match a {
             Action::Quit => self.should_quit = true,
+            // Back undoes one thing at a time: a search first, then the tab (back to Home).
             Action::Back => {
                 if !self.search.text.is_empty() {
                     self.search = Search::default();
@@ -278,6 +307,8 @@ impl App {
                 _ => {}
             },
             Action::Activate => self.activate(now),
+            // Only the Diag tab acts on these two, and `diagnostics_action` took them above; on any
+            // other tab they do nothing.
             Action::UnitRestart | Action::UnitReset => {}
             Action::Refresh => self.refresh_tab(now),
         }

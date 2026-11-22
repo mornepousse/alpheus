@@ -1,11 +1,23 @@
-//! Key table: standard conventions (Ctrl+P, F1, Esc…), plus D/H/T/N
-//! (can be disabled), all overridable in config.toml.
+//! The key table: which key press is which `Action`.
+//!
+//! `Chord` is one key with its modifiers, written and read as text ("ctrl+p", "shift+tab", "f1").
+//! `Keymap` holds, for each `Action`, the chords bound to it: the standard conventions (Ctrl+P,
+//! F1, Esc, the arrows) plus `d`, `h`, `t`, `n` for left, down, up and right (Dvorak navigation,
+//! `[keys] dvorak_nav = false` turns them off). `[keys]` in config.toml overrides any of them by
+//! action name. `input.rs` asks `lookup` what a key press means; the help box and the shortcut
+//! bar ask for the labels.
+//!
+//! Never:
+//! - read a file or a config itself: it is handed a `KeysConfig`;
+//! - leave one chord on two actions: an override takes its keys from every other action.
+//!
+//! See: docs/features/control-center.md ("The default keymap").
 
 use super::action::Action;
 use crate::config::KeysConfig;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// A key with its modifiers, normalized.
+/// A key with its modifiers, normalized: a character never carries Shift (see `from_event`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub code: KeyCode,
@@ -41,7 +53,10 @@ impl Chord {
         } else if let Some(p) = s.strip_suffix("++") {
             (p, "+")
         } else {
-            s.rsplit_once('+').unwrap_or(("", s))
+            match s.rsplit_once('+') {
+                Some(pair) => pair,
+                None => ("", s),
+            }
         };
         let mut mods = KeyModifiers::NONE;
         for m in mods_part.split('+').filter(|m| !m.is_empty()) {
@@ -129,6 +144,9 @@ impl Chord {
     }
 }
 
+/// The keys an action has when config.toml says nothing, as text `Chord::parse` reads. The
+/// Dvorak keys are added only when `dvorak` is set. A tab key is its digit (`tab::digit`), none
+/// for a tab past the ninth.
 fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
     let mut v = match a {
         Action::Quit => vec!["q"],
@@ -167,6 +185,7 @@ fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
     v
 }
 
+/// The chords bound to each action.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Keymap {
     /// In Action::ALL order (used by the help screen).
@@ -180,6 +199,8 @@ impl Default for Keymap {
 }
 
 impl Keymap {
+    /// The default table. The keys are written in this file, so `expect` cannot fail while the
+    /// tests that build `Keymap::default()` pass.
     pub fn defaults(dvorak_nav: bool) -> Keymap {
         let bindings = Action::ALL
             .into_iter()
@@ -202,6 +223,7 @@ impl Keymap {
         Ok(km)
     }
 
+    /// Binds `action` to exactly `chords` and takes those chords away from every other action.
     fn set(&mut self, action: Action, chords: Vec<Chord>) {
         for (a, cs) in &mut self.bindings {
             if *a == action {
@@ -212,20 +234,36 @@ impl Keymap {
         }
     }
 
+    /// The action a key press is bound to, if any.
     pub fn lookup(&self, e: &KeyEvent) -> Option<Action> {
         let c = Chord::from_event(e);
-        self.bindings.iter().find(|(_, cs)| cs.contains(&c)).map(|(a, _)| *a)
+        for (action, chords) in &self.bindings {
+            if chords.contains(&c) {
+                return Some(*action);
+            }
+        }
+        None
     }
 
+    /// The chords bound to `a` (none when the user unbound it).
     pub fn keys(&self, a: Action) -> &[Chord] {
-        self.bindings.iter().find(|(b, _)| *b == a).map(|(_, cs)| cs.as_slice()).unwrap_or(&[])
+        for (action, chords) in &self.bindings {
+            if *action == a {
+                return chords.as_slice();
+            }
+        }
+        &[]
     }
 
     /// First key of the action (shortcut bar), empty if none.
     pub fn label(&self, a: Action) -> String {
-        self.keys(a).first().map(Chord::label).unwrap_or_default()
+        match self.keys(a).first() {
+            Some(chord) => chord.label(),
+            None => String::new(),
+        }
     }
 
+    /// Every action with its chords, in `Action::ALL` order.
     pub fn all(&self) -> &[(Action, Vec<Chord>)] {
         &self.bindings
     }
