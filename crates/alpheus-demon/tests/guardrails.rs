@@ -1611,7 +1611,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "compositor/sway.rs",
     "sources/sway.rs",
     "session.rs",
-    "power.rs",
+    "power/mod.rs",
     "privacy.rs",
     "camera_dev.rs",
     "camera_app.rs",
@@ -3042,7 +3042,7 @@ fn every_power_menu_activation_is_a_configured_session() {
 #[test]
 fn the_power_menu_has_no_panicking_path() {
     let files = source_files();
-    for name in ["power.rs", "power_app.rs"] {
+    for name in ["power/mod.rs", "power/app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -3489,7 +3489,7 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
 fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (popup, power_app) = (src("popup.rs"), src("power_app.rs"));
+    let (popup, power_app) = (src("popup.rs"), src("power/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("(p.ops().closed)(self)"), "popup_close must let a module popup's hooks run: {close}");
     let row = popup_ops_row(&power_app);

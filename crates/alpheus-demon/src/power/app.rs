@@ -5,25 +5,39 @@
 
 use crate::actions::Button;
 use crate::keys::Key;
+use crate::launcher::surface::CloseReason;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::power::{Power, PowerAction};
+use crate::quick_app::verb_debounced;
 use crate::session::Session;
 use crate::wayland::App;
 use alpheus_commun::exec::Executor;
+use alpheus_commun::launcher_ipc::{Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
 
 /// The power menu's row of `popup::POPUPS`.
 pub(crate) const OPS: PopupOps = PopupOps {
     kind: ModulePopup::Power,
-    toggle: |app, qh, anchor, _| app.power_toggle(qh, anchor),
+    toggle: |app, qh, anchor, _| app.power_toggle(qh, anchor, Input::Grab),
     key: App::power_key,
     pointer: App::power_pointer,
     flush: no_hook,
     // Whatever the reason: the question's timer goes with the menu (power spec § 4).
     closed: App::power_closed,
 };
+
+/// What `--power` answers when the menu has nothing to show (no `[quick]` session command at all).
+pub(crate) fn power_refusal(config: &crate::config::QuickConfig) -> Option<&'static str> {
+    crate::session::configured(config).is_empty().then_some("no session command is set ([quick] lock, logout, reboot, poweroff)")
+}
+
+/// What `--power` answers when it cannot open the menu now: no command, or no bar (`has_anchor`
+/// false). Decided before anything is closed.
+pub(crate) fn power_open_refusal(config: &crate::config::QuickConfig, has_anchor: bool) -> Option<&'static str> {
+    power_refusal(config).or((!has_anchor).then_some("no bar to open the power menu under"))
+}
 
 /// Spawns `s`'s command `argv` (`[quick]`'s, as given), never waiting (power spec § 3). The log
 /// line: "power: <word>", or "power: <word> could not start (<error>)"; never the command itself,
@@ -67,8 +81,40 @@ impl App {
         self.power_action(action);
     }
 
-    /// A left press on the power button: toggles its menu under it (a second press closes it).
-    pub(crate) fn power_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
+    /// `alpheus-launch --power` (tools spec § 5), answered before the launcher's guard
+    /// (`launcher/socket_glue.rs`): toggles the menu under the bar's right end on the focused
+    /// output, the keyboard taken without a grab. An open launcher is closed first; a verb within
+    /// the debounce of the verb's own open is ignored; an error when no `[quick]` session command
+    /// is set.
+    pub(crate) fn power_verb(&mut self, qh: &QueueHandle<App>, request: &Request) -> Reply {
+        if !matches!(request, Request::Power) {
+            return Reply::Done;
+        }
+        let anchor = self.quick_anchor();
+        if let Some(refusal) = power_open_refusal(&self.bar.config.quick, anchor.is_some() || self.power_shown()) {
+            return Reply::Error(refusal.into());
+        }
+        if self.power_shown() {
+            if verb_debounced(self.power_verb_opened, Instant::now()) {
+                log("power: toggle debounced");
+            } else {
+                self.popup_close(PopupClose::Verb);
+            }
+            return Reply::Done;
+        }
+        // Everything that can refuse is known: only now is an open launcher closed.
+        if let Some(anchor) = anchor {
+            if self.launcher.is_some() {
+                self.launcher_guarded("power", |app| app.launcher_close(CloseReason::Replaced));
+            }
+            self.power_toggle(qh, anchor, Input::Keys);
+        }
+        Reply::Done
+    }
+
+    /// A left press on the power button (`Input::Grab`) or the verb (`Input::Keys`): toggles its
+    /// menu under it (a second press closes it).
+    pub(crate) fn power_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor, input: Input) {
         if self.power_shown() {
             self.popup_close(PopupClose::OutsideClick);
             return;
@@ -76,7 +122,8 @@ impl App {
         let Some(menu) = Power::new(&self.bar.config.quick) else { return };
         let (rows, entries) = (menu.render(), menu.describe());
         let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Power(menu), columns, height, Input::Grab) {
+        if self.popup_open(qh, anchor, PopupBody::Power(menu), columns, height, input) {
+            self.power_verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("power menu shown ({entries})"));
         }
@@ -138,6 +185,7 @@ impl App {
 
     /// The menu went, whatever closed it (`popup_close`): its timer goes too.
     pub(crate) fn power_closed(&mut self) {
+        self.power_verb_opened = None;
         self.power_timer.sync_opt(self.loop_handle.as_ref(), None, App::power_tick);
     }
 }
@@ -148,6 +196,29 @@ mod tests {
     use crate::config::QuickConfig;
     use alpheus_commun::exec::ExecError;
     use alpheus_commun::exec::fake::FakeExecutor;
+
+    /// The verb cannot open the menu with no bar to anchor it under: refused, and (the host's
+    /// glue) the open launcher is left alone.
+    #[test]
+    fn the_verb_is_refused_without_a_bar_to_open_under() {
+        let c = QuickConfig::default();
+        assert_eq!(power_open_refusal(&c, true), None);
+        assert_eq!(power_open_refusal(&c, false), Some("no bar to open the power menu under"));
+        // The session commands' refusal comes first.
+        let none = QuickConfig { lock: Vec::new(), logout: Vec::new(), reboot: Vec::new(), poweroff: Vec::new(), ..QuickConfig::default() };
+        assert_eq!(power_open_refusal(&none, false), power_refusal(&none));
+    }
+
+    /// `--power` is refused only with all four `[quick]` commands empty; one is enough to open.
+    #[test]
+    fn the_verb_is_refused_only_without_any_session_command() {
+        let mut c = QuickConfig::default();
+        assert_eq!(power_refusal(&c), None);
+        (c.lock, c.logout, c.reboot, c.poweroff) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(power_refusal(&c), Some("no session command is set ([quick] lock, logout, reboot, poweroff)"));
+        c.logout = vec!["leave".into()];
+        assert_eq!(power_refusal(&c), None);
+    }
 
     /// Power spec § 3: the command as given, spawned once; the log line names the entry, never the
     /// command (a configured path may hold the user's name).
