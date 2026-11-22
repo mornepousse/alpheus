@@ -14,7 +14,8 @@ assistant, find this, read it and change it?
 
 ## 1. A module says what it is, what it never does, and where to read more
 
-Every `.rs` file starts with a `//!` header in four parts, in this order:
+Every `.rs` file starts with a `//!` header in four parts, in this order (test files are the
+exception: a short `//!` saying what the file tests is enough):
 
 1. one plain sentence saying what the file is;
 2. a short paragraph of what it holds and how it fits with its neighbours, if that is needed;
@@ -53,7 +54,10 @@ Every fact of the old header is still there; the new one adds what an unfamiliar
 
 A word of warning: some guardrail tests read a file's text, comments included, for forbidden
 words (`thread::`, `spawn(`, `.unwrap()`). Do not write those exact strings in a comment of a file
-they cover; say it in words ("starts a thread").
+they cover; say it in words ("starts a thread"). Another one reads comments too:
+`the_timer_is_wired_through_one_path` finds the function that owns a line by looking for `fn ` in
+the text, comments included, so a comment containing `fn ` inside `timer_do` would make it name
+the wrong owner.
 
 ## 2. Every non-obvious line says why, in a full sentence
 
@@ -63,16 +67,17 @@ numbers get a sentence.
 Before:
 
 ```rust
-/// A running end further than this from now is not believed when read back from the file.
-const SAVED_AHEAD_MS: u64 = 25 * 3_600_000;
+/// Two deadlines this close are the same one.
+const SAME_DEADLINE: Duration = Duration::from_millis(5);
 ```
 
 After:
 
 ```rust
-/// A running end read back from the state file is not believed when it is further than this from
-/// now. The longest timer is one day, so 25 hours leaves an hour of room.
-const SAVED_AHEAD_MS: u64 = 25 * 3_600_000;
+/// Two deadlines this close are the same one: `timer_sync` leaves an armed deadline alone rather
+/// than re-arm it for a few milliseconds' difference, so the clock tick does not re-arm a timer
+/// already set.
+const SAME_DEADLINE: Duration = Duration::from_millis(5);
 ```
 
 Before:
@@ -167,7 +172,7 @@ fn believable_end(end: u64, now: u64) -> Option<u64> {
 }
 ```
 
-The same rule removes a repeated test. The chip and the popup both asked "is this timer paused?"
+The same rule removes a repeated check. The chip and the popup both asked "is this timer paused?"
 with the same five-line `matches!`; it is now one method, `Timer::paused_now`, which both call.
 
 ## 4. Where a Rust form stays, explain it once, where it is used
@@ -244,11 +249,11 @@ fn minutes_clock_and_length_texts_read_as_written()
 ```
 
 Test names that other documents cite (memory and headless tests are cited with `--exact`) are
-never renamed in a tidy-up commit.
+never renamed in a tidy-up commit. This covers tests cited outside docs/specs/ and docs/plans/.
 
 ## 7. Rules the timer already followed
 
-These needed no change; the lines below show them.
+The timer already followed these, except the last one; the lines below show them.
 
 - **Closed sets are enums, not traits.** `Change` (what can be asked), `End` (what can end) and
   `Phase` are enums, so every place that handles them is a `match` the compiler checks is
@@ -259,7 +264,7 @@ These needed no change; the lines below show them.
   request.** The timer has none.
 - **Every `unsafe` block says why it is sound.** The timer has none.
 - **Early returns.** Functions such as `Timer::chip` return at once for the idle cases and keep
-  the main path unindented.
+  the main path unindented. This one was introduced by the rewrite, not already there.
 
 ## 8. The decisions file
 

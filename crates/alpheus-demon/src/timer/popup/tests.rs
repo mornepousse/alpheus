@@ -21,7 +21,7 @@ fn running_countdown(end: u64, total: u64) -> Timer {
 }
 
 /// A running Pomodoro phase with a minute left.
-fn pomodoro_running(phase: Phase, round: u8) -> Timer {
+fn running_pomodoro(phase: Phase, round: u8) -> Timer {
     Timer::Pomodoro { run: Run::Running(T0 + 60_000), phase, round }
 }
 
@@ -52,7 +52,7 @@ fn the_items_follow_the_state() {
     assert_eq!(items(&Timer::Idle { done: true }), [Countdown, Pomodoro, Stopwatch]);
     assert_eq!(items(&running_countdown(T0 + 1000, 1000)), [Pause, Add, Stop]);
     assert_eq!(items(&paused()), [Resume, Add, Stop]);
-    assert_eq!(items(&pomodoro_running(Phase::Work, 1)), [Pause, Skip, Stop]);
+    assert_eq!(items(&running_pomodoro(Phase::Work, 1)), [Pause, Skip, Stop]);
     assert_eq!(items(&stopwatch()), [Pause, Stop]);
 }
 
@@ -82,15 +82,15 @@ fn the_rows_read_the_state() {
     assert!(r[0].starts_with(&format!(" {TIMER} 24:13")) && r[0].ends_with("of 25:00"), "{:?}", r[0]);
     assert!(r[2].starts_with(&format!(" {PAUSE} Pause")));
     for (t, end) in [
-        (pomodoro_running(Phase::Work, 2), "work 2/4"),
-        (pomodoro_running(Phase::ShortBreak, 2), "break 2/4"),
-        (pomodoro_running(Phase::LongBreak, 4), "long break"),
+        (running_pomodoro(Phase::Work, 2), "work 2/4"),
+        (running_pomodoro(Phase::ShortBreak, 2), "break 2/4"),
+        (running_pomodoro(Phase::LongBreak, 4), "long break"),
     ] {
         let r = row_texts(&rows(&TimerPopup::new(10, &t), &t));
         assert!(r[0].ends_with(end), "{:?}", r[0]);
     }
     assert!(
-        row_texts(&rows(&TimerPopup::new(10, &pomodoro_running(Phase::ShortBreak, 1)), &pomodoro_running(Phase::ShortBreak, 1)))[0]
+        row_texts(&rows(&TimerPopup::new(10, &running_pomodoro(Phase::ShortBreak, 1)), &running_pomodoro(Phase::ShortBreak, 1)))[0]
             .starts_with(&format!(" {BREAK}"))
     );
     let p = paused();
@@ -134,7 +134,7 @@ fn the_keys_move_adjust_and_act() {
     assert_eq!(p.key(&t, Key::Escape, false), TimerAction::Close);
     assert_eq!(p.key(&t, Key::Enter, true), TimerAction::Nothing, "a held Enter acts once");
     assert_eq!(p.key(&t, Key::Down, true), TimerAction::Redraw, "a held arrow moves");
-    let r = pomodoro_running(Phase::Work, 1);
+    let r = running_pomodoro(Phase::Work, 1);
     let mut p = TimerPopup::new(10, &running_countdown(T0 + 1000, 1000));
     let t = running_countdown(T0 + 1000, 1000);
     assert_eq!(p.key(&t, Key::Enter, false), TimerAction::Do(Change::Pause));

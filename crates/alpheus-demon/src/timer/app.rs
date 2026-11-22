@@ -43,7 +43,8 @@ use std::time::{Duration, Instant};
 /// end read back from the file is at most 25 hours ahead. A longer wait is cut to this.
 const WAIT_MAX_MS: u64 = 25 * 3_600_000;
 /// Two deadlines this close are the same one: `timer_sync` leaves an armed deadline alone rather
-/// than re-arm it for a few milliseconds' difference.
+/// than re-arm it for a few milliseconds' difference, so the clock tick does not re-arm a timer
+/// already set.
 const SAME_DEADLINE: Duration = Duration::from_millis(5);
 
 /// The timer's state on the app: the model, the `[timer]` lengths, its one deadline.
@@ -127,7 +128,8 @@ fn total_of(t: &Model) -> Option<u64> {
 }
 
 /// The log line a change makes (the words are fixed: see docs/decisions.md, "Logs carry fixed
-/// words and numbers only"). None when the change was not worth a line: `Seen`, or a change with nothing to act on.
+/// words and numbers only"). None when the change was not worth a line: `Seen`, or a change with
+/// nothing to act on.
 pub(crate) fn change_line(before: &Model, after: &Model, c: Change, _l: &Lengths) -> Option<String> {
     if before == after {
         return None;
@@ -196,7 +198,7 @@ pub(crate) fn wait_for(target_ms: u64, now_ms: u64) -> Duration {
     Duration::from_millis(target_ms.saturating_sub(now_ms).min(WAIT_MAX_MS))
 }
 
-/// The wall clock now, in Unix milliseconds. This is the one place the timer reads the clock.
+/// The wall clock now, in Unix milliseconds. This is the one place the timer reads Unix time.
 ///
 /// A clock set before 1970 reads as 0, and a time too large for the number reads as the largest
 /// number: neither can happen in practice, and neither panics.
@@ -216,7 +218,8 @@ pub(crate) fn step(model: Model, l: &Lengths, now: u64) -> (Model, Option<End>, 
 /// end, what ended, and the timer after the change.
 ///
 /// This order matters: after a laptop resumes, a click on Pause or an Add must not pause or
-/// extend a timer that has already ended. The end comes first, so the change finds nothing to act on.
+/// extend a timer that has already ended. The end comes first, so the change finds nothing to act
+/// on.
 pub(crate) fn change_step(model: Model, c: Change, l: &Lengths, now: u64) -> (Model, Option<End>, Model) {
     let (due, end, _) = step(model, l, now);
     (due, end, due.apply(c, l, now))
@@ -265,7 +268,8 @@ impl App {
             self.timer_end(end);
         }
         if after == before {
-            // The change did nothing, but an end happened: the chip and deadline still need updating.
+            // The change did nothing, but an end happened: the chip and deadline still need
+            // updating.
             if end.is_some() {
                 self.timer_chip();
                 self.timer_sync();
@@ -295,7 +299,8 @@ impl App {
         if !self.timer.enabled {
             return Reply::Error("the timer module is not in modules".into());
         }
-        // The popup verb toggles the popup and changes no timer, so it is handled apart.
+        // The popup verb toggles the popup. It does not go through `timer_do`; opening applies
+        // `Seen`, which clears `done`.
         if *verb == TimerVerb::Popup {
             // A second verb right after the first opened the popup is the compositor firing the
             // key bind twice: ignore it.
@@ -494,7 +499,8 @@ impl App {
         let fx = effects(serving, self.dnd, &self.bar.config.timer.sound);
         if fx.notify {
             // The nested closures hand the server a small job to run: it sends the notice, then
-            // returns what the server wants done next (`take_effects`).
+            // returns the centre's effects (`take_effects`: a notification closed, an action
+            // invoked), which `act` turns into D-Bus signals.
             self.notify_act(move |s| {
                 s.act(|c| {
                     c.notify(n, Instant::now(), minute_now());

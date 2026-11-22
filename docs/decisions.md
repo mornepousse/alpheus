@@ -51,9 +51,11 @@ Date: 2026-11-15 · Source: timer spec "Constraints" and "Approaches"; timer pla
 
 ### The clock's minute tick re-checks the timer
 
-The deadline runs on the event loop's own clock, which stops while the laptop sleeps, so after a
-suspend it fires late. The clock module's minute tick, which follows the wall clock, calls
-`timer_check_clock` as well, so an end that passed during sleep is seen within a minute of waking.
+The deadline is a monotonic timer on the event loop, and monotonic timers do not run while the
+laptop sleeps (timer spec § 1), so after a suspend it fires late. The clock module's tick is also
+a timer on the loop; it is re-aimed at each wall-clock minute (at each second when the clock's
+format shows seconds), so it is at most a minute away. It calls `timer_check_clock` as well, so an
+end that passed during sleep is seen within a minute of waking.
 A deadline that fires early only arms the next one.
 
 Date: 2026-11-15 · Source: timer spec § 1; timer plan 1, decision 4; guardrail `the_timer_is_wired_through_one_path`
@@ -86,8 +88,7 @@ Date: 2026-11-15 · Source: timer spec § 5; timer plan 1, decision 8
 
 ### The 24-hour stopwatch stop is silent
 
-A stopwatch stops itself, paused, after a day. That writes one log line and notifies nothing:
-nobody is waiting for it, and a notice would only add noise.
+A stopwatch stops itself, paused, after a day. That writes one log line and notifies nothing.
 
 Date: 2026-11-15 · Source: timer plan 1, decisions 9 and 13
 

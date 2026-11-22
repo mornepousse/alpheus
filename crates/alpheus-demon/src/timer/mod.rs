@@ -24,7 +24,8 @@ pub const MINUTE_MS: u64 = 60_000;
 /// The longest countdown, and the stopwatch's cap: one day.
 pub const MAX_MS: u64 = 86_400_000;
 /// A running end read back from the state file is not believed when it is further than this from
-/// now. The longest timer is one day, so 25 hours leaves an hour of room.
+/// now. The bound is the timer plan's decision 13: a running end at most 25 hours after now (the
+/// longest timer is one day, plus an hour).
 const SAVED_AHEAD_MS: u64 = 25 * 3_600_000;
 /// The most Pomodoro rounds (`[timer] rounds`); a saved round above it is refused.
 const ROUNDS_MAX: u8 = 12;
@@ -152,7 +153,7 @@ pub enum Change {
     Seen,
 }
 
-/// What came to its end. The notification and the log line say which.
+/// What came to its end, for the notification, the sound and the log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum End {
     Countdown {
@@ -449,10 +450,10 @@ impl Timer {
     }
 
     /// A state file's text read back, treated as hostile (docs/decisions.md, "The state file is
-    /// hostile input"): the file may be stale, edited by hand or
-    /// not ours at all. Exact fields, digits only, and every bound of the spec: lengths from one
-    /// second to a day, a running end at most 25 hours ahead, a stopwatch started ahead of now
-    /// clamped to now, rounds 1 to 12. None for anything else.
+    /// hostile input"): the file may be stale, edited by hand or not ours at all. Exact fields,
+    /// digits only, and every bound of the spec: lengths from one second to a day, a running end
+    /// at most 25 hours ahead, a stopwatch started ahead of now clamped to now, rounds 1 to 12.
+    /// None for anything else.
     pub fn parse_saved(text: &str, now: u64) -> Option<Self> {
         // The text split on spaces. Each pattern below matches a list of exactly that many fields,
         // the first ones being fixed words; anything of another shape reaches the last arm, `_`.
@@ -525,7 +526,7 @@ pub fn minutes_text(minutes: u64) -> String {
 /// Seconds as a clock: `24:13`, `0:05`, `1:02:03`.
 pub fn clock_text(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
-    // Under an hour the minutes are not padded and count from `secs`, not from `m`: `0:05`.
+    // Under an hour the minutes are not padded: `0:05`, not `00:05`.
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{}:{s:02}", secs / 60) }
 }
 
