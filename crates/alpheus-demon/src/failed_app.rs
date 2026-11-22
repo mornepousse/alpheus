@@ -20,6 +20,7 @@ use crate::session_bus::router::TrayOutput;
 use crate::session_bus::{SYSTEMD_NAME, SYSTEMD_OWNER_RULE, SYSTEMD_PATH, SYSTEMD_PROPERTIES_RULE};
 use crate::state::Msg;
 use crate::wayland::App;
+use alpheus_commun::launcher_ipc::{Reply as IpcReply, Request};
 
 /// What `Subscribe` answers when a client already subscribed (a `daemon-reexec` keeps it).
 const ALREADY_SUBSCRIBED: &str = "org.freedesktop.systemd1.AlreadySubscribed";
@@ -265,9 +266,11 @@ impl App {
 
     /// The user manager's count, from either connection: the bar repaints only when it changed.
     pub(crate) fn failed_user(&mut self, count: Option<u32>) {
+        self.hooks_msg(&Msg::UserUnits(count));
         if self.bar.apply(Msg::UserUnits(count)) {
             self.dirty = true;
         }
+        self.failed_notify();
     }
 
     /// Runs `f` on the user manager's count wherever it lives, flushed; what the flush drained comes
@@ -289,10 +292,18 @@ impl App {
         self.failed_do(|u, out| u.on_units_read(out));
     }
 
-    /// `alpheus-launch --failed-refresh` (and the diagnostics tab's refresh): both counts read
-    /// now, whatever the subscription. The system one by a poke of the D-Bus thread (its answer
-    /// is a `UnitsRead`), the user one on this loop.
-    #[allow(dead_code)] // the `failed-refresh` verb calls it (the next task); the private-bus tests drive it now
+    /// `alpheus-launch --failed-refresh` (and the diagnostics tab's refresh), answered before the
+    /// launcher's guard (`launcher/socket_glue.rs`): Done, also with the module off (nothing is
+    /// there to read: no tap, no user client).
+    pub(crate) fn failed_verb(&mut self, request: &Request) -> IpcReply {
+        if matches!(request, Request::FailedRefresh) {
+            self.failed_refresh();
+        }
+        IpcReply::Done
+    }
+
+    /// Both counts read now, whatever the subscription. The system one by a poke of the D-Bus
+    /// thread (its answer is a `UnitsRead`), the user one on this loop.
     pub(crate) fn failed_refresh(&mut self) {
         if let Some(tap) = &self.units_tap {
             tap.poke();

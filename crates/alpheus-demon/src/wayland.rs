@@ -497,6 +497,9 @@ pub struct App {
     /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
     /// a threshold in `[battery] warn`.
     pub(crate) battery_alerts: Option<crate::battery_alert::BatteryAlerts>,
+    /// The failed-units notice (failed.rs): only with `[failed] notify` and the failed and
+    /// notifications modules.
+    pub(crate) failed_notice: Option<crate::failed::Notice>,
     /// The event hooks (hooks_app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks_app::HooksApp>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
@@ -614,6 +617,7 @@ impl App {
         let timer = crate::timer_app::TimerApp::new(&bar.config);
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
+        let failed_notice = crate::failed::notice_wanted(&bar.config).then(crate::failed::Notice::default);
         let hooks = crate::hooks_app::HooksApp::new(&bar.config.hooks);
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
@@ -666,6 +670,7 @@ impl App {
             media_timer: DeadlineTimer::new(),
             bubbles: crate::bubbles_surface::BubbleSurface::new(),
             battery_alerts,
+            failed_notice,
             hooks,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),

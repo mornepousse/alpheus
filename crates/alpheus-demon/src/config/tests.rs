@@ -258,12 +258,22 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 18);
+    assert_eq!(ModuleId::ALL.len(), 19);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
     let c = BarConfig::from_text("modules = [\"privacy\", \"clock\"]").unwrap();
     assert_eq!(c.modules, vec![ModuleId::Privacy, ModuleId::Clock]);
+}
+
+#[test]
+fn the_failed_module_sits_after_privacy_and_is_on_by_default() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Failed), at(ModuleId::Privacy) + 1, "right after privacy on this branch (after shield once merged)");
+    assert_eq!(ModuleId::Failed.name(), "failed");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Failed));
+    let c = BarConfig::from_text("modules = [\"failed\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Failed, ModuleId::Clock]);
 }
 
 #[test]
@@ -750,6 +760,7 @@ fn hooks_are_read_in_order() {
         "bluetooth",
         "privacy",
         "displays",
+        "failed_units",
     ];
     let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
     let c = BarConfig::from_text(&text).unwrap();

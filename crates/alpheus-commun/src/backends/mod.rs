@@ -19,7 +19,7 @@ pub mod sound;
 
 pub use bluetooth::{Bluetooth, BluetoothCtl, BtDevice, BtStatus};
 pub use brightness::{Brightness, BrightnessCtl};
-pub use diagnostics::{CheckResult, DaemonPoke, Diagnostics, JournalRead, NoPoke, PokeAnswer, SystemdTools, UnitAction};
+pub use diagnostics::{CheckResult, DaemonPoke, Diagnostics, JournalRead, NoPoke, PokeAnswer, SocketPoke, SystemdTools, UnitAction};
 pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
@@ -129,7 +129,7 @@ impl Backends {
             power: Arc::new(SessionPower::new(exec.clone())),
             displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
             diagnostics: Arc::new(SystemdTools::new(exec)),
-            poke: Arc::new(NoPoke),
+            poke: Arc::new(SocketPoke::new(crate::launcher_ipc::socket_path(&runtime_dir))),
         }
     }
 

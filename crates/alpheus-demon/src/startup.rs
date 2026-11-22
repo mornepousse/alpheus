@@ -280,7 +280,11 @@ impl App {
         if matches!(m, Msg::UnitsRead) {
             self.failed_units_read();
         }
+        let units = matches!(m, Msg::Units(_));
         on_message(self, m, || LocalTime::now().0);
+        if units {
+            self.failed_notify();
+        }
         if quick {
             self.quick_refresh();
         }

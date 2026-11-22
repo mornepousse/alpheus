@@ -14,6 +14,7 @@ use crate::diagnostics::report::{self, HostFacts, ReportCrash, ReportError, Repo
 use crate::diagnostics::show::{self, Restarts};
 use crate::diagnostics::units::{self, FailedUnit};
 use crate::exec::{CaptureEnd, CaptureLimits, ExecError, Executor, MAX_INPUT};
+use crate::launcher_ipc::{Reply, Request, exchange_waiting};
 use crate::text::clean_line;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -349,12 +350,40 @@ pub trait DaemonPoke: Send + Sync {
     fn failed_refresh(&self) -> PokeAnswer;
 }
 
-/// Until the socket verb exists: always unreachable.
+/// No daemon wired: always unreachable (the tests that must never touch a socket).
 pub struct NoPoke;
 
 impl DaemonPoke for NoPoke {
     fn failed_refresh(&self) -> PokeAnswer {
-        PokeAnswer::Unreachable("not wired yet".into())
+        PokeAnswer::Unreachable("not wired".into())
+    }
+}
+
+/// `failed-refresh` on the daemon's owner-only launcher socket.
+pub struct SocketPoke {
+    socket: PathBuf,
+}
+
+impl SocketPoke {
+    pub fn new(socket: PathBuf) -> Self {
+        SocketPoke { socket }
+    }
+}
+
+impl DaemonPoke for SocketPoke {
+    fn failed_refresh(&self) -> PokeAnswer {
+        let request = Request::FailedRefresh;
+        match exchange_waiting(&self.socket, &request, request.reply_timeout()) {
+            Ok(Reply::Done) => PokeAnswer::Done,
+            // A daemon from before the verb refuses it as an unknown request.
+            Ok(Reply::Error(e)) if e == "malformed request: unknown request \"failed-refresh\"" => PokeAnswer::Older,
+            Ok(Reply::Error(e)) => PokeAnswer::Unreachable(clean_line(&e, 120)),
+            Ok(_) => PokeAnswer::Unreachable("unexpected answer from the alpheus daemon".into()),
+            Err(e) => PokeAnswer::Unreachable(match e.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => "the alpheus daemon is not running".into(),
+                _ => clean_line(&e.to_string(), 120),
+            }),
+        }
     }
 }
 
@@ -631,8 +660,59 @@ mod tests {
         assert!(!tools(&dir.join("missing")).journal_readable(), "no such directory");
     }
 
+    /// A daemon of one connection in the test's directory: reads one request, answers `reply`.
+    fn serve(dir: &std::path::Path, reply: Reply) -> (SocketPoke, std::thread::JoinHandle<Request>) {
+        use crate::launcher_ipc::{RequestDecoder, encode_reply};
+        use std::io::{Read, Write};
+        let socket = dir.join("alpheus-launcher.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut decoder = RequestDecoder::new();
+            let mut chunk = [0u8; 4096];
+            let request = loop {
+                let n = conn.read(&mut chunk).unwrap();
+                assert!(n > 0, "the client hung up before a whole request");
+                if let Some(r) = decoder.feed(&chunk[..n]).unwrap() {
+                    break r;
+                }
+            };
+            conn.write_all(&encode_reply(&reply)).unwrap();
+            request
+        });
+        (SocketPoke::new(socket), h)
+    }
+
     #[test]
-    fn the_poke_is_not_wired_yet() {
-        assert_eq!(NoPoke.failed_refresh(), PokeAnswer::Unreachable("not wired yet".into()));
+    fn the_poke_sends_failed_refresh_and_reads_the_answer() {
+        let dir = crate::temp_path::TempPath::dir("poke-done");
+        let (p, h) = serve(&dir, Reply::Done);
+        assert_eq!(p.failed_refresh(), PokeAnswer::Done);
+        assert_eq!(h.join().unwrap(), Request::FailedRefresh);
+        let (p, h) = serve(&dir, Reply::Error("malformed request: unknown request \"failed-refresh\"".into()));
+        assert_eq!(p.failed_refresh(), PokeAnswer::Older, "a daemon from before the verb");
+        h.join().unwrap();
+        let (p, h) = serve(&dir, Reply::Error("request deadline passed".into()));
+        assert_eq!(p.failed_refresh(), PokeAnswer::Unreachable("request deadline passed".into()));
+        h.join().unwrap();
+        let (p, h) = serve(&dir, Reply::Cancelled);
+        assert!(matches!(p.failed_refresh(), PokeAnswer::Unreachable(_)));
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn no_socket_or_no_listener_is_a_daemon_not_running() {
+        let dir = crate::temp_path::TempPath::dir("poke-absent");
+        let p = SocketPoke::new(dir.join("alpheus-launcher.sock"));
+        let not_running = PokeAnswer::Unreachable("the alpheus daemon is not running".into());
+        assert_eq!(p.failed_refresh(), not_running);
+        drop(std::os::unix::net::UnixListener::bind(dir.join("alpheus-launcher.sock")).unwrap());
+        assert_eq!(p.failed_refresh(), not_running, "a socket left behind");
+    }
+
+    #[test]
+    fn no_poke_is_unreachable() {
+        assert_eq!(NoPoke.failed_refresh(), PokeAnswer::Unreachable("not wired".into()));
     }
 }

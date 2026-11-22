@@ -48,10 +48,10 @@ fn privacy_alone_starts_the_sound_source() {
 
 #[test]
 fn only_the_sources_the_modules_need() {
-    let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
+    let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power, Domain::Units];
     assert_eq!(
         wanted(&ModuleId::ALL),
-        Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true, failed: false }
+        Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true, failed: true }
     );
     assert_eq!(
         wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
@@ -110,18 +110,20 @@ fn only_the_sources_the_modules_need() {
     );
 }
 
-/// Diagnostics spec § 6: the failed-units count is the `Units` domain, last in reading order. No
-/// module asks for it until the failed module comes (the default bar reads no count).
+/// Diagnostics spec § 6: the failed-units count is the `Units` domain, last in reading order. Only
+/// the `failed` module asks for it (both managers' counts).
 #[test]
-fn the_units_domain_follows_its_need_and_no_module_has_it_yet() {
+fn the_units_domain_follows_its_need_and_only_the_failed_module_has_it() {
     use crate::modules::Needs;
     assert_eq!(wanted_for(Needs::UNITS).dbus, vec![Domain::Units]);
     assert_eq!(
         wanted_for(Needs::UNITS.or(Needs::NETWORK).or(Needs::POWER_PROFILE)).dbus,
         vec![Domain::Network, Domain::Power, Domain::Units]
     );
-    assert!(!wanted(&ModuleId::ALL).dbus.contains(&Domain::Units), "no module sets it yet");
-    assert!(!wanted(&ModuleId::ALL).failed, "nor the user manager's count on the session bus");
+    let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Failed).collect();
+    assert!(!wanted(&without).dbus.contains(&Domain::Units), "no other module sets it");
+    assert!(!wanted(&without).failed, "nor the user manager's count on the session bus");
+    assert!(wanted(&[ModuleId::Failed]).dbus.contains(&Domain::Units) && wanted(&[ModuleId::Failed]).failed);
     assert!(wanted_for(Needs::UNITS).failed, "the same need asks for both counts");
     assert!(!wanted_for(Needs::NETWORK).failed);
     assert_eq!(wanted_for(Needs::NONE), wanted(&[]));

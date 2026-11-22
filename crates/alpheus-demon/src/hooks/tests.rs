@@ -242,6 +242,7 @@ fn a_hook_never_inherits_a_variable_its_event_does_not_set() {
         Event::Bluetooth(BtChange::Connected("X".into())),
         Event::Privacy(CaptureKind::Camera, true),
         Event::Displays("p".into()),
+        Event::FailedUnits { total: 1, system: Some(1), user: None },
     ] {
         let env = e.env();
         let mut all: Vec<&str> = env.iter().map(|(k, _)| *k).chain(unset_for(&env)).collect();
@@ -383,6 +384,36 @@ fn throttled_is_said_once_per_episode() {
     assert_eq!(h.fire(Event::Dnd(true), late + REFILL), Verdict::Throttled(HookId::Dnd), "a new episode");
 }
 
+/// Diagnostics spec § 6: `failed_units` fires when the total of the two counts changes; the first
+/// total is a seed, a source that is down (None) is not a state.
+#[test]
+fn failed_units_edges_on_the_total() {
+    let ev = |total, system, user| Event::FailedUnits { total, system, user };
+    let mut h = hooks(&["failed_units"], Instant::now());
+    assert!(h.on_msg(&Msg::Units(Some(0))).is_empty(), "the first total seeds");
+    assert!(h.on_msg(&Msg::Units(Some(0))).is_empty());
+    assert_eq!(h.on_msg(&Msg::Units(Some(2))), [ev(2, Some(2), None)]);
+    assert_eq!(h.on_msg(&Msg::UserUnits(Some(1))), [ev(3, Some(2), Some(1))]);
+    assert!(h.on_msg(&Msg::UserUnits(Some(1))).is_empty(), "the same total");
+    assert!(h.on_msg(&Msg::Units(None)).is_empty(), "the system bus going down is no state");
+    assert!(h.on_msg(&Msg::UserUnits(None)).is_empty(), "nor the user manager's");
+    assert_eq!(h.on_msg(&Msg::UserUnits(Some(0))), [ev(2, Some(2), Some(0))], "the last known system count stays");
+    assert_eq!(h.on_msg(&Msg::Units(Some(0))), [ev(0, Some(0), Some(0))]);
+    let mut none = hooks(&["dnd"], Instant::now());
+    assert!(none.on_msg(&Msg::Units(Some(1))).is_empty() && none.on_msg(&Msg::Units(Some(2))).is_empty(), "not wanted: nothing");
+}
+
+#[test]
+fn failed_units_variables() {
+    assert_eq!(
+        Event::FailedUnits { total: 3, system: Some(2), user: Some(1) }.env(),
+        [s("ALPHEUS_EVENT", "failed_units"), s("ALPHEUS_FAILED", "3"), s("ALPHEUS_FAILED_SYSTEM", "2"), s("ALPHEUS_FAILED_USER", "1")]
+    );
+    let env = Event::FailedUnits { total: 2, system: Some(2), user: None }.env();
+    assert_eq!(env, [s("ALPHEUS_EVENT", "failed_units"), s("ALPHEUS_FAILED", "2"), s("ALPHEUS_FAILED_SYSTEM", "2")]);
+    assert!(unset_for(&env).contains(&"ALPHEUS_FAILED_USER"), "unknown: removed, never inherited");
+}
+
 #[test]
 fn reads_follows_the_modules() {
     use crate::config::ModuleId as M;
@@ -395,6 +426,8 @@ fn reads_follows_the_modules() {
     assert!(HookId::PowerProfile.reads(&[M::Quick]) && !HookId::PowerProfile.reads(&[M::Network]));
     assert!(HookId::Bluetooth.reads(&[M::Bluetooth]) && HookId::Bluetooth.reads(&[M::Quick]));
     assert_eq!(HookId::Network.needs(), "network or quick");
+    assert!(!HookId::FailedUnits.reads(&[M::Clock]) && HookId::FailedUnits.reads(&[M::Failed]));
+    assert_eq!(HookId::FailedUnits.needs(), "failed");
 }
 
 #[test]

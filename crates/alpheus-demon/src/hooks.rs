@@ -6,13 +6,13 @@
 use crate::config::{HooksConfig, ModuleId};
 use crate::modules::Needs;
 use crate::privacy::Capture;
-use crate::state::Msg;
+use crate::state::{Failed, Msg};
 use crate::system::{Battery, BtState, Charge, Link, NetState, PowerState, Profile, ProfileState};
 use crate::text;
 use alpheus_commun::theme::Mode;
 use std::time::{Duration, Instant};
 
-pub const COUNT: usize = 11;
+pub const COUNT: usize = 12;
 /// After start, an edge only moves its seed: the portal's first answer, the first graph, a profile
 /// applied at start. `Started` alone ignores it.
 pub const QUIET: Duration = Duration::from_secs(3);
@@ -35,6 +35,7 @@ pub enum HookId {
     Bluetooth,
     Privacy,
     Displays,
+    FailedUnits,
 }
 
 impl HookId {
@@ -50,6 +51,7 @@ impl HookId {
         HookId::Bluetooth,
         HookId::Privacy,
         HookId::Displays,
+        HookId::FailedUnits,
     ];
 
     /// The `[hooks]` key.
@@ -66,6 +68,7 @@ impl HookId {
             HookId::Bluetooth => "bluetooth",
             HookId::Privacy => "privacy",
             HookId::Displays => "displays",
+            HookId::FailedUnits => "failed_units",
         }
     }
 
@@ -81,6 +84,7 @@ impl HookId {
             HookId::Bluetooth => needs().contains(Needs::BLUETOOTH),
             HookId::Privacy => modules.contains(&ModuleId::Privacy),
             HookId::Displays => modules.contains(&ModuleId::Displays),
+            HookId::FailedUnits => needs().contains(Needs::UNITS),
         }
     }
 
@@ -97,6 +101,7 @@ impl HookId {
             HookId::Bluetooth => "bluetooth or quick",
             HookId::Privacy => "privacy",
             HookId::Displays => "displays",
+            HookId::FailedUnits => "failed",
         }
     }
 
@@ -135,11 +140,17 @@ pub enum Event {
     Privacy(CaptureKind, bool),
     /// The applied profile's name.
     Displays(String),
+    /// The failed units' total changed; each manager's count when known.
+    FailedUnits {
+        total: u32,
+        system: Option<u32>,
+        user: Option<u32>,
+    },
 }
 
 /// Every variable a hook may be given. One an event does not set is removed from the hook's
 /// environment (`unset_for`), so an inherited one never passes for the event's.
-pub const VARS: [&str; 14] = [
+pub const VARS: [&str; 17] = [
     "ALPHEUS_EVENT",
     "ALPHEUS_MODE",
     "ALPHEUS_DND",
@@ -154,6 +165,9 @@ pub const VARS: [&str; 14] = [
     "ALPHEUS_CAPTURE",
     "ALPHEUS_STATE",
     "ALPHEUS_DISPLAY_PROFILE",
+    "ALPHEUS_FAILED",
+    "ALPHEUS_FAILED_SYSTEM",
+    "ALPHEUS_FAILED_USER",
 ];
 
 /// The names of `VARS` that `env` does not set.
@@ -214,6 +228,7 @@ impl Event {
             Event::Bluetooth(_) => HookId::Bluetooth,
             Event::Privacy(..) => HookId::Privacy,
             Event::Displays(_) => HookId::Displays,
+            Event::FailedUnits { .. } => HookId::FailedUnits,
         }
     }
 
@@ -263,6 +278,11 @@ impl Event {
                 env.push(("ALPHEUS_STATE", on_off(*b)));
             }
             Event::Displays(name) => env.push(("ALPHEUS_DISPLAY_PROFILE", clean_value(name))),
+            Event::FailedUnits { total, system, user } => {
+                env.push(("ALPHEUS_FAILED", total.to_string()));
+                env.extend(system.map(|n| ("ALPHEUS_FAILED_SYSTEM", n.to_string())));
+                env.extend(user.map(|n| ("ALPHEUS_FAILED_USER", n.to_string())));
+            }
         }
         env
     }
@@ -310,6 +330,9 @@ pub struct Hooks {
     sound_down: bool,
     compositor_down: bool,
     quiet_said: bool,
+    /// The last count of each manager that was known, and the total last seen.
+    failed: Failed,
+    failed_total: Option<u32>,
 }
 
 impl Hooks {
@@ -334,6 +357,8 @@ impl Hooks {
             sound_down: false,
             compositor_down: false,
             quiet_said: false,
+            failed: Failed::default(),
+            failed_total: None,
         })
     }
 
@@ -408,6 +433,15 @@ impl Hooks {
                     out.push(Event::BatteryLevel(*b));
                 }
             }
+            // A count that is down (None) is no state: the last known one stays.
+            Msg::Units(Some(n)) if self.wants(HookId::FailedUnits) => {
+                self.failed.system = Some(*n);
+                out.extend(self.failed_edge());
+            }
+            Msg::UserUnits(Some(n)) if self.wants(HookId::FailedUnits) => {
+                self.failed.user = Some(*n);
+                out.extend(self.failed_edge());
+            }
             Msg::Profile(Some(ProfileState { active: Some(p), .. }))
                 if self.wants(HookId::PowerProfile) && self.profile.replace(*p).is_some_and(|old| old != *p) =>
             {
@@ -416,6 +450,16 @@ impl Hooks {
             _ => {}
         }
         out
+    }
+
+    /// The total of the known counts against the last one seen (the first is a seed).
+    fn failed_edge(&mut self) -> Option<Event> {
+        let total = crate::failed::total(&self.failed)?;
+        self.failed_total.replace(total).filter(|old| *old != total).map(|_| Event::FailedUnits {
+            total,
+            system: self.failed.system,
+            user: self.failed.user,
+        })
     }
 
     /// The mode in effect: a seed, then an edge on each change. `settled`: the mode is the user's

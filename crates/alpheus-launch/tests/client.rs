@@ -501,6 +501,7 @@ fn help_prints_usage_and_exits_0() {
         "--lines N",
         "--quick [sound|wifi|bluetooth|vpn]",
         "(or its wifi, bluetooth or vpn word)",
+        "--failed-refresh",
     ] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
@@ -515,6 +516,7 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
         (&["--dnd", "on", "--for", "30m"], Request::DndOn(DndEnd::For(1800))),
         (&["--dnd", "on", "--for=1h30m"], Request::DndOn(DndEnd::For(5400))),
         (&["--clear-notifications"], Request::ClearNotifications),
+        (&["--failed-refresh"], Request::FailedRefresh),
     ];
     for (i, (args, expected)) in cases.into_iter().enumerate() {
         let (socket, daemon) = answering(&format!("notify-{i}"), Reply::Done);
@@ -682,6 +684,7 @@ fn dnd_toggle_with_no_daemon_exits_3() {
     assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
     assert!(err.contains("not running"), "{err}");
     assert_eq!(launch(&["--clear-notifications"], &socket, b"").0, EXIT_UNREACHABLE);
+    assert_eq!(launch(&["--failed-refresh"], &socket, b"").0, EXIT_UNREACHABLE);
 }
 
 #[test]

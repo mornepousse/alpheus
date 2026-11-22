@@ -597,6 +597,16 @@ fn privacy_stays_on_a_narrow_bar_while_the_title_goes() {
     assert!(seen_without_title, "a width where the title is gone and privacy stays");
 }
 
+/// Diagnostics spec § 6: the failed count has a block of its own and leaves after the timer, before
+/// the privacy indicators.
+#[test]
+fn failed_is_its_own_block_removed_after_the_timer_and_before_privacy() {
+    assert_eq!(ModuleId::Failed.spec().group, GroupKind::Failed);
+    let at = |m| REMOVAL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Failed), at(ModuleId::Timer) + 1);
+    assert_eq!(at(ModuleId::Failed) + 1, at(ModuleId::Privacy));
+}
+
 // ---- the media module (media spec § 1) ----
 
 /// The media module between the title and the volume (its place in `ModuleId::ALL`).
@@ -851,7 +861,7 @@ fn the_timer_is_a_block_of_its_own_before_the_clock() {
     assert_eq!(ModuleId::Timer.spec().hue, Some(Hue::Yellow));
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
     assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock), "just before the clock");
-    assert_eq!(REMOVAL[REMOVAL.len() - 4..], [ModuleId::Launcher, ModuleId::Timer, ModuleId::Privacy, ModuleId::Power]);
+    assert_eq!(REMOVAL[REMOVAL.len() - 5..], [ModuleId::Launcher, ModuleId::Timer, ModuleId::Failed, ModuleId::Privacy, ModuleId::Power]);
     // Its own yellow block under a block style.
     let mut b = with_timer(bar());
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];

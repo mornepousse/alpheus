@@ -195,6 +195,8 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 // The displays verbs: answered from the output controller, a try once the
                 // compositor answered (its connection kept until then, `outputs_app.rs`).
                 Route::Displays => state.displays_verb(&request, conn),
+                // The failed-units count's verb: answered here, nothing of the launcher's.
+                Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),
                 Route::Launcher => {
                     // A dmenu request may have buffered up to 4 MiB: once it
                     // reached RELEASE_AFTER, give the pages back as soon as it
@@ -258,6 +260,7 @@ enum Route {
     Timer,
     Notes,
     Displays,
+    Failed,
     Launcher,
 }
 
@@ -268,6 +271,7 @@ fn route(request: &Request) -> Route {
         Request::Quick(_) => Route::Quick,
         Request::Timer(_) => Route::Timer,
         Request::Notes => Route::Notes,
+        Request::FailedRefresh => Route::Failed,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
         Request::Toggle | Request::Close | Request::Calc | Request::Windows | Request::Dmenu { .. } => Route::Launcher,
     }

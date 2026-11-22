@@ -27,7 +27,7 @@ use common::{
     fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon,
     start_daemon_with, volume_delta, wait_for_pid_file, wl_copy, write_atomically, wtype, wtype_spawn,
 };
-use common::{FakeVpn, vpn_uuid};
+use common::{FakeSystemd, FakeVpn, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -6807,4 +6807,164 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_secs(1)); // the close settles (wtype's keyboard going, the D-Bus thread's last word)
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
+}
+
+// ---- The failed-units module (diagnostics plan 1, task 9). Two private buses: the system one and
+// the session one each carry a `FakeSystemd`; the compositor is the headless sway. ----
+
+/// The bar with the failed count and the clock only: no hue but the error role's could be red.
+const FAILED_BAR: &str = "modules = [\"workspaces\", \"failed\", \"clock\"]\n";
+
+/// A daemon on two private buses, `system` and `user` systemd managers with those counts; returned
+/// once the bar is placed and both counts were read.
+fn failed_daemon(
+    name: &str,
+    bar_toml: &str,
+    system: u32,
+    user: u32,
+    extra_env: impl FnOnce(&Sway),
+) -> (Sway, PrivateBus, PrivateBus, FakeSystemd, FakeSystemd, Daemon) {
+    let sway = Sway::start(name, 1);
+    extra_env(&sway);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let (sys_bus, user_bus) = (PrivateBus::start(&format!("{name}-sys")), PrivateBus::start(&format!("{name}-user")));
+    let (sys, usr) = (FakeSystemd::serve(&sys_bus, system), FakeSystemd::serve(&user_bus, user));
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(bar_toml),
+            system_bus: Some(&sys_bus.address),
+            session_bus: Some(&user_bus.address),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (sway, sys_bus, user_bus, sys, usr, d)
+}
+
+/// Both managers' counts were read (the module is on), and the bar drawn.
+fn failed_counts_read(sys: &FakeSystemd, usr: &FakeSystemd) {
+    sys.wait_until("the system count read", |s| s.calls("Get") >= 1);
+    usr.wait_until("the user count read", |s| s.calls("Get") >= 1);
+    thread::sleep(Duration::from_millis(300));
+}
+
+fn error_red_on_the_bar(sway: &Sway) -> bool {
+    sway.screenshot("HEADLESS-1").is_some_and(|s| on_the_bar(&s, privacy_red()).is_some())
+}
+
+/// Spec § 6: nothing drawn at 0; a count pushed by a subscribed manager draws `󰀦 N` in the error
+/// role and it goes again at 0. Either manager's count counts.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_shows_only_above_zero() {
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-shows", FAILED_BAR, 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(!error_red_on_the_bar(&sway), "nothing at zero: {:?}", d.log());
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    usr.wait_until("the user subscription", |s| s.subscribers() == 1);
+    sys.set_failed(1);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "never drawn: {:?}", d.log());
+    sys.set_failed(0);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_none()), "never gone: {:?}", d.log());
+    // The user manager's count alone shows too.
+    usr.set_failed(2);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "the user count: {:?}", d.log());
+    assert_eq!(sys.calls("GetAll") + usr.calls("GetAll"), 0, "the Manager's Environment is never asked for");
+}
+
+/// With `subscribe = false` a change shows only when something asks: `alpheus-launch
+/// --failed-refresh` makes the daemon read both managers (the system one through the D-Bus
+/// thread, the user one on the loop). The system count alone is changed: a verb that skipped the
+/// poke would leave the bar as it was.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_follows_failed_refresh_unsubscribed() {
+    let toml = format!("{FAILED_BAR}[failed]\nsubscribe = false\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-refresh", &toml, 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    ready(&d);
+    assert_eq!((sys.calls("Subscribe"), usr.calls("Subscribe")), (0, 0), "[failed] subscribe = false");
+    sys.set_failed(1);
+    thread::sleep(Duration::from_millis(800));
+    assert!(!error_red_on_the_bar(&sway), "no subscription, no push: {:?}", d.log());
+    let user_reads = usr.calls("Get");
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "never drawn after the verb: {:?}", d.log());
+    assert!(usr.calls("Get") > user_reads, "the user manager was read again too");
+    // And back to zero by the verb as well.
+    sys.set_failed(0);
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap().0, EXIT_OK);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_none()), "never gone: {:?}", d.log());
+}
+
+/// The verb with the module off: Done, and nothing is read.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_refresh_without_the_module_is_done_and_reads_nothing() {
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-off", "modules = [\"workspaces\", \"clock\"]\n", 0, 0, |_| ());
+    ready(&d);
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((sys.calls("Get"), usr.calls("Get")), (0, 0), "nothing read: {:?}", d.log());
+}
+
+/// Spec § 6, the hook: `failed_units` fires on a change of the total (past the quiet window), with
+/// both counts in its environment, and not twice for a total that did not change.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_units_hook_fires_on_change() {
+    let toml = format!("{FAILED_BAR}[hooks]\nfailed_units = [\"hook-rec\"]\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-hook", &toml, 0, 0, |sway| {
+        fake_env_recorder(sway, "hook-rec");
+    });
+    failed_counts_read(&sys, &usr);
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    usr.wait_until("the user subscription", |s| s.subscribers() == 1);
+    assert!(recorded(&sway, "hook-rec").is_empty(), "the first total is a seed: {:?}", d.log());
+    past_the_quiet_window();
+    sys.set_failed(2);
+    let calls = hook_calls(&sway, &d, 1);
+    assert_eq!(
+        calls[0], "hook-rec |ALPHEUS_EVENT=failed_units ALPHEUS_FAILED=2 ALPHEUS_FAILED_SYSTEM=2 ALPHEUS_FAILED_USER=0 ",
+        "{calls:?}"
+    );
+    usr.set_failed(1);
+    let calls = hook_calls(&sway, &d, 2);
+    assert_eq!(
+        calls[1], "hook-rec |ALPHEUS_EVENT=failed_units ALPHEUS_FAILED=3 ALPHEUS_FAILED_SYSTEM=2 ALPHEUS_FAILED_USER=1 ",
+        "{calls:?}"
+    );
+    // The same count again is no change of the total: no third run.
+    sys.set_failed(2);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(recorded(&sway, "hook-rec").len(), 2, "no more than the changes of the total: {:?}", d.log());
+    assert!(d.wait_for("hook: failed_units", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().filter(|l| l.contains("hook")).all(|l| !l.contains("ALPHEUS")), "the log names the event only: {:?}", d.log());
+}
+
+/// Spec § 6, the notice: with `[failed] notify` and the notifications module, a total that rises
+/// above the last notified sends one notice; the same total, or a fall, none; zero re-arms it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nnotify = true\n";
+    let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice", toml, 0, 0, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    sys.wait_until("the system subscription", |s| s.subscribers() == 1);
+    sys.set_failed(1);
+    assert!(d.wait_for_count("failed: notice", 1, DELAY), "{:?}", d.log());
+    sys.set_failed(2);
+    assert!(d.wait_for_count("failed: notice", 2, DELAY), "{:?}", d.log());
+    sys.set_failed(1);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("failed: notice"), 2, "a fall is no notice: {:?}", d.log());
+    sys.set_failed(0);
+    thread::sleep(Duration::from_millis(300));
+    sys.set_failed(1);
+    assert!(d.wait_for_count("failed: notice", 3, DELAY), "re-armed at zero: {:?}", d.log());
 }

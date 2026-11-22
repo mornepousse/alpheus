@@ -38,6 +38,7 @@ fn requests() -> Vec<Request> {
         Request::DndOn(DndEnd::For(1800)),
         Request::DndOn(DndEnd::Until(1_763_229_600)),
         Request::ClearNotifications,
+        Request::FailedRefresh,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
         Request::Quick(QuickVerb::Sound),
@@ -93,6 +94,7 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Dnd(DndVerb::Off)), b"alpheus-launcher/1 dnd off\n");
     assert_eq!(encode_request(&Request::Dnd(DndVerb::Toggle)), b"alpheus-launcher/1 dnd toggle\n");
     assert_eq!(encode_request(&Request::ClearNotifications), b"alpheus-launcher/1 clear-notifications\n");
+    assert_eq!(encode_request(&Request::FailedRefresh), b"alpheus-launcher/1 failed-refresh\n");
     assert_eq!(encode_request(&Request::Osd(OsdVerb::Brightness)), b"alpheus-launcher/1 osd brightness\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Top)), b"alpheus-launcher/1 quick\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
@@ -150,6 +152,7 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 dnd on now\n",
         b"alpheus-launcher/1 dnd  on\n",
         b"alpheus-launcher/1 clear-notifications now\n",
+        b"alpheus-launcher/1 failed-refresh now\n",
         b"alpheus-launcher/1 osd\n",
         b"alpheus-launcher/1 osd volume\n",
         b"alpheus-launcher/1 osd brightness now\n",

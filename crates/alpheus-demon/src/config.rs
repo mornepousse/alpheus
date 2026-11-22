@@ -88,7 +88,7 @@
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
-//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays, failed_units
 //! ```
 
 use crate::clock;
@@ -110,6 +110,9 @@ pub enum ModuleId {
     Media,
     /// The privacy indicators (privacy spec § 1): who holds the microphone, the camera or the screen.
     Privacy,
+    /// The failed-units count (diagnostics spec § 6): `󰀦 N` when a unit of the system or the user
+    /// manager is in the failed state; nothing at 0. A left click opens the control center's Diag tab.
+    Failed,
     Volume,
     Network,
     Bluetooth,
@@ -482,11 +485,12 @@ pub struct HooksConfig {
     pub bluetooth: Vec<String>,
     pub privacy: Vec<String>,
     pub displays: Vec<String>,
+    pub failed_units: Vec<String>,
 }
 
 impl HooksConfig {
     /// Every hook with its TOML key, in field order.
-    pub fn commands(&self) -> [(&'static str, &[String]); 11] {
+    pub fn commands(&self) -> [(&'static str, &[String]); 12] {
         [
             ("started", &self.started),
             ("theme_mode", &self.theme_mode),
@@ -499,6 +503,7 @@ impl HooksConfig {
             ("bluetooth", &self.bluetooth),
             ("privacy", &self.privacy),
             ("displays", &self.displays),
+            ("failed_units", &self.failed_units),
         ]
     }
 
