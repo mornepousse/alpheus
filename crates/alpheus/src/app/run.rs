@@ -13,8 +13,8 @@ use crate::exec::SystemExecutor;
 use crate::external_tools::{self, CrosstermScreen, ProcessLauncher};
 use crate::theme::Theme;
 use crate::ui;
-pub use alpheus_commun::paths::{config_dir, runtime_dir};
-use alpheus_commun::shutdown::{SIGNAL_RECEIVED, STOP_REQUESTED, install_signals, watch};
+pub use alpheus_common::paths::{config_dir, runtime_dir};
+use alpheus_common::shutdown::{SIGNAL_RECEIVED, STOP_REQUESTED, install_signals, watch};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
@@ -117,7 +117,7 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
 pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     let (config, w_config) = Config::load(&dir.join("config.toml"));
     // The mode the daemon publishes (read from `$XDG_RUNTIME_DIR/alpheus/mode`), read only in mode auto; no D-Bus here.
-    let runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
+    let runtime = alpheus_common::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     let (theme, w_theme) = Theme::load(dir, runtime.as_deref());
     let (keymap, w_keys) = match Keymap::from_config(&config.keys) {
         Ok(k) => (k, None),
@@ -267,7 +267,7 @@ mod tests {
     /// compositor, opening on the tab reads the displays, and what the daemon answers fills it.
     #[test]
     fn the_tab_is_available_under_sway() {
-        let dir = alpheus_commun::temp_path::TempPath::new("run-tab-under-sway");
+        let dir = alpheus_common::temp_path::TempPath::new("run-tab-under-sway");
         let mut a = build_app(&dir, Tab::Displays, Instant::now());
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])]);
         let mut b = Backends::system_isolated(Arc::new(FakeExecutor::new()), dir.to_path_buf());
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn display_profiles_loaded_at_startup() {
-        let dir = alpheus_commun::temp_path::TempPath::dir("run-displays");
+        let dir = alpheus_common::temp_path::TempPath::dir("run-displays");
         let a = build_app(&dir, Tab::Home, Instant::now());
         assert!(a.displays.profiles.is_empty());
         assert_eq!(a.status.warning, None, "missing file: no message");

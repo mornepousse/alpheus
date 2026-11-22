@@ -1,0 +1,11 @@
+---
+source: crates/alpheus-daemon/src/session_bus/menu.rs
+expression: snapshot(&rows)
+---
+ A very long label A very long label A very … 
+ Short                                      ▸ 
+
+SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+............................................m.
+
+separators: []

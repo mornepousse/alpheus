@@ -1,0 +1,33 @@
+---
+source: crates/alpheus-daemon/src/launcher/view.rs
+expression: snapshot(&rows)
+---
+ All  Apps  Windows  Commands       
+ ❯                                  
+ 󰆍 Alacritty               Terminal 
+ 󰣆 btop++               application 
+ 󰉋 Files               File Manager 
+ 󰈹 Firefox              Web Browser 
+                                    
+                                    
+                                    
+                                    
+                                    
+                                    
+ enter open · ctrl+enter action · … 
+
+mmmmmAAAAAAmmmmmmmmmmmmmmmmmmm......
+.G.A................................
+.a.........................mmmmmmmm.
+.a......................mmmmmmmmmmm.
+.a.....................mmmmmmmmmmmm.
+SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+....................................
+....................................
+....................................
+....................................
+....................................
+....................................
+.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.
+
+divider: none

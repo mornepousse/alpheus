@@ -105,7 +105,7 @@ sound = ["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"]
 
 ## How it is built
 
-Three files in `crates/alpheus-demon/src/timer/`, split the way alpheus splits most features: a
+Three files in `crates/alpheus-daemon/src/timer/`, split the way alpheus splits most features: a
 pure model, a pure popup, and the wiring that touches the outside world.
 
 - `mod.rs`: the model. The `Timer` value, every `Change`, the `End` a timer comes to, the chip, the

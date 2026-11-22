@@ -9,7 +9,7 @@ use super::worker::{DiagRead, DiagResult, Op, Request};
 use super::{App, Tab};
 use crate::backends::BResult;
 use crate::diagnostics::analyze::Blame;
-use alpheus_commun::text::clean_line;
+use alpheus_common::text::clean_line;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Span;
 use std::cell::Cell;

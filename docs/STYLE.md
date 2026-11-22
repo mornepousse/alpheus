@@ -5,7 +5,7 @@
 This page says how alpheus's code is written, so that someone who reads Rust with difficulty can
 still find a feature, read it and change it. Every rule below is shown with a real pair of
 "before" and "after" taken from the commit that brought the focus timer to this standard
-(`docs/features/timer.md` describes the feature; its code is in `crates/alpheus-demon/src/timer/`).
+(`docs/features/timer.md` describes the feature; its code is in `crates/alpheus-daemon/src/timer/`).
 Where the timer already followed a rule and nothing had to change, the example is a line that
 shows it.
 

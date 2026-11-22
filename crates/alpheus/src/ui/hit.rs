@@ -2,7 +2,7 @@
 
 use crate::app::PanelField;
 use crate::app::action::Tab;
-use alpheus_commun::theme::settings::{BarStyle, ModeSetting, ModuleColors};
+use alpheus_common::theme::settings::{BarStyle, ModeSetting, ModuleColors};
 use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

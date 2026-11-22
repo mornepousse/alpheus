@@ -2,7 +2,7 @@ Third-party data in alpheus
 ===========================
 
 The emoji table behind the launcher's `:` prefix
-(crates/alpheus-demon/src/launcher/emoji/table.rs) is generated from the Unicode
+(crates/alpheus-daemon/src/launcher/emoji/table.rs) is generated from the Unicode
 Consortium's emoji-test.txt, version 16.0
 (https://www.unicode.org/Public/emoji/16.0/emoji-test.txt), whose names come from the
 Unicode CLDR. That data is distributed under the Unicode License v3, reproduced below

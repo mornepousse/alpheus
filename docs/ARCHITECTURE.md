@@ -14,13 +14,13 @@ One Cargo workspace, four crates:
 
 | Crate | What it is | Does not depend on |
 |---|---|---|
-| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays, diagnostics), compositor detection and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
+| `alpheus-common` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays, diagnostics), compositor detection and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
-| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
+| `alpheus-daemon` (binary `alpheus-demon`) | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, Shield mode, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
 
 These boundaries are enforced from `Cargo.lock` by
-`crates/alpheus-commun/tests/boundaries.rs`: a dependency added across a
+`crates/alpheus-common/tests/boundaries.rs`: a dependency added across a
 line fails the build's tests. The TUI re-exports the shared modules, so
 paths like `alpheus::backends::…` still work.
 
@@ -65,7 +65,7 @@ happened*.
 - **Session-bus features run on the loop itself,** through a second,
   non-blocking connection (the tray's StatusNotifierWatcher and dbusmenu,
   MPRIS, the notification server, the portal's colour scheme, and the user
-  manager's failed-unit count (`failed_app.rs`, the same typed `Get` and
+  manager's failed-unit count (`failed/app.rs`, the same typed `Get` and
   `Subscribe` allowlist as the system side); all in `session_bus/`): no new thread.
 - **Timers are deadlines, not ticks.** `deadline::DeadlineTimer` arms one
   calloop timer at the earliest deadline while there is one and nothing
@@ -89,17 +89,17 @@ happened*.
 
 The Diag tab does not use D-Bus: its reads are `systemctl`, `journalctl`,
 `coredumpctl` and `systemd-analyze` run through the executor's bounded
-`capture` on the TUI's worker thread, parsed in `alpheus-commun::diagnostics`
+`capture` on the TUI's worker thread, parsed in `alpheus-common::diagnostics`
 (`serde_json` joined that crate for it), never in a render, and only while the
 tab shows. A restart or reset-failed of a *system* unit is the one thing the
 TUI runs outside the executor, in its own window (`external_tools`), so
 systemd's polkit agent can ask for the password on that terminal; alpheus
 never runs `sudo` or `pkexec`. Compositor detection (`SWAYSOCK`,
 `HYPRLAND_INSTANCE_SIGNATURE`, `MANGO_INSTANCE_SIGNATURE`, `NIRI_SOCKET`) lives
-in `alpheus-commun::compositor`, used by the daemon's sources and by the
+in `alpheus-common::compositor`, used by the daemon's sources and by the
 tab's health check (which connects to the compositor's socket and closes it:
 nothing is written). Every string from these tools passes one cleaner
-(`alpheus-commun::text`) before reaching a cell, and the bug report is
+(`alpheus-common::text`) before reaching a cell, and the bug report is
 redacted (`diagnostics::report`) before it is shown or copied.
 
 ### The launcher bridge
@@ -109,15 +109,15 @@ redacted (`diagnostics::report`) before it is shown or copied.
 Displays tab reads and tries the screens' layout there (`outputs`,
 `outputs-try`, `outputs-keep`, `outputs-revert`), and the daemon holds the 15 s
 trial; the Diag tab sends `failed-refresh` there so the bar's count follows. The wire protocol lives in
-`alpheus-commun::launcher_ipc`. The daemon's side is `launcher/socket.rs`, the
+`alpheus-common::launcher_ipc`. The daemon's side is `launcher/socket.rs`, the
 only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
 bounded `capture`.
 
-The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `tools_app.rs`:
+The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `launcher/tools/app.rs`:
 the glue) is a launcher mode with no scan. Built-ins replay the daemon's own verbs
 inside the process; the entry states and dynamic choices are read one at a time on a
-short-lived `alpheus-tools` thread through `capture`; `tools_join.rs` is the only file
+short-lived `alpheus-tools` thread through `capture`; `launcher/tools/join.rs` is the only file
 that names the clipboard, Shield and Diagnostics for it.
 
 ## Policy: what the daemon may touch
@@ -160,7 +160,7 @@ These are guardrails from the scope document, checked mechanically.
 
 ## The executor
 
-`alpheus-commun::exec::Executor` is the **only** way alpheus launches a system
+`alpheus-common::exec::Executor` is the **only** way alpheus launches a system
 tool (`run`, `spawn`, `stream`, `capture`, `run_silent`, `spawn_with_input`). Production code
 uses `SystemExecutor` (argument vectors, never a shell, a timeout, the whole
 process group killed and reaped on timeout); tests use `FakeExecutor`, which
@@ -172,10 +172,10 @@ ever calls a real `wpctl`, `nmcli`, `systemctl`, `wm-set`…" practical.
 
 ## Tests and guardrails
 
-- **Unit tests** sit beside the code (pure models: `quick.rs`, `privacy.rs`,
-  `media.rs`, `layout`, the compositor parsers).
-- **Guardrail tests** (`crates/alpheus-demon/tests/guardrails.rs`,
-  `crates/alpheus/tests/guardrails.rs`, `crates/alpheus-commun/tests/boundaries.rs`)
+- **Unit tests** sit beside the code (pure models: `quick/mod.rs`, `privacy/mod.rs`,
+  `media/mod.rs`, `layout`, the compositor parsers).
+- **Guardrail tests** (`crates/alpheus-daemon/tests/guardrails.rs`,
+  `crates/alpheus/tests/guardrails.rs`, `crates/alpheus-common/tests/boundaries.rs`)
   read the *source files* and fail on a forbidden pattern: D-Bus confined to
   `sources/` and read-only, the Bluetooth connection acting only through its
   allowlist, compositor requests read-only, the launcher socket bound in one

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/alpheus-commun", "crates/alpheus", "crates/alpheus-demon", "crates/alpheus-launch"]
+members = ["crates/alpheus-common", "crates/alpheus", "crates/alpheus-daemon", "crates/alpheus-launch"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,7 +9,7 @@ rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
-alpheus-commun = { path = "crates/alpheus-commun" }
+alpheus-common = { path = "crates/alpheus-common" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"

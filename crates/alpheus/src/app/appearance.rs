@@ -8,11 +8,11 @@ use super::App;
 use super::action::Action;
 use crate::theme::Theme;
 use crate::theme_file::{Entry, WALLPAPER, entries, write_settings};
-use alpheus_commun::theme::mode_file::read_mode;
-use alpheus_commun::theme::settings::{
+use alpheus_common::theme::mode_file::read_mode;
+use alpheus_common::theme::settings::{
     BarStyle, ModeSetting, ModuleColors, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve,
 };
-use alpheus_commun::theme::{Mode, Roles};
+use alpheus_common::theme::{Mode, Roles};
 use std::path::PathBuf;
 use std::time::Instant;
 

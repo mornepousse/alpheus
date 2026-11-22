@@ -6,6 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 description = "Bridge to alpheus's launcher: toggle, close, dmenu-style menus (talks to alpheus-demon over a Unix socket)"
 
-# std + alpheus-commun only: no Wayland, no fonts (tests/boundaries.rs in alpheus-commun).
+# std + alpheus-common only: no Wayland, no fonts (tests/boundaries.rs in alpheus-common).
 [dependencies]
-alpheus-commun.workspace = true
+alpheus-common.workspace = true

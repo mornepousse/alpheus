@@ -391,7 +391,7 @@ fn revert_impossible_is_reported() {
 /// informational toast, nothing told before the answer.
 #[test]
 fn keep_or_revert_after_a_daemon_restart_says_so_once() {
-    use alpheus_commun::displays::wire::ERROR_NO_TRIAL;
+    use alpheus_common::displays::wire::ERROR_NO_TRIAL;
     let t0 = Instant::now();
     for (keep, op) in [(true, Op::KeepDisplays), (false, Op::RevertDisplays)] {
         let (mut a, _) = applied(t0);
@@ -760,8 +760,8 @@ fn never_a_negative_coordinate_after_anchoring() {
 
 // ── Save current ─────────────────────────────────────────────────
 
-fn tmp(name: &str) -> alpheus_commun::temp_path::TempPath {
-    alpheus_commun::temp_path::TempPath::new(&format!("app-displays-{name}")).below("displays.toml")
+fn tmp(name: &str) -> alpheus_common::temp_path::TempPath {
+    alpheus_common::temp_path::TempPath::new(&format!("app-displays-{name}")).below("displays.toml")
 }
 
 #[test]

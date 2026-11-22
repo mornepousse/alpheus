@@ -2,8 +2,8 @@
 //! `theme.toml`'s `theme`, `mode`, `module_colors` and `style` lines, edited in place (everything else byte
 //! for byte).
 
-use alpheus_commun::theme::presets::PRESETS;
-use alpheus_commun::theme::settings::THEME_FILE;
+use alpheus_common::theme::presets::PRESETS;
+use alpheus_common::theme::settings::THEME_FILE;
 use std::io;
 use std::path::Path;
 
@@ -156,8 +156,8 @@ mod tests {
         assert_eq!(e[13].label, "High contrast");
     }
 
-    fn scratch(name: &str) -> alpheus_commun::temp_path::TempPath {
-        alpheus_commun::temp_path::TempPath::new(&format!("appearance-{name}"))
+    fn scratch(name: &str) -> alpheus_common::temp_path::TempPath {
+        alpheus_common::temp_path::TempPath::new(&format!("appearance-{name}"))
     }
 
     #[test]

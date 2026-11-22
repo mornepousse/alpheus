@@ -12,7 +12,7 @@ use crate::app::diagnostics::{View, middle_cut};
 use crate::app::journal::{JournalView, Load, Picker, Scroll};
 use crate::diagnostics::journal::Entry;
 use crate::diagnostics::query::{Priority, Scope};
-use alpheus_commun::text::clean_line;
+use alpheus_common::text::clean_line;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

@@ -329,7 +329,7 @@ mod tests {
 
     use crate::app::appearance::Focus;
     use crate::app::appearance::tests::open;
-    use alpheus_commun::theme::settings::ModeSetting;
+    use alpheus_common::theme::settings::ModeSetting;
 
     #[test]
     fn a_click_on_a_theme_selects_it_and_writes_nothing_a_second_click_applies() {
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_module_colours_value_applies_it() {
-        use alpheus_commun::theme::settings::ModuleColors;
+        use alpheus_common::theme::settings::ModuleColors;
         let (mut a, dir) = open("mouse-colors", &[("theme.toml", "theme = \"nord\"\n")]);
         let (x, y) = center(&a, Target::AppearanceColors(ModuleColors::Full));
         click(&mut a, x, y);
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_style_applies_it() {
-        use alpheus_commun::theme::settings::BarStyle;
+        use alpheus_common::theme::settings::BarStyle;
         let (mut a, dir) = open("mouse-style", &[("theme.toml", "theme = \"nord\"\n")]);
         let (x, y) = center(&a, Target::AppearanceStyle(BarStyle::Powerline));
         click(&mut a, x, y);

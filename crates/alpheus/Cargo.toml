@@ -7,10 +7,10 @@ license.workspace = true
 description = "Mae's TUI control center"
 
 [dependencies]
-alpheus-commun.workspace = true
+alpheus-common.workspace = true
 ratatui.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-alpheus-commun = { workspace = true, features = ["testing"] }
+alpheus-common = { workspace = true, features = ["testing"] }
 insta.workspace = true

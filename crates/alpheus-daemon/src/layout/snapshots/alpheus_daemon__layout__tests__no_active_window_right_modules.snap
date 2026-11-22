@@ -1,0 +1,6 @@
+---
+source: crates/alpheus-daemon/src/layout/tests.rs
+expression: snapshot(&without_window)
+---
+ 󰍉  ·   2·  4!····+  5                                 ·  󰖀 55%  ·  󰖩  ·  󰂁 80%  ·  Sun 4 Oct 14:05 
+..mmmmmAAAAuuuuuuuuummm..............................mmmmm.....mmmmm.mmmmm.....mmmmmmmmmmmmmmmGGGGG.

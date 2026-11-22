@@ -116,6 +116,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Quick notepad, open with 2,000 characters typed | +794…+985 KB PSS over closed (3 runs) | `notes_pss_open_and_closed` (7.4–7.6 MB cold, 1 output; the pool, the text and the data device exist only while it shows); the first open also warms code and font pages once (+0.3–1.5 MB of file-backed PSS, the same as any box), so closed is read after one warm-up cycle |
 | Quick notepad, closed again | +0…+92 KB of anonymous memory over the warmed closed figure (3 runs); anonymous memory 1.40–1.41 MB cold, 1.48–1.50 MB warmed | the same test; its bounds are on `Anonymous:` (smaps_rollup), because total PSS moves ±1 MB with what other processes share and with the page cache; total PSS and the file-backed share are printed |
 | Quick notepad, at rest | 0 loop wake-ups in 5 s after a close, and 0 in 5 s with the pad open and saved | `at_rest_no_wakeups_after_notes`: the first window opens 1.1 s after the close (past SCTK's one key-repeat firing), the open-and-saved one is closed by the verb after it (never a scheduled key, which could land inside it); a save timer left re-arming every second makes the open-and-saved window read 5 |
+| Tools menu, one release run on the branch (no back-to-back base comparison) | PSS cold 9,549 KB; first open 11,711; closed 10,087; open 11,731 (+1,644 over closed); closed again 10,099; after 20 more cycles 10,217 | `tools_pss_open_and_closed`, a single run: the daemon's own anonymous memory cold 1,568 KB, closed 1,704, open 2,040 (+336), closed again 1,716 (+12), after 20 more cycles 1,780 (+64); the shm pools closed 56 KB, open 1,372 (+1,316), closed again 56; 6 threads before and after (the reader thread `alpheus-tools` lives only while the box is open). Not measured against a base |
+| Tools menu, a `choices_cmd` of 2,000 lines | anonymous memory +1,880 KB open over closed (1,704 → 3,584), +144 KB closed again (1,848), +64 KB after 5 more cycles (1,912); PSS open +2,656 KB over closed | `tools_choices_2000_lines`, a single run: the list is read on the short-lived thread under the 2,000-line, 256 KiB bound and dropped at close |
+| Tools menu, at rest | 0 loop wake-ups in 5 s after a cycle, with a confirmation question pending and closed, and after one left to expire | `at_rest_no_wakeups_after_tools` (the assertion is `delta == 0`); the full memory suite passed 86 of 87 in that run: `pss_under_30mb_and_stable` read a growth of 10,883 → 11,929 KB (a low warm-up reading) and passed 3 of 3 alone (+483…+545 KB, bound 1,024) |
 | Clipboard history, linked in but off (no `[clipboard] enabled`) | −256…+80 KB at start (`everything` −140, −140, −52; `plan 1` +80, +78, −256, 3 pairings: the harness drifts, trust the deltas) | binary 7,390,128 → 7,533,488 bytes stripped (+140 KiB: code, no allocation); measured `1efa8dd` vs this delivery, release, back to back, 3 runs each, separate target directories; off, no protocol object is bound and nothing is allocated |
 | Clipboard history, on, nothing copied (`+ clipboard`) | +160, +64, −24 KB over `everything` | `startup_pss_per_source`, 3 runs (bound 256 KB); the data-control manager and device, no timer, no thread |
 | Clipboard history, full (50 × 4,000 bytes) | +164…+188 KB of anonymous memory over rest; 100 more copies +4 KB; cleared back to about rest | `clipboard_full_history`, 3 runs (bounds 384 / 64 KB on `Anonymous:`; PSS printed: +290…+430 KB); the history, its previews and the one read buffer, all wiped when removed |
@@ -148,7 +151,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > approximate and about 40 KiB of the growth belongs to no symbol): ≈ 180 KiB in the alpheus
 > crates' own code (the tab, the journal and report views, the backend's parsers, the health
 > checks, the redaction, the config), ≈ 30 KiB in `serde_json` (new to this binary: it joined
-> `alpheus-commun` for `journalctl -o json` and `systemctl --output=json`), ≈ 70 KiB in generic
+> `alpheus-common` for `journalctl -o json` and `systemctl --output=json`), ≈ 70 KiB in generic
 > std and dependency code instantiated for the new types, ≈ 15 KiB in `toml` and `serde` derive
 > code. It is code, not a new connection or a new library: the TUI still links no D-Bus. The spec
 > estimated 0.3–0.5 MiB for linking D-Bus into the TUI and chose to spawn the tools instead; the
@@ -234,7 +237,9 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Shell command line | ✅ `$ …` runs `sh -c`, detached or in the held terminal | ➖ | ➖ | ❌ | ➖ |
 | Window switcher (Alt+Tab) | ✅ `alpheus-launch --windows` from a compositor bind: the previous window first, the bind again steps | ➖ | ➖ | ❌ | ❌ |
 | Currencies, dates | 🚧 later | ✅ | ➖ | ❌ | ❌ |
-| System actions, Bluetooth/sound, SSH | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
+| System actions, sound, Wi-Fi/Bluetooth/VPN, control center tabs (the Tools menu) | ✅ `alpheus-launch --tools` (a bind of your own) or `/` in Mod+Space: categories to browse, a flat search across all of them, built-ins that open alpheus's own features, no configuration needed; nothing resident while closed | ➖ | ➖ | ❌ | ❌ |
+| Your own entries in the Tools menu (a command, a terminal, a confirmation, an on/off state, choices) | ✅ `[[tools.entry]]` in `launcher.toml`: argv with no shell, `confirm` asks `Name? ⏎` (second Enter after 0.4 s), `state` shows the quick panel's switch, fixed `choices` or a `choices_cmd` list; read on a short-lived thread, no plugin runtime | ➖ | ➖ | ❌ | ❌ |
+| SSH | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Clipboard history | ✅ off unless `[clipboard] enabled = true`: text only, 50 entries of 4 KiB in memory (nothing on disk), pins, `alpheus-launch --clipboard` (a bind of your own) and the `"` prefix in Mod+Space; a copy with a password-manager hint is never stored (see [Clipboard history](#clipboard-history)) | ✅ | ➖ | ❌ | ➖ |
 | Files | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
@@ -269,9 +274,9 @@ A Cargo workspace of four crates:
 | Crate | Role |
 |---|---|
 | `alpheus` | **Control center** as a TUI (ratatui), opened on demand |
-| `alpheus-demon` | **Resident daemon**: the bar, one per screen (layer-shell) |
+| `alpheus-daemon` (binary `alpheus-demon`) | **Resident daemon**: the bar, one per screen (layer-shell) |
 | `alpheus-launch` | **Scripting bridge** to the daemon's launcher, notifications, OSD and quick panel (`--toggle`, `--dmenu`, `--dnd`, `--quick`…) |
-| `alpheus-commun` | Shared foundation: command execution, configuration, theme, access to system tools |
+| `alpheus-common` | Shared foundation: command execution, configuration, theme, access to system tools |
 
 The TUI doesn't embed Wayland, the daemon doesn't embed ratatui: a test
 checks this.
@@ -556,6 +561,19 @@ and its path): ≈ 6–8 MB at the bounds (8 sources × 256 KiB) plus the ranker
 A running `alpheus-demon` older than `--index`/`--password`/`--visible` (upgraded but not restarted) refuses
 them: `alpheus-launch` then exits 3, like an unreachable daemon, so a script falls back to another
 menu with the same options.
+
+### The Tools menu
+
+One box for "do something to my session", in the launcher's own box (nothing resident while closed, no thread, no new crate): `alpheus-launch --tools` (bind it yourself: Mango `bind=SUPER,x,spawn,sh -c 'alpheus-launch --tools; [ $? -eq 3 ] && tools-menu'`, Sway `bindsym $mod+x exec …`; exit 3 means the daemon is too old or not running, the one case to fall back on another menu) opens it, and `/` typed as the whole query in Mod+Space jumps into it.
+
+- **Browsing.** With the query empty it lists categories (`Quick settings`, `Control center`, `Utilities`, `Session`, and your own). Enter or → opens one, ← or Esc goes back up, Esc at the root closes. Every action closes the box.
+- **Searching.** Typing searches every entry of every category at once, the category dimmed after the entry, fixed choices as `Entry · Choice`; inside a category or a choices list it filters that level. Entries also rank in Mod+Space's normal search, as `[[sources]]` lines do.
+- **Built-ins** (nothing to declare; each shows only when it can work): Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not disturb, Keep awake and Night light (with the quick panel's switch, from `[quick]`), the control center's tabs (through `[actions] open_tab`, else the launcher's terminal and `alpheus --tab <name>`), Notes, Timer, Clipboard, Emoji, Lock, the Power menu and an optional `Reload the bar`. They replay the daemon's own verbs, so no process starts and each verb's rules apply. `[tools] builtins = false` shows none, `hide = ["tab.power", …]` hides some, `root = ["keep_awake"]` also lists some at the root.
+- **Your entries.** `[[tools.entry]]` in `launcher.toml` (below): an argv with no shell, optionally in the terminal (`terminal`) or the held one (`hold`), `confirm` (the first Enter turns the row into `Name? ⏎`; a second one between 0.4 s and 3 s later runs it, a double Enter never does), `state` (an argv run when the box opens: exit 0 shows the quick panel's `ON` switch, any other exit `off`, a hung one is killed at 1 s and shows nothing), and `choices` or `choices_cmd` (the lines a command prints when the entry is opened, filterable) with `{choice}` standing for the chosen line as one whole argument.
+- **Bounds.** 16 categories, 128 entries, 32 fixed choices per entry, 16 states; past a bound the first ones are kept, with one log line of counts. A command's list or state read is cut at 1 s, 2,000 lines and 256 KiB. Names, commands and lines are never logged (an entry is named by its position in the file).
+- **`alpheus-launch --power`** opens the ⏻ menu (lock, log out, reboot, power off) under the bar's right end, with or without the `power` module; exit 2 when no `[quick]` session command is set.
+- **The `/` caveat.** A typed path (`/etc/hosts`) in Mod+Space's All mode jumps into the Tools menu; `[prefixes] tools = ""` gives the key back. A `tools` prefix the file never sets that clashes with your `commands` or `windows` prefix is turned off with a note; one the file sets is refused.
+- **Moving from a menu script.** `[[sources]]` keeps working beside it (an entry in both shows twice in Mod+Space's search: drop the source once the menu is yours).
 
 ### The quick notepad
 
@@ -1009,7 +1027,7 @@ An unknown module name in `modules` is an error that makes the whole
 invalid key.
 
 The launcher, in `launcher.toml` (defaults shown; `[[sources]]` are described
-under [The launcher](#the-launcher)):
+under [The launcher](#the-launcher), the Tools menu's under [The Tools menu](#the-tools-menu)):
 
 ```toml
 terminal = ["foot", "-e"]                        # Terminal=true apps, plain
@@ -1024,6 +1042,38 @@ open = ["xdg-open"]                              # opens that URL (appended as t
 [prefixes]
 commands = ">"       # non-empty, no leading space, neither a prefix of the other
 windows = "w "
+tools = "/"          # jumps into the Tools menu; "" turns it off
+
+[tools]              # the Tools menu (`alpheus-launch --tools`), see The Tools menu
+builtins = true      # false: no built-in entry
+hide = []            # built-in ids never shown ("tab.power", "quick.shield", …); an unknown one is logged and ignored
+root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
+reload = []          # the "Reload the bar" built-in's argv, e.g. ["shell-ctl", "reload-bar"]; [] hides it
+
+[[tools.category]]   # at most 16
+name = "Nix"         # 1 to 48 characters, unique; may be a built-in category's name (it then restyles it)
+icon = "󰏖"           # one character; absent: a generic folder glyph
+order = 50           # 0 to 1000, default 50; root rows sort by order, then name
+
+[[tools.entry]]      # at most 128
+name = "Update"      # 1 to 48 characters, unique within its category
+category = "Nix"     # a [[tools.category]] or a built-in category; absent: at the root
+icon = "󰚰"           # one character; absent: none
+run = ["my-update", "--now"]   # argv, no shell; required
+terminal = false     # true: `terminal` is put in front
+hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
+confirm = false      # true: asks "Update? ⏎", runs on a second Enter 0.4 s to 3 s later
+
+[[tools.entry]]
+name = "Generation"
+category = "Nix"
+run = ["my-switch", "{choice}"]      # with choices, `run` holds "{choice}" as a whole element
+choices = ["boot", "test", "switch"] # at most 32 of 1 to 64 characters; or: choices_cmd = ["my-list"]
+
+[[tools.entry]]
+name = "Gaming mode"
+run = ["my-gaming", "toggle"]
+state = ["my-gaming", "status"]      # exit 0 = on (a switch is shown), else off; not with choices
 ```
 
 `terminal`, `terminal_hold` and `focus` are separate argv lists (program then

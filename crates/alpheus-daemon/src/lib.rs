@@ -1,0 +1,59 @@
+//! alpheus-daemon — resident daemon (sub-project 2 of docs/SCOPE.md,
+//! spec docs/specs/2026-10-04-alpheus-demon-barre-design.md). A pure state
+//! (`state::Bar`) changed by messages, sources that send them, a grid of
+//! cells drawn by cosmic-text into a layer-shell surface per screen.
+
+pub mod actions;
+pub mod appearance;
+pub mod background;
+pub mod backlight;
+pub mod calendar;
+pub mod clipboard;
+pub mod clock;
+pub mod compositor;
+pub mod config;
+pub mod deadline;
+pub mod failed;
+pub mod grid;
+pub mod hooks;
+pub mod icons;
+pub mod inotify;
+pub mod keys;
+pub mod launcher;
+pub mod layout;
+pub mod link;
+pub mod list;
+pub mod lock;
+pub mod log;
+pub mod media;
+pub mod memory;
+pub mod modules;
+pub mod nonblocking;
+pub mod notes;
+pub mod notify;
+pub mod osd;
+pub mod outputs;
+pub mod painter;
+pub mod pipewire;
+pub mod placement;
+pub mod popup;
+pub mod power;
+pub mod privacy;
+pub mod quick;
+pub mod resources;
+pub mod retired;
+pub mod segments;
+pub mod session;
+pub mod session_bus;
+pub mod shield;
+pub mod sources;
+pub mod startup;
+pub mod state;
+pub mod state_file;
+pub mod sys;
+pub mod system;
+pub mod text;
+pub mod timer;
+pub mod tray;
+pub mod watch;
+pub mod wayland;

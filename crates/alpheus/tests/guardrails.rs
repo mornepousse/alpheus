@@ -209,7 +209,7 @@ fn systemctl_never_starts_stops_or_changes_the_environment() {
     ];
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let mut files = Vec::new();
-    for krate in ["alpheus", "alpheus-commun"] {
+    for krate in ["alpheus", "alpheus-common"] {
         rs_files(&crates.join(krate).join("src"), &mut files);
     }
     let mut scanned = 0;

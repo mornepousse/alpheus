@@ -8,7 +8,7 @@ use super::rail::tab_hue;
 use crate::app::diagnostics::View;
 use crate::app::report_views::wrap_rows;
 use crate::app::{App, Loadable};
-use alpheus_commun::text::clean_line;
+use alpheus_common::text::clean_line;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
