@@ -1624,7 +1624,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/calc/units.rs",
     "dnd.rs",
     "battery_alert.rs",
-    "hooks.rs",
+    "hooks/mod.rs",
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
@@ -3120,7 +3120,7 @@ fn the_timer_has_no_panicking_path() {
 #[test]
 fn the_calculator_has_no_panicking_path() {
     let files = source_files();
-    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks.rs", "hooks_app.rs"] {
+    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks/mod.rs", "hooks/app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -3759,9 +3759,9 @@ fn spawn_with_env_only_runs_hooks() {
         }
     }
     seen.sort();
-    // nonblocking.rs declares and delegates it (twice); hooks_app.rs calls it once.
-    assert_eq!(seen.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["hooks_app.rs", "nonblocking.rs"]);
-    assert_eq!(seen[0].1, 1, "hooks_app.rs starts a hook in one place");
+    // nonblocking.rs declares and delegates it (twice); hooks/app.rs calls it once.
+    assert_eq!(seen.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["hooks/app.rs", "nonblocking.rs"]);
+    assert_eq!(seen[0].1, 1, "hooks/app.rs starts a hook in one place");
 }
 
 /// Hooks final review I1: the hooks see a sound or compositor message before the privacy indicators
@@ -3822,7 +3822,7 @@ fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
 #[test]
 fn hook_logs_carry_fixed_words_only() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks_app.rs").expect("hooks_app.rs").1;
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks/app.rs").expect("hooks/app.rs").1;
     let production = production_code(t);
     let statements = log_statements(&production);
     assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
@@ -3866,7 +3866,7 @@ fn the_hooks_are_fed_where_state_changes() {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
     }
-    let app = production_code(&text("hooks_app.rs"));
+    let app = production_code(&text("hooks/app.rs"));
     let mut checked = 0;
     for (at, _) in app.match_indices("pub(crate) fn hooks_") {
         let body = function_body(&app[at..], "pub(crate) fn hooks_");
@@ -4783,7 +4783,7 @@ fn the_shield_logs_name_nothing() {
         calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
     }
     for name in
-        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks_app.rs", "watch.rs"]
+        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks/app.rs", "watch.rs"]
     {
         calls.extend(
             log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
