@@ -16,7 +16,7 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
-use crate::launcher::tools::nav::{Job, RowId, Step, ToolAction, ToolRow, ToolsState};
+use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
 use crate::list;
 use crate::session;
 use alpheus_commun::launcher_ipc::{DmenuFlags, wipe};
@@ -187,8 +187,8 @@ pub struct Launcher {
     /// The Tools mode's rows of the open level (the flat search's are the state's own).
     tool_level: Vec<ToolRow>,
     tool_level_hits: Vec<ToolHitRow>,
-    /// The `ToolsState::rev` the level's rows were built at (None: not built).
-    tool_level_rev: Option<u64>,
+    /// The level and `ToolsState::rev` the level's rows were built at (None: not built).
+    tool_level_key: Option<(Level, u64)>,
     /// How many times the level's rows were built (tests: a keystroke builds none).
     #[cfg(test)]
     tool_level_builds: u32,
@@ -248,7 +248,7 @@ impl Launcher {
             tools: None,
             tool_level: Vec::new(),
             tool_level_hits: Vec::new(),
-            tool_level_rev: None,
+            tool_level_key: None,
             #[cfg(test)]
             tool_level_builds: 0,
             tool_flat_shown: true,
@@ -343,7 +343,7 @@ impl Launcher {
         }
         let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.tools = Some(ToolsState::new(catalog));
-        self.tool_level_rev = None;
+        self.tool_level_key = None;
         self.ranker.forget();
         self.refilter_keeping(kept);
     }
@@ -907,9 +907,9 @@ impl Launcher {
             self.ranker.forget();
         }
         self.tool_flat_shown = flat;
-        let rev = t.rev();
-        if !flat && self.tool_level_rev != Some(rev) {
-            self.tool_level_rev = Some(rev);
+        let key = (t.level(), t.rev());
+        if !flat && self.tool_level_key != Some(key) {
+            self.tool_level_key = Some(key);
             #[cfg(test)]
             {
                 self.tool_level_builds += 1;

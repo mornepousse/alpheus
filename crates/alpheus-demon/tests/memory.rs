@@ -4417,9 +4417,12 @@ fn at_rest_no_wakeups_after_tools() {
     assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "{:?}", d.log());
     std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
     assert_eq!(d.count("launcher closed ("), 0, "the box is still open with its question: {:?}", d.log());
+    // The entry asks (`confirm`): the second Return did not run it, so a question is pending.
+    assert_eq!(d.count("tools: entry 1 run"), 0, "the question was never asked, the entry ran: {:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher closed (toggle)", 1, DELAY), "{:?}", d.log());
     assert!(typing.wait().unwrap().success());
+    assert_eq!(d.count("tools: entry 1 run"), 0, "closing with the question pending ran nothing: {:?}", d.log());
     rest("after a question closed with the box");
     // A question left to expire (3.5 s), then the box closed.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);

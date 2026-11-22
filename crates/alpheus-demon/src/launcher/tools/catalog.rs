@@ -213,8 +213,8 @@ fn icon_of(s: &Option<String>) -> Option<char> {
 }
 
 impl Catalog {
-    /// The catalog for `t` under `c`. An unknown id in `hide` or `root` is noted once each
-    /// (never quoted) and ignored, so a file written for a newer alpheus stays valid.
+    /// The catalog for `t` under `c`. An unknown id in `hide` or `root` is noted once per list,
+    /// however many it holds (never quoted), and ignored, so a file written for a newer alpheus stays valid.
     pub fn build(t: &ToolsConfig, c: &Context, note: &mut dyn FnMut(&str)) -> Catalog {
         let known = |id: &String| BUILTINS.iter().any(|b| b.id == id);
         if !t.hide.iter().all(known) {

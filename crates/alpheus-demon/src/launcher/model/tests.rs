@@ -1479,6 +1479,14 @@ fn typing_in_a_tools_level_does_not_rebuild_its_rows() {
     assert_eq!(l.tool_level_builds, built, "keystrokes only rank");
     l.key(Key::Enter); // into Nix
     assert!(l.tool_level_builds > built, "a level change rebuilds");
+    // Inside a category the level's rows are cached the same way (the flat search is the root's).
+    let built = l.tool_level_builds;
+    typed(&mut l, "up");
+    l.key(Key::Backspace);
+    l.key(Key::Backspace);
+    assert_eq!(l.tool_level_builds, built, "keystrokes inside a category only rank");
+    l.key(Key::Left); // back to the root
+    assert!(l.tool_level_builds > built, "leaving the category rebuilds");
 }
 
 #[test]

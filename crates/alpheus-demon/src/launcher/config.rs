@@ -247,7 +247,7 @@ impl LauncherConfig {
             && (tools_clash(&r.prefixes.tools, &r.prefixes.commands) || tools_clash(&r.prefixes.tools, &r.prefixes.windows))
         {
             notes.push(format!(
-                "prefixes.tools {:?} clashes with prefixes.commands or prefixes.windows: the Tools jump is off (set prefixes.tools to turn it on)",
+                "prefixes.tools {:?} clashes with prefixes.commands or prefixes.windows: the Tools jump is off (prefixes.tools = \"\" silences this note; set prefixes.tools to a prefix of its own to turn the jump on)",
                 r.prefixes.tools
             ));
             r.prefixes.tools.clear();
@@ -384,7 +384,9 @@ mod tests {
     fn a_default_tools_prefix_that_clashes_is_turned_off_with_a_note() {
         let c = LauncherConfig::from_text("[prefixes]\ncommands = \"/run \"\n").unwrap();
         assert_eq!(c.prefixes.tools, "", "the default `/` clashes with `/run `: the jump is off");
-        assert!(c.notes.iter().any(|n| n.contains("prefixes.tools")), "said once: {:?}", c.notes);
+        let about: Vec<_> = c.notes.iter().filter(|n| n.contains("prefixes.tools")).collect();
+        assert_eq!(about.len(), 1, "said once: {:?}", c.notes);
+        assert!(about[0].contains("prefixes.tools = \"\""), "the note names the way to turn the jump off for good: {about:?}");
         assert_eq!(c.prefixes.commands, "/run ", "the user's own prefix is kept");
         let c = LauncherConfig::from_text("[prefixes]\nwindows = \"/\"\n").unwrap();
         assert_eq!(c.prefixes.tools, "");
