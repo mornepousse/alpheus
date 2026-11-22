@@ -11,14 +11,14 @@ use crate::actions::Button;
 use crate::grid::{Grid, Style};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Row};
-use crate::media::Players;
-use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
+use crate::media::popup::{MediaAction, MediaPopup};
+use crate::media::{self, Players};
 use crate::notify::bubbles::{DEFAULT_ACTION, clock};
 use crate::notify::{Center, Entry};
 use std::time::Instant;
 
-/// Content width in cells: the media card's, since `media_popup::press` hit-tests its buttons at it.
-pub const WIDTH: u16 = media_popup::WIDTH;
+/// Content width in cells: the media card's, since `media::popup::press` hit-tests its buttons at it.
+pub const WIDTH: u16 = media::popup::WIDTH;
 /// Rows outside the history and the card: a separator, "Do not disturb", "Clear all".
 const FOOTER: usize = 3;
 
@@ -33,7 +33,7 @@ pub enum Item {
 }
 
 /// What is selected, by what it is rather than by its row: arrivals and removals above it move
-/// its row, never the selection off it (as `media_popup::Chosen`).
+/// its row, never the selection off it (as `media::popup::Chosen`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chosen {
     Card,
@@ -89,7 +89,7 @@ pub enum PanelAction {
 
 /// The card's rows: the media popup's lines, none without a shown player.
 fn card_rows(players: Option<&Players>) -> usize {
-    players.map_or(0, |p| media_popup::lines(p).len())
+    players.map_or(0, |p| media::popup::lines(p).len())
 }
 
 /// What can be selected, top to bottom: the card when it shows, every entry, then the footer's two.
@@ -214,7 +214,7 @@ pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant,
         Some(pl) if card_rows(players) > 0 => {
             // The card's band only while the card holds the selection.
             let focus = if selected == Some(Item::Card) { p.media.clone() } else { MediaPopup { selected: usize::MAX, ..p.media.clone() } };
-            media_popup::rows(pl, &focus, now, WIDTH)
+            media::popup::rows(pl, &focus, now, WIDTH)
         }
         _ => Boxed::default(),
     };
@@ -316,7 +316,7 @@ fn key_on(p: &mut Panel, center: &Center, players: Option<&Players>, items: &[It
     if let (Some(Item::Card), Some(pl)) = (items.get(p.selected), players)
         && matches!(k, Key::Up | Key::Down | Key::CtrlP | Key::CtrlN | Key::Left | Key::Right | Key::Enter)
     {
-        let a = media_popup::key(&mut p.media, pl, k);
+        let a = media::popup::key(&mut p.media, pl, k);
         if a != MediaAction::Nothing {
             return PanelAction::Media(a);
         }
@@ -361,7 +361,7 @@ pub fn press(p: &mut Panel, center: &Center, players: Option<&Players>, cell: (u
     match (line, button) {
         (Some(Line::Card(_)), Button::Left) => {
             let Some(pl) = players else { return PanelAction::Nothing };
-            match media_popup::press(&mut p.media, pl, cell, WIDTH) {
+            match media::popup::press(&mut p.media, pl, cell, WIDTH) {
                 MediaAction::Nothing => PanelAction::Nothing,
                 a => {
                     select(p, Item::Card);

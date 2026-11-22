@@ -1,38 +1,47 @@
+//! Tests of the media model (`mod.rs`): how a player's status and metadata are read, which player is
+//! active, the title and its cut, and the position. No bus, no clock: each test passes the instant
+//! it wants.
+
 use super::*;
 use crate::grid::text_width;
 use std::time::Duration;
 
-fn s(x: &str) -> Value {
+/// A D-Bus string value.
+fn string_value(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-fn list(xs: &[&str]) -> Value {
+/// A D-Bus list of strings.
+fn string_list_value(xs: &[&str]) -> Value {
     Value::StrList(xs.iter().map(|x| x.to_string()).collect())
 }
 
-fn props(entries: &[(&str, Value)]) -> Vec<(String, Value)> {
+/// Property entries as a player sends them: names and values.
+fn properties(entries: &[(&str, Value)]) -> Vec<(String, Value)> {
     entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
 
-fn metadata(entries: &[(&str, Value)]) -> Track {
-    Track::from_metadata(&props(entries))
+/// The track read from `Metadata` entries.
+fn track_from(entries: &[(&str, Value)]) -> Track {
+    Track::from_metadata(&properties(entries))
 }
 
 /// Players with one player per (bus suffix, unique, status), added and set in that order.
-fn players(spec: &[(&str, &str, &str)]) -> Players {
+fn players_from(spec: &[(&str, &str, &str)]) -> Players {
     let mut p = Players::default();
     for (name, unique, status) in spec {
         assert!(p.add(format!("{MPRIS_PREFIX}{name}"), unique.to_string()));
-        p.apply(unique, &props(&[("PlaybackStatus", s(status))]), &[]);
+        p.apply(unique, &properties(&[("PlaybackStatus", string_value(status))]), &[]);
     }
     p
 }
 
-fn active(p: &Players) -> Option<&str> {
+/// The unique name of the active player, if there is one.
+fn active_player(p: &Players) -> Option<&str> {
     p.active().map(|a| a.unique.as_str())
 }
 
-// ---- status and metadata (spec § 3, Tolerance and Bounds) ----
+// ---- status and metadata (media spec § 3, Tolerance and Bounds) ----
 
 #[test]
 fn status_reads_playing_and_paused_and_anything_else_is_stopped() {
@@ -46,23 +55,23 @@ fn status_reads_playing_and_paused_and_anything_else_is_stopped() {
 /// An unknown status string is Stopped, so the player is hidden.
 #[test]
 fn an_unknown_status_hides_the_player() {
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
-    assert_eq!(active(&p), Some(":1.4"));
-    p.apply(":1.4", &props(&[("PlaybackStatus", s("Buffering"))]), &[]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
+    assert_eq!(active_player(&p), Some(":1.4"));
+    p.apply(":1.4", &properties(&[("PlaybackStatus", string_value("Buffering"))]), &[]);
     assert_eq!(p.get(":1.4").map(|x| x.status), Some(Status::Stopped));
-    assert_eq!(active(&p), None);
+    assert_eq!(active_player(&p), None);
     assert_eq!(view(&p, 30), None, "the module takes no cell");
 }
 
 #[test]
 fn metadata_is_read_with_its_types_tolerated() {
-    let t = metadata(&[
-        ("xesam:title", s("Bohemian Rhapsody")),
-        ("xesam:artist", list(&["Queen"])),
-        ("xesam:url", s("file:///music/Queen/Bohemian%20Rhapsody.flac")),
+    let t = track_from(&[
+        ("xesam:title", string_value("Bohemian Rhapsody")),
+        ("xesam:artist", string_list_value(&["Queen"])),
+        ("xesam:url", string_value("file:///music/Queen/Bohemian%20Rhapsody.flac")),
         ("mpris:length", Value::Int(355_000_000)),
-        ("mpris:trackid", s("/org/mpris/MediaPlayer2/Track/1")),
-        ("xesam:album", s("A Night at the Opera")),
+        ("mpris:trackid", string_value("/org/mpris/MediaPlayer2/Track/1")),
+        ("xesam:album", string_value("A Night at the Opera")),
         ("mpris:artUrl", Value::Other),
     ]);
     assert_eq!(
@@ -75,15 +84,15 @@ fn metadata_is_read_with_its_types_tolerated() {
             id: Some("/org/mpris/MediaPlayer2/Track/1".into()),
         }
     );
-    assert_eq!(metadata(&[("xesam:artist", s("Queen"))]).artists, ["Queen"], "an artist sent as `s`");
-    assert_eq!(metadata(&[("xesam:artist", list(&["Queen", "David Bowie"]))]).artist_line(), "Queen, David Bowie");
-    assert_eq!(metadata(&[("xesam:title", Value::Int(3))]).title, None, "a title of the wrong type is none");
-    assert_eq!(metadata(&[("xesam:title", s("  \t "))]).title, None, "a blank title is none: the fallbacks apply");
+    assert_eq!(track_from(&[("xesam:artist", string_value("Queen"))]).artists, ["Queen"], "an artist sent as `s`");
+    assert_eq!(track_from(&[("xesam:artist", string_list_value(&["Queen", "David Bowie"]))]).artist_line(), "Queen, David Bowie");
+    assert_eq!(track_from(&[("xesam:title", Value::Int(3))]).title, None, "a title of the wrong type is none");
+    assert_eq!(track_from(&[("xesam:title", string_value("  \t "))]).title, None, "a blank title is none: the fallbacks apply");
 }
 
 #[test]
 fn length_is_any_integer_or_a_float_and_unknown_otherwise() {
-    let length = |v: Value| metadata(&[("mpris:length", v)]).length_us;
+    let length = |v: Value| track_from(&[("mpris:length", v)]).length_us;
     assert_eq!(length(Value::Int(355_000_000)), Some(355_000_000), "x, i, u or t: the codec gives Int");
     assert_eq!(length(Value::Float(355_000_000.9)), Some(355_000_000), "d");
     assert_eq!(length(Value::Int(-1)), None, "negative");
@@ -97,9 +106,12 @@ fn length_is_any_integer_or_a_float_and_unknown_otherwise() {
 /// `mpris:length` sent as a string is unknown, and nothing panics.
 #[test]
 fn a_length_sent_as_a_string_is_unknown() {
-    assert_eq!(metadata(&[("mpris:length", s("355000000"))]).length_us, None);
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
-    let changed = props(&[("Metadata", Value::Map(props(&[("xesam:title", s("Song")), ("mpris:length", s("3:55"))])))]);
+    assert_eq!(track_from(&[("mpris:length", string_value("355000000"))]).length_us, None);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
+    let changed = properties(&[(
+        "Metadata",
+        Value::Map(properties(&[("xesam:title", string_value("Song")), ("mpris:length", string_value("3:55"))])),
+    )]);
     p.apply(":1.4", &changed, &[]);
     p.set_position(":1.4", PositionSync { at: Instant::now(), us: 1_000_000 });
     let player = p.get(":1.4").unwrap();
@@ -109,17 +121,17 @@ fn a_length_sent_as_a_string_is_unknown() {
 /// An empty artist list is no artist (no row in the popup), never ", ".
 #[test]
 fn an_empty_artist_list_is_no_artist() {
-    for v in [list(&[]), list(&["", "  ", "\u{1}"]), s(""), Value::Other] {
-        let t = metadata(&[("xesam:artist", v.clone())]);
+    for v in [string_list_value(&[]), string_list_value(&["", "  ", "\u{1}"]), string_value(""), Value::Other] {
+        let t = track_from(&[("xesam:artist", v.clone())]);
         assert_eq!((t.artists.len(), t.artist_line()), (0, String::new()), "{v:?}");
     }
-    assert_eq!(metadata(&[("xesam:artist", list(&["", "Queen"]))]).artist_line(), "Queen", "blanks skipped");
+    assert_eq!(track_from(&[("xesam:artist", string_list_value(&["", "Queen"]))]).artist_line(), "Queen", "blanks skipped");
 }
 
 #[test]
 fn artists_are_capped_at_8() {
     let many: Vec<String> = (1..=20).map(|i| format!("Artist {i}")).collect();
-    let t = metadata(&[("xesam:artist", Value::StrList(many))]);
+    let t = track_from(&[("xesam:artist", Value::StrList(many))]);
     assert_eq!(t.artists.len(), MAX_ARTISTS);
     assert_eq!((t.artists[0].as_str(), t.artists[7].as_str()), ("Artist 1", "Artist 8"), "the first 8, in order");
 }
@@ -129,10 +141,10 @@ fn artists_are_capped_at_8() {
 fn a_100_kb_title_is_capped() {
     let huge = "é".repeat(50_000);
     assert!(huge.len() >= 100_000);
-    let t = metadata(&[("xesam:title", s(&huge)), ("xesam:artist", list(&[huge.as_str()]))]);
+    let t = track_from(&[("xesam:title", string_value(&huge)), ("xesam:artist", string_list_value(&[huge.as_str()]))]);
     assert_eq!(t.title.as_deref().map(|x| x.chars().count()), Some(crate::session_bus::MAX_TEXT));
     assert_eq!(t.artists[0].chars().count(), crate::session_bus::MAX_TEXT);
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
     p.set_identity(":1.4", &huge);
     assert_eq!(p.get(":1.4").and_then(|x| x.identity.as_ref()).map(|x| x.chars().count()), Some(crate::session_bus::MAX_TEXT));
 }
@@ -140,11 +152,11 @@ fn a_100_kb_title_is_capped() {
 /// A newline in a title never reaches the bar (cleaned to a space, like the tray).
 #[test]
 fn a_newline_in_a_title_is_stripped() {
-    let t = metadata(&[("xesam:title", s("Line one\nLine two\r\n")), ("xesam:artist", s("A\u{1b}[31mB"))]);
+    let t = track_from(&[("xesam:title", string_value("Line one\nLine two\r\n")), ("xesam:artist", string_value("A\u{1b}[31mB"))]);
     assert_eq!(t.title.as_deref(), Some("Line one Line two"), "line breaks spaced, the trailing ones trimmed");
     assert_eq!(t.artists, ["A[31mB"], "the escape character removed");
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
-    p.apply(":1.4", &props(&[("Metadata", Value::Map(props(&[("xesam:title", s("a\nb"))])))]), &[]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
+    p.apply(":1.4", &properties(&[("Metadata", Value::Map(properties(&[("xesam:title", string_value("a\nb"))])))]), &[]);
     let v = view(&p, 30).unwrap();
     assert!(!v.title.contains(['\n', '\r']), "{v:?}");
 }
@@ -183,8 +195,8 @@ fn the_17th_player_is_refused_and_a_name_counts_once() {
 
 #[test]
 fn apply_reads_the_player_properties_and_asks_for_invalidated_metadata() {
-    let mut p = players(&[("spotify", ":1.4", "Paused")]);
-    let changed = props(&[
+    let mut p = players_from(&[("spotify", ":1.4", "Paused")]);
+    let changed = properties(&[
         ("CanPlay", Value::Bool(true)),
         ("CanPause", Value::Bool(true)),
         ("CanGoNext", Value::Bool(true)),
@@ -209,7 +221,7 @@ fn apply_reads_the_player_properties_and_asks_for_invalidated_metadata() {
         (Value::Float(f64::INFINITY), 2.0),
         (Value::Float(f64::NEG_INFINITY), 2.0),
     ] {
-        p.apply(":1.4", &props(&[("Rate", rate.clone())]), &[]);
+        p.apply(":1.4", &properties(&[("Rate", rate.clone())]), &[]);
         assert_eq!(p.get(":1.4").unwrap().rate, want, "{rate:?}");
     }
 }
@@ -218,25 +230,25 @@ fn apply_reads_the_player_properties_and_asks_for_invalidated_metadata() {
 /// the view to be rebuilt; Rate, Volume or a repeat of the same value never does.
 #[test]
 fn apply_says_whether_anything_shown_changed() {
-    let mut p = players(&[("spotify", ":1.4", "Paused")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Paused")]);
     let visible = |p: &mut Players, changed: &[(String, Value)]| p.apply(":1.4", changed, &[]).visible;
-    assert!(visible(&mut p, &props(&[("PlaybackStatus", s("Playing"))])), "a status");
-    assert!(!visible(&mut p, &props(&[("PlaybackStatus", s("Playing"))])), "the same status again");
-    let song = props(&[("Metadata", Value::Map(props(&[("xesam:title", s("One"))])))]);
+    assert!(visible(&mut p, &properties(&[("PlaybackStatus", string_value("Playing"))])), "a status");
+    assert!(!visible(&mut p, &properties(&[("PlaybackStatus", string_value("Playing"))])), "the same status again");
+    let song = properties(&[("Metadata", Value::Map(properties(&[("xesam:title", string_value("One"))])))]);
     assert!(visible(&mut p, &song), "a track");
     assert!(!visible(&mut p, &song), "the same track again");
-    assert!(visible(&mut p, &props(&[("CanGoNext", Value::Bool(true))])), "a capability");
-    assert!(!visible(&mut p, &props(&[("CanGoNext", Value::Bool(true))])), "the same capability again");
-    assert!(!visible(&mut p, &props(&[("Rate", Value::Float(2.0)), ("Volume", Value::Float(0.3))])), "Rate, Volume: unseen");
+    assert!(visible(&mut p, &properties(&[("CanGoNext", Value::Bool(true))])), "a capability");
+    assert!(!visible(&mut p, &properties(&[("CanGoNext", Value::Bool(true))])), "the same capability again");
+    assert!(!visible(&mut p, &properties(&[("Rate", Value::Float(2.0)), ("Volume", Value::Float(0.3))])), "Rate, Volume: unseen");
     assert!(!p.apply(":1.4", &[], &["Metadata".into()]).visible, "an invalidation alone: nothing yet");
-    assert!(!p.apply(":1.9", &props(&[("PlaybackStatus", s("Stopped"))]), &[]).visible, "an unknown player");
+    assert!(!p.apply(":1.9", &properties(&[("PlaybackStatus", string_value("Stopped"))]), &[]).visible, "an unknown player");
 }
 
 #[test]
 fn a_status_track_or_rate_change_forgets_the_position() {
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
     let sync = PositionSync { at: Instant::now(), us: 5 };
-    let song = |title: &str| props(&[("Metadata", Value::Map(props(&[("xesam:title", s(title))])))]);
+    let song = |title: &str| properties(&[("Metadata", Value::Map(properties(&[("xesam:title", string_value(title))])))]);
     p.apply(":1.4", &song("One"), &[]);
     p.set_position(":1.4", sync);
     p.apply(":1.4", &song("One"), &[]);
@@ -244,24 +256,24 @@ fn a_status_track_or_rate_change_forgets_the_position() {
     p.apply(":1.4", &song("Two"), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, None, "a new track");
     p.set_position(":1.4", sync);
-    p.apply(":1.4", &props(&[("PlaybackStatus", s("Playing"))]), &[]);
+    p.apply(":1.4", &properties(&[("PlaybackStatus", string_value("Playing"))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same status: kept");
-    p.apply(":1.4", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
+    p.apply(":1.4", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, None, "a status change");
     // A new Rate too, or the time since the last read would be counted at it.
     p.set_position(":1.4", sync);
-    p.apply(":1.4", &props(&[("Rate", Value::Float(1.0))]), &[]);
+    p.apply(":1.4", &properties(&[("Rate", Value::Float(1.0))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same rate: kept");
-    p.apply(":1.4", &props(&[("Rate", Value::Float(2.0))]), &[]);
+    p.apply(":1.4", &properties(&[("Rate", Value::Float(2.0))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, None, "a rate change");
     p.set_position(":1.4", sync);
-    p.apply(":1.4", &props(&[("Rate", Value::Float(f64::NAN))]), &[]);
+    p.apply(":1.4", &properties(&[("Rate", Value::Float(f64::NAN))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "a rate refused: kept");
 }
 
 #[test]
 fn identity_is_cleaned_and_a_blank_one_is_none() {
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
     p.set_identity(":1.4", " Spotify\n");
     assert_eq!(p.get(":1.4").unwrap().identity.as_deref(), Some("Spotify"));
     p.set_identity(":1.4", " \t");
@@ -271,61 +283,61 @@ fn identity_is_cleaned_and_a_blank_one_is_none() {
     assert_eq!(p.get(":1.4").unwrap().identity, None, "and the known one is untouched");
 }
 
-// ---- the active player (spec § 3) ----
+// ---- the active player (media spec § 3) ----
 
 #[test]
 fn playing_beats_paused_and_a_tie_goes_to_the_latest_change() {
-    let mut p = players(&[("mpv", ":1.1", "Paused"), ("spotify", ":1.2", "Playing"), ("firefox", ":1.3", "Stopped")]);
-    assert_eq!(active(&p), Some(":1.2"), "playing 2, paused 1");
-    p.apply(":1.1", &props(&[("PlaybackStatus", s("Playing"))]), &[]);
-    assert_eq!(active(&p), Some(":1.1"), "two playing: the latest to start");
-    p.apply(":1.2", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
-    p.apply(":1.2", &props(&[("PlaybackStatus", s("Playing"))]), &[]);
-    assert_eq!(active(&p), Some(":1.2"), "it started again since");
-    p.apply(":1.1", &props(&[("PlaybackStatus", s("Stopped"))]), &[]);
-    p.apply(":1.2", &props(&[("PlaybackStatus", s("Stopped"))]), &[]);
-    assert_eq!(active(&p), None, "every player stopped");
+    let mut p = players_from(&[("mpv", ":1.1", "Paused"), ("spotify", ":1.2", "Playing"), ("firefox", ":1.3", "Stopped")]);
+    assert_eq!(active_player(&p), Some(":1.2"), "playing 2, paused 1");
+    p.apply(":1.1", &properties(&[("PlaybackStatus", string_value("Playing"))]), &[]);
+    assert_eq!(active_player(&p), Some(":1.1"), "two playing: the latest to start");
+    p.apply(":1.2", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
+    p.apply(":1.2", &properties(&[("PlaybackStatus", string_value("Playing"))]), &[]);
+    assert_eq!(active_player(&p), Some(":1.2"), "it started again since");
+    p.apply(":1.1", &properties(&[("PlaybackStatus", string_value("Stopped"))]), &[]);
+    p.apply(":1.2", &properties(&[("PlaybackStatus", string_value("Stopped"))]), &[]);
+    assert_eq!(active_player(&p), None, "every player stopped");
     assert_eq!(p.shown().count(), 0);
 }
 
 #[test]
 fn a_pinned_player_stays_active_until_it_stops_or_leaves() {
-    let mut p = players(&[("mpv", ":1.1", "Paused"), ("spotify", ":1.2", "Playing")]);
+    let mut p = players_from(&[("mpv", ":1.1", "Paused"), ("spotify", ":1.2", "Playing")]);
     p.pin("org.mpris.MediaPlayer2.mpv");
-    assert_eq!(active(&p), Some(":1.1"), "pinned, though only paused");
+    assert_eq!(active_player(&p), Some(":1.1"), "pinned, though only paused");
     p.pin("org.mpris.MediaPlayer2.nothing");
-    assert_eq!(active(&p), Some(":1.1"), "an unknown name changes nothing");
-    p.apply(":1.1", &props(&[("PlaybackStatus", s("Stopped"))]), &[]);
-    assert_eq!(active(&p), Some(":1.2"), "stopped: the score decides");
-    p.apply(":1.1", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
-    assert_eq!(active(&p), Some(":1.1"), "the pin holds again");
+    assert_eq!(active_player(&p), Some(":1.1"), "an unknown name changes nothing");
+    p.apply(":1.1", &properties(&[("PlaybackStatus", string_value("Stopped"))]), &[]);
+    assert_eq!(active_player(&p), Some(":1.2"), "stopped: the score decides");
+    p.apply(":1.1", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
+    assert_eq!(active_player(&p), Some(":1.1"), "the pin holds again");
     p.remove_unique(":1.1");
     assert!(p.add("org.mpris.MediaPlayer2.mpv".into(), ":1.7".into()));
-    p.apply(":1.7", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
-    assert_eq!(active(&p), Some(":1.2"), "the pin left with its player");
+    p.apply(":1.7", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
+    assert_eq!(active_player(&p), Some(":1.2"), "the pin left with its player");
 }
 
 #[test]
 fn shown_lists_the_players_not_stopped_in_discovery_order() {
-    let p = players(&[("mpv", ":1.1", "Paused"), ("vlc", ":1.2", "Stopped"), ("spotify", ":1.3", "Playing")]);
+    let p = players_from(&[("mpv", ":1.1", "Paused"), ("vlc", ":1.2", "Stopped"), ("spotify", ":1.3", "Playing")]);
     let shown: Vec<&str> = p.shown().map(|x| x.unique.as_str()).collect();
     assert_eq!(shown, [":1.1", ":1.3"]);
 }
 
 #[test]
 fn controls_follow_the_capabilities() {
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
     let caps = |p: &Players| [Control::PlayPause, Control::Next, Control::Previous].map(|c| p.get(":1.4").unwrap().can(c));
     assert_eq!(caps(&p), [false, false, false], "nothing said: nothing allowed");
-    p.apply(":1.4", &props(&[("CanPause", Value::Bool(true)), ("CanGoNext", Value::Bool(true))]), &[]);
+    p.apply(":1.4", &properties(&[("CanPause", Value::Bool(true)), ("CanGoNext", Value::Bool(true))]), &[]);
     assert_eq!(caps(&p), [true, true, false], "playing: PlayPause needs CanPause");
-    p.apply(":1.4", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
+    p.apply(":1.4", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
     assert_eq!(caps(&p), [false, true, false], "paused: PlayPause needs CanPlay");
-    p.apply(":1.4", &props(&[("CanPlay", Value::Bool(true)), ("CanGoPrevious", Value::Bool(true))]), &[]);
+    p.apply(":1.4", &properties(&[("CanPlay", Value::Bool(true)), ("CanGoPrevious", Value::Bool(true))]), &[]);
     assert_eq!(caps(&p), [true, true, true]);
 }
 
-// ---- what the bar shows (spec § 1) ----
+// ---- what the bar shows (media spec § 1) ----
 
 #[test]
 fn the_title_falls_back_to_the_url_then_the_name() {
@@ -351,17 +363,27 @@ fn the_title_falls_back_to_the_url_then_the_name() {
 
 /// A title of combining marks or zero-width characters alone draws nothing: it is
 /// blank, so the url or the player's name stands in.
+/// An escape made of letters (`%C3%A9` is é) is decoded like one made of digits (`%20`).
+#[test]
+fn percent_escapes_with_letters_in_a_url_are_decoded() {
+    let track = Track { url: Some("file:///music/Caf%C3%A9%20Noir.flac".into()), ..Track::default() };
+    assert_eq!(display_title(&track, None, "org.mpris.MediaPlayer2.lumen"), "Café Noir.flac");
+}
+
 #[test]
 fn a_title_that_takes_no_cell_is_blank() {
     let meta = |title: &str| {
-        Track::from_metadata(&props(&[("xesam:title", s(title)), ("xesam:artist", Value::StrList(vec!["\u{200b}".into(), "Ann".into()]))]))
+        Track::from_metadata(&properties(&[
+            ("xesam:title", string_value(title)),
+            ("xesam:artist", Value::StrList(vec!["\u{200b}".into(), "Ann".into()])),
+        ]))
     };
     let t = meta("\u{301}\u{302}\u{200d}");
     assert_eq!(t.title, None);
     assert_eq!(t.artists, ["Ann"], "a zero-width artist is none either");
     assert_eq!(display_title(&t, Some("VLC"), "org.mpris.MediaPlayer2.vlc"), "VLC");
     assert_eq!(meta("e\u{301}").title.as_deref(), Some("e\u{301}"), "a mark on a base stays");
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
     p.set_identity(":1.4", "\u{fe0f}");
     assert_eq!(p.get(":1.4").unwrap().identity, None);
 }
@@ -369,16 +391,16 @@ fn a_title_that_takes_no_cell_is_blank() {
 #[test]
 fn view_is_none_without_an_active_player_and_truncated_otherwise() {
     assert_eq!(view(&Players::default(), 30), None, "no player");
-    assert_eq!(view(&players(&[("mpv", ":1.1", "Stopped")]), 30), None, "every player stopped");
-    let mut p = players(&[("spotify", ":1.4", "Playing")]);
-    p.apply(":1.4", &props(&[("Metadata", Value::Map(props(&[("xesam:title", s("Bohemian Rhapsody"))])))]), &[]);
+    assert_eq!(view(&players_from(&[("mpv", ":1.1", "Stopped")]), 30), None, "every player stopped");
+    let mut p = players_from(&[("spotify", ":1.4", "Playing")]);
+    p.apply(":1.4", &properties(&[("Metadata", Value::Map(properties(&[("xesam:title", string_value("Bohemian Rhapsody"))])))]), &[]);
     assert_eq!(view(&p, 30), Some(MediaView { playing: true, title: "Bohemian Rhapsody".into() }));
     assert_eq!(view(&p, 8), Some(MediaView { playing: true, title: "Bohemia…".into() }));
-    p.apply(":1.4", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
+    p.apply(":1.4", &properties(&[("PlaybackStatus", string_value("Paused"))]), &[]);
     assert_eq!(view(&p, 30).map(|v| v.playing), Some(false));
 }
 
-// ---- truncation (spec § 1, amended: no new dependency) ----
+// ---- truncation (media spec § 1, amended: no new dependency) ----
 
 #[test]
 fn truncation_counts_cells_like_the_grid() {
@@ -410,15 +432,16 @@ fn truncation_never_splits_a_cluster() {
     assert_eq!(truncate_title("ab🇫🇷🇩🇪", 5), "ab🇫🇷…");
 }
 
-// ---- time (spec § 2) ----
+// ---- time (media spec § 2) ----
 
-fn timed(status: &str, length: Option<u64>, rate: f64, sync_us: u64, at: Instant) -> Player {
-    let mut p = players(&[("spotify", ":1.4", status)]);
-    let mut meta = vec![("xesam:title", s("Song"))];
+/// A player with the given status, track length and rate, whose position was read as `sync_us` at `at`.
+fn player_with_position(status: &str, length: Option<u64>, rate: f64, sync_us: u64, at: Instant) -> Player {
+    let mut p = players_from(&[("spotify", ":1.4", status)]);
+    let mut meta = vec![("xesam:title", string_value("Song"))];
     if let Some(l) = length {
         meta.push(("mpris:length", Value::Int(l as i64)));
     }
-    p.apply(":1.4", &props(&[("Metadata", Value::Map(props(&meta))), ("Rate", Value::Float(rate))]), &[]);
+    p.apply(":1.4", &properties(&[("Metadata", Value::Map(properties(&meta))), ("Rate", Value::Float(rate))]), &[]);
     p.set_position(":1.4", PositionSync { at, us: sync_us });
     p.get(":1.4").unwrap().clone()
 }
@@ -427,13 +450,25 @@ fn timed(status: &str, length: Option<u64>, rate: f64, sync_us: u64, at: Instant
 fn the_position_runs_at_the_rate_while_playing_and_is_clamped() {
     let t0 = Instant::now();
     let later = t0 + Duration::from_secs(10);
-    assert_eq!(position_now(&timed("Playing", Some(300_000_000), 1.0, 5_000_000, t0), later), Some(15_000_000));
-    assert_eq!(position_now(&timed("Playing", Some(300_000_000), 2.0, 5_000_000, t0), later), Some(25_000_000), "rate 2");
-    assert_eq!(position_now(&timed("Paused", Some(300_000_000), 1.0, 5_000_000, t0), later), Some(5_000_000), "paused: still");
-    assert_eq!(position_now(&timed("Playing", Some(12_000_000), 1.0, 5_000_000, t0), later), Some(12_000_000), "clamped to the length");
-    assert_eq!(position_now(&timed("Playing", None, 1.0, 5_000_000, t0), later), None, "unknown length");
-    assert_eq!(position_now(&timed("Playing", Some(300_000_000), 1.0, 5_000_000, later), t0), Some(5_000_000), "a clock behind the sync");
-    let mut unsynced = timed("Playing", Some(300_000_000), 1.0, 0, t0);
+    assert_eq!(position_now(&player_with_position("Playing", Some(300_000_000), 1.0, 5_000_000, t0), later), Some(15_000_000));
+    assert_eq!(position_now(&player_with_position("Playing", Some(300_000_000), 2.0, 5_000_000, t0), later), Some(25_000_000), "rate 2");
+    assert_eq!(
+        position_now(&player_with_position("Paused", Some(300_000_000), 1.0, 5_000_000, t0), later),
+        Some(5_000_000),
+        "paused: still"
+    );
+    assert_eq!(
+        position_now(&player_with_position("Playing", Some(12_000_000), 1.0, 5_000_000, t0), later),
+        Some(12_000_000),
+        "clamped to the length"
+    );
+    assert_eq!(position_now(&player_with_position("Playing", None, 1.0, 5_000_000, t0), later), None, "unknown length");
+    assert_eq!(
+        position_now(&player_with_position("Playing", Some(300_000_000), 1.0, 5_000_000, later), t0),
+        Some(5_000_000),
+        "a clock behind the sync"
+    );
+    let mut unsynced = player_with_position("Playing", Some(300_000_000), 1.0, 0, t0);
     unsynced.position = None;
     assert_eq!(position_now(&unsynced, later), None, "never read");
 }

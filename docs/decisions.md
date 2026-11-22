@@ -384,3 +384,58 @@ before the popup existed. With `[actions] resources` empty the popup has no `Mon
 
 Date: 2026-11-15 · Source: resources popup spec § 1; resources popup plan 1, decision 10
 
+
+### The active media player is the pinned one, else the best status
+
+A player chosen in the media popup stays the active one while it exists and is not stopped.
+Otherwise the active player is the one with the best status (playing over paused; a stopped player
+is never shown), and a tie goes to the player whose status changed last. Players the `ignore` list
+names are never queried, so they never count. (The reason for the order is not recorded.)
+
+Date: 2026-10-08 · Source: media spec § 3 ("Active player"); media plan 1, Task 1, "Decisions written down", item "The active player"
+
+### One connection owning two MPRIS names keeps the first
+
+Players are matched to signals by the unique name of their connection, because a signal carries
+only that. So when one connection owns two MPRIS names, only the first is followed, and the second
+is refused like a name already known. A 17th player is refused too.
+
+Date: 2026-10-08 · Source: media plan 1, Task 1, "Decisions written down", item "`add`"; `Players::add`
+
+### The media popup computes the position, and reads it only while open
+
+MPRIS does not signal the playback position. The popup works it out as the last position read, plus
+the time since, times the rate, while the player plays, and cuts it to the track's length. The
+position is read with one call when the popup opens, on `Seeked`, and when the status or the track
+changes while it is open; with the popup closed it stays unknown. The `Seeked` rule is on the bus
+only while the popup is open, and the 1 s redraw timer exists only while the popup (or the
+notification panel's media card) is shown and the active player plays. This keeps the module to
+the spec's lightness rules (no polling, no wake-up at rest).
+
+Date: 2026-10-08 · Source: media spec § 2 ("Time"), § 3 ("Seeked") and "Goal"; media plan 1, "Controller reconciliation", item 5
+
+### A player is labelled by its identity, else by its name
+
+The popup's list, and the bar's last fallback for a title, name a player by its `Identity` when it
+has one, and otherwise by the first label after `org.mpris.MediaPlayer2.` (`vlc` for
+`org.mpris.MediaPlayer2.vlc.instance42`). (The reason is not recorded.)
+
+Date: 2026-10-08 · Source: media spec § 2 (amended 2026-10-08); media plan 1, "Controller reconciliation", the list of confirmed choices (fourth bullet)
+
+### A paused player's module is fully dim
+
+On the bar, `▶ Title` takes the module's purple (as `module_colors` says) while the player plays;
+`⏸ Title` is dim as a whole, whatever `module_colors` says. A state wins over the hue, as it does
+for the other modules.
+
+Date: 2026-10-08 · Source: media spec § 1 ("Content"); media plan 1, Task 2, "Decisions written down", item "Paused", and the list of confirmed choices at the end of "Controller reconciliation" (first bullet)
+
+### Media titles are cut by display width, never inside a cluster
+
+The title is cut to `title_max` cells and ends with `…`. Width is counted per character as the grid
+counts it, after putting the text in NFC form, and a cut never falls inside a cluster (a combining
+mark, a variation selector or a skin tone after its base, a ZWJ sequence, a flag's two regional
+indicators). It is written by hand on the `unicode-width` crate the daemon already uses, so that no
+dependency is added.
+
+Date: 2026-10-08 · Source: media spec § 1 (amended 2026-10-08); media plan 1, Task 1, "Decisions written down", item "`truncate_title`"

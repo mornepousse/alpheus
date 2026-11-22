@@ -1,8 +1,27 @@
-//! The media module's model (media spec docs/specs/2026-10-08-alpheus-media-design.md): the MPRIS
-//! players, which one is active, their track, and what the bar and the popup show. Pure: it never
-//! names D-Bus (`session_bus/codec.rs` hands it `Value`s), starts nothing and never reads the clock (its
-//! callers pass the `Instant`). Bounded: 16 players, cleaned strings of at most 256 characters,
-//! 8 artists.
+//! The media module's model: the MPRIS players, which one is active, and what the bar and the popup
+//! show about it.
+//!
+//! MPRIS is the D-Bus interface media players use to say what they play and to be controlled.
+//! This file is the pure half of the media module. It holds the players that are known (`Players`),
+//! their status, track and abilities, the rule that picks the active one, the title the bar shows
+//! (`view`, `display_title`, `truncate_title`) and the time the popup shows (`position_now`,
+//! `clock`). `popup.rs` builds the popup's rows from it, `app.rs` is the wiring (the popup, its
+//! timer, the clicks), and `session_bus/mpris.rs` talks to the bus and feeds this file.
+//!
+//! Bounded, so that a hostile player cannot grow memory (media spec § 5): at most 16 players, strings
+//! cleaned and cut at 256 characters, at most 8 artists.
+//!
+//! Never:
+//! - name D-Bus: `session_bus/codec.rs` turns what a player sends into this file's `Value`;
+//! - read the clock: the caller passes `now` as an `Instant`, so a test can choose any time;
+//! - start a thread or a process, or write anything: the module never writes a player's volume,
+//!   never seeks, and never raises or launches a player (media spec § 5).
+//!
+//! See: docs/specs/2026-10-08-alpheus-media-design.md, docs/features/media.md, and docs/decisions.md
+//! ("The active media player is the pinned one, else the best status", "One connection owning two
+//! MPRIS names keeps the first", "The media popup computes the position, and reads it only while
+//! open", "A player is labelled by its identity, else by its name", "A paused player's module is
+//! fully dim", "Media titles are cut by display width, never inside a cluster").
 
 use crate::grid::char_width;
 use crate::text::clean;
@@ -11,7 +30,7 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Every MPRIS player's well-known name starts with this.
 pub const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
-/// Players tracked at most (spec § 3): a 17th is refused.
+/// Players tracked at most: a 17th is refused (media spec § 3, Bounds).
 pub const MAX_PLAYERS: usize = 16;
 /// `xesam:artist` entries kept.
 pub const MAX_ARTISTS: usize = 8;
@@ -19,8 +38,11 @@ pub const MAX_ARTISTS: usize = 8;
 pub const MAX_RATE: f64 = 16.0;
 /// playerctld's own name after the prefix: a proxy that mirrors another player, always ignored.
 const PLAYERCTLD: &str = "playerctld";
+/// Zero-width joiner: it glues the characters on either side of it into one emoji, so a cut may
+/// never fall next to it.
 const ZWJ: char = '\u{200d}';
 
+/// What a player is doing. `Stopped` hides the player from the bar and the popup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Playing,
@@ -39,7 +61,7 @@ impl Status {
         }
     }
 
-    /// The active player's score (spec § 3): playing 2, paused 1, stopped never shown.
+    /// The active player's score (media spec § 3): playing 2, paused 1, stopped never shown.
     fn score(self) -> u8 {
         match self {
             Status::Playing => 2,
@@ -49,7 +71,7 @@ impl Status {
     }
 }
 
-/// What a click or a key asks the active player (spec § 1, § 2).
+/// What a click or a key asks the active player (media spec § 1, § 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     PlayPause,
@@ -57,7 +79,8 @@ pub enum Control {
     Previous,
 }
 
-/// A decoded D-Bus variant, built by session_bus/codec.rs; media.rs never names `dbus`.
+/// A decoded D-Bus variant, built by `session_bus/codec.rs`, so that this file never names `dbus`.
+/// An integer of any D-Bus width is an `Int`; a type this file has no use for is `Other`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Str(String),
@@ -69,6 +92,8 @@ pub enum Value {
     Other,
 }
 
+/// What a player says about the track it plays. Every text is cleaned and capped, and a blank one
+/// is `None` (or left out of `artists`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Track {
     pub title: Option<String>,
@@ -80,9 +105,9 @@ pub struct Track {
 }
 
 impl Track {
-    /// An MPRIS `Metadata` map (spec § 3, Tolerance): `xesam:artist` as `as` or `s`, `mpris:length`
-    /// as any integer or a float; every string cleaned and capped (`codec::clean`), a blank one
-    /// absent; unknown keys and unexpected types ignored.
+    /// An MPRIS `Metadata` map (media spec § 3, Tolerance): `xesam:artist` as `as` or `s`,
+    /// `mpris:length` as any integer or a float; every string cleaned and capped (`text::clean`), a
+    /// blank one absent; unknown keys and unexpected types ignored (never an error).
     pub fn from_metadata(entries: &[(String, Value)]) -> Track {
         let mut t = Track::default();
         for (key, value) in entries {
@@ -104,6 +129,7 @@ impl Track {
     }
 }
 
+/// What a player says it can do now (MPRIS `CanPlay`, `CanPause`, `CanGoNext`, `CanGoPrevious`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Caps {
     pub play: bool,
@@ -112,6 +138,7 @@ pub struct Caps {
     pub previous: bool,
 }
 
+/// One MPRIS player and what is known about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Player {
     /// org.mpris.MediaPlayer2.spotify
@@ -146,7 +173,7 @@ impl Player {
         }
     }
 
-    /// Whether the player says it can do `c` now (spec § 1): PlayPause needs `CanPause` while
+    /// Whether the player says it can do `c` now (media spec § 1): PlayPause needs `CanPause` while
     /// playing and `CanPlay` otherwise; a capability it lacks makes the action a no-op.
     pub fn can(&self, c: Control) -> bool {
         match c {
@@ -158,6 +185,7 @@ impl Player {
     }
 }
 
+/// A position read from a player at `at`: the popup counts on from it (`position_now`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PositionSync {
     pub at: Instant,
@@ -192,21 +220,43 @@ pub struct Players {
 }
 
 impl Players {
-    /// Never queried (spec § 3): playerctld always, then any player whose bus name contains one of
+    /// Never queried (media spec § 3): playerctld always (`playerctld`, or `playerctld.` followed by
+    /// anything; `playerctldx` is another player), then any player whose bus name contains one of
     /// `ignore`'s substrings (an empty one matches nothing).
     pub fn is_ignored(bus_name: &str, ignore: &[String]) -> bool {
-        let own = bus_name.strip_prefix(MPRIS_PREFIX).unwrap_or(bus_name);
-        own == PLAYERCTLD
-            || own.strip_prefix(PLAYERCTLD).is_some_and(|rest| rest.starts_with('.'))
-            || ignore.iter().any(|s| !s.is_empty() && bus_name.contains(s.as_str()))
+        // The name without `org.mpris.MediaPlayer2.`; a name without the prefix is taken whole.
+        let own = match bus_name.strip_prefix(MPRIS_PREFIX) {
+            Some(rest) => rest,
+            None => bus_name,
+        };
+        if own == PLAYERCTLD {
+            return true;
+        }
+        if let Some(rest) = own.strip_prefix(PLAYERCTLD) {
+            if rest.starts_with('.') {
+                return true;
+            }
+        }
+        for substring in ignore {
+            if !substring.is_empty() && bus_name.contains(substring.as_str()) {
+                return true;
+            }
+        }
+        false
     }
 
     /// A new player, Stopped until its properties arrive; false when MAX_PLAYERS are already
     /// tracked, or when that bus name or that unique name already is (one connection owning two
-    /// MPRIS names keeps the first: signals carry only the unique name).
+    /// MPRIS names keeps the first: signals carry only the unique name). See docs/decisions.md,
+    /// "One connection owning two MPRIS names keeps the first".
     pub fn add(&mut self, bus_name: String, unique: String) -> bool {
-        if self.list.len() >= MAX_PLAYERS || self.list.iter().any(|p| p.bus_name == bus_name || p.unique == unique) {
+        if self.list.len() >= MAX_PLAYERS {
             return false;
+        }
+        for known in &self.list {
+            if known.bus_name == bus_name || known.unique == unique {
+                return false;
+            }
         }
         self.list.push(Player::new(bus_name, unique));
         true
@@ -216,6 +266,8 @@ impl Players {
     pub fn remove_unique(&mut self, unique: &str) -> bool {
         let Some(i) = self.list.iter().position(|p| p.unique == unique) else { return false };
         let gone = self.list.remove(i);
+        // `as_deref` reads the pinned `Option<String>` as an `Option<&str>`, to compare it with a
+        // `&str` without copying the name.
         if self.pinned.as_deref() == Some(gone.bus_name.as_str()) {
             self.pinned = None;
         }
@@ -235,8 +287,11 @@ impl Players {
     /// status, track or rate change forgets the position. Need::Metadata when `Metadata` is
     /// invalidated.
     pub fn apply(&mut self, unique: &str, changed: &[(String, Value)], invalidated: &[String]) -> Applied {
+        // Taking the two fields out of `self` at once lets the borrow checker see that the player
+        // (borrowed from `list`) and the counter `seq` are different things, so both can change.
         let Players { list, seq, .. } = self;
         let Some(p) = list.iter_mut().find(|p| p.unique == unique) else { return Applied { need: Need::None, visible: false } };
+        // What was shown before the change, to say afterwards whether the status or an ability moved.
         let (status, caps) = (p.status, p.caps);
         let mut visible = false;
         for (key, value) in changed {
@@ -259,9 +314,12 @@ impl Players {
                     }
                 }
                 ("Rate", v) => {
-                    if let Some(r) = rate(v).filter(|r| *r != p.rate) {
-                        p.rate = r;
-                        p.position = None;
+                    // A rate that is not a number, or is the one already known, changes nothing.
+                    if let Some(r) = rate(v) {
+                        if r != p.rate {
+                            p.rate = r;
+                            p.position = None;
+                        }
                     }
                 }
                 ("CanPlay", Value::Bool(b)) => p.caps.play = *b,
@@ -272,10 +330,12 @@ impl Players {
             }
         }
         let visible = visible || p.status != status || p.caps != caps;
+        // An invalidated `Metadata` comes as its name only: its value has to be asked for again.
         let need = if invalidated.iter().any(|k| k == "Metadata") { Need::Metadata(unique.to_string()) } else { Need::None };
         Applied { need, visible }
     }
 
+    /// Records the position just read from the player of `unique`.
     pub fn set_position(&mut self, unique: &str, sync: PositionSync) {
         if let Some(p) = self.list.iter_mut().find(|p| p.unique == unique) {
             p.position = Some(sync);
@@ -290,10 +350,16 @@ impl Players {
     }
 
     /// The pinned player while it is not Stopped; otherwise the best score, a tie going to the
-    /// latest status change. None when every player is Stopped.
+    /// latest status change. None when every player is Stopped. See docs/decisions.md, "The active
+    /// media player is the pinned one, else the best status".
     pub fn active(&self) -> Option<&Player> {
-        let pinned = self.pinned.as_deref().and_then(|b| self.shown().find(|p| p.bus_name == b));
-        pinned.or_else(|| self.shown().max_by_key(|p| (p.status.score(), p.changed)))
+        if let Some(pinned) = self.pinned.as_deref() {
+            if let Some(player) = self.shown().find(|p| p.bus_name == pinned) {
+                return Some(player);
+            }
+        }
+        // The largest pair wins: the better status first, then the later change.
+        self.shown().max_by_key(|p| (p.status.score(), p.changed))
     }
 
     /// The players not Stopped, in discovery order.
@@ -306,6 +372,7 @@ impl Players {
         self.list.iter().any(|p| p.bus_name == bus_name)
     }
 
+    /// The player that owns the unique name `unique` (`:1.42`), whatever its status.
     pub fn get(&self, unique: &str) -> Option<&Player> {
         self.list.iter().find(|p| p.unique == unique)
     }
@@ -319,7 +386,7 @@ impl Players {
     }
 }
 
-/// What the bar shows (spec § 1): `▶`/`⏸` and the title, already truncated.
+/// What the bar shows (media spec § 1): `▶`/`⏸` and the title, already truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaView {
     pub playing: bool,
@@ -328,41 +395,61 @@ pub struct MediaView {
 
 /// The bar's view of the active player; None when there is none (the module takes no cell).
 pub fn view(players: &Players, title_max: u16) -> Option<MediaView> {
+    // `?` after a call that gives None ends the function with None: no active player, no view.
     let p = players.active()?;
     let title = display_title(&p.track, p.identity.as_deref(), &p.bus_name);
     Some(MediaView { playing: p.status == Status::Playing, title: truncate_title(&title, title_max) })
 }
 
-/// The title, else the last path segment of the url (percent-decoded), else the player's name.
+/// The title, else the last path segment of the url (percent-decoded), else the player's name
+/// (media spec § 1).
 pub fn display_title(track: &Track, identity: Option<&str>, bus_name: &str) -> String {
     if let Some(title) = &track.title {
         return title.clone();
     }
-    if let Some(tail) = track.url.as_deref().and_then(url_tail) {
-        return tail;
+    if let Some(url) = track.url.as_deref() {
+        if let Some(tail) = url_tail(url) {
+            return tail;
+        }
     }
     player_name(identity, bus_name)
 }
 
 /// A player's label (the popup's list, the title's last fallback): its `Identity`, else the first
-/// label after the MPRIS prefix ("vlc" for org.mpris.MediaPlayer2.vlc.instance4242).
+/// label after the MPRIS prefix ("vlc" for org.mpris.MediaPlayer2.vlc.instance4242). See
+/// docs/decisions.md, "A player is labelled by its identity, else by its name".
 pub fn player_name(identity: Option<&str>, bus_name: &str) -> String {
-    if let Some(name) = identity.filter(|n| !n.is_empty()) {
-        return name.to_string();
+    if let Some(name) = identity {
+        if !name.is_empty() {
+            return name.to_string();
+        }
     }
-    let own = bus_name.strip_prefix(MPRIS_PREFIX).unwrap_or(bus_name);
-    own.split('.').next().unwrap_or(own).to_string()
+    let own = match bus_name.strip_prefix(MPRIS_PREFIX) {
+        Some(rest) => rest,
+        None => bus_name,
+    };
+    // `split('.')` always gives a first part (the whole text when it holds no dot).
+    match own.split('.').next() {
+        Some(first) => first.to_string(),
+        None => own.to_string(),
+    }
 }
 
 /// `s` cut to `max` cells, ending with "…" when cut: by display width (as `Grid::write` counts it),
 /// never inside a cluster (a combining mark, a variation selector or a skin tone after its base, a
-/// ZWJ sequence, a flag's two regional indicators).
+/// ZWJ sequence, a flag's two regional indicators). The text is first put in NFC form (composed
+/// characters), as `Grid::write` does. The cut counts width the way the grid does and splits no
+/// cluster (media spec § 1, amended: done by hand on `unicode-width`, with no new dependency); see
+/// docs/decisions.md, "Media titles are cut by display width, never inside a cluster".
 pub fn truncate_title(s: &str, max: u16) -> String {
     let chars: Vec<char> = s.nfc().collect();
+    // Display width of a run of characters; `saturating_add` stops at the largest `u16` instead of
+    // wrapping round.
     let width = |cs: &[char]| cs.iter().map(|c| char_width(*c)).fold(0u16, u16::saturating_add);
     if width(&chars) <= max {
         return chars.into_iter().collect();
     }
+    // One cell is kept for the `…`; with `max` 0 there is no room for anything.
     let Some(budget) = max.checked_sub(1) else { return String::new() };
     let mut out = String::new();
     let mut used = 0u16;
@@ -383,12 +470,15 @@ pub fn truncate_title(s: &str, max: u16) -> String {
 /// regional indicator of a flag.
 fn clusters(chars: &[char]) -> Vec<&[char]> {
     let mut out = Vec::new();
+    // `start`: where the cluster being read begins. `regional`: how many regional indicators it holds.
     let (mut start, mut regional) = (0, 0usize);
     let mut prev: Option<char> = None;
     for (i, &c) in chars.iter().enumerate() {
         let joins = prev == Some(ZWJ) || extends(c) || (is_regional(c) && regional == 1);
         if i > 0 && !joins {
-            out.extend(chars.get(start..i));
+            if let Some(cluster) = chars.get(start..i) {
+                out.push(cluster);
+            }
             start = i;
             regional = 0;
         }
@@ -397,24 +487,35 @@ fn clusters(chars: &[char]) -> Vec<&[char]> {
         }
         prev = Some(c);
     }
-    out.extend(chars.get(start..).filter(|c| !c.is_empty()));
+    // The last cluster (none for an empty text).
+    if let Some(cluster) = chars.get(start..) {
+        if !cluster.is_empty() {
+            out.push(cluster);
+        }
+    }
     out
 }
 
+/// Whether `c` joins the character before it into one cluster: it takes no cell, or it is a skin
+/// tone modifier (U+1F3FB to U+1F3FF).
 fn extends(c: char) -> bool {
     char_width(c) == 0 || matches!(c, '\u{1f3fb}'..='\u{1f3ff}')
 }
 
+/// Whether `c` is a regional indicator letter: two of them in a row make a flag.
 fn is_regional(c: char) -> bool {
     matches!(c, '\u{1f1e6}'..='\u{1f1ff}')
 }
 
-/// Where the track is now (spec § 2, Time): the last position read, plus the time since × Rate
-/// while Playing, clamped to [0, length]. None when the position or the length is unknown.
+/// Where the track is now (media spec § 2, Time): the last position read, plus the time since × Rate
+/// while Playing, clamped to [0, length]. None when the position or the length is unknown. MPRIS
+/// does not signal the position, so it is computed; see docs/decisions.md, "The media popup
+/// computes the position, and reads it only while open".
 pub fn position_now(p: &Player, now: Instant) -> Option<u64> {
-    let (sync, length) = (p.position?, p.track.length_us?);
+    let (Some(sync), Some(length)) = (p.position, p.track.length_us) else { return None };
     let advanced = if p.status == Status::Playing {
         // Saturating: f64 → u64 clamps, and a NaN (never stored: `rate` refuses it) is 0.
+        // `saturating_duration_since` is zero when `now` is before the sync (a clock behind it).
         (now.saturating_duration_since(sync.at).as_secs_f64() * 1e6 * p.rate) as u64
     } else {
         0
@@ -422,21 +523,23 @@ pub fn position_now(p: &Player, now: Instant) -> Option<u64> {
     Some(sync.us.saturating_add(advanced).min(length))
 }
 
-/// "m:ss", "h:mm:ss" from one hour.
+/// "m:ss", "h:mm:ss" from one hour. Microseconds in, whole seconds shown (rounded down).
 pub fn clock(us: u64) -> String {
     let s = us / 1_000_000;
     let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    // `{m:02}` pads to two digits.
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
 /// A string from a player, cleaned and capped, its blanks trimmed; None when nothing is left that
 /// takes a cell (combining marks or zero-width characters alone draw nothing).
 fn clean_text(s: &str) -> Option<String> {
-    let c = clean(s);
-    let t = c.trim();
-    t.chars().any(|c| char_width(c) > 0).then(|| t.to_string())
+    let cleaned = clean(s);
+    let trimmed = cleaned.trim();
+    if trimmed.chars().any(|c| char_width(c) > 0) { Some(trimmed.to_string()) } else { None }
 }
 
+/// A string value, cleaned; None for a value of another type or a blank one.
 fn text(v: &Value) -> Option<String> {
     match v {
         Value::Str(s) => clean_text(s),
@@ -444,6 +547,7 @@ fn text(v: &Value) -> Option<String> {
     }
 }
 
+/// The artists of `xesam:artist`: one string, or a list of at most `MAX_ARTISTS` non-blank ones.
 fn artists(v: &Value) -> Vec<String> {
     match v {
         Value::Str(s) => clean_text(s).into_iter().collect(),
@@ -456,11 +560,16 @@ fn artists(v: &Value) -> Vec<String> {
 /// is unknown.
 fn length(v: &Value) -> Option<u64> {
     let us = match *v {
-        Value::Int(i) => u64::try_from(i).ok()?,
+        Value::Int(i) => match u64::try_from(i) {
+            Ok(us) => us,
+            // A negative length.
+            Err(_) => return None,
+        },
+        // `as u64` stops at the largest value for a float too big, and a float with decimals loses them.
         Value::Float(f) if f.is_finite() && f >= 0.0 => f as u64,
         _ => return None,
     };
-    (us > 0).then_some(us)
+    if us > 0 { Some(us) } else { None }
 }
 
 /// `Rate`, clamped to 0.0..=MAX_RATE; NaN, infinite or not a number: None (the old rate stays).
@@ -470,18 +579,27 @@ fn rate(v: &Value) -> Option<f64> {
         Value::Int(i) => i as f64,
         _ => return None,
     };
-    r.is_finite().then(|| r.clamp(0.0, MAX_RATE))
+    if r.is_finite() { Some(r.clamp(0.0, MAX_RATE)) } else { None }
 }
 
 /// The last path segment of a url, its query and fragment dropped, percent-decoded and cleaned;
 /// None when nothing is left. Only the path counts, never the scheme nor the host ("file:///",
 /// "https://host/" have none).
 fn url_tail(url: &str) -> Option<String> {
-    let url = url.split(['?', '#']).next().unwrap_or(url);
-    let path = match url.split_once("://") {
-        Some((_, rest)) => rest.find('/').map_or("", |i| &rest[i..]),
+    // Everything from the first `?` or `#` on is dropped (`split` always gives a first part).
+    let url = match url.split(['?', '#']).next() {
+        Some(before) => before,
         None => url,
     };
+    let path = match url.split_once("://") {
+        // After the scheme, the path starts at the first `/` (none: the url has no path).
+        Some((_, rest)) => match rest.find('/') {
+            Some(i) => &rest[i..],
+            None => "",
+        },
+        None => url,
+    };
+    // The last segment, ignoring slashes at the end; `?` gives None if there were none.
     let tail = path.trim_end_matches('/').rsplit('/').next()?;
     clean_text(&percent_decode(tail))
 }
@@ -492,8 +610,7 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
-        let hex = |o: usize| bytes.get(i + o).and_then(|h| char::from(*h).to_digit(16));
-        match (b, hex(1), hex(2)) {
+        match (b, hex_digit_at(bytes, i + 1), hex_digit_at(bytes, i + 2)) {
             (b'%', Some(high), Some(low)) => {
                 out.push((high * 16 + low) as u8);
                 i += 3;
@@ -505,6 +622,14 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The value of the hexadecimal digit at `bytes[at]`; None past the end or for another character.
+fn hex_digit_at(bytes: &[u8], at: usize) -> Option<u32> {
+    match bytes.get(at) {
+        Some(byte) => char::from(*byte).to_digit(16),
+        None => None,
+    }
 }
 
 pub mod app;

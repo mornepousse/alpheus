@@ -1,12 +1,29 @@
-//! The media popup's wiring: the bar's media view, the popup's toggle, actions and pin, its rows
-//! refreshed after each host output, and the 1 s tick (`media_timer`) armed only while the popup
-//! (or the panel's card) shows and the active player plays.
+//! The media module's wiring: the bar's view, the popup's opening, its actions, and its 1 s tick.
+//!
+//! This is the half of the media module that touches the outside. `media_view` hands the bar what
+//! to show. `media_toggle` opens (or closes) the popup under the module, `media_key` and
+//! `media_pointer` pass keys and presses to `popup.rs`, and `media_action` carries out what comes
+//! back: a redraw, a close, a control sent to the active player, a pin. After anything that can
+//! change what the popup shows, `media_popup_refresh` rebuilds and repaints its rows, and
+//! `media_timer_sync` keeps the 1 s tick (`media_timer`) armed only while the popup, or the
+//! notification panel's media card, is shown and the active player plays. `OPS` is the popup's row
+//! in the table of popups (`popup::POPUPS`), which is how the shared popup code reaches these
+//! functions. The players are reached only through `App::mpris_do`'s closures and `mpris_of`.
+//!
+//! Never:
+//! - arm the tick for a closed popup, or when the player is paused or at the end of its track:
+//!   nothing runs at rest (media spec § 2, Time);
+//! - wait for D-Bus traffic to show a pin: a pin sends none, so `media_pin` takes the bar's new view
+//!   itself.
+//!
+//! See: docs/specs/2026-10-08-alpheus-media-design.md (§ 2, § 3), docs/features/media.md, and
+//! docs/decisions.md ("The media popup computes the position, and reads it only while open").
 
 use crate::actions::Button;
 use crate::keys::Key;
 use crate::log::write as log;
-use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
-use crate::media::{MediaView, Players};
+use crate::media::popup::{MediaAction, MediaPopup};
+use crate::media::{self, MediaView, Players};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::session_bus::mpris::Mpris;
 use crate::state::Msg;
@@ -15,7 +32,9 @@ use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
 
-/// The media popup's row of `popup::POPUPS`.
+/// The media popup's row of `popup::POPUPS`: what the shared popup code calls for it.
+///
+/// (`pub(crate)` means the item is visible inside the daemon, and nowhere outside it.)
 pub(crate) const OPS: PopupOps = PopupOps {
     kind: ModulePopup::Media,
     toggle: |app, qh, anchor, _| app.media_toggle(qh, anchor),
@@ -45,16 +64,15 @@ impl App {
             return;
         }
         let now = Instant::now();
-        let built = mpris_of(self.tray.as_ref(), self.link.session.as_ref())
-            .map(Mpris::players)
-            .filter(|p| p.shown().next().is_some())
-            .map(|players| {
-                let popup = MediaPopup::new(players);
-                let rows = media_popup::rows(players, &popup, now, media_popup::WIDTH);
-                let heading = media_popup::heading(players, &rows);
-                (popup, rows, heading)
-            });
-        let Some((popup, rows, heading)) = built else { return };
+        // Nothing opens without a player that is shown: no connection, or every player stopped.
+        let Some(mpris) = mpris_of(self.tray.as_ref(), self.link.session.as_ref()) else { return };
+        let players = Mpris::players(mpris);
+        if players.shown().next().is_none() {
+            return;
+        }
+        let popup = MediaPopup::new(players);
+        let rows = media::popup::rows(players, &popup, now, media::popup::WIDTH);
+        let heading = media::popup::heading(players, &rows);
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, Input::Grab) {
             self.popup_paint(rows);
@@ -65,19 +83,25 @@ impl App {
         }
     }
 
+    /// Whether the open popup is the media popup.
     pub(crate) fn media_shown(&self) -> bool {
         matches!(self.popup_body(), Some(PopupBody::Media(_)))
     }
 
     /// `f` on the open media popup and the players; Nothing when either is missing.
     pub(crate) fn media_with(&mut self, f: impl FnOnce(&mut MediaPopup, &Players) -> MediaAction) -> MediaAction {
+        // Taking the three fields out of `self` at once lets the borrow checker see that the popup
+        // (changed) and the players (only read) are different things.
         let App { tray, link, popup, .. } = self;
-        match (mpris_of(tray.as_ref(), link.session.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
-            (Some(m), Some(PopupBody::Media(p))) => f(p, m.players()),
+        let Some(mpris) = mpris_of(tray.as_ref(), link.session.as_ref()) else { return MediaAction::Nothing };
+        let Some(open) = popup.as_mut() else { return MediaAction::Nothing };
+        match &mut open.body {
+            PopupBody::Media(p) => f(p, mpris.players()),
             _ => MediaAction::Nothing,
         }
     }
 
+    /// Carries out what a key or a press asked of the popup.
     pub(crate) fn media_action(&mut self, action: MediaAction) {
         match action {
             MediaAction::Nothing => {}
@@ -115,6 +139,7 @@ impl App {
     /// rows rebuilt and painted (`popup_draw` commits nothing when they did not change), the tick
     /// re-synced. The bar's view is not rebuilt here (once a tick, per output): the outputs carry
     /// it (`take_view_change`), and the pin takes it itself.
+    ///
     /// No player shown any more, or no host: the popup closes (player gone). Popup closed: only
     /// the timer is synced (to none).
     pub(crate) fn media_popup_refresh(&mut self) {
@@ -124,12 +149,17 @@ impl App {
         }
         let now = Instant::now();
         let rows = {
+            // As in `media_with`: the popup is changed (`fit`), the players only read.
             let App { tray, link, popup, .. } = &mut *self;
-            match (mpris_of(tray.as_ref(), link.session.as_ref()).map(Mpris::players), popup.as_mut().map(|o| &mut o.body)) {
-                (Some(players), Some(PopupBody::Media(p))) if players.shown().next().is_some() => {
-                    p.fit(players);
-                    Some(media_popup::rows(players, p, now, media_popup::WIDTH))
-                }
+            match (mpris_of(tray.as_ref(), link.session.as_ref()), popup.as_mut()) {
+                (Some(mpris), Some(open)) => match &mut open.body {
+                    PopupBody::Media(p) if mpris.players().shown().next().is_some() => {
+                        let players = mpris.players();
+                        p.fit(players);
+                        Some(media::popup::rows(players, p, now, media::popup::WIDTH))
+                    }
+                    _ => None,
+                },
                 _ => None,
             }
         };
@@ -141,16 +171,21 @@ impl App {
         self.media_timer_sync();
     }
 
-    /// The tick follows `media_popup::player_tick`: armed only while the popup is open (or the panel
-    /// showing its card) and the active player plays, its position known, before the end of its track; removed otherwise. An armed
-    /// tick still ahead is kept (`next_deadline`).
+    /// The tick follows `media::popup::player_tick`: armed only while the popup is open (or the panel
+    /// showing its card) and the active player plays, its position known, before the end of its
+    /// track; removed otherwise. An armed tick still ahead is kept (`next_deadline`).
     pub(crate) fn media_timer_sync(&mut self) {
         let now = Instant::now();
         let open = self.media_shown() || self.panel_shown();
-        let due = mpris_of(self.tray.as_ref(), self.link.session.as_ref())
-            .and_then(|m| m.players().active())
-            .and_then(|p| media_popup::player_tick(open, p, now));
-        let at = media_popup::next_deadline(due, self.media_timer.deadline(), now);
+        // How long until the next redraw, if one is due: needs a connection, an active player and
+        // a position it knows.
+        let mut due = None;
+        if let Some(mpris) = mpris_of(self.tray.as_ref(), self.link.session.as_ref()) {
+            if let Some(player) = mpris.players().active() {
+                due = media::popup::player_tick(open, player, now);
+            }
+        }
+        let at = media::popup::next_deadline(due, self.media_timer.deadline(), now);
         self.media_timer.sync_opt(self.loop_handle.as_ref(), at, App::media_tick);
     }
 
@@ -161,16 +196,16 @@ impl App {
         app.panel_refresh();
     }
 
-    /// ↑ ↓ ← →, Enter, Escape (spec § 2).
+    /// ↑ ↓ ← →, Enter, Escape (media spec § 2).
     fn media_key(&mut self, k: Key) {
-        let action = self.media_with(|p, players| media_popup::key(p, players, k));
+        let action = self.media_with(|p, players| media::popup::key(p, players, k));
         self.media_action(action);
     }
 
     /// A left press on a button or a player does what Enter does; nothing else reacts.
     fn media_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
         if let (PopupPointer::Press(Button::Left), Some(c)) = (kind, cell) {
-            let action = self.media_with(|p, players| media_popup::press(p, players, c, media_popup::WIDTH));
+            let action = self.media_with(|p, players| media::popup::press(p, players, c, media::popup::WIDTH));
             self.media_action(action);
         }
     }
