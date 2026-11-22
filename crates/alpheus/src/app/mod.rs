@@ -203,8 +203,8 @@ pub struct Toast {
     pub until: Instant,
 }
 
-/// What the status line (classic layout) and the rail's header say: the last message, the last
-/// action's error and the startup warning.
+/// What the status shows: the last message (the classic layout's status line, the foot of the
+/// rail), the last action's error and the startup warning (the status line, the rail's header).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Status {
     pub last: Option<String>,
@@ -351,8 +351,8 @@ impl App {
         self.external.take()
     }
 
-    /// Adds a startup warning (config, theme, keys), kept for the whole run and shown on the
-    /// status line.
+    /// Adds a startup warning (config, theme, keys), kept for the whole run and shown with the
+    /// last action's error.
     pub fn warn(&mut self, msg: String) {
         self.status.warning = Some(match self.status.warning.take() {
             Some(prev) => format!("{prev} ; {msg}"), // several faulty files

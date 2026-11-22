@@ -1,7 +1,17 @@
-//! The rail chrome (UI refresh spec): a left rail with the brand and one entry per tab, a header in the
-//! tab's hue with a live one-line summary, and the key hints drawn as keycaps on the last row. Drawn
-//! when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H` (Mae's real window is 87×26); below it
-//! `ui::render` draws the classic chrome.
+//! The rail layout's frame: a left rail with the brand and one entry per tab, a header in the tab's
+//! hue with a one-line summary, and the shortcut hints drawn as keycaps on the last row.
+//!
+//! It is drawn when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H`; the UI refresh spec sized
+//! those for its 87×26 real window. Below them `ui::render` draws the classic layout. `render`
+//! returns the body rectangle the tab draws into. The tab hues (`tab_hue`) and the tab summaries
+//! (`subtitle`) live here because the rail and the header are what show them.
+//!
+//! Never:
+//! - change the `App`;
+//! - write outside its rectangles (`draw::put` clips);
+//! - read anything: the summaries come from what the `App` already holds.
+//!
+//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md.
 
 use super::draw::{self, put};
 use super::shape::{self, Ink};
@@ -15,7 +25,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// The rail's width: icon, name (the longest, "Displays") and number fit.
 pub const RAIL_W: u16 = 16;
-/// The smallest terminal that gets the rail.
+/// The smallest terminal that gets the rail, in columns and rows (the UI refresh plan's amendment
+/// set 84 by 26).
 pub const RAIL_MIN_W: u16 = 84;
 pub const RAIL_MIN_H: u16 = 26;
 
@@ -33,6 +44,7 @@ pub fn tab_hue(th: &Theme, t: Tab) -> Color {
     }
 }
 
+/// The tab's Nerd Font glyph in the rail and the header.
 pub fn icon(t: Tab) -> &'static str {
     match t {
         Tab::Home => "󰋜",
@@ -46,6 +58,7 @@ pub fn icon(t: Tab) -> &'static str {
     }
 }
 
+/// `n` and the matching word: `1 output`, `2 outputs`.
 pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -56,7 +69,10 @@ pub fn subtitle(app: &App) -> String {
         Tab::Home => "The everyday switches".into(),
         Tab::Sound => match app.data.audio.ready() {
             Some(a) => {
-                let def = a.sinks.iter().find(|n| n.default).map_or("none", |n| n.name.as_str());
+                let def = match a.sinks.iter().find(|n| n.default) {
+                    Some(n) => n.name.as_str(),
+                    None => "none",
+                };
                 format!(
                     "{} · {} · playing on {def}",
                     plural(a.sinks.len(), "output", "outputs"),
@@ -101,7 +117,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) -> Rec
     Rect::new(content.x, content.y + 4, content.width, content.height.saturating_sub(4))
 }
 
-/// The brand, then one two-row entry per tab, the active one filled with its hue; the last action at the foot.
+/// The brand, then one two-row entry per tab, the active one filled with its hue; the last action at the foot,
+/// after a dot that is red while there is an error or a startup warning.
 fn nav(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     draw::clear(buf, r, Style::default().bg(th.surface).fg(th.fg));
@@ -157,7 +174,8 @@ fn nav(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     put(buf, r, r.x + 4, fy, &draw::truncate(last, usize::from(r.width.saturating_sub(5))), Style::default().fg(dim).bg(th.surface));
 }
 
-/// The tab's name in its hue, one line of context, a rule; a fault right-aligned on the first line.
+/// The tab's name in its hue, one line of context, a rule; the last action's error and the startup warning
+/// right-aligned on the first line.
 fn header(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let hue = tab_hue(th, app.tab);
@@ -204,7 +222,8 @@ fn fault_widths(msgs: &[String], room: usize) -> Vec<usize> {
     len.iter().map(|l| if *l < 4 { 0 } else { *l }).collect()
 }
 
-/// The bottom row: keys drawn as keycaps, from the content's left edge.
+/// The bottom row: keys drawn as keycaps, from the content's left edge, from the same list as the classic
+/// shortcut bar (`shortcut_pairs`).
 fn keycaps(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     draw::clear(buf, r, Style::default().bg(th.bg));

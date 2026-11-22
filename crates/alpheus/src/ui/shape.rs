@@ -1,8 +1,16 @@
-//! The theme's shape applied to controls (see the UI refresh spec). One `chip`
-//! draws a filled label the way the style cuts it (square, round caps, an
-//! arrow tip, or coloured underlined text); `band`, `frame` and `tile_fill` do
-//! the same for rows, cards and tiles. Every write goes through `draw::put` /
-//! `draw::clear`, so nothing leaves its clip.
+//! The theme's shape (the bar's `style`) applied to the control center's controls.
+//!
+//! One `chip` draws a filled label the way the shape cuts it: square, round caps, an arrow tip, or
+//! coloured underlined text. `band`, `frame` and `tile_fill` do the same for rows, cards and
+//! tiles. `Shape::of` (`theme.rs`) maps the styles: islands is `Shape::Round`, powerline `Shape::Arrow`, underline
+//! `Shape::Line` and floating `Shape::Float`; flat and translucent are `Shape::Flat`. The round and
+//! arrow caps are Nerd Font glyphs.
+//!
+//! Never:
+//! - write outside its clip: every write goes through `draw::put` or `draw::clear`;
+//! - read the `App` or the theme: the colours and the shape come in as arguments.
+//!
+//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/specs/2026-10-07-alpheus-shapes-design.md.
 
 use super::draw::{clear, put};
 use crate::theme::Shape;
@@ -149,6 +157,9 @@ pub fn darker(c: Color) -> Color {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the shape helpers (`shape.rs`): each shape's chip, band, frame, tile and shadow, drawn
+    //! into a plain buffer.
+
     use super::*;
 
     const FILL: Color = Color::Rgb(10, 20, 30);

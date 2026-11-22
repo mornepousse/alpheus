@@ -1,6 +1,15 @@
-//! The rail's controls (UI refresh spec): hued headings, knob gauges, ON/off switches and glyph
-//! buttons. Drawn only under `Chrome::Rail`; the classic chrome keeps `tabs.rs`'s own bars and
-//! brackets. Every write goes through `draw::put`, so nothing leaves its clip.
+//! The rail layout's controls: hued headings, knob gauges, ON/off switches and glyph buttons.
+//!
+//! They are drawn only under `Chrome::Rail`; the classic layout keeps `tabs.rs`'s own bars and
+//! brackets. Each draws what a `Loadable` holds (`…` while loading, `✗` and the message when
+//! failed) and returns the rectangle a click needs, when it has one.
+//!
+//! Never:
+//! - write outside its clip: every write goes through `draw::put`;
+//! - change the `App`, or know what the control does when used: `app/mouse.rs` does that from the
+//!   regions the caller records.
+//!
+//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md.
 
 use super::draw::put;
 use super::shape::{self, Ink};
@@ -24,10 +33,15 @@ pub fn heading(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, hue: Co
 }
 
 /// `heading`, its rule running up to column `rule_end` (exclusive) instead of its usual length.
+// It takes more arguments than clippy's default limit allows.
 #[allow(clippy::too_many_arguments)]
 pub fn heading_to(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, hue: Color, th: &Theme, rule_end: Option<u16>) {
     let w = put(buf, clip, x, y, &text.to_uppercase(), Style::default().fg(hue).add_modifier(Modifier::BOLD));
-    let end = rule_end.unwrap_or_else(|| x.saturating_add(w + 1 + GAUGE_W)).min(clip.right());
+    let end = match rule_end {
+        Some(end) => end,
+        None => x.saturating_add(w + 1 + GAUGE_W),
+    }
+    .min(clip.right());
     for k in x.saturating_add(w + 1)..end {
         put(buf, clip, k, y, "─", Style::default().fg(th.raised));
     }
@@ -35,6 +49,7 @@ pub fn heading_to(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, hue:
 
 /// A thin line gauge with a knob, the value right of it. Returns the bar's rect (for clicks), or
 /// none when the room is too narrow for a bar (then only `"62 %"`).
+// It takes more arguments than clippy's default limit allows.
 #[allow(clippy::too_many_arguments)]
 pub fn gauge(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, muted: bool, th: &Theme, hue: Color) -> Option<Rect> {
     match v {
@@ -54,15 +69,21 @@ pub fn gauge(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, mut
             }
             // The knob and the filled part are glyphs: the hue (or `fg_dim`) where it reads on what is under
             // the gauge (a focused row's band), else `fg`.
-            let under = buf.cell((x, y)).map_or(th.bg, |c| if c.bg == Color::Reset { th.bg } else { c.bg });
+            let under = match buf.cell((x, y)) {
+                Some(c) if c.bg != Color::Reset => c.bg,
+                _ => th.bg,
+            };
             let ink = th.ink(if muted { th.muted } else { hue }, under, 3.0);
             let filled = (u32::from((*p).min(100)) * u32::from(w - 1) + 50) / 100;
             for k in 0..w {
                 let k32 = u32::from(k);
-                let (g, c) = match k32 {
-                    k if k < filled => ("━", ink),
-                    k if k == filled => ("●", ink),
-                    _ => ("─", th.raised),
+                // The filled part, then the knob, then the rest of the line.
+                let (g, c) = if k32 < filled {
+                    ("━", ink)
+                } else if k32 == filled {
+                    ("●", ink)
+                } else {
+                    ("─", th.raised)
                 };
                 put(buf, clip, x + k, y, g, Style::default().fg(c));
             }
@@ -118,6 +139,7 @@ pub fn command_glyph(c: &Command) -> &'static str {
 
 /// A labelled button, every one of the same width; the focused one is filled with the hue.
 /// Returns the width drawn.
+// It takes more arguments than clippy's default limit allows.
 #[allow(clippy::too_many_arguments)]
 pub fn button(buf: &mut Buffer, clip: Rect, x: u16, y: u16, c: &Command, focused: bool, th: &Theme, hue: Color) -> u16 {
     let line = th.shape == Shape::Line;
@@ -130,10 +152,14 @@ pub fn button(buf: &mut Buffer, clip: Rect, x: u16, y: u16, c: &Command, focused
     let text = format!("  {glyph}  {:<20} 󰁔  ", c.label());
     let w = shape::chip(buf, clip, x, y, &text, Ink { fg, fill, behind, bold: focused }, th.shape);
     if !focused && !line {
+        // The glyph is the third cell: after the two leading spaces, and after the round cap when there is one.
         let gx = x + 2 + u16::from(th.shape == Shape::Round);
         let gh = th.ink(hue, th.raised, 3.0);
-        if let Some(cell) = buf.cell_mut((gx, y)).filter(|_| clip.contains((gx, y).into())) {
-            cell.set_fg(gh);
+        // The glyph's cell is recoloured only when it lies inside the clip and the buffer.
+        if clip.contains((gx, y).into()) {
+            if let Some(cell) = buf.cell_mut((gx, y)) {
+                cell.set_fg(gh);
+            }
         }
     }
     w
@@ -141,6 +167,9 @@ pub fn button(buf: &mut Buffer, clip: Rect, x: u16, y: u16, c: &Command, focused
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the rail's controls (`controls.rs`): gauge, switch, button and glyphs, drawn into a
+    //! plain buffer.
+
     use super::*;
     use ratatui::style::Color;
 
@@ -205,6 +234,46 @@ mod tests {
         assert_eq!(cells(&buf, 2, 1), "…");
         switch(&mut buf, area, 2, 0, &Loadable::Failed("boom".into()), &th, th.cyan);
         assert_eq!(cells(&buf, 2, 6), "✗ boom");
+    }
+
+    /// A resting button is `fg` on `raised` with only its glyph in the hue (where the hue reads on
+    /// `raised`); a focused one is `on_accent` on the hue throughout. The glyph is the third cell,
+    /// one further with round caps.
+    #[test]
+    fn a_resting_button_colours_only_its_glyph() {
+        let mut th = th();
+        let area = Rect::new(0, 0, 40, 1);
+        let lock = Command::Power(PowerAction::Lock);
+        let hue_on_raised = th.ink(th.blue, th.raised, 3.0);
+        assert_ne!(hue_on_raised, th.fg, "the test needs a hue that differs from the text colour");
+        for (shape, glyph_x) in [(Shape::Flat, 3), (Shape::Round, 4)] {
+            th.shape = shape;
+            let mut buf = Buffer::empty(area);
+            button(&mut buf, area, 1, 0, &lock, false, &th, th.blue);
+            assert_eq!(buf[(glyph_x, 0)].symbol(), "󰌾", "{shape:?}");
+            assert_eq!(buf[(glyph_x, 0)].fg, hue_on_raised, "{shape:?}: the glyph");
+            assert_eq!(buf[(glyph_x + 1, 0)].fg, th.fg, "{shape:?}: the cell after it");
+            assert_eq!(buf[(glyph_x + 3, 0)].fg, th.fg, "{shape:?}: the label");
+            let mut buf = Buffer::empty(area);
+            button(&mut buf, area, 1, 0, &lock, true, &th, th.blue);
+            assert_eq!(buf[(glyph_x, 0)].fg, th.on_accent, "{shape:?}: focused");
+        }
+        th.shape = Shape::Line;
+        let mut buf = Buffer::empty(area);
+        button(&mut buf, area, 1, 0, &lock, false, &th, th.blue);
+        assert_eq!(buf[(3, 0)].fg, th.blue, "the line style keeps the hue as the whole ink");
+    }
+
+    /// The glyph's recolouring stays inside the clip too: a clip that ends before the glyph leaves
+    /// that cell as it was.
+    #[test]
+    fn a_resting_button_recolours_nothing_outside_its_clip() {
+        let th = th();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let clip = Rect::new(0, 0, 3, 1);
+        button(&mut buf, clip, 1, 0, &Command::Power(PowerAction::Lock), false, &th, th.blue);
+        assert_eq!(buf[(3, 0)].fg, Color::Reset);
     }
 
     #[test]

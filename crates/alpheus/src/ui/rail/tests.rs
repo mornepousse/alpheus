@@ -1,3 +1,6 @@
+//! Tests of the rail layout (`rail.rs`): when it is drawn, where its entries and header sit, the
+//! summaries, the fault widths and the keycaps, at several sizes and shapes.
+
 use super::*;
 use crate::app::action::Action;
 use crate::app::appearance::tests::{open, to_row};
@@ -42,8 +45,22 @@ fn the_rail_needs_84_columns_and_26_rows() {
     assert!(rows[1].contains("◆ alpheus"), "{:?}", rows[1]);
 }
 
+/// The Sound summary names the default output, or `none` when no output is the default.
 #[test]
-fn mae_window_87x26_shows_the_rail() {
+fn the_sound_summary_names_the_default_output_or_none() {
+    let mut a = ready_app();
+    a.go_tab(Tab::Sound, std::time::Instant::now());
+    assert!(subtitle(&a).ends_with("playing on CasqueBT"), "{}", subtitle(&a));
+    if let Loadable::Ready(audio) = &mut a.data.audio {
+        for n in &mut audio.sinks {
+            n.default = false;
+        }
+    }
+    assert!(subtitle(&a).ends_with("playing on none"), "{}", subtitle(&a));
+}
+
+#[test]
+fn an_87_by_26_window_shows_the_rail() {
     let a = ready_app();
     let (rows, hits) = draw(&a, 87, 26);
     assert!(rows[1].contains("◆ alpheus") && rows[2].contains("control center"), "{:?}", &rows[..3]);
