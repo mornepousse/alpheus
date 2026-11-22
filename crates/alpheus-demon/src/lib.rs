@@ -12,7 +12,6 @@ pub mod bt_app;
 pub mod bubbles;
 pub mod bubbles_surface;
 pub mod calendar;
-pub mod calendar_app;
 pub mod camera_app;
 pub mod camera_dev;
 pub mod clipboard;

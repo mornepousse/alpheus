@@ -1582,7 +1582,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "panel.rs",
     "media_popup.rs",
     "popup.rs",
-    "calendar.rs",
+    "calendar/mod.rs",
     "deadline.rs",
     "list.rs",
     "keys.rs",

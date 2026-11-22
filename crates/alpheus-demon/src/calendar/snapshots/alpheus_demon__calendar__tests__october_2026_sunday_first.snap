@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus-demon/src/calendar.rs
+source: crates/alpheus-demon/src/calendar/mod.rs
 expression: snapshot(&rows)
 ---
     October 2026    

@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus-demon/src/calendar.rs
+source: crates/alpheus-demon/src/calendar/mod.rs
 expression: "snapshot(&{\n    let mut next = Calendar::new(&TODAY, MONDAY, false); next.scroll(1);\n    next.render()\n})"
 ---
    November 2026    

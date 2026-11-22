@@ -300,7 +300,7 @@ pub(crate) struct PopupOps {
 /// popup: its variant, its body in `PopupBody` and `module_popup`, an `OPS` row in its `*_app.rs`,
 /// listed here, and the module's `popup` in `modules.rs`.
 static POPUPS: [PopupOps; 8] = [
-    crate::calendar_app::OPS,
+    crate::calendar::app::OPS,
     crate::media_app::OPS,
     crate::panel_app::OPS,
     crate::quick_app::OPS,
