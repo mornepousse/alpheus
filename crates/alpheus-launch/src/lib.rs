@@ -784,7 +784,10 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
-            (&["--calc", "--toggle"], "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
+            (
+                &["--calc", "--toggle"],
+                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help",
+            ),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
             (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
