@@ -162,7 +162,8 @@ Status: awaiting confirmation at the trial (timer plan 1, "Decisions written dow
 
 `alpheus-launch --timer popup` opens the popup under the chip on the focused output's bar, or
 under the bar's right end when the chip is hidden, taking the keyboard without a grab. A second
-verb within 250 ms of the one that opened it is ignored, because Hyprland re-fires a press bind.
+verb within 250 ms of the one that opened it is ignored, because some compositors fire a key bind
+twice (Hyprland re-fires a press bind, CLAUDE.md).
 
 Date: 2026-11-15 · Source: timer spec § 4; timer plan 1, decision 17; CLAUDE.md, "Quick settings, delivery 1" (the debounce reason)
 
@@ -368,8 +369,8 @@ The verb opens the menu under the bar's right end on the focused output and take
 without a grab: a verb has no pointer press to grab with, exactly as `--quick` does. It works
 whether or not the `power` module is in `modules`, and is refused (exit 2) only when no `[quick]`
 session command is set or no bar can anchor the menu; both are decided before an open launcher is
-closed. A second verb closes the menu, except within 250 ms of its own open (Hyprland re-fires a
-press bind).
+closed. A second verb closes the menu, except within 250 ms of its own open (some compositors fire a key bind twice:
+Hyprland re-fires a press bind, CLAUDE.md).
 
 Date: 2026-11-21 · Source: tools menu spec § 7; tools menu plan 1, `power_verb`; CLAUDE.md, "Quick settings, delivery 1" (the debounce reason)
 
@@ -1194,7 +1195,8 @@ on a module close the panel; a click on a window does not, because nothing tells
 Hyprland older than 0.56.2 a click inside a verb-opened panel may reach the bar and close it
 (hyprwm/Hyprland#15729). A panel opened by a click keeps its grab, like every other popup. A verb
 that arrives within 250 ms of the verb's own open is ignored (`quick: toggle debounced`), because
-Hyprland re-fires a press bind (the launcher's `TOGGLE_DEBOUNCE`).
+some compositors fire a key bind twice (Hyprland re-fires a press bind, CLAUDE.md; the launcher's
+`TOGGLE_DEBOUNCE`).
 
 Date: 2026-10-11 · Source: quick settings spec § 1 (amended 2026-10-11); plan 1, "Decisions written down" 1; CLAUDE.md, "Quick settings, delivery 1" (the debounce and its reason); `quick_toggle`, `verb_debounced`
 
@@ -1228,7 +1230,7 @@ up to 20 s (60 s while the device is still activating). What a failed attempt th
 rule of "A failed Wi-Fi attempt deletes its new profile only when sure". A panel opened meanwhile
 takes the attempt back. This replaces the Wi-Fi plan's rule that closing the panel abandons the attempt.
 
-Date: 2026-10-13 (the merge of Wi-Fi delivery 2, CLAUDE.md) · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); quick Wi-Fi plan 2, "Decisions written down" 10 (the sentence it replaces); commit 750810e (2026-10-11); `WifiFollow`, `quick_flush`
+Date: 2026-10-11 (commit 750810e) · Source: commit 750810e; CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); quick Wi-Fi plan 2, "Decisions written down" 10 (the sentence it replaces); `WifiFollow`, `quick_flush`
 
 ### The Wi-Fi password lives in one boxed buffer that is wiped
 
@@ -1442,3 +1444,15 @@ keeps the failure; no owner or a new one answers `Gone` and forgets the owner, s
 to an old unique name. When BlueZ goes or its owner changes, the connection is let go without a word.
 
 Date: 2026-10-22 · Source: plan 3, "Decisions written down" 8 and 19; quick Bluetooth spec § 5 ("Non-blocking, on the event loop", "Lifetime", "Calls"), § 6; commit 97fbbd0; `BtAct::system`, `BtAct::flush`, `BtAct::recheck`, `App::bt_open`, `App::bt_let_go`
+
+### UPower is the one service the daemon may start
+
+The D-Bus source reads the system services through their unique names so that no read ever starts
+one. The exception is UPower: on some systems (NixOS) it is activated by D-Bus only when a client
+asks, so nothing has started it when the daemon comes up and the battery would stay missing. When
+the battery is wanted and UPower has no owner at a session's start, the session sends one
+`StartServiceByName("org.freedesktop.UPower", 0)` to the bus driver after its first publish, never
+retried (a reconnection asks once more); the name appearing brings the battery in through
+`NameOwnerChanged`. `dbusrs_bus::message` refuses any other name, and a guardrail lists the method.
+
+Date: 2026-11-21 · Source: CLAUDE.md, "Bar delivery 3" (fix `fix/battery-upower`); `upower::activate_if_absent`, `start_service_by_name_names_upower_alone`

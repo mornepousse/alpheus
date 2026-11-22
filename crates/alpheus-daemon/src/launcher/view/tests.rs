@@ -92,7 +92,7 @@ fn all_mode_lists_apps_then_windows() {
     let mut l = launcher();
     let (b, rows) = draw(&mut l, 100);
     // The user hasn't moved the selection yet, so the catalog's arrival (inside
-    // `launcher()`) put it back on top (Mae, 2026-10-05): the first app, not the window
+    // `launcher()`) put it back on top (2026-10-05): the first app, not the window
     // `for_apps` started on. The panel still fills with its preview either way.
     assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the selected app's preview");
     insta::assert_snapshot!("all", snapshot(&rows));
@@ -161,7 +161,7 @@ fn panel(rows: &Boxed, b: &BoxLayout) -> Vec<String> {
     rows.rows.iter().map(|r| r.text().chars().skip(start).take(usize::from(b.preview_columns)).collect()).collect()
 }
 
-/// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
+/// 2026-10-05, after seeing the real rendering: the box never changes width as the
 /// selection moves, and the panel — once reserved — always shows the selected result; it
 /// is never blank while one exists. `Left`/`Right` (the model has no toggle for them to drive, and no `Ctrl+Space`) are still
 /// recognised keys,
@@ -226,7 +226,7 @@ fn window_preview_names_its_app_via_the_class_link_or_the_class_itself() {
     assert!(text.iter().any(|t| t.contains("unknown-app")), "no linked app: the class itself\n{}", snapshot(&rows));
 }
 
-/// Mae, 2026-10-05: "its description and binary" even without a `.desktop` Action.
+/// 2026-10-05: "its description and binary" even without a `.desktop` Action.
 #[test]
 fn apps_mode_preview_without_actions_still_shows_description_and_binary() {
     let mut c = catalog();
@@ -347,7 +347,7 @@ fn narrow_output_drops_the_preview_and_truncates() {
 /// The help line must still read in full in the narrow box (no preview panel reserved,
 /// `BOX_COLUMNS` — the floor a wide, preview-reserving box also shrinks to when there
 /// isn't room for the panel): the Commands help line used to be longer than what
-/// `render`'s `truncate` leaves it, silently losing its tail (Mae, 2026-10-05).
+/// `render`'s `truncate` leaves it, silently losing its tail (2026-10-05).
 #[test]
 fn every_mode_help_line_fits_the_narrow_box() {
     let mut l = launcher();

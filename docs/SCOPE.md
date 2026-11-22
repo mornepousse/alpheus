@@ -9,7 +9,7 @@
 
 # alpheus — overall scope
 
-Date: 2026-10-02 · Author: Mae · Designed in session with Claude from
+Date: 2026-10-02 · Author: the project owner · Designed in session with Claude from
 `~/nixos-config`.
 
 > *Alpheus*: the pistol shrimp, tiny and the fastest in the ocean. The
@@ -23,7 +23,7 @@ spirit**, driven by **keyboard and mouse**.
 
 ### Measurements that led here (pc1, PSS ≈ 1 min after startup)
 
-| Stack | RAM | Mae's verdict |
+| Stack | RAM | Verdict |
 |---|---|---|
 | Old stack (waybar, mako, swayosd, swaybg) | ≈ 120 MB | light, but fuzzel menus too limited |
 | HyprPanel (GJS) | ≈ 151 MB | "not great", Hyprland only, dispatch refused in Lua config |
@@ -36,7 +36,7 @@ spirit**, driven by **keyboard and mouse**.
 Conclusion: every shell in DMS's class is built on Quickshell (~500 MB
 floor); the lightweight alternatives aren't polished enough.
 
-## Requirements (validated by Mae on 2026-10-02)
+## Requirements (validated by the owner on 2026-10-02)
 
 1. **Resident budget: 120 MB maximum** for EVERYTHING that stays in memory
    (bar, notifications, OSD, wallpaper). Whatever opens on demand (the TUI)

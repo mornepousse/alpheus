@@ -403,7 +403,7 @@ fn split_grid(split: u16) -> Grid {
     g
 }
 
-/// Spec § 3, powerline (amended 2026-10-08, Mae): full-height blocks on an opaque bar, alternating
+/// Spec § 3, powerline (amended 2026-10-08): full-height blocks on an opaque bar, alternating
 /// `pill_bg` and `raised` from the workspaces, which are on `pill_bg`.
 #[test]
 fn powerline_blocks_are_full_height_on_an_opaque_bar() {
@@ -458,7 +458,7 @@ fn powerline_arrows_are_one_cell_anti_aliased_triangles_in_their_blocks_colour()
     }
 }
 
-/// Mae, 2026-10-08: the workspaces block is on `pill_bg` wherever it sits, the active workspace
+/// 2026-10-08: the workspaces block is on `pill_bg` wherever it sits, the active workspace
 /// keeps its accent fill on it, and every block differs from its neighbours, those before the
 /// workspaces included (the launcher on the left).
 #[test]
@@ -582,7 +582,7 @@ fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
     assert_eq!(s.at(s.mid(4), s.h / 2), opaque(roles.accent_container), "flat: no blocks, no clipping");
 }
 
-/// Mae (2026-10-08): inside a pill a MUTED cell (Bluetooth off, offline,
+/// 2026-10-08: inside a pill a MUTED cell (Bluetooth off, offline,
 /// an outage's "–") is the pill's ink mixed 50 % toward the fill, so it reads paler than normal
 /// text, which keeps the full ink; states still win. Floating's pills blocks too.
 #[test]
@@ -878,7 +878,7 @@ fn a_visible_workspace_on_a_pill_bg_block_is_raised() {
 
 /// A visible workspace is told apart from its block (and powerline's blocks from their neighbours)
 /// only if `raised` is not `pill_bg`: true of a wallpaper theme from a legacy file (derived one step
-/// up) and of every preset half (Mae chose a derived step for the three whose palettes gave both
+/// up) and of every preset half (a derived step was chosen for the three whose palettes gave both
 /// roles the same tone, 2026-10-08).
 #[test]
 fn raised_differs_from_pill_bg_in_every_theme() {

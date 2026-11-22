@@ -295,7 +295,7 @@ fn the_real_name_gives_each_long_word() {
     assert_eq!(r.apply("dupont wrote"), "<user> wrote");
 }
 
-/// Review of Task 9, item 6: a host name matches whole words, a default host name equal to the
+/// A host name matches whole words, a default host name equal to the
 /// distribution's own name is no secret, a dotted unit instance keeps its unit name, a pointer-shaped
 /// token is redacted as a MAC (the safe side), a login that is a top-level directory is not replaced.
 #[test]
@@ -340,7 +340,7 @@ fn a_login_that_is_a_top_level_directory_is_not_replaced() {
     assert_eq!(r.apply("alice"), "<user>");
 }
 
-/// Final review, commun privacy items.
+/// The privacy rules shared with the daemon's reports.
 #[test]
 fn a_sudo_line_keeps_no_command_arguments() {
     let line = "sudo: jdoe : 3 incorrect password attempts ; TTY=pts/1 ; PWD=/home/jdoe ; USER=root ; COMMAND=/run/current-system/sw/bin/mysql -pHunter2Secret";

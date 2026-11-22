@@ -901,7 +901,7 @@ fn shield_hard_checks_refuse_the_file() {
     let err = |t: String| BarConfig::from_text(&t).unwrap_err();
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "relative/flag")).contains("shield.flag"));
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "/")).contains("shield.flag"), "no file name");
-    // Final fix wave M4: a trailing slash names a directory (`Path::file_name` ignores it).
+    // A trailing slash names a directory (`Path::file_name` ignores it).
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield/on/")).contains("shield.flag"));
     assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield//")).contains("shield.flag"));
     assert!(err(with("allow = [\"x\", \"--id={id}\"]\n")).contains("shield.allow"), "allow_with_a_partial_placeholder_is_refused");

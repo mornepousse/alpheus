@@ -653,7 +653,7 @@ impl App {
                 self.bt_run(orders);
                 self.quick_refresh();
             }
-            // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
+            // The one path (`notify/app.rs`): persisted, given to the server; it repaints this panel.
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
                 self.set_dnd(on);
@@ -669,7 +669,7 @@ impl App {
                     self.quick_refresh();
                 }
             }
-            // The detail's choice, as the CLI would send it (notify_app.rs).
+            // The detail's choice, as the CLI would send it (`notify/app.rs`).
             QuickAction::Dnd(c) => {
                 let until = self.bar.config.quick.dnd_until_hm();
                 match dnd_request(c, until, unix_now() as i64) {

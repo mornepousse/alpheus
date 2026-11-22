@@ -1,6 +1,6 @@
 //! The `powerline` pass (spec § 3):
 //! - full-height blocks on an opaque `bar_bg`, alternating `pill_bg` and `raised` counted from the
-//!   workspaces, which are on `pill_bg` (Mae, 2026-10-08), or their hue under pills;
+//!   workspaces, which are on `pill_bg` (2026-10-08), or their hue under pills;
 //! - between them, a one-cell arrow drawn as an analytically anti-aliased triangle in the colour
 //!   of the block it comes from, never a Nerd Font glyph. Left-side blocks (ending at or before
 //!   `Grid::split`) point right, from the free cell after them; right-side blocks
@@ -73,7 +73,7 @@ pub(super) fn base(roles: &Roles, groups: &[Group], i: usize) -> Rgb {
 /// - the band opaque `bar_bg`;
 /// - each group a full-height block, `pill_bg` or `raised` by the parity of its distance to the
 ///   workspaces block (on `pill_bg`, the first block when there is none), so neighbours always
-///   differ and the active workspace's `accent_container` stands out (Mae, 2026-10-08); under
+///   differ and the active workspace's `accent_container` stands out (2026-10-08); under
 ///   pills, a hued block takes its first module's hue, the workspaces (no hue) stay `pill_bg`;
 /// - the block's arrow in its free neighbouring cell: after it, pointing right, when the block
 ///   ends at or before `split` (the grid's right-hand side, `Grid::split`); before it, pointing

@@ -326,7 +326,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
 }
 
 /// Whether a peripheral is shown under `visibility`, given whether it
-/// currently counts as low (spec `[battery]`, Mae 2026-10-05).
+/// currently counts as low (spec `[battery]`, 2026-10-05).
 fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     match visibility {
         BatteryVisibility::Always => true,
@@ -344,7 +344,7 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
         // A charging battery never alarms: the accent without hues (the old look), green with them,
-        // at any level (Mae, 2026-10-07). Warn and error apply only while discharging.
+        // at any level (2026-10-07). Warn and error apply only while discharging.
         let state = match b.charge {
             Charge::Charging if mc == ModuleColors::None => Some(Style::ACCENT),
             Charge::Charging => None,
@@ -355,7 +355,7 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     }
     // Every peripheral with a real percentage follows `[battery] peripherals`
     // (default "always", warn when low, error when critical); one with only a coarse `BatteryLevel`
-    // (Mae, 2026-10-05) follows `[battery] coarse` (default "low": hidden
+    // (2026-10-05) follows `[battery] coarse` (default "low": hidden
     // except Low or Critical), shown as the bare icon, warn when low: UPower's Low and Critical are one bool here.
     for p in &state.peripherals {
         let space = if pieces.is_empty() { "" } else { " " };

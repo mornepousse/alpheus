@@ -42,7 +42,7 @@ pub enum Msg {
         state: Option<WifiState>,
     },
     /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
-    /// (quick_app takes it), never kept by the bar. `state` None: the panel closed, BlueZ
+    /// (`quick/app.rs` takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
         open: Option<u64>,
@@ -235,12 +235,12 @@ impl Bar {
             Msg::Network(s) => update(&mut self.network, s),
             Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
             Msg::Battery(s) => update(&mut self.battery, s),
-            // Kept for the quick panel (quick_app.rs repaints it): no bar redraw.
+            // Kept for the quick panel (`quick/app.rs` repaints it): no bar redraw.
             Msg::Profile(p) => {
                 update(&mut self.profile, p);
                 false
             }
-            // The open quick panel's (quick_app.rs takes it first): never kept, no bar redraw.
+            // The open quick panel's (`quick/app.rs` takes it first): never kept, no bar redraw.
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
             Msg::Vpn { .. } => false,

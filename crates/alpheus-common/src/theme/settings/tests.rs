@@ -434,7 +434,7 @@ fn a_bad_wallpaper_file_is_flagged_an_absent_one_is_not() {
     assert!(!resolve_detailed(&preset, Mode::Light, &dir).bad_file, "a preset never reads the files");
 }
 
-/// Review Focus 5: Mae's machine on upgrade day — a legacy 7-key colors.toml and no
+/// A machine on upgrade day — a legacy 7-key colors.toml and no
 /// theme.toml. Through load_settings (the wallpaper rule) and resolve, the bar keeps its `bg`.
 #[test]
 fn a_legacy_colors_toml_alone_keeps_its_bg() {

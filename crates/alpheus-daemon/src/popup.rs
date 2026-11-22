@@ -197,7 +197,7 @@ pub fn is_hyprland<'a>(mut interfaces: impl Iterator<Item = &'a str>) -> bool {
 /// surface is `Exclusive`. Hyprland is the other way round: it hands the grab the keyboard by
 /// itself, and before 0.56.2 (hyprwm/Hyprland#15729) an `Exclusive` layer surface swallows the
 /// hit test of its own popups, so every click inside the menu is taken for a click outside and
-/// ends the grab (`xdg_popup.done`) — Mae, Hyprland 0.55.4, 2026-10-06.
+/// ends the grab (`xdg_popup.done`) (seen on Hyprland 0.55.4, 2026-10-06).
 pub fn bar_exclusive_during_grab(on_hyprland: bool) -> bool {
     !on_hyprland
 }
@@ -753,7 +753,7 @@ impl App {
             // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name`:
             // a name can change after the fact (`update_output`) or be
             // shared for a moment by two bars, and the wrong bar — or none — would stay stuck
-            // `Exclusive`, holding Mae's keyboard.
+            // `Exclusive`, holding the keyboard.
             // Only if `popup_open` set it (`exclusive_during_grab`: not on Hyprland, unless keyed).
             let bar =
                 if self.exclusive_during_grab || keyed { position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) } else { None };

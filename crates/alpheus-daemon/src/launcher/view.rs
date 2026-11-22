@@ -63,7 +63,7 @@ impl BoxLayout {
 /// output_columns - 2 nor less than MIN_COLUMNS (or the output width if smaller); list_rows =
 /// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (the host
 /// passes `!script`, once per open); `render` always fills a reserved panel with the selected
-/// result (Mae, 2026-10-05 — there is no more toggle to gate it on).
+/// result (2026-10-05 — there is no more toggle to gate it on).
 pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: bool, preview: bool) -> BoxLayout {
     let room = output_columns.saturating_sub(2);
     let wide = BOX_COLUMNS + PREVIEW_COLUMNS + 1;
@@ -328,7 +328,7 @@ fn capped_wrap(text: &str, width: u16, budget: usize) -> Vec<String> {
 }
 
 /// The preview's lines for the selected result, each with its style — always something
-/// (Mae, 2026-10-05): an app shows its name, generic name, description and binary even
+/// (2026-10-05): an app shows its name, generic name, description and binary even
 /// without actions; a window its full title, its app, its workspace and what Enter does; a
 /// command its name and path; a script line nothing (script mode reserves no panel, so
 /// `render` never calls this for it). `budget` is how many rows the panel actually has: the
@@ -381,7 +381,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((c.clone(), Style::BOLD_ACCENT));
                 let path = command_path(&l.path_dirs, c).map(|p| p.display().to_string()).unwrap_or_else(|| "command on $PATH".into());
                 out.push((path, Style::MUTED));
-                // The real model (`Launcher::primary`/`secondary`, Mae 2026-10-05): Enter holds
+                // The real model (`Launcher::primary`/`secondary`, 2026-10-05): Enter holds
                 // it open in the configured terminal; Ctrl+Enter runs it detached, no terminal.
                 out.push(("enter  run in terminal".to_string(), Style::NORMAL));
                 out.push(("ctrl+enter  run in background".to_string(), Style::NORMAL));
@@ -540,9 +540,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     };
     rows.push(g);
     rows.push(blank(b));
-    // The panel is reserved for the whole open (Mae 2026-10-05: the box never
+    // The panel is reserved for the whole open (2026-10-05: the box never
     // changes width with the selection) and, once reserved, always shows the selected
-    // result (Mae, 2026-10-05, after seeing the real rendering: never blank while one
+    // result (2026-10-05, after seeing the real rendering: never blank while one
     // exists — `preview_lines` picks the content, `capped_wrap` keeps it inside `budget`).
     if b.preview_columns > 0 {
         let (start, stop) = (end + 2, b.columns.saturating_sub(2));

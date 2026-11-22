@@ -185,7 +185,7 @@ fn refusal_words() {
     assert_eq!(Refusal::NotClean.word(), "has tabs or control characters");
 }
 
-/// I1: a refused pad says why on the help row from its open, before any key.
+/// A refused pad says why on the help row from its open, before any key.
 #[test]
 fn a_read_only_pad_says_why_at_open() {
     let n = Notes::new("x".into(), Some(Refusal::NotClean));

@@ -257,7 +257,7 @@ fn an_idle_reader_starts_the_first_job_at_once() {
     assert!(s.preempt.load(Ordering::Acquire), "a waiting choices read stops the states read after its entry");
 }
 
-/// Task 7, review item 5: the flag a waiting choices read raised is lowered when a job starts, so
+/// The flag a waiting choices read raised is lowered when a job starts, so
 /// the resumed states read goes through all its remaining entries in one thread.
 #[test]
 fn a_resumed_states_job_reads_all_the_remaining_entries_in_one_thread() {
@@ -328,7 +328,7 @@ fn an_unread_remainder_of_a_closed_open_is_dropped() {
     assert!(s.finished(Some(1)).is_none(), "nothing unread, nothing queued");
 }
 
-/// Review I2: the menu closing (or failing) raises the flag, so a running states read stops after
+/// The menu closing (or failing) raises the flag, so a running states read stops after
 /// its current entry instead of running the user's `state` commands for a dead menu.
 #[test]
 fn a_closed_menu_stops_the_running_states_read_after_its_entry() {

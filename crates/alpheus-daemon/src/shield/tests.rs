@@ -159,7 +159,7 @@ fn the_attempt_ends_on_the_flag_the_exit_or_the_deadline() {
     let (mut s, g) = switching_on(now);
     s.done(done_mail(Job::Switch(true), g, RunOutcome::Capped), seconds_after(now, 5));
     assert_eq!(s.flag(Some(true), seconds_after(now, 6)).1, Some(Finish::Switched(true)), "capped, then the flag");
-    // The 5 s grace after an exit 0 is not cut by the 60 s bound (final fix wave M2), and it says so.
+    // The 5 s grace after an exit 0 is not cut by the 60 s bound, and it says so.
     let (mut s, g) = switching_on(now);
     s.done(done_mail(Job::Switch(true), g, RunOutcome::Exited(Some(0))), seconds_after(now, 58));
     assert_eq!(s.deadline(), Some(seconds_after(now, 63)));

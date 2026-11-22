@@ -19,7 +19,7 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 /// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`) —
 /// missing from this list (re-review, follow-up): a rename wouldn't have
 /// re-read it until something else happened to change too. `BatteryLevel`
-/// (Mae, 2026-10-05): a coarse-reporting peripheral (a Logitech HID++
+/// (2026-10-05): a coarse-reporting peripheral (a Logitech HID++
 /// receiver…) going Low or Critical, or recovering from it, must re-read.
 const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
 /// BlueZ: the properties the bar reads, by interface.
@@ -43,7 +43,7 @@ const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 /// systemd's Manager: the failed-units count, the only property of it that emits a change.
 const SYSTEMD_PROPS: [&str; 1] = [units::PROPERTY];
 
-/// The properties of `path`/`interface` the bar reads (I1): an
+/// The properties of `path`/`interface` the bar reads: an
 /// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
 /// not named here can't change what the bar shows. None: an interface the
 /// bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
@@ -184,7 +184,7 @@ impl Signal {
     }
 
     /// Whether this signal, already narrowed to `d` by its path, can
-    /// actually change what the bar shows for `d` (I1): an
+    /// actually change what the bar shows for `d`: an
     /// allowlist of the properties/interfaces the bar reads, not a denylist
     /// of known noise.
     fn relevant(&self, d: Domain) -> bool {

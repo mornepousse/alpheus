@@ -16,7 +16,7 @@ pub(crate) fn xdg_abs(var: impl Fn(&str) -> Option<OsString>, name: &str) -> Opt
 /// Unlike `state_dir` and `runtime_dir`, this does NOT go through `xdg_abs`: a relative (or empty)
 /// $XDG_CONFIG_HOME is honoured as is today, and the TUI and the daemon both rely on finding the
 /// same directory. Applying the spec's "absolute only" rule here would be a behaviour change for
-/// anyone who sets one; that is Mae's decision, not a cleanup's.
+/// anyone who sets one; that is the owner's decision, not a cleanup's.
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

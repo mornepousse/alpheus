@@ -77,7 +77,7 @@ fn an_empty_pad_shows_the_hint_after_the_caret() {
     assert_eq!(row.cells()[at].style, Style::MUTED);
     let (n, _) = notes("x");
     assert!(!text_of(&render(&n, &b).rows[2]).contains("Type here"));
-    // I1: an empty read-only pad (a file not ours) never invites typing.
+    // An empty read-only pad (a file not ours) never invites typing.
     let mut ro = Notes::new(String::new(), Some(Refusal::NotOurs));
     ro.set_area(wrap_width(&b), usize::from(b.text_rows));
     assert!(!text_of(&render(&ro, &b).rows[2]).contains("Type here"));

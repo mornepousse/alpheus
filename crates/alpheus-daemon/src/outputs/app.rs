@@ -843,7 +843,7 @@ placement = { x = 0, y = 0 }
         assert_eq!(sent.0.len(), 1, "nothing sent but the try");
     }
 
-    /// Final review A-I2(b): a keep or a revert reaching a daemon that never took a try (it
+    /// A keep or a revert reaching a daemon that never took a try (it
     /// restarted mid-trial) says so, rather than a done the TUI would read as rolled back.
     #[test]
     fn keep_and_revert_without_any_trial_say_the_daemon_restarted() {

@@ -277,7 +277,7 @@ fn no_empty_segment_without_window_or_known_workspace() {
 }
 
 /// Launcher, workspaces, window, volume, network, battery, clock — the
-/// module set from Mae's bug report (mae-feedback.md item 3): with no
+/// module set from a bug report: with no
 /// active window, the only elastic segment vanishes, and the free
 /// space it used to carry must keep tracking its slot in the order.
 fn bar_with_right_modules() -> Bar {

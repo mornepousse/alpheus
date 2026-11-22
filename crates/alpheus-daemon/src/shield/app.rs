@@ -455,7 +455,7 @@ impl App {
         }
     }
 
-    /// What the quick panel's Shield row asks (`quick_app::quick_action`); a refusal is one fixed line.
+    /// What the quick panel's Shield row asks (`quick_action` in `quick/app.rs`); a refusal is one fixed line.
     pub(crate) fn shield_ask(&mut self, ask: ShieldAsk) {
         let refused = match ask {
             ShieldAsk::Toggle => match toggle_target(self.bar.shield) {

@@ -324,7 +324,7 @@ fn an_empty_category_is_not_listed() {
     assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Session]".to_string()));
 }
 
-/// Controller's ruling (tools plan, decisions): an entry of a category cut by the 16-category
+/// An entry of a category cut by the 16-category
 /// bound is dropped, never moved to the root (the config counts it in its note).
 #[test]
 fn an_entry_naming_a_cut_category_is_dropped() {

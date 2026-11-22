@@ -17,7 +17,7 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeysConfig {
-    /// D/H/T/N = left/down/up/right (hjkl positions on Mae's Dvorak layout).
+    /// D/H/T/N = left/down/up/right (hjkl positions on a Dvorak layout).
     pub dvorak_nav: bool,
     /// Overrides: action name → keys (replace the defaults).
     pub bindings: BTreeMap<String, Vec<String>>,

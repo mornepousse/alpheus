@@ -412,8 +412,8 @@ fn a_charging_battery_is_green_under_icons_and_full() {
 
 #[test]
 fn battery_tint_boundary_at_19_and_20() {
-    // Warn tint strictly below LOW (20): 19 % is low, 20 % is not (Mae,
-    // 2026-10-04); see the `b.percent < LOW` comparison in `battery`.
+    // Warn tint strictly below LOW (20): 19 % is low, 20 % is not
+    // (2026-10-04); see the `b.percent < LOW` comparison in `battery`.
     let laptop = |percent| Feed::Ready(PowerState { laptop: Some(Battery { percent, charge: Charge::Discharging }), peripherals: vec![] });
     let d = &BatteryConfig::default();
     assert_eq!(draw(&battery(&laptop(19), d).unwrap()).1, "wwwww", "19%: warn");
@@ -431,7 +431,7 @@ fn peripheral_tint_boundary_at_19_and_20() {
 
 #[test]
 fn a_coarse_peripheral_is_hidden_unless_low_or_critical() {
-    // Mae, 2026-10-05: BatteryLevel not None means Percentage is not to
+    // 2026-10-05: BatteryLevel not None means Percentage is not to
     // be trusted (UPower's own words). Default `[battery] coarse = "low"`:
     // hidden, except Low/Critical (`low`), shown as the bare icon in the
     // warn tint.
@@ -487,7 +487,7 @@ fn peripherals_after_the_battery_hidden_without_anything_to_show() {
 #[test]
 fn peripherals_visibility_always_low_never() {
     // `[battery] peripherals` on a real-percentage peripheral (spec,
-    // Mae 2026-10-05): "always" (default) shows it whatever the level,
+    // 2026-10-05): "always" (default) shows it whatever the level,
     // "low" only below 20 %, "never" hides it outright.
     let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
     let s = |percent| Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(percent)] });
@@ -509,7 +509,7 @@ fn peripherals_visibility_always_low_never() {
 #[test]
 fn coarse_visibility_always_low_never() {
     // `[battery] coarse` on a peripheral with only a coarse `BatteryLevel`
-    // (spec, Mae 2026-10-05): "always" shows the bare icon whatever the
+    // (spec, 2026-10-05): "always" shows the bare icon whatever the
     // level (warn tint only when low), "low" (default) only when Low or
     // Critical, "never" hides it outright.
     let device = |low| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low };
@@ -552,7 +552,7 @@ fn resources_cpu_memory_temperature() {
 #[test]
 fn resources_temperature_tint_boundary_at_84_and_85() {
     // The error tint from HOT (85 \u{b0}C, waybar's own critical threshold,
-    // Mae 2026-10-04): 84\u{b0} is still normal, 85\u{b0} already errs.
+    // 2026-10-04): 84\u{b0} is still normal, 85\u{b0} already errs.
     let normal = Sample { cpu: Some(50), memory: None, temperature: Some(84), ..Sample::default() };
     let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85), ..Sample::default() };
     assert_eq!(

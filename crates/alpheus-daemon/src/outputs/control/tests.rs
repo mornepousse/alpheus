@@ -1136,7 +1136,7 @@ fn a_revert_sent_on_stale_heads_waits_for_its_own_done() {
     assert_eq!(c.trial_state(t0 + ms(50)), TrialState::Ended(TrialEnd::Reverted));
 }
 
-/// Final review A-I1: a profile cancelled after the screens changed is not re-sent onto the new
+/// A profile cancelled after the screens changed is not re-sent onto the new
 /// set; the new set is evaluated after its own debounce. In either order of the two events.
 #[test]
 fn a_cancelled_profile_is_dropped_once_the_screens_changed() {
@@ -1177,7 +1177,7 @@ fn a_cancelled_cap_is_dropped_once_the_screens_changed() {
     assert_eq!(c.next_deadline(), Some(t0 + ms(610) + DEBOUNCE));
 }
 
-/// Final review A-I2: the daemon stopping restores the state from before a trial, open or
+/// The daemon stopping restores the state from before a trial, open or
 /// still flying; nothing else is sent.
 #[test]
 fn shutdown_restores_the_state_from_before_a_trial() {
@@ -1205,7 +1205,7 @@ fn shutdown_restores_the_state_from_before_a_trial() {
     assert!(c.shutdown(t0 + ms(110)).is_empty(), "a revert already flying");
 }
 
-/// Final review A-I2(b): whether this controller ever took a try.
+/// Whether this controller ever took a try.
 #[test]
 fn a_trial_seen_is_remembered() {
     let t0 = Instant::now();
@@ -1219,7 +1219,7 @@ fn a_trial_seen_is_remembered() {
     assert!(c.trial_seen(), "for good");
 }
 
-/// Final review A-M1: at most 3 automatic applies per set of screens per 60 s; the skip is logged
+/// At most 3 automatic applies per set of screens per 60 s; the skip is logged
 /// once per window.
 #[test]
 fn a_profile_is_applied_at_most_three_times_a_minute() {
@@ -1250,7 +1250,7 @@ fn a_profile_is_applied_at_most_three_times_a_minute() {
     assert_eq!(sends(&cycle(t0 + ms(60_000))).len(), 1);
 }
 
-/// Final re-review I1: a profile skipped by the limit is evaluated again once the window of its
+/// A profile skipped by the limit is evaluated again once the window of its
 /// set's oldest apply ends (that evaluation counts as an apply); a set change drops the retry.
 #[test]
 fn a_skipped_profile_is_retried_when_the_window_ends() {
@@ -1296,7 +1296,7 @@ fn a_skipped_profile_is_retried_when_the_window_ends() {
     assert!(sends(&c.tick(&profiles, retry)).is_empty());
 }
 
-/// Final review A-M3: without displays.toml (or with no profile in it) nothing is logged.
+/// Without displays.toml (or with no profile in it) nothing is logged.
 #[test]
 fn no_profile_at_all_logs_nothing() {
     let t0 = Instant::now();

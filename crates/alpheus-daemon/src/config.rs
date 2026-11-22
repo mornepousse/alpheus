@@ -202,8 +202,8 @@ pub struct ClockConfig {
     pub format: String,
     /// The date, muted, before the time; empty = no date.
     pub date: String,
-    /// A left click on the clock opens the calendar (default true —
-    /// question 10 of the tray plan).
+    /// A left click on the clock opens the calendar (default true:
+    /// docs/features/calendar.md).
     pub calendar: bool,
     /// ISO week numbers in the calendar (default false).
     pub week_numbers: bool,
@@ -282,8 +282,8 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspacesConfig {
     /// Command run to go to a workspace (click, wheel); `{workspace}` and
-    /// `{output}` are replaced in it. Default: `wm-set` (Mae's
-    /// nixos-config), the only path to the compositor allowed by the
+    /// `{output}` are replaced in it. Default: `wm-set` (nixos-config's
+    /// script), the only path to the compositor allowed by the
     /// framing document.
     pub command: Vec<String>,
 }
@@ -299,13 +299,13 @@ impl Default for WorkspacesConfig {
 pub struct ActionsConfig {
     /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
     /// battery); `{tab}` becomes home, sound, network or bluetooth (the
-    /// TUI's `--tab`). Default: `alpheus-toggle` (Mae's nixos-config), which
+    /// TUI's `--tab`). Default: `alpheus-toggle` (nixos-config's script), which
     /// opens the TUI in a floating terminal, or closes it if already open —
     /// not a neutral default yet: see the portability step (CLAUDE.md).
     pub open_tab: Vec<String>,
     /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
     /// popup): a system monitor. Default: btop in
-    /// foot (Mae's decision, 2026-10-05: lightness — foot measures ≈ 9.9 MB
+    /// foot (2026-10-05: lightness — foot measures ≈ 9.9 MB
     /// PSS against ≈ 92.6 MB for alacritty, for the same TUI).
     pub resources: Vec<String>,
 }
@@ -376,7 +376,7 @@ impl Default for ResourcesConfig {
     }
 }
 
-/// How a battery segment shows up (spec Q, Mae 2026-10-05): every peripheral
+/// How a battery segment shows up (spec Q, 2026-10-05): every peripheral
 /// with a real percentage defaults to "always" (today's behaviour); one that
 /// only reports a coarse UPower `BatteryLevel` defaults to "low" (today's
 /// behaviour: hidden unless Low, Critical or Action).
@@ -457,7 +457,7 @@ pub struct FailedConfig {
     pub user_units: bool,
     /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
     /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
-    /// until Mae chooses): the count is read on triggers only (a resume, `failed-refresh`, another
+    /// see docs/decisions.md, "The failed-units count is read on triggers, and `Subscribe` is off by default"): the count is read on triggers only (a resume, `failed-refresh`, another
     /// domain's wake-up, a piggyback).
     pub subscribe: bool,
     /// A notification when the count rises.
@@ -864,7 +864,7 @@ pub enum StateForm {
     /// "": the row shows `·`.
     Unknown,
     /// "file:<path>": on while the file exists. The path starts with `/`, `~/` or
-    /// `$XDG_RUNTIME_DIR/`, the only two expansions (`quick_state::expand`).
+    /// `$XDG_RUNTIME_DIR/`, the only two expansions (`quick/state.rs`'s `expand`).
     File(String),
     /// "process:<name>": on while a process with that `comm` runs.
     Process(String),

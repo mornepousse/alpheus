@@ -172,7 +172,7 @@ const TOKYO_NIGHT_LIGHT: Roles = Roles {
     bar_bg: h(0xe1e2e7),            // bg (fg on bg_dark is 3.99:1)
     pill_bg: h(0xd0d5e3),           // bg_dark
     popup_bg: h(0xe1e2e7),          // bg
-    raised: h(0xc1c9df),            // a step off bg_dark, fg ≥ 3.5:1 (Mae, 2026-10-08)
+    raised: h(0xc1c9df),            // a step off bg_dark, fg ≥ 3.5:1 (2026-10-08)
     selection: h(0xc4c8da),         // bg_highlight
     fg: h(0x3760bf),                // fg
     fg_dim: h(0x68709a),            // dark5
@@ -375,7 +375,7 @@ const SOLARIZED_DARK: Roles = Roles {
     bar_bg: h(0x002b36),            // base03
     pill_bg: h(0x073642),           // base02
     popup_bg: h(0x002b36),          // base03
-    raised: h(0x133f4a),            // a step up from base02, fg ≥ 3.5:1 (Mae, 2026-10-08)
+    raised: h(0x133f4a),            // a step up from base02, fg ≥ 3.5:1 (2026-10-08)
     selection: h(0x073642),         // base02
     fg: h(0x839496),                // base0
     fg_dim: h(0x657b83),            // base00
@@ -404,7 +404,7 @@ const SOLARIZED_LIGHT: Roles = Roles {
     bar_bg: h(0xfdf6e3),            // base3
     pill_bg: h(0xeee8d5),           // base2
     popup_bg: h(0xfdf6e3),          // base3
-    raised: h(0xdfdccb),            // a step down from base2, fg ≥ 3.5:1 (Mae, 2026-10-08)
+    raised: h(0xdfdccb),            // a step down from base2, fg ≥ 3.5:1 (2026-10-08)
     selection: h(0xeee8d5),         // base2
     fg: h(0x586e75),                // base01 (base00 is 4.13:1)
     fg_dim: h(0x657b83),            // base00
@@ -1033,7 +1033,7 @@ mod tests {
 
     /// `fg` stays legible on the two block fills (shapes delivery): `raised` (a visible workspace
     /// inside a block, powerline's alternate blocks) and `pill_bg`, at 3.5:1 in every preset half
-    /// (Mae, 2026-10-08). Every ratio is printed (`--nocapture`), the worst pair first in a failure.
+    /// (2026-10-08). Every ratio is printed (`--nocapture`), the worst pair first in a failure.
     #[test]
     fn fg_is_legible_on_raised_and_pill_bg() {
         const MIN: f32 = 3.5;
@@ -1090,7 +1090,7 @@ mod tests {
         assert!(failures.is_empty(), "{worst:?}\n{failures:#?}");
     }
 
-    /// Review Focus 5: the text on an accent fill reads on every hue and on `warn` (a dark-only
+    /// The text on an accent fill reads on every hue and on `warn` (a dark-only
     /// family is checked once).
     #[test]
     fn on_accent_is_legible_on_every_hue() {

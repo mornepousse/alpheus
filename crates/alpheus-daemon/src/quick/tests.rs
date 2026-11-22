@@ -983,7 +983,7 @@ fn brightness_never_goes_below_one_percent() {
     assert_eq!(q.key(&l, Key::Right, false, later(t, 4)), set_brightness(5), "from a dark backlight, up");
 }
 
-/// Fix m4: the wheel counts ten notches at most.
+/// The wheel counts ten notches at most.
 #[test]
 fn the_wheel_takes_ten_notches_at_most() {
     let mut w = World::full();
@@ -997,7 +997,7 @@ fn the_wheel_takes_ten_notches_at_most() {
     assert_eq!(q.scroll(&l, Some((5, 1)), 15, t), set_brightness(30), "15 notches down: 50");
 }
 
-/// Fix m3: `BAR` is the width `osd::level` draws, from `BAR_START` (the click mapping counts on it).
+/// `BAR` is the width `osd::level` draws, from `BAR_START` (the click mapping counts on it).
 #[test]
 fn the_drawn_bar_spans_bar_start_and_its_bar_cells() {
     let mut g = Grid::empty(WIDTH + 2);

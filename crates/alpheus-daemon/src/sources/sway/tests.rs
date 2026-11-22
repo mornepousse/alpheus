@@ -185,7 +185,7 @@ fn a_deep_reply_is_bounded_on_the_compositor_stack() {
     assert!(r.states.try_recv().is_err(), "nothing published");
 }
 
-/// Final review: the session feeds the window events to the model's focus history. C (10) then A
+/// The session feeds the window events to the model's focus history. C (10) then A
 /// (7, the tree's focused window) focused: C previous first, B never seen, A last; the arrays
 /// alone give B, C, A.
 #[test]

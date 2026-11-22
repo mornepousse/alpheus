@@ -119,7 +119,7 @@ pub(crate) fn on_fill(roles: &Roles, fill: Rgb) -> Rgb {
     if ratio(roles.bar_bg, fill) >= ratio(roles.fg, fill) { roles.bar_bg } else { roles.fg }
 }
 
-/// A muted cell's ink on a pill (Mae, 2026-10-08): the pill's `ink` mixed 50 % toward its `fill`,
+/// A muted cell's ink on a pill (2026-10-08): the pill's `ink` mixed 50 % toward its `fill`,
 /// paler than normal text, as `fg_dim` is beside `fg` on the bar.
 pub(crate) fn muted_on_fill(ink: Rgb, fill: Rgb) -> Rgb {
     let half = |a: u8, b: u8| (u16::from(a) + u16::from(b)).div_ceil(2) as u8;

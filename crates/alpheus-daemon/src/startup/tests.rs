@@ -205,7 +205,7 @@ fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
     on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None, ..Sample::default() }), || AFTER);
     after_dispatch(&mut c);
     assert_eq!(c.redraws, 1, "a burst of system messages: one redraw");
-    assert_eq!(c.bar.clock, Some(AFTER), "a resources tick also puts the clock right (B-m4)");
+    assert_eq!(c.bar.clock, Some(AFTER), "a resources tick also puts the clock right");
 }
 
 #[test]

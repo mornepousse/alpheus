@@ -339,7 +339,7 @@ mod tests {
         format!(r#"{{"change":"focus","container":{{"id":{id},"type":"con","nodes":[]}}}}"#)
     }
 
-    /// Final review: one most-recent order across workspaces, fed by the focus events. Focus B
+    /// One most-recent order across workspaces, fed by the focus events. Focus B
     /// (workspace 2), A (1), C (2): A, the previous window, first; B; C focused last. The per-
     /// container `focus` arrays alone would give B, A, C.
     #[test]

@@ -1,4 +1,4 @@
-//! The light/dark mode in effect, as the daemon publishes it for the TUI (Mae, 2026-10-07: the TUI
+//! The light/dark mode in effect, as the daemon publishes it for the TUI (2026-10-07: the TUI
 //! never uses D-Bus): `$XDG_RUNTIME_DIR/alpheus/mode`, holding `dark` or `light` and a newline. The
 //! daemon writes it (`alpheus_daemon::appearance::write_mode`); the TUI reads it in mode "auto".
 

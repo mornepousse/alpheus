@@ -676,7 +676,7 @@ fn a_daemon_without_the_vpn_word_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
-/// Review Focus: `--dnd toggle` with no daemon exits 3, like every verb (tools-menu falls back on 3).
+/// `--dnd toggle` with no daemon exits 3, like every verb (tools-menu falls back on 3).
 #[test]
 fn dnd_toggle_with_no_daemon_exits_3() {
     let socket = temp_socket("dnd-absent");
@@ -734,7 +734,7 @@ fn visible_sends_its_count() {
     assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines, flags });
 }
 
-/// Review Focus 5: `--index` with `--visible` still answers the line's position on stdin, empty lines counted.
+/// `--index` with `--visible` still answers the line's position on stdin, empty lines counted.
 #[test]
 fn visible_with_index_counts_empty_lines() {
     let (socket, daemon) = answering("visible-index", Reply::Index(Some(2)));

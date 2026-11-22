@@ -34,13 +34,12 @@ use std::time::{Duration, Instant};
 /// magnitude for "too long" elsewhere on this socket.
 const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 
-/// How long after the launcher opens a Toggle is still ignored (Mae,
-/// 2026-10-06): with a press bind, Hyprland fires the bind a second time on
+/// How long after the launcher opens a Toggle is still ignored
+/// (commit 9331286): with a press bind, Hyprland fires the bind a second time on
 /// release once the launcher has grabbed the keyboard, so a second Toggle
 /// lands here a few ms to ~200 ms after the open and would otherwise close
-/// the box right back. Ignoring it is what keeps the press bind usable — the
-/// release bind nixos-config tried instead misses whenever Mae lets go of
-/// Super before Space.
+/// the box right back. Ignoring it is what keeps the press bind usable — a
+/// release bind misses whenever the user lets go of Super before Space.
 pub(crate) const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Whether a Toggle arriving `since_open` after the launcher opened must be
@@ -143,7 +142,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Calc, None) => (Action::OpenCalc, Some(Reply::Done)),
         (Request::Calc, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Calc, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
-        // Launcher 2, decision 12 (amended at the final review): a repeated `--windows` (Alt+Tab
+        // Launcher 2, decision 12: a repeated `--windows` (Alt+Tab
         // held, or pressed again) steps to the next window, except within the debounce of the
         // switcher's own open — Hyprland's press-bind refire, which would move the selection off
         // the previous window. Past it, no debounce: a repeat is the point.
@@ -772,7 +771,7 @@ mod tests {
         }
     }
 
-    /// Decision 12, amended at the final review: a `--windows` within `TOGGLE_DEBOUNCE` of the
+    /// Launcher 2, decision 12: a `--windows` within `TOGGLE_DEBOUNCE` of the
     /// switcher's own open is Hyprland's press-bind refire and is ignored (still answered Done),
     /// so the previous window stays selected; past it every repeat steps, however close to the
     /// last one (the time counts from the open, not from the last step).
@@ -854,7 +853,7 @@ mod tests {
     }
 
     /// A Toggle arriving less than `TOGGLE_DEBOUNCE` after the open is the
-    /// Hyprland press-bind refire (spec of this fix, Mae 2026-10-06): it must
+    /// Hyprland press-bind refire (commit 9331286): it must
     /// be ignored, not close the box right back — but the socket still
     /// replies Done, so `alpheus-launch` exits 0.
     #[test]

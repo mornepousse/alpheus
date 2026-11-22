@@ -223,7 +223,7 @@ fn device_labels_are_cleaned_like_any_drawn_text() {
 /// `follow` asks `matches` before building a state (no String cloned for a delta that changes
 /// nothing): it must be exactly equality with `state()` on what the scope reads, whatever field
 /// moved. The bar reads the sink's volume; the OSD also the sink's name and label, and the
-/// source's node and mute (never its level: Mae, 2026-10-09).
+/// source's node and mute (never its level: 2026-10-09).
 #[test]
 fn matches_is_equality_on_what_the_scope_reads() {
     let mut m = Model::default();

@@ -456,7 +456,7 @@ pub struct App {
     /// Do-not-disturb: loaded at startup, changed only by `dnd_apply`.
     /// Mirrors `dnd_timed.model.on`; `dnd_apply` and `dnd_load` set both together.
     pub(crate) dnd: bool,
-    /// Its timed model and the timer of its end (notify_app.rs).
+    /// Its timed model and the timer of its end (`notify/app.rs`).
     pub(crate) dnd_timed: crate::notify::app::DndTimed,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
@@ -510,7 +510,7 @@ pub struct App {
     /// The OSD's trigger memory, surface and hide timer (osd/surface.rs).
     pub(crate) osd: crate::osd::surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
-    /// (quick_app.rs).
+    /// (`quick/app.rs`).
     pub(crate) quick: crate::quick::app::QuickApp,
     /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
     /// `Units` domain.
@@ -1004,7 +1004,7 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
     }
 }
 
-/// Mae (2026-10-05), generalised 2026-10-06: a click on the icon whose menu is shown, with the
+/// 2026-10-05, generalised 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click on the icon whose menu is shown, with the
 /// button that opened it, only closes that menu and does nothing else; a right click always
 /// closes it, whatever opened it — the press that closed it never reopens it (like `decide_click`
 /// for the launcher). Steam's menu, opened by a left click (a failed Activate, no `Menu` of its
@@ -1398,7 +1398,7 @@ impl PointerHandler for App {
                     self.menu.recently_closed = None;
                     let popup_only_closes = closed_by_done(&mut self.recently_closed_popup, pressed_popup, Instant::now());
                     if only_closes || popup_only_closes {
-                        continue; // the menu's own icon: closed, never reopened (Mae)
+                        continue; // the menu's own icon: closed, never reopened (docs/decisions.md)
                     }
                     if let Some(b) = b {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {

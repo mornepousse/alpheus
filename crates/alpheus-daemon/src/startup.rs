@@ -181,8 +181,7 @@ pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
 /// also refreshes the clock: coming out of sleep, the timer (a monotonic
 /// clock, stopped during sleep) can lag by a minute; the first focus change
 /// puts the clock right again — and so does the next resources reading,
-/// which needs no user interaction with the compositor at all (B-m4,
-/// The clock could otherwise stay stale for up to a minute after
+/// which needs no user interaction with the compositor at all (the clock could otherwise stay stale for up to a minute after
 /// resume if nothing compositor-related happens meanwhile). Cheapest
 /// correct option: resources already ticks on its own already-scheduled
 /// timer whenever the module is shown, so this reuses an existing wakeup
