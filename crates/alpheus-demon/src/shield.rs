@@ -4,7 +4,8 @@
 
 use crate::config::ShieldConfig;
 use crate::quick::FAILED_SHOWN;
-use crate::shield_usb::Parsed;
+use crate::shield_usb::{Parsed, UsbDevice};
+use alpheus_commun::launcher_ipc::{Reply, ShieldVerb};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -144,6 +145,81 @@ pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>
         }
     }
     out
+}
+
+/// What the model knows when a verb arrives (`plan_verb`).
+#[derive(Debug, Clone, Copy)]
+pub struct VerbCtx {
+    pub state: Option<bool>,
+    /// An action runs (the slot is held).
+    pub action_busy: bool,
+    /// `blocked` is set.
+    pub can_list: bool,
+    /// `allow` is set.
+    pub can_allow: bool,
+}
+
+/// What the daemon does for a verb (spec § 9), decided without side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerbPlan {
+    /// Answer at once.
+    Answer(Reply),
+    /// Start the switch to this state, then answer Done.
+    Switch(bool),
+    /// Read the blocked devices, then print the status.
+    StatusRead,
+    /// Read the blocked devices, then open the picker.
+    AllowRead,
+}
+
+/// The picker's prompt (spec § 9).
+pub const PICKER_PROMPT: &str = "Allow a blocked USB device";
+pub const ERR_BUSY: &str = "a shield command is already running";
+pub const ERR_UNKNOWN: &str = "the shield state cannot be read";
+
+pub fn plan_verb(verb: ShieldVerb, c: &VerbCtx) -> VerbPlan {
+    let error = |t: &str| VerbPlan::Answer(Reply::Error(t.into()));
+    let switch = |target: bool| match c.state {
+        None => error(ERR_UNKNOWN),
+        // The asked state already holds: nothing runs (spec decision 9).
+        Some(on) if on == target => VerbPlan::Answer(Reply::Done),
+        Some(_) if c.action_busy => error(ERR_BUSY),
+        Some(_) => VerbPlan::Switch(target),
+    };
+    match verb {
+        ShieldVerb::On => switch(true),
+        ShieldVerb::Off => switch(false),
+        ShieldVerb::Toggle => match c.state {
+            None => error(ERR_UNKNOWN),
+            Some(_) if c.action_busy => error(ERR_BUSY),
+            Some(on) => VerbPlan::Switch(!on),
+        },
+        ShieldVerb::Status => match (c.state, c.can_list) {
+            (Some(true), true) => VerbPlan::StatusRead,
+            (state, _) => VerbPlan::Answer(Reply::Shield(status_text(state, None))),
+        },
+        ShieldVerb::Allow => match c.state {
+            None => error(ERR_UNKNOWN),
+            Some(false) => error("the shield is off"),
+            Some(true) if !(c.can_allow && c.can_list) => error("no allow command in [shield]"),
+            Some(true) => VerbPlan::AllowRead,
+        },
+    }
+}
+
+/// The picker's lines and, in the same order, the device ids they stand for (the ids never reach
+/// the box: a chosen position maps back to one).
+pub fn picker(devices: &[UsbDevice]) -> (Vec<String>, Vec<u32>) {
+    (devices.iter().map(crate::shield_usb::picker_line).collect(), devices.iter().map(|d| d.id).collect())
+}
+
+/// The id a picker's answer stands for: a chosen position only. Typed text (`Index(None)`), a
+/// line's text, Escape or an out-of-range position run nothing.
+pub fn picked(ids: &[u32], reply: Reply) -> Option<u32> {
+    match reply {
+        Reply::Index(Some(i)) => ids.get(i).copied(),
+        _ => None,
+    }
 }
 
 /// A switch waiting for its flag.

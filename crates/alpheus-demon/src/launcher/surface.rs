@@ -9,6 +9,7 @@ use crate::actions::{self, Button};
 use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
+use crate::launcher::host::ScriptOwner;
 use crate::launcher::model::{Activation, Launcher, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
@@ -332,6 +333,8 @@ impl Drop for Scrim {
 pub struct OpenLauncher {
     pub model: Launcher,
     pub reply: Option<Pending>,
+    /// Whose script menu this is (`Client` for every other kind of box).
+    pub owner: ScriptOwner,
     pub generation: u64,
     pub requested_at: Instant,
     pub spawner: Spawner,
@@ -485,6 +488,7 @@ impl App {
         self.launcher = Some(OpenLauncher {
             model,
             reply,
+            owner: ScriptOwner::Client,
             generation: self.launcher_generation,
             requested_at,
             spawner: run::spawner(&paths::runtime_dir()),
@@ -719,11 +723,24 @@ impl App {
                         self.launcher_redraw();
                     }
                     Ok(Done::Reply(mut reply)) => {
-                        if let Some(p) = open.reply.take() {
-                            p.reply(&reply);
-                        }
-                        if let (Reply::Chosen(text), true) = (&mut reply, open.model.password) {
-                            wipe(text);
+                        let (pending, owner, password) = (open.reply.take(), std::mem::take(&mut open.owner), open.model.password);
+                        match owner {
+                            ScriptOwner::Client => {
+                                if let Some(p) = pending {
+                                    p.reply(&reply);
+                                }
+                                if let (Reply::Chosen(text), true) = (&mut reply, password) {
+                                    wipe(text);
+                                }
+                            }
+                            // The Shield picker: a chosen position runs `allow`, the client hears Done
+                            // (or why not); typed text and every other answer run nothing.
+                            ScriptOwner::Shield(ids) => {
+                                let answer = self.shield_picked(&ids, reply);
+                                if let Some(p) = pending {
+                                    p.reply(&answer);
+                                }
+                            }
                         }
                         self.launcher_close(CloseReason::Activated);
                     }

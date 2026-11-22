@@ -356,3 +356,77 @@ fn the_notices_read() {
     assert_eq!(notice(&NoticeKind::AllowFailed, &c), ("USB device not allowed".into(), "The command failed or was cancelled.".into()));
     assert_eq!(notice(&NoticeKind::NothingBlocked, &c).0, "No blocked USB device");
 }
+
+// ---- the verbs' decisions (shield spec § 9) ----
+
+fn ctx(state: Option<bool>) -> VerbCtx {
+    VerbCtx { state, action_busy: false, can_list: true, can_allow: true }
+}
+
+fn error(t: &str) -> VerbPlan {
+    VerbPlan::Answer(Reply::Error(t.into()))
+}
+
+#[test]
+fn on_and_off_in_the_asked_state_run_nothing() {
+    assert_eq!(plan_verb(ShieldVerb::On, &ctx(Some(true))), VerbPlan::Answer(Reply::Done));
+    assert_eq!(plan_verb(ShieldVerb::Off, &ctx(Some(false))), VerbPlan::Answer(Reply::Done));
+    assert_eq!(plan_verb(ShieldVerb::On, &ctx(Some(false))), VerbPlan::Switch(true));
+    assert_eq!(plan_verb(ShieldVerb::Off, &ctx(Some(true))), VerbPlan::Switch(false));
+    assert_eq!(plan_verb(ShieldVerb::Toggle, &ctx(Some(true))), VerbPlan::Switch(false));
+    assert_eq!(plan_verb(ShieldVerb::Toggle, &ctx(Some(false))), VerbPlan::Switch(true));
+    // Even while a command runs: nothing to start, nothing wrong.
+    let busy = VerbCtx { action_busy: true, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::On, &busy), VerbPlan::Answer(Reply::Done));
+}
+
+#[test]
+fn a_verb_while_busy_is_an_error() {
+    let busy = VerbCtx { action_busy: true, ..ctx(Some(false)) };
+    for v in [ShieldVerb::On, ShieldVerb::Toggle] {
+        assert_eq!(plan_verb(v, &busy), error(ERR_BUSY), "{v:?}");
+    }
+    let busy_on = VerbCtx { action_busy: true, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Off, &busy_on), error(ERR_BUSY));
+}
+
+#[test]
+fn an_unknown_state_is_an_error_but_for_status() {
+    for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Allow] {
+        assert_eq!(plan_verb(v, &ctx(None)), error(ERR_UNKNOWN), "{v:?}");
+    }
+    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(None)), VerbPlan::Answer(Reply::Shield("Shield: unknown".into())));
+}
+
+#[test]
+fn status_reads_the_list_only_while_on_and_listable() {
+    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(Some(true))), VerbPlan::StatusRead);
+    assert_eq!(plan_verb(ShieldVerb::Status, &ctx(Some(false))), VerbPlan::Answer(Reply::Shield("Shield: off".into())));
+    let nolist = VerbCtx { can_list: false, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Status, &nolist), VerbPlan::Answer(Reply::Shield("Shield: on".into())));
+}
+
+#[test]
+fn allow_needs_the_mode_on_and_both_commands() {
+    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(true))), VerbPlan::AllowRead);
+    assert_eq!(plan_verb(ShieldVerb::Allow, &ctx(Some(false))), error("the shield is off"));
+    let noallow = VerbCtx { can_allow: false, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Allow, &noallow), error("no allow command in [shield]"));
+    let nolist = VerbCtx { can_list: false, ..ctx(Some(true)) };
+    assert_eq!(plan_verb(ShieldVerb::Allow, &nolist), error("no allow command in [shield]"));
+}
+
+#[test]
+fn the_picker_lines_and_ids_go_together() {
+    use crate::shield_usb::UsbDevice;
+    let d = |id, n: &str| UsbDevice { id, vid_pid: "1234:5678".into(), name: n.into() };
+    let (lines, ids) = picker(&[d(7, "Test Keyboard"), d(12, "Test Stick")]);
+    assert_eq!(lines, ["Test Keyboard (1234:5678)", "Test Stick (1234:5678)"]);
+    assert_eq!(ids, [7, 12]);
+    // What the chosen index maps to: only a real position, never typed text.
+    assert_eq!(picked(&ids, Reply::Index(Some(1))), Some(12));
+    assert_eq!(picked(&ids, Reply::Index(Some(2))), None);
+    assert_eq!(picked(&ids, Reply::Index(None)), None, "typed text runs nothing");
+    assert_eq!(picked(&ids, Reply::Chosen("Test Stick (1234:5678)".into())), None);
+    assert_eq!(picked(&ids, Reply::Cancelled), None);
+}

@@ -3,22 +3,39 @@
 
 use crate::config::ShieldConfig;
 use crate::deadline::DeadlineTimer;
+use crate::launcher::socket::{Conn, Pending};
+use crate::launcher::socket_glue::reply_guarded;
 use crate::log::write as log;
 use crate::popup::PopupBody;
 use crate::quick_shield::ShieldAsk;
-use crate::shield::{Edge, Finish, Job, NoticeKind, Reason, Shield, ShieldMail, read_flag};
+use crate::shield::{
+    Edge, Finish, Job, NoticeKind, Reason, Shield, ShieldMail, VerbCtx, VerbPlan, picked, picker, plan_verb, read_flag, status_text,
+};
 use crate::shield_run::spawn_job;
 use crate::shield_usb::{Parsed, allow_argv};
 use crate::startup::Mail;
 use crate::wayland::App;
+use alpheus_commun::launcher_ipc::{Reply, Request};
 use std::path::Path;
 use std::time::Instant;
 
+/// Every verb's answer while `[shield]` is not set (spec § 2: no Shield anywhere).
+pub(crate) const NOT_CONFIGURED: &str = "shield is not configured in bar.toml";
+
 /// Who asked for a read of the blocked devices; they join the one read in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // built by the detail (task 5)
 pub(crate) enum ListFor {
     Detail,
+    /// A verb (`status`, `allow`) waits: its connection is in `ShieldApp.waiting`.
+    Verb,
+}
+
+/// A client kept until the read of the blocked devices ends (at most one per socket connection).
+pub(crate) enum Waiter {
+    /// `--shield status`: the text goes back.
+    Status(Pending),
+    /// `--shield allow`: the picker opens for it.
+    Picker(Pending),
 }
 
 pub(crate) struct ShieldApp {
@@ -28,6 +45,8 @@ pub(crate) struct ShieldApp {
     timer: DeadlineTimer,
     /// Who waits for the read in flight.
     askers: Vec<ListFor>,
+    /// The verbs' clients waiting for that read.
+    waiting: Vec<Waiter>,
     /// The last read of the blocked devices (the detail, the picker and `status` take it).
     #[allow(dead_code)] // read by the detail and the verbs (tasks 5 and 6)
     pub(crate) listing: Option<Result<Parsed, Reason>>,
@@ -41,6 +60,7 @@ impl ShieldApp {
             config: config.clone(),
             timer: DeadlineTimer::new(),
             askers: Vec::new(),
+            waiting: Vec::new(),
             listing: None,
         })
     }
@@ -117,7 +137,6 @@ impl App {
     }
 
     /// Starts the switch to `target` (the other state than the one known): Err says why not.
-    #[allow(dead_code)] // the row and the verbs (tasks 5 and 6)
     pub(crate) fn shield_switch(&mut self, target: bool) -> Result<(), &'static str> {
         let sh = self.shield.as_mut().ok_or("shield is not configured in bar.toml")?;
         match sh.model.state() {
@@ -135,7 +154,6 @@ impl App {
     }
 
     /// Allows the blocked device `id`: Err says why not.
-    #[allow(dead_code)] // the detail and the picker (tasks 5 and 6)
     pub(crate) fn shield_allow(&mut self, id: u32) -> Result<(), &'static str> {
         let sh = self.shield.as_mut().ok_or("shield is not configured in bar.toml")?;
         let argv = allow_argv(&sh.config.allow, id).ok_or("allow is not configured")?;
@@ -149,7 +167,6 @@ impl App {
     }
 
     /// Reads the blocked devices; an asker while one read runs joins it.
-    #[allow(dead_code)] // the detail (task 5)
     pub(crate) fn shield_list(&mut self, why: ListFor) {
         let Some(sh) = self.shield.as_mut() else { return };
         let argv = sh.config.blocked_argv().to_vec();
@@ -246,6 +263,7 @@ impl App {
                     log("shield: more than 64 blocked devices; the rest not listed");
                 }
                 sh.askers.clear();
+                self.shield_answer_waiting(Ok(&p));
                 // Kept only for an open panel (the allow's device name; nothing resident while closed).
                 if self.quick_shown() {
                     self.shield_panel_listed(Ok(p.devices.clone()));
@@ -257,12 +275,97 @@ impl App {
             Finish::ListFailed(why) => {
                 log(&format!("shield: listing failed ({})", why.text()));
                 sh.askers.clear();
+                self.shield_answer_waiting(Err(why));
                 if self.quick_shown() {
                     self.shield_panel_listed(Err(()));
                     if let Some(sh) = self.shield.as_mut() {
                         sh.listing = Some(Err(why));
                     }
                 }
+            }
+        }
+    }
+
+    /// A verb from the launcher socket (`launcher/socket_glue.rs`, spec § 9). Answered at once, or the
+    /// connection kept while the blocked devices are read (`status`, `allow`).
+    pub(crate) fn shield_verb(&mut self, request: &Request, conn: Conn) {
+        let Request::Shield(verb) = request else {
+            reply_guarded(conn, &Reply::Error("not a shield request".into()));
+            return;
+        };
+        if self.shield.is_none() {
+            reply_guarded(conn, &Reply::Error(NOT_CONFIGURED.into()));
+            return;
+        }
+        // Degraded (no watch): the flag is read again now, so the verb acts on the truth.
+        if !self.shield_watched() {
+            self.shield_readable();
+        }
+        let Some(sh) = self.shield.as_ref() else { return };
+        let ctx = VerbCtx {
+            state: sh.model.state(),
+            action_busy: sh.model.action_busy(),
+            can_list: !sh.config.blocked_argv().is_empty(),
+            can_allow: !sh.config.allow.is_empty(),
+        };
+        match plan_verb(*verb, &ctx) {
+            VerbPlan::Answer(r) => reply_guarded(conn, &r),
+            VerbPlan::Switch(target) => {
+                let r = match self.shield_switch(target) {
+                    Ok(()) => Reply::Done,
+                    Err(why) => {
+                        log(&format!("shield: not started ({why})"));
+                        Reply::Error(why.into())
+                    }
+                };
+                reply_guarded(conn, &r);
+            }
+            VerbPlan::StatusRead => self.shield_wait(Waiter::Status(conn.into_pending())),
+            VerbPlan::AllowRead => self.shield_wait(Waiter::Picker(conn.into_pending())),
+        }
+    }
+
+    /// Keeps `w` until the read of the blocked devices ends (one is started if none runs).
+    fn shield_wait(&mut self, w: Waiter) {
+        let Some(sh) = self.shield.as_mut() else { return };
+        sh.waiting.push(w);
+        self.shield_list(ListFor::Verb);
+    }
+
+    /// The read ended: each waiting verb is answered (the status text, or the picker opened).
+    fn shield_answer_waiting(&mut self, result: Result<&Parsed, Reason>) {
+        let Some(sh) = self.shield.as_mut() else { return };
+        let (waiting, state) = (std::mem::take(&mut sh.waiting), sh.model.state());
+        for w in waiting {
+            match w {
+                Waiter::Status(p) => p.reply(&Reply::Shield(status_text(state, Some(result)))),
+                Waiter::Picker(p) => match (state, result) {
+                    (Some(true), Ok(parsed)) if parsed.devices.is_empty() => {
+                        self.shield_notice(NoticeKind::NothingBlocked);
+                        p.reply(&Reply::Done);
+                    }
+                    (Some(true), Ok(parsed)) => {
+                        let (lines, ids) = picker(&parsed.devices);
+                        let qh = self.qh.clone();
+                        self.launcher_open_picker(&qh, lines, ids, p);
+                    }
+                    (Some(true), Err(_)) => p.reply(&Reply::Error("cannot list the blocked USB devices".into())),
+                    // The mode went off (or unreadable) while the list was read.
+                    (_, _) => p.reply(&Reply::Error("the shield is off".into())),
+                },
+            }
+        }
+    }
+
+    /// The picker's answer: a chosen position runs `allow` for that device (the client hears Done, or
+    /// why not); anything else (typed text, Escape) runs nothing and cancels.
+    pub(crate) fn shield_picked(&mut self, ids: &[u32], reply: Reply) -> Reply {
+        let Some(id) = picked(ids, reply) else { return Reply::Cancelled };
+        match self.shield_allow(id) {
+            Ok(()) => Reply::Done,
+            Err(why) => {
+                log(&format!("shield: not started ({why})"));
+                Reply::Error(why.into())
             }
         }
     }

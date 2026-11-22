@@ -338,7 +338,8 @@ impl App {
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
-            | Request::OutputsRevert => {}
+            | Request::OutputsRevert
+            | Request::Shield(_) => {}
         }
         Reply::Done
     }

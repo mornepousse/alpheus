@@ -801,7 +801,7 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, TimerVerb};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -822,6 +822,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsTry(_) => "outputs-try",
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
+            Request::Shield(_) => "shield",
         }
     }
     let all = [
@@ -843,6 +844,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsTry(String::new()),
         Request::OutputsKeep,
         Request::OutputsRevert,
+        Request::Shield(ShieldVerb::Status),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -864,7 +866,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs",
             "outputs-try",
             "outputs-keep",
-            "outputs-revert"
+            "outputs-revert",
+            "shield"
         ]
     );
 }

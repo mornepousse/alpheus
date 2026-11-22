@@ -57,6 +57,11 @@ fn requests() -> Vec<Request> {
         Request::OutputsTry("café ☕ 日本\n".into()),
         Request::OutputsKeep,
         Request::OutputsRevert,
+        Request::Shield(ShieldVerb::On),
+        Request::Shield(ShieldVerb::Off),
+        Request::Shield(ShieldVerb::Toggle),
+        Request::Shield(ShieldVerb::Status),
+        Request::Shield(ShieldVerb::Allow),
     ]
 }
 
@@ -572,4 +577,36 @@ fn timer_words_round_trip_and_bad_ones_are_refused() {
         "an unknown word is named"
     );
     assert_eq!(Request::Timer(TimerVerb::Stop).reply_timeout(), Some(Duration::from_secs(2)));
+}
+
+#[test]
+fn shield_requests_and_replies_round_trip() {
+    for v in ShieldVerb::ALL {
+        assert_eq!(encode_request(&Request::Shield(v)), format!("alpheus-launcher/1 shield {}\n", v.word()).into_bytes());
+        assert_eq!(ShieldVerb::parse(v.word()), Some(v));
+    }
+    assert_eq!(ShieldVerb::parse("nope"), None);
+    assert!(matches!(decode(b"alpheus-launcher/1 shield\n"), Err(IpcError::Malformed(_))), "a bare shield is not a request");
+    assert!(matches!(decode(b"alpheus-launcher/1 shield sideways\n"), Err(IpcError::Malformed(_))));
+    for text in ["", "Shield: off", "Shield: on\nBlocked USB devices:\n  Test Stick (1234:5678)\n", "café ☕ 日本\n"] {
+        let r = Reply::Shield(text.into());
+        assert_eq!(decode_reply(&encode_reply(&r)), Ok(r.clone()), "{text:?}");
+    }
+    // Status waits for the read it asks for, allow for the person, the rest for the usual answer.
+    assert_eq!(Request::Shield(ShieldVerb::Status).reply_timeout(), Some(STATUS_TIMEOUT));
+    assert_eq!(Request::Shield(ShieldVerb::Allow).reply_timeout(), None);
+    for v in [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle] {
+        assert_eq!(Request::Shield(v).reply_timeout(), Some(REPLY_TIMEOUT));
+    }
+}
+
+#[test]
+fn a_shield_body_past_16_kib_is_refused() {
+    let big = format!("shield {}\n", MAX_SHIELD_BODY + 1);
+    assert_eq!(decode_reply(big.as_bytes()), Err(IpcError::TooLarge("shield body")));
+    let exact = "x".repeat(MAX_SHIELD_BODY);
+    assert_eq!(decode_reply(&encode_reply(&Reply::Shield(exact.clone()))), Ok(Reply::Shield(exact)));
+    // Cut short or followed by more bytes.
+    assert_eq!(decode_reply(b"shield 5\nabc"), Err(IpcError::Truncated));
+    assert!(matches!(decode_reply(b"shield 2\nabc"), Err(IpcError::Malformed(_))));
 }
