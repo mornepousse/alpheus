@@ -86,5 +86,7 @@ pub fn incoming(n: u32) -> Incoming {
     }
 }
 
+pub mod app;
+
 #[cfg(test)]
 mod tests;

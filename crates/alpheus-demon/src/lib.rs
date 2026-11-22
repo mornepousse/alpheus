@@ -22,7 +22,6 @@ pub mod config;
 pub mod deadline;
 pub mod dnd;
 pub mod failed;
-pub mod failed_app;
 pub mod grid;
 pub mod hooks;
 pub mod hooks_app;

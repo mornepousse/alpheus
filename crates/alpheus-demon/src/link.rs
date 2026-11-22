@@ -15,7 +15,7 @@
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, ModuleId, NotificationsConfig};
 use crate::deadline::DeadlineTimer;
-use crate::failed_app::UserUnits;
+use crate::failed::app::UserUnits;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;

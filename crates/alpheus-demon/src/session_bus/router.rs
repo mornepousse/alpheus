@@ -17,7 +17,7 @@ use super::watcher::Watcher;
 use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, NotificationsConfig};
-use crate::failed_app::UserUnits;
+use crate::failed::app::UserUnits;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;

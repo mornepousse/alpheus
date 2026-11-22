@@ -1527,7 +1527,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// Diagnostics spec § 8: the user manager is asked for one property and told `Subscribe`, nothing
 /// else of systemd's. `Subscribe` is the only call on the Manager interface the session bus's
 /// allowlist holds; the count is a `Get` of one property, never `GetAll` (its `Environment` may
-/// hold secrets); `failed_app.rs` names no dbus type, builds no call, and logs fixed words (no
+/// hold secrets); `failed/app.rs` names no dbus type, builds no call, and logs fixed words (no
 /// owner, no unit name).
 #[test]
 fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
@@ -1544,9 +1544,9 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
     assert_eq!(sub.destination().as_deref(), Some(":1.9"), "to its unique name, never the well-known one");
     assert!(!sub.get_auto_start());
     assert_eq!(SYSTEMD_NAME, "org.freedesktop.systemd1");
-    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "failed_app.rs").expect("failed_app.rs").1;
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "failed/app.rs").expect("failed/app.rs").1;
     let prod = production_code(&file);
-    assert!(!uses_crate(&prod, "dbus"), "failed_app.rs goes through the tray's typed calls and codec");
+    assert!(!uses_crate(&prod, "dbus"), "failed/app.rs goes through the tray's typed calls and codec");
     assert!(!prod.contains("method_call(") && !prod.contains("get_all") && !prod.contains("GetAll"), "one Get, built by bus::message");
     assert!(!prod.contains("Environment"), "never the Manager's environment");
     assert_eq!(
@@ -1558,7 +1558,7 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
         "only the two rules, the owner, the count and the subscription"
     );
     for word in ["StartUnit", "StopUnit", "RestartUnit", "ResetFailed", "KillUnit", "Reload", "Unsubscribe", "SetEnvironment"] {
-        assert!(!prod.contains(word), "{word} in failed_app.rs: the daemon only counts failed units");
+        assert!(!prod.contains(word), "{word} in failed/app.rs: the daemon only counts failed units");
     }
     // Every log line is a fixed word: nothing formatted, so no owner, no unit, no path.
     assert!(!prod.contains("log(&format!") && !prod.contains("say)(&format!"), "fixed lines only");
@@ -1591,7 +1591,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "state_file.rs",
     "notify_app.rs",
     "link.rs",
-    "failed_app.rs",
+    "failed/app.rs",
     "background.rs",
     "painter/",
     "placement.rs",
