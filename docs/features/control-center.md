@@ -3,8 +3,7 @@
 `alpheus` is the terminal control center: a ratatui program with eight tabs (Home, Sound, Network,
 Bluetooth (BT), Power, Displays, Theme, Diag). This page is written one tab at a time, in the order the
 tabs are brought to the house standard (`docs/STYLE.md`); today it holds the Sound, Network,
-Bluetooth and Power tabs. The tabs that are not described here yet are described in the README's
-control center section.
+Bluetooth, Power, Home, Displays, Theme and Diag tabs, which is all of them.
 
 How the program is laid out, for every tab. The state lives in `crates/alpheus/src/app/` (one
 `App` that every key, mouse event and worker answer changes, with no terminal and no thread of its
@@ -457,3 +456,111 @@ Two small files and the tab's row in `app/tab.rs`.
 
 Nothing while the tab is shown or not: it reads no data. The first-render budget for the control
 center as a whole is under 100 milliseconds (`docs/specs/2026-10-02-alpheus-v1-design.md`).
+
+## Home
+
+### What it does
+
+Home is the first tab and the everyday one: two sliders (**Volume** and **Brightness**), four
+switches (**Wi-Fi**, **Bluetooth**, **Do not disturb**, **Keep awake**) and the **Energy profile**
+(the power profiles the system offers, one of them active). It reads these seven things and nothing
+else, apart from the list of active connections and the connected Bluetooth devices, which the
+dashboard shows.
+
+In a window where the tab's body is at least 64 columns by 20 rows (the 87 by 26 window of the
+Super+A launcher leaves a 67 by 20 body beside the rail), Home is a **dashboard**: a clock in large
+block digits with the date, a greeting (`Good morning` from 5 to 11 o'clock, `Good afternoon` from 12
+to 17, `Good evening` otherwise) and a one-line summary (`2 connections · 1 device · Balanced`); a card
+for the volume, one for the brightness and one for the energy profile; four tiles for the switches,
+filled with their colour when on and showing what is connected (the Wi-Fi network, the first
+Bluetooth device); and the two lists, **Connections** and **Devices**. The cards and tiles take the
+shape of the theme's `style` (round caps under `islands`, arrow tips under `powerline`, no fill under
+`underline`, double frames under `floating`). In a smaller body the tab is plain rows (the classic
+layout):
+
+```
+ ▶ Volume              ███████████████░░░░░░░░░  62 %
+
+   Brightness          ████████████░░░░░░░░░░░░  50 %
+
+   Wi-Fi               [■] on
+
+   Bluetooth           [■] on
+
+   Do not disturb      [ ] off
+
+   Keep awake          [ ] off
+
+   Energy profile       Balanced   Performance   Power saver
+```
+
+(What the rows say is the same on the dashboard: the same seven items in the same order, so the
+keys, the palette and the mouse reach the same things.)
+
+### Using it
+
+| Key (default) | What it does |
+| --- | --- |
+| ↑ ↓ | move to the previous or next of the seven items |
+| ← → or `-` `+` | on a slider: lower or raise it by 5 points; on the energy profile: the previous or next profile |
+| Space | on a switch: turn it on or off |
+
+There is no search on this tab. With the mouse: a click on a card or a tile selects it, and on a
+tile switches it; a click or a drag on a gauge sets the value; a click on a profile chooses it.
+
+The volume and brightness sliders follow the rules the Sound tab states (never above 100 % from here;
+the brightness never goes below its minimum percentage, `brightness::MIN_PERCENT`).
+
+### Configuration
+
+None of its own. The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`,
+`increase`, `decrease`, `left`, `right`). The dashboard's colours and shapes come from the theme
+(`theme.toml`, the Theme tab below).
+
+### How it is built
+
+Two files and the tab's row in `app/tab.rs`.
+
+- `app/home.rs`: `items`, the seven focusable items in the order they are drawn. What they do is
+  shared, in `app/mod.rs`: `App::adjust` (sliders and profile), `App::toggle` (the four switches),
+  `Command::SetProfile`. Their data is in `App::data` (volume, brightness, Wi-Fi, Bluetooth, Dnd,
+  Keep awake, profiles, and the two lists).
+- `ui/home.rs`: the dashboard (`render`, and one function per card, tile and list), the clock
+  (`LocalTime`, passed in by `ui::render_at` so a test can draw at any time) and the shortcut hints.
+  The rows used below 64 by 20 are the shared arm `Tab::Home | Tab::Power` of `ui/tabs.rs`, which
+  stays there because Power draws its rows with the same code (see the Power section); the items are
+  drawn by the shared item drawing in the same file.
+- `app/tab.rs`: the tab's row says it is not searchable, that it is read every second while it is
+  shown (the Volume, Brightness, Dnd, KeepAwake, Profiles, Network and Bluetooth domains) and that its
+  label column is 20 cells wide.
+
+**The dashboard's seven positions.** `ui/home.rs` names the items by position (`VOLUME` is 0, `WIFI`
+is 2, and so on) and a test (`home_item_indices_match_the_app`) fails if `app/home.rs` reorders them.
+
+**The layout.** `bands` gives the heights: at 20 rows a 4-row clock, 7-row cards, 4-row tiles and what
+is left for the lists; every row more goes, in a fixed order, to the cards, a gap, the tiles, the
+clock. The two lists are drawn only if four rows are left for them. The clock tries three
+arrangements in turn (two-cell digits with the date beside them, one-cell digits beside them, two-cell
+digits with the date stacked) and takes the first that fits.
+
+### Rules it keeps
+
+- `items_per_tab` (`app/tests.rs`): seven items on Home.
+- `home_item_indices_match_the_app` (`ui/home/tests.rs`): the positions the dashboard names are the
+  app's.
+- `the_dashboard_needs_a_64x20_body` and `small_bodies_keep_the_rows` (`ui/home/tests.rs`): the
+  thresholds, and the rows below them.
+- `dashboard_hits_reach_today_s_actions` (`ui/home/tests.rs`): a click on a card or a tile reaches
+  the same action as the rows.
+- `mae_window_87x26_shows_the_whole_dashboard` and `a_clock_strip_that_just_fits_gets_the_two_cell_digits`
+  (`ui/home/tests.rs`): the dashboard whole at 87 by 26, and the clock's choice at its edge.
+- `the_dashboards_hints_follow_the_keymap` (`ui/home/tests.rs`): no key is written into a hint.
+- `the_dashboard_at_120_by_36_matches_its_snapshot` and `the_home_tab_at_80_by_24_matches_its_snapshot`
+  (`ui/home/tests.rs`, their snapshots in `ui/home/snapshots/`).
+
+### What it costs
+
+The first render of the dashboard is checked to take under 100 milliseconds even when the tools are
+slow (`first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, `tests/first_render.rs`;
+README: 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
+the spec's, § 3).

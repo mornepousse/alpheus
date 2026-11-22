@@ -1,13 +1,27 @@
-//! The Home tab as a dashboard (UI refresh spec): a block-digit clock with the date, a greeting and
-//! a one-line summary; a card per setting (volume and brightness with big digits and a gauge, the
-//! energy profiles); four tiles filled with their hue when on; the connections and the devices.
-//! Each domain keeps its hue (sound blue, brightness yellow, energy green, Wi-Fi cyan, Bluetooth
-//! purple, do-not-disturb red, keep-awake orange). The seven items and their order are
-//! `App::items()`'s, so keys, the palette and the mouse work as on the rows.
+//! The Home tab as a dashboard: a block-digit clock with the date, a greeting and a one-line
+//! summary; a card per setting; four tiles; the connections and the devices.
 //!
-//! Laid out for Mae's window first (a 67×20 body beside the rail: one-cell digits, the date,
-//! greeting and summary stacked, compact cards and tiles), it grows into larger bodies; below
-//! `MIN_W` × `MIN_H` `tabs::render` draws the rows instead.
+//! The cards are volume and brightness (big digits and a gauge) and the energy profiles; the tiles
+//! are Wi-Fi, Bluetooth, do not disturb and keep awake, filled with their hue when on. Each domain
+//! keeps its hue (sound blue, brightness yellow, energy green, Wi-Fi cyan, Bluetooth purple,
+//! do-not-disturb red, keep-awake orange). The seven items and their order are `App::items()`'s
+//! (`app/home.rs`), so keys, the palette and the mouse work as on the rows.
+//!
+//! The dashboard is laid out for the 87 by 26 window of the Super+A launcher first (a 67 by 20
+//! body beside the rail: one-cell digits, the date, greeting and summary stacked, compact cards
+//! and tiles), and grows into larger bodies. Below `MIN_W` by `MIN_H` `tabs::render` draws the
+//! rows instead, and this file also holds the shortcut hints and the local time the clock shows.
+//!
+//! Never:
+//! - change the state: everything here reads the `App` and fills the cells and the map of
+//!   clickable regions;
+//! - read a clock by itself in a draw: the time is passed in as `LocalTime`, so a test can draw at
+//!   any time (`LocalTime::now` is called once per redraw, by `ui::render`);
+//! - hard-code a key in a hint: the hints are built from the keymap (`App::keymap`).
+//!
+//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md (Goals, 1: Home as a dashboard),
+//! docs/plans/2026-11-15-alpheus-ui-refresh-plan-1.md (the 64 by 20 threshold; "The clock is
+//! injected"; "Hints come from the keymap"), docs/features/control-center.md.
 
 use super::digits::big_glyph;
 use super::draw::{clear, put, truncate};
@@ -62,6 +76,12 @@ pub struct LocalTime {
     pub month: u8,
 }
 
+/// A field of the C library's `tm` as a byte, or None if it does not fit (a value the library
+/// should never give).
+fn small(value: libc::c_int) -> Option<u8> {
+    u8::try_from(value).ok()
+}
+
 impl LocalTime {
     /// Now, in the local time zone; `None` when the C library cannot tell.
     pub fn now() -> Option<LocalTime> {
@@ -74,21 +94,22 @@ impl LocalTime {
             }
             tm
         };
-        let field = |v: libc::c_int| u8::try_from(v).ok();
         Some(LocalTime {
-            hour: field(tm.tm_hour)?,
-            minute: field(tm.tm_min)?,
-            weekday: field(tm.tm_wday)?,
-            day: field(tm.tm_mday)?,
-            month: field(tm.tm_mon)?,
+            hour: small(tm.tm_hour)?,
+            minute: small(tm.tm_min)?,
+            weekday: small(tm.tm_wday)?,
+            day: small(tm.tm_mday)?,
+            month: small(tm.tm_mon)?,
         })
     }
 }
 
+/// Whether a body of this size gets the dashboard (`MIN_W` by `MIN_H` at least).
 pub fn fits(body: Rect) -> bool {
     body.width >= MIN_W && body.height >= MIN_H
 }
 
+/// The greeting for an hour of the day: morning from 5 to 11, afternoon from 12 to 17, else evening.
 pub fn greeting(hour: u8) -> &'static str {
     match hour {
         5..=11 => "Good morning",
@@ -148,6 +169,8 @@ fn bands(height: u16) -> Bands {
     b
 }
 
+/// Draws the dashboard in `body`: the clock, the three cards, the four tiles, then the two lists if
+/// four rows are left for them. Each card and tile adds its clickable region to `hits`.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, now: Option<LocalTime>) {
     let th = &app.theme;
     let b = bands(body.height);
@@ -160,18 +183,41 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, now: O
     profile_card(buf, cards[2], app, hits);
     let y2 = y1 + b.cards + b.gap1;
     let tiles = split(Rect::new(body.x, y2, body.width, b.tiles), 4);
-    let ssid = app.data.network.ready().and_then(|n| n.active.iter().find(|c| c.kind == "Wi-Fi")).map(|c| c.name.as_str());
-    let device = app.data.bluetooth.ready().and_then(|b| b.connected.first()).map(|d| d.name.as_str());
-    let tile_of = |i, id, glyph, hue, detail| TileSpec { i, id, glyph, hue, detail };
-    tile(buf, tiles[0], app, tile_of(WIFI, ToggleId::Wifi, "󰖩", th.cyan, ssid), hits);
-    tile(buf, tiles[1], app, tile_of(BLUETOOTH, ToggleId::Bluetooth, "󰂯", th.purple, device), hits);
-    tile(buf, tiles[2], app, tile_of(DND, ToggleId::Dnd, "󰂛", th.red, None), hits);
-    tile(buf, tiles[3], app, tile_of(KEEP_AWAKE, ToggleId::KeepAwake, "󰅶", th.orange, None), hits);
+    let ssid = wifi_name(app);
+    let device = first_device_name(app);
+    let wifi = TileSpec { i: WIFI, id: ToggleId::Wifi, glyph: "󰖩", hue: th.cyan, detail: ssid };
+    let bluetooth = TileSpec { i: BLUETOOTH, id: ToggleId::Bluetooth, glyph: "󰂯", hue: th.purple, detail: device };
+    let dnd = TileSpec { i: DND, id: ToggleId::Dnd, glyph: "󰂛", hue: th.red, detail: None };
+    let keep_awake = TileSpec { i: KEEP_AWAKE, id: ToggleId::KeepAwake, glyph: "󰅶", hue: th.orange, detail: None };
+    tile(buf, tiles[0], app, wifi, hits);
+    tile(buf, tiles[1], app, bluetooth, hits);
+    tile(buf, tiles[2], app, dnd, hits);
+    tile(buf, tiles[3], app, keep_awake, hits);
     let y3 = y2 + b.tiles + b.gap2;
     if y3 + 4 <= body.bottom() {
         let lists = split(Rect::new(body.x, y3, body.width, body.bottom() - y3), 2);
         connections_card(buf, lists[0], app);
         devices_card(buf, lists[1], app);
+    }
+}
+
+/// The name of the active Wi-Fi connection, if the network data is read and one is active.
+fn wifi_name(app: &App) -> Option<&str> {
+    let Loadable::Ready(network) = &app.data.network else { return None };
+    for connection in &network.active {
+        if connection.kind == "Wi-Fi" {
+            return Some(connection.name.as_str());
+        }
+    }
+    None
+}
+
+/// The name of the first connected Bluetooth device, if the data is read and one is connected.
+fn first_device_name(app: &App) -> Option<&str> {
+    let Loadable::Ready(bluetooth) = &app.data.bluetooth else { return None };
+    match bluetooth.connected.first() {
+        Some(device) => Some(device.name.as_str()),
+        None => None,
     }
 }
 
@@ -187,6 +233,7 @@ fn split(r: Rect, n: u16) -> Vec<Rect> {
         .collect()
 }
 
+/// The width of `s` in cells, counting one cell per character.
 fn width(s: &str) -> u16 {
     u16::try_from(s.chars().count()).unwrap_or(u16::MAX)
 }
@@ -220,6 +267,8 @@ fn failed(buf: &mut Buffer, inner: Rect, y: u16, e: &str, th: &Theme) {
     put(buf, inner, inner.x + 1, y, &text, Style::default().fg(th.error));
 }
 
+/// A volume or brightness card: the value in big digits, the `muted` tag, a two-row gauge and, as
+/// the height allows, its ticks and (focused) the keys that adjust it.
 #[allow(clippy::too_many_arguments)]
 fn slider_card(buf: &mut Buffer, r: Rect, app: &App, i: usize, id: SliderId, title: &str, hue: Color, hits: &mut HitMap) {
     let th = &app.theme;
@@ -278,6 +327,7 @@ fn slider_card(buf: &mut Buffer, r: Rect, app: &App, i: usize, id: SliderId, tit
     }
 }
 
+/// The energy card: one row per available profile, the active one filled in the card's green.
 fn profile_card(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let focused = app.focus == PROFILE;
@@ -334,6 +384,8 @@ struct TileSpec<'a> {
     detail: Option<&'a str>,
 }
 
+/// A tile: the glyph, the label and the state, in the tile's hue when on, with a subtitle and a
+/// switch when it is wide and tall enough.
 fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
     let th = &app.theme;
     if r.height < 3 || r.width < 4 {
@@ -395,8 +447,11 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
             _ => None,
         };
         let sy = if r.height >= 5 { r.y + 3 } else { r.y + 2 };
-        if let Some(sub) = sub.filter(|_| sy <= last) {
-            put(buf, r, x + 2, sy, &truncate(&sub, usize::from(r.width.saturating_sub(6))), dim_style);
+        // The subtitle is drawn only if its row is not below the last row text may use.
+        if let Some(sub) = sub {
+            if sy <= last {
+                put(buf, r, x + 2, sy, &truncate(&sub, usize::from(r.width.saturating_sub(6))), dim_style);
+            }
         }
         if r.height >= 6 {
             let (sw, sstyle) = if on { ("━━━━━●", label_style) } else { ("○┄┄┄┄┄", dim_style) };
@@ -435,6 +490,7 @@ fn list_row(buf: &mut Buffer, inner: Rect, y: u16, glyph: &str, hue: Color, name
     }
 }
 
+/// The Connections list: one row per active connection, or why there is none.
 fn connections_card(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let inner = card(buf, r, " 󰛳 Connections ", th.cyan, false, th);
@@ -466,6 +522,7 @@ fn connections_card(buf: &mut Buffer, r: Rect, app: &App) {
     }
 }
 
+/// The Devices list: one row per connected Bluetooth device, or why there is none.
 fn devices_card(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let inner = card(buf, r, " 󰂯 Devices ", th.purple, false, th);
@@ -522,14 +579,17 @@ fn clock(buf: &mut Buffer, r: Rect, app: &App, now: Option<LocalTime>) {
     // The first arrangement that fits: the date beside the digits and the greeting right-aligned, or
     // all three stacked beside them; two-cell pixels before one-cell ones.
     let (dw, hw, sw) = (width(day).max(width(&date)), width(hello), width(&sum));
-    let (scale, side) = [(2, true), (1, true), (2, false)]
-        .into_iter()
-        .find(|&(scale, side)| {
-            let dx = r.x + 1 + clock_width(scale) + 2;
-            let need = if side { dw + 2 + hw.max(sw) + 1 } else { (width(day) + 1 + width(&date)).max(hw).max(sw) + 1 };
-            dx + need <= r.right()
-        })
-        .unwrap_or((1, false));
+    let mut scale = 1;
+    let mut side = false;
+    for (try_scale, try_side) in [(2, true), (1, true), (2, false)] {
+        let dx = r.x + 1 + clock_width(try_scale) + 2;
+        let need = if try_side { dw + 2 + hw.max(sw) + 1 } else { (width(day) + 1 + width(&date)).max(hw).max(sw) + 1 };
+        if dx + need <= r.right() {
+            scale = try_scale;
+            side = try_side;
+            break;
+        }
+    }
     let mut x = r.x + 1;
     for ch in format!("{:02}:{:02}", t.hour, t.minute).chars() {
         x += big_glyph(buf, r, x, top, ch, scale, Style::default().fg(th.accent)) + 1;

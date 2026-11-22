@@ -1,3 +1,6 @@
+//! Tests of the Home dashboard (`ui/home.rs`): the layout at several sizes, the clickable regions,
+//! the hints, and the whole screen at 80 by 24 as a snapshot.
+
 use super::*;
 use crate::app::action::{Action, Tab};
 use crate::app::testing::{app, ready_app};
@@ -8,6 +11,7 @@ use crate::theme::Shape;
 use crate::ui::Chrome;
 use crate::ui::shape::darker;
 use crate::ui::testing::{T, buffer_at, draw, draw_at};
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
@@ -43,7 +47,7 @@ fn home_item_indices_match_the_app() {
 }
 
 #[test]
-fn greeting_boundaries() {
+fn the_greeting_changes_at_5_12_and_18_hours() {
     let (m, a, e) = ("Good morning", "Good afternoon", "Good evening");
     for (h, want) in [(0, e), (4, e), (5, m), (11, m), (12, a), (17, a), (18, e), (23, e)] {
         assert_eq!(greeting(h), want, "{h} h");
@@ -51,7 +55,7 @@ fn greeting_boundaries() {
 }
 
 #[test]
-fn summary_counts_with_plurals() {
+fn the_summary_counts_connections_and_devices_with_their_plurals() {
     let mut a = ready_app();
     assert_eq!(summary(&a), "2 connections · 1 device · Balanced");
     if let Loadable::Ready(n) = &mut a.data.network {
@@ -74,7 +78,7 @@ fn the_dashboard_needs_a_64x20_body() {
 }
 
 #[test]
-fn dashboard_snapshot() {
+fn the_dashboard_at_120_by_36_matches_its_snapshot() {
     let a = ready_app();
     let rows = draw_at(&a, 120, 36, Some(T)).0;
     let all = rows.join("\n");
@@ -224,7 +228,7 @@ fn the_focus_frame_follows_the_seven_items() {
 
 /// Review Focus 2: data loading or failed shows inside the cards; the clock still draws.
 #[test]
-fn loading_and_failed_cards() {
+fn cards_show_an_ellipsis_while_loading_and_the_error_when_failed() {
     let a = app();
     for (w, h) in [(120, 36), (87, 26)] {
         let (rows, hits) = draw_at(&a, w, h, Some(T));
@@ -243,7 +247,7 @@ fn loading_and_failed_cards() {
 
 /// Review Focus 3: a 40-character SSID and 8 connections stay inside their card and tile.
 #[test]
-fn long_names_stay_inside() {
+fn long_names_are_cut_inside_their_cards_and_tiles() {
     let mut a = ready_app();
     let ssid = "A very long network name for this test 1";
     assert_eq!(ssid.chars().count(), 40);
@@ -341,7 +345,7 @@ fn a_focused_tile_keeps_its_state_row_at_87x26() {
 }
 
 #[test]
-fn hints_follow_the_keymap() {
+fn the_dashboards_hints_follow_the_keymap() {
     let mut a = ready_app();
     a.focus = VOLUME;
     let km = &a.keymap;
@@ -359,7 +363,7 @@ fn hints_follow_the_keymap() {
 }
 
 #[test]
-fn no_time_draws_no_clock() {
+fn without_a_time_the_summary_stands_alone() {
     let a = ready_app();
     let (rows, hits) = draw_at(&a, 120, 36, None);
     let all = rows.join("\n");
@@ -377,4 +381,30 @@ fn the_home_tab_at_80_by_24_matches_its_snapshot() {
     let mut a = ready_app();
     a.go_tab(Tab::Home, Instant::now());
     insta::assert_snapshot!("home_tab", draw(&a, 80, 24).0.join("\n"));
+}
+
+#[test]
+fn a_time_field_that_does_not_fit_a_byte_is_refused() {
+    assert_eq!(small(14), Some(14));
+    assert_eq!(small(300), None);
+    assert_eq!(small(-1), None);
+}
+
+/// The column where the day's name starts when the clock strip is drawn `width` columns wide.
+fn day_column(a: &App, width: u16) -> usize {
+    let r = Rect::new(0, 0, width, 4);
+    let mut buf = Buffer::empty(r);
+    clock(&mut buf, r, a, Some(T));
+    let rows: Vec<String> = (0..r.height).map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect()).collect();
+    let in_chars = |row: &String| row.find("Sunday").map(|byte| row[..byte].chars().count());
+    rows.iter().find_map(in_chars).expect("the day is drawn")
+}
+
+#[test]
+fn a_clock_strip_that_just_fits_gets_the_two_cell_digits() {
+    let a = ready_app();
+    // With the test's time and summary the large digits need the date, the greeting and the summary
+    // to end exactly at the strip's right edge, 83 columns.
+    let (just_enough, one_short) = (day_column(&a, 83), day_column(&a, 82));
+    assert!(just_enough > one_short, "two-cell digits push the date right: {just_enough} against {one_short}");
 }
