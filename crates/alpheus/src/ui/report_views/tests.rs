@@ -93,3 +93,19 @@ fn without_a_copy_program_the_button_is_not_drawn() {
     let s = rows(&a, 87, 26);
     assert!(!s.contains("[ Copy ]") && s.contains("No copy program configured"), "{s}");
 }
+
+#[test]
+fn a_long_line_wraps_so_everything_that_is_copied_is_visible() {
+    let mut a = diag_app(false);
+    a.diag_activate(DiagItem::Report);
+    // 250 characters with markers at both ends and in the middle.
+    let long = format!("§S§{}§M§{}§E§", "a".repeat(121), "b".repeat(120));
+    assert_eq!(long.chars().count(), 250);
+    let text = format!("head\n {long}\ntail\n");
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text)), Instant::now());
+    let s = rows(&a, 87, 26);
+    for marker in ["§S§", "§M§", "§E§", "tail"] {
+        assert!(s.contains(marker), "{marker} is not on screen:\n{s}");
+    }
+    assert!(!s.contains('…'), "nothing is cut with an ellipsis:\n{s}");
+}

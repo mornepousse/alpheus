@@ -330,7 +330,7 @@ fn the_compositor_socket_is_never_written() {
         got
     });
     let exec = Arc::new(FakeExecutor::new());
-    let backends = Backends::system(exec, dir.join("none"));
+    let backends = Backends::system_isolated(exec, dir.join("none"));
     let sock_var = sock.clone();
     let var = move |k: &str| -> Option<OsString> { (k == "SWAYSOCK").then(|| sock_var.clone().into_os_string()) };
     let h = health(&backends, &var);
@@ -389,7 +389,7 @@ fn the_poke_answer_sets_the_daemon_check() {
     for (answer, ok, older) in
         [(PokeAnswer::Done, true, false), (PokeAnswer::Older, true, true), (PokeAnswer::Unreachable("no socket".into()), false, false)]
     {
-        let mut b = Backends::system(exec.clone(), std::env::temp_dir().join("alpheus-poke-none"));
+        let mut b = Backends::system_isolated(exec.clone(), std::env::temp_dir().join("alpheus-poke-none"));
         b.poke = Arc::new(FakePoke(answer.clone()));
         let mut a = on_diag(t0);
         a.on_update(worker::respond(&b, Op::FailedRefresh), t0);

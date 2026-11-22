@@ -18,7 +18,7 @@ fn first_render_under_100_ms_even_with_slow_tools() {
     let dir = std::env::temp_dir().join("alpheus-first-render-no-config");
     let mut app = build_app(&dir, Tab::Home, start);
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
-    let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
+    let (tx, _rx) = worker::spawn(Backends::system_isolated(exec, dir.clone()));
     for r in app.take_requests() {
         tx.send(r).unwrap();
     }
@@ -40,7 +40,7 @@ fn first_render_of_the_dashboard_under_100_ms_even_with_slow_tools() {
     let dir = std::env::temp_dir().join("alpheus-first-render-dashboard-no-config");
     let mut app = build_app(&dir, Tab::Home, start);
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
-    let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
+    let (tx, _rx) = worker::spawn(Backends::system_isolated(exec, dir.clone()));
     for r in app.take_requests() {
         tx.send(r).unwrap();
     }
@@ -67,7 +67,7 @@ fn first_render_of_diagnostics_under_100_ms_even_with_slow_tools() {
     let mut app = build_app(&dir, Tab::Diagnostics, start);
     // Every systemd tool takes half a second, captures included: the screen does not wait.
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
-    let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
+    let (tx, _rx) = worker::spawn(Backends::system_isolated(exec, dir.clone()));
     let requests = app.take_requests();
     assert!(!requests.is_empty(), "the tab asks for its reads on opening");
     for r in requests {

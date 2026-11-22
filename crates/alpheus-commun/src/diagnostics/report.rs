@@ -72,12 +72,13 @@ pub struct Redactions {
 }
 
 impl Redactions {
-    /// The user's names and homes, the host name and the machine id.
+    /// The user's names and homes, the host name (and its short name when it is fully
+    /// qualified) and the machine id. Names match in any ASCII case.
     pub fn new(users: &[String], homes: &[String], host: Option<&str>, machine_id: Option<&str>) -> Redactions {
         let mut exact: Vec<(String, &'static str)> = Vec::new();
         let mut add = |s: &str, to: &'static str, min: usize| {
             let s = s.trim();
-            if s.chars().count() >= min && !exact.iter().any(|(e, _)| e == s) {
+            if s.chars().count() >= min && !exact.iter().any(|(e, _)| e.eq_ignore_ascii_case(s)) {
                 exact.push((s.to_string(), to));
             }
         };
@@ -90,6 +91,9 @@ impl Redactions {
         }
         if let Some(h) = host {
             add(h, "<host>", MIN_NAME);
+            if let Some((short, _)) = h.split_once('.') {
+                add(short, "<host>", MIN_NAME);
+            }
         }
         for u in users {
             add(u, "<user>", MIN_NAME);
@@ -102,74 +106,185 @@ impl Redactions {
     pub fn apply(&self, text: &str) -> String {
         let mut out = text.to_string();
         for (needle, to) in &self.exact {
-            out = out.replace(needle.as_str(), to);
+            out = replace_ci(&out, needle, to);
         }
-        let out = replace_tokens(&out, mac, "<mac>");
-        let out = replace_tokens(&out, ipv6, "<ip>");
-        let out = replace_tokens(&out, ipv4, "<ip>");
-        redact_emails(&out)
+        replace_shapes(&out)
     }
 }
 
-/// A token is a maximal run of characters that can be part of an address; `f` says whether the
-/// whole token is one.
-fn replace_tokens(text: &str, f: fn(&str) -> bool, to: &str) -> String {
+/// `text` with each ASCII-case-insensitive occurrence of `needle` replaced by `to`. Lowercasing
+/// ASCII keeps every byte offset, so the match positions carry over.
+fn replace_ci(text: &str, needle: &str, to: &str) -> String {
+    let (hay, pin) = (text.to_ascii_lowercase(), needle.to_ascii_lowercase());
     let mut out = String::with_capacity(text.len());
-    let mut token = String::new();
-    let flush = |token: &mut String, out: &mut String| {
-        if !token.is_empty() {
-            // Brackets, a trailing colon or dot are punctuation around the address, not in it.
-            let core = token.trim_matches(|c| c == ':' && !token.contains("::") || c == '.' || c == '-');
-            if !core.is_empty() && f(core) {
-                let start = token.find(core).unwrap_or(0);
-                out.push_str(&token[..start]);
-                out.push_str(to);
-                out.push_str(&token[start + core.len()..]);
-            } else {
-                out.push_str(token);
-            }
-            token.clear();
-        }
-    };
-    for c in text.chars() {
-        if c.is_ascii_hexdigit() || matches!(c, ':' | '.' | '-') {
-            token.push(c);
-        } else {
-            flush(&mut token, &mut out);
-            out.push(c);
-        }
+    let mut at = 0;
+    while let Some(found) = hay[at..].find(&pin) {
+        out.push_str(&text[at..at + found]);
+        out.push_str(to);
+        at += found + pin.len();
     }
-    flush(&mut token, &mut out);
+    out.push_str(&text[at..]);
     out
 }
 
-fn mac(t: &str) -> bool {
-    let sep = if t.contains(':') { ':' } else { '-' };
-    let parts: Vec<&str> = t.split(sep).collect();
-    parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+/// Replaces every MAC, UUID, IPv6, IPv4 and e-mail shape. The scan tries each shape at every
+/// position that follows a boundary (a character that is not part of a word), so an address
+/// glued to a label by punctuation (`BSSID:aa:…`, `wlan0-aa:…`, `dev_AA_…`) is found. A dotted
+/// quad right after the word "version" is a version, not an address; any other is redacted.
+fn replace_shapes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if (c.is_ascii_hexdigit() || c == ':') && boundary_before(&chars, i) {
+            let hit = uuid(&chars[i..])
+                .map(|n| (n, "<uuid>"))
+                .or_else(|| mac(&chars[i..]).map(|n| (n, "<mac>")))
+                .or_else(|| ipv6(&chars[i..]).map(|n| (n, "<ip>")))
+                .or_else(|| (!after_version(&chars, i)).then(|| ipv4(&chars[i..]).map(|n| (n, "<ip>"))).flatten());
+            if let Some((n, to)) = hit {
+                out.push_str(to);
+                i += n;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    redact_emails(&out)
 }
 
-fn ipv4(t: &str) -> bool {
-    let parts: Vec<&str> = t.split('.').collect();
-    parts.len() == 4
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n <= 255))
+/// Not in the middle of a word or of a dotted number.
+fn boundary_before(chars: &[char], i: usize) -> bool {
+    let Some(&prev) = i.checked_sub(1).map(|p| &chars[p]) else { return true };
+    if prev.is_alphanumeric() {
+        return false;
+    }
+    !(prev == '.' && i >= 2 && chars[i - 2].is_alphanumeric())
 }
 
-/// Hex groups of at most four digits, either all eight of them or a `::` somewhere: a clock
-/// (`21:02:11`) is neither.
-fn ipv6(t: &str) -> bool {
-    if t.contains('.') || t.contains('-') {
-        return false;
+/// The next character is not part of the same word.
+fn boundary_after(chars: &[char], n: usize) -> bool {
+    chars.get(n).is_none_or(|c| !c.is_alphanumeric())
+}
+
+/// The word before `i` (after one space) is "version".
+fn after_version(chars: &[char], i: usize) -> bool {
+    let end = if i > 0 && chars[i - 1] == ' ' { i - 1 } else { return false };
+    let start = (0..end).rev().find(|&k| !chars[k].is_alphabetic()).map_or(0, |k| k + 1);
+    chars[start..end].iter().collect::<String>().eq_ignore_ascii_case("version")
+}
+
+fn hex_run(s: &[char], n: usize) -> bool {
+    s.len() >= n && s[..n].iter().all(char::is_ascii_hexdigit)
+}
+
+/// Six pairs of hex digits joined by one of `:`, `-` or `_`. Returns the length.
+fn mac(s: &[char]) -> Option<usize> {
+    let sep = *s.get(2)?;
+    if !matches!(sep, ':' | '-' | '_') {
+        return None;
     }
-    let groups: Vec<&str> = t.split(':').collect();
-    let compressed = t.contains("::");
-    let full = groups.len() == 8 && groups.iter().all(|g| !g.is_empty());
-    if !(compressed || full) || groups.len() > 8 + usize::from(compressed) || groups.len() < 3 {
-        return false;
+    for g in 0..6 {
+        if !hex_run(&s[g * 3..], 2) || (g < 5 && s.get(g * 3 + 2) != Some(&sep)) {
+            return None;
+        }
     }
-    groups.iter().all(|g| g.len() <= 4 && g.bytes().all(|b| b.is_ascii_hexdigit()))
+    // Not the head of a longer chain of pairs (an EUI-64 is an IPv6-shaped token instead).
+    let more = s.get(17) == Some(&sep) && hex_run(&s[18.min(s.len())..], 2);
+    (boundary_after(s, 17) && !more).then_some(17)
+}
+
+/// 8-4-4-4-12 hex digits joined by `-` or by systemd's `\x2d` escape. Returns the length.
+fn uuid(s: &[char]) -> Option<usize> {
+    let sep_len = if s.get(8) == Some(&'-') {
+        1
+    } else if s.get(8) == Some(&'\\')
+        && s.get(9).is_some_and(|c| c.eq_ignore_ascii_case(&'x'))
+        && s.get(10) == Some(&'2')
+        && s.get(11).is_some_and(|c| c.eq_ignore_ascii_case(&'d'))
+    {
+        4
+    } else {
+        return None;
+    };
+    let mut at = 0;
+    for (g, len) in [8, 4, 4, 4, 12].into_iter().enumerate() {
+        if g > 0 {
+            let sep = s.get(at..at + sep_len)?;
+            if !sep.iter().zip(&s[8..8 + sep_len]).all(|(a, b)| a.eq_ignore_ascii_case(b)) {
+                return None;
+            }
+            at += sep_len;
+        }
+        if !hex_run(s.get(at..)?, len) {
+            return None;
+        }
+        at += len;
+    }
+    boundary_after(s, at).then_some(at)
+}
+
+/// Four decimal parts of at most 255, then optionally a `:port` that stays. Returns the length of
+/// the address alone.
+fn ipv4(s: &[char]) -> Option<usize> {
+    let mut at = 0;
+    for part in 0..4 {
+        let digits = s[at..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 || digits > 3 || s[at..at + digits].iter().collect::<String>().parse::<u16>().ok()? > 255 {
+            return None;
+        }
+        at += digits;
+        if part < 3 {
+            if s.get(at) != Some(&'.') {
+                return None;
+            }
+            at += 1;
+        }
+    }
+    // A fifth part is a longer version number, not an address.
+    let dotted = s.get(at) == Some(&'.') && s.get(at + 1).is_some_and(char::is_ascii_digit);
+    (boundary_after(s, at) && !dotted).then_some(at)
+}
+
+/// Hex groups of at most four digits: eight of them, or a `::` somewhere with at least two
+/// non-empty groups and one of three or more digits (so `a::b`, `std::io` and a clock are not
+/// addresses), with an IPv4 tail allowed (`::ffff:10.1.2.3`). Returns the length.
+fn ipv6(s: &[char]) -> Option<usize> {
+    let run = s.iter().take_while(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '.')).count();
+    let mut n = run;
+    // A trailing dot or single colon is the sentence's; a trailing `::` is part of the address.
+    while n > 0 && (s[n - 1] == '.' || (s[n - 1] == ':' && !(n >= 2 && s[n - 2] == ':'))) {
+        n -= 1;
+    }
+    let token: String = s[..n].iter().collect();
+    let compressed = token.contains("::");
+    if token.contains(":::") || token.matches("::").count() > 1 || !boundary_after(s, n) {
+        return None;
+    }
+    let (head, tail) = match token.rsplit_once(':') {
+        Some((h, t)) if t.contains('.') => (h.to_string(), Some(t)),
+        _ => (token.clone(), None),
+    };
+    if let Some(t) = tail {
+        let q: Vec<char> = t.chars().collect();
+        if ipv4(&q) != Some(q.len()) {
+            return None;
+        }
+    }
+    let groups: Vec<&str> = head.split(':').collect();
+    let non_empty: Vec<&&str> = groups.iter().filter(|g| !g.is_empty()).collect();
+    let wide = groups.iter().all(|g| g.len() <= 4 && g.bytes().all(|b| b.is_ascii_hexdigit()));
+    let want = 8 - usize::from(tail.is_some()) * 2;
+    let full = !compressed && groups.len() == want && groups.iter().all(|g| !g.is_empty());
+    let ok = wide
+        && (full
+            || (compressed
+                && groups.len() <= want + 1
+                && non_empty.len() + usize::from(tail.is_some()) >= 2
+                && (tail.is_some() || non_empty.iter().any(|g| g.len() >= 3))));
+    ok.then_some(n)
 }
 
 fn redact_emails(text: &str) -> String {
@@ -210,12 +325,33 @@ fn redact_emails(text: &str) -> String {
     out
 }
 
-/// Identical errors (same identifier and message) folded into one with a count, ordered by their
-/// latest occurrence.
-fn fold(errors: &[ReportError]) -> Vec<(ReportError, usize)> {
+/// `s` cleaned, redacted, and only then cut to `max` characters: a name straddling the cut would
+/// otherwise survive in pieces. Tag characters (U+E0000-E007F) stay only inside a subdivision
+/// flag (after U+1F3F4): anywhere else they are invisible text.
+fn safe(r: &Redactions, s: &str, max: usize) -> String {
+    let cleaned = clean_line(s, usize::MAX);
+    let mut flag = false;
+    let kept: String = cleaned
+        .chars()
+        .filter(|&c| {
+            let tag = ('\u{e0000}'..='\u{e007f}').contains(&c);
+            if c == '\u{1f3f4}' || (tag && flag) {
+                flag = true;
+                return true;
+            }
+            flag = false;
+            !tag
+        })
+        .collect();
+    clean_line(&r.apply(&kept), max)
+}
+
+/// Identical errors (same identifier and message, after redaction) folded into one with a count,
+/// ordered by their latest occurrence.
+fn fold(errors: &[ReportError], r: &Redactions) -> Vec<(ReportError, usize)> {
     let mut out: Vec<(ReportError, usize)> = Vec::new();
     for e in errors {
-        let e = ReportError { time: e.time.clone(), ident: clean_line(&e.ident, 40), message: clean_line(&e.message, MESSAGE_MAX) };
+        let e = ReportError { time: e.time.clone(), ident: safe(r, &e.ident, 40), message: safe(r, &e.message, MESSAGE_MAX) };
         let seen = out.iter().position(|(o, _)| o.ident == e.ident && o.message == e.message);
         let count = seen.map_or(1, |i| out.remove(i).1 + 1);
         out.push((e, count));
@@ -223,7 +359,7 @@ fn fold(errors: &[ReportError]) -> Vec<(ReportError, usize)> {
     out
 }
 
-fn fixed_part(i: &ReportInputs) -> Vec<String> {
+fn fixed_part(i: &ReportInputs, r: &Redactions) -> Vec<String> {
     let mut lines = vec![format!("alpheus diagnostics report, {}", i.when)];
     let mut versions = vec![format!("alpheus {}", i.alpheus)];
     for (label, v) in [("systemd", &i.systemd), ("kernel", &i.kernel)] {
@@ -244,7 +380,7 @@ fn fixed_part(i: &ReportInputs) -> Vec<String> {
     };
     lines.push(list(
         "Failed units",
-        i.failed.as_ref().map(|v| v.iter().map(|u| format!("{} ({}: {})", u.unit, u.scope, clean_line(&u.description, 60))).collect()),
+        i.failed.as_ref().map(|v| v.iter().map(|u| format!("{} ({}: {})", u.unit, u.scope, safe(r, &u.description, 60))).collect()),
     ));
     lines.push(list(
         "Restarting in a loop",
@@ -254,7 +390,8 @@ fn fixed_part(i: &ReportInputs) -> Vec<String> {
         "Crashes (7 days)",
         i.crashes.as_ref().map(|v| v.iter().map(|c| format!("{} {} {}", c.time, c.exe, c.signal)).collect()),
     ));
-    lines
+    // The fields that were not cut above are redacted as whole lines.
+    lines.iter().map(|l| r.apply(l)).collect()
 }
 
 /// The report with the latest `keep` of `folded` (None: the errors could not be read).
@@ -268,6 +405,9 @@ fn with_errors(fixed: &[String], folded: Option<&[(ReportError, usize)]>, keep: 
             let shown = &folded[total - keep.min(total)..];
             lines.push(if shown.len() == total {
                 format!("Errors this boot (latest {total}, duplicates folded):")
+            } else if keep == 0 {
+                // Too long for the heading below: a shorter line that still says what was read.
+                format!("Errors this boot: latest 0 of {total}, cut")
             } else {
                 format!("Errors this boot (latest {} of {total}, older ones cut):", shown.len())
             });
@@ -282,12 +422,13 @@ fn with_errors(fixed: &[String], folded: Option<&[(ReportError, usize)]>, keep: 
     text
 }
 
-/// The report: the fixed part, then the latest 40 folded errors, redacted, in at most `MAX_INPUT`
-/// bytes. Over the bound, the oldest errors go first and the errors heading says how many are
-/// left; only if the fixed part alone is over it, it is cut on a line boundary with `… cut`.
+/// The report: the fixed part, then the latest 40 folded errors, in at most `MAX_INPUT` bytes.
+/// Every field is redacted before it is cut, so what is shown and copied is what was redacted.
+/// Over the bound, the oldest errors go first and the errors heading says how many are left;
+/// only if the fixed part alone is over it, it is cut on a line boundary with `… cut`.
 pub fn build(i: &ReportInputs, r: &Redactions) -> String {
-    let fixed = fixed_part(i);
-    let mut folded = i.errors.as_deref().map(fold);
+    let fixed = fixed_part(i, r);
+    let mut folded = i.errors.as_deref().map(|e| fold(e, r));
     if let Some(f) = &mut folded
         && f.len() > MAX_ERRORS
     {
@@ -296,14 +437,14 @@ pub fn build(i: &ReportInputs, r: &Redactions) -> String {
     }
     let count = folded.as_ref().map_or(0, Vec::len);
     for keep in (0..=count).rev() {
-        let text = r.apply(&with_errors(&fixed, folded.as_deref(), keep));
+        let text = with_errors(&fixed, folded.as_deref(), keep);
         if text.len() <= MAX_INPUT {
             return text;
         }
     }
     // The fixed part alone is too long.
     let mut out = String::new();
-    for line in r.apply(&with_errors(&fixed, None, 0)).lines() {
+    for line in with_errors(&fixed, folded.as_deref(), 0).lines() {
         if out.len() + line.len() + 1 + "… cut\n".len() > MAX_INPUT {
             break;
         }
@@ -393,6 +534,11 @@ impl HostFacts {
             if libc::getpwuid_r(libc::geteuid(), &mut pwd, buf.as_mut_ptr(), buf.len(), &mut found) == 0 && !found.is_null() {
                 users.push(std::ffi::CStr::from_ptr(pwd.pw_name).to_string_lossy().into_owned());
                 homes.push(std::ffi::CStr::from_ptr(pwd.pw_dir).to_string_lossy().into_owned());
+                // The real name (the first comma-separated field of GECOS), when there is one.
+                if !pwd.pw_gecos.is_null() {
+                    let gecos = std::ffi::CStr::from_ptr(pwd.pw_gecos).to_string_lossy().into_owned();
+                    users.extend(gecos.split(',').next().map(str::to_string).filter(|n| !n.trim().is_empty()));
+                }
             }
         }
         HostFacts {

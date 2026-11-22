@@ -100,6 +100,13 @@ impl SystemdTools {
         SystemdTools { exec, journal_dirs: vec![PathBuf::from("/var/log/journal"), PathBuf::from("/run/log/journal")], facts: None }
     }
 
+    /// Tools that read nothing of the machine they run on: the journal under `journal_dirs`, the
+    /// names and ids of `facts` (tests).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn for_tests(exec: Arc<dyn Executor>, journal_dirs: Vec<PathBuf>, facts: HostFacts) -> Self {
+        SystemdTools { exec, journal_dirs, facts: Some(facts) }
+    }
+
     /// The same, with the machine's facts given (tests).
     pub fn with_facts(mut self, facts: HostFacts) -> Self {
         self.facts = Some(facts);

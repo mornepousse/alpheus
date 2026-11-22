@@ -88,7 +88,7 @@ fn every_launched_command_is_on_the_allowlist() {
     // The displays ask the daemon's socket in the runtime directory: one that does not exist here,
     // so they reach no daemon (never the session's), and run no command.
     let runtime = std::env::temp_dir().join(format!("alpheus-guardrails-{}-no-runtime", std::process::id()));
-    let b = Backends::system(fake.clone(), runtime);
+    let b = Backends::system_isolated(fake.clone(), runtime);
     for d in Domain::ALL {
         let _ = fetch(&b, d);
     }
@@ -274,4 +274,37 @@ fn the_health_checks_never_read_the_process_environment() {
             assert!(!t.contains(call), "`{call}` in {}: the environment must be injected", f.display());
         }
     }
+}
+
+/// `Backends::system` hands the diagnostics the machine's own journal directories, hostname,
+/// user and machine id (`/var/log/journal`, `/etc/machine-id`, `$USER`): a test that built it
+/// would read the real ones. Only the real worker (`run.rs`'s `run`) builds it; every test uses
+/// `Backends::system_isolated`, whose diagnostics look in a directory that does not exist and
+/// know no names.
+#[test]
+fn only_the_real_worker_builds_the_system_backends() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rs_files(&root.join("src"), &mut files);
+    rs_files(&root.join("tests"), &mut files);
+    let mut found = Vec::new();
+    for f in files.into_iter().filter(|f| f.file_name().is_some_and(|n| n != "guardrails.rs")) {
+        let t = std::fs::read_to_string(&f).unwrap();
+        // The text of a call, not of a doc comment that names it.
+        for (n, line) in t.lines().enumerate() {
+            if line.contains("Backends::system(") && !line.trim_start().starts_with("//") {
+                found.push(format!("{}:{}", f.strip_prefix(root).unwrap().display(), n + 1));
+            }
+        }
+    }
+    assert_eq!(found.len(), 1, "Backends::system( outside the real worker: {found:?}");
+    assert!(found[0].starts_with("src/app/run.rs:"), "{found:?}");
+    // And the isolated one never reads the machine.
+    let b = Backends::system_isolated(
+        Arc::new(FakeExecutor::new()),
+        std::env::temp_dir().join(format!("alpheus-guardrails-{}-isolated", std::process::id())),
+    );
+    assert!(!b.diagnostics.journal_readable());
+    let text = b.diagnostics.report("Mango", 3);
+    assert!(!text.contains("kernel "), "no kernel release was read: {text}");
 }

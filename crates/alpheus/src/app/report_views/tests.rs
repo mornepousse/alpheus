@@ -66,12 +66,10 @@ fn the_report_is_shown_before_copy() {
     key(&mut a, KeyCode::Enter);
     assert!(a.take_requests().is_empty());
     let text = "alpheus diagnostics report, 2026-11-21 21:40 UTC\nalpheus 0.1.0\n".to_string();
-    a.on_update(
-        Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text.clone())),
-        Instant::now(),
-    );
+    let shown = Instant::now();
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text.clone())), shown);
     assert!(a.take_requests().is_empty(), "showing it copies nothing");
-    key(&mut a, KeyCode::Enter);
+    key_at(&mut a, KeyCode::Enter, shown + std::time::Duration::from_secs(1));
     let argv = vec![Config::default().diagnostics.copy[0].clone()];
     assert_eq!(a.take_requests(), vec![Request::Do(Op::Copy { argv, text })], "exactly the text that is on screen, and only on Enter");
     // Esc closes: nothing was copied by it.
@@ -154,4 +152,58 @@ fn a_crash_opens_the_minute_before_it() {
     let secs = 1_795_183_320u64;
     assert_eq!(q.since_until, Some((secs - 60, secs + 5)));
     assert_eq!((q.preset, q.unit), (Preset::ServiceLogs, None::<(Scope, String)>));
+}
+
+#[test]
+fn the_report_scrolls_by_the_key_table() {
+    let mut a = on_diag(Config::default());
+    a.diag_activate(DiagItem::Report);
+    let text: String = (0..50).map(|n| format!("line {n}\n")).collect();
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text)), Instant::now());
+    let scroll = |a: &App| match &a.diag.view {
+        View::Report(r) => r.scroll,
+        _ => panic!(),
+    };
+    // Dvorak navigation is on by default: h goes down, t up.
+    key(&mut a, KeyCode::Char('h'));
+    assert_eq!(scroll(&a), 1);
+    key(&mut a, KeyCode::Char('t'));
+    assert_eq!(scroll(&a), 0);
+}
+
+fn key_at(a: &mut App, code: KeyCode, now: Instant) {
+    a.on_key(KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }, now);
+}
+
+#[test]
+fn wrapped_rows_are_what_scrolls() {
+    let mut a = on_diag(Config::default());
+    a.diag_activate(DiagItem::Report);
+    // A 250-character line is seven rows at 40 columns; five short lines follow.
+    let text = format!("{}\n{}", "x".repeat(250), "y\n".repeat(5));
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text)), Instant::now());
+    let View::Report(r) = &a.diag.view else { panic!() };
+    r.width.set(40);
+    r.page.set(4);
+    assert_eq!(r.lines(), 7 + 5);
+    key(&mut a, KeyCode::End);
+    let View::Report(r) = &a.diag.view else { panic!() };
+    assert_eq!(r.scroll, 12 - 4, "the last page of wrapped rows");
+    assert_eq!(wrap_rows("é".repeat(5).as_str(), 2), vec!["éé", "éé", "é"]);
+    assert_eq!(wrap_rows("a\n\nb", 10), vec!["a", "", "b"], "an empty line is a row");
+    assert_eq!(wrap_rows("日本語", 4), vec!["日本", "語"], "wide characters count two cells");
+}
+
+#[test]
+fn enter_just_after_the_text_arrives_copies_nothing() {
+    let mut a = on_diag(Config::default());
+    a.diag_activate(DiagItem::Report);
+    a.take_requests();
+    let t = Instant::now();
+    a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report("text\n".into())), t);
+    // An Enter typed ahead, before the person could read the warning.
+    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(100));
+    assert!(a.take_requests().is_empty(), "too soon");
+    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(500));
+    assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::Copy { .. })]), "after the delay it copies");
 }

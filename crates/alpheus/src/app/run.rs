@@ -270,7 +270,7 @@ mod tests {
         let dir = alpheus_commun::temp_path::TempPath::new("run-tab-under-sway");
         let mut a = build_app(&dir, Tab::Displays, Instant::now());
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])]);
-        let mut b = Backends::system(Arc::new(FakeExecutor::new()), dir.to_path_buf());
+        let mut b = Backends::system_isolated(Arc::new(FakeExecutor::new()), dir.to_path_buf());
         let fake = Arc::new(FakeDisplays::default());
         b.displays = fake.clone();
         a.on_update(fetch(&b, Domain::Displays), Instant::now());

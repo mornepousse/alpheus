@@ -4,6 +4,7 @@
 //! never asks again while one is in flight. Leaving the view (or the tab) ends the follow: there
 //! is no child that outlives it, only a bounded read each second while the view is open.
 
+use super::action::Action;
 use super::diagnostics::View;
 use super::worker::{DiagRead, DiagResult, Request};
 use super::{App, Tab};
@@ -132,13 +133,19 @@ impl JournalView {
 
     /// Whether the entry passes the text filter (a substring of message, identifier or unit, case
     /// and accents folded).
-    fn passes(&self, h: &Held) -> bool {
-        self.filter.is_empty() || h.haystack.contains(&fuzzy::fold_str(&self.filter))
+    fn passes(&self, h: &Held, needle: &str) -> bool {
+        needle.is_empty() || h.haystack.contains(needle)
+    }
+
+    /// The filter, folded once for a whole pass over the entries.
+    fn needle(&self) -> String {
+        if self.filter.is_empty() { String::new() } else { fuzzy::fold_str(&self.filter) }
     }
 
     /// The entries that pass the filter, oldest first.
     pub fn visible(&self) -> Vec<&Entry> {
-        self.entries.iter().filter(|h| self.passes(h)).map(|h| &h.entry).collect()
+        let needle = self.needle();
+        self.entries.iter().filter(|h| self.passes(h, &needle)).map(|h| &h.entry).collect()
     }
 
     /// The cursor a follow read goes on from.
@@ -148,9 +155,10 @@ impl JournalView {
 
     fn push(&mut self, entries: Vec<Entry>) {
         let mut shown = 0;
+        let needle = self.needle();
         for e in entries {
             let h = Held::new(e);
-            if self.passes(&h) {
+            if self.passes(&h, &needle) {
                 shown += 1;
             }
             self.entries.push_back(h);
@@ -303,6 +311,10 @@ impl App {
         if self.tab != Tab::Diagnostics || e.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
             return false;
         }
+        // What the key table says, before the view is borrowed: scrolling goes through it (so the
+        // Dvorak keys and a user's own keys scroll), and the view's own letters give way to any
+        // binding of the user's.
+        let action = self.keymap.lookup(&e);
         let Some(j) = self.journal_view() else { return false };
         if j.picker.is_some() {
             self.picker_key(e);
@@ -326,31 +338,31 @@ impl App {
         }
         let shown = j.visible().len();
         let page = j.page.get().max(2) - 1;
-        match e.code {
-            KeyCode::Esc if !j.filter.is_empty() => {
+        match (e.code, action) {
+            (KeyCode::Esc, _) if !j.filter.is_empty() => {
                 j.filter.clear();
                 j.set_offset(0);
             }
-            KeyCode::Char('/') => j.filter_editing = true,
-            KeyCode::Char('u') => {
+            (KeyCode::Char('/'), _) => j.filter_editing = true,
+            (KeyCode::Char('u'), None) => {
                 j.picker = Some(Picker::new());
                 self.requests.push(Request::Diag(DiagRead::ServiceUnits));
             }
-            KeyCode::Char('p') => {
+            (KeyCode::Char('p'), None) => {
                 j.query.priority = j.query.priority.next();
                 self.journal_reread();
             }
-            KeyCode::Char('f') => {
+            (KeyCode::Char('f'), None) => {
                 if j.query.since_until.is_none() {
                     j.follow = !j.follow;
                 }
             }
-            KeyCode::Up => j.scroll_by(1, shown),
-            KeyCode::Down => j.scroll_by(-1, shown),
-            KeyCode::PageUp => j.scroll_by(page as isize, shown),
-            KeyCode::PageDown => j.scroll_by(-(page as isize), shown),
-            KeyCode::Home => j.scroll_by(isize::MAX / 2, shown),
-            KeyCode::End => j.set_offset(0),
+            (_, Some(Action::Up)) => j.scroll_by(1, shown),
+            (_, Some(Action::Down)) => j.scroll_by(-1, shown),
+            (_, Some(Action::PageUp)) => j.scroll_by(page as isize, shown),
+            (_, Some(Action::PageDown)) => j.scroll_by(-(page as isize), shown),
+            (_, Some(Action::Home)) => j.scroll_by(isize::MAX / 2, shown),
+            (_, Some(Action::End)) => j.set_offset(0),
             _ => return false,
         }
         true

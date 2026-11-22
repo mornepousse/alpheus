@@ -286,7 +286,12 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     for r in reqs {
         match r {
             // The same read asked twice (F5 pressed twice) is made once.
-            Request::Diag(_) => {
+            Request::Diag(read) => {
+                // Only the newest journal read matters: the view has moved on from the older one.
+                if matches!(read, DiagRead::Journal(_)) {
+                    diag.retain(|d| !matches!(d, Request::Diag(DiagRead::Journal(_))));
+                }
+                let r = Request::Diag(read);
                 if !diag.contains(&r) {
                     diag.push(r);
                 }
@@ -375,7 +380,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn backends(f: &Arc<FakeExecutor>) -> Backends {
-        Backends::system(f.clone(), std::env::temp_dir().join("alpheus-worker-no-flag"))
+        Backends::system_isolated(f.clone(), std::env::temp_dir().join("alpheus-worker-no-flag"))
     }
 
     #[test]
@@ -541,6 +546,19 @@ mod tests {
             "the poke is asked once"
         );
         assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn a_newer_journal_read_replaces_a_queued_one() {
+        use crate::diagnostics::query::{JournalQuery, Preset};
+        let q = |preset, n| Request::Diag(DiagRead::Journal(JournalQuery::new(preset, n)));
+        let (r, dropped) =
+            coalesce(vec![q(Preset::Live, 100), Request::Diag(DiagRead::Crashes), q(Preset::ErrorsThisBoot, 200), q(Preset::Live, 300)]);
+        assert_eq!(r, vec![Request::Diag(DiagRead::Crashes), q(Preset::Live, 300)], "only the newest journal read is made");
+        assert!(dropped.is_empty());
+        // Other reads are not touched.
+        let (r, _) = coalesce(vec![Request::Diag(DiagRead::Crashes), Request::Diag(DiagRead::BootTime)]);
+        assert_eq!(r.len(), 2);
     }
 
     #[test]

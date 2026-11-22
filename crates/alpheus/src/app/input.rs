@@ -37,7 +37,7 @@ impl App {
         if self.search.editing {
             return self.key_search(e);
         }
-        if self.journal_key(e) || self.report_views_key(e) {
+        if self.journal_key(e) || self.report_views_key(e, now) {
             return;
         }
         if let Some(a) = self.keymap.lookup(&e) {

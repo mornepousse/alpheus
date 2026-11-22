@@ -132,6 +132,16 @@ impl Backends {
             poke: Arc::new(NoPoke),
         }
     }
+
+    /// The same for tests: the diagnostics look for the journal under `runtime_dir` (where there
+    /// is none) and know no user, host or machine id, so no test reads the machine it runs on.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn system_isolated(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
+        let mut b = Backends::system(exec.clone(), runtime_dir.clone());
+        b.diagnostics =
+            Arc::new(SystemdTools::for_tests(exec, vec![runtime_dir.join("no-journal")], crate::diagnostics::report::HostFacts::default()));
+        b
+    }
 }
 
 #[cfg(test)]

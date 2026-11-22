@@ -65,10 +65,11 @@ fn the_report_holds_only_the_listed_fields() {
 
 #[test]
 fn redaction_cases() {
-    let r = Redactions::new(&["alice".into()], &["/home/alice".into()], Some("host-01"), Some("0123456789abcdef0123456789abcdef"));
+    let r =
+        Redactions::new(&["alice".into()], &["/home/alice".into()], Some("host-01.example.org"), Some("0123456789abcdef0123456789abcdef"));
     let cases = [
         ("opened /home/alice/notes by alice", "opened ~/notes by <user>"),
-        ("on host-01 now", "on <host> now"),
+        ("on host-01.example.org now", "on <host> now"),
         ("id 0123456789abcdef0123456789abcdef", "id <machine-id>"),
         ("link 00:1a:2b:3c:4d:5e up", "link <mac> up"),
         ("link 00-1A-2B-3C-4D-5E up", "link <mac> up"),
@@ -79,6 +80,26 @@ fn redaction_cases() {
         // Not addresses: a clock, a kernel version, an out-of-range quad, a version with five parts.
         ("21:02:11 kernel 6.18.2 999.1.1.1", "21:02:11 kernel 6.18.2 999.1.1.1"),
         ("device (wlan0): state 12:34", "device (wlan0): state 12:34"),
+        // A port after the address stays; the address goes.
+        ("dns 192.168.1.1:53 up", "dns <ip>:53 up"),
+        // A word glued to the address by punctuation does not hide it.
+        ("BSSID:aa:bb:cc:dd:ee:ff", "BSSID:<mac>"),
+        ("wlan0-aa:bb:cc:dd:ee:ff", "wlan0-<mac>"),
+        ("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "/org/bluez/hci0/dev_<mac>"),
+        ("via ::ffff:10.1.2.3 ok", "via <ip> ok"),
+        ("[2001:db8::1]:443", "[<ip>]:443"),
+        // Not addresses: a Rust path, a version after the word, a letter-prefixed quad.
+        ("std::io failed", "std::io failed"),
+        ("a::b and Foo::Bar", "a::b and Foo::Bar"),
+        ("version 1.2.3.4", "version 1.2.3.4"),
+        ("v1.2.3.4 and 1.2.3.4.5", "v1.2.3.4 and 1.2.3.4.5"),
+        ("peer 1.2.3.4 gone", "peer <ip> gone"),
+        // Names match in any case, and the short name of a fully qualified host does too.
+        ("Alice ALICE", "<user> <user>"),
+        ("HOST-01.example.org and host-01 and host-01.other.net", "<host> and <host> and <host>.other.net"),
+        // UUIDs, plain and in a unit name's escaping.
+        ("fs 123e4567-e89b-12d3-a456-426614174000 ok", "fs <uuid> ok"),
+        ("dev-disk-by\\x2duuid-123e4567\\x2de89b\\x2d12d3\\x2da456\\x2d426614174000.device", "dev-disk-by\\x2duuid-<uuid>.device"),
     ];
     for (input, want) in cases {
         assert_eq!(r.apply(input), want, "{input}");
@@ -169,4 +190,60 @@ fn kernel_release_is_not_the_node_name() {
     assert!(!format!("{:?}", release_of(&u)).contains("secret"));
     assert_eq!(os_pretty("NAME=NixOS\nPRETTY_NAME=\"NixOS 26.05 (Yarara)\"\nID=nixos\n"), "NixOS 26.05 (Yarara)");
     assert_eq!(os_pretty("ID=x\n"), "");
+}
+
+#[test]
+fn a_secret_is_redacted_before_the_line_is_cut() {
+    // 190 characters, then a name that would straddle the 200-character cut.
+    let mut i = inputs();
+    i.errors =
+        Some(vec![ReportError { time: "21:00:00".into(), ident: "k".into(), message: format!("{} alice-secret-name", "x".repeat(190)) }]);
+    let r = Redactions::new(&["alice-secret-name".into()], &[], None, None);
+    let text = build(&i, &r);
+    assert!(!text.contains("alice") && !text.contains("secret-name"), "{text}");
+    assert!(text.contains("<user>"), "redacted whole, then cut: {text}");
+}
+
+#[test]
+fn a_user_named_like_a_placeholder_is_not_redacted_twice() {
+    let mut i = inputs();
+    i.errors = Some(vec![ReportError { time: "21:00:00".into(), ident: "k".into(), message: "hello user".into() }]);
+    let r = Redactions::new(&["user".into()], &[], None, None);
+    assert!(build(&i, &r).contains("k: hello <user>\n"), "{}", build(&i, &r));
+}
+
+#[test]
+fn tag_characters_survive_only_after_a_flag() {
+    let mut i = inputs();
+    let flag = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}";
+    i.errors = Some(vec![
+        ReportError { time: "21:00:00".into(), ident: "k".into(), message: format!("flag {flag} ok") },
+        ReportError { time: "21:00:01".into(), ident: "k".into(), message: "hidden \u{e0041}\u{e0042} tags".into() },
+    ]);
+    let text = build(&i, &none());
+    assert!(text.contains(flag), "a subdivision flag is kept");
+    assert!(!text.contains('\u{e0041}') && text.contains("hidden  tags"), "{text:?}");
+}
+
+#[test]
+fn a_cut_that_fell_back_still_says_how_many_errors_there_were() {
+    // Fixed parts of every length near the bound: the fallback never calls a read errors
+    // "unknown" when they were read (for lengths just over the bound it used to).
+    let mut base = inputs();
+    base.errors = Some(vec![]);
+    let mut units = Vec::new();
+    while build(&ReportInputs { failed: Some(units.clone()), ..base.clone() }, &none()).len() < 3990 {
+        let n = units.len();
+        units.push(ReportUnit { unit: format!("example-unit-{n:03}.service"), scope: "system", description: "d".repeat(10) });
+    }
+    for pad in 0..120 {
+        let mut i = inputs();
+        let mut failed = units.clone();
+        failed.push(ReportUnit { unit: "pad.service".into(), scope: "system", description: "p".repeat(pad.min(60)) });
+        failed.push(ReportUnit { unit: "x".repeat(pad.saturating_sub(60) + 1), scope: "system", description: String::new() });
+        i.failed = Some(failed);
+        i.errors = Some((0..3).map(|n| err(n, 5)).collect());
+        let text = build(&i, &none());
+        assert!(text.len() <= 4096 && !text.contains("Errors this boot: unknown"), "{pad}: {text}");
+    }
 }

@@ -6,6 +6,7 @@ use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use super::rail::tab_hue;
 use crate::app::diagnostics::View;
+use crate::app::report_views::wrap_rows;
 use crate::app::{App, Loadable};
 use alpheus_commun::text::clean_line;
 use ratatui::buffer::Buffer;
@@ -110,20 +111,17 @@ fn report(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Ch
     }
     let area = Rect::new(body.x, body.y + 4, body.width, body.height.saturating_sub(4));
     r.page.set(usize::from(area.height));
+    r.width.set(usize::from(area.width));
     match &r.text {
         None => {
             put(buf, area, area.x, area.y, "Building the report…", Style::default().fg(th.ink(th.muted, th.bg, 3.0)));
         }
         Some(text) => {
-            for (n, line) in text.lines().skip(r.scroll).take(usize::from(area.height)).enumerate() {
-                put(
-                    buf,
-                    area,
-                    area.x,
-                    area.y + n as u16,
-                    &truncate(&clean_line(line, 400), usize::from(area.width)),
-                    Style::default().fg(th.fg),
-                );
+            // Wrapped, never cut: everything Copy sends is somewhere on screen.
+            let rows = wrap_rows(text, usize::from(area.width));
+            let scroll = r.scroll.min(rows.len().saturating_sub(usize::from(area.height)));
+            for (n, line) in rows.iter().skip(scroll).take(usize::from(area.height)).enumerate() {
+                put(buf, area, area.x, area.y + n as u16, line, Style::default().fg(th.fg));
             }
         }
     }

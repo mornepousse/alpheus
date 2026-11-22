@@ -361,7 +361,7 @@ impl App {
     /// An answer of a Diag read: the journal view's own first, else the tab's lists.
     pub(crate) fn diag_update(&mut self, read: DiagRead, result: DiagResult, now: Instant) {
         if let Some(result) = self.journal_try(&read, result, now)
-            && let Some(result) = self.report_views_try(result)
+            && let Some(result) = self.report_views_try(result, now)
         {
             self.diag.apply(result);
         }

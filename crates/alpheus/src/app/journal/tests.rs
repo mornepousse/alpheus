@@ -346,3 +346,49 @@ fn the_wheel_scrolls_the_view() {
     assert!(a.journal_wheel(-1));
     assert_eq!(view(&a).scroll, Scroll::Tail);
 }
+
+fn with_keys(keys: &[(&str, &[&str])], t0: Instant) -> App {
+    let mut cfg = crate::config::KeysConfig::default();
+    for (action, chords) in keys {
+        cfg.bindings.insert((*action).to_string(), chords.iter().map(|c| (*c).to_string()).collect());
+    }
+    let mut a = App::with_tab(Config::default(), Theme::default(), Keymap::from_config(&cfg).unwrap(), Tab::Diagnostics, t0);
+    a.take_requests();
+    a
+}
+
+#[test]
+fn scrolling_follows_the_key_table() {
+    let t0 = Instant::now();
+    // The Dvorak navigation keys (on by default) scroll: t up, h down.
+    let mut a = on_diag(t0);
+    opened(&mut a, Preset::Live, (0..100).map(|n| entry(n, "x")).collect(), t0);
+    key(&mut a, KeyCode::Char('t'), t0);
+    assert_eq!(view(&a).scroll, Scroll::At(1));
+    key(&mut a, KeyCode::Char('h'), t0);
+    assert_eq!(view(&a).scroll, Scroll::Tail);
+    // A user's own keys for the actions do too, and the arrow they replaced does not.
+    let mut a = with_keys(&[("up", &["k"]), ("down", &["j"])], t0);
+    opened(&mut a, Preset::Live, (0..100).map(|n| entry(n, "x")).collect(), t0);
+    key(&mut a, KeyCode::Char('k'), t0);
+    assert_eq!(view(&a).scroll, Scroll::At(1));
+    key(&mut a, KeyCode::Up, t0);
+    assert_eq!(view(&a).scroll, Scroll::At(1), "the arrow is no longer bound");
+    key(&mut a, KeyCode::Char('j'), t0);
+    assert_eq!(view(&a).scroll, Scroll::Tail);
+}
+
+#[test]
+fn the_views_letters_never_shadow_a_users_binding() {
+    let t0 = Instant::now();
+    // `p` is the priority key; a user who bound it to Refresh gets Refresh, not a re-read.
+    let mut a = with_keys(&[("refresh", &["p"])], t0);
+    let q = opened(&mut a, Preset::Live, vec![entry(1, "x")], t0);
+    key(&mut a, KeyCode::Char('p'), t0);
+    assert_eq!(view(&a).query.priority, q.priority, "the priority did not change");
+    // Unbound, `p` is the view's own.
+    let mut a = on_diag(t0);
+    let q = opened(&mut a, Preset::Live, vec![entry(1, "x")], t0);
+    key(&mut a, KeyCode::Char('p'), t0);
+    assert_ne!(view(&a).query.priority, q.priority);
+}
