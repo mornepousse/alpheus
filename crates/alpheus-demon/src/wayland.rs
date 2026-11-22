@@ -434,7 +434,7 @@ pub struct App {
     pub(crate) viewporter: Option<WpViewporter>,
     /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
     /// `modules` or without the manager.
-    pub(crate) displays: Option<crate::outputs_app::OutputsApp>,
+    pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
     /// The clipboard history (clipboard spec); None with `[clipboard] enabled` off (nothing bound) or
     /// without a data-control protocol.
     pub(crate) clipboard: Option<crate::clipboard::app::ClipboardApp>,
@@ -622,7 +622,7 @@ impl App {
             .config
             .modules
             .contains(&ModuleId::Displays)
-            .then(|| crate::outputs_app::OutputsApp::bind(globals, qh, &bar.config.displays))
+            .then(|| crate::outputs::app::OutputsApp::bind(globals, qh, &bar.config.displays))
             .flatten();
         // Only when switched on: otherwise no manager is bound and nothing is allocated.
         let clipboard = bar.config.clipboard.enabled.then(|| crate::clipboard::app::ClipboardApp::bind(globals, qh)).flatten();

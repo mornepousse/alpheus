@@ -325,7 +325,7 @@ fn the_daemon_only_reads_from_the_compositor() {
         }
         // Only the glue sends one, so none bypasses the controller.
         if t.contains("wlr.send(") {
-            assert_eq!(name, "outputs_app.rs", "an output configuration sent outside the displays glue");
+            assert_eq!(name, "outputs/app.rs", "an output configuration sent outside the displays glue");
         }
     }
 }
@@ -1154,7 +1154,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
-        ("outputs_app.rs", "Timer::", 1),
+        ("outputs/app.rs", "Timer::", 1),
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
@@ -1166,7 +1166,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("notes/app.rs", "Timer::", 1),
         // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
         // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
-        ("outputs_app.rs", "Generic::new", 1),
+        ("outputs/app.rs", "Generic::new", 1),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd: readable only when theme.toml or a colour file
@@ -1619,7 +1619,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "sources/dbus/bt_act.rs",
     "bt_app.rs",
     "outputs/",
-    "outputs_app.rs",
+    "outputs/app.rs",
     "launcher/calc.rs",
     "launcher/calc/units.rs",
     "dnd.rs",
