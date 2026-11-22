@@ -285,6 +285,25 @@ fn the_wifi_row_is_read_on_a_poke_followed_while_open_and_dropped_on_close() {
     assert_eq!(device_reads, 4, "Device and Device.Wireless, at the poke and at the radio's signal; none closed");
 }
 
+fn poke_the_units(b: &mut FakeBus) {
+    b.units_tap.poke();
+}
+
+/// Final review: a poke is each tap's own word. The failed-units count asked for again reads the
+/// count, and nothing of the open Wi-Fi row.
+#[test]
+fn a_units_poke_rereads_no_panel() {
+    let mut bus = FakeBus::workstation();
+    bus.with_wifi();
+    bus.with_systemd(1);
+    let steps: [Step; 2] = [(Signal::poke(), open_the_row), (Signal::poke(), poke_the_units)];
+    bus.script = VecDeque::from(steps);
+    let (_, _, r) = run_units(&mut bus, &[Domain::Network, Domain::Units], opts(false, 3600));
+    assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    let device_reads = bus.calls.iter().filter(|c| c.contains(WIFI_DEVICE)).count();
+    assert_eq!(device_reads, 2, "the open at the first poke only: {:?}", bus.calls);
+}
+
 /// A session (re)starting while the panel is open (a reconnection) reads the row at once.
 #[test]
 fn a_session_starting_with_the_panel_open_reads_the_row_at_once() {
@@ -1662,6 +1681,18 @@ fn another_domains_signal_piggybacks_once_per_interval() {
     bus.script = VecDeque::from(steps);
     let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 10));
     assert_eq!(bus.units_gets(), 3, "at start, past 10 s, past 10 s again: {:?}", bus.calls);
+}
+
+/// Final review: a subscribed count is pushed by systemd, so another domain's wake-up never
+/// reads it (the piggyback is the unsubscribed way).
+#[test]
+fn a_subscribed_count_is_not_piggybacked() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    let steps: [Step; 2] = [(battery_wakes(), eleven_more), (battery_wakes(), eleven_more)];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 10));
+    assert_eq!((bus.units_gets(), bus.subscribes()), (1, 1), "only the first read: {:?}", bus.calls);
 }
 
 fn eleven_more(b: &mut FakeBus) {

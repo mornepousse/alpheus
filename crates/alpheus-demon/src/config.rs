@@ -43,7 +43,7 @@
 //! proc_dir = "/proc"                                        # where processes are listed (a camera opened outside PipeWire)
 //! [failed]                                                  # the failed-units count (systemd's)
 //! user_units = true                                         # also count the user manager's failed units (the session bus)
-//! subscribe = true                                          # Subscribe() to systemd so that a change arrives at once; false: read on triggers only
+//! subscribe = false                                         # true: Subscribe() to systemd so that a change arrives at once (costs systemd and dbus-daemon a signal per unit change); false: read on triggers only
 //! notify = false                                            # a notification when the count rises
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
@@ -441,8 +441,10 @@ impl Default for PrivacyConfig {
 pub struct FailedConfig {
     /// Also count the user manager's failed units (the session bus).
     pub user_units: bool,
-    /// `Subscribe()` to systemd so that a change arrives at once; false: the count is read on
-    /// triggers only (a resume, `failed-refresh`, another domain's wake-up).
+    /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
+    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
+    /// until Mae chooses): the count is read on triggers only (a resume, `failed-refresh`, another
+    /// domain's wake-up, a piggyback).
     pub subscribe: bool,
     /// A notification when the count rises.
     pub notify: bool,
@@ -450,7 +452,7 @@ pub struct FailedConfig {
 
 impl Default for FailedConfig {
     fn default() -> Self {
-        FailedConfig { user_units: true, subscribe: true, notify: false }
+        FailedConfig { user_units: true, subscribe: false, notify: false }
     }
 }
 

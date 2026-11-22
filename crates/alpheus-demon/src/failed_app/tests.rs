@@ -193,6 +193,32 @@ fn lost_resets_subscribed() {
     assert!(!u.owns(sub));
 }
 
+/// Final review: a user-side read that fails is logged like the system side's, one line per
+/// episode (until a read succeeds), with fixed words and no error text.
+#[test]
+fn a_failed_user_read_logs_once_per_episode() {
+    let (mut out, mut u) = running(false, 1);
+    for _ in 0..3 {
+        u.signal(&mut out, &Signal::UnitsChanged { sender: USER.into() });
+        let get = id(&out, &count_call(USER));
+        u.answer(&mut out, get, Err(CallError::Remote("org.freedesktop.DBus.Error.NoMemory".into())));
+    }
+    assert_eq!((u.count(), lines("count could not be read")), (None, 1));
+    // A read that succeeds ends the episode: the next failure is a new line.
+    u.signal(&mut out, &Signal::UnitsChanged { sender: USER.into() });
+    let get = id(&out, &count_call(USER));
+    u.answer(&mut out, get, Ok(Reply::Count(2)));
+    u.signal(&mut out, &Signal::UnitsChanged { sender: USER.into() });
+    let get = id(&out, &count_call(USER));
+    u.answer(&mut out, get, Err(CallError::Timeout));
+    assert_eq!(lines("count could not be read"), 2);
+    // The connection going away is not a read that failed.
+    u.signal(&mut out, &Signal::UnitsChanged { sender: USER.into() });
+    let get = id(&out, &count_call(USER));
+    u.answer(&mut out, get, Err(CallError::Disconnected));
+    assert_eq!(lines("count could not be read"), 2);
+}
+
 #[test]
 fn a_refused_user_subscribe_logs_once_per_owner() {
     let (mut out, mut u) = running(true, 1);

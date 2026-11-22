@@ -39,6 +39,8 @@ pub struct UserUnits {
     subscribed: bool,
     /// The failed owner lookup was logged: one line per episode (until a manager is found).
     lookup_logged: bool,
+    /// A failed read was logged: one line per episode (until a read succeeds).
+    read_logged: bool,
     /// The owner whose refusal was logged: one line per owner.
     refused_for: Option<String>,
     /// The calls in flight (at most one of each): the owner, the count, the subscription.
@@ -71,6 +73,7 @@ impl UserUnits {
             count: None,
             subscribed: false,
             lookup_logged: false,
+            read_logged: false,
             refused_for: None,
             owner_call: None,
             get_call: None,
@@ -158,10 +161,17 @@ impl UserUnits {
             self.get_call = None;
             match result {
                 Ok(Reply::Count(n)) => {
+                    self.read_logged = false;
                     self.set_count(Some(n));
                     self.subscribe_if_wanted(out);
                 }
-                _ => self.set_count(None),
+                other => {
+                    // Fixed words, like the system side's: never the error's text.
+                    if !matches!(other, Err(CallError::Disconnected)) && !std::mem::replace(&mut self.read_logged, true) {
+                        (self.say)("failed: the user manager's count could not be read");
+                    }
+                    self.set_count(None);
+                }
             }
             if std::mem::take(&mut self.reread) {
                 self.read(out);
@@ -233,7 +243,8 @@ impl UserUnits {
         }
     }
 
-    /// The session bus closed: unknown, nothing subscribed (the next link brings `start` again).
+    /// The session bus closed: unknown, nothing subscribed. The link is never reconnected, so the bar
+    /// keeps the count it last had (an unknown count is not a state) until the daemon restarts.
     pub fn lost(&mut self) {
         self.owner_call = None;
         self.forget_owner();
@@ -329,10 +340,13 @@ impl App {
     /// Both counts read now, whatever the subscription. The system one by a poke of the D-Bus
     /// thread (its answer is a `UnitsRead`), the user one on this loop.
     pub(crate) fn failed_refresh(&mut self) {
+        // With a tap, the thread's read answers `UnitsRead`, which reads the user count: one read
+        // each. Without one (the module off the system bus), the user count is read here.
         if let Some(tap) = &self.units_tap {
             tap.poke();
+        } else {
+            self.failed_units_read();
         }
-        self.failed_units_read();
     }
 }
 

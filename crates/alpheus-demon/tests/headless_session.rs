@@ -6861,7 +6861,8 @@ fn error_red_on_the_bar(sway: &Sway) -> bool {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn failed_module_shows_only_above_zero() {
-    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-shows", FAILED_BAR, 0, 0, |_| ());
+    let (sway, _sys_bus, _user_bus, sys, usr, d) =
+        failed_daemon("failed-shows", &format!("{FAILED_BAR}[failed]\nsubscribe = true\n"), 0, 0, |_| ());
     failed_counts_read(&sys, &usr);
     assert!(!error_red_on_the_bar(&sway), "nothing at zero: {:?}", d.log());
     sys.wait_until("the system subscription", |s| s.subscribers() == 1);
@@ -6894,7 +6895,8 @@ fn failed_module_follows_failed_refresh_unsubscribed() {
     let user_reads = usr.calls("Get");
     assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
     assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "never drawn after the verb: {:?}", d.log());
-    assert!(usr.calls("Get") > user_reads, "the user manager was read again too");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(usr.calls("Get"), user_reads + 1, "the user manager was read once more, not twice (one read per refresh)");
     // And back to zero by the verb as well.
     sys.set_failed(0);
     assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap().0, EXIT_OK);
@@ -6971,7 +6973,7 @@ fn failed_refresh_without_the_module_is_done_and_reads_nothing() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn the_failed_units_hook_fires_on_change() {
-    let toml = format!("{FAILED_BAR}[hooks]\nfailed_units = [\"hook-rec\"]\n");
+    let toml = format!("{FAILED_BAR}[failed]\nsubscribe = true\n[hooks]\nfailed_units = [\"hook-rec\"]\n");
     let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-hook", &toml, 0, 0, |sway| {
         fake_env_recorder(sway, "hook-rec");
     });
@@ -7005,7 +7007,7 @@ fn the_failed_units_hook_fires_on_change() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn the_failed_notice_at_start_is_one_with_the_total() {
-    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nnotify = true\n";
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nsubscribe = true\nnotify = true\n";
     let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice-start", toml, 2, 1, |_| ());
     failed_counts_read(&sys, &usr);
     assert!(d.wait_for_count("failed: notice", 1, DELAY), "{:?}", d.log());
@@ -7018,7 +7020,7 @@ fn the_failed_notice_at_start_is_one_with_the_total() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn the_failed_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
-    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nnotify = true\n";
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nsubscribe = true\nnotify = true\n";
     let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice", toml, 0, 0, |_| ());
     failed_counts_read(&sys, &usr);
     assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());

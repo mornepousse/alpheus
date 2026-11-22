@@ -7,8 +7,9 @@
 //! other changes: the chosen line on stdout and exit 0; Escape → nothing,
 //! exit 1; anything wrong (another menu open, bad usage, no answer) → a
 //! message on stderr, exit 2. One code of its own: 3 when the daemon is
-//! unreachable (not running) or too old for `--index`/`--password`/`--visible`, the only
-//! cases where a caller may fall back to another menu.
+//! unreachable (not running) or too old for a flag it was sent (`--index`/`--password`/`--visible`
+//! and the later ones, `--failed-refresh` among them), the only cases where a caller may fall
+//! back to another menu.
 
 use alpheus_commun::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,

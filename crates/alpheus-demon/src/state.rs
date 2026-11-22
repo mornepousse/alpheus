@@ -89,7 +89,7 @@ pub struct Bar {
     /// The power profile, for the quick panel; nothing in the bar draws it.
     pub profile: Feed<ProfileState>,
     pub resources: Resources,
-    /// The failed units: nothing in the bar draws them yet (the module comes with the wiring).
+    /// The failed-units counts (the system manager's and the user manager's), drawn by the `failed` module.
     pub failed: Failed,
     /// The tray's icons, in registration order; empty at start.
     pub tray: Vec<TrayIcon>,

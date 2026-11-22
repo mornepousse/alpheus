@@ -45,8 +45,8 @@ happened*.
     and, a fifth domain, systemd's `NFailedUnits` for the `failed` module)
     on one thread blocked on the bus while nothing changes. The units domain
     reads one property (`Get`, never `GetAll`: the Manager's carries its
-    environment) and calls `Subscribe()` once per owner unless
-    `[failed] subscribe = false`; its reads ride the thread's existing
+    environment) and calls `Subscribe()` once per owner only with
+    `[failed] subscribe = true` (off by default); its reads ride the thread's existing
     wake-ups (a poke from the socket's `failed-refresh`, a resume, another
     domain's signal after 60 s), never a timer of its own.
   Resources (`/proc`, `/sys`) are a timer on the loop, not a thread. With
@@ -130,7 +130,7 @@ These are guardrails from the scope document, checked mechanically.
    activation start it), and a guardrail test fails if a write word (`Set`,
    `Connect`, `ActivateConnection`, `GetSecrets`, `Pair`, …) appears there. The
    systemd1 calls are `Get` of `NFailedUnits` (the Manager interface only,
-   never `GetAll`) and `Subscribe()`, which makes systemd send its signals; no
+   never `GetAll`) and, with `[failed] subscribe = true`, `Subscribe()`, which makes systemd send its signals; no
    method of `systemd1` that acts (`StartUnit`, `RestartUnit`, `ResetFailed`,
    `KillUnit`, …) may appear under `sources/dbus/`.
    **The one named exemption** is the Bluetooth acting connection

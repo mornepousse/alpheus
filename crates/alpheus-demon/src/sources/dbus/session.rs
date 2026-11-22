@@ -161,6 +161,11 @@ fn units_done(link: &mut UnitsLink, bus: &mut dyn Bus, count: Option<u32>, units
     Ok(units_read())
 }
 
+/// Whether a tap's (scope, opens) differs from what was last read for it, which then catches up.
+fn spoke(now: (PanelScope, u64), seen: &mut (PanelScope, u64)) -> bool {
+    std::mem::replace(seen, now) != now
+}
+
 /// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
 /// again on each of its pokes and with every network re-read; Closed reads nothing. `units`: the
 /// loop's word "read the failed-units count now"; `opts`: whether to `Subscribe` to systemd and
@@ -191,17 +196,20 @@ pub fn session(
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
-    let r = asked(wifi.snapshot(), &mut s.wifi_open, |scope| reader.rescope(bus, scope));
+    let mut wifi_seen = wifi.snapshot();
+    let r = asked(wifi_seen, &mut s.wifi_open, |scope| reader.rescope(bus, scope));
     if let Err(e) = wifi_into(r, &mut s) {
         failed = Some(e);
     }
     bt.drain();
-    let r = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
+    let mut bt_seen = bt.snapshot();
+    let r = asked(bt_seen, &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
     if let Err(e) = bt_into(r, &mut s) {
         failed = Some(e);
     }
     vpn.drain();
-    let r = asked(vpn.snapshot(), &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
+    let mut vpn_seen = vpn.snapshot();
+    let r = asked(vpn_seen, &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
     if let Err(e) = vpn_into(r, &mut s) {
         failed = Some(e);
     }
@@ -241,13 +249,26 @@ pub fn session(
             drained = true;
         }
         if signal.is_poke() {
-            let r = asked(wifi.snapshot(), &mut s.wifi_open, |scope| reader.rescope(bus, scope));
-            let r = wifi_into(r, &mut s);
-            // The same for Bluetooth, read whichever tap spoke (a poke does not say which).
-            let b = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
-            let b = bt_into(b, &mut s);
-            let v = asked(vpn.snapshot(), &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope));
-            let v = vpn_into(v, &mut s);
+            // A poke does not say which tap spoke: each is read only when its own scope or its
+            // opens moved since it was last read, so the failed-units word re-reads no panel.
+            let snap = wifi.snapshot();
+            let r = if spoke(snap, &mut wifi_seen) {
+                wifi_into(asked(snap, &mut s.wifi_open, |scope| reader.rescope(bus, scope)), &mut s)
+            } else {
+                Ok(())
+            };
+            let snap = bt.snapshot();
+            let b = if spoke(snap, &mut bt_seen) {
+                bt_into(asked(snap, &mut s.bt_open, |scope| bt_reader.rescope(bus, scope)), &mut s)
+            } else {
+                Ok(())
+            };
+            let snap = vpn.snapshot();
+            let v = if spoke(snap, &mut vpn_seen) {
+                vpn_into(asked(snap, &mut s.vpn_open, |scope| vpn_reader.rescope(bus, scope)), &mut s)
+            } else {
+                Ok(())
+            };
             // The loop's `failed-refresh`: the count again, now.
             let poked = domains.contains(&Domain::Units) && units.poked_since(&mut units_seen);
             let mut u = poked.then(|| read(bus, Domain::Units, &mut s, log_state));
@@ -340,8 +361,8 @@ pub fn session(
         }
         let r = read(bus, d, &mut s, log_state);
         // The count rides another domain's wake-up when it was last read `opts.piggyback` ago or
-        // more: no timer, no wake-up of its own.
-        let piggyback = d != Domain::Units && domains.contains(&Domain::Units) && link.due(bus.now());
+        // more: no timer, no wake-up of its own. Not when subscribed: systemd then pushes it.
+        let piggyback = d != Domain::Units && domains.contains(&Domain::Units) && !link.subscribed() && link.due(bus.now());
         let p = piggyback.then(|| read(bus, Domain::Units, &mut s, log_state));
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
         // The same re-read for an open VPN reading (the actives, not the list at the row).

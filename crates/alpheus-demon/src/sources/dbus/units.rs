@@ -4,8 +4,8 @@
 //! counts, it does not list.
 //!
 //! Systemd sends the Manager's `PropertiesChanged` only while some client has called `Subscribe`,
-//! so the session subscribes once after its first successful read (`UnitsLink`), unless
-//! `[failed] subscribe` is off. The triggers that hold whatever the subscription (resume, a poke,
+//! so the session subscribes once after its first successful read (`UnitsLink`), only when
+//! `[failed] subscribe` is on (it is off by default). The triggers that hold whatever the subscription (resume, a poke,
 //! a piggyback on another domain's wake-up) re-read it all the same.
 
 use super::{Bus, SYSTEMD1};
@@ -23,7 +23,8 @@ pub const PIGGYBACK: Duration = Duration::from_secs(60);
 /// What the session is told about the count (`[failed]`; tests pass a short interval).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitsOptions {
-    /// Call `Subscribe` once per owner so that systemd sends the change at once.
+    /// Call `Subscribe` once per owner so that systemd sends the change at once (`[failed]
+    /// subscribe`, off by default).
     pub subscribe: bool,
     /// The piggyback interval.
     pub piggyback: Duration,
@@ -31,7 +32,7 @@ pub struct UnitsOptions {
 
 impl Default for UnitsOptions {
     fn default() -> Self {
-        UnitsOptions { subscribe: true, piggyback: PIGGYBACK }
+        UnitsOptions { subscribe: false, piggyback: PIGGYBACK }
     }
 }
 

@@ -593,7 +593,7 @@ fn units_become(rx: &mpsc::Receiver<Option<u32>>, want: Option<u32>) {
 fn units_follow_a_subscribed_manager() {
     let b = PrivateBus::start("units-follow");
     let systemd = FakeSystemd::serve(&b, 0);
-    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions::default());
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
     assert_eq!(next_units(&rx, 5), Some(Some(0)), "read at start");
     systemd.wait_until("the subscription", |s| s.subscribers() == 1);
     systemd.set_failed(2);
@@ -637,7 +637,7 @@ fn without_subscribe_a_change_is_seen_on_the_next_trigger() {
 fn a_refused_subscribe_goes_on_and_a_poke_still_reads() {
     let b = PrivateBus::start("units-refused");
     let systemd = FakeSystemd::serve_refusing(&b, 1);
-    let (rx, tap) = units_session(&b, vec![Domain::Units], UnitsOptions::default());
+    let (rx, tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
     assert_eq!(next_units(&rx, 5), Some(Some(1)));
     systemd.wait_until("the refused call", |s| s.calls("Subscribe") == 1);
     systemd.set_failed(3);
@@ -651,7 +651,7 @@ fn a_refused_subscribe_goes_on_and_a_poke_still_reads() {
 fn a_systemd_restart_resubscribes() {
     let b = PrivateBus::start("units-restart");
     let systemd = FakeSystemd::serve(&b, 0);
-    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions::default());
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
     assert_eq!(next_units(&rx, 5), Some(Some(0)));
     systemd.wait_until("the first subscription", |s| s.subscribers() == 1);
     systemd.restart();
@@ -665,7 +665,7 @@ fn a_systemd_restart_resubscribes() {
 fn units_rules_name_their_service() {
     let b = PrivateBus::start("units-rules");
     let systemd = FakeSystemd::serve(&b, 0);
-    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions::default());
+    let (rx, _tap) = units_session(&b, vec![Domain::Units], UnitsOptions { subscribe: true, ..UnitsOptions::default() });
     assert_eq!(next_units(&rx, 5), Some(Some(0)));
     systemd.wait_until("the subscription", |s| s.subscribers() == 1);
     let reads = systemd.calls("Get NFailedUnits");
