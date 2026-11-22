@@ -1613,6 +1613,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "placement.rs",
     "text.rs",
     "quick/mod.rs",
+    "quick/draw.rs",
     "quick/state.rs",
     "quick/wifi.rs",
     "quick/secret.rs",
@@ -2414,8 +2415,16 @@ fn the_resources_popup_has_no_panicking_path() {
 /// command run. Production code only.
 #[test]
 fn the_quick_model_and_its_state_reader_only_read() {
-    const QUICK_MODEL_FILES: &[&str] =
-        &["quick/mod.rs", "quick/state.rs", "quick/wifi.rs", "quick/bt.rs", "quick/vpn.rs", "quick/dnd.rs", "quick/shield.rs"];
+    const QUICK_MODEL_FILES: &[&str] = &[
+        "quick/mod.rs",
+        "quick/draw.rs",
+        "quick/state.rs",
+        "quick/wifi.rs",
+        "quick/bt.rs",
+        "quick/vpn.rs",
+        "quick/dnd.rs",
+        "quick/shield.rs",
+    ];
     let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
     let unmatched = unmatched_entries(QUICK_MODEL_FILES, &names);
     assert!(unmatched.is_empty(), "QUICK_MODEL_FILES names no existing file: {unmatched:?}");
@@ -2760,6 +2769,7 @@ fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
     for name in [
         "quick/mod.rs",
+        "quick/draw.rs",
         "quick/state.rs",
         "quick/app.rs",
         "quick/wifi.rs",
