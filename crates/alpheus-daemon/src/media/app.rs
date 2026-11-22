@@ -65,6 +65,9 @@ impl App {
         }
         let now = Instant::now();
         // Nothing opens without a player that is shown: no connection, or every player stopped.
+        // The bar shows the module only for a shown player, so this guard is reached only by a race
+        // (the player stops between the draw and the click); no test covers it, and without it an
+        // empty framed popup would open.
         let Some(mpris) = mpris_of(self.tray.as_ref(), self.link.session.as_ref()) else { return };
         let players = Mpris::players(mpris);
         if players.shown().next().is_none() {

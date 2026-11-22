@@ -13,8 +13,8 @@ that is shown. It never takes a click and never takes the keyboard.
 
 - **Volume** (the default sink). The glyph follows the level as the bar's sound module does (muted,
   low below 34 %, medium below 67 %, high above). Muted dims the glyph, the bar and the number and
-  keeps the level. Above 100 % the whole bar fills in the warning colour and the real number is
-  shown (`130%`).
+  keeps the level. Above 100 % the whole bar fills in the warning colour (unless muted) and the real number
+  is shown (`130%`).
 - **The default sink changes.** The pill shows the new sink's name (cut to fit) in place of the
   bar, with its level.
 - **Microphone** (the default source). A glyph for live or muted, with the source's level, shown
@@ -26,15 +26,18 @@ Volume and microphone changes are passive: they come from the PipeWire state the
 follows (the `pw-dump` child of the sound source), whatever caused them (a key, pavucontrol, a
 Bluetooth headset). Nothing shows for the first state after `pw-dump` starts, for 1 s after it, nor
 for 1 s after a default device appears, goes or is switched, and nothing shows for a change under a
-whole percent. Inside that second, the sink's name card, when it is on screen, follows a second
-switch or a key press.
+whole percent. Each stream (sink, source) has its own grace. The switch itself shows the sink's name
+card unless an earlier grace is running; inside the second, a card on screen follows a second
+switch or a key press, and a card waiting for the new sink's volume shows once it arrives, if that
+is inside the second.
 
 ## Using it
 
 There is nothing to click. Change the volume, switch the default sound output, or mute the
 microphone, and the pill appears. For brightness, the key that changes it must also run
-`alpheus-launch --osd brightness`, after `brightnessctl`, since alpheus never writes brightness and
-never watches it (a watcher would show the pill when the idle daemon dims the screen). The verb
+`alpheus-launch --osd brightness`, after `brightnessctl`, since the OSD never writes brightness (the
+quick panel's slider changes it through `brightnessctl`) and never watches it (a watcher would show
+the pill when the idle daemon dims the screen). The verb
 answers 0 and shows nothing when the `osd` module is off or no backlight is found, and exits 3 when
 the daemon cannot be reached.
 
@@ -51,7 +54,7 @@ In `bar.toml`, read at start (a change needs a restart of the bar). `osd` is in 
 | `[osd] width` | `32` | cells of the pill's row; 24 to 60 |
 | `[osd] margin` | `48` | logical px between the pill and the output's bottom edge; 0 to 400 |
 | `[osd] backlight` | `""` | a device name in `backlight_dir`; empty means the first one in sorted order |
-| `[osd] backlight_dir` | `/sys/class/backlight` | where backlight devices are listed; an absolute path; read only on the verb |
+| `[osd] backlight_dir` | `/sys/class/backlight` | where backlight devices are listed; an absolute path; read on the verb, and when the quick panel shows its brightness row (again 150 ms after it runs `brightnessctl`) |
 
 An unknown key or a value out of range makes `bar.toml` invalid: the daemon logs one line and runs on
 the defaults.
@@ -66,8 +69,9 @@ Two files in `crates/alpheus-daemon/src/osd/`, and the backlight's reader beside
   deadline. `rows` builds the pill's one row of cells (`level` draws the glyph, bar and percentage,
   which the quick panel's sliders share), and `parse_level` and `brightness_percent` turn the
   backlight's two texts into a level.
-- `surface.rs`: the Wayland side, kept thin. `OsdSurface` is one field of `App` (the model, the open
-  surface `OpenOsd`, and the hide timer). `osd_sound` takes every sound message; `osd_verb` answers
+- `surface.rs`: the Wayland side, kept thin. `OsdSurface` is one field of `App`, with three fields of its own (the model,
+  the open surface `OpenOsd`, and the hide timer); whether `osd` is in `modules` is read from the
+  config each time (`osd_enabled`), not stored. `osd_sound` takes every sound message; `osd_verb` answers
   the brightness verb; both end in `osd_show`, which replaces the pill, moves the deadline and calls
   `osd_sync`, the one place that creates or updates the surface (`osd_create`, `osd_update`) or
   drops it (`osd_drop`). `osd_draw` paints the row after each dispatch pass and commits nothing when
@@ -117,7 +121,9 @@ reads the backlight once and calls `osd_show` with `Pill::Brightness`.
   `osd_no_wakeup_at_rest_before_or_after_a_pill`, `osd_off_never_reads_the_sound`,
   `osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill`,
   `osd_a_volume_change_replaces_the_brightness_pill_and_pushes_its_deadline_back`,
-  `osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing`) pin the wiring on an
+  `osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing`,
+  `osd_another_output_going_away_leaves_the_pill`, `osd_the_pills_own_output_going_away_drops_it`)
+  pin the wiring on an
   isolated Sway with a fake `pw-dump` and a fake backlight directory; no test reads `/sys` or calls
   `wpctl` or `brightnessctl`.
 - The reasons are in [decisions.md](../decisions.md): "The microphone pill shows only when its mute
@@ -133,7 +139,7 @@ Measured in release, back to back, 3 runs (the README's memory table has the fig
 method):
 
 - **Linked in:** within noise of the build before it (−28…+172 KB), binary +56 KiB stripped.
-- **Module on, nothing shown:** 0 to 96 KB: the last sound state and three instants; no surface, no
-  timer and no sysfs read until the verb runs.
+- **Module on, nothing shown:** 0 to 96 KB, measured; the model is the last sound state and three
+  instants, and there is no surface, timer or sysfs read until the verb runs.
 - **One pill:** 4 to 30 KB while shown, −38 to −12 KB once gone (`osd_pss_idle_shown_and_gone`).
 - **At rest:** 0 loop wake-ups once the pill went (`at_rest_no_wakeups_after_the_osd`).

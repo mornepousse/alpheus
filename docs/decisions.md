@@ -460,11 +460,10 @@ Date: 2026-10-08 · Source: media plan 1, Task 1, "Decisions written down", item
 
 MPRIS does not signal the playback position. The popup works it out as the last position read, plus
 the time since, times the rate, while the player plays, and cuts it to the track's length. The
-position is read with one call when the popup opens, on `Seeked`, and when the status or the track
-changes while it is open; with the popup closed it stays unknown. The `Seeked` rule is on the bus
-only while the popup is open, and the 1 s redraw timer exists only while the popup (or the
-notification panel's media card) is shown and the active player plays. This keeps the module to
-the spec's lightness rules (no polling, no wake-up at rest).
+position is read with one call when the popup or the notification panel opens, on `Seeked`, and
+when the status, the track or the rate changes while one is open; closed, it stays unknown. The
+`Seeked` rule is on the bus only while one is open, and the 1 s redraw timer exists only while one
+is shown and the active player plays: no polling, no wake-up at rest.
 
 Date: 2026-10-08 · Source: media spec § 2 ("Time"), § 3 ("Seeked") and "Goal"; media plan 1, "Controller reconciliation", item 5
 
@@ -482,7 +481,7 @@ On the bar, `▶ Title` takes the module's purple (as `module_colors` says) whil
 `⏸ Title` is dim as a whole, whatever `module_colors` says. A state wins over the hue, as it does
 for the other modules.
 
-Date: 2026-10-08 · Source: media spec § 1 ("Content"); media plan 1, Task 2, "Decisions written down", item "Paused", and the list of confirmed choices at the end of "Controller reconciliation" (first bullet)
+Date: 2026-10-08 · Source: media spec § 1 ("Content"); media plan 1, Task 2, "Decisions written down", item "Paused", and the list of confirmed choices after item 9 in "Controller reconciliation" (first bullet)
 
 ### Media titles are cut by display width, never inside a cluster
 
@@ -497,22 +496,20 @@ Date: 2026-10-08 · Source: media spec § 1 (amended 2026-10-08); media plan 1, 
 ### The microphone pill shows only when its mute flips
 
 The OSD shows the default source only when its mute state flips, with the level the source has
-then. A change of its level never shows: WebRTC apps (a browser or a chat client in a call) move the
-capture gain on their own, and the pill would pop all through a call. The sound source no longer
-publishes a microphone level change alone, so a call wakes nothing. A mute flip shows even right
-after a sink pill (an earlier 500 ms rule, made for level noise, was dropped as it had nothing left
-to guard), and a message that changes both the sink and the microphone shows the sink.
+then. A change of its level never shows: WebRTC apps move the capture gain during calls, and the
+pill would pop all through one. The sound source publishes no microphone level change alone, so a
+call wakes nothing. A message that changes both the sink and the microphone shows the sink.
 
 Date: 2026-10-09 · Source: OSD spec § 1 and § 2 (amendments of 2026-10-09)
 
 ### A sound change within a second of a start or a new default device shows nothing
 
-The first state after `pw-dump` (re)starts is a baseline and never shows. For 1 s after it, and for
-1 s after a default sink or source appears, goes or is switched, a change shows nothing: the levels of
-a new default settle in silence (WirePlumber restores them). The end of the second counts as outside
-it. One exception: while the sink's name card is on screen, a change inside that second updates the
-card (a second switch shows the new name, a key press the new level); and a switch to a sink whose
-volume has not arrived shows the card once it does.
+The first state after `pw-dump` (re)starts is a baseline and never shows. Each stream (sink,
+source) has its own 1 s grace, started by that baseline and by its default appearing, going or being
+switched: a change inside it shows nothing, since the levels of a new default settle in silence
+(WirePlumber restores them). The end of the second counts as outside it. While the sink's name card
+is on screen, a change inside it updates the card. The switch itself shows the card, unless an
+earlier grace is running; a card waiting for a volume that arrives inside the second shows then.
 
 Date: 2026-10-09 · Source: OSD spec § 2 (and its amendment of the final review); OSD plan 1, "Decisions written down", item 2; `side` in `osd/mod.rs`
 
@@ -529,8 +526,8 @@ Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 1
 
 The brightness pill comes only from `alpheus-launch --osd brightness`, which reads the backlight's
 `brightness` and `max_brightness` once, then shows the pill. Nothing watches the backlight and
-alpheus never writes it: the user's brightness key keeps changing it (through `brightnessctl`) and
-then calls the verb. A watcher would pop the pill each time hypridle dims and restores the
+the OSD never writes it (the quick panel's slider changes it, through `brightnessctl`): the user's
+brightness key keeps changing it the same way and then calls the verb. A watcher would pop the pill each time hypridle dims and restores the
 screen.
 
 Date: 2026-10-09 · Source: OSD spec § 2 ("Brightness is on request")

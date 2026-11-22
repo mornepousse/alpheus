@@ -13,7 +13,7 @@
 //! Never:
 //! - take a click: the input region is empty, and if it cannot be made nothing is shown;
 //! - write brightness, or read the backlight outside the verb (`backlight.rs` reads it once, on
-//!   request);
+//!   request; the quick panel reads it too, for its own brightness row, in `quick/app.rs`);
 //! - run a command or write to the compositor (guardrails check the OSD's files);
 //! - write a log line per change: one when the surface appears and one when it goes.
 //!
@@ -361,6 +361,8 @@ impl App {
         // `true` below says the surface is the pill's even when there is nothing to do.
         let Some(open) = self.osd.open.as_ref() else { return true };
         let (boxed, scale) = (open.boxed.clone(), open.scale);
+        // The same factor leaves the surface as it is. Without this the output would be the same
+        // (same size, same row), at the cost of one more resize and frame.
         if scale == factor {
             return true;
         }

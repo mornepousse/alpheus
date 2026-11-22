@@ -122,8 +122,9 @@ rule goes off and the tick with it.
   the notification panel's, name `media_closed`, which drops the `Seeked` rule and the tick.
 - `nothing_resident_while_the_launcher_is_closed`: counts the timers the daemon builds, so the media
   tick cannot be joined by another unnoticed.
-- No guardrail checks that these files do not panic; their production code has no `unwrap`, `expect`
-  or `panic!`, only the `unwrap_or` family.
+- `the_media_files_have_no_panicking_path`: the production code of `media/mod.rs`, `media/popup.rs`
+  and `media/app.rs` has no `.unwrap()`, `.expect(`, `panic!(`, `unreachable!(` or indexing by a
+  constant, `i` or `..n`.
 - The unit tests of `media/tests.rs` and `media/popup/tests.rs` pin the model and the popup's rows,
   keys and tick, with hostile players (an unknown status, a length sent as a string, an empty artist
   list, a 100 KB title, a newline in a title, a 17th player). `tests/media_private_bus.rs` runs the

@@ -62,7 +62,7 @@
 //! width = 32                                                # cells of the pill's row, 24 to 60
 //! margin = 48                                               # logical px above the bottom edge, 0 to 400
 //! backlight = ""                                            # a device in backlight_dir; "": the first one, in sorted order
-//! backlight_dir = "/sys/class/backlight"                    # where backlight devices are listed; read only on `alpheus-launch --osd brightness`
+//! backlight_dir = "/sys/class/backlight"                    # where backlight devices are listed; read on `alpheus-launch --osd brightness` and for the quick panel's brightness row
 //! [quick]                                                   # the quick settings panel (with "quick" in modules)
 //! step = 5                                                  # % per ←/→ or wheel notch on a slider, 1 to 25
 //! keep_awake = { toggle = [], state = "" }                  # toggle: argv, run as given; [] hides the row
