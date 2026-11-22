@@ -529,7 +529,7 @@ pub struct App {
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
-    /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
+    /// The camera devices' watch and scan state (privacy delivery 2, privacy/camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
     /// The tray menus' and tooltip's state (tray/menu_app.rs).
     pub(crate) menu: crate::tray::menu_app::TrayMenu,

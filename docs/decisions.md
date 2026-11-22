@@ -634,3 +634,115 @@ reconnection is tried: a retry loop would wake the bar at rest. The media and no
 consumers that live on the tray's connection go with it.
 
 Date: 2026-10-05 · Source: tray spec § 3 ("No session bus": no retry loop); tray plan 2, "Controller decisions", item 12; `tray_output` (the consumers' log lines)
+
+### The microphone lights for a recording stream, never a meter or a filter
+
+The microphone indicator lights for a link from an audio source to a `Stream/Input/Audio` that is
+active or whose stream runs. It is not lit for a stream that is a meter (`stream.monitor`, such as
+pavucontrol's), one that reads a sink's monitor (`stream.capture.sink`, the visualisers), a member of
+a `node.link-group` (filter chains, loopbacks and echo cancellation, which forward sound and do not
+record) or a passive stream.
+
+Date: 2026-10-16 · Source: privacy spec § 2 ("The rules", Microphone)
+
+### A muted app stream still lights the microphone
+
+The model has no per-stream mute: a stream that is linked and running holds the device, so the
+indicator stays lit even when the app muted its own stream, since the app still holds the
+microphone. Only the default source's mute changes how it is drawn: the glyph is dim, and so is the
+popup's heading.
+
+Date: 2026-10-16 · Source: privacy spec § 1 ("Muted microphone"); privacy plan 1, "Review Focus", item 2; privacy plan 1, "Decisions written down", item 1; CLAUDE.md, "Privacy indicators, delivery 1" (the dim glyph also in the popup's heading)
+
+### A running camera with no link lights it unnamed
+
+When a device video source (a v4l2 or libcamera device, or a source with the Camera role) is running
+and no link from it is seen, the camera indicator is lit with no app name. The same holds for a
+running screen producer, as long as no link has named a screen holder.
+
+Date: 2026-10-16 · Source: privacy spec § 2 ("The rules", Camera, "GNOME's rule"); the screen case is `capture` in `privacy/mod.rs`
+
+### An indicator going off stays shown for half a second
+
+An indicator that is no longer live stays shown for 0.5 s, and one that comes back within that time
+never blinked: a stream that renegotiates (a call changing codec, a share switching window) drops
+for a few batches. Lighting up is immediate. One deadline timer, armed only while an indicator is
+pending off, serves every indicator.
+
+Date: 2026-10-16 · Source: privacy spec § 4 (the figure is GNOME's)
+
+### A compositor's screencast release counts after a one-second hold
+
+Hyprland sends a release about 500 ms after the last frame of a cast, and a screenshot gives a short
+blip, so its release counts only after a hold of 1 s, after which the 0.5 s off-delay applies (1.5 s
+in all). niri's hold is zero. A cast that comes back during the hold never blinks the screen.
+
+Date: 2026-10-16 · Source: privacy spec § 3 (Hyprland); privacy plan 1, "Decisions written down", item 4
+
+### A screen lit by the compositor alone reads `(unnamed)`
+
+The compositor's cast events say that a screen is captured and what is captured, never who captures
+it. The screen indicator is lit when PipeWire or the compositor says so, and the popup's names come
+from PipeWire; a screen lit by the compositor alone shows `(unnamed)`.
+
+Date: 2026-10-16 · Source: privacy spec § 3 (amended 2026-10-16 at planning)
+
+### The privacy popup lists apps and selects nothing
+
+The popup has one heading per lit indicator and one row per app, and no row can be selected: Escape
+closes it and every other key, the wheel and a click inside do nothing. While open it follows what is
+shown, and it closes (`nothing captured`) once nothing is shown, after the off-delay. It is at most 32
+cells wide; a longer name is cut.
+
+Date: 2026-10-16 · Source: privacy spec § 5; privacy plan 1, "Decisions written down", items 5 and 6
+
+### The camera is read from `/proc` after a trigger, never counted
+
+An open or a close of a `/dev/video*` node, a node appearing or going, or a lost event queue only
+means "look again". What is shown comes from one scan of `/proc`, because a counter of opens drifts
+(descriptors inherited by `fork` or `dup`, opens made before the daemon started, an overflowing event
+queue). The scan reads the links of `<pid>/fd` of the daemon's own user, never opens anything under
+`/dev`, and names a holder by its `comm`.
+
+Date: 2026-10-20 · Source: privacy camera spec §§ 1 and 2
+
+### A burst of camera triggers is scanned at most one second after its first
+
+A trigger moves the scan 300 ms ahead, so that an open and its close (a browser listing the cameras)
+scan once and find nothing. The scan still runs at the latest 1 s after the first trigger of the
+burst, so that a process that opens and closes a node non-stop cannot postpone it for ever.
+
+Date: 2026-10-20 · Source: privacy camera spec § 1 ("The debounce", amended at execution); privacy plan 2, "Decisions written down", item 3
+
+### PipeWire's own hold on a camera adds no name
+
+A holder whose `comm` is `pipewire` or `wireplumber`, and the daemon itself, are left out of the
+scan. PipeWire's hold on the device is already named by the client that reads the camera through it,
+which delivery 1's graph names.
+
+Date: 2026-10-20 · Source: privacy camera spec § 2; privacy plan 2, "Global Constraints" (the dropped holders)
+
+### A video node udev has not opened to the user yet is watched again when its attributes change
+
+A node udev has just created may belong to root alone, so watching it is refused. The refusal is
+kept, and the watch is tried again when the name's attributes change (the group and ACL arriving), or
+when it is created again, and forgotten when the name goes. A refusal because of a permission is not
+logged.
+
+Date: 2026-10-20 · Source: privacy camera spec § 1; privacy plan 2, "Decisions written down", item 5, and "Review Focus", item 1; `CameraWatch::watch_node` (the permission refusals not logged)
+
+### The camera scan runs on the event loop
+
+The scan, a few milliseconds over a few hundred processes, is synchronous on the bar's event loop and
+not on a thread of its own. The measured median is 4.0 to 4.1 ms on 120 processes of 30 descriptors,
+under the 10 ms bound beyond which the spec would have moved it to a short-lived thread.
+
+Date: 2026-10-20 · Source: privacy camera spec § 2 (the 10 ms rule); CLAUDE.md, "Privacy indicators, delivery 2" ("Scan cost", the controller's ruling)
+
+### The camera watch is a second inotify instance
+
+The watch on the video devices has its own inotify instance, apart from the theme watch's. This keeps
+the theme watch untouched and the two lifetimes apart, at the cost of one file descriptor. Delivery
+1's spec had planned to use the existing instance.
+
+Date: 2026-10-20 · Source: privacy camera spec § 4 (amendment of delivery 1's § 10)

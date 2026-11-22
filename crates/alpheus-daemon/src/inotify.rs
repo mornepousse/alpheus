@@ -1,4 +1,4 @@
-//! The one inotify wrapper: the theme watch (watch.rs) and the camera watch (camera_dev.rs) each own an
+//! The one inotify wrapper: the theme watch (watch.rs) and the camera watch (privacy/camera.rs) each own an
 //! instance of it. Non-blocking and close-on-exec; read-only to the file system (it only watches).
 
 use std::ffi::CString;
