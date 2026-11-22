@@ -1758,16 +1758,73 @@ fn units_read_is_sent_outside_the_compared_state() {
     assert_eq!(told, 2, "but two reads, two words");
 }
 
+fn battery_reads(bus: &FakeBus) -> usize {
+    bus.calls.iter().filter(|c| c.starts_with("EnumerateDevices")).count()
+}
+
+/// A read error of the count (systemd1 timing out, an odd reply) is the count's alone: unknown for
+/// that read, and the session, with the other domains, goes on (diagnostics spec § 6).
 #[test]
-fn a_units_outage_hides_the_count_and_tells_nobody() {
-    let mut bus = FakeBus::empty();
+fn a_units_read_error_hides_the_count_and_the_session_goes_on() {
+    let mut bus = FakeBus::workstation();
     bus.with_systemd(1);
     bus.failing.insert(units::PATH.into());
-    let (seen, told, r) = run_units(&mut bus, &[Domain::Units], opts(true, 60));
+    let steps: [Step; 2] = [(battery_wakes(), nothing), (Signal::poke(), poke_the_units)];
+    bus.script = VecDeque::from(steps);
+    let (seen, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 60));
     assert_eq!(seen[0].units, None);
+    assert!(seen[0].battery.is_some(), "the other domains are shown: {seen:?}");
     assert_eq!(told, 0, "a read that failed is not a read");
-    assert_eq!(outage_of(&r.unwrap_err()), Outage::Domain(Domain::Units));
     assert_eq!(bus.subscribes(), 0);
+    // The scripted bus's own end, not the count's outage: both scripted signals were handled.
+    let e = r.unwrap_err();
+    assert_eq!((e.kind(), outage_of(&e)), (io::ErrorKind::UnexpectedEof, Outage::Bus), "{e}");
+    assert_eq!(battery_reads(&bus), 2, "the battery signal was read after the count failed: {:?}", bus.calls);
+}
+
+/// The same on a resume and on the count's own signal.
+#[test]
+fn a_units_read_error_ends_no_session_on_resume_or_its_own_signal() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(units::PATH.into());
+    let steps: [Step; 3] = [(MANAGER_CHANGED(), nothing), (prepare_for_sleep("false"), nothing), (battery_wakes(), nothing)];
+    bus.script = VecDeque::from(steps);
+    let (_, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 60));
+    assert_eq!(told, 0);
+    assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus, "only the scripted end");
+    assert_eq!(battery_reads(&bus), 3, "start, the resume, the signal: {:?}", bus.calls);
+}
+
+/// A systemd that times out is not asked again at every other domain's wake-up: the failed
+/// attempt counts as the last read for the piggyback.
+#[test]
+fn a_failed_count_is_not_piggybacked_before_its_interval() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.failing.insert(units::PATH.into());
+    let steps: [Step; 4] = [
+        (battery_wakes(), five_seconds_pass),
+        (battery_wakes(), nothing),
+        (battery_wakes(), six_more_seconds_pass),
+        (battery_wakes(), nothing),
+    ];
+    bus.script = VecDeque::from(steps);
+    let _ = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(false, 10));
+    assert_eq!(bus.units_gets(), 2, "at start, then once past 10 s: {:?}", bus.calls);
+}
+
+/// The bus itself going away under the count's read stays the whole session's outage.
+#[test]
+fn the_bus_going_away_under_the_count_ends_the_session() {
+    let mut bus = FakeBus::workstation();
+    bus.with_systemd(1);
+    bus.disconnecting.insert(units::PATH.into());
+    bus.script = VecDeque::from([(battery_wakes(), nothing as fn(&mut FakeBus))]);
+    let (_, told, r) = run_units(&mut bus, &[Domain::Battery, Domain::Units], opts(true, 60));
+    assert_eq!(told, 0);
+    assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus);
+    assert_eq!(bus.script.len(), 1, "no signal was reached");
 }
 
 #[test]

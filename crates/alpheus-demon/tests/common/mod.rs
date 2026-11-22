@@ -1607,6 +1607,8 @@ const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
 #[derive(Default)]
 struct SystemdShared {
     n_failed: u32,
+    /// `Get` answers with an error reply (an odd reply, a service that is failing).
+    get_error: bool,
     /// The unique names that called `Subscribe` (systemd drops them with their connection).
     subscribers: Vec<String>,
     /// Every call received, "Member" or "Member arg".
@@ -1701,7 +1703,9 @@ impl FakeSystemd {
                             "Get" => {
                                 let (interface, property): (String, String) = call.read2().unwrap_or_default();
                                 s.calls.push(format!("Get {property}"));
-                                if interface == SYSTEMD_MANAGER && property == "NFailedUnits" {
+                                if s.get_error {
+                                    call.error(&"org.freedesktop.DBus.Error.Failed".into(), c"failing")
+                                } else if interface == SYSTEMD_MANAGER && property == "NFailedUnits" {
                                     let mut r = call.method_return();
                                     busctl_wire::push_reply(
                                         &mut r,
@@ -1764,6 +1768,11 @@ impl FakeSystemd {
             tx.send(SystemdCmd::Failed(n)).unwrap();
         }
         self.wait_until("the count to be set", |s| s.shared.lock().unwrap().n_failed == n);
+    }
+
+    /// From now on `Get` is answered with an error reply (or not, again).
+    pub fn set_get_error(&self, on: bool) {
+        self.shared.lock().unwrap().get_error = on;
     }
 
     /// Drops the connection and takes the name again: a new owner, with no subscriber.

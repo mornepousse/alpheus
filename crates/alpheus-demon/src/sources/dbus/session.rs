@@ -69,6 +69,11 @@ pub(super) fn read_all(
         let r = read(bus, *d, s, log_state);
         if *d == Domain::Units {
             *units_ok = r.is_ok();
+            // A failed count is not a failed session (diagnostics spec § 6): the count is unknown
+            // for this read, logged under the rate limit, and the other domains carry on.
+            if r.as_ref().is_err_and(is_units_error) {
+                continue;
+            }
         }
         if let Err(e) = r {
             let already_bus = failed.as_ref().is_some_and(|f| outage_of(f) == Outage::Bus);
@@ -78,6 +83,26 @@ pub(super) fn read_all(
         }
     }
     failed
+}
+
+/// Whether `e` is the failed-units count's own read error (not the bus going away, which is
+/// tagged `Outage::Bus` and stays fatal).
+fn is_units_error(e: &io::Error) -> bool {
+    outage_of(e) == Outage::Domain(Domain::Units)
+}
+
+/// The count's read, made non-fatal: `Ok(true)` it was read, `Ok(false)` it failed for real (the
+/// count is None, already logged; the attempt is remembered so a piggyback does not retry a
+/// systemd that times out at every wake-up), any other error is returned as it is.
+fn units_soft(r: io::Result<()>, link: &mut UnitsLink, now: Instant) -> io::Result<bool> {
+    match r {
+        Ok(()) => Ok(true),
+        Err(e) if is_units_error(&e) => {
+            link.attempted(now);
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Reads the wanted domains, publishes, then waits for signals: each one of
@@ -193,6 +218,9 @@ pub fn session(
     let mut last = None;
     let mut initial_units_ok = false;
     let mut failed = read_all(bus, domains, &mut s, log_state, &mut initial_units_ok);
+    if domains.contains(&Domain::Units) && !initial_units_ok && failed.is_none() {
+        link.attempted(bus.now());
+    }
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
@@ -271,11 +299,11 @@ pub fn session(
             };
             // The loop's `failed-refresh`: the count again, now.
             let poked = domains.contains(&Domain::Units) && units.poked_since(&mut units_seen);
-            let mut u = poked.then(|| read(bus, Domain::Units, &mut s, log_state));
+            let mut u = poked.then(|| units_soft(read(bus, Domain::Units, &mut s, log_state), &mut link, bus.now()));
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
-            if let Some(Ok(())) = u {
+            if let Some(Ok(true)) = u {
                 match units_done(&mut link, bus, s.units, units_read) {
                     Ok(true) => {}
                     Ok(false) => return Ok(()),
@@ -299,6 +327,9 @@ pub fn session(
             // would otherwise point to.
             let mut units_ok = false;
             let mut failed = read_all(bus, domains, &mut s, log_state, &mut units_ok);
+            if domains.contains(&Domain::Units) && !units_ok && failed.is_none() {
+                link.attempted(bus.now());
+            }
             if let Err(e) = wifi_into(reader.reread(bus), &mut s) {
                 failed = Some(e);
             }
@@ -359,11 +390,13 @@ pub fn session(
         if d == Domain::Units && signal.member == "NameOwnerChanged" {
             link.new_owner();
         }
+        let mut units_read_ok = false;
         let r = read(bus, d, &mut s, log_state);
+        let r = if d == Domain::Units { units_soft(r, &mut link, bus.now()).map(|ok| units_read_ok = ok) } else { r };
         // The count rides another domain's wake-up when it was last read `opts.piggyback` ago or
         // more: no timer, no wake-up of its own. Not when subscribed: systemd then pushes it.
         let piggyback = d != Domain::Units && domains.contains(&Domain::Units) && !link.subscribed() && link.due(bus.now());
-        let p = piggyback.then(|| read(bus, Domain::Units, &mut s, log_state));
+        let p = piggyback.then(|| units_soft(read(bus, Domain::Units, &mut s, log_state), &mut link, bus.now()));
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
         // The same re-read for an open VPN reading (the actives, not the list at the row).
         let v = if d == Domain::Network { vpn_into(vpn_reader.reread(bus), &mut s) } else { Ok(()) };
@@ -374,7 +407,7 @@ pub fn session(
             return Ok(());
         }
         let mut units_err = None;
-        if (d == Domain::Units && r.is_ok()) || matches!(p, Some(Ok(()))) {
+        if units_read_ok || matches!(p, Some(Ok(true))) {
             match units_done(&mut link, bus, s.units, units_read) {
                 Ok(true) => {}
                 Ok(false) => return Ok(()),

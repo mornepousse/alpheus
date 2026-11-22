@@ -95,6 +95,12 @@ impl UnitsLink {
         Ok(())
     }
 
+    /// The count's read failed at `now`: remembered like a read, so a piggyback waits its interval
+    /// before asking a systemd that does not answer again.
+    pub fn attempted(&mut self, now: Instant) {
+        self.last = Some(now);
+    }
+
     /// systemd1 changed owner (a `daemon-reexec`, a restart): the new one has no subscriber.
     pub fn new_owner(&mut self) {
         self.sub = Sub::Unsent;

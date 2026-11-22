@@ -632,6 +632,57 @@ fn without_subscribe_a_change_is_seen_on_the_next_trigger() {
     units_become(&rx, Some(4));
 }
 
+/// A systemd that answers `Get` with an error leaves the count unknown and the session alive: the
+/// other domains keep flowing (diagnostics spec § 6).
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn a_failing_systemd_leaves_the_other_domains_flowing() {
+    let b = PrivateBus::start("units-failing");
+    let systemd = FakeSystemd::serve(&b, 3);
+    systemd.set_get_error(true);
+    let power = FakePowerProfiles::serve(&b, "balanced");
+    let domains = vec![Domain::Power, Domain::Units];
+    let tap = Arc::new(UnitsTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &domains).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let (end_tx, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let r = alpheus_demon::sources::dbus::session(
+            &mut bus,
+            &domains,
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &tap,
+            UnitsOptions { subscribe: false, piggyback: Duration::from_secs(1) },
+            &mut |s| tx.send(s).is_ok(),
+            &mut || true,
+        );
+        let _ = end_tx.send(r.is_ok());
+    });
+    let first = rx.recv_timeout(Duration::from_secs(5)).expect("a first state");
+    assert_eq!((first.units, first.power.is_some()), (None, true), "the count unknown, the profile read");
+    power.set_active("performance");
+    let until = Instant::now() + Duration::from_secs(5);
+    let mut last = first.clone();
+    while last.power == first.power {
+        let left = until.checked_duration_since(Instant::now()).expect("the profile change was never published");
+        last = rx.recv_timeout(left).expect("the profile change was never published");
+    }
+    assert_eq!(last.units, None);
+    assert!(end_rx.try_recv().is_err(), "the session is still alive");
+    // The count comes back once systemd answers again (a piggyback on the next profile change).
+    systemd.set_get_error(false);
+    std::thread::sleep(Duration::from_millis(1200));
+    power.set_active("balanced");
+    let until = Instant::now() + Duration::from_secs(5);
+    while last.units != Some(3) {
+        let left = until.checked_duration_since(Instant::now()).expect("the count never came back");
+        last = rx.recv_timeout(left).expect("the count never came back");
+    }
+}
+
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
 fn a_refused_subscribe_goes_on_and_a_poke_still_reads() {

@@ -527,6 +527,7 @@ fn startup_pss_per_source() {
     // Another build under test (`ALPHEUS_DEMON_UNDER_TEST`, a base from before the module) does
     // not know its name.
     if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none() {
+        // `[failed]` at its defaults: `subscribe = false`.
         cases.push(("+ failed", concat!(every_module!(), ", \"failed\"")));
     }
     let mut report = Vec::new();
@@ -3800,8 +3801,9 @@ fn start_figures(r: &FailedRig) -> (u64, u64, usize, usize) {
 }
 
 /// The default bar, then the same list with and without `failed`, at start, count 0 on both
-/// managers: PSS printed, the anonymous memory bounded (+ 256 KB), threads and sockets printed
-/// (does a bar without a session bus, or with one, open a link it did not before?).
+/// managers, with `subscribe` stated each way (it defaults to false): PSS printed, the anonymous
+/// memory bounded (+ 256 KB), threads and sockets printed (does a bar without a session bus, or
+/// with one, open a link it did not before?).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn failed_module_pss_at_start() {
@@ -3809,25 +3811,37 @@ fn failed_module_pss_at_start() {
     let off = failed_rig("failed-start-off", FAILED_OFF, 0, 0, true, false);
     let off_figures = start_figures(&off);
     drop(off);
-    let on = failed_rig("failed-start-on", FAILED_ON, 0, 0, true, true);
+    let unsubscribed = format!("{FAILED_ON}[failed]\nsubscribe = false\n");
+    let subscribed = format!("{FAILED_ON}[failed]\nsubscribe = true\n");
+    let on = failed_rig("failed-start-on", &unsubscribed, 0, 0, true, true);
     let on_figures = start_figures(&on);
-    let both_read = (on.sys.calls("Get"), on.usr.as_ref().map(|u| u.calls("Get")));
+    let both_read = (on.sys.calls("Get"), on.usr.as_ref().map(|u| u.calls("Subscribe")), on.sys.calls("Subscribe"));
     drop(on);
-    let no_session = failed_rig("failed-start-nosession", FAILED_ON, 0, 0, false, true);
+    let sub = failed_rig("failed-start-sub", &subscribed, 0, 0, true, true);
+    let sub_figures = start_figures(&sub);
+    let sub_subscribed = (sub.sys.subscribers(), sub.usr.as_ref().map(|u| u.subscribers()));
+    drop(sub);
+    let no_session = failed_rig("failed-start-nosession", &unsubscribed, 0, 0, false, true);
     let no_session_figures = start_figures(&no_session);
     drop(no_session);
     eprintln!(
-        "failed module at start (PSS KB, Pss_Anon KB, threads, sockets): without {off_figures:?}; with, count 0 on both {on_figures:?} \
-         (Get calls {both_read:?}); with, no session bus {no_session_figures:?}"
+        "failed module at start (PSS KB, Pss_Anon KB, threads, sockets): without {off_figures:?}; with, count 0 on both, subscribe false \
+         {on_figures:?} (system Get calls, user and system Subscribe calls: {both_read:?}); subscribe true {sub_figures:?} \
+         (subscribers system, user: {sub_subscribed:?}); subscribe false, no session bus {no_session_figures:?}"
     );
-    assert!(
-        on_figures.1 <= off_figures.1 + 256,
-        "the module costs {} KB of anonymous memory at start (bound 256)",
-        on_figures.1.saturating_sub(off_figures.1)
-    );
+    assert_eq!(both_read.1.unwrap_or(0) + both_read.2, 0, "subscribe = false: no Subscribe call");
+    assert_eq!(sub_subscribed, (1, Some(1)), "subscribe = true: one Subscribe on each manager");
+    for (what, figures) in [("subscribe false", on_figures), ("subscribe true", sub_figures)] {
+        assert!(
+            figures.1 <= off_figures.1 + 256,
+            "the module costs {} KB of anonymous memory at start, {what} (bound 256)",
+            figures.1.saturating_sub(off_figures.1)
+        );
+    }
 }
 
-/// The default bar (no `modules`) at start, a system manager and a user manager at count 0 on
+/// The default bar (no `modules`, so `[failed]` at its defaults: `subscribe = false`, the base build
+/// knowing no such table) at start, a system manager and a user manager at count 0 on
 /// their buses: PSS, anonymous PSS, threads and sockets printed. The same test runs against a base
 /// build (`ALPHEUS_DEMON_UNDER_TEST`), which has no failed module: the difference is what the
 /// module's being in the default list costs.
