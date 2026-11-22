@@ -11,6 +11,7 @@ use crate::launcher::socket::Server;
 use crate::launcher::socket_glue::{launcher_socket_outcome, watch_launcher_socket};
 use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
+use crate::launcher::tools::nav::{Counts, StateJob};
 use crate::lock;
 use crate::modules::Needs;
 use crate::nonblocking::NonBlocking;
@@ -67,6 +68,29 @@ pub enum Mail {
     Entries {
         generation: u64,
         entries: Entries,
+    },
+    /// One entry's `state`, read for the open Tools menu (tools spec § 6): adopted by the open
+    /// launcher with this generation only.
+    ToolState {
+        generation: u64,
+        entry: usize,
+        state: Option<bool>,
+    },
+    /// The states read is over: the entries it did not read (a waiting choices read stopped it), and
+    /// the reader's slot is free.
+    ToolStatesDone {
+        generation: u64,
+        unread: Vec<StateJob>,
+        counts: Counts,
+    },
+    /// A `choices_cmd`'s lines: adopted only by the open launcher whose generation and `token` match;
+    /// the reader's slot is free either way.
+    ToolChoices {
+        generation: u64,
+        token: u64,
+        entry: usize,
+        lines: Vec<String>,
+        failed: bool,
     },
     /// A Shield worker's report (shield spec § 7).
     Shield(crate::shield::ShieldMail),
@@ -642,6 +666,12 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
+        // The Tools menu's reader (tools_app.rs): one entry's state, the end of a states read, a choices read.
+        channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
+        channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
+        channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {
+            state.tools_choices(generation, token, entry, lines, failed)
+        }
         channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
@@ -712,7 +742,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     // The focus timer as it was left (nothing without `timer` in `modules`): its chip, even idle,
     // and its deadline; with the loop handle made, whatever `notifications` is.
-    state.timer_load(crate::timer_app::unix_ms());
+    state.timer_load(crate::timer::app::unix_ms());
     state.start_notifications(want.notifications);
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.theme.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));

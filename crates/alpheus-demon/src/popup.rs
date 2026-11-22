@@ -30,7 +30,7 @@ use crate::resources_popup::ResourcesPopup;
 use crate::session_bus::codec::Layout;
 use crate::session_bus::menu::{Menu, MenuAction};
 use crate::session_bus::menu_session::MenuSession;
-use crate::timer_popup::TimerPopup;
+use crate::timer::popup::TimerPopup;
 use crate::wayland::{App, pick_buffer, position_by};
 use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
@@ -307,7 +307,7 @@ static POPUPS: [PopupOps; 8] = [
     crate::power_app::OPS,
     crate::privacy_app::OPS,
     crate::resources_app::OPS,
-    crate::timer_app::OPS,
+    crate::timer::app::OPS,
 ];
 
 /// A row's hook for a popup with nothing to do there.

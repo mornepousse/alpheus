@@ -5,6 +5,9 @@ A short map for contributors. The reasons behind each part are in
 [`specs/`](specs/); the per-module `//!` comments in the source are the
 detailed reference and are kept current with the code.
 
+Features are documented one page each in [`features/`](features/), the
+[timer](features/timer.md) first.
+
 ## Crates
 
 One Cargo workspace, four crates:
@@ -110,6 +113,12 @@ trial; the Diag tab sends `failed-refresh` there so the bar's count follows. The
 only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
 bounded `capture`.
+
+The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `tools_app.rs`:
+the glue) is a launcher mode with no scan. Built-ins replay the daemon's own verbs
+inside the process; the entry states and dynamic choices are read one at a time on a
+short-lived `alpheus-tools` thread through `capture`; `tools_join.rs` is the only file
+that names the clipboard, Shield and Diagnostics for it.
 
 ## Policy: what the daemon may touch
 

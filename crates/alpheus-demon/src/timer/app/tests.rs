@@ -1,15 +1,24 @@
+//! Tests of the timer's wiring (`app.rs`) that need no running daemon: its pure helpers (what an
+//! end does, the log lines, the sound, the wait, the clock check, loading the state file). A fake
+//! executor stands in for the real one, so no program is ever started.
+
 use super::*;
 use crate::timer::{MAX_MS, MINUTE_MS, Run};
 use alpheus_commun::exec::fake::FakeExecutor;
 
+/// The same lengths as the model's tests: 25 minutes of work, 5 and 15 of break, 4 rounds.
 const L: Lengths = Lengths { work: 25 * MINUTE_MS, short: 5 * MINUTE_MS, long: 15 * MINUTE_MS, rounds: 4 };
+/// The instant every test starts from (Unix milliseconds).
 const T0: u64 = 1_000_000_000;
+/// A timer with nothing running and nothing to dismiss.
 const IDLE: Model = Model::Idle { done: false };
 
-fn pomo(end: u64, phase: Phase, round: u8) -> Model {
+/// A Pomodoro phase that is running and ends at `end`.
+fn running_pomodoro(end: u64, phase: Phase, round: u8) -> Model {
     Model::Pomodoro { run: Run::Running(end), phase, round }
 }
 
+/// A sound command; it is never run, the tests only check whether one is set.
 fn sound() -> Vec<String> {
     vec!["x".to_string()]
 }
@@ -38,10 +47,10 @@ fn change_lines_are_fixed_words() {
     assert_eq!(line(paused, Change::Toggle).as_deref(), Some("timer: resumed"));
     assert_eq!(line(running, Change::Add(60_000)).as_deref(), Some("timer: added 1 min"));
     assert_eq!(line(running, Change::Stop).as_deref(), Some("timer: stopped"));
-    assert_eq!(line(pomo(T0 + 1, Phase::Work, 1), Change::Skip).as_deref(), Some("timer: skipped to short break"));
-    assert_eq!(line(pomo(T0 + 1, Phase::Work, 4), Change::Skip).as_deref(), Some("timer: skipped to long break"));
-    assert_eq!(line(pomo(T0 + 1, Phase::ShortBreak, 1), Change::Skip).as_deref(), Some("timer: skipped to work"));
-    assert_eq!(line(pomo(T0 + 1, Phase::LongBreak, 4), Change::Skip).as_deref(), Some("timer: skipped to the end"));
+    assert_eq!(line(running_pomodoro(T0 + 1, Phase::Work, 1), Change::Skip).as_deref(), Some("timer: skipped to short break"));
+    assert_eq!(line(running_pomodoro(T0 + 1, Phase::Work, 4), Change::Skip).as_deref(), Some("timer: skipped to long break"));
+    assert_eq!(line(running_pomodoro(T0 + 1, Phase::ShortBreak, 1), Change::Skip).as_deref(), Some("timer: skipped to work"));
+    assert_eq!(line(running_pomodoro(T0 + 1, Phase::LongBreak, 4), Change::Skip).as_deref(), Some("timer: skipped to the end"));
     assert_eq!(line(IDLE, Change::Pause), None, "nothing to pause");
     assert_eq!(line(IDLE, Change::Skip), None, "nothing to skip");
     let done = Model::Idle { done: true };
@@ -50,7 +59,7 @@ fn change_lines_are_fixed_words() {
 }
 
 #[test]
-fn end_lines() {
+fn each_end_has_its_fixed_log_line() {
     assert_eq!(end_line(End::Countdown { total: 1 }), "timer: countdown ended");
     assert_eq!(end_line(End::WorkDone { next: Phase::ShortBreak }), "timer: pomodoro work ended");
     assert_eq!(end_line(End::BreakDone { round: 2 }), "timer: pomodoro break ended");
@@ -82,19 +91,19 @@ fn the_sound_spawns_its_argv_and_logs_no_command() {
 }
 
 #[test]
-fn wait_for_never_overflows() {
+fn the_wait_for_a_target_is_zero_when_past_and_never_overflows() {
     assert_eq!(wait_for(10, 0), Duration::from_millis(10));
     assert_eq!(wait_for(0, 10), Duration::ZERO);
     assert_eq!(wait_for(u64::MAX, 0), Duration::from_millis(25 * 3_600_000));
 }
 
 #[test]
-fn check_clock_applies_one_end_and_saves() {
-    let (m, end, save) = step(pomo(T0, Phase::Work, 1), &L, T0 + 5_000);
+fn the_clock_check_applies_one_end_and_says_to_save() {
+    let (m, end, save) = step(running_pomodoro(T0, Phase::Work, 1), &L, T0 + 5_000);
     assert_eq!(end, Some(End::WorkDone { next: Phase::ShortBreak }));
-    assert_eq!(m, pomo(T0 + 5_000 + L.short, Phase::ShortBreak, 1), "one phase only, started now");
+    assert_eq!(m, running_pomodoro(T0 + 5_000 + L.short, Phase::ShortBreak, 1), "one phase only, started now");
     assert!(save);
-    let before = pomo(T0 + 1_000, Phase::Work, 1);
+    let before = running_pomodoro(T0 + 1_000, Phase::Work, 1);
     assert_eq!(step(before, &L, T0), (before, None, false));
     assert_eq!(step(IDLE, &L, T0), (IDLE, None, false));
     let (m, end, save) = step(Model::Countdown { run: Run::Running(T0), total: MINUTE_MS }, &L, T0);
@@ -102,10 +111,10 @@ fn check_clock_applies_one_end_and_saves() {
 }
 
 #[test]
-fn loading_reads_drops_or_ends_silently() {
+fn loading_reads_a_good_file_drops_a_bad_one_and_ends_silently() {
     let l = load(None, &L, T0);
     assert_eq!(l, Loaded { model: IDLE, unreadable: false, ended: false });
-    let running = pomo(T0 + 60_000, Phase::Work, 2);
+    let running = running_pomodoro(T0 + 60_000, Phase::Work, 2);
     let l = load(running.saved().as_deref(), &L, T0);
     assert_eq!(l, Loaded { model: running, unreadable: false, ended: false });
     for bad in ["", "garbage", "countdown running 1 2 3", "countdown paused 999 999"] {
@@ -149,6 +158,6 @@ fn a_due_end_is_applied_before_the_change() {
 fn closing_the_popup_dismisses_a_done_chip_only() {
     assert_eq!(seen_at_close(&Model::Idle { done: true }), Some(Change::Seen));
     assert_eq!(seen_at_close(&IDLE), None);
-    assert_eq!(seen_at_close(&pomo(T0 + 1000, Phase::Work, 1)), None);
+    assert_eq!(seen_at_close(&running_pomodoro(T0 + 1000, Phase::Work, 1)), None);
     assert_eq!(seen_at_close(&Model::Stopwatch { run: Run::Paused(5) }), None);
 }

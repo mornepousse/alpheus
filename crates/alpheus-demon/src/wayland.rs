@@ -518,9 +518,14 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
-    /// The focus timer's model, lengths and deadline (timer_app.rs); the deadline is armed only
+    /// The Tools menu's question timer and reader schedule (tools_app.rs); nothing armed or
+    /// running while the menu is closed.
+    pub(crate) tools: crate::tools_app::ToolsApp,
+    /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
+    pub(crate) power_verb_opened: Option<Instant>,
+    /// The focus timer's model, lengths and deadline (timer/app.rs); the deadline is armed only
     /// while a timer runs.
-    pub(crate) timer: crate::timer_app::TimerApp,
+    pub(crate) timer: crate::timer::app::TimerApp,
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
@@ -621,7 +626,7 @@ impl App {
             .flatten();
         // Only when switched on: otherwise no manager is bound and nothing is allocated.
         let clipboard = bar.config.clipboard.enabled.then(|| crate::clipboard::app::ClipboardApp::bind(globals, qh)).flatten();
-        let timer = crate::timer_app::TimerApp::new(&bar.config);
+        let timer = crate::timer::app::TimerApp::new(&bar.config);
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         let failed_notice = crate::failed::notice_wanted(&bar.config).then(crate::failed::Notice::default);
@@ -686,6 +691,8 @@ impl App {
             quick: crate::quick_app::QuickApp::new(),
             units_tap: None,
             power_timer: DeadlineTimer::new(),
+            tools: crate::tools_app::ToolsApp::new(),
+            power_verb_opened: None,
             timer,
             privacy_timer: DeadlineTimer::new(),
             camera: crate::camera_app::Camera::new(),
