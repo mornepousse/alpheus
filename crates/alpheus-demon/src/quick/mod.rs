@@ -19,11 +19,11 @@ use crate::keys::Key;
 use crate::list::{self, Boxed};
 use crate::notify::dnd::Dnd;
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
-use crate::quick_bt::{Bt, BtOrder, Code};
-use crate::quick_dnd::{DndChoice, DndDetail};
-use crate::quick_shield::{ShieldAsk, ShieldPanel};
-use crate::quick_vpn::Vpn;
-use crate::quick_wifi::Wifi;
+use crate::quick::bt::{Bt, BtOrder, Code};
+use crate::quick::dnd::{DndChoice, DndDetail};
+use crate::quick::shield::{ShieldAsk, ShieldPanel};
+use crate::quick::vpn::Vpn;
+use crate::quick::wifi::Wifi;
 use crate::segments::{BELL, SHIELD};
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
@@ -1772,6 +1772,16 @@ pub fn describe(live: &Live, q: &Quick) -> String {
     let names: Vec<&str> = shown(live, q).into_iter().map(Row::name).collect();
     format!("rows: {}; sinks: {}", names.join(" "), q.sinks.len())
 }
+
+pub mod app;
+pub mod bt;
+pub mod bt_app;
+pub mod dnd;
+pub mod secret;
+pub mod shield;
+pub mod state;
+pub mod vpn;
+pub mod wifi;
 
 #[cfg(test)]
 mod tests;

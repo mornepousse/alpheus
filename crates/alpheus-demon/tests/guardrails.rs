@@ -1136,7 +1136,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // re-read (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
         // forget question (quick delivery 3) is.
-        ("quick_app.rs", "Timer::", 1),
+        ("quick/app.rs", "Timer::", 1),
         // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
         // runs (at its end, and at each minute of the chip).
         ("timer/app.rs", "Timer::", 1),
@@ -1178,7 +1178,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The quick panel's acting Bluetooth connection (quick delivery 3): inserted only while the
         // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
         // answers or calls the agent.
-        ("bt_app.rs", "Generic::new", 1),
+        ("quick/bt_app.rs", "Generic::new", 1),
         // The bar's own session link: only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
         // readable only when the portal or a player speaks. Its deadline timer, above, is
@@ -1596,14 +1596,14 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "painter/",
     "placement.rs",
     "text.rs",
-    "quick.rs",
-    "quick_state.rs",
-    "quick_wifi.rs",
-    "quick_secret.rs",
-    "quick_bt.rs",
-    "quick_vpn.rs",
-    "quick_dnd.rs",
-    "quick_shield.rs",
+    "quick/mod.rs",
+    "quick/state.rs",
+    "quick/wifi.rs",
+    "quick/secret.rs",
+    "quick/bt.rs",
+    "quick/vpn.rs",
+    "quick/dnd.rs",
+    "quick/shield.rs",
     "shield/mod.rs",
     "shield/usb.rs",
     "compositor/mango.rs",
@@ -1617,7 +1617,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "privacy/camera_app.rs",
     "sources/dbus/bt.rs",
     "sources/dbus/bt_act.rs",
-    "bt_app.rs",
+    "quick/bt_app.rs",
     "outputs/",
     "outputs/app.rs",
     "launcher/calc.rs",
@@ -2398,7 +2398,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs", "quick_shield.rs"]
+        if !["quick/mod.rs", "quick/state.rs", "quick/wifi.rs", "quick/bt.rs", "quick/vpn.rs", "quick/dnd.rs", "quick/shield.rs"]
             .contains(&name.as_str())
         {
             continue;
@@ -2421,7 +2421,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 7, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs, quick_dnd.rs and quick_shield.rs");
+    assert_eq!(checked, 7, "quick/mod.rs, quick/state.rs, quick/wifi.rs, quick/bt.rs, quick/vpn.rs, quick/dnd.rs and quick/shield.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2559,7 +2559,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         // The password field, then a failure with the profile nmcli made: `--ask`, then the cleanup.
         const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
         let mut q = opened.clone();
-        q.wifi.pick = alpheus_demon::quick_wifi::Pick::Network(b"Bureau-Test".to_vec());
+        q.wifi.pick = alpheus_demon::quick::wifi::Pick::Network(b"Bureau-Test".to_vec());
         record(q.key(&live, Key::Enter, false, t));
         for ch in "fake-pass".chars() {
             record(q.key(&live, Key::Char(ch), false, t));
@@ -2575,7 +2575,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             d.state = 30;
         }
         record(q.set_wifi(Some(failing), t).action);
-        record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
+        record(q.due(t + alpheus_demon::quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
     // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
     // key on every pick (twice), every press of every cell with every button (twice).
@@ -2740,17 +2740,17 @@ fn every_quick_command_stays_on_the_allowlist() {
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
     for name in [
-        "quick.rs",
-        "quick_state.rs",
-        "quick_app.rs",
-        "quick_wifi.rs",
-        "quick_secret.rs",
-        "quick_bt.rs",
-        "quick_vpn.rs",
-        "quick_dnd.rs",
-        "quick_shield.rs",
+        "quick/mod.rs",
+        "quick/state.rs",
+        "quick/app.rs",
+        "quick/wifi.rs",
+        "quick/secret.rs",
+        "quick/bt.rs",
+        "quick/vpn.rs",
+        "quick/dnd.rs",
+        "quick/shield.rs",
         "session.rs",
-        "bt_app.rs",
+        "quick/bt_app.rs",
     ] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
@@ -2766,7 +2766,7 @@ fn the_quick_panel_has_no_panicking_path() {
 fn the_bluetooth_connection_goes_with_the_panel() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (quick_app, bt_app) = (src("quick_app.rs"), src("bt_app.rs"));
+    let (quick_app, bt_app) = (src("quick/app.rs"), src("quick/bt_app.rs"));
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("BtScope::Closed") && closed.contains("self.bt_close()"), "{closed}");
     let flush = function_body(&quick_app, "pub(crate) fn quick_flush(");
@@ -2816,7 +2816,7 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(matches!((flushed, read), (Some(f), Some(r)) if f < r), "read after the flush: {run}");
 }
 
-/// Only bt_app.rs drives the acting connection; quick_app.rs only declares its field.
+/// Only quick/bt_app.rs drives the acting connection; quick/app.rs only declares its field.
 #[test]
 fn only_bt_app_and_bt_act_name_btact() {
     let mut naming = Vec::new();
@@ -2826,11 +2826,11 @@ fn only_bt_app_and_bt_act_name_btact() {
             naming.push(name.clone());
         }
         if prod.contains(".bt_act") {
-            assert_eq!(name, "bt_app.rs", "the acting connection used outside bt_app.rs");
+            assert_eq!(name, "quick/bt_app.rs", "the acting connection used outside quick/bt_app.rs");
         }
     }
     naming.sort();
-    assert_eq!(naming, ["bt_app.rs", "quick_app.rs", "sources/dbus/bt_act.rs"]);
+    assert_eq!(naming, ["quick/app.rs", "quick/bt_app.rs", "sources/dbus/bt_act.rs"]);
 }
 
 /// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
@@ -2840,7 +2840,7 @@ fn only_bt_app_and_bt_act_name_btact() {
 fn the_bluetooth_logs_name_no_device() {
     let files = source_files();
     let mut lines = 0;
-    for name in ["quick_bt.rs", "bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
+    for name in ["quick/bt.rs", "quick/bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
         let prod = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
             lines += 1;
@@ -2852,7 +2852,7 @@ fn the_bluetooth_logs_name_no_device() {
         }
     }
     assert!(lines >= 3, "the log lines were not found: the check is hollow");
-    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "bt_app.rs").expect("bt_app.rs").1);
+    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt_app.rs").expect("quick/bt_app.rs").1);
     for line in bt_app.lines().filter(|l| l.contains(":?") || l.contains(":#?")) {
         assert!(line.contains(".kind()"), "bt_app.rs: Debug of anything but an io::ErrorKind: {line}");
     }
@@ -2865,13 +2865,13 @@ fn the_bluetooth_logs_name_no_device() {
 fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let quick_app = src("quick_app.rs");
+    let quick_app = src("quick/app.rs");
     let body = function_body(&quick_app, "fn quick_spawn_secret(");
     let (input, sent) = (body.find("spawn_with_input("), body.find("password_sent()"));
     assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
     assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
     assert!(!body.contains(".spawn("), "never an argument: {body}");
-    for name in ["quick.rs", "quick_wifi.rs", "quick_secret.rs", "quick_app.rs", "popup.rs"] {
+    for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "popup.rs"] {
         let prod = src(name);
         for leak in
             ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
@@ -2889,7 +2889,7 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
             }
         }
     }
-    let secret = src("quick_secret.rs");
+    let secret = src("quick/secret.rs");
     assert_eq!(secret.matches("unsafe").count(), 1, "one unsafe block: the volatile write");
     assert!(secret.contains("write_volatile") && secret.contains("compiler_fence"));
     assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
@@ -2917,7 +2917,7 @@ fn the_panel_readers_have_no_panicking_path() {
 fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify/app.rs"));
+    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick/app.rs"), src("notify/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     // Fix S1: a slider level still waiting for its window is sent before the panel's body goes:
     // the row's `flush` runs before the take, its `closed` once the body is dropped.
@@ -3721,7 +3721,7 @@ fn the_camera_logs_name_no_process() {
 #[test]
 fn the_bluetooth_row_reuses_the_modules_glyphs() {
     let files = source_files();
-    let quick_bt = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_bt.rs").expect("quick_bt.rs").1);
+    let quick_bt = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt.rs").expect("quick/bt.rs").1);
     for copy in ["\\u{f00af}", "\\u{f00b1}", "\u{f00af}", "\u{f00b1}"] {
         assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
     }
@@ -4252,9 +4252,9 @@ fn the_vpn_logs_name_no_profile() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let mut statements = 0;
-    for name in ["quick_vpn.rs", "sources/dbus/vpn.rs", "quick_app.rs"] {
+    for name in ["quick/vpn.rs", "sources/dbus/vpn.rs", "quick/app.rs"] {
         let prod = src(name);
-        let own = name != "quick_app.rs";
+        let own = name != "quick/app.rs";
         for statement in vpn_log_statements(&prod) {
             if !own && !statement.to_ascii_lowercase().contains("vpn") {
                 continue;
@@ -4292,7 +4292,7 @@ fn vpn_log_statements(text: &str) -> Vec<&str> {
 #[test]
 fn the_vpn_tap_follows_the_panel() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("VpnScope::Closed"), "{closed}");
     for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
@@ -4789,11 +4789,11 @@ fn the_shield_logs_name_nothing() {
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     // Every log call of the Shield's own files, and the Shield's lines of the others.
     let mut calls: Vec<(String, String)> = Vec::new();
-    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick_shield.rs"] {
+    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick/shield.rs"] {
         calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
     }
     for name in
-        ["quick_app.rs", "notify/app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks/app.rs", "watch.rs"]
+        ["quick/app.rs", "notify/app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks/app.rs", "watch.rs"]
     {
         calls.extend(
             log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
@@ -4828,7 +4828,7 @@ fn the_shield_logs_name_nothing() {
 #[test]
 fn the_shield_watch_is_the_theme_watchs_instance() {
     let files = source_files();
-    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick_shield.rs"] {
+    for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick/shield.rs"] {
         let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for never in ["Inotify::new", "inotify_", "inotify::"] {
             assert!(!t.contains(never), "{never} in {name}");
@@ -4843,7 +4843,7 @@ fn the_shield_watch_is_the_theme_watchs_instance() {
 #[test]
 fn the_shield_files_have_no_panicking_path() {
     let files = source_files();
-    for name in ["shield/mod.rs", "shield/usb.rs", "shield/run.rs", "quick_shield.rs"] {
+    for name in ["shield/mod.rs", "shield/usb.rs", "shield/run.rs", "quick/shield.rs"] {
         let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
@@ -4893,7 +4893,7 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
 #[test]
 fn the_quick_panels_timer_follows_the_view_from_the_open() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
         assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
     }

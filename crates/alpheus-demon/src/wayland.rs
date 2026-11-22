@@ -511,7 +511,7 @@ pub struct App {
     pub(crate) osd: crate::osd::surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).
-    pub(crate) quick: crate::quick_app::QuickApp,
+    pub(crate) quick: crate::quick::app::QuickApp,
     /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
     /// `Units` domain.
     pub(crate) units_tap: Option<Arc<crate::sources::dbus::UnitsTap>>,
@@ -688,7 +688,7 @@ impl App {
             hooks,
             shield,
             osd: crate::osd::surface::OsdSurface::new(),
-            quick: crate::quick_app::QuickApp::new(),
+            quick: crate::quick::app::QuickApp::new(),
             units_tap: None,
             power_timer: DeadlineTimer::new(),
             tools: crate::launcher::tools::app::ToolsApp::new(),

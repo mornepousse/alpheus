@@ -26,7 +26,7 @@ use crate::grid::Target;
 use crate::keys::Key;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
-use crate::quick_app::verb_debounced;
+use crate::quick::app::verb_debounced;
 use crate::session_bus::notifications::minute_now;
 use crate::state::Msg;
 use crate::state_file;

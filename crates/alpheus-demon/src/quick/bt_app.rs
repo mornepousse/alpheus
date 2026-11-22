@@ -8,9 +8,9 @@
 
 use crate::log::write as log;
 use crate::popup::PopupBody;
+use crate::quick::app::bt_scope_for;
+use crate::quick::bt::{Bt, BtOrder};
 use crate::quick::{self, Quick, QuickAction};
-use crate::quick_app::bt_scope_for;
-use crate::quick_bt::{Bt, BtOrder};
 use crate::sources::dbus::bt_act::{ActCall, ActError, AgentReply, AgentRequest, BtAct, BtEvent};
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;

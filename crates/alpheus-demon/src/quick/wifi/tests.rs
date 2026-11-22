@@ -1,6 +1,6 @@
 use super::*;
-use crate::quick_app::WifiFollow;
-use crate::quick_secret::CAPACITY;
+use crate::quick::app::WifiFollow;
+use crate::quick::secret::CAPACITY;
 use crate::system::{SavedWifi, WifiDevice};
 use std::time::Duration;
 

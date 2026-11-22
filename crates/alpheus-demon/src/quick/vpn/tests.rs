@@ -4,7 +4,7 @@ use crate::config::QuickConfig;
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
 use crate::quick::Line;
-use crate::quick_wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
+use crate::quick::wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
 use crate::system::{ActiveVpn, VpnProfile};
 use std::time::Duration;
 

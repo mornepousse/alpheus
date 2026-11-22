@@ -7,7 +7,7 @@ use crate::launcher::socket::{Conn, Pending};
 use crate::launcher::socket_glue::reply_guarded;
 use crate::log::write as log;
 use crate::popup::PopupBody;
-use crate::quick_shield::ShieldAsk;
+use crate::quick::shield::ShieldAsk;
 use crate::shield::run::spawn_job;
 use crate::shield::usb::{Parsed, allow_argv};
 use crate::shield::{

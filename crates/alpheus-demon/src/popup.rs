@@ -303,7 +303,7 @@ static POPUPS: [PopupOps; 8] = [
     crate::calendar::app::OPS,
     crate::media::app::OPS,
     crate::notify::panel_app::OPS,
-    crate::quick_app::OPS,
+    crate::quick::app::OPS,
     crate::power::app::OPS,
     crate::privacy::app::OPS,
     crate::resources::app::OPS,

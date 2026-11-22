@@ -1,8 +1,8 @@
 use super::*;
 use crate::config::{BarConfig, QuickConfig};
 use crate::keys::Key;
+use crate::quick::wifi::Pick;
 use crate::quick::{Row, shown};
-use crate::quick_wifi::Pick;
 use crate::system::Volume;
 use alpheus_commun::exec::fake::FakeExecutor;
 
@@ -352,7 +352,7 @@ fn the_headset_goes_to_the_panel_never_the_bar() {
     assert_eq!(taken_headset(&mut Msg::Profile(None)), None, "only a sound message carries one");
 }
 
-use crate::bt_app::tests::{HCI0, bar_bt_on, bt_view};
+use crate::quick::bt_app::tests::{HCI0, bar_bt_on, bt_view};
 use crate::system::BtScope;
 
 /// Quick Bluetooth spec § 5: a Bluetooth view goes to the open panel; the message left for the
@@ -397,7 +397,7 @@ fn bt_scope_follows_the_panel() {
 /// BlueZ restarting with the detail open.
 #[test]
 fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
-    use crate::bt_app::{adapter_seen, connection_wanted, opens_for};
+    use crate::quick::bt_app::{adapter_seen, connection_wanted, opens_for};
     let (t, bar) = (Instant::now(), bar_bt_on());
     let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
     let mut q = Quick::new(Focus::Bluetooth, &live, vec![], None, [None, None], 20);
@@ -407,7 +407,7 @@ fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
     assert!(!q.bt.open, "the detail closed");
     assert!(!adapter_seen(&q) && !connection_wanted(Some(&q), 0));
     assert!(!opens_for(&q.bt_leaving(), adapter_seen(&q)), "nothing reopened toward the old owner");
-    let late = crate::quick_bt::BtOrder::Call(crate::sources::dbus::bt_act::ActCall::StopDiscovery { adapter: HCI0.into() });
+    let late = crate::quick::bt::BtOrder::Call(crate::sources::dbus::bt_act::ActCall::StopDiscovery { adapter: HCI0.into() });
     assert!(!opens_for(&[late], adapter_seen(&q)), "nor by a call still made before the new owner shows");
     panel_bt(&mut q, &live, Some(3), Some(bt_view()), Some(3), t).expect("the new owner");
     assert!(adapter_seen(&q) && quick::shown(&live, &q).contains(&Row::Bluetooth), "the row back");
@@ -428,7 +428,7 @@ fn a_view_without_an_adapter_of_this_open_lets_the_connection_go() {
 
 #[test]
 fn dnd_request_is_the_cli_request() {
-    use crate::quick_dnd::DndChoice;
+    use crate::quick::dnd::DndChoice;
     use alpheus_commun::launcher_ipc::{DndEnd, DndVerb};
     let now = 1_800_000_000;
     let at = (8, 0);

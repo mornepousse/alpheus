@@ -1,7 +1,7 @@
 use super::*;
 use crate::grid::Tint;
-use crate::quick_dnd::DndChoice;
-use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
+use crate::quick::dnd::DndChoice;
+use crate::quick::wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
 use crate::segments::BLUETOOTH_CONNECTED;
 use crate::segments::VOLUME_MEDIUM;
 use crate::system::{
@@ -401,7 +401,7 @@ fn focus_bluetooth_opens_the_detail() {
 /// The D-Bus thread's view while the detail is open: discovery, BlueZ lost, the row gone.
 #[test]
 fn the_bluetooth_detail_follows_its_view() {
-    use crate::quick_bt::BtOrder;
+    use crate::quick::bt::BtOrder;
     use crate::sources::dbus::bt_act::ActCall;
     use crate::system::{BtAdapter, BtEntry, BtKind, BtView};
     let mut w = World::full();
@@ -458,7 +458,7 @@ fn clavier_view() -> BtView {
 /// A double Enter (or a held one) on a device makes one call.
 #[test]
 fn a_double_enter_on_a_device_calls_once() {
-    use crate::quick_bt::BtOrder;
+    use crate::quick::bt::BtOrder;
     use crate::sources::dbus::bt_act::ActCall;
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
@@ -476,7 +476,7 @@ fn a_double_enter_on_a_device_calls_once() {
 /// arrived is never rejected by a key pressed before it.
 #[test]
 fn a_held_key_never_answers_a_code_question() {
-    use crate::quick_bt::{BtOrder, Code};
+    use crate::quick::bt::{BtOrder, Code};
     use crate::sources::dbus::bt_act::{ActCall, AgentId, AgentReply, AgentRequest};
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
@@ -503,7 +503,7 @@ fn a_held_key_never_answers_a_code_question() {
 /// Spec § 3: a code question cancels a pending `Forget?`; leaving drops it too.
 #[test]
 fn the_question_cancels_forget() {
-    use crate::quick_bt::BtOrder;
+    use crate::quick::bt::BtOrder;
     use crate::sources::dbus::bt_act::{ActCall, AgentId, AgentReply, AgentRequest};
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
@@ -536,7 +536,7 @@ fn the_question_cancels_forget() {
 /// The Bluetooth timers join the panel's: the earliest deadline, and what `due` finds.
 #[test]
 fn bluetooth_deadlines_and_logs_go_through_due() {
-    use crate::quick_bt::{BtOrder, CALL_DEADLINE};
+    use crate::quick::bt::{BtOrder, CALL_DEADLINE};
     use crate::sources::dbus::bt_act::ActCall;
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
@@ -567,7 +567,7 @@ fn bluetooth_deadlines_and_logs_go_through_due() {
 /// a press on any other line cancels it.
 #[test]
 fn a_press_on_the_asking_device_confirms_forget() {
-    use crate::quick_bt::BtOrder;
+    use crate::quick::bt::BtOrder;
     use crate::sources::dbus::bt_act::ActCall;
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
@@ -604,7 +604,7 @@ fn a_left_click_on_the_bluetooth_row_opens_the_detail() {
 /// Spec § 2: Space on the Bluetooth row is a power action with its 30 s deadline.
 #[test]
 fn the_rows_power_toggle_is_armed() {
-    use crate::quick_bt::{CALL_DEADLINE, Step};
+    use crate::quick::bt::{CALL_DEADLINE, Step};
     let mut w = World::full();
     w.bluetooth = Some(BtState::On { devices: vec![] });
     let t = Instant::now();
@@ -1329,10 +1329,10 @@ fn the_wifi_attempt_rides_the_panel_s_one_timer() {
         q.key(&l, Key::Char(c), false, t);
     }
     assert!(matches!(q.key(&l, Key::Enter, false, t), QuickAction::RunSecret { .. }));
-    assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT));
-    let d = q.due(t + crate::quick_wifi::CONNECT_TIMEOUT);
+    assert_eq!(q.deadline(), Some(t + crate::quick::wifi::CONNECT_TIMEOUT));
+    let d = q.due(t + crate::quick::wifi::CONNECT_TIMEOUT);
     assert_eq!((d.wifi_failed, d.redraw), (Some("no answer in 20 s"), true));
-    assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT + crate::quick_wifi::FAILED_SHOWN));
+    assert_eq!(q.deadline(), Some(t + crate::quick::wifi::CONNECT_TIMEOUT + crate::quick::wifi::FAILED_SHOWN));
 }
 
 /// A held Backspace keeps erasing in the password field; elsewhere it
@@ -1832,13 +1832,13 @@ fn the_last_profile_gone_closes_the_detail() {
     q.follow_vpn(&l, Some(vpn_state(3, &[])), t);
     assert!(q.vpn.open);
     q.key(&l, Key::Down, false, t);
-    assert_eq!(q.vpn.pick, crate::quick_vpn::Pick::Profile(vpn_uuid(2)));
+    assert_eq!(q.vpn.pick, crate::quick::vpn::Pick::Profile(vpn_uuid(2)));
     // One of three gone: the pick moves to its neighbour, the detail stays.
     let mut s = vpn_state(3, &[]);
     s.profiles.retain(|p| p.uuid != vpn_uuid(2));
     q.follow_vpn(&l, Some(s), t);
     assert!(q.vpn.open);
-    assert_eq!(q.vpn.pick, crate::quick_vpn::Pick::Profile(vpn_uuid(3)));
+    assert_eq!(q.vpn.pick, crate::quick::vpn::Pick::Profile(vpn_uuid(3)));
     // All gone: back on the rows, the row hidden, the selection on a row still shown.
     q.top = 4;
     q.follow_vpn(&l, Some(VpnState { profiles: vec![], active: vec![] }), t);
@@ -1864,13 +1864,13 @@ fn the_vpn_rides_the_panel_s_one_timer() {
     q.selected = Row::Vpn;
     q.key(&l, Key::Char(' '), false, t);
     assert_eq!(q.vpn_scope(), VpnScope::Detail, "an attempt widens the read");
-    assert_eq!(q.deadline(), Some(t + crate::quick_vpn::CONNECT_TIMEOUT));
+    assert_eq!(q.deadline(), Some(t + crate::quick::vpn::CONNECT_TIMEOUT));
     assert_eq!(q.due(t + Duration::from_secs(19)).vpn_failed, None);
-    let due = q.due(t + crate::quick_vpn::CONNECT_TIMEOUT);
+    let due = q.due(t + crate::quick::vpn::CONNECT_TIMEOUT);
     assert_eq!(due.vpn_failed, Some("no answer in 20 s"));
     assert!(due.redraw);
-    assert_eq!(q.deadline(), Some(t + crate::quick_vpn::CONNECT_TIMEOUT + FAILED_SHOWN), "the failed mark");
-    assert!(q.due(t + crate::quick_vpn::CONNECT_TIMEOUT + FAILED_SHOWN).redraw);
+    assert_eq!(q.deadline(), Some(t + crate::quick::vpn::CONNECT_TIMEOUT + FAILED_SHOWN), "the failed mark");
+    assert!(q.due(t + crate::quick::vpn::CONNECT_TIMEOUT + FAILED_SHOWN).redraw);
     assert_eq!(q.deadline(), None);
 }
 

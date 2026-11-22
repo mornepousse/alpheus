@@ -16,10 +16,10 @@ use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
 use crate::notify::app::unix_now;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
+use crate::quick::dnd::DndChoice;
+use crate::quick::state;
+use crate::quick::wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
-use crate::quick_dnd::DndChoice;
-use crate::quick_state;
-use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
 use crate::system::{BtScope, BtView, Headset, Sink, SoundState, VpnScope, VpnState, WifiScope, WifiState};
@@ -404,7 +404,7 @@ impl App {
         if c.toggle.is_empty() {
             return None;
         }
-        quick_state::read(&c.state, Path::new("/proc"), &|k| std::env::var_os(k))
+        state::read(&c.state, Path::new("/proc"), &|k| std::env::var_os(k))
     }
 
     /// The bar a verb opens under: the focused output's, else the first configured one.

@@ -9,7 +9,7 @@ use crate::launcher::surface::CloseReason;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::power::{Power, PowerAction};
-use crate::quick_app::verb_debounced;
+use crate::quick::app::verb_debounced;
 use crate::session::Session;
 use crate::wayland::App;
 use alpheus_commun::exec::Executor;
