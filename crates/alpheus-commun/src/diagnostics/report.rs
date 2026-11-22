@@ -68,45 +68,47 @@ pub struct ReportInputs {
 /// What is replaced, and by what: exact strings first (the longest first), then the shapes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Redactions {
-    exact: Vec<(String, &'static str)>,
+    exact: Vec<(String, &'static str, bool)>,
 }
 
 impl Redactions {
     /// The user's names and homes, the host name (and its short name when it is fully
     /// qualified) and the machine id. Names match in any ASCII case.
     pub fn new(users: &[String], homes: &[String], host: Option<&str>, machine_id: Option<&str>) -> Redactions {
-        let mut exact: Vec<(String, &'static str)> = Vec::new();
-        let mut add = |s: &str, to: &'static str, min: usize| {
+        let mut exact: Vec<(String, &'static str, bool)> = Vec::new();
+        // `word`: matched as a whole word only (a login or one word of a real name would shred
+        // `event` or `systemd` as a substring).
+        let mut add = |s: &str, to: &'static str, min: usize, word: bool| {
             let s = s.trim();
-            if s.chars().count() >= min && !exact.iter().any(|(e, _)| e.eq_ignore_ascii_case(s)) {
-                exact.push((s.to_string(), to));
+            if s.chars().count() >= min && !exact.iter().any(|(e, ..)| e.eq_ignore_ascii_case(s)) {
+                exact.push((s.to_string(), to, word));
             }
         };
         if let Some(id) = machine_id {
-            add(id, "<machine-id>", 16);
+            add(id, "<machine-id>", 16, false);
         }
         for h in homes {
             // "/" alone, or an empty home, would eat every path.
-            add(h.trim_end_matches('/'), "~", 3);
+            add(h.trim_end_matches('/'), "~", 3, false);
         }
         if let Some(h) = host {
-            add(h, "<host>", MIN_NAME);
+            add(h, "<host>", MIN_NAME, false);
             if let Some((short, _)) = h.split_once('.') {
-                add(short, "<host>", MIN_NAME);
+                add(short, "<host>", MIN_NAME, false);
             }
         }
         for u in users {
-            add(u, "<user>", MIN_NAME);
+            add(u, "<user>", MIN_NAME, !u.trim().contains(char::is_whitespace));
         }
-        exact.sort_by_key(|(s, _)| std::cmp::Reverse(s.len()));
+        exact.sort_by_key(|(s, ..)| std::cmp::Reverse(s.len()));
         Redactions { exact }
     }
 
     /// `text` with every listed string and every address-shaped token replaced.
     pub fn apply(&self, text: &str) -> String {
         let mut out = text.to_string();
-        for (needle, to) in &self.exact {
-            out = replace_ci(&out, needle, to);
+        for (needle, to, word) in &self.exact {
+            out = if *word { replace_word_ci(&out, needle, to) } else { replace_ci(&out, needle, to) };
         }
         replace_shapes(&out)
     }
@@ -125,6 +127,40 @@ fn replace_ci(text: &str, needle: &str, to: &str) -> String {
     }
     out.push_str(&text[at..]);
     out
+}
+
+/// `text` with each ASCII-case-insensitive whole-word occurrence of `needle` replaced by `to`:
+/// no letter right before or after it (a digit, a dash, a dot or the end all count as the word's
+/// edge, and so does systemd's `\x2d` escape before it).
+fn replace_word_ci(text: &str, needle: &str, to: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let pin: Vec<char> = needle.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let end = i + pin.len();
+        let hit = end <= chars.len()
+            && chars[i..end].iter().zip(&pin).all(|(a, b)| a.eq_ignore_ascii_case(b))
+            && !chars.get(end).is_some_and(|c| c.is_alphabetic())
+            && (i == 0 || !chars[i - 1].is_alphabetic() || escaped_dash_before(&chars, i));
+        if hit {
+            out.push_str(to);
+            i = end;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The four characters before `i` are systemd's `\x2d`.
+fn escaped_dash_before(chars: &[char], i: usize) -> bool {
+    i >= 4
+        && chars[i - 4] == '\\'
+        && chars[i - 3].eq_ignore_ascii_case(&'x')
+        && chars[i - 2] == '2'
+        && chars[i - 1].eq_ignore_ascii_case(&'d')
 }
 
 /// Replaces every MAC, UUID, IPv6, IPv4 and e-mail shape. The scan tries each shape at every
@@ -155,6 +191,14 @@ fn replace_shapes(text: &str) -> String {
                 continue;
             }
         }
+        // `0xaabbccddeeff`: a bare 12-hex right after a hex prefix.
+        if c.is_ascii_hexdigit() && after_hex_prefix(&chars, i) {
+            if let Some(n) = bare_mac(&chars[i..]) {
+                out.push_str("<mac>");
+                i += n;
+                continue;
+            }
+        }
         out.push(c);
         i += 1;
     }
@@ -168,11 +212,12 @@ fn boundary_before(chars: &[char], i: usize) -> bool {
     if !prev.is_alphanumeric() {
         return true;
     }
-    i >= 4
-        && chars[i - 4] == '\\'
-        && chars[i - 3].eq_ignore_ascii_case(&'x')
-        && chars[i - 2] == '2'
-        && chars[i - 1].eq_ignore_ascii_case(&'d')
+    escaped_dash_before(chars, i)
+}
+
+/// `0x` right before `i`, itself at a word start.
+fn after_hex_prefix(chars: &[char], i: usize) -> bool {
+    i >= 2 && chars[i - 2] == '0' && chars[i - 1].eq_ignore_ascii_case(&'x') && (i == 2 || !chars[i - 3].is_alphanumeric())
 }
 
 /// A dot right after a digit: the tail of a longer dotted number (`1.2.3.4.5`), not an address
@@ -346,32 +391,45 @@ fn redact_emails(text: &str) -> String {
     let mut i = 0;
     let mut copied = 0; // chars before `copied` are already in `out`
     while i < chars.len() {
-        if chars[i] != '@' {
+        // `@`, or systemd's `\x40` escape of it.
+        let marker = if chars[i] == '@' {
+            1
+        } else if i + 4 <= chars.len()
+            && chars[i] == '\\'
+            && chars[i + 1].eq_ignore_ascii_case(&'x')
+            && chars[i + 2] == '4'
+            && chars[i + 3] == '0'
+        {
+            4
+        } else {
             i += 1;
             continue;
-        }
+        };
         let mut start = i;
         while start > copied && local(chars[start - 1]) {
             start -= 1;
         }
-        let mut end = i + 1;
+        let mut end = i + marker;
         while end < chars.len() && domain(chars[end]) {
             end += 1;
         }
         // A trailing dot is the sentence's.
-        while end > i + 1 && chars[end - 1] == '.' {
+        while end > i + marker && chars[end - 1] == '.' {
             end -= 1;
         }
-        let host: String = chars[i + 1..end].iter().collect();
-        // A templated unit (`getty@tty1.service`) is not an address.
-        let unit = host.rsplit('.').next().is_some_and(|l| UNIT_SUFFIXES.iter().any(|u| l.eq_ignore_ascii_case(u)));
+        let host: String = chars[i + marker..end].iter().collect();
+        // A templated unit (`getty@tty1.service`, `user@1000.service`) is not an address: one
+        // dotless instance name, then the suffix. `mbsync@alice@example.org.service` is one.
+        let unit = marker == 1
+            && host.matches('.').count() == 1
+            && host.rsplit('.').next().is_some_and(|l| UNIT_SUFFIXES.iter().any(|u| l.eq_ignore_ascii_case(u)));
         if start < i && host.contains('.') && !host.starts_with('.') && !unit {
             out.extend(&chars[copied..start]);
             out.push_str("<email>");
             copied = end;
             i = end;
         } else {
-            i += 1;
+            i += marker;
         }
     }
     out.extend(&chars[copied..]);

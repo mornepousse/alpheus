@@ -234,3 +234,25 @@ fn a_failed_read_makes_the_count_unknown() {
     assert_eq!((u.count(), u.take_change()), (None, Some(None)));
     assert_eq!(Call::SubscribeUnits { dest: USER.into() }.method(), Method::Subscribe);
 }
+
+#[test]
+fn a_failed_owner_lookup_is_one_line_per_episode() {
+    let (mut out, mut u) = started(true);
+    let who = id(&out, &owner_call());
+    u.answer(&mut out, who, Err(CallError::Timeout));
+    assert_eq!(lines("could not be found"), 1);
+    // Asked again by the next system read: the same failure says nothing more.
+    u.on_units_read(&mut out);
+    let who = id(&out, &owner_call());
+    u.answer(&mut out, who, Err(CallError::Timeout));
+    assert_eq!(lines("could not be found"), 1);
+    // A manager found ends the episode; losing it and failing again is a new one.
+    u.on_units_read(&mut out);
+    let who = id(&out, &owner_call());
+    u.answer(&mut out, who, Ok(Reply::Owner(USER.into())));
+    u.signal(&mut out, &owner_changed(USER, ""));
+    u.on_units_read(&mut out);
+    let who = id(&out, &owner_call());
+    u.answer(&mut out, who, Err(CallError::Timeout));
+    assert_eq!(lines("could not be found"), 2);
+}

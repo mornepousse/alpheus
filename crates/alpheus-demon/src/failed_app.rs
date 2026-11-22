@@ -36,6 +36,8 @@ pub struct UserUnits {
     count: Option<u32>,
     /// `Subscribe` was accepted for the current owner.
     subscribed: bool,
+    /// The failed owner lookup was logged: one line per episode (until a manager is found).
+    lookup_logged: bool,
     /// The owner whose refusal was logged: one line per owner.
     refused_for: Option<String>,
     /// The calls in flight (at most one of each): the owner, the count, the subscription.
@@ -64,6 +66,7 @@ impl UserUnits {
             owner: None,
             count: None,
             subscribed: false,
+            lookup_logged: false,
             refused_for: None,
             owner_call: None,
             get_call: None,
@@ -132,12 +135,15 @@ impl UserUnits {
             match result {
                 Ok(Reply::Owner(owner)) => {
                     self.owner = Some(owner);
+                    self.lookup_logged = false;
                     self.read(out);
                 }
                 // Nobody runs it: unknown, and the rule says when it comes.
                 Err(CallError::Remote(name)) if name == "org.freedesktop.DBus.Error.NameHasNoOwner" => self.forget_owner(),
                 Ok(_) | Err(_) => {
-                    (self.say)("failed: the user manager could not be found");
+                    if !std::mem::replace(&mut self.lookup_logged, true) {
+                        (self.say)("failed: the user manager could not be found");
+                    }
                     self.forget_owner();
                 }
             }

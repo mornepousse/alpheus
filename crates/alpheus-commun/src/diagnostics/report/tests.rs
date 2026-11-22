@@ -117,6 +117,12 @@ fn redaction_cases() {
         ("user@1000.service", "user@1000.service"),
         ("wg-quick@wg0.service failed", "wg-quick@wg0.service failed"),
         ("bob@example.org.service2", "<email>"),
+        // A dotted local part before the unit suffix is an address; `\x40` is an `@`.
+        ("mbsync@carol@example.org.service", "mbsync@<email>"),
+        ("mbsync@carol\\x40example.org.service", "mbsync@<email>"),
+        ("bob\\x40example.org", "<email>"),
+        // A bare 12-hex after `0x` is a MAC too.
+        ("0xaabbccddeeff", "0x<mac>"),
         // Longer chains, a 0x prefix, bare 12 hex digits as a token, Cisco dots, tcpdump's port.
         ("00:11:22:33:44:55:66", "<mac>"),
         ("0x00:11:22:33:44:55", "<mac>"),
@@ -131,6 +137,14 @@ fn redaction_cases() {
     // A two-letter name is not replaced everywhere: it would shred ordinary words.
     let short = Redactions::new(&["al".into()], &[], None, None);
     assert_eq!(short.apply("a real total"), "a real total");
+    // Real-name words and the login match whole words: ordinary words around them survive.
+    let named = Redactions::new(&["emartin".into(), "Eve Martin".into(), "Eve".into(), "Martin".into(), "System".into()], &[], None, None);
+    assert_eq!(
+        named.apply("CTRL-EVENT-CONNECTED event restart Debian systemd emartinez"),
+        "CTRL-EVENT-CONNECTED event restart Debian systemd emartinez"
+    );
+    assert_eq!(named.apply("by Eve Martin, eve and EMARTIN; System up"), "by <user>, <user> and <user>; <user> up");
+    assert_eq!(named.apply("home-emartin\\x2dfoo.mount"), "home-<user>\\x2dfoo.mount");
     // The home is replaced before the user name, so the path keeps no name.
     assert_eq!(r.apply("/home/alice"), "~");
 }
