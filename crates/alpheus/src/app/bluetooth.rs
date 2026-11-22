@@ -1,10 +1,14 @@
 //! The Bluetooth tab's items: the Bluetooth switch and the button that opens the Bluetooth tool.
 //!
-//! The Bluetooth data (`App::data.bluetooth`, read by the worker as `Domain::Bluetooth`), the
-//! switch itself (`ToggleId::Bluetooth`, changed by `App::toggle`) and the opening of the external
-//! tool (`Command::Open`, `App::external_argv`) live in `mod.rs`: Home has the same switch, so the
-//! code that changes it is shared. This file holds only what is the Bluetooth tab's own, its list
-//! of items.
+//! Three things live in `mod.rs` and `action.rs`, each because another place uses it too:
+//! - the Bluetooth switch (`ToggleId::Bluetooth`, changed by `App::toggle`): Home has the same
+//!   switch (`home::items`);
+//! - the Bluetooth data (`App::data.bluetooth`, read by the worker as `Domain::Bluetooth`): Home
+//!   reads that domain too (its row in `tab.rs`);
+//! - the opening of the external tool (`Command::Open`, `App::external_argv`): the palette's
+//!   "Pair a device" entry (`palette_entries`) and Sound's mixer button run the same command.
+//!
+//! This file holds only what is the Bluetooth tab's own, its list of items.
 //!
 //! Never:
 //! - run a tool: `bluetoothctl` is run by the worker, and the pairing tool (`bluetui` by default)

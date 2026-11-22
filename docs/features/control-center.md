@@ -9,9 +9,16 @@ How the program is laid out, for every tab. The state lives in `crates/alpheus/s
 `App` that every key, mouse event and worker answer changes, with no terminal and no thread of its
 own) and the drawing in `crates/alpheus/src/ui/` (`render` draws the whole screen and returns the
 map of clickable regions). A tab that has code of its own has a file of the same name in each
-folder: `app/sound.rs` and `ui/sound.rs`, `app/network.rs` and `ui/network.rs`, and so on. What every tab shares stays in `app/mod.rs`,
-`app/tab.rs` (one row of plain data per tab), `ui/tabs.rs` (the item rows), `ui/rail.rs` (the
-rail, the tab hues) and `ui/mod.rs` (the frame and the status line's hints).
+folder: `app/sound.rs` and `ui/sound.rs`, `app/network.rs` and `ui/network.rs`, and so on. What
+every tab shares stays in `app/mod.rs`, `app/tab.rs` (one row of plain data per tab),
+`ui/tabs.rs` (the item rows), `ui/rail.rs` (the rail, the tab hues) and `ui/mod.rs` (the frame
+and the shortcut hints). The hints are drawn on the shortcut bar, the last row of the classic
+layout; in the layout with the rail they are the keycaps row (`ui/rail.rs`). The status line, above
+the shortcut bar, shows the tab's name and the last message.
+
+The default keymap has Dvorak navigation as well as the arrow keys: `d`, `h`, `t`, `n` for left,
+down, up and right (`KeysConfig::default`, `dvorak_nav: true`; `[keys] dvorak_nav = false` turns it
+off). The key tables below name the arrow keys only.
 
 ## Sound
 
@@ -84,8 +91,8 @@ Two files, one per layer, and the tab's row in `app/tab.rs`.
   audio data itself (`App::data.audio`) and the slider helpers (`slider_value`, `set_slider`,
   `nudge_slider`; a node's slider is a `SliderId::Node`) are in `app/mod.rs`, beside the volume
   and brightness sliders of Home.
-- `ui/sound.rs`: `rows` (the heading, node and button rows) and `hints` (the keys named in the
-  status line). A row is drawn by the shared item drawing in `ui/tabs.rs`.
+- `ui/sound.rs`: `rows` (the heading, node and button rows) and `hints` (the keys named on the
+  shortcut bar, or the keycaps row in the rail). A row is drawn by the shared item drawing in `ui/tabs.rs`.
 - `app/tab.rs`: the tab's row says it is searchable, that it is read every 2 seconds while it is
   shown, from the `Domain::Audio` domain, and that its label column is 34 cells wide.
 
@@ -116,7 +123,7 @@ most every 15 seconds (a broken tool must not be relaunched every second: a comm
   kept inside the list.
 - `items_per_tab` (`app/tests.rs`): the order of the items, with the mixer button last.
 - `volume_above_100_is_never_lowered_by_plus` (`app/tests.rs`).
-- `the_sound_tab_shows_both_lists_the_mixer_button_and_its_hints` (`ui/tests.rs`): the rows, the clickable regions and the hint on the status line.
+- `the_sound_tab_shows_both_lists_the_mixer_button_and_its_hints` (`ui/tests.rs`): the rows, the clickable regions and the hints on the shortcut bar.
 - `the_sound_tab_at_80_by_24_matches_its_snapshot` (`ui/sound/tests.rs`, its snapshot in
   `ui/sound/snapshots/`): the whole 80 by 24 screen.
 - `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
@@ -141,7 +148,7 @@ loopback connection is never listed. While the data is loading the list shows `�
 failed it shows its error; with no connection it shows `none`.
 
 ```
- ▶ Wi-Fi                            [■] on
+ ▶ Wi-Fi               [■] on
 
  Active connections
    Wi-Fi      MON_WIFI_1  (wlp0s1f01)
@@ -168,11 +175,16 @@ kind of connection, and the button with a glyph. The items and their order are t
 With the mouse: a click on the switch's row turns Wi-Fi on or off; a click on the button opens the
 tool. The search narrows the list of connections only; the two items stay.
 
-The switch changes at once and the command follows: the value shown is already the new one, and a
-read that was launched before the change, and arrives after it, is dropped
-(`stale_read_ignored_during_a_toggle`) so it cannot flip the switch back. If the state is not
-known yet (still loading, or the read failed), the switch does nothing and a message says
-`Wi-Fi: unknown state`.
+The switch changes at once and the command follows: the value shown is already the new one, and
+from the change until the worker answers, any read of that domain that arrives is dropped
+(`App::is_pending`, `stale_read_ignored_during_a_toggle`), whether it was launched before the
+change or after, so it cannot flip the switch back. If the state is not known yet (still loading,
+or the read failed), the switch does nothing and a message says `Wi-Fi: unknown state`. If the
+command fails, a message says `Wi-Fi: <error>` and the tab is read again, which puts back what
+`nmcli` says (the comment in `App::op_done`: "cancels the optimistic display").
+
+These commands are also in the palette (Ctrl+P, on any tab: `palette_entries`): **Wi-Fi** is the
+same switch and **Choose a network** the same button, so they can be run from another tab.
 
 The **Choose a network** button opens the program set under `[commands] network` in `config.toml`
 (default `nmtui`) in alpheus's own window: alpheus leaves its screen, the tool runs, and alpheus
@@ -194,13 +206,17 @@ The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `acti
 
 Two files, one per layer, and the tab's row in `app/tab.rs`.
 
-- `app/network.rs`: `items` (the Wi-Fi switch, then the button). The network data
-  (`App::data.network`, a `NetStatus`), the switch's change (`App::toggle`, `ToggleId::Wifi`) and
-  the opening of the external tool (`Command::Open`, `External::Network`) are in `app/mod.rs` and
-  `app/action.rs`: Home has the same Wi-Fi switch, so they are shared.
+- `app/network.rs`: `items` (the Wi-Fi switch, then the button). Three things are in `app/mod.rs`
+  and `app/action.rs`, each because another place uses it: the switch's change (`App::toggle`,
+  `ToggleId::Wifi`; Home has the same switch), the network data (`App::data.network`, a
+  `NetStatus`; Home reads `Domain::Network` too) and the opening of the external tool
+  (`Command::Open`, `External::Network`; the palette's "Choose a network" and Sound's mixer
+  button run the same command).
 - `ui/network.rs`: `rows` (the switch, the heading, the connection lines, the button) and `hints`
-  (the keys named in the status line). The switch and the button are drawn by the shared item
-  drawing in `ui/tabs.rs`.
+  (the keys named on the shortcut bar, or the keycaps row in the rail). The switch and the button
+  are drawn by the shared item drawing in `ui/tabs.rs`. A connection line is the kind (padded to
+  10), the name and the device in parentheses in the classic layout; in the rail, a glyph, the
+  name (padded to 24), the kind (padded to 10) and the device.
 - `app/tab.rs`: the tab's row says it is searchable, that it is read every 2 seconds while it is
   shown, from the `Domain::Network` domain, and that its label column is 20 cells wide.
 
@@ -218,8 +234,10 @@ at most every 15 seconds (a broken tool must not be relaunched every second: a c
    a `Request::Do` in the box the real loop empties.
 3. The worker thread runs `nmcli radio wifi off` (`NmCli::set_wifi`), through the injectable
    command executor, and answers with `Update::Done`.
-4. Until then a read of that domain that arrives is dropped (`App::on_update`). On the answer a
-   message says `Wi-Fi: off` and the data is read again, so what is shown is what `nmcli` now says.
+4. Until then a read of that domain that arrives is dropped (`App::on_update`, `is_pending`). On
+   the answer a message says `Wi-Fi: off` and the data is read again, so what is shown is what
+   `nmcli` now says. If the command failed, the message is `Wi-Fi: <error>` and the same read
+   cancels the optimistic display (`App::op_done`).
 
 ### Rules it keeps
 
@@ -256,7 +274,7 @@ and its address. While the data is loading the list shows `…`; if the read fai
 error; with the adapter off it shows `Bluetooth is off`; with nothing connected it shows `none`.
 
 ```
- ▶ Bluetooth                        [■] on
+ ▶ Bluetooth           [■] on
 
  Connected devices
    CasqueBT  (AA:BB:CC:DD:EE:01)
@@ -283,8 +301,9 @@ With the mouse: a click on the switch's row turns the adapter on or off; a click
 opens the tool. The search narrows the list of devices only; the two items stay.
 
 The switch behaves as the Wi-Fi switch of the Network tab: it changes at once, a stale read does
-not undo it, and with the state unknown it does nothing and a message says
-`Bluetooth: unknown state`.
+not undo it, with the state unknown it does nothing and a message says `Bluetooth: unknown state`,
+and a failed command says `Bluetooth: <error>` and reads the tab again. The palette (Ctrl+P, on
+any tab) has the same two commands: **Bluetooth** and **Pair a device**.
 
 The **Pair a device** button opens the program set under `[commands] bluetooth` in `config.toml`
 (default `bluetui`) in alpheus's own window, and reads the tab again when it ends. If the tool
@@ -305,14 +324,17 @@ The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `acti
 
 Two files, one per layer, and the tab's row in `app/tab.rs`.
 
-- `app/bluetooth.rs`: `items` (the Bluetooth switch, then the button). The Bluetooth data
-  (`App::data.bluetooth`, a `BtStatus`), the switch's change (`App::toggle`,
-  `ToggleId::Bluetooth`) and the opening of the external tool (`Command::Open`,
-  `External::Bluetooth`) are in `app/mod.rs` and `app/action.rs`: Home has the same switch, so
-  they are shared.
+- `app/bluetooth.rs`: `items` (the Bluetooth switch, then the button). Three things are in
+  `app/mod.rs` and `app/action.rs`, each because another place uses it: the switch's change
+  (`App::toggle`, `ToggleId::Bluetooth`; Home has the same switch), the Bluetooth data
+  (`App::data.bluetooth`, a `BtStatus`; Home reads `Domain::Bluetooth` too) and the opening of the
+  external tool (`Command::Open`, `External::Bluetooth`; the palette's "Pair a device" and Sound's
+  mixer button run the same command).
 - `ui/bluetooth.rs`: `rows` (the switch, the heading, the device lines, the button) and `hints`
-  (the keys named in the status line). The switch and the button are drawn by the shared item
-  drawing in `ui/tabs.rs`.
+  (the keys named on the shortcut bar, or the keycaps row in the rail). The switch and the button
+  are drawn by the shared item drawing in `ui/tabs.rs`. A device line is the name and the address
+  in parentheses in the classic layout; in the rail, a glyph, the name (padded to 24) and the
+  address.
 - `app/tab.rs`: the tab's row says it is searchable, that it is read every 2 seconds while it is
   shown, from the `Domain::Bluetooth` domain, and that its label column is 20 cells wide.
 
@@ -326,9 +348,10 @@ and `Op::SetBluetooth(false)`; the worker runs `bluetoothctl power off`
 
 ### Rules it keeps
 
-- The Bluetooth tab's items have no test of their own: `items_per_tab` (`app/tests.rs`) checks the
-  Network tab's items. `network_bluetooth_power_tabs` (`ui/tests.rs`) checks that the heading, a
-  device and the button are drawn.
+- `items_per_tab` (`app/tests.rs`): the Bluetooth tab's items, the switch
+  (`Toggle(Bluetooth)`) then the button (`Button(Open(Bluetooth))`).
+  `network_bluetooth_power_tabs` (`ui/tests.rs`) checks that the heading, a device and the button
+  are drawn.
 - `optimistic_toggle`, `stale_read_ignored_during_a_toggle`, `two_toggles_wait_for_both_responses`
   (`app/tests.rs`): the switch rule, tested on the Wi-Fi switch, the same code.
 - `tick_refreshes_sound_network_bluetooth_every_two_seconds` (`app/tests.rs`): a read after 2
@@ -379,12 +402,17 @@ order are the same.)
 | --- | --- |
 | ↑ ↓ | move to the previous or next button |
 | Enter | run the focused button's action, after the question for the three that ask |
-| ← → or Tab | in the question: move between Cancel and Confirm |
+| ← → | in the question: move to Cancel (left) or Confirm (right), and stay at the end |
+| Tab or Shift+Tab | in the question: switch between Cancel and Confirm |
 | Enter | in the question: do what the focused button says |
-| Esc | in the question: cancel; with no question open, go back to Home |
+| Esc or `q` | in the question: cancel (`q` does not quit while the question is open); with no question open, Esc goes back to Home |
 
 There is no search on this tab. With the mouse: a click on a button is Enter on it; in the
-question, a click on Cancel or Confirm answers it.
+question, a click on Cancel or Confirm answers it, and a click elsewhere does nothing.
+
+The five actions are also in the palette (Ctrl+P, on any tab: `palette_entries`), and the palette
+runs them through the same `App::run_command`: **Power off**, **Reboot** and **Log out** from the
+palette get the same question, with the focus on Cancel.
 
 In the question the focus starts on **Cancel**, so that an Enter pressed by reflex runs nothing (a
 comment on `Confirm::yes_focused`). The spec asks for the confirmation on power off, reboot and
@@ -415,18 +443,19 @@ Two small files and the tab's row in `app/tab.rs`.
 - `app/power.rs`: `items` (one button per `PowerAction`, in the order of `PowerAction::ALL`). The
   rest is shared, in `app/mod.rs`: `App::run_command` opens the question (`Overlay::Confirm`) for
   an action that needs it, and sends `Op::Power` straight away for the others;
-  `App::close_confirm` sends `Op::Power` once the question is answered Confirm. The question is
-  drawn by `ui/overlays.rs`.
-- `ui/power.rs`: `hints` only (the one key named in the status line). The rows are not here: Home
-  and Power list one row per item with a blank row between them, and that one arm is in
-  `ui/tabs.rs` (`Tab::Home | Tab::Power`).
+  `App::close_confirm` sends `Op::Power` only when the question is answered Confirm (answered
+  Cancel, it sends nothing). The question is drawn by `ui/overlays.rs`.
+- `ui/power.rs`: `hints` only (the one key named on the shortcut bar, or the keycaps row in the
+  rail). The rows are not here: Home and Power list one row per item with a blank row between
+  them, and that one arm is in `ui/tabs.rs` (`Tab::Home | Tab::Power`).
 - `app/tab.rs`: the tab's row says it is not searchable, that it is never read (no domain, no
   period), and that its label column is 20 cells wide.
 
 **The path of one action**, Power off:
 
 1. Enter, or a click, reaches `App::activate`, which sees a `Command::Power` button and calls
-   `run_command`.
+   `run_command`. (The palette's **Power off** entry calls `run_command` directly, and the path
+   goes on from step 2.)
 2. `run_command` sees that Power off needs a confirmation and opens `Overlay::Confirm` with
    the focus on Cancel. Nothing is sent.
 3. Confirm, by Enter with the focus moved to it or by a click, reaches `close_confirm`, which
@@ -435,12 +464,17 @@ Two small files and the tab's row in `app/tab.rs`.
 
 ### Rules it keeps
 
-- `items_per_tab` (`app/tests.rs`): five buttons on the Power tab.
+- `items_per_tab` (`app/tests.rs`): the Power tab's items are exactly one `Command::Power` button
+  per `PowerAction::ALL`, in that order.
 - `power_with_or_without_confirmation` (`app/tests.rs`): Power off opens the question and queues
   nothing; Lock queues `Op::Power` at once.
 - `confirmation_from_the_keyboard`, `arrow_keys_in_the_confirmation` (`app/input/tests.rs`) and
-  `confirmation_with_the_mouse` (`app/mouse.rs`): the question starts on Cancel, and each way of
-  answering it.
+  `confirmation_with_the_mouse` (`app/mouse.rs`): the question starts on Cancel. The keyboard
+  test covers `q` (cancels, does not quit), Enter on Cancel (sends nothing), → then Enter on
+  Confirm (queues `Op::Power`) and Esc; the arrow test covers ←, →, `d` and `n` (the Dvorak
+  keys), Tab and Shift+Tab, and that nothing is queued without Enter. The mouse test covers a
+  click on Confirm (queues `Op::Power`), and that a click outside or on a tab under the question
+  does nothing; a click on Cancel has no test.
 - `tick_reads_nothing_on_power` and `changing_tab` (`app/tests.rs`): nothing is read on this tab,
   not even after a minute.
 - `confirmation_for_logout_reboot_and_poweroff` and `exact_commands` (`alpheus-common`,

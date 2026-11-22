@@ -3,7 +3,7 @@
 //! here (a test checks there is exactly one, in variant order), then its
 //! items (`App::items`), its view (`ui/tabs.rs`) and its shortcut hints
 //! (`ui/mod.rs`), which are code, not data. A tab's own code goes in `app/<tab>.rs` and
-//! `ui/<tab>.rs` (Sound is the first).
+//! `ui/<tab>.rs`, which every tab has.
 
 use super::action::Tab;
 use super::worker::Domain;

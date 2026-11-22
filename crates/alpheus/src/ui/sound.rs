@@ -1,4 +1,4 @@
-//! The Sound tab's rows and its shortcut hints.
+//! The Sound tab's rows and its shortcut hints (the shortcut bar, or the keycaps row in the rail).
 //!
 //! `tabs::render` draws the rows this file lists; the items themselves come from
 //! `app/sound.rs`, and a row is drawn by the shared item drawing in `tabs.rs`, like the other item
@@ -46,8 +46,8 @@ pub(super) fn rows(app: &App, items: &[Item], rows: &mut Vec<Row>) {
     rows.push(Row::Item(items.len().saturating_sub(1)));
 }
 
-/// The keys the status line offers on this tab: choose the default, change the volume (`adjust`
-/// is the pair of keys the caller built from the keymap), and search.
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab: choose the default,
+/// change the volume (`adjust` is the pair of keys the caller built from the keymap), and search.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap, adjust: String) {
     pairs.push((km.label(Action::Activate), "Default"));
     pairs.push((adjust, "Volume"));

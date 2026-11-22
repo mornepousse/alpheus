@@ -1,10 +1,11 @@
 //! The Power tab's items: one button per session action.
 //!
-//! This tab has no state of its own and reads nothing: its `Tab` row in `tab.rs` lists no domain
-//! and no refresh period. What a button does is shared code in `mod.rs`: `App::run_command` asks
-//! for a confirmation first when the action needs one (`PowerAction::needs_confirm`: log out,
-//! reboot and power off), and `App::close_confirm` queues `Op::Power` once it is answered. The
-//! commands themselves are in the backend (`SessionPower`).
+//! This tab has no state of its own and reads nothing: its row in `tab.rs` (`TabSpec`) lists no
+//! domain and no refresh period. What a button does is shared code in `mod.rs`: `App::run_command`
+//! asks for a confirmation first when the action needs one (`PowerAction::needs_confirm`: log out,
+//! reboot and power off), and `App::close_confirm` queues `Op::Power` only when the answer is
+//! Confirm (`close_confirm(false)` sends nothing). The commands themselves are in the backend
+//! (`SessionPower`).
 //!
 //! Never:
 //! - run a tool: the worker runs the command of `Op::Power`;

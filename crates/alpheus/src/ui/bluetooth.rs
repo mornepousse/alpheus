@@ -1,4 +1,4 @@
-//! The Bluetooth tab's rows and its shortcut hints.
+//! The Bluetooth tab's rows and its shortcut hints (the shortcut bar, or the keycaps row in the rail).
 //!
 //! `tabs::render` draws the rows this file lists; the items themselves come from
 //! `app/bluetooth.rs`, and a switch or a button is drawn by the shared item drawing in `tabs.rs`,
@@ -21,11 +21,11 @@ use crate::app::{App, Loadable};
 /// with one line per device that passes the search, then the "Pair a device" button.
 ///
 /// `rail` says the tab is drawn with the left rail (from 84 columns by 26 rows), where each line
-/// starts with a glyph and the name is padded; the classic layout writes the name and the address
-/// in parentheses. A list that has not loaded shows `…`, a failed read shows its error, an adapter
+/// starts with a glyph and the name is padded to 24, then comes the address; the classic layout
+/// writes the name, then the address in parentheses. A list that has not loaded shows `…`, a failed read shows its error, an adapter
 /// that is off shows `Bluetooth is off`, and an empty list shows `none`.
 pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
-    // The switch and the button are the two items of `bluetooth::items`, by position.
+    // The switch and the button are the two items of `items` in `app/bluetooth.rs`, by position.
     rows.push(Row::Item(0));
     rows.push(Row::Blank);
     rows.push(Row::Heading("Connected devices"));
@@ -47,7 +47,7 @@ pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
     rows.push(Row::Item(1));
 }
 
-/// The keys the status line offers on this tab: switch Bluetooth, open the pairing tool, and search
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab: switch Bluetooth, open the pairing tool, and search
 /// the devices.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap) {
     pairs.push((km.label(Action::Toggle), "Toggle"));

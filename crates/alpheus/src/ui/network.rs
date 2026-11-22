@@ -1,4 +1,4 @@
-//! The Network tab's rows and its shortcut hints.
+//! The Network tab's rows and its shortcut hints (the shortcut bar, or the keycaps row in the rail).
 //!
 //! `tabs::render` draws the rows this file lists; the items themselves come from
 //! `app/network.rs`, and a switch or a button is drawn by the shared item drawing in `tabs.rs`,
@@ -21,11 +21,12 @@ use crate::app::{App, Loadable};
 /// one line per connection that passes the search, then the "Choose a network" button.
 ///
 /// `rail` says the tab is drawn with the left rail (from 84 columns by 26 rows), where each line
-/// starts with a glyph for the kind of connection and the columns are wider; the classic layout
-/// writes the kind first and the device in parentheses. A list that has not loaded shows `…`, a
-/// failed read shows its error, and an empty one shows `none`.
+/// starts with a glyph for the kind of connection, then the name (padded to 24), the kind (padded
+/// to 10) and the device; the classic layout writes the kind first (padded to 10), then the name,
+/// then the device in parentheses. A list that has not loaded shows `…`, a failed read shows its
+/// error, and an empty one shows `none`.
 pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
-    // The switch and the button are the two items of `network::items`, by position.
+    // The switch and the button are the two items of `items` in `app/network.rs`, by position.
     rows.push(Row::Item(0));
     rows.push(Row::Blank);
     rows.push(Row::Heading("Active connections"));
@@ -56,7 +57,7 @@ pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
     rows.push(Row::Item(1));
 }
 
-/// The keys the status line offers on this tab: switch Wi-Fi, open the network tool, and search
+/// The keys the shortcut bar (the keycaps row in the rail) offers on this tab: switch Wi-Fi, open the network tool, and search
 /// the connections.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap) {
     pairs.push((km.label(Action::Toggle), "Toggle"));
