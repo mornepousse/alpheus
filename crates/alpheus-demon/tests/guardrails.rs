@@ -877,6 +877,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Notes => "notes",
             Request::Clipboard => "clipboard",
             Request::ClipboardClear => "clipboard-clear",
+            Request::Tools => "tools",
+            Request::Power => "power",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -900,6 +902,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Notes,
         Request::Clipboard,
         Request::ClipboardClear,
+        Request::Tools,
+        Request::Power,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -924,6 +928,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "notes",
             "clipboard",
             "clipboard-clear",
+            "tools",
+            "power",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -1133,12 +1139,15 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("quick_app.rs", "Timer::", 1),
         // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
         // runs (at its end, and at each minute of the chip).
-        ("timer_app.rs", "Timer::", 1),
+        ("timer/app.rs", "Timer::", 1),
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
         ("bubbles_surface.rs", "Timer::", 1),
         ("osd_surface.rs", "Timer::", 1),
+        // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
+        // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
+        ("tools_app.rs", "Timer::", 1),
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
@@ -1177,6 +1186,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("link.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
+        // The Tools menu's reader: one short-lived thread per read of states or of a
+        // `choices_cmd`, started while the menu is open, ending with its last delivery.
+        ("launcher/tools/read.rs", "thread::Builder", 1),
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
@@ -1616,8 +1628,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "launcher/emoji.rs",
     "launcher/emoji/",
     "resources_popup.rs",
-    "timer.rs",
-    "timer_popup.rs",
+    "timer/mod.rs",
+    "timer/popup.rs",
     "notes/text.rs",
     "notes/lines.rs",
     "notes/keys.rs",
@@ -1627,6 +1639,9 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/surface.rs",
     "notes/paste.rs",
     "clipboard/",
+    "launcher/tools/config.rs",
+    "launcher/tools/catalog.rs",
+    "launcher/tools/nav.rs",
 ];
 
 #[test]
@@ -3008,7 +3023,7 @@ fn the_power_menu_has_no_panicking_path() {
 #[test]
 fn the_timer_is_wired_through_one_path() {
     let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap();
-    let app = src("timer_app.rs");
+    let app = src("timer/app.rs");
     let tick = function_body(&app, "fn timer_tick(");
     let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
     assert!(fired.is_some() && check.is_some() && fired < check, "fired() before the check: {tick}");
@@ -3038,7 +3053,7 @@ fn the_timer_is_wired_through_one_path() {
             }) || (["replace(&mut", "swap(&mut"].iter().any(|f| line.contains(f)) && line.contains("timer.model"));
             if assigns {
                 assert!(
-                    name == "timer_app.rs" && ["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()),
+                    name == "timer/app.rs" && ["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()),
                     "the model changed in {name}'s {owner}"
                 );
             }
@@ -3056,7 +3071,7 @@ fn the_timer_is_wired_through_one_path() {
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer.rs", "timer_app.rs", "timer_popup.rs"] {
+    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -3163,6 +3178,66 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
             assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
         }
     }
+}
+
+/// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
+/// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
+/// range. Production code only; Task 3 appends `nav.rs`.
+const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs"];
+
+#[test]
+fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in TOOLS_PURE.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
+/// `tools_join.rs` alone (tools spec § 8): no other production file of the menu names their items.
+/// A plain word search for the shield would hit the emoji table and the VPN model, so the
+/// searched words are the hook points' own names; `"diagnostics"` quoted is the tab's slug (the
+/// table's `tab.diagnostics` id is another literal).
+#[test]
+fn the_parallel_branches_are_named_only_in_tools_join() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !(name.starts_with("launcher/tools/") || name == "tools_app.rs") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for word in ["clipboard_availability", "launcher_open_clipboard", "shield_open_detail", "ShieldConfig", "\"diagnostics\""] {
+            assert!(!production.contains(word), "{word} in {name}: name the parallel branches in tools_join.rs only");
+        }
+    }
+    assert!(seen >= 3, "the tools files were not found");
+}
+
+/// The shield and diagnostics hook points are filled in (they merged): the shield is available
+/// exactly when `[shield]` is configured and the `quick` module is on (what `shield_open_detail`
+/// needs), opens through it, and the tab's slug is the one the control center accepts.
+#[test]
+fn the_join_hooks_are_filled_in() {
+    let files = source_files();
+    let join = &files.iter().find(|(p, _)| relative_path(p) == "tools_join.rs").expect("tools_join.rs").1;
+    let available = function_body(join, "pub fn shield_available");
+    assert!(available.contains("shield.is_some()") && available.contains("quick_enabled()"), "shield_available: {available}");
+    assert!(function_body(join, "pub fn open_shield").contains("shield_open_detail()"), "open_shield goes through the Shield feature");
+    assert!(join.contains("pub const DIAGNOSTICS_TAB: Option<&str> = Some(\"diagnostics\");"), "DIAGNOSTICS_TAB");
+    let tab = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../alpheus/src/app/tab.rs")).expect("the TUI's tab.rs");
+    assert!(tab.contains("slug: \"diagnostics\""), "the control center has no tab with the slug alpheus-launch passes");
 }
 
 /// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's
@@ -3411,7 +3486,7 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let timer_app = src("timer_app.rs");
+    let timer_app = src("timer/app.rs");
     let row = popup_ops_row(&timer_app);
     assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
     let closed = function_body(&timer_app, "fn timer_closed(");
@@ -4301,6 +4376,312 @@ fn the_clipboard_shutdown_wipes_pins_too() {
     let prod = production_code(t);
     let body = function_body(&prod, "fn clipboard_shutdown(");
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
+}
+
+/// Tools spec § 9, plan Task 4: every command a Tools row starts is one the user configured
+/// (`[[tools.entry]]`: its `run`, `terminal` or `terminal_hold` in front), the chosen line one
+/// whole element — from the Tools box and from Mod+Space's search alike, in a scope or detached —
+/// never through a shell alpheus builds; and each shape is reached.
+#[test]
+fn every_tool_run_is_a_configured_argv_with_the_choice_whole() {
+    use alpheus_demon::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let text = r#"
+[[tools.category]]
+name = "Nix"
+[[tools.entry]]
+name = "Update"
+category = "Nix"
+run = ["atool", "update"]
+[[tools.entry]]
+name = "Held"
+run = ["atool", "held"]
+hold = true
+[[tools.entry]]
+name = "Termed"
+run = ["atool", "termed"]
+terminal = true
+[[tools.entry]]
+name = "Gen"
+category = "Nix"
+run = ["atool", "gen", "{choice}"]
+choices = ["a b", "$(id); rm -rf ~", "it's", "{choice}", "-rf"]
+[tools]
+builtins = false
+"#;
+    let config = LauncherConfig::from_text(text).unwrap();
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-tools-bin", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    let _guard = RemoveOnDrop(bin.clone());
+    for p in ["atool", "foot"] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path_dirs = [bin.clone()];
+    let configured = |argv: &[String]| -> Option<&'static str> {
+        let a: Vec<&str> = argv.iter().map(String::as_str).collect();
+        match a.as_slice() {
+            ["atool", "update"] => Some("plain"),
+            ["foot", "--hold", "-e", "atool", "held"] => Some("hold"),
+            ["foot", "-e", "atool", "termed"] => Some("terminal"),
+            ["atool", "gen", c] if ["a b", "$(id); rm -rf ~", "it's", "{choice}", "-rf"].contains(c) => Some("choice"),
+            _ => None,
+        }
+    };
+    let mut seen = Vec::new();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        let catalog = || ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+        // The Tools box: every row of every level, by click.
+        let mut outcomes = Vec::new();
+        let open = || Launcher::for_tools(config.clone(), catalog(), History::empty(200), 1_800_000_000);
+        let rows_at = |keys: &[Key]| {
+            let mut l = open();
+            for k in keys {
+                l.key(*k);
+            }
+            l.results.len()
+        };
+        // Root: categories and root entries; into "Nix" (after the root entries: Held, Nix, Termed).
+        let nix = (0..rows_at(&[])).find(|&i| {
+            let mut l = open();
+            l.click(i, false);
+            l.tools().is_some_and(|t| t.breadcrumb() == "Tools › Nix")
+        });
+        for i in 0..rows_at(&[]) {
+            outcomes.push(open().click(i, false));
+        }
+        let nix = nix.expect("the Nix category is a root row");
+        let in_nix = || {
+            let mut l = open();
+            l.click(nix, false);
+            l
+        };
+        for i in 0..in_nix().results.len() {
+            let mut l = in_nix();
+            let o = l.click(i, false);
+            outcomes.push(o);
+            // Drilled into Gen: its choices.
+            for j in 0..l.results.len() {
+                let mut c = in_nix();
+                c.click(i, false);
+                outcomes.push(c.click(j, false));
+            }
+        }
+        // Mod+Space's typed search reaches the same entries and the fixed choices.
+        for q in ["update", "held", "termed", "gen", "gen a b", "gen -rf", "gen it", "gen {choice}", "gen $(id)"] {
+            let mut l = Launcher::for_apps(config.clone(), vec![], History::empty(200), 1_800_000_000);
+            l.set_tools(catalog());
+            for c in q.chars() {
+                l.key(Key::Char(c));
+            }
+            outcomes.push(l.key(Key::Enter));
+            outcomes.push(l.key(Key::CtrlEnter));
+        }
+        for o in outcomes {
+            let Outcome::Activate(a) = o else { continue };
+            let spy = ArgvSpy::default();
+            let mut l = open();
+            let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &path_dirs });
+            let calls = spy.0.lock().unwrap().clone();
+            let argv = calls.first().expect("a tool ran nothing");
+            let scoped: Vec<String> = SYSTEMD_RUN.iter().map(|s| s.to_string()).collect();
+            let argv = if spawner == Spawner::SystemdScope { argv.strip_prefix(&scoped[..]).expect("not in its scope") } else { &argv[..] };
+            let shape = configured(argv).unwrap_or_else(|| panic!("a tool started something nobody configured: {argv:?}"));
+            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell alpheus builds: {argv:?}");
+            seen.push((shape, spawner));
+        }
+    }
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for shape in ["plain", "hold", "terminal", "choice"] {
+            assert!(seen.contains(&(shape, spawner)), "{shape} never reached under {spawner:?}: {seen:?}");
+        }
+    }
+}
+
+// ---- The Tools menu's glue (tools plan, Task 7). ----
+
+/// The placeholders a Tools log line may interpolate: positions, counts, a built-in's static id and
+/// a `Why`'s fixed words. Never a name, a command, a choice, a line or the query.
+const TOOLS_LOG_PLACEHOLDERS: [&str; 8] = ["{i}", "{n}", "{k}", "{on}", "{off}", "{unknown}", "{id}", "{why}"];
+
+/// The first `log(` or `note(` call in `code` that is not fixed words, if any. The relay
+/// `|m| log(m)` (the notes of the pure code handed to the log) is the one variable allowed.
+fn tools_unfixed_log(code: &str) -> Option<String> {
+    let code = code.replace("|m| log(m)", "");
+    for opener in ["log(", "note("] {
+        let mut rest = code.as_str();
+        while let Some(i) = rest.find(opener) {
+            let before = rest[..i].chars().next_back();
+            let call = &rest[i..];
+            // A longer name (`catalog(`, `tools_note(`) is not the call.
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                rest = &call[opener.len()..];
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut end = call.len();
+            for (j, c) in call.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = j + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut text = call[..end].to_string();
+            for ok in TOOLS_LOG_PLACEHOLDERS {
+                text = text.replace(ok, "");
+            }
+            let arg = call[opener.len()..end.saturating_sub(1)].trim();
+            let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+            let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2;
+            if !literal || text.contains('{') || text.contains("+ ") {
+                return Some(call[..end].to_string());
+            }
+            rest = &call[end..];
+        }
+    }
+    None
+}
+
+#[test]
+fn the_tools_logs_are_fixed_words() {
+    let files = source_files();
+    let mut seen = 0;
+    for name in ["launcher/tools/read.rs", "tools_app.rs", "tools_join.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+        seen += code.matches("log(").count() + code.matches("note(").count();
+    }
+    let run = &files.iter().find(|(p, _)| relative_path(p) == "launcher/run.rs").expect("run.rs").1;
+    let run_production = production_code(run);
+    let perform_tool = function_body(&run_production, "fn perform_tool");
+    assert_eq!(tools_unfixed_log(perform_tool), None, "a log call in perform_tool names more than fixed words");
+    assert!(seen >= 8 && perform_tool.contains("log("), "the log calls were found: {seen}");
+}
+
+#[test]
+fn the_tools_log_guardrail_helper_bites() {
+    assert_eq!(tools_unfixed_log("log(\"tools: read failed\");"), None);
+    assert_eq!(tools_unfixed_log("log(&format!(\"tools: built-in {id}\"));"), None);
+    assert_eq!(tools_unfixed_log("note(&format!(\"tools: entry {i}: choices {why}, {k} kept\"));"), None);
+    assert_eq!(tools_unfixed_log("let c = tools_catalog(&config); Catalog::build(a, b, &mut |m| log(m));"), None);
+    assert!(tools_unfixed_log("log(&format!(\"tools: entry {name}\"));").is_some(), "a name");
+    assert!(tools_unfixed_log("log(&format!(\"tools: entry {}\", e.name));").is_some(), "a bare placeholder");
+    assert!(tools_unfixed_log("log(&text);").is_some(), "a variable");
+    assert!(tools_unfixed_log("note(&line);").is_some(), "a variable note");
+    assert!(tools_unfixed_log("log(\"a\"); log(&format!(\"{choice}\"));").is_some());
+}
+
+/// The question's timer goes with the box, however it goes: both the close and the panic path
+/// re-sync it (it then reads no deadline).
+#[test]
+fn the_tools_timer_is_disarmed_by_close_and_by_a_panic() {
+    let files = source_files();
+    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let surface = text("launcher/surface.rs");
+    assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_timer_sync()"), "launcher_close");
+    assert!(function_body(&surface, "fn launcher_outcome(").contains("tools_timer_sync()"), "launcher_outcome");
+    let host = text("launcher/host.rs");
+    assert!(function_body(&host, "fn launcher_fail(").contains("tools_timer_sync()"), "launcher_fail");
+}
+
+/// A built-in spawns only through `run::launch` (its own scope, its program looked up first); the
+/// glue never starts a process itself, through a shell or otherwise.
+#[test]
+fn the_tools_glue_spawns_only_through_launch() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "tools_app.rs").expect("tools_app.rs").1;
+    let code = production_code(t);
+    for forbidden in [".spawn(", ".run(", ".capture(", "Command::new", "\"sh\"", "-c\""] {
+        assert!(!code.contains(forbidden), "{forbidden} in tools_app.rs");
+    }
+    assert!(code.contains("run::launch("), "the one spawn");
+    assert_eq!(code.matches("run::launch(").count(), 1);
+}
+
+/// Every built-in's argv is the configured command, `[actions] open_tab` with the tab, or the
+/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell.
+#[test]
+fn every_builtin_argv_stays_on_the_allowlist() {
+    use alpheus_demon::config::QuickConfig;
+    use alpheus_demon::launcher::tools::catalog::{BUILTINS, BuiltinAction};
+    use alpheus_demon::tools_app::{Commands, builtin_argv};
+    use std::os::unix::fs::PermissionsExt;
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    let _bin_guard = RemoveOnDrop(bin.clone());
+    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot"];
+    for p in programs {
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let dirs = [bin.clone()];
+    let mut quick = QuickConfig::default();
+    quick.keep_awake.toggle = vec!["keepawake".into(), "--flip".into()];
+    quick.night_light.toggle = vec!["nightlight".into()];
+    let reload = vec!["shell-ctl".to_string(), "reload-bar".to_string()];
+    let terminal = vec!["foot".to_string()];
+    // `open_tab`'s program is missing: the terminal fallback is what runs.
+    let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
+    let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
+    let mut spawned = 0;
+    for b in BUILTINS.iter() {
+        let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
+        let expected: Option<Vec<String>> = match b.action {
+            BuiltinAction::Lock => Some(quick.lock.clone()),
+            BuiltinAction::Toggle(t) => Some(t.config(&quick).toggle.clone()),
+            BuiltinAction::Reload => Some(reload.clone()),
+            BuiltinAction::Tab => {
+                let slug = b.id.strip_prefix("tab.").expect("a tab id");
+                Some(["foot", "alpheus", "--tab", slug].map(String::from).to_vec())
+            }
+            _ => None,
+        };
+        assert_eq!(got, expected, "{}", b.id);
+        if let Some(argv) = got {
+            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
+            spawned += 1;
+        }
+    }
+    assert!(spawned >= 5, "the spawning built-ins were reached: {spawned}");
+}
+
+/// Review I1, I2, M1, M5: what a Mod+Space open leaves alone, and what a closed menu stops.
+#[test]
+fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
+    let files = source_files();
+    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let host = text("launcher/host.rs");
+    let apps = function_body(&host, "pub(crate) fn launcher_open_apps(");
+    for word in ["tools_builtin_states", "tools_adopt_builtin_states", "tools_known_states"] {
+        assert!(!apps.contains(word), "{word}: a plain Mod+Space open reads no built-in state (a /proc scan)");
+    }
+    assert!(apps.contains("tools_catalog(&config, false)"), "a Mod+Space open logs no catalog note");
+    assert!(text("tools_join.rs").contains("clipboard_availability()"), "the clipboard row follows the protocol too");
+    let tools = text("tools_app.rs");
+    assert!(function_body(&tools, "pub(crate) fn launcher_open_tools(").contains("tools_catalog(&config, true)"));
+    let surface = text("launcher/surface.rs");
+    let outcome = function_body(&surface, "fn launcher_outcome_inner(");
+    assert!(
+        outcome.contains("Outcome::EnterTools(") && outcome.contains("tools_adopt_builtin_states()"),
+        "the jump reads the built-ins' states"
+    );
+    assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_reads_stop()"), "launcher_close");
+    assert!(function_body(&host, "fn launcher_fail(").contains("tools_reads_stop()"), "launcher_fail");
+    assert!(function_body(&tools, "pub(crate) fn run_builtin(").contains("is_refusal"), "a refused verb is logged");
+    assert!(
+        function_body(&tools, "fn tools_spawn(").contains("spawn_builtin(")
+            && !function_body(&tools, "fn tools_spawn(").contains("Spawner::")
+    );
+    let tick = function_body(&tools, "pub(crate) fn tools_tick(");
+    assert!(tick.contains("launcher_guarded(\"tools timer\""), "the timer's tick runs guarded");
 }
 
 /// The string literals of `call` (escapes skipped) and what is left of it once they are removed.

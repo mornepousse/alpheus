@@ -461,5 +461,8 @@ pub fn incoming(end: End, l: &Lengths) -> Option<Incoming> {
     })
 }
 
+pub mod app;
+pub mod popup;
+
 #[cfg(test)]
 mod tests;
