@@ -150,7 +150,7 @@ fn parse_line(line: &str) -> Option<UsbDevice> {
 
 /// `allow` with its `{id}` element replaced by the decimal id; None when `allow` is empty. Only a
 /// whole element equal to `{id}` is replaced: the id comes from a parsed line and goes into one
-/// argument, never into a larger one (shield plan 1, "Review Focus", item 2).
+/// argument, never into a larger one (shield spec § 2: `{id}` is one whole element).
 pub fn allow_argv(allow: &[String], id: u32) -> Option<Vec<String>> {
     if allow.is_empty() {
         return None;

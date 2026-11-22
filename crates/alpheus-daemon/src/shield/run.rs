@@ -17,7 +17,8 @@
 //! - read an action's output through `capture`: only the listing is, and a guardrail
 //!   (`a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands`) checks the order of the
 //!   two calls in `run_job`;
-//! - panic: a worker that panics still reports, as `WorkerFailed`.
+//! - panic: a guardrail (`the_shield_files_have_no_panicking_path`) reads this file's code; should
+//!   `run_job` panic anyway, the worker still reports, as `WorkerFailed`.
 //!
 //! See: docs/specs/2026-11-21-alpheus-shield-design.md (§§ 6 and 7), docs/features/shield.md, and
 //! docs/decisions.md ("Shield commands and reads run on a short-lived thread", "A running Shield

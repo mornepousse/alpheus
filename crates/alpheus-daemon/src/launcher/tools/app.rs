@@ -12,18 +12,19 @@
 //! `launcher_fail`. The functions that decide something (`context`, `tab_argv`, `builtin_argv`,
 //! `Scheduler`) take plain values, so they are tested without an `App`.
 //!
-//! The path of a built-in: Enter on its row makes the launcher close, then `tools_prepare` has
-//! checked its program while the box was still open (a missing one is said in the box, which then stays
-//! open); `run_builtin` replays the verb, or `tools_spawn` hands the argv to the launcher's own
-//! start function, in its own scope.
+//! The path of a built-in: Enter on its row first reaches `tools_prepare`, which checks the program
+//! while the box is still open (a missing one is said in the box, which stays open). Otherwise the
+//! launcher closes, then `run_builtin` replays the daemon's verb, or `tools_spawn` hands the argv to
+//! the launcher's own start function, in its own scope.
 //!
 //! Never:
 //! - start a process itself, through a shell or otherwise: a built-in that spawns goes through the
 //!   launcher's start function, exactly once (a guardrail, `the_tools_glue_spawns_only_through_launch`);
-//! - write a name, a command, a choice or a line into a log line: only fixed words and a built-in's id
-//!   (a guardrail, `the_tools_logs_are_fixed_words`);
-//! - name the clipboard, the shield or the diagnostics tab: `join.rs` is the one file that does (a
-//!   guardrail, `the_parallel_branches_are_named_only_in_tools_join`);
+//! - write a name, a command, a choice or a line into a log line: only fixed words, a built-in's id,
+//!   its position and counts (a guardrail, `the_tools_logs_are_fixed_words`);
+//! - call the clipboard's, the shield's or the diagnostics tab's own functions or types: `join.rs` is
+//!   the one file that does (a guardrail, `the_parallel_branches_are_named_only_in_tools_join`, looks
+//!   in this folder's other files for the names of those functions and types);
 //! - keep a thread, a timer or a catalog while the menu is closed.
 //!
 //! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§§ 1, 5, 6, 8, 9),
@@ -111,7 +112,8 @@ pub fn is_refusal(reply: &Reply) -> bool {
 
 /// The state of the built-in entries among `entries` whose state the daemon knows itself, as
 /// (position in `entries`, on): Do not disturb is `dnd`, and a `[quick]` toggle is what `toggle_state`
-/// says (None: unknown, so no entry for it).
+/// says (None: unknown, so no entry for it). The positions come from the catalog, which builds each
+/// `Builtin` index from `BUILTINS`, so the lookup finds its entry.
 pub fn known_builtin_states(entries: &[Entry], dnd: bool, toggle_state: &dyn Fn(Toggle) -> Option<bool>) -> Vec<(usize, bool)> {
     let mut known = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
@@ -156,7 +158,7 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
             return match tab_argv(c.open_tab, slug, c.terminal, c.path_dirs) {
                 Some(argv) => Ok(Some(argv)),
                 None => {
-                    // The program named in the message is the one the person configured: `open_tab`'s,
+                    // The program named in the message is the one the user configured: `open_tab`'s,
                     // else the terminal's, else the word "terminal".
                     let program = match c.open_tab.first().or(c.terminal.first()) {
                         Some(program) => program.as_str(),

@@ -1,5 +1,5 @@
 //! The hook points of the Tools menu for the clipboard, the shield and the diagnostics tab: the only
-//! file that names them.
+//! file of the menu that calls their own functions and types.
 //!
 //! Each of the three is a feature of its own, built in parallel with the menu and merged into it. The
 //! menu's other files do not know them; this one gives, for each, what the menu needs: a function that
@@ -7,9 +7,11 @@
 //! control center, is a constant instead).
 //!
 //! Never:
-//! - hold any state or start anything: each function asks the app or hands it a request;
-//! - let another file of the menu name these three (a guardrail,
-//!   `the_parallel_branches_are_named_only_in_tools_join`, reads their production code).
+//! - hold any state or start a thread, a process or a timer: each function asks the app or hands it a
+//!   request;
+//! - let another file of the menu call their own functions or types (a guardrail,
+//!   `the_parallel_branches_are_named_only_in_tools_join`, looks for their names in this folder's
+//!   other files).
 //!
 //! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§ 8), docs/features/tools-menu.md, and
 //! docs/decisions.md ("The Tools menu reaches the clipboard, the shield and the diagnostics tab

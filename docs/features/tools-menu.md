@@ -9,7 +9,8 @@ and `join.rs`); the other files of the folder are summarised in "How it is built
 
 `alpheus-launch --tools` opens the launcher in a Tools mode: categories to browse, and a search that
 looks at every entry of every category at once. Typing `/` as the whole query in Mod+Space jumps into it
-too. Nothing is resident while it is closed: no thread, no timer, no catalog.
+too, so typing a path that starts with `/` does as well, from its first character (`[prefixes] tools = ""`
+gives the key back; tools spec decision 21). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
   disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, Lock,
@@ -23,7 +24,7 @@ too. Nothing is resident while it is closed: no thread, no timer, no catalog.
 **Browsing.** With the query empty the box lists categories (`Quick settings`, `Control center`,
 `Utilities`, `Session`, and your own). Enter or → opens one; ← or Esc goes back up; Esc at the root
 closes. Every action closes the box: a run, a built-in opening its feature, a toggle. Only opening a
-level, going up and a confirmation question keep it open.
+level, going up, a confirmation question and a program not on the `$PATH` (said in the box) keep it open.
 
 **Searching.** Typing filters the current level: at the root, every entry of every category, the
 category dimmed after the entry and fixed choices as `Entry · Choice`; inside a category or a list of
@@ -67,7 +68,8 @@ most 128) has:
 A command's reads (`state`, `choices_cmd`) are cut at 1 s, 2,000 lines and 256 KiB. Past a bound the first
 ones are kept and one line of counts is logged. Invalid structure makes `launcher.toml` invalid, as for
 every other key. A built-in that opens a tab runs `[actions] open_tab` with `{tab}`, else the launcher's
-terminal with `alpheus --tab <name>`.
+terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-category bound is dropped,
+not moved to the root (tools plan 1, decision 12).
 
 ## How it is built
 
@@ -83,15 +85,18 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
   reader's one-job-at-a-time queue; `ToolsApp` holds the question's `DeadlineTimer` and the scheduler;
   and the methods of `App` open the menu, adopt the reader's mail, run a built-in after the box closed and
   arm the timer.
-- `join.rs`: the only file that names the clipboard, the shield and the diagnostics tab.
+- `join.rs`: the only file of the folder that calls the clipboard's, the shield's and the diagnostics
+  tab's own functions and types; `app.rs` still has a `Join` struct carrying their three answers and
+  reads `join::DIAGNOSTICS_TAB`.
 
 **The path of a built-in.** Enter on its row; `tools_prepare` checks, while the box is still open, that
-the program it would spawn is on the `$PATH` (a missing one is said in the box, which stays open). The
-launcher closes; `run_builtin` then replays the daemon's own verb (the quick panel, Notes, Timer, the
+the program it would spawn is on the `$PATH` (a missing one is said in the box, which stays open).
+Otherwise the launcher closes; `run_builtin` then replays the daemon's own verb (the quick panel, Notes, Timer, the
 power menu, Do not disturb), opens the clipboard history or the Shield detail through `join.rs`, reopens
 Mod+Space with `:` typed (Emoji), or hands the argv to the launcher's start function through
-`tools_spawn`, in its own `systemd-run --user --scope`. One log line names the built-in
-by its id; a refusal is a second one.
+`tools_spawn`, in its own `systemd-run --user --scope` (a bare spawn when there is no systemd). One log
+line names the built-in by its id; a refusal (`refused`) or a spawn that could not start (`could not
+start`) is another.
 
 **The reader's schedule.** `tools_offer` hands a job to `Scheduler::offer`. A choices read that a
 drill-in asks for goes first; a running states read stops after its current entry and its unread entries
@@ -105,14 +110,16 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 
 - `the_tools_pure_parts_have_no_panicking_path_and_log_nothing`: `config.rs`, `catalog.rs` and `nav.rs`
   never panic and log nothing.
-- `the_tools_logs_are_fixed_words`: a log line of the menu is a fixed word or a built-in's id, never a
-  name, a command, a choice or a line.
+- `the_tools_logs_are_fixed_words`: a log line of the menu is a fixed word, a built-in's id, an entry's
+  position or counts, never a name, a command, a choice or a line.
 - `the_tools_glue_spawns_only_through_launch`: `app.rs` starts no process itself and calls the
   launcher's start function exactly once.
 - `every_builtin_argv_stays_on_the_allowlist`: a built-in's argv is the configured command,
   `[actions] open_tab`, or the terminal running `alpheus --tab`, never through a shell.
-- `the_parallel_branches_are_named_only_in_tools_join`, `the_join_hooks_are_filled_in`: only `join.rs`
-  names the clipboard, the shield and the diagnostics tab, and its three answers are real.
+- `the_parallel_branches_are_named_only_in_tools_join`, `the_join_hooks_are_filled_in`: the folder's other
+  files never name `clipboard_availability`, `launcher_open_clipboard`, `shield_open_detail`,
+  `ShieldConfig` or the `"diagnostics"` slug, so `join.rs` is the one file that calls the clipboard's and
+  the shield's own functions; and its three answers are real.
 - `the_tools_timer_is_disarmed_by_close_and_by_a_panic` and
   `the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box`: the timer and the reads end with the
   box, however it ends.

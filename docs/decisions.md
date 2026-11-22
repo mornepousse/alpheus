@@ -717,6 +717,8 @@ burst, so that a process that opens and closes a node non-stop cannot postpone i
 
 Date: 2026-10-20 · Source: privacy camera spec § 1 ("The debounce"; the 1 s cap, `SCAN_MAX_WAIT`, was amended at execution); privacy plan 2, "Decisions written down", item 3 (the 300 ms push-back only)
 
+Status: awaiting confirmation at the trial (privacy plan 2, "Decisions written down": handed over to be read over at the trial, see the trial note)
+
 ### PipeWire's own hold on a camera adds no name
 
 A holder whose `comm` is `pipewire` or `wireplumber`, and the daemon itself, are left out of the
@@ -733,6 +735,8 @@ when it is created again, and forgotten when the name goes. A refusal because of
 logged.
 
 Date: 2026-10-20 · Source: privacy camera spec § 1; privacy plan 2, "Decisions written down", item 5, and "Review Focus", item 1; `CameraWatch::watch_node` (the permission refusals not logged)
+
+Status: awaiting confirmation at the trial (privacy plan 2, "Decisions written down": handed over to be read over at the trial, see the trial note)
 
 ### The camera scan runs on the event loop
 
@@ -756,7 +760,7 @@ Date: 2026-10-20 · Source: privacy camera spec § 4 (amendment of delivery 1's 
 
 The mode is on while the flag file exists, off when it does not, and unknown when its existence cannot
 be told (any error but "not found"). Unknown is not off: the switch reads `·`, the bar draws nothing,
-Space and `toggle` do nothing, and the detail says `Shield state unknown` instead of `Shield is off`.
+Space does nothing and `toggle` answers an error (exit 2), and the detail says `Shield state unknown` instead of `Shield is off`.
 The spec gives the rule as "never "off" on a guess", the rule of `[quick]`'s `file:` states.
 
 Date: 2026-11-21 · Source: shield spec § 3 and § 14, items 5 and 16
@@ -790,11 +794,12 @@ Status: awaiting confirmation at the trial (shield spec § 14: its decisions are
 ### Shield commands and reads run on a short-lived thread
 
 `on`, `off` and `allow` (through `run_silent`) and the listing of blocked devices (through `capture`)
-each run on a thread that lives only while the job runs, and mail the outcome back. A `failed` on a
-non-zero exit is wanted, and only a command that is waited for gives an exit code; a detached spawn
-never sees one.
+each run on a thread that lives only while the job runs, and mail the outcome back. For the three
+commands: a `failed` on a non-zero exit is wanted, and only a command that is waited for gives an exit
+code; a detached spawn never sees one. For the listing: `capture` blocks up to its deadline, so it runs
+off the event loop (the comment on `only_the_runners_capture_and_never_through_a_shell`).
 
-Date: 2026-11-21 · Source: shield spec § 14, item 6; § 13 (the rejected detached spawns)
+Date: 2026-11-21 · Source: shield spec § 6, § 14, item 6; § 13 (the rejected detached spawns)
 
 Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
 
@@ -825,19 +830,19 @@ picker; never when a device is plugged, and nothing is read while the mode is of
 detail is the refresh. The design rejects a notice on every plug: that is background watching, and
 allowing stays a deliberate gesture.
 
-Date: 2026-11-21 · Source: shield spec § 11, § 13 and § 14, item 12
+Date: 2026-11-21 · Source: shield spec § 11, § 13 and § 14, items 12 and 15 (`status` reads the list only while the mode is on)
 
 Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
 
 ### The Shield flag may not share a directory with alpheus's configuration
 
 The flag's directory and its parent may equal neither the configuration directory nor its parent;
-otherwise Shield mode is turned off with a warning at start. The theme target and the flag target
+otherwise Shield mode is turned off with one warning at start (spec § 2; plan 1, item 8). The theme target and the flag target
 would then share inotify watch descriptors (one inode, one descriptor), and re-arming one would drop
 the other. An alias the paths do not show (a symlink, a bind mount) is caught when the watch arms: the
 flag is then not watched and the unwatched mode applies.
 
-Date: 2026-11-21 · Source: shield spec § 14, item 3; shield plan 1, "Decisions written down", item 9
+Date: 2026-11-21 · Source: shield spec § 2 and § 14, item 3; shield plan 1, "Decisions written down", items 8 and 9
 
 Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
 
@@ -861,11 +866,12 @@ longer leave a broken layout, because the daemon reverts at the deadline.
 
 Date: 2026-10-30 · Source: displays protocol spec, "Designer's calls", item 1
 
-### displays.toml is read when the debounce ends, never watched
+### displays.toml is read at each evaluation of the profiles, never watched
 
-The daemon reads `displays.toml` at the moment it evaluates the profiles (after the debounce that follows
-a change of screens), not before: it does not watch the file and does not keep it between evaluations
-(reason not recorded).
+The daemon reads `displays.toml` each time the controller evaluates the profiles (`displays_tick`): when
+the debounce that follows a change of screens ends (the first one follows the first `done` at start), and
+when the re-check of a profile skipped by the 3-a-minute limit comes due. It does not watch the file and
+does not keep it between evaluations (reason not recorded).
 
 Date: 2026-10-30 · Source: displays protocol spec § 1, "The daemon applies profiles on hotplug"
 
@@ -873,10 +879,11 @@ Date: 2026-10-30 · Source: displays protocol spec § 1, "The daemon applies pro
 
 A screen is DisplayLink when its connector's DRM card is driven by `evdi`: the `card*-<name>` entry of
 `[displays] drm_dir` (default `/sys/class/drm`) whose driver link ends in `evdi`. The answer is read once
-for each new screen name and never watched, and nothing under `/dev` is opened. The directory is
-configurable so that tests can point elsewhere (reason for reading once: not recorded).
+for each new screen name and never watched, and nothing under `/dev` is opened (`is_displaylink` reads
+only `drm_dir`). The directory is configurable so that tests can point elsewhere (reason for reading once:
+not recorded).
 
-Date: 2026-10-30 · Source: displays protocol spec § 1, "DisplayLink detection" (with its amendment at the final review)
+Date: 2026-10-30 · Source: displays protocol spec § 1, "DisplayLink detection" (with its amendment at the final review); the code (`is_displaylink`)
 
 ### A screen's identity and a profile file's errors are never logged
 
@@ -884,14 +891,16 @@ A profile's name is the user's own word and may be logged (`displays: profile "<
 a screen's identity is device data and never is, and an invalid `displays.toml` is logged as one fixed line
 with no error text, because the error may quote a screen's identity.
 
-Date: 2026-10-30 · Source: displays protocol spec § 1 ("Match": profile names may be logged, screen identities never are); the code's comment on the invalid-file line
+Date: 2026-10-30 · Source: displays protocol spec § 1 ("Match": profile names may be logged, screen identities never are); the comment on `LOG_INVALID_FILE` in `outputs/app.rs`
 
 ### The Tools menu reaches the clipboard, the shield and the diagnostics tab through one file
 
 The three features were built in parallel with the menu. `launcher/tools/join.rs` is the only file of the
-menu that names them, with one function each for "does its row show" and "open it" (the diagnostics tab
-is a constant), and a guardrail reads the other files' code for their names. All three are real since the
-merges.
+menu that calls their own functions and types, with one function each for "does its row show" and "open
+it" (the diagnostics tab is a constant). `app.rs` has a `Join` struct carrying the three answers and
+reads that constant. The guardrail `the_parallel_branches_are_named_only_in_tools_join` looks in the
+folder's other files for `clipboard_availability`, `launcher_open_clipboard`, `shield_open_detail`,
+`ShieldConfig` and the `"diagnostics"` slug. All three are real since the merges.
 
 Date: 2026-11-21 · Source: tools menu spec § 8 and "Decisions written down", item 19
 
@@ -901,20 +910,31 @@ Status: awaiting confirmation at the trial (tools menu spec, "Decisions written 
 
 A built-in that opens a feature (the quick panel, Notes, Timer, the power menu) calls the daemon's own
 verb internally, with no process and no socket round trip, and does so after the launcher's box has
-closed, in the same pass. The verbs open their popups with the keyboard taken as a socket verb would,
-which is why a held Enter does nothing in the Tools mode: the repeat of the key that ran a built-in must
-not act in the popup it opened. Every action closes the box (the reason for that is not recorded).
+closed, in the same pass (the reason for replaying after the close is not recorded). The verbs open
+their popups with the keyboard taken as a socket verb would, which is why a held Enter does nothing in
+the Tools mode: the repeat of the key that ran a built-in must not act in the popup it opened.
 
-Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", items 6, 8 and 23; tools menu plan 1, "Decisions written down", item 5
+Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", items 6 and 23; tools menu plan 1, "Decisions written down", item 5
 
 Status: awaiting confirmation at the trial (tools menu spec and plan 1, "Decisions written down": to be confirmed at the trial)
+
+### Every action of the Tools menu closes the box, toggles included
+
+Running an entry, opening a built-in's feature and flipping a toggle all close the box; the switch is not
+redrawn in place. Only opening a level, going up, a confirmation question and a missing program (said in
+the box) keep it open. The reason is not recorded.
+
+Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", item 8
+
+Status: awaiting confirmation at the trial (tools menu spec, "Decisions written down": to be confirmed at the trial)
 
 ### A tab opens through `[actions] open_tab`, else in the terminal
 
 A built-in for a control center tab runs `[actions] open_tab` with `{tab}` replaced by the tab's name, when
 its program is on the `$PATH` of the open. When it is not, it runs the launcher's terminal with
 `alpheus --tab <name>`. When neither program is there, the box says `program not found` and stays open
-(reason not recorded; the spec notes that an empty `open_tab` is refused by `bar.toml` itself).
+(the launcher's own rule for a missing program, tools menu spec § 5). An empty `open_tab` never reaches
+this point: `bar.toml` refuses it. Why the terminal is the fallback is not recorded.
 
 Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", item 5; tools menu plan 1, "Decisions written down", item 9
 

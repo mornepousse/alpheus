@@ -71,8 +71,9 @@ takes effect after `shell-ctl reload-bar`.
 | `off_text` | `Back to the usual settings.` | The `Shield off` notice's body, same limits |
 
 Shield is configured when `flag`, `on` and `off` are all set. A table with only some of them is a
-warning at start and counts as unconfigured. A relative flag, a blank program, `{id}` in the wrong
-place and an over-long text are errors of the file. Unknown keys are refused.
+warning at start and counts as unconfigured. A relative flag or one with no file name, a blank program or
+a NUL in any argument list, `{id}` in the wrong place, and an over-long text or one holding a newline are
+errors of the file (shield plan 1, decision 8). Unknown keys are refused.
 
 ```toml
 [shield]
@@ -105,8 +106,8 @@ Files in `crates/alpheus-daemon/src/shield/`, and the parts of other files that 
 - `app.rs`: the wiring on the daemon's state. `ShieldApp` (the model, the configuration, the timer, who
   waits for the read) and the methods of `App` that carry out what the model answers.
 - Elsewhere: `watch.rs` arms the flag's directory in the theme watch's inotify instance;
-  `quick/shield.rs` is the row and the detail; `startup::resolve_shield` turns a partial table or a
-  flag in the configuration's directory into a warning and no Shield; `notify/app.rs`'s
+  `quick/shield.rs` is the row and the detail; `startup::resolve_shield` turns a partial table, or a flag whose directory or its
+  parent equals the configuration directory or its parent, into a warning and no Shield; `notify/app.rs`'s
   `shield_notice` hands a notice to the server only while it serves; `hooks/app.rs`'s `hooks_shield`
   feeds the hook.
 
@@ -123,8 +124,8 @@ joins.
 the command and mails its outcome back. The loop hands the mail to `shield_mail`. Meanwhile the flag's
 directory reports the change to `shield_readable`, which reads the flag once and asks the model's
 `flag` for the edge and the attempt it ends: the switch has succeeded when the flag reaches its target,
-before or after the exit. A non-zero exit fails at once (`exit <n>`, `killed`, `program not found`,
-`could not start`), after one look at the flag; an exit 0 waits 5 s for the flag
+before or after the exit. A failed command ends the switch at once (`exit <n>`, `killed`,
+`program not found`, `could not start`), after one look at the flag; an exit 0 waits 5 s for the flag
 (`no change after the command`); 60 s with the command still running is `no change in 60 s`. An edge is
 logged (`shield: now on` or `off`), announced, handed to the hook and published to the bar and the
 panel. The timer's tick reads the flag once more before judging the deadline, watched or not.
@@ -144,8 +145,9 @@ alpheus runs and at each panel open, never on a timer.
   never panic, because a USB name is hostile text.
 - `the_shield_watch_is_the_theme_watchs_instance`: the Shield's files create no inotify instance;
   `watch.rs` has one and carries both targets.
-- `only_the_runners_capture_and_never_through_a_shell`: only the launcher's source runner and
-  `shield/run.rs` call `capture` or `run_silent`, and neither builds a shell command.
+- `only_the_runners_capture_and_never_through_a_shell`: only `launcher/sources.rs` and `shield/run.rs`
+  call `capture`, only `shield/run.rs` calls `run_silent` (the executor's `NonBlocking` delegate apart), and
+  neither builds a shell command.
 - `a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands`: an action never goes through a
   pipe that could be cut; `shield_mail` and the timer's tick read the flag before judging a failed
   switch or the deadline; shutdown stops the commands it can still reach.
@@ -158,6 +160,7 @@ alpheus runs and at each panel open, never on a timer.
   `shield_the_detail_lists_and_allows`, `shield_status_and_allow_verbs`,
   `shield_a_picker_chosen_after_the_mode_went_off_allows_nothing`, `shield_unconfigured_is_silent`,
   `shield_a_refused_verb_is_logged`, `shield_a_notice_is_given_only_while_serving`,
+  `shield_a_panel_reopened_within_4_s_of_a_failed_switch_shows_failed_then_clears`,
   `shield_at_rest_no_wakeups`, `shield_the_hook_fires_on_a_change_past_the_quiet_window`) run a stub
   script on a private `PATH`; no test runs a real `pkexec`, `usbguard` or `systemctl`.
 - The reasons are in [decisions.md](../decisions.md): "An unknown Shield state is never read as off",
@@ -172,9 +175,10 @@ alpheus runs and at each panel open, never on a timer.
 
 Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
 
-- **Linked in, nothing configured:** within noise of the build before it at start (binary +48 KiB
-  stripped); no watch descriptor, no segment, no row, nothing allocated.
-- **Configured, at rest:** `Anonymous:` +0 to +8 KB with the mode off and +28 KB on
+- **Linked in, nothing configured:** −4 to +214 KB at start (the `everything` case of
+  `startup_pss_per_source`; the harness drifts); binary +48 KiB stripped; no watch descriptor, no segment,
+  no row, nothing allocated.
+- **Configured, at rest, over unconfigured:** `Anonymous:` +0 to +8 KB with the mode off and +28 KB on
   (`shield_pss_at_rest_unconfigured_and_configured`); no thread and no timer.
 - **The detail open on 10 blocked devices:** about +0.6 MB PSS over rest; once closed, `Anonymous:`
   +64 to +68 KB over rest, and ten more cycles +64 to +68 KB (`shield_pss_detail_open_and_closed`).

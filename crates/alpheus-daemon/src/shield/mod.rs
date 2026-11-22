@@ -409,8 +409,8 @@ impl Shield {
 
     /// A reading of the flag with its consequences: the edge, and the attempt it ends (a switch
     /// succeeds when the flag reaches its target, before or after the command's exit). Any edge
-    /// clears a shown `failed`: a late change is announced as any change. The second parameter is
-    /// not used (reason not recorded).
+    /// clears a shown `failed`: a late change is announced as any change. `_now` is unused (reason
+    /// not recorded).
     pub fn flag(&mut self, state: Option<bool>, _now: Instant) -> (Option<Edge>, Option<Finish>) {
         let edge = self.observe(state);
         if edge.is_some() {

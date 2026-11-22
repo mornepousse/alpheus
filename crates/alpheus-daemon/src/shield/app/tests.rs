@@ -1,4 +1,5 @@
-//! Tests of Shield mode's wiring (`app.rs`): nothing exists unconfigured, and a notice is alpheus's own.
+//! Tests of Shield mode's wiring (`app.rs`): nothing exists unconfigured, a notice is alpheus's own,
+//! and `flag_is_watched`, `toggle_target` and `start_worker` answer as their docs say.
 
 use super::*;
 use crate::watch::Watches;

@@ -14,14 +14,16 @@ describes the code as it is today.
   screen (name, description, make, model, serial, enabled, current mode, position, scale, transform and
   its modes, at most 256 per screen), updated only when the manager says `done`.
 - **Changes them** only through one configuration at a time, sent whole. A change that would leave no
-  screen enabled is refused, and so is one that changes nothing (a configuration that is already the
-  current state is never sent).
+  screen enabled is refused. A change that changes nothing is not sent, and the request succeeds at
+  once (displays spec § 1).
 - **Applies a profile on hotplug.** With `[displays] auto = true` (the default), when the identities of
   the connected screens change, the profile of `displays.toml` whose screens are exactly the connected
   ones is applied once the screens have been still for 500 ms. No matching profile: nothing happens.
 - **Holds the trial.** A change asked by the control center starts a 15 s trial; Keep ends it, and
-  anything else (Revert, the deadline, a screen unplugged) brings the screens back to what they were.
-  It lives in the daemon, so a control center that dies cannot leave a bad layout.
+  Revert, the deadline and a screen unplugged bring the screens back to what they were; a layout changed
+  elsewhere ends the trial and restores nothing (`ChangedElsewhere`), and a refusal or no answer from the
+  compositor are other ends (`Refused`, `NoAnswer`). It lives in the daemon, so a control center that dies
+  cannot leave a bad layout.
 - **Lowers a DisplayLink screen to 120 Hz.** No mode above 120 Hz is offered or accepted on a DisplayLink
   screen, and one the compositor sets above it is lowered by the daemon: the one change it makes without
   being asked.
@@ -121,19 +123,20 @@ screen's identity and a profile file's errors are never logged" in [decisions.md
   `displays_toml_is_read_capped_from_a_regular_file_only`, and the verbs and the waiting client in
   `outputs/app.rs`, the controller's in `outputs/control/tests.rs`.
 - The reasons are in [decisions.md](../decisions.md): "The displays are changed by the daemon, and its
-  trial lives there", "displays.toml is read when the debounce ends, never watched", "A DisplayLink screen
+  trial lives there", "displays.toml is read at each evaluation of the profiles, never watched", "A DisplayLink screen
   is told from the DRM directory, once per screen name".
 
 ## What it costs
 
 Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
 
-- **Linked in, off:** +4 to +168 KB at start over nine pairings of the `everything` case; the binary grew
-  244 KiB stripped.
+- **Linked in, off:** +4 to +168 KB at start over nine pairings of the `everything` case of
+  `startup_pss_per_source`; the binary grew 244 KiB stripped.
 - **On at start:** +56 to +204 KB with 1 output, −36 to +36 KB with 3 (`displays_pss_at_start`).
 - **Trials and hotplug:** a trial open −46 to +8 KB over idle and 20 more trials +0 KB of the daemon's own
   memory (`displays_pss_after_trials`); 20 hotplug cycles +40 to +44 KB, then +8 KB between cycles 21
-  and 41 (`displays_pss_after_hotplug_cycles`).
+  and 41 and +0 to +8 KB from 41 to 61, in the daemon's own memory (PSS without the shm pools;
+  `displays_pss_after_hotplug_cycles`).
 - **At rest:** 0 loop and 0 whole-daemon wake-ups after the start, a trial and the hotplug cycles.
 - **Parked:** a 64 KiB `displays.toml` raises the heap by about 2.8 MB once, because the parse peaks at
   about 44 times the file's size and the allocator keeps the high-water mark; a real file of a few

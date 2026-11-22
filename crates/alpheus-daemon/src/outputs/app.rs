@@ -7,8 +7,9 @@
 //! the DisplayLink 120 Hz rule and the 15 s trial); `model.rs` is the model of the heads. This file hands
 //! the controller what happens (a `done`, a verb, the timer firing) and carries out what it answers: it
 //! sends a configuration, writes a log line, answers the waiting client, tells the hooks which profile
-//! was applied. It is the only file that sends a configuration (a guardrail, `the_daemon_only_reads_from_the_compositor`,
-//! checks that), so every change goes through the controller's rules.
+//! was applied. It is the only file that calls `wlr.send` (a guardrail,
+//! `the_daemon_only_reads_from_the_compositor`, checks that); `wlr.rs` builds and applies the
+//! configuration. So every change goes through the controller's rules.
 //!
 //! One `DeadlineTimer` follows `Controller::next_deadline`: the debounce, the watchdog, the trial, or the
 //! retry of a profile the 3-a-minute limit skipped; none at rest. DisplayLink heads are told from
@@ -19,12 +20,12 @@
 //!   way (power management included);
 //! - write a screen's identity or an error text that may quote one into a log line: only the spec's fixed
 //!   lines, and a profile's name, which is the user's own word (`profile_line`);
-//! - start a thread or a command, or read anything unbounded: `displays.toml` is read capped, from a
-//!   regular file only (the module is checked by `the_tray_spawns_no_thread`).
+//! - start a thread or a command (the module is checked by `the_tray_spawns_no_thread`), or read
+//!   anything unbounded: `displays.toml` is read capped, from a regular file only.
 //!
 //! See: docs/specs/2026-10-30-alpheus-displays-protocol-design.md (§§ 1 and 2),
 //! docs/features/displays.md, and docs/decisions.md ("The displays are changed by the daemon, and its
-//! trial lives there", "displays.toml is read when the debounce ends, never watched", "A DisplayLink
+//! trial lives there", "displays.toml is read at each evaluation of the profiles, never watched", "A DisplayLink
 //! screen is told from the DRM directory, once per screen name").
 
 use crate::config::{DisplaysConfig, ModuleId};
