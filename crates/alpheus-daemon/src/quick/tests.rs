@@ -1,8 +1,8 @@
 //! Tests of the quick panel's model (`mod.rs`) and its cells (`draw.rs`): the rows and their
 //! order, the selection, every key, click and wheel notch, the sliders' pacing, the confirmation,
 //! and what each list's row and detail (Wi-Fi, Bluetooth, VPN, Shield, do-not-disturb) do inside the
-//! panel. No clock, file or command: each test passes the time it wants and reads the actions the
-//! panel returns.
+//! panel. No file or command, and no waiting: each test takes one `Instant` and adds the time it
+//! wants to it, then reads the actions the panel returns.
 
 use super::draw::{LabelForm, session_form, session_label, slider};
 use super::*;
@@ -24,7 +24,7 @@ fn a_volume_of(percent: u8, muted: bool) -> Option<Volume> {
     Some(Volume { percent, muted })
 }
 
-/// An output (a sink) with the id and label wpctl would give it, the default or not.
+/// An output (a sink) with pw-dump's node id and label, the default or not.
 fn an_output(id: u32, label: &str, default: bool) -> Sink {
     Sink { id, label: label.into(), default }
 }
@@ -307,11 +307,7 @@ fn the_rows_style_their_switches_and_tracks_in_warn_accent_and_dim() {
     let b = rows(&w.live(), &q);
     let t = row_texts(&b);
     // Volume, brightness, separator, mic, DND, profile, keep awake, night light, separator, session.
-    assert_eq!(
-        t[3],
-        format!(" {MIC_OFF} Microphone{} ○ off", " ".repeat(13)),
-        "a muted microphone is the off switch (UI refresh plan 1, Decision 8)"
-    );
+    assert_eq!(t[3], format!(" {MIC_OFF} Microphone{} ○ off", " ".repeat(13)), "a muted microphone is the off switch");
     assert_eq!(&b.rows[3].styles()[26..33], "sssssss", "no longer warn");
     assert_eq!(t[4], format!(" {BELL} Do not disturb{} ON  ●", " ".repeat(9)));
     assert_eq!(&b.rows[4].styles()[26..33], "AAAAAAA", "ON filled in the accent");
@@ -841,7 +837,8 @@ fn volume_steps_mutes_and_takes_a_click_on_its_bar() {
     assert_eq!(q.key(&loud.live(), Key::Right, false, t), set_volume(100), "never beyond 100 %");
 }
 
-/// A press on the cell either side of the bar is not a level: it opens the outputs, as `›` does.
+/// A press on the cell either side of the bar is not a level: like any other press on the row, it
+/// opens the outputs.
 #[test]
 fn a_click_beside_the_volume_bar_sets_no_level() {
     let w = World::full();
@@ -2090,7 +2087,7 @@ fn the_shield_rows_failed_tag_ends_at_its_deadline_with_a_redraw() {
 #[test]
 fn open_shield_selects_the_row_and_opens_its_detail() {
     // What `App::shield_open_detail` does inside the panel: the row selected, its detail open and
-    // one read asked,.
+    // one read asked.
     let w = shield_world(shield_view(Some(true), true, true));
     let (l, mut q) = (w.live(), panel_opened_on(&w, Focus::Shield));
     assert_eq!(q.selected, Row::Shield);

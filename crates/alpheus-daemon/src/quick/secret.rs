@@ -2,9 +2,10 @@
 //!
 //! It is a fixed buffer of `CAPACITY` bytes on the heap, so moving the panel never copies it. The
 //! wipe is done with volatile writes (writes the compiler is not allowed to drop as dead stores):
-//! `clear()` wipes the whole buffer, which the Wi-Fi code calls when the field closes and right after
-//! the password has been handed to `nmcli`; a dropped buffer is cleared too, and a removed character
-//! is wiped at once. `bytes()` is the only way to read it, and its `Debug` never shows a byte. A character that would
+//! `clear()` wipes the whole buffer in place (Ctrl+U calls it); a dropped buffer is cleared too, and
+//! the Wi-Fi field drops it when it closes, which is also right after the password has been handed to
+//! `nmcli` (`password_sent`, then `close_field`, in `wifi.rs`); a removed character is wiped at once.
+//! `bytes()` is the only way to read it, and its `Debug` never shows a byte. A character that would
 //! not fit is refused whole: the field then refuses to connect, so a password is never sent cut
 //! short.
 //!
@@ -14,8 +15,10 @@
 //!   one block of low-level code, the volatile write);
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! What is not covered: the buffer is not locked in memory, and the key event that carried each
-//! typed character comes from SCTK (the Wayland toolkit) as a heap string that is not wiped.
+//! What is not covered: the buffer is not locked in memory, the key event that carried each typed
+//! character comes from SCTK (the Wayland toolkit) as a heap string that is not wiped, and the
+//! `Key::Char` that hands each character to the panel sits on the stack, not wiped either (Wi-Fi
+//! plan 2, decision 14).
 //!
 //! See: docs/specs/2026-10-11-alpheus-quick-settings-wifi-design.md (§ 3), docs/features/quick-settings.md,
 //! and docs/decisions.md ("The Wi-Fi password lives in one boxed buffer that is wiped").

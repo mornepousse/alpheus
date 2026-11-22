@@ -5,25 +5,30 @@
 //! popup; `Live` borrows what the rest of the daemon knows (the sound state, do-not-disturb, the
 //! power profile, the configuration) each time it is used; `QuickAction` is what a key or a click
 //! asks the wiring to do (run a command, close the panel, repaint). `ROWS` says which rows exist
-//! and when each shows, and the selection is kept by the row it is on, not by its position.
+//! and when each shows, and the selection is kept by the row it is on, not by its position (spec § 5).
 //! The other files of this folder: `app.rs` is the wiring (the popup, the reads, spawning the
 //! commands), `state.rs` reads a configured toggle's state, `draw.rs` turns the state into cells,
 //! and `wifi.rs`, `bt.rs`, `vpn.rs`, `dnd.rs` and `shield.rs` are the lists with a detail: each
 //! is its own struct with its own state, rows, keys and safety rules. This file only hands such a
 //! list its turn (`Row`, `ROWS`, `Line`, `lines`, `selected_line`, `key`, `press`, `fit`) and
-//! gives it the helpers they share (`nav`, `moved`, `run`, `argv`, `FAILED_SHOWN` and the tags).
+//! gives it the helpers they share (`nav`, `moved`, `run`, `run_and_close`, `argv`, `FAILED_SHOWN`,
+//! the tags, and `text_row` and `note_row` from `draw.rs`, re-exported here).
 //!
 //! Never:
-//! - read a file or a clock, or start a thread, a process or a timer: the wiring passes `now` and
-//!   `Live`, and gets the commands back as `QuickAction` (guardrails
-//!   `the_quick_model_and_its_state_reader_only_read` and `NO_THREAD_NOR_COMMAND`);
+//! - write or create a file, or make a raw system call (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`): the wiring passes `now` and `Live`, and gets
+//!   the commands back as `QuickAction`;
+//! - read a clock: the wiring passes `now` (the one exception is the time zone: `live` turns the
+//!   do-not-disturb end into local time, which reads the zone);
 //! - put a configured command's argv in a log line: a command carries a short `what` word to log
 //!   instead;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/decisions.md ("The quick
-//! panel keeps its selection on a row, not on a position", "A slider sends one level per
-//! 150 ms window and keeps showing it", "The quick panel never sets the backlight below 1 %",
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/decisions.md ("A slider
+//! sends one level per 150 ms window and keeps showing it", "The quick panel never sets the backlight below 1 %",
 //! "A click on a slider's bar sets the level of the cell", "Only the arrow keys repeat in the quick
 //! panel", "The quick panel's outputs detail stays open after a choice", "A session button closes the
 //! quick panel", "Do not disturb shows in the quick panel only with the notifications module",
@@ -52,6 +57,7 @@ use crate::system::{
     BtScope, BtState, BtView, Headset, HeadsetMode, ProfileState, Sink, SoundState, VpnScope, VpnState, WifiScope, WifiState,
 };
 pub use draw::rows;
+// `pub(crate)`: visible inside the daemon, not outside it.
 pub(crate) use draw::{dnd_switch, note_row, session_cells, switch, text_row};
 use draw::{
     draw_bluetooth, draw_brightness, draw_headset, draw_mark, draw_mic, draw_profile, draw_shield, draw_volume, draw_vpn, draw_wifi,
@@ -89,7 +95,7 @@ pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
 /// A slider sends at most one command per window this long: a held key, the wheel or clicks in a
 /// row coalesce into the latest level, sent when the window ends. See docs/decisions.md, "A slider
 /// sends one level per 150 ms window and keeps showing it". The window is the length of the
-/// backlight's re-read delay; why 150 ms is not recorded.
+/// backlight's re-read delay.
 pub const COALESCE: Duration = BRIGHTNESS_REREAD;
 /// The backlight's floor from the panel: never a black screen. See docs/decisions.md, "The quick
 /// panel never sets the backlight below 1 %".
@@ -98,11 +104,11 @@ pub const BRIGHTNESS_MIN: u8 = 1;
 /// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may take longer than a window
 /// to apply it.
 pub const SETTLE: Duration = Duration::from_secs(1);
-/// How long a list's entry shows `failed` after what ran on it failed; the tags of both.
+/// How long a list's entry shows `failed` after what ran on it failed.
 pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
-// `pub(crate)`: visible inside the daemon, not outside it.
-/// The tag a list's entry shows while what was asked of it runs, and after it failed.
+/// The tag a list's entry shows while what was asked of it runs.
 pub(crate) const RUNNING_TAG: &str = "…";
+/// The tag a list's entry shows for `FAILED_SHOWN` after what ran on it failed.
 pub(crate) const FAILED_TAG: &str = "failed";
 
 /// Where the panel opens (spec § 1).
@@ -300,7 +306,7 @@ pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
             _ => None,
         },
         dnd: dnd_shown,
-        // A do-not-disturb switched on by a capture (`by_sharing`) has no end time to show.
+        // A capture's do-not-disturb ends with the capture, not at a time, so it shows no `until`.
         dnd_end: match dnd.until {
             Some(until) if dnd.on && !dnd.by_sharing => {
                 let t = LocalTime::from_epoch(until as i64);
@@ -486,7 +492,8 @@ fn brightness_command(b: &Backlight) -> QuickAction {
     QuickAction::Run { argv, what: format!("brightness {}%", b.percent) }
 }
 
-/// The percent a press on a slider's bar sets; None off the bar.
+/// The percent a press on a slider's bar sets; None off the bar. See docs/decisions.md, "A click
+/// on a slider's bar sets the level of the cell".
 fn bar_value(col: u16) -> Option<u8> {
     if !(BAR_START..BAR_START + BAR).contains(&col) {
         return None;
@@ -595,7 +602,8 @@ struct RowSpec {
 /// Every row, top to bottom (spec § 2): also the order a selection falls back along when its row
 /// goes. A test pins each entry's `row` to its index. Adding a row:
 /// - a toggle with no configuration (like the microphone or do-not-disturb): a `Row` variant at its
-///   place, one entry here (its `draw_mark` for a ●/○ state), its Space/Enter arm in `Quick::act`;
+///   place, one entry here (its `draw_*` in `draw.rs`, `draw_mark` for a switch), its Space/Enter arm
+///   in `Quick::act`;
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
 ///   header) and its state read in `app.rs`. The per-toggle arrays follow `Toggle::ALL`.
@@ -1488,7 +1496,7 @@ impl Quick {
     }
 
     /// One of BlueZ's agent requests (`Bt::agent`), then fitted; a code question cancels a pending
-    /// `Forget?` (spec § 3).
+    /// `Forget?` (quick Bluetooth spec § 3).
     pub fn bt_agent(&mut self, id: AgentId, request: AgentRequest, now: Instant) -> QuickAction {
         let a = self.bt.agent(id, request, now);
         if matches!(self.bt.code, Some(Code::Question { .. })) && matches!(self.confirm, Some((Question::Forget(_), _))) {

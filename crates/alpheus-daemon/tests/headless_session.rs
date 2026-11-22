@@ -4755,6 +4755,8 @@ fn quick_the_verb_opens_under_the_bar_of_the_focused_output() {
     assert!(sway.wait_for_screen("HEADLESS-2", |s| !quick_drawn_on_the_right(s)), "closed: {:?}", d.log());
     hypr.focus("HEADLESS-1");
     assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    // A fixed wait: the daemon logs nothing when its focused output changes and nothing on screen
+    // shows it has read the event, so there is no condition to wait on.
     thread::sleep(Duration::from_secs(1));
     assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
     assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());

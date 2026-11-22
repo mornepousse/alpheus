@@ -7,14 +7,17 @@
 //! wiring's, in `shield/app.rs`; the panel's own glue is `quick/app.rs`.
 //!
 //! Never:
-//! - read a file, run a command or start anything (guardrail
+//! - write or create a file, or make a raw system call (guardrail
 //!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`);
+//! - read a clock or a file;
 //! - put a device's name, id or `vid:pid` in a log line (guardrail `the_shield_logs_name_nothing`);
 //! - panic: a USB name is text from outside (guardrail `the_shield_files_have_no_panicking_path`).
 //!
 //! See: docs/specs/2026-11-21-alpheus-shield-design.md (§ 5), docs/features/quick-settings.md,
-//! docs/features/shield.md, and docs/decisions.md ("The Shield detail's device rows are selectable
-//! only when `allow` is configured").
+//! and docs/features/shield.md.
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style, text_width, truncate};

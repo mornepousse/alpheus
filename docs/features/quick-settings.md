@@ -10,10 +10,11 @@ it, and what it costs. It describes the code as it is today.
 
 The panel is an `xdg_popup` on the bar's own layer surface. It is built each time it opens and
 dropped when it closes: nothing of it stays in memory but one thing (a Wi-Fi attempt on a new network
-that outlives it, below), and nothing wakes while it is closed. Every
-write it makes is a command run through the daemon's executor (never through a shell, never waited
-for); the D-Bus connection that feeds it is read-only, except for the Bluetooth detail's own acting
-connection (see Bluetooth below).
+that outlives it, below), and nothing wakes while it is closed except that followed attempt's
+deadline. Every outside action is a command run through the daemon's executor (never through a
+shell, never waited for), except do-not-disturb, which the daemon applies itself, and the Bluetooth
+detail's D-Bus calls, made on its own acting connection (see Bluetooth below). The D-Bus connection
+that feeds the panel is read-only.
 
 A row whose tool, hardware or command is missing is not shown.
 
@@ -33,7 +34,8 @@ A row whose tool, hardware or command is missing is not shown.
   `night_light`), with their state read from the `state` you give. Hidden unless configured.
 - **Wi-Fi, Bluetooth, VPN.** One row each, with a detail list behind it (below).
 - **Shield.** A row and a detail of the blocked USB devices, when `[shield]` is configured (see
-  [shield.md](shield.md)).
+  [shield.md](shield.md)). A left click on the `shield` module opens the panel on the Shield row (it
+  needs `quick`).
 - **Session buttons.** Lock, Log out, Reboot and Power off, each a command from `[quick]`; a button
   whose command is empty is not drawn. Reboot and power off ask first.
 
@@ -78,16 +80,16 @@ secrets or the desktop's agent, else it fails, and `More…` (`[quick] vpn_more`
 
 ## Using it
 
-**Opening.** A left click on the volume, network or Bluetooth module opens the panel under it (the
-right click opens the control center's tab). `alpheus-launch --quick [sound|wifi|bluetooth|vpn]`
+**Opening.** A left click on the volume, network, Bluetooth or `shield` module opens the panel under
+it (the right click opens the control center's tab). `alpheus-launch --quick [sound|wifi|bluetooth|vpn]`
 opens it under the bar's right end on the focused output, on that section; the same verb again closes
 it. Only one bar popup is open at a time. Without `quick` in `modules`, the verb exits 0 and opens
 nothing.
 
 **Keys.** ↑ ↓ and Home End move between rows (Ctrl+P and Ctrl+N too); ← → change a slider by
 `[quick] step` percent, or move between session buttons; Space and Enter toggle a row, Enter on the
-volume opens the outputs; Esc leaves a detail, else closes the panel. Only the arrow keys repeat when
-held. The wheel over a slider changes it; elsewhere it moves the window over the rows when they do
+volume opens the outputs; Esc leaves a detail, else closes the panel. Only the moving keys (arrows,
+Ctrl+P and Ctrl+N) and erasing repeat when held. The wheel over a slider changes it; elsewhere it moves the window over the rows when they do
 not fit.
 
 **Mouse.** A left press acts on its row; a press on a slider's bar sets the level of the cell; a
@@ -118,8 +120,8 @@ ignored (`quick: toggle debounced`), because Hyprland fires a press bind again.
 | `night_light` | none | the same, for night light |
 | `lock` | `["loginctl", "lock-session"]` | the Lock button's command; empty hides the button |
 | `logout` | `[]` | the Log out button's command (empty by default, so the button is hidden) |
-| `reboot` | `["systemctl", "reboot"]` | the Reboot button's command |
-| `poweroff` | `["systemctl", "poweroff"]` | the Power off button's command |
+| `reboot` | `["systemctl", "reboot"]` | the Reboot button's command; empty hides the button |
+| `poweroff` | `["systemctl", "poweroff"]` | the Power off button's command; empty hides the button |
 | `wifi_more` | launcher.toml's terminal and `nmtui` | the Wi-Fi detail's `More…`; `[]` hides the row |
 | `vpn_more` | launcher.toml's terminal and `nmtui-edit` | the VPN detail's `More…`; `[]` hides the row |
 | `mixer` | launcher.toml's terminal and `wiremix` | the `Mixer…` row; `[]` hides it |
@@ -148,14 +150,14 @@ pure model, pure details, and the wiring that touches the outside world.
 
 - `mod.rs`: the model. `Quick` is the open panel's state, `Live` borrows what the daemon knows,
   `QuickAction` is what a key or a click asks of the wiring, and `ROWS` says which rows exist.
-  It reads no file and no clock and starts nothing.
+  It reads no clock (the wiring passes `now`) and runs and starts nothing.
 - `draw.rs`: the model's state turned into cells (rows, sliders, switches, session buttons).
 - `app.rs`: the wiring (`QuickApp` on the `App`, and the `quick_*` methods): opening, the reads,
   spawning commands, the timer, and the Wi-Fi attempt that outlives the panel.
 - `state.rs`: a configured toggle's state (`file:` or `process:`), one bounded read.
 - `secret.rs`: the Wi-Fi password's buffer.
 - `dnd.rs` and `shield.rs`: the do-not-disturb detail and the Shield detail, each its own struct
-  with its own state, rows, keys and tags.
+  with its own state, rows and keys (the Shield detail also its tags).
 - `wifi.rs`, `bt.rs`, `vpn.rs` and `bt_app.rs`: the Wi-Fi, Bluetooth and VPN lists. Their reads are
   on the D-Bus thread (`sources/dbus/wifi.rs`, `bt.rs`, `vpn.rs`); Bluetooth's calls go through its
   own connection (`sources/dbus/bt_act.rs`).
@@ -190,8 +192,8 @@ polls beside the bus). A state read for an earlier open is dropped.
    `spawn_logged`, `RunSecret` hands the password to `quick_spawn_secret`, and `Redraw` repaints.
 
 The "why" behind several of these choices is in [decisions.md](../decisions.md): the entries from
-"The quick panel keeps its selection on a row, not on a position" to "The Shield detail's device
-rows are selectable only when `allow` is configured".
+"A slider sends one level per 150 ms window and keeps showing it" to "The do-not-disturb detail marks
+and opens by the current state".
 
 ## Rules it keeps
 
@@ -199,7 +201,10 @@ These are enforced by tests, so a change that breaks one fails the build.
 
 - `the_quick_model_and_its_state_reader_only_read` (`tests/guardrails.rs`): the model, the cells, the
   state reader and the Wi-Fi, Bluetooth, VPN, do-not-disturb and Shield files write no file, create
-  nothing, make no raw system call, and start no command, thread or timer.
+  nothing and make no raw system call (no `libc::`, no `unsafe`). That they run no command and start
+  no thread is `the_tray_spawns_no_thread`, through its `NO_THREAD_NOR_COMMAND` list; that they arm
+  no timer is the `Timer::` table of `nothing_resident_while_the_launcher_is_closed`. That they read
+  no clock is a rule of their headers, no guardrail checks it.
 - `every_quick_command_stays_on_the_allowlist`: every command the panel can build, from every key on
   every row and every press of every cell, is one of the exact shapes; the configured commands run as
   given.
@@ -207,8 +212,10 @@ These are enforced by tests, so a change that breaks one fails the build.
   of the panel's files (`mod.rs`, `draw.rs`, `state.rs`, `app.rs`, `wifi.rs`, `secret.rs`, `bt.rs`,
   `vpn.rs`, `dnd.rs`, `shield.rs`, `session.rs`, `bt_app.rs`).
 - `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`: the password is written to `nmcli`'s
-  standard input and then the field closes; no file of the panel formats a key or the secret with
-  `Debug`; the password buffer has one `unsafe` block, the volatile wipe.
+  standard input, followed by a newline, and then the field closes; `quick/mod.rs`, `wifi.rs`,
+  `secret.rs`, `app.rs`, `draw.rs` and `popup.rs` format no key, secret, password or field with
+  `Debug`; the password buffer derives neither `Debug` nor `Clone` and has one `unsafe` block, the
+  volatile wipe.
 - `the_vpn_logs_name_no_profile`: no log line of the VPN files or the VPN lines of `app.rs` names a
   profile.
 - `the_shield_logs_name_nothing`: every log call of the Shield's files, and the Shield's lines in the
@@ -216,6 +223,12 @@ These are enforced by tests, so a change that breaks one fails the build.
   a configuration or a device.
 - `the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it`: whatever closes the
   panel, the sound thread goes back to its own scope and the panel's timer goes.
+- `the_bluetooth_logs_name_no_device`: no log line of the Bluetooth files names a device, and their
+  glue formats nothing with `Debug` but an `io::ErrorKind`.
+- `the_panel_readers_have_no_panicking_path`: no `unwrap`, `expect` or `panic!` in the production
+  code of the Wi-Fi and VPN readers on the D-Bus thread (`sources/dbus/wifi.rs`, `vpn.rs`).
+- `the_tray_spawns_no_thread`: the quick panel's model files and `bt_app.rs` are on its
+  `NO_THREAD_NOR_COMMAND` list, so they run no command and start no thread.
 - `the_quick_panels_timer_follows_the_view_from_the_open`: the timer is synced as the panel opens, so
   a `failed` shown at open clears at its 4 s.
 - `the_bluetooth_connection_goes_with_the_panel` and `the_vpn_tap_follows_the_panel`: the acting
@@ -230,9 +243,10 @@ Figures are those recorded when each part merged, in release, back to back with 
   later details each added code: +176…+372 KB (Wi-Fi), +12…+208 KB (Bluetooth), within noise (VPN).
   It is code linked in and unused.
 - **The panel itself** (`quick_pss_idle_open_and_closed`): module on and closed, 96–108 KB over the
-  bar without it; open, 316–338 KB over rest; once closed, +208…+210 KB over rest (the first open's
-  code and font pages, paid once); 20 more cycles −28…−4 KB. The test bounds the daemon's own
-  memory, not the shared pages.
+  bar without it (when the first delivery merged); open, 316–338 KB over rest; once closed, +208…+210
+  KB over rest (the first open's code and font pages, paid once); 20 more cycles −28…−4 KB (these
+  three re-measured at the UI refresh against `d9b8965`). The test bounds total PSS: the module at
+  rest ≤ 256 KB, open ≤ 1 MB over rest, closed ≤ rest + 512 KB, 20 more cycles ≤ closed + 128 KB.
 - **The details open:** the Wi-Fi detail on 40 access points (32 listed), 898–910 KB over the module
   at rest (`quick_wifi_pss_detail_open_and_closed`); the VPN detail on 10 profiles, 846–854 KB
   (`quick_vpn_pss_detail_open_with_10_profiles_and_after`); the Bluetooth detail on 20 devices,
@@ -246,4 +260,5 @@ Figures are those recorded when each part merged, in release, back to back with 
 - **Wake-ups:** none at rest after the panel closes, for the loop and for the D-Bus thread
   (`at_rest_no_wakeups_after_the_quick_panel`, `at_rest_no_wakeups_after_the_wifi_detail`,
   `at_rest_no_wakeups_after_the_vpn_detail`, `bluetooth_at_rest_no_wakeups_after_the_detail`). A
-  one-second timer left armed by a close turns them red.
+  one-second timer left armed by a close was shown to turn the quick panel's, the Wi-Fi detail's and
+  the VPN detail's tests red.

@@ -7,8 +7,11 @@
 //! `None`, and the row shows `·`.
 //!
 //! Never:
-//! - write a file, start a command, thread or timer (guardrail
+//! - write or create a file, or make a raw system call (guardrail
 //!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`);
 //! - guess "off": a state that cannot be read is unknown, not off;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
@@ -136,7 +139,8 @@ mod tests {
         assert_eq!(expand("/abs/flag", &none), Some(PathBuf::from("/abs/flag")));
     }
 
-    /// `/proc` entries that are not processes (`self`, `uptime`, a name that is not text) are skipped.
+    /// `/proc` entries that are not processes (an empty name, `self`, `12a`, a name that is not text)
+    /// are skipped.
     #[test]
     fn only_a_name_of_digits_is_a_process_id() {
         use std::os::unix::ffi::OsStrExt;
@@ -147,16 +151,20 @@ mod tests {
         assert!(!is_process_id(OsStr::from_bytes(b"\xff12")));
     }
 
-    /// Entries that are not processes are skipped, whatever order the directory lists them in: with
-    /// fifty of them around, the one process is still found.
+    /// Entries that are not processes do not end the scan: with 25 of them created before the
+    /// process and 25 after, the process is found whether the directory lists them in creation
+    /// order, in reverse, or (not controlled here) in some other order.
     #[test]
     fn entries_that_are_not_processes_do_not_end_the_scan() {
         let root = tree("skipped");
-        for i in 0..50 {
+        for i in 0..25 {
             fs::write(root.join(format!("note{i}")), "").unwrap();
         }
         fs::create_dir_all(root.join("7")).unwrap();
         fs::write(root.join("7").join("comm"), "foot\n").unwrap();
+        for i in 25..50 {
+            fs::write(root.join(format!("note{i}")), "").unwrap();
+        }
         assert!(scan(&root, "foot", MAX_PROC_ENTRIES));
         let _ = fs::remove_dir_all(&root);
     }

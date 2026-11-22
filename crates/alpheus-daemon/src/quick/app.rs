@@ -10,8 +10,9 @@
 //! repainted. The wiring of the other lists is in `bt_app.rs` (Bluetooth) and `shield/app.rs`
 //! (Shield).
 //!
-//! One `DeadlineTimer` (`QuickApp::timer`) is armed only while something is pending: a re-read, the
-//! reboot question or a Wi-Fi deadline. Nothing of the panel stays once it closes (`quick_closed`),
+//! One `DeadlineTimer` (`QuickApp::timer`) is armed only while something is pending: a slider's
+//! 150 ms window, a re-read, the reboot or forget question, a Wi-Fi, VPN or Bluetooth deadline, or a
+//! failed tag's end. Nothing of the panel stays once it closes (`quick_closed`),
 //! except for one thing: an attempt on a new network outlives the panel (`WifiFollow`). The Wi-Fi
 //! stays read and the timer stays armed for that attempt alone until it ends, so that a new profile
 //! that failed is still deleted.
@@ -61,7 +62,7 @@ pub(crate) struct QuickApp {
     /// The quick panel's timer: armed only while the panel is open and a re-read
     /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
     /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
-    /// question (quick delivery 3); closed, only for an attempt still followed
+    /// question; closed, only for an attempt still followed
     /// (`QuickApp::wifi_follow`).
     pub(crate) timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
@@ -359,9 +360,10 @@ pub(crate) fn followed(exec: &dyn Executor, follow: &mut Option<WifiFollow>, out
     lines
 }
 
-/// The panel `q` just opened takes back the followed attempt `f`: no second attempt. Opened on the Wi-Fi (the network module, `--quick wifi`), the detail opens at once from
-/// the state the follower carried, since no word of the D-Bus thread is coming (its scope did not
-/// change). The action to take: the detail's rescan, else a repaint.
+/// The panel `q` just opened takes back the followed attempt `f`: no second attempt. Opened on the
+/// Wi-Fi (the network module, `--quick wifi`), the detail opens at once from the state the follower
+/// carried, since no word of the D-Bus thread is coming (its scope did not change). The action to
+/// take: the detail's rescan, else a repaint.
 pub(crate) fn resumed(q: &mut Quick, f: WifiFollow) -> QuickAction {
     f.resume(&mut q.wifi);
     q.resumed_wifi_focus().unwrap_or(QuickAction::Redraw)
@@ -833,8 +835,8 @@ impl App {
     }
 
     /// The panel is closing (`popup_close`, before its body goes): the slider levels still waiting
-    /// for their window are sent now, never lost; an attempt on a new network handed to the follower
-    ///, the D-Bus thread's reading left as it is (never Closed in between).
+    /// for their window are sent now, never lost; an attempt on a new network handed to the follower,
+    /// the D-Bus thread's reading left as it is (never Closed in between).
     pub(crate) fn quick_flush(&mut self) {
         let (leaving, waiting, follow) = match self.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.bt_leaving(), q.flush(), WifiFollow::leaving(&mut q.wifi)),

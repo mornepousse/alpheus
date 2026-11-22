@@ -4,16 +4,25 @@
 //! what the daemon knows (`Quick` and `Live`) and gives the lines in the window; each row of the
 //! table has a `draw_*` function, and the small pieces they share (the switch, the slider, a text
 //! row, the session buttons) live here too. The lists with a detail (`wifi.rs`, `bt.rs`, `vpn.rs`,
-//! `dnd.rs`, `shield.rs`) draw their own lines and use `text_row` and `note_row` from here.
+//! `dnd.rs`, `shield.rs`) draw their own lines and use `text_row` and `note_row` from here, and
+//! `switch` is also the tools menu's (`launcher/view.rs`).
 //!
 //! Never:
-//! - change the panel's state, decide what a key does or run anything: every function here takes
-//!   `&Quick` and returns or fills cells;
-//! - read a file or a clock, start a thread, or panic (the guardrails that cover `mod.rs` list this
-//!   file too).
+//! - change the panel's state, decide what a key does or run anything: every function here only
+//!   reads the panel's state (`&Quick`, `&Live`) and returns or fills cells;
+//! - write or create a file, or make a raw system call (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`);
+//! - read a clock or a file;
+//! - format a key or the Wi-Fi secret with Debug (guardrail
+//!   `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`, which lists this file: the Wi-Fi
+//!   password row is drawn here);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
 //! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md (§ 2, the rows),
-//! docs/decisions.md ("A click on a slider's bar sets the level of the cell", "The selected slider row is banded across the whole row").
+//! docs/decisions.md ("The selected slider row is banded across the whole row").
 
 use super::{FAILED_TAG, GLYPH_AT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines};
 use crate::grid::{Grid, Style, text_width};
@@ -69,13 +78,16 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
 }
 
 /// The cells of one row of the table: its `draw` function, `selected` when it is the selected row.
-/// Every `draw_*` below has the same four parameters because `RowSpec::draw` holds them as one
-/// function type; a `_` marks a parameter that row does not use.
-pub(super) fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
+/// Every row's `draw_*` (the ones `ROWS` names) has the same four parameters because
+/// `RowSpec::draw` holds them as one function type; a `_` marks a parameter that row does not use.
+// `pub(super)` on the `draw_*` below: visible in `quick` (`mod.rs`, which names them in `ROWS`), not
+// outside it.
+fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
     (row.spec().draw)(g, live, q, q.selected == row);
 }
 
-/// The volume row: the slider, at the level the panel shows (`volume_level` while one is held).
+/// The volume row: the slider, at the level the panel shows (`volume_level` while the level the
+/// panel sent still stands).
 pub(super) fn draw_volume(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     if let Some(v) = live.sound.and_then(|s| s.sink) {
         let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
@@ -150,8 +162,8 @@ pub(super) fn draw_mark(g: &mut Grid, glyph: char, label: &str, on: Option<bool>
     write_switch(g, on);
 }
 
-/// A toggle's state, 7 cells (UI refresh, Decision 8): ` ON  ● ` filled in the accent,
-/// ` ○ off ` on a pill, `·` dim when unknown.
+/// A toggle's state, 7 cells: ` ON  ● ` filled in the accent, ` ○ off ` on a pill, `·` dim when
+/// unknown.
 pub(crate) fn switch(on: Option<bool>) -> (&'static str, Style) {
     match on {
         Some(true) => (" ON  ● ", Style::ACTIVE),
@@ -170,7 +182,7 @@ pub(crate) fn dnd_switch(live: &Live) -> (String, Style) {
 }
 
 /// `switch(on)` right-aligned to end one cell before the row's end.
-pub(super) fn write_switch(g: &mut Grid, on: Option<bool>) {
+fn write_switch(g: &mut Grid, on: Option<bool>) {
     let (text, style) = switch(on);
     write_cell(g, text, style);
 }
@@ -213,7 +225,7 @@ pub(crate) fn note_row(g: &mut Grid, note: &str) {
     g.write(3, end.saturating_sub(1), note, Style::MUTED);
 }
 
-/// The session buttons' cells (UI refresh, Decision 7): columns `1..end - 1`, one-cell gaps, equal
+/// The session buttons' cells: columns `1..end - 1`, one-cell gaps, equal
 /// widths, the remainder on the last. (start, width); drawing and clicks both come from here.
 pub(crate) fn session_cells(end: u16, n: usize) -> Vec<(u16, u16)> {
     let n = n as u16;

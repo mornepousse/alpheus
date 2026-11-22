@@ -1,6 +1,7 @@
 //! Tests of the quick panel's wiring (`app.rs`): the Wi-Fi follower that outlives the panel, which
-//! state belongs to the open panel, the sink list and the headset a message carries, the password's
-//! hand-over, the verb's debounce and the do-not-disturb request. No window, no real command: the
+//! state belongs to the open panel, the sink list and the headset a message carries, the Bluetooth
+//! view and scope, the VPN state and attempt, the password's hand-over, the verb's debounce and the
+//! do-not-disturb request. No window, no real command: the
 //! executor is the fake one.
 
 use super::*;

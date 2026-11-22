@@ -162,10 +162,9 @@ Status: awaiting confirmation at the trial (timer plan 1, "Decisions written dow
 
 `alpheus-launch --timer popup` opens the popup under the chip on the focused output's bar, or
 under the bar's right end when the chip is hidden, taking the keyboard without a grab. A second
-verb within 250 ms of the one that opened it is ignored, because some compositors fire a key bind
-twice.
+verb within 250 ms of the one that opened it is ignored, because Hyprland re-fires a press bind.
 
-Date: 2026-11-15 · Source: timer spec § 4; timer plan 1, decision 17
+Date: 2026-11-15 · Source: timer spec § 4; timer plan 1, decision 17; CLAUDE.md, "Quick settings, delivery 1" (the debounce reason)
 
 Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": every one is to be confirmed at the trial)
 
@@ -369,10 +368,10 @@ The verb opens the menu under the bar's right end on the focused output and take
 without a grab: a verb has no pointer press to grab with, exactly as `--quick` does. It works
 whether or not the `power` module is in `modules`, and is refused (exit 2) only when no `[quick]`
 session command is set or no bar can anchor the menu; both are decided before an open launcher is
-closed. A second verb closes the menu, except within 250 ms of its own open (some compositors fire
-a key bind twice).
+closed. A second verb closes the menu, except within 250 ms of its own open (Hyprland re-fires a
+press bind).
 
-Date: 2026-11-21 · Source: tools menu spec § 7; tools menu plan 1, `power_verb`
+Date: 2026-11-21 · Source: tools menu spec § 7; tools menu plan 1, `power_verb`; CLAUDE.md, "Quick settings, delivery 1" (the debounce reason)
 
 ### The resources history is kept always, as whole samples
 
@@ -1109,34 +1108,24 @@ never jump under the pointer because the focus followed the mouse.
 
 Date: 2026-10-09 · Source: notifications plan 1, Task 6; `bubbles::moves`
 
-### The quick panel keeps its selection on a row, not on a position
-
-The selected row is kept by which row it is. A row appearing or going above it (the Wi-Fi row when
-NetworkManager answers, the backlight when its device goes) never moves the selection. When its own
-row goes, the selection falls to the next row down the table, else to the nearest one above.
-
-Date: 2026-10-11 · Source: quick settings spec § 5 and § 7 ("the selection kept by identity when rows appear or vanish"); `Quick::fit`
-
 ### A slider sends one level per 150 ms window and keeps showing it
 
-The volume and the brightness send absolute levels that the panel works out from the level it shows,
-at most one command per 150 ms window. A key, a wheel notch or a click inside a window only moves the
-level shown; the latest level goes when the window ends, and a level still waiting when the panel
-closes is sent then. After a quiet window the level sent stays shown, and is stepped from, until
-pw-dump reports it or 1 s has passed; the backlight is re-read after the last command, and a reading
-that differs from the level sent is held back until that second ends. A default sink switch drops a
-held volume level: it is never sent to the new sink. The levels stay shown because a slow `wpctl` or
-`brightnessctl` would otherwise make the next press step from a stale level (commit 0a69573). Why
-commands are paced to one per window, and why 150 ms, is not recorded.
+The volume and the brightness send absolute levels, at most one command per 150 ms window: a key, a
+wheel notch or a click inside a window only moves the level shown, and the latest level goes when the
+window ends. After a quiet window the level sent stays shown, and is stepped from, until pw-dump
+reports it or 1 s has passed, because a slow `wpctl` or `brightnessctl` would otherwise make the next
+press step from a stale level (commit 0a69573). A default sink switch drops a held or waiting volume
+level: it is never sent to the new sink. Spec § 5 sets the pacing for a held key; why 150 ms is not
+recorded.
 
-Date: 2026-10-11 · Source: commits 9347a3c and 0a69573; `Pace`, `COALESCE`, `SETTLE`, `Quick::fit`
+Date: 2026-10-11 · Source: quick settings spec § 5; commits 9347a3c and 0a69573; `Pace`, `COALESCE`, `SETTLE`
 
 ### The quick panel never sets the backlight below 1 %
 
-A slider move on the brightness row stops at 1 %: the code gives the reason as "never a black
-screen". The guardrail on the commands the panel may run pins the same floor.
+A slider move on the brightness row stops at 1 %, so the panel can never black the screen. The
+guardrail on the commands the panel may run pins the same floor.
 
-Date: 2026-10-11 · Source: commit 9347a3c; `BRIGHTNESS_MIN`
+Date: 2026-10-11 · Source: quick settings spec § 5; commit 9347a3c; `BRIGHTNESS_MIN`
 
 ### A click on a slider's bar sets the level of the cell
 
@@ -1160,14 +1149,14 @@ Status: awaiting confirmation at the trial (the plan's "Decisions written down" 
 ### Only the arrow keys repeat in the quick panel
 
 Held down, only ↑ ↓ ← → (and Ctrl+P, Ctrl+N) repeat, and Backspace in the Wi-Fi password field. A held
-Space or Enter acts once: the plan expects one action, never a flapping mute or a confirmed reboot. A
-held ← or → on the headset row sends nothing more, because it would send `wpctl set-profile` again
-before pw-dump reports the switch; a held key never answers a Bluetooth code question, which a key
-pressed before the question arrived would otherwise reject (both reasons from the code's comments).
+Space or Enter acts once, so a held key never flaps a mute or confirms a reboot. Two later cases
+follow from it: a held ← or → on the headset row sends nothing more, because it would send
+`wpctl set-profile` again before pw-dump reports the switch, and a held key never answers a
+Bluetooth code question, which a key pressed before the question arrived would otherwise reject.
 
-Date: 2026-10-11 · Source: quick settings plan 1, "Review Focus" 5 and "Decisions written down" 8; `Quick::key`
+Date: 2026-10-11 · Source: quick settings spec § 3; plan 1, "Decisions written down" 8 and "Review Focus" 5; commits 1f922b6 (Backspace), b627888 (headset) and 33da8c6 (code question); `Quick::key`
 
-Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+Status: the base rule (plan decision 8) awaits confirmation at the trial; the three exceptions came later
 
 ### The quick panel's outputs detail stays open after a choice
 
@@ -1205,25 +1194,14 @@ on a module close the panel; a click on a window does not, because nothing tells
 Hyprland older than 0.56.2 a click inside a verb-opened panel may reach the bar and close it
 (hyprwm/Hyprland#15729). A panel opened by a click keeps its grab, like every other popup. A verb
 that arrives within 250 ms of the verb's own open is ignored (`quick: toggle debounced`), because
-Hyprland fires a press bind again (the launcher's `TOGGLE_DEBOUNCE`).
+Hyprland re-fires a press bind (the launcher's `TOGGLE_DEBOUNCE`).
 
-Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 1; CLAUDE.md, "Quick settings, delivery 1" (the debounce and its reason); `quick_toggle`, `verb_debounced`
-
-Status: accepted (CLAUDE.md records decision 1 as already accepted)
-
-### The quick panel's top and its volume row are the same row
-
-The panel opens on its first row for the bare verb (`Focus::Top`) and on the volume row for a click on
-the volume module or `--quick sound` (`Focus::Sound`). In this delivery these are the same row, because
-the volume is the first row whenever it shows.
-
-Date: 2026-10-11 · Source: quick settings plan 1, "Decisions written down" 3; `Focus`, `Quick::new`
-
-Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
+Date: 2026-10-11 · Source: quick settings spec § 1 (amended 2026-10-11); plan 1, "Decisions written down" 1; CLAUDE.md, "Quick settings, delivery 1" (the debounce and its reason); `quick_toggle`, `verb_debounced`
 
 ### The wheel moves the quick panel's window only when the lines do not fit
 
-Over a slider, `n` wheel notches send one command of `n × step` percent (at most 100). Anywhere else
+Over a slider, `n` wheel notches (at most 10 counted per event) send one command of `n × step` percent
+(at most 100). Anywhere else
 the wheel moves the panel's window over its lines only when they do not all fit under the bar;
 otherwise it does nothing.
 
@@ -1247,12 +1225,10 @@ Status: awaiting confirmation at the trial (quick settings plan 1, closing note:
 When the panel closes during an attempt on a network with no saved profile, the attempt is handed to
 a follower (`WifiFollow`) that keeps the Wi-Fi read, and the panel's timer stays armed for it alone,
 up to 20 s (60 s while the device is still activating). If the attempt fails, the profile that
-appeared during it is deleted, but only if it is still saved. The hand-over keeps the D-Bus thread's
-reader at the detail's scope, never closed in between: a reset would read a profile it had skipped
-before as a new one. A panel opened meanwhile takes the attempt back. This replaces the Wi-Fi plan's
-rule that closing the panel abandons the attempt.
+appeared during it is deleted, but only if it is still saved. A panel opened meanwhile takes the
+attempt back. This replaces the Wi-Fi plan's rule that closing the panel abandons the attempt.
 
-Date: 2026-10-13 · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); quick Wi-Fi plan 2, "Decisions written down" 10 (the sentence it replaces); `WifiFollow`, `quick_flush`
+Date: 2026-10-13 (the merge of Wi-Fi delivery 2, CLAUDE.md) · Source: CLAUDE.md, "Quick settings, delivery 2" ("Connecting"); quick Wi-Fi plan 2, "Decisions written down" 10 (the sentence it replaces); commit 750810e (2026-10-11); `WifiFollow`, `quick_flush`
 
 ### The Wi-Fi password lives in one boxed buffer that is wiped
 
@@ -1262,18 +1238,24 @@ it. The buffer is wiped with volatile writes when the field closes, after the pa
 password is written to `nmcli`'s standard input straight from the buffer, in parts, never joined into a
 copy and never an argument. A character that would not fit is refused whole, and the field then refuses
 to connect rather than send a password cut short. What is not wiped: the per-key heap string that SCTK
-(the Wayland toolkit) creates for each typed key.
+(the Wayland toolkit) creates for each typed key, and the `Key::Char` on the stack that carries
+each character to the panel.
 
 Date: 2026-10-11 · Source: quick Wi-Fi plan 2, "Decisions written down" 14 and 15; quick Wi-Fi spec § 3; CLAUDE.md, "Quick settings, delivery 2" (the per-key string, "decision 14"); `Secret`
+
+Status: awaiting confirmation at the trial (Wi-Fi plan 2's closing report lists decision 14; that `nmcli --ask` reads the password from a pipe is unverified until the trial, CLAUDE.md)
 
 ### A toggle's state that cannot be read shows `·`, never off
 
 A configured toggle's state is read when the panel opens and 300 ms after its toggle ran, never
 watched. A state that is empty, of a form `bar.toml` refuses, a path that cannot be expanded, or a
 file whose existence cannot be told (any error but "not found") is unknown, and its row shows `·`:
-the panel does not say "off" on a guess.
+the panel does not say "off" on a guess. The same rule holds for Shield: see "An unknown Shield
+state is never read as off".
 
-Date: 2026-10-11 · Source: quick settings spec § 4 (`state`); `state::read`
+Date: 2026-10-11 · Source: quick settings spec § 4 (`state`); plan 1, "Decisions written down" 11; commit eab1ed5 (any error but "not found" is unknown); `state::read`
+
+Status: awaiting confirmation at the trial (the plan's "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
 
 ### The do-not-disturb detail marks and opens by the current state
 
@@ -1282,15 +1264,6 @@ The ● sits on `Off` when do-not-disturb is off, on `Until I turn it off` when 
 otherwise on nothing. The detail opens on the ● entry, else on `30 minutes`, also when the ● entry is
 `Off` (nothing to turn off). Why `30 minutes` is the fallback is not recorded.
 
-Date: 2026-11-15 · Source: small features 2 plan 1, "Decisions written down" 8; `marked`, `DndDetail::open`
+Date: 2026-11-15 · Source: small features 2 plan 1, "Decisions written down" 8; commit b06e745 (the `Off` case and its reason); `marked`, `DndDetail::open`
 
 Status: awaiting confirmation at the trial (small features 2 plan: its "Decisions written down" are to be confirmed at the trial, CLAUDE.md)
-
-### The Shield detail's device rows are selectable only when `allow` is configured
-
-Without `[shield] allow`, the blocked devices are listed but no row can be selected and Enter does
-nothing on them.
-
-Date: 2026-11-21 · Source: shield spec § 5; `ShieldPanel::is_selected`, `ShieldPanel::allow`
-
-Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)

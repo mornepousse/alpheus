@@ -6,8 +6,12 @@
 //! This file is the pure half: what a choice does is the wiring's (`dnd_request` in `app.rs`).
 //!
 //! Never:
-//! - read a clock or a file, run a command, or start anything (guardrail
+//! - write or create a file, or make a raw system call (guardrail
 //!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`);
+//! - read a clock or a file;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
 //! See: docs/specs/2026-11-15-alpheus-small-features-2-design.md (§ 2), docs/features/quick-settings.md,
