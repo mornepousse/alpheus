@@ -65,7 +65,7 @@ happened*.
 - **Session-bus features run on the loop itself,** through a second,
   non-blocking connection (the tray's StatusNotifierWatcher and dbusmenu,
   MPRIS, the notification server, the portal's colour scheme, and the user
-  manager's failed-unit count (`failed_app.rs`, the same typed `Get` and
+  manager's failed-unit count (`failed/app.rs`, the same typed `Get` and
   `Subscribe` allowlist as the system side); all in `session_bus/`): no new thread.
 - **Timers are deadlines, not ticks.** `deadline::DeadlineTimer` arms one
   calloop timer at the earliest deadline while there is one and nothing
@@ -114,10 +114,10 @@ only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
 bounded `capture`.
 
-The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `tools_app.rs`:
+The Tools menu (`launcher/tools/`: pure catalog, navigation and config; `launcher/tools/app.rs`:
 the glue) is a launcher mode with no scan. Built-ins replay the daemon's own verbs
 inside the process; the entry states and dynamic choices are read one at a time on a
-short-lived `alpheus-tools` thread through `capture`; `tools_join.rs` is the only file
+short-lived `alpheus-tools` thread through `capture`; `launcher/tools/join.rs` is the only file
 that names the clipboard, Shield and Diagnostics for it.
 
 ## Policy: what the daemon may touch
@@ -172,8 +172,8 @@ ever calls a real `wpctl`, `nmcli`, `systemctl`, `wm-set`…" practical.
 
 ## Tests and guardrails
 
-- **Unit tests** sit beside the code (pure models: `quick.rs`, `privacy.rs`,
-  `media.rs`, `layout`, the compositor parsers).
+- **Unit tests** sit beside the code (pure models: `quick/mod.rs`, `privacy/mod.rs`,
+  `media/mod.rs`, `layout`, the compositor parsers).
 - **Guardrail tests** (`crates/alpheus-daemon/tests/guardrails.rs`,
   `crates/alpheus/tests/guardrails.rs`, `crates/alpheus-common/tests/boundaries.rs`)
   read the *source files* and fail on a forbidden pattern: D-Bus confined to
