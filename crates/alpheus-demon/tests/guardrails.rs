@@ -1147,7 +1147,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("osd/surface.rs", "Timer::", 1),
         // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
         // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
-        ("tools_app.rs", "Timer::", 1),
+        ("launcher/tools/app.rs", "Timer::", 1),
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
@@ -3258,13 +3258,13 @@ fn the_parallel_branches_are_named_only_in_tools_join() {
     let mut seen = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !(name.starts_with("launcher/tools/") || name == "tools_app.rs") {
+        if !name.starts_with("launcher/tools/") || name == "launcher/tools/join.rs" {
             continue;
         }
         seen += 1;
         let production = production_code(&t);
         for word in ["clipboard_availability", "launcher_open_clipboard", "shield_open_detail", "ShieldConfig", "\"diagnostics\""] {
-            assert!(!production.contains(word), "{word} in {name}: name the parallel branches in tools_join.rs only");
+            assert!(!production.contains(word), "{word} in {name}: name the parallel branches in launcher/tools/join.rs only");
         }
     }
     assert!(seen >= 3, "the tools files were not found");
@@ -3276,7 +3276,7 @@ fn the_parallel_branches_are_named_only_in_tools_join() {
 #[test]
 fn the_join_hooks_are_filled_in() {
     let files = source_files();
-    let join = &files.iter().find(|(p, _)| relative_path(p) == "tools_join.rs").expect("tools_join.rs").1;
+    let join = &files.iter().find(|(p, _)| relative_path(p) == "launcher/tools/join.rs").expect("launcher/tools/join.rs").1;
     let available = function_body(join, "pub fn shield_available");
     assert!(available.contains("shield.is_some()") && available.contains("quick_enabled()"), "shield_available: {available}");
     assert!(function_body(join, "pub fn open_shield").contains("shield_open_detail()"), "open_shield goes through the Shield feature");
@@ -4598,7 +4598,7 @@ fn tools_unfixed_log(code: &str) -> Option<String> {
 fn the_tools_logs_are_fixed_words() {
     let files = source_files();
     let mut seen = 0;
-    for name in ["launcher/tools/read.rs", "tools_app.rs", "tools_join.rs"] {
+    for name in ["launcher/tools/read.rs", "launcher/tools/app.rs", "launcher/tools/join.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
         assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
@@ -4642,10 +4642,10 @@ fn the_tools_timer_is_disarmed_by_close_and_by_a_panic() {
 #[test]
 fn the_tools_glue_spawns_only_through_launch() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "tools_app.rs").expect("tools_app.rs").1;
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "launcher/tools/app.rs").expect("launcher/tools/app.rs").1;
     let code = production_code(t);
     for forbidden in [".spawn(", ".run(", ".capture(", "Command::new", "\"sh\"", "-c\""] {
-        assert!(!code.contains(forbidden), "{forbidden} in tools_app.rs");
+        assert!(!code.contains(forbidden), "{forbidden} in launcher/tools/app.rs");
     }
     assert!(code.contains("run::launch("), "the one spawn");
     assert_eq!(code.matches("run::launch(").count(), 1);
@@ -4656,8 +4656,8 @@ fn the_tools_glue_spawns_only_through_launch() {
 #[test]
 fn every_builtin_argv_stays_on_the_allowlist() {
     use alpheus_demon::config::QuickConfig;
+    use alpheus_demon::launcher::tools::app::{Commands, builtin_argv};
     use alpheus_demon::launcher::tools::catalog::{BUILTINS, BuiltinAction};
-    use alpheus_demon::tools_app::{Commands, builtin_argv};
     use std::os::unix::fs::PermissionsExt;
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
@@ -4709,8 +4709,8 @@ fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
         assert!(!apps.contains(word), "{word}: a plain Mod+Space open reads no built-in state (a /proc scan)");
     }
     assert!(apps.contains("tools_catalog(&config, false)"), "a Mod+Space open logs no catalog note");
-    assert!(text("tools_join.rs").contains("clipboard_availability()"), "the clipboard row follows the protocol too");
-    let tools = text("tools_app.rs");
+    assert!(text("launcher/tools/join.rs").contains("clipboard_availability()"), "the clipboard row follows the protocol too");
+    let tools = text("launcher/tools/app.rs");
     assert!(function_body(&tools, "pub(crate) fn launcher_open_tools(").contains("tools_catalog(&config, true)"));
     let surface = text("launcher/surface.rs");
     let outcome = function_body(&surface, "fn launcher_outcome_inner(");

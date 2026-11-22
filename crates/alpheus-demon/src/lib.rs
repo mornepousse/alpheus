@@ -70,8 +70,6 @@ pub mod sys;
 pub mod system;
 pub mod text;
 pub mod timer;
-pub mod tools_app;
-pub mod tools_join;
 pub mod tray;
 pub mod watch;
 pub mod wayland;
