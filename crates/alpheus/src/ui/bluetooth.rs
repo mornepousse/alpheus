@@ -1,9 +1,31 @@
+//! The Bluetooth tab's rows and its shortcut hints.
+//!
+//! `tabs::render` draws the rows this file lists; the items themselves come from
+//! `app/bluetooth.rs`, and a switch or a button is drawn by the shared item drawing in `tabs.rs`,
+//! like the other item tabs. This file adds the list of connected devices between the two items.
+//!
+//! Never:
+//! - change the state: everything here reads the `App` and fills a list of rows;
+//! - run a tool or read a clock.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the Bluetooth row),
+//! docs/specs/2026-11-15-alpheus-ui-refresh-design.md (the rail and the tab hues),
+//! docs/features/control-center.md.
+
 use super::tabs::Row;
 use crate::app::action::Action;
 use crate::app::keymap::Keymap;
 use crate::app::{App, Loadable};
 
+/// Adds the Bluetooth tab's rows to `rows`: the Bluetooth switch, the "Connected devices" heading
+/// with one line per device that passes the search, then the "Pair a device" button.
+///
+/// `rail` says the tab is drawn with the left rail (from 84 columns by 26 rows), where each line
+/// starts with a glyph and the name is padded; the classic layout writes the name and the address
+/// in parentheses. A list that has not loaded shows `…`, a failed read shows its error, an adapter
+/// that is off shows `Bluetooth is off`, and an empty list shows `none`.
 pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
+    // The switch and the button are the two items of `bluetooth::items`, by position.
     rows.push(Row::Item(0));
     rows.push(Row::Blank);
     rows.push(Row::Heading("Connected devices"));
@@ -25,6 +47,8 @@ pub(super) fn rows(app: &App, rail: bool, rows: &mut Vec<Row>) {
     rows.push(Row::Item(1));
 }
 
+/// The keys the status line offers on this tab: switch Bluetooth, open the pairing tool, and search
+/// the devices.
 pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap) {
     pairs.push((km.label(Action::Toggle), "Toggle"));
     pairs.push((km.label(Action::Activate), "Open"));
