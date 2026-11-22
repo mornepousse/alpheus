@@ -77,6 +77,8 @@ pub enum Action {
     OpenCalc,
     /// `--windows`: the window switcher, with no scan.
     OpenWindows,
+    /// `--clipboard`: the history alone, replacing any other open launcher.
+    OpenClipboard,
     /// `--windows` while the switcher is open: select the next window.
     StepWindows,
     Close(CloseReason),
@@ -89,13 +91,14 @@ pub enum Action {
     },
 }
 
-/// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, or the
-/// window switcher.
+/// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
+/// window switcher, or the clipboard history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opened {
     Apps,
     Script,
     Switcher,
+    Clipboard,
 }
 
 /// The open model's kind.
@@ -104,6 +107,8 @@ pub fn opened(model: &Launcher) -> Opened {
         Opened::Script
     } else if model.is_switcher() {
         Opened::Switcher
+    } else if model.mode == crate::launcher::matching::Mode::Clipboard {
+        Opened::Clipboard
     } else {
         Opened::Apps
     }
@@ -130,6 +135,12 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Windows, Some(Opened::Switcher)) => (Action::StepWindows, Some(Reply::Done)),
         // From nothing, an app launcher or a script menu: the switcher replaces it, as a script does.
         (Request::Windows, _) => (Action::OpenWindows, Some(Reply::Done)),
+        // Clipboard spec, decision 17: `--clipboard` toggles the history (with the same debounce
+        // against a re-fired press bind) and replaces anything else open, as `--windows` does.
+        (Request::Clipboard, None) => (Action::OpenClipboard, Some(Reply::Done)),
+        (Request::Clipboard, Some(Opened::Clipboard)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Clipboard, Some(Opened::Clipboard)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        (Request::Clipboard, Some(_)) => (Action::OpenClipboard, Some(Reply::Done)),
         // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
@@ -148,6 +159,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::Quick(_)
             | Request::Timer(_)
             | Request::Notes
+            | Request::ClipboardClear
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -166,6 +178,7 @@ pub fn open_after(open: Option<Opened>, action: &Action) -> Option<Opened> {
         Action::Close(_) => None,
         Action::OpenScript { .. } => Some(Opened::Script),
         Action::OpenWindows => Some(Opened::Switcher),
+        Action::OpenClipboard => Some(Opened::Clipboard),
     }
 }
 
@@ -279,6 +292,8 @@ impl App {
         // that panicked) defers the release to a key-up or leave that its dead surface never sends.
         let open = self.launcher.take();
         let was_open = open.is_some();
+        // Only one launcher exists: any open prompt is this one, and its model is not read after a panic.
+        self.clipboard_password_closed_if_open();
         if let Some(open) = open {
             let _ = guarded("close", move || {
                 let mut open = open;
@@ -313,6 +328,13 @@ impl App {
         let requested_at = conn.accepted_at();
         let open = self.launcher.as_ref().map(|o| opened(&o.model));
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
+        // The history off or unbound: said before `decide`, so nothing else open is replaced.
+        if request == Request::Clipboard {
+            if let Err(why) = self.clipboard_availability() {
+                conn.reply(&Reply::Error(why.into()));
+                return;
+            }
+        }
         match decide(request, open, since_open) {
             (Action::OpenScript { prompt, lines, flags }, _) => {
                 if self.launcher_is_open() {
@@ -332,6 +354,12 @@ impl App {
                 match action {
                     Action::OpenApps => self.launcher_open_apps(qh, requested_at),
                     Action::OpenCalc => self.launcher_open_calc(qh, requested_at),
+                    Action::OpenClipboard => {
+                        if self.launcher_is_open() {
+                            self.launcher_close(CloseReason::Replaced);
+                        }
+                        self.launcher_open_clipboard(qh, requested_at);
+                    }
                     Action::OpenWindows => {
                         if self.launcher_is_open() {
                             self.launcher_close(CloseReason::Replaced);
@@ -378,6 +406,13 @@ impl App {
         self.launcher_open(qh, model, None, requested_at);
     }
 
+    /// `--clipboard`: the history alone. No scan, no `$PATH`; the rows are a snapshot of the history.
+    fn launcher_open_clipboard(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+        let config = read_config(&paths::config_dir(), &mut |m| log(m));
+        let model = Launcher::for_clipboard(config, self.clipboard_rows());
+        self.launcher_open(qh, model, None, requested_at);
+    }
+
     /// `--windows`: the window switcher. No scan, no history, no `$PATH`.
     fn launcher_open_windows(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         let config = read_config(&paths::config_dir(), &mut |m| log(m));
@@ -410,6 +445,11 @@ impl App {
         let env = ScanEnv::from_env(|k| std::env::var_os(k));
         let mut model = Launcher::for_apps(config, self.launcher_toplevels(), history, now);
         model.path_dirs = env.path_dirs.clone();
+        // The `"` prefix only with the history on and bound.
+        if self.clipboard_availability().is_ok() {
+            model.clipboard = true;
+            model.set_clips(self.clipboard_rows());
+        }
         self.launcher_open(qh, model, None, requested_at);
         let Some(open) = self.launcher.as_mut() else { return };
         let generation = open.generation;
@@ -580,7 +620,7 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
-        use Opened::{Apps, Script, Switcher};
+        use Opened::{Apps, Clipboard, Script, Switcher};
         let script =
             Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
         let not_ours = || Action::Nothing;
@@ -603,6 +643,17 @@ mod tests {
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
             (Request::Notes, Some(Apps), not_ours(), refused()),
+            (Request::Clipboard, None, Action::OpenClipboard, done()),
+            (Request::Clipboard, Some(Clipboard), Action::Close(R::Toggle), done()),
+            (Request::Clipboard, Some(Apps), Action::OpenClipboard, done()),
+            (Request::Clipboard, Some(Script), Action::OpenClipboard, done()),
+            (Request::Clipboard, Some(Switcher), Action::OpenClipboard, done()),
+            (Request::ClipboardClear, Some(Apps), not_ours(), refused()),
+            (Request::Toggle, Some(Clipboard), Action::Close(R::Toggle), done()),
+            (Request::Close, Some(Clipboard), Action::Close(R::Close), done()),
+            (Request::Calc, Some(Clipboard), Action::Close(R::Toggle), done()),
+            (Request::Windows, Some(Clipboard), Action::OpenWindows, done()),
+            (dmenu(), Some(Clipboard), script.clone(), None),
             (Request::Calc, None, Action::OpenCalc, done()),
             (Request::Calc, Some(Apps), Action::Close(R::Toggle), done()),
             (Request::Calc, Some(Script), Action::Close(R::Toggle), done()),
@@ -641,6 +692,24 @@ mod tests {
             (Action::StepWindows, Some(Reply::Done)),
             "10 ms after the last step: steps again"
         );
+    }
+
+    /// Clipboard spec, decision 17: `--clipboard` toggles the history, ignoring a press-bind refire
+    /// inside the debounce, and replaces any other open launcher (the state becomes the history).
+    #[test]
+    fn clipboard_toggles_with_the_debounce_and_replaces_others() {
+        let open = Some(Opened::Clipboard);
+        assert_eq!(decide(Request::Clipboard, open, Duration::from_millis(10)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Clipboard, open, Duration::from_millis(300)), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        for other in [Opened::Apps, Opened::Script, Opened::Switcher] {
+            for since in [Duration::from_millis(10), PAST_DEBOUNCE] {
+                assert_eq!(decide(Request::Clipboard, Some(other), since), (Action::OpenClipboard, Some(Reply::Done)), "{other:?}");
+            }
+        }
+        assert_eq!(open_after(Some(Opened::Apps), &Action::OpenClipboard), open);
+        let model = Launcher::for_clipboard(LauncherConfig::default(), vec![]);
+        assert_eq!(opened(&model), Opened::Clipboard);
+        assert_eq!(opened(&apps_model()), Opened::Apps);
     }
 
     /// `--windows` replaces another launcher (as a script does); the state becomes the switcher.

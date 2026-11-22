@@ -300,7 +300,9 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 /// The daemon only reads from the compositor, plus two writes: the workspace command, and output
 /// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
 /// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
-/// never output power management, never dpms (displays spec § 2, as amended).
+/// never output power management, never dpms (displays spec § 2, as amended). A third write is the
+/// clipboard's own selection, set in `clipboard/control.rs` only (clipboard spec decision 14): the
+/// daemon's re-copy of a history entry, never a primary selection.
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in all_source_files() {
@@ -796,6 +798,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Calc => "calc",
             Request::Windows => "windows",
             Request::Notes => "notes",
+            Request::Clipboard => "clipboard",
+            Request::ClipboardClear => "clipboard-clear",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -815,6 +819,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Calc,
         Request::Windows,
         Request::Notes,
+        Request::Clipboard,
+        Request::ClipboardClear,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -835,6 +841,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "calc",
             "windows",
             "notes",
+            "clipboard",
+            "clipboard-clear",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -1058,6 +1066,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
+        // The clipboard history's read deadline, built in `ClipboardApp::bind`: armed only while a
+        // read is pending, disarmed by every way a read ends.
+        ("clipboard/app.rs", "Timer::", 1),
         // The pad's save, armed only while it is open and edited (quick notes), built in
         // `NotesApp::new`.
         ("notes/app.rs", "Timer::", 1),
@@ -1479,6 +1490,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/store.rs",
     "notes/surface.rs",
     "notes/paste.rs",
+    "clipboard/",
 ];
 
 #[test]
@@ -1581,6 +1593,29 @@ fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&s
         startup_wm_class: None,
         actions: actions.iter().map(|(n, e)| DesktopAction { key: n.to_lowercase(), name: n.to_string(), exec: e.to_string() }).collect(),
     }
+}
+
+/// A clipboard history row spawns nothing from the launcher: `perform` refuses it (the app copies
+/// from its own history first), and no key or click on the rows reaches an executor.
+#[test]
+fn a_clipboard_row_spawns_nothing_from_the_launcher() {
+    use alpheus_demon::clipboard::history::ClipRow;
+    let rows = || {
+        (0..3).map(|i| ClipRow { id: i, preview: format!("row {i}"), first: format!("row {i}"), more_lines: 0, pinned: i == 0 }).collect()
+    };
+    let fake = FakeExecutor::new();
+    let ctx = RunContext { exec: &fake, spawner: Spawner::Detached, history_path: None, path_dirs: &[] };
+    for secondary in [false, true] {
+        for i in 0..4 {
+            let mut l = Launcher::for_clipboard(LauncherConfig::default(), rows());
+            let o = l.click(i, secondary);
+            if let Outcome::Activate(a) = o {
+                assert!(matches!(a, Activation::Clip { .. }), "{a:?}");
+                assert!(perform(&mut l, a, &ctx).is_err(), "perform refuses a history row");
+            }
+        }
+    }
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
 }
 
 /// Every activation the launcher can produce — every result of every mode,
@@ -2980,6 +3015,162 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's
+/// message embeds the text), slice a string by range nor log (a copy is private). Production code
+/// only; Tasks 2 and 3 append theirs.
+const CLIPBOARD_NO_PANIC_NO_LOG: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
+
+#[test]
+fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in CLIPBOARD_NO_PANIC_NO_LOG.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+            for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
+                assert!(!code.contains(p) || code.contains("is_char_boundary"), "{p} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// `clipboard/app.rs` logs, with fixed words only: no panicking path, and every `log(` call is a
+/// plain literal or interpolates only the entry point's name or an error kind.
+const CLIPBOARD_FIXED_LOG_PLACEHOLDERS: [&str; 2] = ["{what}", "{kind:?}"];
+
+/// The first `log(` call in `code` that is not fixed words, if any.
+fn clipboard_unfixed_log(code: &str) -> Option<String> {
+    let mut rest = code;
+    while let Some(i) = rest.find("log(") {
+        let call = &rest[i..];
+        // To the parenthesis that closes `log(`.
+        let mut depth = 0usize;
+        let mut end = call.len();
+        for (j, c) in call.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = call[..end].to_string();
+        for ok in CLIPBOARD_FIXED_LOG_PLACEHOLDERS {
+            text = text.replace(ok, "");
+        }
+        // The argument is a string literal or `&format!("…")` of one: never a variable.
+        let arg = call["log(".len()..end.saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2;
+        if !literal || text.contains('{') || text.contains("+ ") {
+            return Some(call[..end].to_string());
+        }
+        rest = &call[end..];
+    }
+    None
+}
+
+/// A print or debug macro in `code` (clipboard text must reach no stream but the log's words).
+fn clipboard_print_macro(code: &str) -> Option<&'static str> {
+    ["eprintln!", "println!", "eprint!", "print!", "dbg!"]
+        .into_iter()
+        .find(|m| code.match_indices(m).any(|(i, _)| !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')))
+}
+
+#[test]
+fn clipboard_app_never_panics_and_logs_fixed_words() {
+    let files = source_files();
+    let name = "clipboard/app.rs";
+    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
+    }
+    for line in production.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in {name}'s production code");
+        }
+    }
+    let code: String = production.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    assert_eq!(clipboard_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+}
+
+#[test]
+fn nothing_under_clipboard_prints() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("clipboard/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(m) = clipboard_print_macro(code) {
+                panic!("{m} in {name}'s production code");
+            }
+        }
+    }
+    assert!(seen >= 5, "the clipboard files were found: {seen}");
+}
+
+#[test]
+fn the_clipboard_guardrail_helpers_bite() {
+    assert_eq!(clipboard_unfixed_log("log(\"clipboard: a fixed word\");"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"clipboard error in {what}\"));"), None);
+    assert_eq!(clipboard_unfixed_log("log(&format!(\"read failed ({kind:?})\"));"), None);
+    assert!(clipboard_unfixed_log("log(&format!(\"copied {text}\"));").is_some());
+    assert!(clipboard_unfixed_log("log(&text);").is_some(), "a variable is not fixed words");
+    assert!(clipboard_unfixed_log("log(text);").is_some());
+    assert!(clipboard_unfixed_log("log(\"a\"); log(&format!(\"{text:?}\"));").is_some());
+    for m in ["eprintln!(\"x\")", "println!(\"x\")", "print!(\"x\")", "eprint!(\"x\")", "dbg!(x)"] {
+        assert!(clipboard_print_macro(m).is_some(), "{m}");
+    }
+    assert_eq!(clipboard_print_macro("fn pprintln!() {}"), None, "a longer identifier is not the macro");
+}
+
+/// The hint types that mark a password-manager copy are named in `clipboard/offer.rs`'s `SENSITIVE`
+/// and nowhere else: no code path can request such an offer's data.
+#[test]
+fn the_clipboard_sensitive_hint_type_is_never_received() {
+    let hints = ["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type", "ExcludeClipboardContentFromMonitorProcessing"];
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let production = production_code(&t);
+        if name == "clipboard/offer.rs" {
+            let mut rest = production.clone();
+            let start = rest.find("pub const SENSITIVE").expect("SENSITIVE");
+            let end = start + rest[start..].find("];").expect("end of SENSITIVE") + 2;
+            rest.replace_range(start..end, "");
+            for h in hints {
+                assert!(!rest.contains(h), "{h} outside SENSITIVE in offer.rs");
+                assert!(production.contains(h), "{h} missing from SENSITIVE");
+            }
+            seen += 1;
+        } else {
+            for h in hints {
+                assert!(!production.contains(h), "{h} in {name}");
+            }
+        }
+    }
+    assert_eq!(seen, 1);
+}
+
 /// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked
 /// with `is_char_boundary`; else 0 (so the count check fails).
 fn checked_replace_range(production: &str) -> usize {
@@ -3563,14 +3754,16 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
         if name.starts_with("notes/") {
             seen += 1;
         }
-        if name != "notes/paste.rs" {
+        // The clipboard history reads its offers through the same SCTK pipe, in its one protocol file.
+        if name != "notes/paste.rs" && name != "clipboard/control.rs" {
             assert!(
                 !((prod.contains("insert_source(") || prod.contains(".receive(")) && prod.contains("ReadPipe")),
                 "a ReadPipe source outside notes/paste.rs: {name}"
             );
         }
         for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
-            assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
+            let allowed = never == "set_selection" && name == "clipboard/control.rs";
+            assert!(allowed || !prod.contains(never), "{never} in {name}: the pad never owns a selection");
         }
     }
     assert!(seen >= 9, "the notes files were found: {seen}");
@@ -3593,6 +3786,46 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
 }
 
+/// Clipboard task 4: the daemon sets a selection in one place only, `own_selection` of
+/// `clipboard/control.rs`, for a history entry's re-copy: never `None` (it would clear the user's
+/// clipboard), never the primary selection.
+#[test]
+fn the_clipboard_selection_is_set_only_by_the_own_source() {
+    let files = source_files();
+    for (p, t) in &files {
+        let name = relative_path(p);
+        let prod = production_code(t);
+        assert!(!prod.contains("set_primary_selection"), "the primary selection is never set: {name}");
+        if name != "clipboard/control.rs" {
+            assert!(!prod.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
+        }
+    }
+    let control = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/control.rs").expect("control.rs").1;
+    let prod = production_code(control);
+    assert_eq!(prod.matches("set_selection(").count(), 2, "one call per protocol, in the macro-free own_selection: {prod}");
+    assert!(!prod.contains("set_selection(None"), "the selection is never cleared");
+    let body = function_body(&prod, "fn own_selection(");
+    assert_eq!(body.matches("set_selection(").count(), 2, "both calls sit inside own_selection: {body}");
+    assert_eq!(body.matches("own_offer_types()").count(), 2, "each source offers the one list, marker included: {body}");
+    assert_eq!(body.matches("set_selection(Some(").count(), 2, "only ever a source: {body}");
+}
+
+/// An offer taken in `clipboard_selection_inner` sits in a `DestroyOnDrop` before anything can
+/// panic: a panic between taking it and reading it still destroys it (Task 3 review).
+#[test]
+fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
+    let files = source_files();
+    let app = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("clipboard/app.rs").1;
+    let prod = production_code(app);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let take = body.find("slot.take()").expect("the offer is taken out of its slot");
+    let guard = body.find("DestroyOnDrop::new(offer)").expect("the offer is wrapped in DestroyOnDrop");
+    assert!(take < guard, "wrapped right after it is taken: {body}");
+    // Nothing that can panic or call out sits between the take and the guard.
+    let between = &body[take..guard];
+    assert!(!between.contains("self.") && !between.contains("unwrap") && !between.contains("expect"), "{between}");
+}
+
 /// This file and the harness, as `stray_clipboard_spawns` names them (relative to `crates/`).
 const THIS_FILE: &str = "alpheus-demon/tests/guardrails.rs";
 const HARNESS: &str = "alpheus-demon/tests/common/mod.rs";
@@ -3608,8 +3841,10 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
         }
         let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         if name == HARNESS {
-            let body = function_body(&code, "pub fn wl_copy(").to_string();
-            code = code.replace(&body, "");
+            for helper in ["pub fn wl_copy(", "pub fn wl_paste("] {
+                let body = function_body(&code, helper).to_string();
+                code = code.replace(&body, "");
+            }
         }
         for program in ["wl-copy", "wl-paste"] {
             if code.contains(program) {
@@ -3622,7 +3857,7 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
 
 #[test]
 fn stray_clipboard_spawns_are_found() {
-    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
+    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\npub fn wl_paste(s: &Sway) -> C {\n    Command::new(\"wl-paste\")\n}\n";
     let files = |a: &str, b: &str| {
         vec![(HARNESS.to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
     };
@@ -3633,6 +3868,9 @@ fn stray_clipboard_spawns_are_found() {
     );
     let outside = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
     assert_eq!(stray_clipboard_spawns(&outside), [format!("{HARNESS} names wl-copy")]);
+    // A second harness function naming wl-paste is still found next to the two helpers.
+    let second = vec![(HARNESS.to_string(), format!("{helper}fn other() {{ Command::new(\"wl-paste\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&second), [format!("{HARNESS} names wl-paste")]);
     // Another crate's harness or guardrails get no exemption.
     let elsewhere = vec![
         ("alpheus/tests/common/mod.rs".to_string(), helper.to_string()),
@@ -3640,7 +3878,11 @@ fn stray_clipboard_spawns_are_found() {
     ];
     assert_eq!(
         stray_clipboard_spawns(&elsewhere),
-        ["alpheus/tests/common/mod.rs names wl-copy", "alpheus/tests/guardrails.rs names wl-paste"]
+        [
+            "alpheus/tests/common/mod.rs names wl-copy",
+            "alpheus/tests/common/mod.rs names wl-paste",
+            "alpheus/tests/guardrails.rs names wl-paste"
+        ]
     );
 }
 
@@ -3681,6 +3923,16 @@ fn no_test_spawns_wl_copy_outside_the_harness_helper() {
         assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
     }
     assert!(!helper.contains("--primary"), "never the primary selection");
+    let paste = function_body(common, "pub fn wl_paste(");
+    let socket_check = paste.find("assert!(sway.runtime.join(&sway.wayland).exists()");
+    assert!(
+        socket_check.is_some() && socket_check < paste.find(".spawn()"),
+        "the wl-paste helper must assert this sway's socket exists before it spawns: {paste}"
+    );
+    for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--no-newline\""] {
+        assert!(paste.contains(need), "the wl-paste helper lacks {need}: {paste}");
+    }
+    assert!(!paste.contains("--primary"), "never the primary selection");
     let guard = function_body(common, "impl Drop for WlCopyChild");
     assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
 }
@@ -3780,4 +4032,122 @@ fn the_vpn_tap_follows_the_panel() {
     assert!(take.contains("Msg::Vpn { .. }"), "a VPN message refreshes the panel it shows: {take}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
+}
+
+/// Clipboard task 3: every data-control token is named in `clipboard/control.rs` only.
+#[test]
+fn data_control_only_in_control_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["data_control", "DataControl", "zwlr_data_control", "ext_data_control"] {
+            if t.contains(token) {
+                assert_eq!(name, "clipboard/control.rs", "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
+/// Off (the default): no manager is bound. The `clipboard` field's value is computed under
+/// `clipboard.enabled`.
+#[test]
+fn the_manager_is_bound_only_when_enabled() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let prod = production_code(wayland);
+    let at = prod.find("let clipboard =").expect("the clipboard binding in App::new");
+    let stmt = &prod[at..at + prod[at..].find(';').expect("end of the statement")];
+    let (gate, bind) = (stmt.find("clipboard.enabled"), stmt.find("ClipboardApp::bind("));
+    assert!(gate.is_some() && bind.is_some() && gate < bind, "bound only under clipboard.enabled: {stmt}");
+}
+
+/// The read deadline is armed by every function that starts or ends a read, and disarmed with it.
+#[test]
+fn every_clipboard_read_start_and_end_syncs_the_timer() {
+    let files = source_files();
+    let body = |file: &str, sig: &str| {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == file).unwrap_or_else(|| panic!("{file}")).1;
+        function_body(&production_code(t), sig).to_string()
+    };
+    for (file, sig) in [
+        ("clipboard/control.rs", "fn start_read("),
+        ("clipboard/app.rs", "fn clipboard_selection_inner("),
+        ("clipboard/app.rs", "fn clipboard_read_done("),
+        ("clipboard/app.rs", "fn clipboard_deadline("),
+    ] {
+        assert!(body(file, sig).contains("clipboard_timer_sync()"), "{sig} syncs the read deadline");
+    }
+    let deadline = body("clipboard/app.rs", "fn clipboard_deadline(");
+    let (fired, stop) = (deadline.find(".fired()"), deadline.find("clipboard_stop_read()"));
+    assert!(fired.is_some() && fired < stop, "the deadline drops its own timer first: {deadline}");
+    assert!(body("clipboard/control.rs", "fn start_read(").contains("clipboard_stop_read()"), "a new read drops the pending one");
+}
+
+/// The clipboard's log lines are the fixed words of the plan, never a text, a type or a count.
+#[test]
+fn clipboard_logs_only_fixed_words() {
+    const ALLOWED: [&str; 9] = [
+        "clipboard: ext-data-control-v1",
+        "clipboard: wlr-data-control-unstable-v1",
+        "clipboard: the compositor offers no data-control protocol; no history",
+        "clipboard: the data device finished",
+        "clipboard: a read timed out",
+        "clipboard: a read failed ({kind:?})",
+        "clipboard: history cleared (row)",
+        "clipboard error in {what}",
+        "clipboard: history cleared (verb)",
+    ];
+    let mut calls = 0;
+    for (p, t) in source_files() {
+        if !relative_path(&p).starts_with("clipboard/") {
+            continue;
+        }
+        let prod = production_code(&t);
+        for token in ["log(", "log::write("] {
+            let mut rest = prod.as_str();
+            while let Some(at) = rest.find(token) {
+                let after = &rest[at + token.len()..];
+                // Only a literal (or a `format!` of one) is logged, and nothing follows it.
+                let trimmed = after.trim_start();
+                let body = trimmed.strip_prefix("&format!(").unwrap_or(trimmed).trim_start();
+                assert!(body.starts_with('"'), "a log call that is not a literal: {}", &after[..after.len().min(40)]);
+                let inner = &body[1..];
+                let close = inner.find('"').expect("the literal ends");
+                let template = &inner[..close];
+                assert!(ALLOWED.contains(&template), "a log line outside the fixed words: {template}");
+                for word in ["text", "mime", "buffer", "bytes", "len"] {
+                    assert!(!template.contains(word), "{word} in the log line {template}");
+                }
+                let next = inner[close + 1..].trim_start().chars().next();
+                assert!(next == Some(')'), "an argument after the template of {template}");
+                calls += 1;
+                rest = &inner[close..];
+            }
+        }
+    }
+    assert!(calls >= 6, "the log calls were found: {calls}");
+}
+
+/// A `selection(None)` leaves a read in flight alone (an app that copies then quits sends it right
+/// after): the read is dropped only once a real offer is taken, never before.
+#[test]
+fn a_cleared_selection_does_not_drop_a_read() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let (take, stop) = (body.find("let Some(offer) = slot.take() else { return }"), body.find("clipboard_stop_read()"));
+    assert!(take.is_some() && take < stop, "returns on None before any read is stopped: {body}");
+}
+
+/// Shutdown wipes the whole history, pins included (`clear` keeps the pinned ones).
+#[test]
+fn the_clipboard_shutdown_wipes_pins_too() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_shutdown(");
+    assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }

@@ -18,6 +18,8 @@ use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec
 use crate::launcher::model::Launcher;
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::list::{self, Boxed, Row, tail, wrap};
+use alpheus_commun::launcher_ipc::wipe;
+use std::borrow::Cow;
 
 pub const BOX_COLUMNS: u16 = 60;
 pub const PREVIEW_COLUMNS: u16 = 36;
@@ -28,6 +30,10 @@ pub const COMMAND_ICON: char = '\u{f018d}';
 pub const CALC_ICON: char = '\u{f00ec}';
 /// Glyph for the web search row (md-magnify).
 pub const SEARCH_ICON: char = '\u{f0349}';
+/// Glyph for a pinned history row (md-pin).
+pub const PIN_ICON: char = '\u{f0403}';
+/// The history mode's empty input line (a bare `"` in All lists everything instead).
+const CLIPBOARD_PLACEHOLDER: &str = "type to filter the clipboard history";
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +118,10 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     // `--password`: one dot per character, never the text itself.
     let shown = if l.password { tail(&MASK.to_string().repeat(l.query.chars().count()), room) } else { tail(&l.query, room) };
     x = g.write(x, end, &shown, Style::NORMAL);
-    g.write(x, end, " ", Style::ACTIVE);
+    x = g.write(x, end, " ", Style::ACTIVE);
+    if l.mode == Mode::Clipboard && l.query.is_empty() {
+        g.write(x + 1, end, CLIPBOARD_PLACEHOLDER, Style::MUTED);
+    }
 }
 
 /// A window's title, or its class when the title is empty — or made only of
@@ -123,31 +132,46 @@ fn window_title(w: &Toplevel) -> &str {
 }
 
 /// (icon, name, kind) of a result.
-fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
+fn describe(l: &Launcher, s: Source) -> (Option<char>, Cow<'_, str>, String) {
     let apps = l.catalog.as_ref().map(|c| &c.apps[..]).unwrap_or(&[]);
     let commands = l.catalog.as_ref().map(|c| &c.commands[..]).unwrap_or(&[]);
     match s {
         Source::App(i) => {
             let e = &apps[i];
-            (Some(icons::glyph(&e.id)), e.name.clone(), e.generic_name.clone().unwrap_or_else(|| "application".into()))
+            (Some(icons::glyph(&e.id)), e.name.clone().into(), e.generic_name.clone().unwrap_or_else(|| "application".into()))
         }
         Source::Window(i) => {
             let w = &l.windows[i];
-            (Some(icons::glyph(&w.class)), window_title(w).to_string(), format!("window · {}", w.workspace))
+            (Some(icons::glyph(&w.class)), window_title(w).into(), format!("window · {}", w.workspace))
         }
-        Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
-        Source::Line(i) => (None, l.lines[i].clone(), String::new()),
-        Source::Calc => (Some(CALC_ICON), calc_text(l), "calculator".into()),
-        Source::Search => (Some(SEARCH_ICON), format!("Search the web: {}", l.prefixed().map_or("", |(_, t)| t)), "web".into()),
+        Source::Command(i) => (Some(COMMAND_ICON), commands[i].as_str().into(), "command".into()),
+        Source::Line(i) => (None, l.lines[i].as_str().into(), String::new()),
+        Source::Calc => (Some(CALC_ICON), calc_text(l).into(), "calculator".into()),
+        Source::Search => (Some(SEARCH_ICON), format!("Search the web: {}", l.prefixed().map_or("", |(_, t)| t)).into(), "web".into()),
         Source::Emoji(offset) => {
             let (emoji, name) = emoji::at(offset).unwrap_or_default();
-            (None, format!("{emoji}  {name}"), "emoji".into())
+            (None, format!("{emoji}  {name}").into(), "emoji".into())
         }
-        Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)), "shell".into()),
+        Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)).into(), "shell".into()),
+        Source::Clip(i) => match l.clips.get(i) {
+            // Borrowed here; the list's `truncate` and the grid cells then make per-frame copies of
+            // the visible rows' first lines that are freed unwiped — out of scope ("where practical",
+            // clipboard spec § wiping): the model's own rows (`ClipRow`) are the ones wiped.
+            Some(c) => (Some(if c.pinned { PIN_ICON } else { ' ' }), Cow::Borrowed(c.first.as_str()), more_lines(c.more_lines)),
+            None => (None, Cow::Borrowed(""), String::new()),
+        },
+        Source::ClipClear => (None, "Clear history".into(), "pins kept".into()),
         // Reached only if the entry vanished: `result_row` draws the real row.
-        Source::Entry(i) => {
-            (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
-        }
+        Source::Entry(i) => (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or("", |e| e.entry.as_str()).into(), String::new()),
+    }
+}
+
+/// A history row's dim tail: how many lines its first line leaves out.
+fn more_lines(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "+1 line".into(),
+        n => format!("+{n} lines"),
     }
 }
 
@@ -169,6 +193,11 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         return;
     }
     let (icon, name, kind) = describe(l, l.results[index].source);
+    if matches!(l.results[index].source, Source::ClipClear) && l.clear_question() {
+        let row = Row { icon: None, icon_style: Style::ACCENT, text: "Clear? ⏎", right: "", style: Style::WARN, selected };
+        list::row(g, 1, b.pane_end(), &row);
+        return;
+    }
     let failed = matches!(l.results[index].source, Source::Calc) && matches!(l.calc, Some(Err(_)));
     let row = Row {
         icon,
@@ -200,12 +229,17 @@ fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>
     }
 }
 
+fn clips_help(l: &Launcher) -> &'static str {
+    if l.clips.is_empty() { "esc close" } else { "enter copy · ctrl+enter pin · del forget · esc close" }
+}
+
 fn help_text(l: &Launcher) -> &'static str {
     match l.prefixed() {
         Some((Prefix::Search, _)) => return "enter search · esc close",
         Some((Prefix::Emoji, _)) if l.config.copy.is_empty() => return "esc close",
         Some((Prefix::Emoji, _)) => return "enter copy · ctrl+enter copy name · esc close",
         Some((Prefix::Shell, _)) => return "enter run · ctrl+enter run in terminal · esc close",
+        Some((Prefix::Clipboard, _)) => return clips_help(l),
         None => {}
     }
     if l.is_switcher() {
@@ -213,6 +247,7 @@ fn help_text(l: &Launcher) -> &'static str {
     }
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
+        Mode::Clipboard => clips_help(l),
         Mode::Calc if l.config.copy.is_empty() => "esc close",
         Mode::Calc => "enter copy · ctrl+enter copy expression · esc close",
         Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
@@ -331,6 +366,25 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 }
             }
         }
+        Source::Clip(i) => {
+            if let Some(c) = l.clips.get(i) {
+                let tail = [
+                    (String::new(), Style::NORMAL),
+                    ("enter  copy".to_string(), Style::NORMAL),
+                    ("ctrl+enter  pin".to_string(), Style::NORMAL),
+                    ("delete  forget".to_string(), Style::NORMAL),
+                ];
+                let room = budget.saturating_sub(tail.len());
+                out.extend(capped_wrap(&c.preview, width, room).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+                out.extend(tail);
+            }
+        }
+        Source::ClipClear => {
+            out.push(("Forget every copy".to_string(), Style::BOLD_ACCENT));
+            out.push(("pinned ones stay".to_string(), Style::MUTED));
+            out.push((String::new(), Style::NORMAL));
+            out.push(("enter  clear".to_string(), Style::NORMAL));
+        }
         Source::Shell => {
             let text = l.prefixed().map_or("", |(_, t)| t);
             let tail = [
@@ -395,6 +449,8 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                     }
                 }
                 Mode::Calc => "type an expression",
+                Mode::Clipboard if l.query.trim().is_empty() => prefix::hint(Prefix::Clipboard),
+                Mode::Clipboard => "no match",
                 _ if l.is_switcher() => "no window open",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",
@@ -417,18 +473,24 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     if b.preview_columns > 0 {
         let (start, stop) = (end + 2, b.columns.saturating_sub(2));
         let interior_rows = rows.len() - 2;
-        let lines = preview_lines(l, stop.saturating_sub(start), interior_rows);
+        let mut lines = preview_lines(l, stop.saturating_sub(start), interior_rows);
         // A safety net, not the common path (`capped_wrap` already fits the one part that can
         // grow without bound to `interior_rows`): a fixed tail longer than the panel itself —
         // many `.desktop` Actions at the smallest `rows` configuration — can still overflow it;
         // marks the cut on the last visible line rather than dropping it silently.
         let overflow = lines.len() > interior_rows;
         let last = rows.len() - 1;
-        for (i, (row, (mut text, style))) in rows[1..last].iter_mut().zip(lines).enumerate() {
+        for (i, (row, (text, style))) in rows[1..last].iter_mut().zip(lines.iter_mut()).enumerate() {
             if overflow && i + 1 == interior_rows && !text.ends_with('…') {
                 text.push('…');
             }
-            row.write(start, stop, &truncate(&text, stop.saturating_sub(start)), style);
+            let mut cut = truncate(text, stop.saturating_sub(start));
+            row.write(start, stop, &cut, *style);
+            wipe(&mut cut);
+        }
+        // The panel's lines may be a history row's text: overwritten before they are freed.
+        for (text, _) in &mut lines {
+            wipe(text);
         }
     }
     list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()))

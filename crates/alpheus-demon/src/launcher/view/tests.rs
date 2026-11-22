@@ -706,3 +706,107 @@ fn the_switcher_has_no_modes_row() {
     assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside), "row 1 is the input now");
     assert!(!l.has_modes());
 }
+
+// ---- the clipboard history (clipboard spec, task 5) ----
+
+fn clip_row(id: u64, preview: &str, first: &str, more_lines: usize, pinned: bool) -> crate::clipboard::history::ClipRow {
+    crate::clipboard::history::ClipRow { id, preview: preview.into(), first: first.into(), more_lines, pinned }
+}
+
+fn clip_box(rows: Vec<crate::clipboard::history::ClipRow>) -> Launcher {
+    Launcher::for_clipboard(LauncherConfig::default(), rows)
+}
+
+fn result_text(rows: &Boxed, b: &BoxLayout, i: u16) -> String {
+    rows.rows[usize::from(b.list_top - 1 + i)].text()
+}
+
+#[test]
+fn the_empty_history_shows_its_hint() {
+    let mut l = clip_box(vec![]);
+    let (b, rows) = draw(&mut l, 100);
+    assert!(result_text(&rows, &b, 0).contains("the clipboard history is empty"), "{}", snapshot(&rows));
+    assert_eq!(b.preview_columns, 0, "no panel for the history alone");
+    assert_eq!(help_text(&l), "esc close", "nothing to act on");
+    let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
+    typed(&mut l, "zzqx");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(result_text(&rows, &b, 0).contains("no match"));
+}
+
+#[test]
+fn a_multi_line_row_shows_its_first_line_and_more_lines_and_a_pinned_one_its_glyph() {
+    let mut l = clip_box(vec![
+        clip_row(1, "fn main second line", "fn main", 2, true),
+        clip_row(2, "plain", "plain", 0, false),
+        clip_row(3, "one more", "one more", 1, false),
+    ]);
+    let (b, rows) = draw(&mut l, 100);
+    let (r0, r1, r2) = (result_text(&rows, &b, 0), result_text(&rows, &b, 1), result_text(&rows, &b, 2));
+    assert!(r0.contains("fn main") && r0.contains("+2 lines") && r0.contains(PIN_ICON), "{r0}");
+    assert!(!r0.contains("second line"), "only the first line is shown: {r0}");
+    assert!(r1.contains("plain") && !r1.contains("lines") && !r1.contains(PIN_ICON), "{r1}");
+    assert!(r2.contains("+1 line") && !r2.contains("+1 lines"), "{r2}");
+}
+
+#[test]
+fn the_clear_row_reads_its_question() {
+    let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
+    let (b, rows) = draw(&mut l, 100);
+    let clear = result_text(&rows, &b, 1);
+    assert!(clear.contains("Clear history") && clear.contains("pins kept"), "{}", snapshot(&rows));
+    assert!(clear.trim_end().ends_with("pins kept"), "dim, on the right: {clear}");
+    l.selected = 1;
+    l.key(Key::Enter);
+    let (b, rows) = draw(&mut l, 100);
+    assert!(result_text(&rows, &b, 1).contains("Clear? ⏎"), "{}", snapshot(&rows));
+    assert!(!result_text(&rows, &b, 1).contains("Clear history"), "the question replaces the label");
+}
+
+#[test]
+fn the_history_help_lines() {
+    let l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
+    assert_eq!(help_text(&l), "enter copy · ctrl+enter pin · del forget · esc close");
+    let mut l = launcher();
+    l.clipboard = true;
+    typed(&mut l, "\"");
+    l.set_clips(vec![clip_row(1, "milk", "milk", 0, false)]);
+    assert_eq!(help_text(&l), "enter copy · ctrl+enter pin · del forget · esc close");
+}
+
+#[test]
+fn the_prefix_in_all_fills_the_panel_with_the_whole_preview() {
+    let mut l = launcher();
+    l.clipboard = true;
+    l.set_clips(vec![clip_row(1, "alpha beta gamma delta", "alpha", 3, false)]);
+    typed(&mut l, "\"");
+    let (b, rows) = draw(&mut l, 120);
+    assert!(b.preview_columns > 0);
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert!(lines.iter().any(|t| t.contains("alpha beta gamma delta")), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  copy") && lines.iter().any(|t| t == "ctrl+enter  pin"), "{lines:?}");
+    // The Clear row's panel says what it does.
+    l.selected = 1;
+    let (b, rows) = draw(&mut l, 120);
+    assert!(panel(&rows, &b).iter().any(|t| t.contains("enter  clear")), "{:?}", panel(&rows, &b));
+}
+
+#[test]
+fn the_clipboard_mode_has_its_placeholder_until_something_is_typed() {
+    let mut l = clip_box(vec![clip_row(1, "milk", "milk", 0, false)]);
+    let (b, rows) = draw(&mut l, 100);
+    let input = rows.rows[usize::from(b.list_top) - 2].text();
+    assert!(input.contains("type to filter the clipboard history"), "{input}");
+    typed(&mut l, "m");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(!rows.rows[usize::from(b.list_top) - 2].text().contains("type to filter"));
+}
+
+#[test]
+fn the_panel_wipes_its_text_temporaries_and_the_row_text_is_borrowed() {
+    let src = include_str!("../view.rs");
+    let render = src.split("pub fn render(").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+    assert!(render.contains("wipe(&mut cut)") && render.contains("wipe(text)"), "render must wipe the panel's temporaries");
+    let describe = src.split("fn describe(").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+    assert!(describe.contains("Cow::Borrowed(c.first.as_str())"), "a history row's text is borrowed, never cloned");
+}

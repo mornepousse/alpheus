@@ -15,6 +15,7 @@ pub mod calendar;
 pub mod calendar_app;
 pub mod camera_app;
 pub mod camera_dev;
+pub mod clipboard;
 pub mod clock;
 pub mod compositor;
 pub mod config;

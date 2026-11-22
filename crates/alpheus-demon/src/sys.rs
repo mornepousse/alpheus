@@ -3,6 +3,7 @@
 
 use std::ffi::CString;
 use std::io;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -21,6 +22,21 @@ pub fn poll(fds: &mut [libc::pollfd], timeout_ms: i32) -> io::Result<usize> {
             return Err(e);
         }
     }
+}
+
+/// Makes `fd` non-blocking (`fcntl(2)` `F_GETFL` then `F_SETFL | O_NONBLOCK`): a write to a full
+/// pipe or socket returns `WouldBlock` instead of stopping the loop.
+pub fn set_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
+    // SAFETY: `fd` is a live descriptor borrowed for the whole call; F_GETFL reads its flags only.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above; F_SETFL sets the status flags read just before, plus O_NONBLOCK.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// A filesystem's size in blocks (the unit cancels out in the percentage).
@@ -59,6 +75,30 @@ mod tests {
 
     fn watching(s: &UnixStream) -> libc::pollfd {
         libc::pollfd { fd: s.as_raw_fd(), events: libc::POLLIN, revents: 0 }
+    }
+
+    #[test]
+    fn set_nonblocking_makes_a_full_socket_return_would_block() {
+        use std::io::Write;
+        use std::os::fd::{AsFd, OwnedFd};
+        let (a, _b) = UnixStream::pair().unwrap();
+        let writer = OwnedFd::from(a);
+        set_nonblocking(writer.as_fd()).unwrap();
+        let mut file = std::fs::File::from(writer);
+        let chunk = [0u8; 4096];
+        // A blocking socket would stop here for good: a bounded loop ends in WouldBlock instead.
+        let mut blocked = false;
+        for _ in 0..100_000 {
+            match file.write(&chunk) {
+                Ok(n) => assert!(n > 0),
+                Err(e) => {
+                    assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+                    blocked = true;
+                    break;
+                }
+            }
+        }
+        assert!(blocked);
     }
 
     #[test]

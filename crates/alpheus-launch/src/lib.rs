@@ -36,7 +36,8 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
-                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes | --help]
+                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
+                      | --clipboard | --clipboard-clear | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -66,12 +67,14 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           start a Pomodoro or a stopwatch, pause, resume, toggle or stop the timer,
                           skip to a Pomodoro's next phase, open or close its popup
   --notes                 open or close the quick notepad (its text is kept in $XDG_STATE_HOME/alpheus/notes.txt)
+  --clipboard             open or close the clipboard history (with [clipboard] enabled in bar.toml)
+  --clipboard-clear       empty the clipboard history (pinned entries stay)
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-or timer module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes (restarted since the upgrade? until then, use another menu).
+or timer module not in bar.toml, or the clipboard history off in bar.toml or without a data-control protocol), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--clipboard/--clipboard-clear (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -97,6 +100,8 @@ pub enum Invocation {
     Windows,
     Timer(TimerVerb),
     Notes,
+    Clipboard,
+    ClipboardClear,
     Help,
 }
 
@@ -146,6 +151,8 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--calc" => choose(&mut mode, Invocation::Calc)?,
             "--windows" => choose(&mut mode, Invocation::Windows)?,
             "--notes" => choose(&mut mode, Invocation::Notes)?,
+            "--clipboard" => choose(&mut mode, Invocation::Clipboard)?,
+            "--clipboard-clear" => choose(&mut mode, Invocation::ClipboardClear)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -269,6 +276,8 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Windows => Request::Windows,
         Invocation::Timer(v) => Request::Timer(v),
         Invocation::Notes => Request::Notes,
+        Invocation::Clipboard => Request::Clipboard,
+        Invocation::ClipboardClear => Request::ClipboardClear,
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -368,7 +377,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --timer, --notes, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --help"
                 .into(),
         );
     }
@@ -471,7 +480,9 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Calc
             | Invocation::Windows
             | Invocation::Timer(_)
-            | Invocation::Notes),
+            | Invocation::Notes
+            | Invocation::Clipboard
+            | Invocation::ClipboardClear),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -527,6 +538,8 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Windows
             | Request::Timer(_)
             | Request::Notes
+            | Request::Clipboard
+            | Request::ClipboardClear
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert,
@@ -562,6 +575,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
+        Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
             Some(if matches!(end, DndEnd::For(_)) { "--dnd on --for" } else { "--dnd on --until" })
@@ -572,6 +586,13 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// What a daemon from before the clipboard history answers its two verbs (an unknown request,
+/// `socket::describe`): the refusal and the flag. Exit 3, as for the other verbs.
+const OLD_CLIPBOARD: [(&str, &str); 2] = [
+    ("malformed request: unknown request \"clipboard\"", "--clipboard"),
+    ("malformed request: unknown request \"clipboard-clear\"", "--clipboard-clear"),
+];
 
 /// A daemon older than `--index`/`--password`/`--visible` (an upgrade not followed by a restart) decodes
 /// only `dmenu <prompt> <len>`: the trailing flag words make the whole header an unknown request,
@@ -655,6 +676,8 @@ mod tests {
         assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
         assert_eq!(parse_args(&args(&["--windows"])), Ok(Invocation::Windows));
         assert_eq!(parse_args(&args(&["--notes"])), Ok(Invocation::Notes));
+        assert_eq!(parse_args(&args(&["--clipboard"])), Ok(Invocation::Clipboard));
+        assert_eq!(parse_args(&args(&["--clipboard-clear"])), Ok(Invocation::ClipboardClear));
         assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
         assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
         assert_eq!(parse_args(&args(&["--quick", "wifi"])), Ok(Invocation::Quick(QuickVerb::Wifi)));
@@ -716,9 +739,11 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
-            (&["--calc", "--toggle"], "--quick, --calc, --windows, --timer, --notes, --help"),
+            (&["--calc", "--toggle"], "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --help"),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
+            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --help"),
+            (&["--clipboard-clear", "--clipboard"], "only one of"),
             (&["--quick", "sound", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--help", "--dmenu"], "only one of"),
             (&["--dmenu", "--prompt"], "needs a value"),
@@ -850,6 +875,25 @@ mod tests {
         assert!(String::from_utf8_lossy(&err).contains("--notes"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
         assert_eq!(reply_to_exit(&Request::Notes, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+    }
+
+    /// A daemon from before the clipboard verbs refuses each as an unknown request: exit 3, naming
+    /// the flag; a current daemon's error (the history is off) stays exit 2.
+    #[test]
+    fn a_daemon_without_clipboard_is_too_old() {
+        for (request, word, flag) in
+            [(Request::Clipboard, "clipboard", "--clipboard"), (Request::ClipboardClear, "clipboard-clear", "--clipboard-clear")]
+        {
+            let refusal = format!("malformed request: unknown request \"{word}\"");
+            let mut err = Vec::new();
+            assert_eq!(reply_to_exit(&request, Reply::Error(refusal), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+            assert!(String::from_utf8_lossy(&err).contains(flag), "{}", String::from_utf8_lossy(&err));
+            let mut err = Vec::new();
+            let off = "the clipboard history is off ([clipboard] enabled in bar.toml)";
+            assert_eq!(reply_to_exit(&request, Reply::Error(off.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+            assert!(String::from_utf8_lossy(&err).contains(off));
+            assert_eq!(reply_to_exit(&request, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
+        }
     }
 
     /// An upgrade not followed by a restart: a daemon that never heard of the displays verbs

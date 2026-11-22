@@ -316,6 +316,8 @@ impl App {
             | Request::Quick(_)
             | Request::Timer(_)
             | Request::Notes
+            | Request::Clipboard
+            | Request::ClipboardClear
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
