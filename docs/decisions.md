@@ -240,3 +240,27 @@ is missing. The hook therefore never dies with the bar, and a restart of the bar
 The choice is made once at start. alpheus never waits for a hook, reads its output or kills it.
 
 Date: 2026-11-15 · Source: hooks spec § 3; hooks plan 1, decision 11
+
+### The calendar is written in English, like the clock
+
+The month title (`October 2026`) and the weekday initials (`Mo Tu We`) are in English, as the
+clock's text is.
+
+Date: 2026-10-05 · Source: tray plan 2, decision 3
+
+### The calendar's first day comes from the locale, read at each open
+
+The first day of the week is the locale's `LC_TIME` setting. The `C` and `POSIX` locales, or a
+locale that cannot be read, give Monday (ISO 8601). The locale is read each time the calendar
+opens, through `newlocale`, `nl_langinfo_l` and `freelocale`: this is thread-safe, changes no
+global locale, and nothing is kept while the calendar is closed.
+
+Date: 2026-10-05 · Source: tray plan 2, decisions 4 and 11; tray spec "Calendar"
+
+### Calendar week numbers are ISO 8601
+
+When `[clock] week_numbers` is on, the numbers are ISO 8601 weeks. In a calendar whose week starts
+on Sunday, a row shows the ISO week of its Monday. A sixth row with no day of the month shows no
+number.
+
+Date: 2026-10-05 · Source: tray plan 2, decision 5 and "Controller reconciliation"
