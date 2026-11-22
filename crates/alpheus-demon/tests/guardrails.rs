@@ -2323,15 +2323,22 @@ fn the_notification_server_has_no_panicking_path() {
     assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");
 }
 
+/// The OSD's three files, each checked by the guardrails below; every entry must name a file
+/// (`unmatched_entries`), so a rename cannot take one out of the checks in silence.
+const OSD_FILES: &[&str] = &["osd/mod.rs", "osd/surface.rs", "backlight.rs"];
+
 /// OSD spec § 2 and its guardrails: the OSD reads sysfs and shows, nothing else. Its three files
 /// write no file, create nothing, change no permission, make no raw system call (no `libc::`, no
 /// `unsafe`), and, through `NO_THREAD_NOR_COMMAND`, run no command. Production code only.
 #[test]
 fn the_osd_only_reads() {
+    let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
+    let unmatched = unmatched_entries(OSD_FILES, &names);
+    assert!(unmatched.is_empty(), "OSD_FILES names no existing file: {unmatched:?}");
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["osd/mod.rs", "osd/surface.rs", "backlight.rs"].contains(&name.as_str()) {
+        if !OSD_FILES.contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -2352,7 +2359,7 @@ fn the_osd_only_reads() {
             assert!(!prod.contains(never), "{never} in {name}: the OSD only reads");
         }
     }
-    assert_eq!(checked, 3, "osd.rs, osd_surface.rs and backlight.rs");
+    assert_eq!(checked, 3, "osd/mod.rs, osd/surface.rs and backlight.rs");
 }
 
 /// No panic in the OSD's production code (spec § 5): with its tests left out, each file has no
@@ -2360,7 +2367,10 @@ fn the_osd_only_reads() {
 #[test]
 fn the_osd_has_no_panicking_path() {
     let files = source_files();
-    for name in ["osd/mod.rs", "osd/surface.rs", "backlight.rs"] {
+    let names: Vec<String> = files.iter().map(|(p, _)| relative_path(p)).collect();
+    let unmatched = unmatched_entries(OSD_FILES, &names);
+    assert!(unmatched.is_empty(), "OSD_FILES names no existing file: {unmatched:?}");
+    for &name in OSD_FILES {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
