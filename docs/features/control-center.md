@@ -1,7 +1,7 @@
 # The control center
 
 `alpheus` is the terminal control center: a ratatui program with eight tabs (Home, Sound, Network,
-Bluetooth, Power, Displays, Theme, Diag). This page is written one tab at a time, in the order the
+Bluetooth (BT), Power, Displays, Theme, Diag). This page is written one tab at a time, in the order the
 tabs are brought to the house standard (`docs/STYLE.md`); today it holds the Sound tab, the first
 one done. The tabs that are not described here yet are described in the README's control center
 section.
@@ -34,7 +34,7 @@ input. A node's name comes from `wpctl status`. While the audio data is loading 
    [ Per-app mixer ]
 ```
 
-(The classic layout, in a window smaller than 84 columns by 26 rows. From that size the tab is
+(The classic layout, in a window narrower than 84 columns or shorter than 26 rows. From that size the tab is
 drawn with the rail: a blue hue for its headings and gauges, the focused row as a band, and a
 knob on each gauge. The items and their order are the same.)
 
@@ -43,10 +43,11 @@ knob on each gauge. The items and their order are the same.)
 | Key (default) | What it does |
 | --- | --- |
 | ↑ ↓ | move to the previous or next item |
+| ← → | lower or raise the volume of the focused node, like `-` and `+` |
 | Enter | on an output or an input: make it the default; on the button: open the mixer |
 | `-` `+` | lower or raise the volume of the focused node by 5 points |
 | `/` or Ctrl+F | search: only the nodes whose name matches the text are listed (a fuzzy match) |
-| Esc | clear the search |
+| Esc | clear the search; with an empty search, go back to Home |
 | F5 | read the audio data again |
 
 With the mouse: a click on a row selects it and makes it the default (the same as Enter); a click
@@ -54,13 +55,15 @@ or a drag on a gauge sets the volume; the wheel over a gauge changes it by 5 poi
 elsewhere moves the focus; a click on the button opens the mixer.
 
 Two rules about the volume. It is never sent above 100 %: `wpctl` is called with `-l 1.0`. And a
-node already above 100 % (another program can set it) is not lowered by `+`; going down from there
-works. After a volume change the tab is not read again: the value shown is already the new one,
+node already above 100 % (wpctl allows it) is not lowered by `+`: a requested increase would be
+clamped to 100 and would lower the sound (a comment in `App::set_slider`). The first `-` brings it
+to 100 % (`set_slider` clamps; `volume_above_100_is_never_lowered_by_plus`). After a successful
+volume change the tab is not read again: the value shown is already the new one,
 and a read in the middle of a drag would make the slider jump (a comment in `App::op_done`).
 
 The **Per-app mixer** button opens the program set under `[commands] mixer` in `config.toml`
 (default `wiremix`) in alpheus's own window. The other keys (the number keys for the tabs, Ctrl+P
-for the palette) are the same on every tab, and `[keys.bindings]` renames any of them.
+for the palette) are the same on every tab, and `[keys.bindings]` assigns other keys to any of them.
 
 ### Configuration
 
@@ -90,13 +93,15 @@ Two files, one per layer, and the tab's row in `app/tab.rs`.
 **Refresh.** Only the visible tab is read (`docs/specs/2026-10-02-alpheus-v1-design.md`, § 3:
 nothing runs in the background and nothing runs when the window is closed). `App::on_tick` asks
 the worker for `Domain::Audio` once the tab's period has passed; a failing read is tried again at
-most every 15 seconds.
+most every 15 seconds (a broken tool must not be relaunched every second: a comment in
+`App::on_tick`).
 
 **The path of one change**, choosing another output as the default:
 
 1. Enter, or a click, reaches `App::activate`, which sees the focused item is a
    `SliderId::Node` and calls `set_default` (`app/sound.rs`).
-2. `set_default` marks the node as default in its own list at once, then calls `send_op` with
+2. `set_default` marks the node as default in its own list at once (when the audio data is
+   loaded and holds the id), then calls `send_op` with
    `Op::SetDefault(id)`. `send_op` notes that `Domain::Audio` and `Domain::Volume` have a change in
    flight and leaves a `Request::Do` in the box the real loop empties.
 3. The worker thread runs `wpctl set-default <id>` (`WpctlSound::set_default`), through the
@@ -112,11 +117,12 @@ most every 15 seconds.
   kept inside the list.
 - `items_per_tab` (`app/tests.rs`): the order of the items, with the mixer button last.
 - `volume_above_100_is_never_lowered_by_plus` (`app/tests.rs`).
-- `sound_tab` (`ui/tests.rs`): the rows, the clickable regions and the hint on the status line.
-- `sound_tab` (`ui/sound/tests.rs`, its snapshot in `ui/sound/snapshots/`): the whole 80 by 24
-  screen.
-- `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): `wpctl` is on the list of
-  programs the control center may run, and no test runs the real one (they use the fake executor).
+- `the_sound_tab_shows_both_lists_the_mixer_button_and_its_hints` (`ui/tests.rs`): the rows, the clickable regions and the hint on the status line.
+- `the_sound_tab_at_80_by_24_matches_its_snapshot` (`ui/sound/tests.rs`, its snapshot in
+  `ui/sound/snapshots/`): the whole 80 by 24 screen.
+- `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
+  run is on the allowed list, `wpctl` included. That no test runs the real tool is CLAUDE.md's rule
+  ("Never a real call in tests": the tests use the fake executor).
 
 ### What it costs
 

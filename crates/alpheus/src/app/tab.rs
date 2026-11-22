@@ -2,7 +2,8 @@
 //! tab order. To add a tab: add its `Tab` variant (action.rs) and one row
 //! here (a test checks there is exactly one, in variant order), then its
 //! items (`App::items`), its view (`ui/tabs.rs`) and its shortcut hints
-//! (`ui/mod.rs`), which are code, not data.
+//! (`ui/mod.rs`), which are code, not data. A tab's own code goes in `app/<tab>.rs` and
+//! `ui/<tab>.rs` (Sound is the first).
 
 use super::action::Tab;
 use super::worker::Domain;

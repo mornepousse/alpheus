@@ -74,7 +74,7 @@ fn loading_and_failure() {
 }
 
 #[test]
-fn sound_tab() {
+fn the_sound_tab_shows_both_lists_the_mixer_button_and_its_hints() {
     let mut a = ready_app();
     a.go_tab(Tab::Sound, Instant::now());
     let (rows, hits) = draw(&a, 80, 24);

@@ -1,9 +1,8 @@
 //! The Sound tab's rows and its shortcut hints.
 //!
-//! `tabs::render` draws the rows this file lists (a heading, then the nodes or a one-word state,
-//! for the outputs and then the inputs, then the mixer button); the items themselves come from
-//! `app/sound.rs`, and a row is drawn by the shared item drawing in `tabs.rs`, like the rows of
-//! the Home, Network and Bluetooth tabs.
+//! `tabs::render` draws the rows this file lists; the items themselves come from
+//! `app/sound.rs`, and a row is drawn by the shared item drawing in `tabs.rs`, like the other item
+//! tabs.
 //!
 //! Never:
 //! - change the state: everything here reads the `App` and fills a list of rows;
@@ -21,11 +20,11 @@ use crate::app::{App, Item, Loadable};
 /// Adds the Sound tab's rows to `rows`: "Outputs" and "Inputs", each followed by its nodes, and
 /// the mixer button at the end.
 ///
-/// `items` is `app/sound.rs`'s list: the outputs, then the inputs, then the button, and `i`
-/// counts through the nodes in that order. A list that has not loaded shows `…`, a failed read
-/// shows its error, and an empty one shows `none`.
+/// A list that has not loaded shows `…`, a failed read shows its error, and an empty one shows
+/// `none`.
 pub(super) fn rows(app: &App, items: &[Item], rows: &mut Vec<Row>) {
     let (sinks, sources) = app.visible_nodes();
+    // `i` counts through the nodes in the order of `sound::items`.
     let mut i = 0;
     for (title, count) in [("Outputs", sinks.len()), ("Inputs", sources.len())] {
         rows.push(Row::Heading(title));
@@ -42,9 +41,8 @@ pub(super) fn rows(app: &App, items: &[Item], rows: &mut Vec<Row>) {
         }
         rows.push(Row::Blank);
     }
-    // The "Per-app mixer" button is always the last item of the
-    // Sound tab (App::items()); subtraction is guarded so the
-    // render never panics even if that invariant were to change.
+    // The button is the last item (`sound::items`); the subtraction is guarded so the render
+    // never panics even if that were to change.
     rows.push(Row::Item(items.len().saturating_sub(1)));
 }
 
