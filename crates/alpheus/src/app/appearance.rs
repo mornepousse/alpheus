@@ -1,8 +1,21 @@
-//! The Appearance tab: choose a theme, the light/dark mode, the module colours and the bar style,
-//! preview them, write theme.toml.
-//! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor only changes
-//! the preview; Enter writes (`crate::theme_file::write_settings`) and reloads the TUI's own theme.
-//! The daemon follows through its inotify reload; the TUI never touches D-Bus.
+//! The Appearance tab's state and logic: the theme list, the light/dark mode, the module colours and
+//! the bar style, their preview, and the write of `theme.toml`.
+//!
+//! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor or a chip only
+//! changes the preview; Enter (or a click on a chip, which applies at once) writes the settings with
+//! `crate::theme_file::write_settings` and reloads the TUI's own theme. The daemon follows by its
+//! own reload of the file (an inotify watch).
+//!
+//! Never:
+//! - touch D-Bus: the tab reads the mode the daemon publishes in `$XDG_RUNTIME_DIR` instead (themes
+//!   spec § 2: "the TUI never uses D-Bus");
+//! - write anything but `theme.toml`'s keys (`theme`, `mode`, `module_colors`, `style`): a setting
+//!   the user left alone is not written, and a failed write changes nothing but the status line;
+//! - draw anything: `ui/appearance.rs` draws the tab from this state.
+//!
+//! See: docs/specs/2026-10-07-alpheus-themes-design.md (§ 2, files and settings; § 9, module
+//! colours), docs/specs/2026-10-07-alpheus-shapes-design.md (§ 4, the Style row),
+//! docs/features/control-center.md.
 
 use super::action::Action;
 use super::{App, Item};
@@ -21,6 +34,7 @@ pub(super) fn items() -> Vec<Item> {
     Vec::new()
 }
 
+/// How a mode setting reads on its chip.
 pub fn mode_label(m: ModeSetting) -> &'static str {
     match m {
         ModeSetting::Auto => "Auto",
@@ -29,6 +43,7 @@ pub fn mode_label(m: ModeSetting) -> &'static str {
     }
 }
 
+/// How a module-colours setting reads on its chip.
 pub fn colors_label(m: ModuleColors) -> &'static str {
     match m {
         ModuleColors::None => "None",
@@ -42,6 +57,7 @@ pub fn colors_label(m: ModuleColors) -> &'static str {
 /// `BarStyle::name()`: no second table to keep in step.
 pub const STYLES: [BarStyle; 6] = BarStyle::ALL;
 
+/// How a bar style reads on its chip.
 pub fn style_label(s: BarStyle) -> &'static str {
     match s {
         BarStyle::Flat => "Flat",
@@ -83,6 +99,8 @@ impl Focus {
     }
 }
 
+/// The tab's state: the theme list and its cursor, the settings chosen (previewed) and the ones in
+/// effect (what `theme.toml` says), and the preview's roles. Empty until the tab is first shown.
 pub struct AppearanceTab {
     /// The config directory (theme.toml, colors.toml); None: nothing can be written.
     pub dir: Option<PathBuf>,
@@ -150,6 +168,7 @@ impl AppearanceTab {
         effective_mode(self.mode, Some(self.auto_mode))
     }
 
+    /// The theme under the cursor, if the list has been read.
     pub fn cursor_entry(&self) -> Option<&Entry> {
         self.entries.get(self.cursor)
     }
@@ -168,7 +187,12 @@ impl AppearanceTab {
             ..ThemeSettings::default()
         };
         if entry.key == WALLPAPER {
-            if self.wallpaper.as_ref().is_none_or(|(m, ..)| *m != mode) {
+            // The wallpaper's colour files are read again only when the mode they are read for changes.
+            let up_to_date = match &self.wallpaper {
+                Some((m, ..)) => *m == mode,
+                None => false,
+            };
+            if !up_to_date {
                 let (roles, warnings) = resolve(&settings(ThemeSource::Wallpaper), mode, &dir);
                 self.wallpaper = Some((mode, roles, warnings.into_iter().next()));
             }
@@ -360,10 +384,13 @@ struct Dirty {
 impl Dirty {
     /// The `(key, value)` lines to write, in theme.toml's order.
     fn keys(&self) -> Vec<(&'static str, &'static str)> {
-        [("theme", self.theme), ("mode", self.mode), ("module_colors", self.colors), ("style", self.style)]
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|v| (key, v)))
-            .collect()
+        let mut lines = Vec::new();
+        for (key, value) in [("theme", self.theme), ("mode", self.mode), ("module_colors", self.colors), ("style", self.style)] {
+            if let Some(value) = value {
+                lines.push((key, value));
+            }
+        }
+        lines
     }
 
     /// The toast and status line after a successful write of `entry`.
@@ -382,13 +409,20 @@ impl Dirty {
 impl AppearanceTab {
     /// Which settings Enter would write, `entry` being the row under the cursor.
     fn dirty(&self, entry: Entry) -> Dirty {
-        let on_list = self.focus == Focus::List;
-        Dirty {
-            theme: (on_list || self.applied != Some(self.cursor)).then_some(entry.key),
-            mode: (self.focus == Focus::Mode || self.mode != self.applied_mode).then(|| self.mode.name()),
-            colors: (self.focus == Focus::Colors || self.module_colors != self.applied_module_colors).then(|| self.module_colors.name()),
-            style: (self.focus == Focus::Style || self.style != self.applied_style).then(|| self.style.name()),
+        let mut dirty = Dirty { theme: None, mode: None, colors: None, style: None };
+        if self.focus == Focus::List || self.applied != Some(self.cursor) {
+            dirty.theme = Some(entry.key);
         }
+        if self.focus == Focus::Mode || self.mode != self.applied_mode {
+            dirty.mode = Some(self.mode.name());
+        }
+        if self.focus == Focus::Colors || self.module_colors != self.applied_module_colors {
+            dirty.colors = Some(self.module_colors.name());
+        }
+        if self.focus == Focus::Style || self.style != self.applied_style {
+            dirty.style = Some(self.style.name());
+        }
+        dirty
     }
 
     /// The write succeeded: what was chosen is now what is in effect.

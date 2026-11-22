@@ -1,3 +1,7 @@
+//! Tests of the Theme tab's drawing (`ui/appearance.rs`): the list, the three chip rows with their
+//! clickable regions, the preview of each style and module-colours setting, how the mini bar gives
+//! way in a narrow window, and the tab's screens as snapshots.
+
 use super::super::testing::draw;
 use super::*;
 use crate::app::action::{Action, Tab};
@@ -45,7 +49,7 @@ fn goto(a: &mut crate::app::App, key: &str) {
 }
 
 #[test]
-fn dark_preset_under_the_cursor() {
+fn a_dark_preset_under_the_cursor_is_previewed_in_dark() {
     let (mut a, _dir) = open("snap-dark", &[("theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\n")]);
     goto(&mut a, "tokyo-night");
     insta::assert_snapshot!("appearance_dark", draw(&a, 100, 24).0.join("\n"));
@@ -440,7 +444,7 @@ fn under_flat_pills_previews_like_full() {
 }
 
 #[test]
-fn each_style_snapshot() {
+fn every_style_preview_matches_its_snapshot() {
     for style in ["flat", "islands", "powerline", "floating", "underline", "translucent"] {
         let a = styled(&format!("snap-{style}"), style, "icons");
         let rows = draw(&a, 100, 24).0;
@@ -525,7 +529,7 @@ fn the_underline_rule_follows_the_active_workspace_run() {
 }
 
 #[test]
-fn each_block_style_snapshot_at_80_columns() {
+fn every_block_style_preview_at_80_columns_matches_its_snapshot() {
     for style in ["islands", "powerline"] {
         let a = styled(&format!("snap80-{style}"), style, "icons");
         let rows = draw(&a, 80, 24).0;

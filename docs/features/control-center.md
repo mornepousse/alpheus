@@ -686,3 +686,107 @@ The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `
 One read of the daemon's model, answered from its memory, every 2 seconds while the tab is shown, and
 nothing otherwise (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`). The daemon's own
 costs (the trial's one timer, the hotplug debounce) are in the README's component table.
+
+## Theme
+
+### What it does
+
+The Theme tab (the seventh; `--tab theme`, or `--tab appearance`) chooses how alpheus looks, for the
+control center and for the bar, and writes the choice to `theme.toml`. It has a **list of themes**
+(the wallpaper's colours, then the 15 presets; a `●` marks the one in effect, `dark only` the
+presets with no light variant), a **preview** of the theme under the cursor (a mini bar in the chosen
+style and a mini menu, drawn with that theme's own colours), and three rows of chips under the list:
+**Mode** (`Auto`, `Dark`, `Light`), **Module colours** (`None`, `Icons`, `Full`, `Pills`) and
+**Style** (`Flat`, `Islands`, `Powerline`, `Floating`, `Underline`, `Translucent`).
+
+Moving the cursor or a chip changes the preview and nothing else. Applying writes `theme.toml`,
+reloads the control center's own theme at once, and the daemon, which watches the file, reloads the
+bar, the popups and the launcher with no restart.
+
+```
+ Theme
+ ❯ ● Catppuccin     Preview — Catppuccin, dark
+     Tokyo Night    ┌──────────────────────────────────────┐
+     Gruvbox        │ 1  2  3! notes.md      ♪ 84% ≈ ▮ 15% │
+     ...            └──────────────────────────────────────┘
+ Mode             Auto  Dark  Light
+ Module colours   None  Icons  Full  Pills
+ Style            Flat  Islands  Powerline  Floating  Underline  Translucent
+```
+
+(Sketch of the layout; the real one has the 16 themes and a mini menu under the mini bar. The
+preview is dropped when the body is too narrow for it.)
+
+### Using it
+
+| Key (default) | What it does |
+| --- | --- |
+| ↑ ↓ | in the list: move the cursor; past the last theme: onto the chip rows, one row at a time |
+| PgUp PgDn Home End | in the list: move by 5, or to the first or last theme |
+| ← → or `-` `+` | on a chip row: the previous or next value (previewed, not written) |
+| Enter | write `theme.toml` (see below) |
+
+What Enter writes: the **theme** when the list has the focus or when the cursor is not on the theme
+in effect; the **mode**, the **module colours** and the **style** each when their row has the focus or
+when the chosen value differs from the one in effect. A setting left alone is not written. The status
+line then reads `Theme: <name>, <mode>` and, if they were written, `, module colours <x>` and
+`, style <x>`. Walking down past the last theme puts the cursor back on the theme in effect, so Enter
+on a chip row applies that row and not a theme the cursor only passed over.
+
+With the mouse: a click on a theme selects it and a click on the one already under the cursor applies
+it; a click on a chip applies that value at once (the mode, the module colours or the style).
+
+### Configuration
+
+The tab reads and writes `theme.toml` in the config directory (`theme`, `mode`, `module_colors`,
+`style`, written by the same safe `set_keys` as the spec says; the file's other keys, such as `opacity`
+and the `[colors]` overrides, are not part of what the tab writes, and the overrides are applied in the
+preview), and
+reads `colors.toml` for the wallpaper theme. In mode `Auto` the preview follows the mode the daemon
+publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running). The themes, their
+roles and the styles are described in the README and in the themes and shapes specs.
+
+### How it is built
+
+- `app/appearance.rs`: the state (`AppearanceTab`), what the tab reads when it opens
+  (`appearance_open`), its keys (`appearance_action`), its clicks (`appearance_click_*`) and the write
+  (`appearance_apply`, with `Dirty` saying which settings to write). The roles to preview are resolved
+  by `refresh_preview`; presets read nothing and the wallpaper's files are read once per mode.
+- `ui/appearance.rs`: `render` (the list, the chip rows and their regions), `hints`, and the preview
+  (`mini_bar` for the flat line, `mini_blocks` for the other five styles, `mini_menu`).
+- `app/tab.rs`: the tab's row says it is not searchable, that it is never read on a timer (no domain,
+  no period: nothing is computed until it is shown) and that its label column is 20 cells wide.
+
+**The path of one change**, choosing `Islands`:
+
+1. A click on the `Islands` chip reaches `appearance_click_style`, which sets the style and calls
+   `appearance_apply`.
+2. `appearance_apply` asks `dirty` which settings to write (the style, because its row has the focus),
+   and `write_settings` updates `theme.toml`; a failed write sets one status line and changes nothing.
+3. On success `commit` makes what was chosen the setting in effect, and the control center reloads
+   its theme (`Theme::load`), so the next draw already shows the new style.
+4. The daemon sees the file change through its inotify watch and repaints the bar.
+
+### Rules it keeps
+
+- `nothing_is_computed_until_the_tab_is_shown`, `it_opens_on_the_theme_in_effect` (`app/appearance/tests.rs`):
+  the tab reads nothing before it is shown, and opens on what is in effect.
+- `enter_in_the_list_also_applies_a_mode_that_was_chosen`,
+  `enter_in_the_list_also_applies_module_colours_that_were_chosen`,
+  `enter_on_a_setting_row_also_applies_a_theme_the_cursor_moved_to` and
+  `a_failed_write_is_one_status_line_and_changes_nothing_else`: exactly what Enter writes.
+- `the_wallpaper_is_read_once_per_mode_not_per_move`: the wallpaper's files are not read on each move.
+- `the_style_row_is_drawn_under_the_colours_with_six_values_and_regions`,
+  `the_module_colours_row_is_drawn_with_its_four_values_and_regions` and
+  `short_terminals_scroll_the_list_and_never_expose_a_hidden_hit` (`ui/appearance/tests.rs`): the rows,
+  their regions, and no clickable region outside what is drawn.
+- `every_style_preview_matches_its_snapshot`, `every_block_style_preview_at_80_columns_matches_its_snapshot`
+  and `the_appearance_tab_at_80_by_24_matches_its_snapshot` (snapshots in `ui/appearance/snapshots/`):
+  the six styles' previews and the tab's whole screen.
+- `the_title_gives_way_first_then_the_clock_then_the_modules` and
+  `a_multibyte_title_is_shortened_by_characters`: how the mini bar gives way in a narrow preview.
+
+### What it costs
+
+Nothing until the tab is shown; then one read of `theme.toml` and the mode file, and the wallpaper's
+colour file for the mode in use, once. Presets are compiled in. Nothing runs on a timer.

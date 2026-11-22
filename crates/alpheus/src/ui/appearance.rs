@@ -1,7 +1,21 @@
-//! The Appearance tab: the theme list on the left, the preview of the theme under the cursor on
-//! the right (a mini bar in the chosen style and a mini menu, drawn with the previewed theme's own
-//! roles), and the mode, module-colours and style rows below. Everything is cells; nothing here
-//! reads a file.
+//! The Theme tab's drawing: the theme list on the left, the preview of the theme under the cursor on
+//! the right, and the mode, module-colours and style rows below.
+//!
+//! The preview is a mini bar in the chosen style and a mini menu, drawn in cells with the previewed
+//! theme's own roles: `mini_bar` for the flat line, `mini_blocks` for the other five styles (the
+//! blocks, rounded ends, powerline arrows and underline are approximated with cell backgrounds and
+//! half-block characters), `mini_menu` for the menu. `tabs::render` calls `render` for this tab, and
+//! `hints` gives the status line's keys.
+//!
+//! Never:
+//! - change the state or read a file: everything here reads the `App` (the roles to preview are
+//!   already resolved in `AppearanceTab::preview`);
+//! - draw outside `body`: every `put` is clipped to it, and a region that is clickable is clipped
+//!   to it too.
+//!
+//! See: docs/specs/2026-10-07-alpheus-themes-design.md (§ 9, module colours),
+//! docs/specs/2026-10-07-alpheus-shapes-design.md (§ 4, the preview approximated in cells),
+//! docs/features/control-center.md.
 
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
@@ -44,6 +58,9 @@ const TAG_X: u16 = 18;
 /// Inner width of the mini menu.
 const MENU_W: u16 = 12;
 
+/// Draws the tab in `body`: the list (scrolled to keep the cursor in view), the three chip rows, and
+/// the preview beside the list when there is room for it. Each theme, chip and style adds its
+/// clickable region to `hits`.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let ap = &app.appearance;
@@ -276,9 +293,9 @@ fn on_hue(p: &Roles, hue: Rgb) -> Rgb {
 /// A block's background under `style`; None where the bar's own background shows. `i` is the
 /// block's index over the blocks shown on both sides (0: the workspaces), for powerline's
 /// alternation: as the daemon's, `pill_bg` at an even distance from the workspaces, `raised` at an
-/// odd one (Mae, 2026-10-08), so the workspaces are on `pill_bg` and neighbours differ.
+/// odd one (ruling of 2026-10-08, CLAUDE.md, Themes delivery 2), so the workspaces are on `pill_bg` and neighbours differ.
 fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -> Option<Rgb> {
-    let pill = (colors == ModuleColors::Pills).then(|| b.hue.unwrap_or(p.pill_bg));
+    let pill = if colors == ModuleColors::Pills { Some(b.hue.unwrap_or(p.pill_bg)) } else { None };
     match style {
         BarStyle::Flat => None,
         BarStyle::Underline => Some(p.pill_bg),
@@ -334,7 +351,11 @@ fn fit(left: &mut Vec<Block>, right: &mut Vec<Block>, width: u16, powerline: boo
     if fits(left, right) {
         return;
     }
-    if let Some(full) = left.get(TITLE).and_then(|b| b.runs.first()).map(|r| r.text) {
+    let title = match left.get(TITLE) {
+        Some(block) => block.runs.first().map(|run| run.text),
+        None => None,
+    };
+    if let Some(full) = title {
         // Cut at character boundaries (a block's width counts characters): never inside one.
         let cuts: Vec<usize> = full.char_indices().map(|(i, _)| i).skip(TITLE_MIN).collect();
         for &k in cuts.iter().rev() {
@@ -362,7 +383,7 @@ fn fit(left: &mut Vec<Block>, right: &mut Vec<Block>, width: u16, powerline: boo
 ///   there. `translucent` cannot blend in cells: its bar is drawn on `bar_bg`.
 fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColors, style: BarStyle) {
     let hole = matches!(style, BarStyle::Islands | BarStyle::Floating);
-    let bar = (!hole).then_some(p.bar_bg);
+    let bar = if hole { None } else { Some(p.bar_bg) };
     frame(buf, clip, r, on(Style::default().fg(color(p.fg)), bar), on(Style::default().fg(color(p.border_over(p.bar_bg))), bar));
     if r.width < 4 || r.height < 3 {
         return;
@@ -388,7 +409,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     // (spec § 1), which `blocks` already gives its runs.
     let pills = colors == ModuleColors::Pills && style != BarStyle::Underline;
     // One block: lead cell, runs, trail cell; returns the x after it.
-    // Underline: the active workspace has no fill, its text is accent (Mae, 2026-10-08).
+    // Underline: the active workspace has no fill, its text is accent (ruling of 2026-10-08, CLAUDE.md, Themes delivery 2).
     let underline = style == BarStyle::Underline;
     let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>| -> u16 {
         let end = |glyph: &'static str| match (rounded, f) {

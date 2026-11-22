@@ -409,7 +409,7 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
     let r = if th.shape == Shape::Float { Rect::new(r.x, r.y, r.width - 1, r.height - 1) } else { r };
     // The focus: a frame in the hue around the tile's edge, on the page's background so it shows on
     // a filled tile too.
-    // A 3-row tile (floating, in Mae's window) has no room for a bottom edge and a state row: its frame
+    // A 3-row tile (floating, in the 87 by 26 window) has no room for a bottom edge and a state row: its frame
     // stays open at the bottom so the glyph, name or state row is kept.
     let open = r.height < 4;
     if focused {
@@ -458,7 +458,7 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
             put(buf, r, r.right().saturating_sub(9), r.bottom() - 2, sw, sstyle);
         }
     } else {
-        // Narrow: the label alone on its row (so "Do not disturb" stays whole in Mae's window), then
+        // Narrow: the label alone on its row (so "Do not disturb" stays whole in the 87 by 26 window), then
         // the glyph and what is on, or the state.
         let x = r.x + 1;
         put(buf, r, x, y, &truncate(label, usize::from(r.width.saturating_sub(2))), label_style);

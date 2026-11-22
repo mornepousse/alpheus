@@ -1,3 +1,7 @@
+//! Tests of the Theme tab's logic (`app/appearance.rs`): what the tab reads when it opens, what a
+//! cursor move or a chip changes (the preview only), and exactly what Enter writes to `theme.toml`.
+//! Each test uses its own temporary config directory.
+
 use super::super::action::Tab;
 use super::super::testing::*;
 use super::*;
@@ -296,6 +300,26 @@ fn enter_in_the_list_also_applies_a_mode_that_was_chosen() {
     a.appearance.focus = Focus::List;
     act(&mut a, Action::Activate);
     assert_eq!(theme_toml(&dir), "theme = \"catppuccin\"\nmode = \"dark\"\n");
+}
+
+#[test]
+fn enter_in_the_list_also_applies_module_colours_that_were_chosen() {
+    let (mut a, dir) = open("both-colors", &[]);
+    a.appearance.focus = Focus::Colors;
+    act(&mut a, Action::Right); // Icons -> Full
+    a.appearance.focus = Focus::List;
+    act(&mut a, Action::Activate);
+    assert_eq!(theme_toml(&dir), "theme = \"catppuccin\"\nmodule_colors = \"full\"\n");
+}
+
+#[test]
+fn enter_on_a_setting_row_also_applies_a_theme_the_cursor_moved_to() {
+    let (mut a, dir) = open("both-theme", &[]);
+    act(&mut a, Action::Down); // the cursor leaves the theme in effect
+    let moved_to = a.appearance.cursor_entry().unwrap().key;
+    a.appearance.focus = Focus::Mode;
+    act(&mut a, Action::Activate);
+    assert_eq!(theme_toml(&dir), format!("theme = \"{moved_to}\"\nmode = \"auto\"\n"));
 }
 
 #[test]
