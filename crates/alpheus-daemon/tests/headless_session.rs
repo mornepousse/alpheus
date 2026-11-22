@@ -5894,6 +5894,7 @@ fn resources_escape_closes_and_right_click_runs_the_monitor() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
     assert!(recorded(&sway, "fake-monitor").is_empty(), "the left click ran nothing");
+    assert_eq!(d.count("resources: monitor"), 0, "nor logged the monitor entry: {:?}", d.log());
     sway.click(POWER_AT.0, POWER_AT.1, "button3");
     assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
     thread::sleep(Duration::from_millis(500));

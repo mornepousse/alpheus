@@ -75,14 +75,15 @@ fn each_item_scales_to_permille_and_the_edges_never_overflow_or_divide_by_zero()
     assert_eq!(series(Net, &half)[1][HISTORY - 1], Some(500), "both over the one top");
 }
 
-/// A pass with no net reading (no route for a moment) is skipped, not the end of the search: the
-/// network's top still counts the samples on both sides of it.
+/// A pass with no net reading (no route for a moment) is skipped: the search neither stops there
+/// (the second case, where the highest comes after the gap) nor starts over there (the first, where
+/// the highest comes before it and lower samples follow).
 #[test]
 fn the_network_top_skips_a_sample_with_no_reading_and_goes_on() {
     let rate = |down: u64, up: u64| Sample { net: Some(NetRate { down, up }), ..Sample::default() };
     let h =
         resources_with_history(&[rate(NET_FLOOR * 4, 0), Sample::default(), rate(NET_FLOOR * 2, NET_FLOOR * 3), Sample::default()]).history;
-    assert_eq!(net_top(&h), Some(NET_FLOOR * 4), "the highest, whichever side of a gap it is on");
+    assert_eq!(net_top(&h), Some(NET_FLOOR * 4), "the highest before a gap still counts, lower samples following it");
     let h = resources_with_history(&[rate(NET_FLOOR * 2, 0), Sample::default(), rate(NET_FLOOR * 5, 0)]).history;
     assert_eq!(net_top(&h), Some(NET_FLOOR * 5), "a higher sample after the gap counts too");
 }
