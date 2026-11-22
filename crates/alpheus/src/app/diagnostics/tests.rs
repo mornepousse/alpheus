@@ -114,7 +114,7 @@ fn f5_reads_everything_again() {
 fn no_refresh_while_the_journal_view_is_open() {
     let t0 = Instant::now();
     let mut a = on_diag(t0);
-    a.diag.view = View::Journal(JournalView { query: JournalQuery::new(Preset::Live, 500) });
+    a.diag.view = View::Journal(Box::new(JournalView::new(JournalQuery::new(Preset::Live, 500))));
     for s in 1..=10 {
         a.on_tick(at(s, t0));
     }
@@ -128,7 +128,7 @@ fn no_refresh_while_the_journal_view_is_open() {
 fn f5_in_the_journal_view_does_not_queue_the_overview_refresh() {
     let t0 = Instant::now();
     let mut a = on_diag(t0);
-    a.diag.view = View::Journal(JournalView { query: JournalQuery::new(Preset::Live, 500) });
+    a.diag.view = View::Journal(Box::new(JournalView::new(JournalQuery::new(Preset::Live, 500))));
     a.diagnostics_refresh(at(2, t0));
     assert!(a.take_requests().is_empty(), "the journal view owns the worker");
 }

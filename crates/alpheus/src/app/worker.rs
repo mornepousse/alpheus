@@ -94,6 +94,8 @@ pub enum DiagRead {
     /// The loaded service units of both managers (the journal's picker).
     ServiceUnits,
     Journal(JournalQuery),
+    /// Whether this user can open the system journal's files (once per journal view).
+    JournalReadable,
     /// `systemd-analyze blame` and `critical-chain`.
     BootReport,
 }
@@ -106,6 +108,7 @@ pub enum DiagResult {
     Checks(Vec<CheckResult>),
     ServiceUnits(BResult<Vec<(Scope, String)>>),
     Journal(BResult<JournalRead>),
+    JournalReadable(bool),
     BootReport { blame: BResult<Vec<Blame>>, chain: BResult<Vec<String>> },
 }
 
@@ -221,6 +224,7 @@ pub fn diag_fetch(b: &Backends, read: &DiagRead) -> DiagResult {
             })
         }
         DiagRead::Journal(q) => DiagResult::Journal(d.journal(q)),
+        DiagRead::JournalReadable => DiagResult::JournalReadable(d.journal_readable()),
         DiagRead::BootReport => DiagResult::BootReport { blame: d.blame(15), chain: d.critical_chain(60) },
     }
 }

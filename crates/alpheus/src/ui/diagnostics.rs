@@ -6,6 +6,7 @@
 use super::Chrome;
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
+use super::home::LocalTime;
 use super::overlays::frame;
 use super::rail::tab_hue;
 use super::shape::{self, Ink};
@@ -271,9 +272,10 @@ fn tone_color(app: &App, tone: Tone, over: Color) -> Color {
     th.ink(c, over, 3.0)
 }
 
-pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
+pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     match &app.diag.view {
         View::Overview => overview(buf, body, app, hits, chrome),
+        View::Journal(_) => super::journal::render(buf, body, app, hits, chrome, now),
         other => view_stub(buf, body, app, other),
     }
 }
@@ -283,7 +285,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
 fn view_stub(buf: &mut Buffer, body: Rect, app: &App, view: &View) {
     let th = &app.theme;
     let title = match view {
-        View::Journal(j) => format!("Journal · {}", j.query.preset.label()),
+        View::Journal(_) => return,
         View::Boot(_) => "Boot report".to_string(),
         View::Report(_) => "Bug report".to_string(),
         View::Overview => return,

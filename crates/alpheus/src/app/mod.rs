@@ -8,6 +8,7 @@ pub mod appearance;
 pub mod diagnostics;
 pub mod displays;
 mod input;
+pub mod journal;
 pub mod keymap;
 mod mouse;
 pub mod run;
@@ -384,7 +385,7 @@ impl App {
             Update::Failed(Scope::System, r) => self.diag.failed_system.set(r),
             Update::Failed(Scope::User, r) => self.diag.failed_user.set(r),
             Update::Health(h) => self.diag.health = Some(h),
-            Update::Diag(_, result) => self.diag.apply(result),
+            Update::Diag(read, result) => self.diag_update(read, result, now),
             Update::Poke(answer) => self.diag.daemon = Some(answer),
             Update::Done(op @ (Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays), r) => {
                 self.op_answered(&op);
@@ -470,6 +471,7 @@ impl App {
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
+        self.journal_tick(now);
         if self.diagnostics_refresh_held() {
             return;
         }

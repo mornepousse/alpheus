@@ -69,17 +69,13 @@ pub struct BootView;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReportView;
 
-/// The journal view (filled in when the view exists): what is asked of the journal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JournalView {
-    pub query: JournalQuery,
-}
+pub use super::journal::JournalView;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
     #[default]
     Overview,
-    Journal(JournalView),
+    Journal(Box<JournalView>),
     Boot(BootView),
     Report(ReportView),
 }
@@ -161,7 +157,7 @@ impl DiagnosticsTab {
             DiagResult::BootTime(r) => self.boot = r.into(),
             DiagResult::Checks(results) => self.checks = results,
             // The journal, its picker and the boot report are kept by their views.
-            DiagResult::ServiceUnits(_) | DiagResult::Journal(_) | DiagResult::BootReport { .. } => {}
+            DiagResult::ServiceUnits(_) | DiagResult::Journal(_) | DiagResult::JournalReadable(_) | DiagResult::BootReport { .. } => {}
         }
     }
 }
@@ -364,6 +360,13 @@ impl App {
         self.requests.push(Request::Do(Op::FailedRefresh));
     }
 
+    /// An answer of a Diag read: the journal view's own first, else the tab's lists.
+    pub(crate) fn diag_update(&mut self, read: DiagRead, result: DiagResult, now: Instant) {
+        if let Some(result) = self.journal_try(&read, result, now) {
+            self.diag.apply(result);
+        }
+    }
+
     /// F5: everything again, now (not in the journal view, which reads for itself).
     pub fn diagnostics_refresh(&mut self, now: Instant) {
         if self.tab == super::Tab::Diagnostics && !self.diagnostics_refresh_held() {
@@ -408,7 +411,7 @@ impl App {
         v.into_iter().map(Item::Diag).collect()
     }
 
-    fn open_diag_view(&mut self, view: View) {
+    pub(super) fn open_diag_view(&mut self, view: View) {
         self.diag.saved_focus = self.focus;
         self.focus = 0;
         self.diag.view = view;
@@ -424,22 +427,21 @@ impl App {
     /// Enter on an overview row.
     pub(crate) fn diag_activate(&mut self, item: DiagItem) {
         let lines = self.config.diagnostics.journal_lines;
-        let journal = |query: JournalQuery| View::Journal(JournalView { query });
         let view = match item {
             DiagItem::HealthRow(_) => return,
             DiagItem::Failed(scope, unit) | DiagItem::Loop(scope, unit) => {
-                journal(JournalQuery { unit: Some((scope, unit)), ..JournalQuery::new(Preset::ServiceLogs, lines) })
+                return self.journal_open(JournalQuery { unit: Some((scope, unit)), ..JournalQuery::new(Preset::ServiceLogs, lines) });
             }
             DiagItem::Crash(i) => {
                 let Some(c) = self.diag.crashes.list().get(i) else { return };
                 let secs = c.time_us / 1_000_000;
-                journal(JournalQuery {
+                return self.journal_open(JournalQuery {
                     since_until: Some((secs.saturating_sub(60), secs.saturating_add(5))),
                     ..JournalQuery::new(Preset::ServiceLogs, lines)
-                })
+                });
             }
             DiagItem::Boot => View::Boot(BootView),
-            DiagItem::Preset(p) => journal(JournalQuery::new(p, lines)),
+            DiagItem::Preset(p) => return self.journal_open(JournalQuery::new(p, lines)),
             DiagItem::Report => View::Report(ReportView),
         };
         self.open_diag_view(view);

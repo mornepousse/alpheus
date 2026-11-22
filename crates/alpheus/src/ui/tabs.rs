@@ -36,7 +36,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
         return appearance::render(buf, body, app, hits);
     }
     if app.tab == Tab::Diagnostics {
-        return diagnostics::render(buf, body, app, hits, chrome);
+        return diagnostics::render(buf, body, app, hits, chrome, now);
     }
     // Home as a dashboard beside the rail when its body has room (the classic chrome keeps the rows).
     if app.tab == Tab::Home && chrome == Chrome::Rail && home::fits(body) {

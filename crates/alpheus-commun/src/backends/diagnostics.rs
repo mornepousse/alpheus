@@ -14,6 +14,7 @@ use crate::diagnostics::show::{self, Restarts};
 use crate::diagnostics::units::{self, FailedUnit};
 use crate::exec::{CaptureEnd, CaptureLimits, ExecError, Executor, MAX_INPUT};
 use crate::text::clean_line;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -78,15 +79,26 @@ pub trait Diagnostics: Send + Sync {
     /// Puts `text` on the standard input of the copy program `argv`.
     fn copy(&self, argv: &[String], text: &str) -> BResult<()>;
     fn check(&self, check: &Check) -> CheckResult;
+    /// Whether this user can open the system journal's files (a member of `systemd-journal`,
+    /// `adm` or `wheel`); false means `journalctl` shows only her own messages.
+    fn journal_readable(&self) -> bool;
 }
 
 pub struct SystemdTools {
     exec: Arc<dyn Executor>,
+    /// Where the journal's per-machine directories are.
+    journal_dirs: Vec<PathBuf>,
 }
 
 impl SystemdTools {
     pub fn new(exec: Arc<dyn Executor>) -> Self {
-        SystemdTools { exec }
+        SystemdTools { exec, journal_dirs: vec![PathBuf::from("/var/log/journal"), PathBuf::from("/run/log/journal")] }
+    }
+
+    /// The same, looking for the journal in `dirs` (tests).
+    pub fn with_journal_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.journal_dirs = dirs;
+        self
     }
 
     /// The standard output of a command that ended by itself with code 0 (and, when
@@ -221,6 +233,10 @@ impl Diagnostics for SystemdTools {
         self.exec.spawn_with_input(prog, &args, &[text.as_bytes()]).map_err(|e| exec_error(prog, e))
     }
 
+    fn journal_readable(&self) -> bool {
+        system_journal_opens(&self.journal_dirs)
+    }
+
     fn check(&self, check: &Check) -> CheckResult {
         let Some((prog, args)) = check.run.split_first() else {
             return CheckResult { ok: false, detail: "no command".into() };
@@ -237,6 +253,15 @@ impl Diagnostics for SystemdTools {
             Err(ExecError::Io(e)) => CheckResult { ok: false, detail: clean_line(&e, CHECK_DETAIL) },
         }
     }
+}
+
+/// True when `system.journal` opens in one of the machine directories under `dirs`. Listing the
+/// top directory proves nothing (it is world-readable); the file is what needs the group.
+fn system_journal_opens(dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|dir| {
+        let Ok(machines) = std::fs::read_dir(dir) else { return false };
+        machines.flatten().take(8).any(|m| std::fs::File::open(m.path().join("system.journal")).is_ok())
+    })
 }
 
 /// What the daemon answered to a `failed-refresh`.
@@ -465,6 +490,26 @@ mod tests {
         f.respond("long", Ok(crate::exec::Output::fail(1, &"x".repeat(300))));
         assert_eq!(t.check(&check(&["long"])).detail.chars().count(), 120);
         assert!(!t.check(&check(&[])).ok);
+    }
+
+    #[test]
+    fn the_system_journal_is_readable_only_when_a_journal_file_opens() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::temp_path::TempPath::dir("journal-readable");
+        let machine = dir.join("0123456789abcdef0123456789abcdef");
+        std::fs::create_dir_all(&machine).unwrap();
+        let tools = |d: &std::path::Path| SystemdTools::new(Arc::new(FakeExecutor::new())).with_journal_dirs(vec![d.to_path_buf()]);
+        assert!(!tools(&dir).journal_readable(), "a directory with no journal file");
+        let file = machine.join("system.journal");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(tools(&dir).journal_readable());
+        // Not in systemd-journal: the directory lists, the file does not open.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = !tools(&dir).journal_readable();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // (root opens anything: the assertion only holds for an ordinary user)
+        assert!(denied || unsafe { libc::geteuid() } == 0, "a file the user cannot open is not readable");
+        assert!(!tools(&dir.join("missing")).journal_readable(), "no such directory");
     }
 
     #[test]

@@ -1,0 +1,30 @@
+---
+source: crates/alpheus/src/ui/journal/tests.rs
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    Journal · Errors this boot                                 Esc back  
+                  unit: any  ·  priority: err and worse  ·  follow: off  ·  / filter   
+  󰕾 Sound    2    01:00:01 kernel[101]: usb 3-2: new high-speed USB device number 4    
+                  01:00:02 example-app[102]: started                                   
+  󰖩 Network  3    01:00:03 example-sync[103]: nothing to sync                          
+                  01:00:04 NetworkManager[104]: device (wlan0): link is slow           
+  󰂯 BT       4    01:00:05 example-app[105]: failed to open /mnt/data                  
+                  01:00:06 kernel[106]: Kernel panic - not syncing                     
+  󰐥 Power    5                                                                         
+                                                                                       
+  󰍹 Displays 6                                                                         
+                                                                                       
+  󰏘 Theme    7                                                                         
+                                                                                       
+ ▌󰃤 Diag     8                                                                         
+                                                                                       
+                                                                                       
+                                                                                       
+  ● ready                                                                              
+                                                                                       
+                   /  Filter    u  Unit    p  Priority    f  Follow

@@ -9,6 +9,7 @@ mod displays;
 pub mod draw;
 pub mod hit;
 pub mod home;
+mod journal;
 mod overlays;
 pub mod rail;
 pub mod shape;
@@ -132,6 +133,23 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
+            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Journal(_)) => {
+                let crate::app::diagnostics::View::Journal(j) = &app.diag.view else { unreachable!() };
+                if j.picker.is_some() {
+                    pairs.push(("Enter".into(), "Choose"));
+                    pairs.push(("Esc".into(), "Close"));
+                } else if j.filter_editing {
+                    pairs.push(("Enter".into(), "Keep"));
+                    pairs.push(("Esc".into(), "Clear"));
+                } else {
+                    pairs.push(("/".into(), "Filter"));
+                    pairs.push(("u".into(), "Unit"));
+                    pairs.push(("p".into(), "Priority"));
+                    pairs.push(("f".into(), "Follow"));
+                    pairs.push(("PgUp/PgDn".into(), "Scroll"));
+                    pairs.push(("End".into(), "Tail"));
+                }
+            }
             Tab::Diagnostics => {
                 pairs.push((km.label(Action::Activate), "Open"));
                 if app.unit_keys_apply() {

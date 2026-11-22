@@ -37,6 +37,9 @@ impl App {
         if self.search.editing {
             return self.key_search(e);
         }
+        if self.journal_key(e) {
+            return;
+        }
         if let Some(a) = self.keymap.lookup(&e) {
             self.do_action(a, now);
         }
