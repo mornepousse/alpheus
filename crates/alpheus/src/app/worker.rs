@@ -80,6 +80,11 @@ pub enum Op {
     UnitUser(UnitAction, String),
     /// Asks the alpheus daemon to re-read its failed-units count; answered by `Update::Poke`.
     FailedRefresh,
+    /// Puts the bug report on the clipboard: the text on the copy program's standard input.
+    Copy {
+        argv: Vec<String>,
+        text: String,
+    },
 }
 
 /// A read of the Diag tab that is not one of the repeated domains.
@@ -98,6 +103,11 @@ pub enum DiagRead {
     JournalReadable,
     /// `systemd-analyze blame` and `critical-chain`.
     BootReport,
+    /// The bug report, built and redacted (the compositor's name is the Diag tab's health read).
+    Report {
+        compositor: String,
+        restart_loop: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +120,7 @@ pub enum DiagResult {
     Journal(BResult<JournalRead>),
     JournalReadable(bool),
     BootReport { blame: BResult<Vec<Blame>>, chain: BResult<Vec<String>> },
+    Report(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +169,7 @@ impl Op {
             Op::Power(_) => &[],
             Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => &[Domain::Displays],
             Op::UnitUser(..) => &[Domain::Failed],
-            Op::FailedRefresh => &[],
+            Op::FailedRefresh | Op::Copy { .. } => &[],
         }
     }
 }
@@ -226,6 +237,7 @@ pub fn diag_fetch(b: &Backends, read: &DiagRead) -> DiagResult {
         DiagRead::Journal(q) => DiagResult::Journal(d.journal(q)),
         DiagRead::JournalReadable => DiagResult::JournalReadable(d.journal_readable()),
         DiagRead::BootReport => DiagResult::BootReport { blame: d.blame(15), chain: d.critical_chain(60) },
+        DiagRead::Report { compositor, restart_loop } => DiagResult::Report(d.report(compositor, *restart_loop)),
     }
 }
 
@@ -255,6 +267,7 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::KeepDisplays => b.displays.keep().map_err(BackendError::Daemon),
         Op::RevertDisplays => b.displays.revert().map_err(BackendError::Daemon),
         Op::UnitUser(a, unit) => b.diagnostics.user_action(*a, unit),
+        Op::Copy { argv, text } => b.diagnostics.copy(argv, text),
         Op::FailedRefresh => match b.poke.failed_refresh() {
             PokeAnswer::Done | PokeAnswer::Older => Ok(()),
             PokeAnswer::Unreachable(why) => Err(BackendError::Daemon(why)),

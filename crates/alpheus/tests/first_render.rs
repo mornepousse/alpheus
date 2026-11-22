@@ -59,3 +59,29 @@ fn first_render_of_the_dashboard_under_100_ms_even_with_slow_tools() {
     let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     assert!(days.iter().any(|d| text.contains(d)), "the clock's date: {text}");
 }
+
+#[test]
+fn first_render_of_diagnostics_under_100_ms_even_with_slow_tools() {
+    let start = Instant::now();
+    let dir = std::env::temp_dir().join("alpheus-first-render-diagnostics-no-config");
+    let mut app = build_app(&dir, Tab::Diagnostics, start);
+    // Every systemd tool takes half a second, captures included: the screen does not wait.
+    let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
+    let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
+    let requests = app.take_requests();
+    assert!(!requests.is_empty(), "the tab asks for its reads on opening");
+    for r in requests {
+        tx.send(r).unwrap();
+    }
+    let mut term = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    term.draw(|f| {
+        ui::render(f, &app);
+    })
+    .unwrap();
+    let elapsed = start.elapsed();
+    println!("first render of the Diag tab in {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(100), "first render in {elapsed:?}");
+    let buf = term.backend().buffer();
+    let text: String = (0..36).flat_map(|y| (0..120).map(move |x| (x, y))).map(|p| buf[p].symbol().to_string()).collect();
+    assert!(text.to_lowercase().contains("session health") && text.contains('…'), "the screen shows waiting, not emptiness: {text}");
+}

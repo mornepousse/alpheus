@@ -276,22 +276,8 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
     match &app.diag.view {
         View::Overview => overview(buf, body, app, hits, chrome),
         View::Journal(_) => super::journal::render(buf, body, app, hits, chrome, now),
-        other => view_stub(buf, body, app, other),
+        View::Boot(_) | View::Report(_) => super::report_views::render(buf, body, app, hits, chrome),
     }
-}
-
-/// A view opened from the overview: its own content comes with its own code; for now a title and
-/// the way back.
-fn view_stub(buf: &mut Buffer, body: Rect, app: &App, view: &View) {
-    let th = &app.theme;
-    let title = match view {
-        View::Journal(_) => return,
-        View::Boot(_) => "Boot report".to_string(),
-        View::Report(_) => "Bug report".to_string(),
-        View::Overview => return,
-    };
-    put(buf, body, body.x, body.y, &title, Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
-    put(buf, body, body.x + 2, body.y + 2, "Esc goes back", Style::default().fg(th.fg));
 }
 
 fn overview(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {

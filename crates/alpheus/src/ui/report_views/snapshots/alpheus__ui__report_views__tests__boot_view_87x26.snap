@@ -1,0 +1,30 @@
+---
+source: crates/alpheus/src/ui/report_views/tests.rs
+expression: "rows(&a, 87, 26)"
+---
+                                                                                       
+  ◆ alpheus       󰃤  Diag                                                              
+ control center   Session health, failed units and the journal                         
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+  󰋜 Home     1    Boot report                                                Esc back  
+                                                                                       
+  󰕾 Sound    2    Startup finished in 18.1s (firmware) + 3.3s (loader) + 0.9s (kerne…  
+                                                                                       
+  󰖩 Network  3    Slowest units                                                        
+                         12.345s  example-sync.service                                 
+  󰂯 BT       4             812ms  mnt-data.mount                                       
+                                                                                       
+  󰐥 Power    5    Critical chain                                                       
+                    graphical.target @18.1s                                            
+  󰍹 Displays 6      └─multi-user.target @18.1s                                         
+                                                                                       
+  󰏘 Theme    7                                                                         
+                                                                                       
+ ▌󰃤 Diag     8                                                                         
+                                                                                       
+                                                                                       
+                                                                                       
+  ● ready                                                                              
+                                                                                       
+                   PgUp/PgDn  Scroll    q  Quit    F1  Help    Ctrl+P  Palette

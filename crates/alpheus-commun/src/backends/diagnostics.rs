@@ -10,6 +10,7 @@ use crate::diagnostics::env;
 use crate::diagnostics::journal::{self, Entry};
 use crate::diagnostics::names::valid_unit;
 use crate::diagnostics::query::{JournalQuery, Scope, journal_args};
+use crate::diagnostics::report::{self, HostFacts, ReportCrash, ReportError, ReportInputs, ReportLoop, ReportUnit};
 use crate::diagnostics::show::{self, Restarts};
 use crate::diagnostics::units::{self, FailedUnit};
 use crate::exec::{CaptureEnd, CaptureLimits, ExecError, Executor, MAX_INPUT};
@@ -82,17 +83,27 @@ pub trait Diagnostics: Send + Sync {
     /// Whether this user can open the system journal's files (a member of `systemd-journal`,
     /// `adm` or `wheel`); false means `journalctl` shows only her own messages.
     fn journal_readable(&self) -> bool;
+    /// The bug report, built and redacted: what shows is what is copied.
+    fn report(&self, compositor: &str, restart_loop: u32) -> String;
 }
 
 pub struct SystemdTools {
     exec: Arc<dyn Executor>,
     /// Where the journal's per-machine directories are.
     journal_dirs: Vec<PathBuf>,
+    /// What the report says of this machine; read when a report is made unless fixed here.
+    facts: Option<HostFacts>,
 }
 
 impl SystemdTools {
     pub fn new(exec: Arc<dyn Executor>) -> Self {
-        SystemdTools { exec, journal_dirs: vec![PathBuf::from("/var/log/journal"), PathBuf::from("/run/log/journal")] }
+        SystemdTools { exec, journal_dirs: vec![PathBuf::from("/var/log/journal"), PathBuf::from("/run/log/journal")], facts: None }
+    }
+
+    /// The same, with the machine's facts given (tests).
+    pub fn with_facts(mut self, facts: HostFacts) -> Self {
+        self.facts = Some(facts);
+        self
     }
 
     /// The same, looking for the journal in `dirs` (tests).
@@ -237,6 +248,48 @@ impl Diagnostics for SystemdTools {
         system_journal_opens(&self.journal_dirs)
     }
 
+    fn report(&self, compositor: &str, restart_loop: u32) -> String {
+        let facts = self.facts.clone().unwrap_or_else(HostFacts::gather);
+        let scope_name = |s: Scope| if s == Scope::User { "user" } else { "system" };
+        let tag = |s: Scope, r: BResult<Vec<FailedUnit>>| r.map(|v| v.into_iter().map(|u| (s, u)).collect::<Vec<_>>());
+        let failed = both(tag(Scope::System, self.failed(Scope::System)), tag(Scope::User, self.failed(Scope::User)));
+        let loops_of = |s: Scope| self.restarts(s, restart_loop).map(|v| v.into_iter().map(|r| (s, r)).collect::<Vec<_>>());
+        let loops = both(loops_of(Scope::System), loops_of(Scope::User));
+        let crashes = self.crashes().ok();
+        let errors = self.journal(&JournalQuery::report_errors(200)).ok();
+        let systemd = self.systemd_version().ok().map(|l| l.strip_prefix("systemd ").unwrap_or(&l).to_string()).unwrap_or_default();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let inputs = ReportInputs {
+            when: report::utc_stamp(now),
+            alpheus: env!("CARGO_PKG_VERSION").to_string(),
+            systemd,
+            kernel: facts.kernel.clone(),
+            compositor: clean_line(compositor, 20),
+            os: facts.os.clone(),
+            failed: failed.map(|v| {
+                v.into_iter().map(|(s, u)| ReportUnit { unit: u.unit, scope: scope_name(s), description: u.description }).collect()
+            }),
+            loops: loops
+                .map(|v| v.into_iter().map(|(s, r)| ReportLoop { unit: r.unit, scope: scope_name(s), restarts: r.restarts }).collect()),
+            crashes: crashes.map(|v| {
+                v.into_iter()
+                    .map(|c| ReportCrash {
+                        time: report::utc_month_day(c.time_us / 1_000_000),
+                        exe: c.exe_name,
+                        signal: crashes::signal_name(c.signal).to_string(),
+                    })
+                    .collect()
+            }),
+            errors: errors.map(|r| {
+                r.entries
+                    .into_iter()
+                    .map(|e| ReportError { time: report::utc_clock(e.time_us / 1_000_000), ident: e.ident, message: e.message })
+                    .collect()
+            }),
+        };
+        report::build(&inputs, &facts.redactions())
+    }
+
     fn check(&self, check: &Check) -> CheckResult {
         let Some((prog, args)) = check.run.split_first() else {
             return CheckResult { ok: false, detail: "no command".into() };
@@ -262,6 +315,17 @@ fn system_journal_opens(dirs: &[PathBuf]) -> bool {
         let Ok(machines) = std::fs::read_dir(dir) else { return false };
         machines.flatten().take(8).any(|m| std::fs::File::open(m.path().join("system.journal")).is_ok())
     })
+}
+
+/// Both managers' lists, or None: half a list would read as a clean bill in the report.
+fn both<T>(a: BResult<Vec<T>>, b: BResult<Vec<T>>) -> Option<Vec<T>> {
+    match (a, b) {
+        (Ok(mut a), Ok(b)) => {
+            a.extend(b);
+            Some(a)
+        }
+        _ => None,
+    }
 }
 
 /// What the daemon answered to a `failed-refresh`.
@@ -490,6 +554,54 @@ mod tests {
         f.respond("long", Ok(crate::exec::Output::fail(1, &"x".repeat(300))));
         assert_eq!(t.check(&check(&["long"])).detail.chars().count(), 120);
         assert!(!t.check(&check(&[])).ok);
+    }
+
+    #[test]
+    fn the_report_is_built_from_the_reads_and_redacted() {
+        use crate::diagnostics::report::HostFacts;
+        let (f, t) = tools();
+        let facts = HostFacts {
+            kernel: "6.18.2".into(),
+            os: "NixOS 26.05 (Yarara)".into(),
+            users: vec!["alice".into()],
+            homes: vec!["/home/alice".into()],
+            host: Some("host-01".into()),
+            machine_id: None,
+        };
+        let t = t.with_facts(facts);
+        f.capture_ok("systemctl list-units --failed --output=json --no-pager", done(FAILED));
+        f.capture_ok("systemctl --user list-units --failed --output=json --no-pager", done("[]"));
+        f.capture_ok("systemctl show --property=Id,NRestarts,ActiveState,SubState --no-pager *.service", done(SHOW));
+        f.capture_ok("systemctl --user show --property=Id,NRestarts,ActiveState,SubState --no-pager *.service", done(""));
+        f.capture_ok(
+            "coredumpctl list --json=short --no-pager --reverse --since=-7d -n 20",
+            done(include_str!("../../tests/fixtures/diag-coredumps.json")),
+        );
+        f.capture_ok("systemctl --version", done("systemd 260 (260.5)\n+PAM\n"));
+        let errors = r#"{"__CURSOR":"s=1;i=1","__REALTIME_TIMESTAMP":"1700010000000000","SYSLOG_IDENTIFIER":"example-app","MESSAGE":"cannot open /home/alice/data from host-01 at 192.168.1.20"}"#;
+        f.capture_ok(
+            "journalctl -o json --output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM --no-pager -n 200 -b -p err",
+            done(&format!("{errors}\n")),
+        );
+        let text = t.report("Mango", 3);
+        assert!(text.starts_with("alpheus diagnostics report, 20") && text.lines().next().unwrap().ends_with(" UTC"), "{text}");
+        assert!(text.contains(" · systemd 260 (260.5) · kernel 6.18.2 · Mango · NixOS 26.05 (Yarara)"), "{text}");
+        assert!(text.contains("Failed units:") && text.contains("Restarting in a loop: example-sync.service"), "{text}");
+        assert!(text.contains("cannot open ~/data from <host> at <ip>"), "redacted before it is shown: {text}");
+        assert!(!text.contains("alice") && !text.contains("192.168"), "{text}");
+        assert!(text.len() <= MAX_INPUT);
+        // Not one command line, environment or id was asked for.
+        for (line, _) in f.limits() {
+            assert!(!line.contains("_CMDLINE") && !line.contains("_BOOT_ID") && !line.contains("show-environment"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_failed_read_is_unknown_in_the_report_not_none() {
+        let (_f, t) = tools();
+        let t = t.with_facts(crate::diagnostics::report::HostFacts::default());
+        let text = t.report("Mango", 3);
+        assert!(text.contains("Failed units: unknown") && text.contains("Errors this boot: unknown"), "{text}");
     }
 
     #[test]

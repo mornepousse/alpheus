@@ -11,6 +11,7 @@ mod input;
 pub mod journal;
 pub mod keymap;
 mod mouse;
+pub mod report_views;
 pub mod run;
 pub mod tab;
 pub mod worker;
@@ -201,6 +202,7 @@ fn op_label(op: &Op) -> String {
         Op::UnitUser(UnitAction::Restart, _) => "Restart".into(),
         Op::UnitUser(UnitAction::ResetFailed, _) => "Reset failed".into(),
         Op::FailedRefresh => "Failed units".into(),
+        Op::Copy { .. } => "Copy".into(),
     }
 }
 
@@ -456,6 +458,7 @@ impl App {
             Op::UnitUser(UnitAction::Restart, unit) => format!("Restart queued: {unit}"),
             Op::UnitUser(UnitAction::ResetFailed, unit) => format!("Cleared: {unit}"),
             Op::FailedRefresh => return None,
+            Op::Copy { .. } => "Copied to the clipboard".to_string(),
         })
     }
 

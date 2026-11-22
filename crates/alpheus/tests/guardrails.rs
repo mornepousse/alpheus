@@ -79,6 +79,7 @@ fn exercise_diagnostics(b: &Backends) {
     let _ = b.diagnostics.user_action(UnitAction::Restart, "-.mount");
     let _ = b.diagnostics.user_action(UnitAction::ResetFailed, "example-sync.service");
     let _ = b.diagnostics.copy(&[copy_program()], "report");
+    let _ = b.diagnostics.report("Mango", 3);
 }
 
 #[test]
@@ -125,7 +126,14 @@ fn every_launched_command_is_on_the_allowlist() {
             assert!(systemctl_line_is_allowed(c), "systemctl line off the list: {c}");
         }
         match prog {
-            "journalctl" => assert!(c.starts_with("journalctl -o json --output-fields="), "{c}"),
+            "journalctl" => {
+                assert!(c.starts_with("journalctl -o json --output-fields="), "{c}");
+                // The bug report and the view never ask for a command line, an environment or an id.
+                assert!(
+                    !c.contains("_CMDLINE") && !c.contains("_BOOT_ID") && !c.contains("_MACHINE_ID") && !c.contains("_HOSTNAME"),
+                    "{c}"
+                );
+            }
             "coredumpctl" => assert_eq!(c, "coredumpctl list --json=short --no-pager --reverse --since=-7d -n 20"),
             "systemd-analyze" => {
                 assert!(

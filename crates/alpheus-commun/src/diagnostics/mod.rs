@@ -9,5 +9,6 @@ pub mod env;
 pub mod journal;
 pub mod names;
 pub mod query;
+pub mod report;
 pub mod show;
 pub mod units;

@@ -190,7 +190,7 @@ fn a_view_covers_the_overview_with_its_way_back() {
     a.go_tab(Tab::Diagnostics, Instant::now());
     a.diag.view = View::Report(Default::default());
     let all = rows(&a, 87, 26);
-    assert!(all.contains("Bug report") && all.contains("Esc goes back"), "{all}");
+    assert!(all.contains("Bug report") && all.contains("Esc back"), "{all}");
 }
 
 #[test]

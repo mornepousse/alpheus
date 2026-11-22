@@ -12,6 +12,7 @@ pub mod home;
 mod journal;
 mod overlays;
 pub mod rail;
+mod report_views;
 pub mod shape;
 mod tabs;
 
@@ -149,6 +150,15 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                     pairs.push(("PgUp/PgDn".into(), "Scroll"));
                     pairs.push(("End".into(), "Tail"));
                 }
+            }
+            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Report(_)) => {
+                if app.report_can_copy() {
+                    pairs.push((km.label(Action::Activate), "Copy"));
+                }
+                pairs.push(("PgUp/PgDn".into(), "Scroll"));
+            }
+            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Boot(_)) => {
+                pairs.push(("PgUp/PgDn".into(), "Scroll"));
             }
             Tab::Diagnostics => {
                 pairs.push((km.label(Action::Activate), "Open"));

@@ -61,13 +61,7 @@ impl<T> Section<T> {
     }
 }
 
-/// The boot report view, opened from the overview's Boot row (filled in when the view exists).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BootView;
-
-/// The bug report view (filled in when the view exists).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ReportView;
+pub use super::report_views::{BootView, ReportView};
 
 pub use super::journal::JournalView;
 
@@ -157,7 +151,11 @@ impl DiagnosticsTab {
             DiagResult::BootTime(r) => self.boot = r.into(),
             DiagResult::Checks(results) => self.checks = results,
             // The journal, its picker and the boot report are kept by their views.
-            DiagResult::ServiceUnits(_) | DiagResult::Journal(_) | DiagResult::JournalReadable(_) | DiagResult::BootReport { .. } => {}
+            DiagResult::ServiceUnits(_)
+            | DiagResult::Journal(_)
+            | DiagResult::JournalReadable(_)
+            | DiagResult::BootReport { .. }
+            | DiagResult::Report(_) => {}
         }
     }
 }
@@ -362,7 +360,9 @@ impl App {
 
     /// An answer of a Diag read: the journal view's own first, else the tab's lists.
     pub(crate) fn diag_update(&mut self, read: DiagRead, result: DiagResult, now: Instant) {
-        if let Some(result) = self.journal_try(&read, result, now) {
+        if let Some(result) = self.journal_try(&read, result, now)
+            && let Some(result) = self.report_views_try(result)
+        {
             self.diag.apply(result);
         }
     }
@@ -427,24 +427,23 @@ impl App {
     /// Enter on an overview row.
     pub(crate) fn diag_activate(&mut self, item: DiagItem) {
         let lines = self.config.diagnostics.journal_lines;
-        let view = match item {
-            DiagItem::HealthRow(_) => return,
+        match item {
+            DiagItem::HealthRow(_) => {}
             DiagItem::Failed(scope, unit) | DiagItem::Loop(scope, unit) => {
-                return self.journal_open(JournalQuery { unit: Some((scope, unit)), ..JournalQuery::new(Preset::ServiceLogs, lines) });
+                self.journal_open(JournalQuery { unit: Some((scope, unit)), ..JournalQuery::new(Preset::ServiceLogs, lines) });
             }
             DiagItem::Crash(i) => {
                 let Some(c) = self.diag.crashes.list().get(i) else { return };
                 let secs = c.time_us / 1_000_000;
-                return self.journal_open(JournalQuery {
+                self.journal_open(JournalQuery {
                     since_until: Some((secs.saturating_sub(60), secs.saturating_add(5))),
                     ..JournalQuery::new(Preset::ServiceLogs, lines)
                 });
             }
-            DiagItem::Boot => View::Boot(BootView),
-            DiagItem::Preset(p) => return self.journal_open(JournalQuery::new(p, lines)),
-            DiagItem::Report => View::Report(ReportView),
-        };
-        self.open_diag_view(view);
+            DiagItem::Boot => self.boot_open(),
+            DiagItem::Preset(p) => self.journal_open(JournalQuery::new(p, lines)),
+            DiagItem::Report => self.report_open(),
+        }
     }
 
     /// A click on an overview row. A unit is selected first (its keys then apply), and a second

@@ -99,6 +99,9 @@ pub struct JournalQuery {
     pub lines: u32,
     /// Follow reads: everything after this cursor, no line count.
     pub after_cursor: Option<String>,
+    /// The bug report's read: only the three fields it prints (never a command line, an
+    /// environment or an id), not the view's seven.
+    pub report_fields: bool,
 }
 
 impl JournalQuery {
@@ -111,9 +114,18 @@ impl JournalQuery {
             since_until: None,
             lines,
             after_cursor: None,
+            report_fields: false,
         }
     }
+
+    /// This boot's errors, read for the bug report.
+    pub fn report_errors(lines: u32) -> Self {
+        JournalQuery { report_fields: true, ..JournalQuery::new(Preset::ErrorsThisBoot, lines) }
+    }
 }
+
+/// The bug report's reads start with these: three fields, no more.
+const REPORT_PREFIX: [&str; 4] = ["-o", "json", "--output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM", "--no-pager"];
 
 /// Every read starts with these.
 const PREFIX: [&str; 4] =
@@ -121,7 +133,8 @@ const PREFIX: [&str; 4] =
 
 /// The `journalctl` arguments of `q`; an invalid unit or cursor is an error and nothing is run.
 pub fn journal_args(q: &JournalQuery) -> Result<Vec<String>, String> {
-    let mut a: Vec<String> = PREFIX.iter().map(|s| s.to_string()).collect();
+    let prefix = if q.report_fields { &REPORT_PREFIX } else { &PREFIX };
+    let mut a: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
     if q.after_cursor.is_none() {
         a.push("-n".into());
         a.push(q.lines.clamp(1, 5000).to_string());
@@ -194,6 +207,13 @@ mod tests {
         assert_eq!(args(&service), with_prefix(&["-n", "500", "--unit=example-sync.service"]));
         assert_eq!(Preset::ALL.map(Preset::label).len(), 8);
         assert!(Preset::Live.follows() && Preset::Usb.follows() && !Preset::Thermal.follows());
+    }
+
+    #[test]
+    fn the_report_asks_for_three_fields_and_nothing_else() {
+        let a = args(&JournalQuery::report_errors(200));
+        assert_eq!(a, ["-o", "json", "--output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM", "--no-pager", "-n", "200", "-b", "-p", "err"]);
+        assert!(!a.join(" ").contains("_CMDLINE") && !a.join(" ").contains("_PID"));
     }
 
     #[test]

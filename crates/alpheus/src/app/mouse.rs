@@ -82,6 +82,7 @@ impl App {
                 self.displays.profile_sel = j;
                 self.profile_bar_activate(now);
             }
+            Target::ReportCopy => self.report_copy_click(),
             Target::AppearanceTheme(i) => self.appearance_click_theme(i, now),
             Target::AppearanceMode(m) => self.appearance_click_mode(m, now),
             Target::AppearanceColors(m) => self.appearance_click_colors(m, now),
@@ -123,7 +124,7 @@ impl App {
         if self.overlay != Overlay::None {
             return;
         }
-        if self.tab == Tab::Diagnostics && self.journal_wheel(dir) {
+        if self.tab == Tab::Diagnostics && (self.journal_wheel(dir) || self.report_views_wheel(dir)) {
             return;
         }
         match hit.map(|(_, t)| t) {
