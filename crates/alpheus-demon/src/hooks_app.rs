@@ -93,10 +93,10 @@ pub(crate) fn hook_spawn(exec: &dyn Executor, spawner: Spawner, path_dirs: &[Pat
 }
 
 /// The start-up lines: how many hooks are set, then each one the configured `modules` never feed.
-pub(crate) fn start_lines(model: &Hooks, modules: &[ModuleId]) -> Vec<String> {
+pub(crate) fn start_lines(model: &Hooks, modules: &[ModuleId], shield_configured: bool) -> Vec<String> {
     let mut lines = vec![format!("hooks: {} set", model.set())];
     for id in HookId::ALL {
-        if model.wants(id) && !id.reads(modules) {
+        if model.wants(id) && !id.reads(modules, shield_configured) {
             lines.push(format!("hooks: {} never fires (needs {})", id.key(), id.needs()));
         }
     }
@@ -133,10 +133,16 @@ impl App {
 
     pub(crate) fn hooks_started(&mut self) {
         let Some(h) = self.hooks.as_ref() else { return };
-        for line in start_lines(&h.model, &self.bar.config.modules) {
+        for line in start_lines(&h.model, &self.bar.config.modules, self.shield.is_some()) {
             log(&line);
         }
         self.hooks_event(Event::Started);
+    }
+
+    /// Shield mode changed (a known state turning into the other known one: `shield_readable`).
+    pub(crate) fn hooks_shield(&mut self, on: bool) {
+        let Some(_) = self.hooks.as_ref() else { return };
+        self.hooks_event(Event::Shield(on));
     }
 
     /// A profile the compositor accepted (the name is cleaned for the variable).

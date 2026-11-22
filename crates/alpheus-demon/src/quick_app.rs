@@ -484,6 +484,7 @@ impl App {
             }
             None => (Vec::new(), None),
         };
+        self.shield_before_panel();
         let backlight = self.quick_backlight();
         let toggles = [self.quick_toggle_state(Toggle::KeepAwake), self.quick_toggle_state(Toggle::NightLight)];
         let built = {
@@ -510,6 +511,8 @@ impl App {
             self.quick_wifi_sync();
             self.quick_bt_sync();
             self.quick_vpn_sync();
+            // A `failed` shown at open expires after its 4 s (the panel's timer follows the view).
+            self.quick_timer_sync();
         } else {
             self.quick_closed();
         }
@@ -592,6 +595,16 @@ impl App {
                 self.set_dnd(on);
                 log(&format!("quick: do not disturb {}", if on { "on" } else { "off" }));
             }
+            // Shield mode (shield_app.rs): a switch or an allow. A switch changes the view, and its
+            // publish repaints the panel (the row says `…`); an allow or a refusal changes only the
+            // panel's own state, repainted here: one paint either way.
+            QuickAction::Shield(ask) => {
+                let before = self.bar.shield;
+                self.shield_ask(ask);
+                if self.bar.shield == before {
+                    self.quick_refresh();
+                }
+            }
             // The detail's choice, as the CLI would send it (notify_app.rs).
             QuickAction::Dnd(c) => {
                 let until = self.bar.config.quick.dnd_until_hm();
@@ -655,6 +668,7 @@ impl App {
         self.quick_wifi_sync();
         self.quick_bt_sync();
         self.quick_vpn_sync();
+        self.shield_panel_sync();
     }
 
     /// The timer follows the panel's earliest pending re-read, question or Wi-Fi deadline; with the
@@ -737,6 +751,9 @@ impl App {
         let dir = &app.bar.config.osd.backlight_dir;
         let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
+        if due.shield_failed {
+            app.shield_failed_due(now);
+        }
         if let Some(PopupBody::Quick(q)) = app.popup_body_mut() {
             if let Some(level) = level {
                 q.set_backlight(level);
@@ -787,6 +804,8 @@ impl App {
             tap.set(BtScope::Closed);
         }
         self.bt_close();
+        // Nothing of the blocked devices outlives the panel.
+        self.shield_panel_closed();
         // Nothing of the VPNs outlives the panel either (no follower: its attempt goes with it).
         if let Some(tap) = &self.quick.vpn_tap {
             tap.set(VpnScope::Closed);

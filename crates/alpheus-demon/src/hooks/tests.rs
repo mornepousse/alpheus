@@ -242,6 +242,7 @@ fn a_hook_never_inherits_a_variable_its_event_does_not_set() {
         Event::Bluetooth(BtChange::Connected("X".into())),
         Event::Privacy(CaptureKind::Camera, true),
         Event::Displays("p".into()),
+        Event::Shield(true),
     ] {
         let env = e.env();
         let mut all: Vec<&str> = env.iter().map(|(k, _)| *k).chain(unset_for(&env)).collect();
@@ -386,15 +387,42 @@ fn throttled_is_said_once_per_episode() {
 #[test]
 fn reads_follows_the_modules() {
     use crate::config::ModuleId as M;
-    assert!(HookId::Started.reads(&[]) && HookId::ThemeMode.reads(&[]));
-    assert!(!HookId::Dnd.reads(&[M::Clock]) && HookId::Dnd.reads(&[M::Notifications]));
-    assert!(!HookId::Privacy.reads(&[M::Clock]) && HookId::Privacy.reads(&[M::Privacy]));
-    assert!(!HookId::Displays.reads(&[M::Clock]) && HookId::Displays.reads(&[M::Displays]));
-    assert!(!HookId::BatteryLevel.reads(&[M::Clock]) && HookId::BatteryLevel.reads(&[M::Battery]));
-    assert!(HookId::Vpn.reads(&[M::Network]) && HookId::Vpn.reads(&[M::Quick]));
-    assert!(HookId::PowerProfile.reads(&[M::Quick]) && !HookId::PowerProfile.reads(&[M::Network]));
-    assert!(HookId::Bluetooth.reads(&[M::Bluetooth]) && HookId::Bluetooth.reads(&[M::Quick]));
+    assert!(HookId::Started.reads(&[], false) && HookId::ThemeMode.reads(&[], false));
+    assert!(!HookId::Dnd.reads(&[M::Clock], false) && HookId::Dnd.reads(&[M::Notifications], false));
+    assert!(!HookId::Privacy.reads(&[M::Clock], false) && HookId::Privacy.reads(&[M::Privacy], false));
+    assert!(!HookId::Displays.reads(&[M::Clock], false) && HookId::Displays.reads(&[M::Displays], false));
+    assert!(!HookId::BatteryLevel.reads(&[M::Clock], false) && HookId::BatteryLevel.reads(&[M::Battery], false));
+    assert!(HookId::Vpn.reads(&[M::Network], false) && HookId::Vpn.reads(&[M::Quick], false));
+    assert!(HookId::PowerProfile.reads(&[M::Quick], false) && !HookId::PowerProfile.reads(&[M::Network], false));
+    assert!(HookId::Bluetooth.reads(&[M::Bluetooth], false) && HookId::Bluetooth.reads(&[M::Quick], false));
     assert_eq!(HookId::Network.needs(), "network or quick");
+}
+
+#[test]
+fn the_shield_event_sets_its_variable() {
+    assert_eq!(Event::Shield(true).env(), [s("ALPHEUS_EVENT", "shield"), s("ALPHEUS_SHIELD", "on")]);
+    assert_eq!(Event::Shield(false).env(), [s("ALPHEUS_EVENT", "shield"), s("ALPHEUS_SHIELD", "off")]);
+    assert_eq!(Event::Shield(true).id(), HookId::Shield);
+    assert_eq!(HookId::Shield.key(), "shield");
+    // Fired like the others: past the quiet window, under the token bucket.
+    let t0 = Instant::now();
+    let mut h = hooks(&["shield"], t0);
+    assert_eq!(h.fire(Event::Shield(true), t0), Verdict::Dropped, "inside the quiet window");
+    let Verdict::Run(f) = h.fire(Event::Shield(true), t0 + QUIET) else { panic!("runs") };
+    assert!(f.unset.contains(&"ALPHEUS_DND") && !f.unset.contains(&"ALPHEUS_SHIELD"));
+    for _ in 1..BURST {
+        assert!(matches!(h.fire(Event::Shield(false), t0 + QUIET), Verdict::Run(_)));
+    }
+    assert_eq!(h.fire(Event::Shield(false), t0 + QUIET), Verdict::Throttled(HookId::Shield));
+}
+
+#[test]
+fn the_shield_hook_needs_shield_configured() {
+    use crate::config::ModuleId as M;
+    // No module feeds it: only a configured `[shield]` does, whatever `modules` hold.
+    assert!(!HookId::Shield.reads(&[M::Quick, M::Shield, M::Notifications], false));
+    assert!(HookId::Shield.reads(&[], true));
+    assert_eq!(HookId::Shield.needs(), "[shield]");
 }
 
 #[test]

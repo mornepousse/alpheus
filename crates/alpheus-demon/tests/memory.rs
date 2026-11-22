@@ -29,11 +29,12 @@ use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeVpn, NmChange, Peer, PrivateBus, PwDump,
     SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder, fake_recorder,
-    fake_source, fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
+    write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DELAY: Duration = Duration::from_secs(10);
@@ -3887,4 +3888,224 @@ fn at_rest_no_wakeups_after_copies() {
     let after_cycle = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("loop-thread wake-ups at rest after a clipboard cycle (5 s): {after_cycle}");
     assert_eq!(after_cycle, 0, "{after_cycle} loop-thread wake-ups in 5 s after a clipboard cycle: {:?}", d.log());
+}
+
+// ---- Shield mode (shield spec § 12): the module, the row, the blocked-USB detail ----
+
+/// A daemon with the Shield module and the quick panel (the Shield row is the panel's first: no
+/// sound, no D-Bus services, no backlight), the `fake-shield` stub of the tests on a private `PATH`
+/// (never a real `pkexec`, `usbguard` or `systemctl`) and a private, empty system bus.
+struct ShieldBed {
+    sway: Sway,
+    _hypr: FakeHyprland,
+    d: Daemon,
+    flag: PathBuf,
+    record: PathBuf,
+    _system: PrivateBus,
+}
+
+/// `configured`: `[shield]` is written; `flag_present`: the flag exists before the daemon starts (the
+/// mode is on); `devices`: how many blocked devices `fake-shield list` prints.
+fn shield_bed(name: &str, configured: bool, flag_present: bool, devices: usize) -> ShieldBed {
+    let system = PrivateBus::start(&format!("{name}-system"));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let flag = sway.runtime.join("shield-state/flag");
+    let record = sway.runtime.join("shield-record");
+    shield_stub(&sway, &flag, &record, devices, 0);
+    if flag_present {
+        std::fs::write(&flag, "").unwrap();
+    }
+    let table = if configured {
+        format!(
+            "[shield]\nflag = {:?}\non = [\"fake-shield\", \"on\"]\noff = [\"fake-shield\", \"off\"]\nblocked = [\"fake-shield\", \"list\"]\nallow = [\"fake-shield\", \"allow\", \"{{id}}\"]\n",
+            flag.display().to_string()
+        )
+    } else {
+        String::new()
+    };
+    let toml =
+        format!("modules = [\"quick\", \"shield\"]\n[osd]\nbacklight_dir = \"{}\"\n{table}", sway.runtime.join("no-backlight").display());
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(&toml), pw_dump: PwDump::Empty, system_bus: Some(&system.address), ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    ShieldBed { sway, _hypr: hypr, d, flag, record, _system: system }
+}
+
+impl ShieldBed {
+    fn lists(&self) -> usize {
+        shield_record(&self.record).iter().filter(|l| l.as_str() == "list").count()
+    }
+
+    /// Waits until `fake-shield list` ran `n` times in all.
+    fn wait_lists(&self, n: usize) {
+        let t = Instant::now();
+        while self.lists() < n {
+            assert!(t.elapsed() < DELAY, "{n} listings: {:?} {:?}", shield_record(&self.record), self.d.log());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn toggle(&self) {
+        assert_eq!(launcher(&self.sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
+    }
+
+    fn key(&self, name: &str) {
+        assert!(wtype(&self.sway, &["-s", "300", "-k", name]).success());
+    }
+
+    /// The `n`-th open of the panel by the verb, Enter on the Shield row (its detail: one listing),
+    /// then, past SCTK's key repeat (it fires once about 0.6 s after a press: older than this
+    /// delivery), the close by the verb.
+    fn detail_cycle(&self, n: usize) {
+        self.toggle();
+        assert!(self.d.wait_for_count("quick shown", n, DELAY), "{:?}", self.d.log());
+        let line = self.d.log().into_iter().rev().find(|l| l.contains("quick shown")).unwrap();
+        assert!(line.contains("quick shown (rows: shield"), "the Shield row is first: {line}");
+        self.key("Return");
+        self.wait_lists(n);
+        std::thread::sleep(Duration::from_millis(1400)); // the listing drawn, the key's repeat timer fired
+        self.toggle();
+        assert!(self.d.wait_for_count("popup closed", n, DELAY), "{:?}", self.d.log());
+    }
+}
+
+/// Shield spec § 12: the module at rest, unconfigured (nothing exists), configured with the mode off,
+/// configured with it on (the glyph drawn). Anonymous memory: configured at most 64 KB over
+/// unconfigured; the total PSS is printed (file pages and the machine's page cache move it ±200 KB).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn shield_pss_at_rest_unconfigured_and_configured() {
+    require_release(cfg!(debug_assertions));
+    let mut report = Vec::new();
+    for (what, configured, present) in [("unconfigured", false, false), ("configured, off", true, false), ("configured, on", true, true)] {
+        let bed = shield_bed(&format!("shield-rest-{}", report.len()), configured, present, 10);
+        std::thread::sleep(TRAY_SETTLE);
+        report.push((what, bed.d.pss_kb(), anon_kb(&bed.d)));
+    }
+    eprintln!("shield at rest, (PSS KB, anonymous KB): {report:?}");
+    let anon = |w: &str| report.iter().find(|(what, ..)| *what == w).map(|(.., a)| *a).unwrap();
+    for w in ["configured, off", "configured, on"] {
+        assert!(anon(w) <= anon("unconfigured") + 64, "{w}: {} KB anonymous vs {} KB unconfigured", anon(w), anon("unconfigured"));
+    }
+}
+
+/// Shield spec § 12: the detail open on 10 blocked devices, closed, and after 10 more cycles. The leak
+/// bounds are on anonymous memory (the shm pools apart), as the other panels' details.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn shield_pss_detail_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bed = shield_bed("shield-detail-cost", true, true, 10);
+    let d = &bed.d;
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_anon = anon_kb(d);
+    let idle_map = smaps_by_mapping(d);
+    bed.toggle();
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    bed.key("Return");
+    bed.wait_lists(1);
+    std::thread::sleep(Duration::from_secs(1)); // read, published and painted
+    let (open, open_shm) = d.pss_and_shm_kb();
+    let open_anon = anon_kb(d);
+    std::thread::sleep(Duration::from_millis(500)); // past the key's repeat and the open's debounce
+    bed.toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_anon = anon_kb(d);
+    let closed_map = smaps_by_mapping(d);
+    eprintln!("shield detail smaps, idle to closed (KB): {}", smaps_moved(&idle_map, &closed_map));
+    for n in 2..=11 {
+        bed.detail_cycle(n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_anon = anon_kb(d);
+    eprintln!("shield detail smaps, closed to cycled (KB): {}", smaps_moved(&closed_map, &smaps_by_mapping(d)));
+    eprintln!(
+        "shield detail PSS (KB): {idle} at rest, {open} with the detail open on 10 devices (cost {}), {closed} closed, \
+         {cycled} after 10 more cycles; the pools: {idle_shm} at rest, {open_shm} open, {closed_shm} closed, {cycled_shm} cycled; \
+         anonymous: {idle_anon} at rest, {open_anon} open, {closed_anon} closed, {cycled_anon} cycled",
+        open.saturating_sub(idle)
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(
+        closed_anon <= idle_anon + ANON_CLOSED,
+        "closed {closed_anon} KB anonymous vs {idle_anon} KB at rest: more than the first open's heap (glyph caches)"
+    );
+    assert!(
+        cycled_anon <= closed_anon + ANON_CYCLED,
+        "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 10 cycles must keep nothing"
+    );
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
+}
+
+/// One window of `REST` away from the minute's tick: the loop thread and the whole daemon.
+fn shield_rest_window(d: &Daemon, what: &str) {
+    const REST: Duration = Duration::from_secs(5);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, what);
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest, {what} (5 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{what}: {main_delta} loop-thread wake-ups in 5 s");
+    assert_eq!(delta, 0, "{what}: {delta} wake-ups in 5 s");
+}
+
+/// Shield spec § 12: 0 loop (and whole-daemon) wake-ups at rest with the mode off, with it on, and
+/// after a detail cycle (the window starting within a second of the close: a one-second timer left
+/// armed, or the switch's grace timer not disarmed, would fall inside it).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_shield() {
+    require_release(cfg!(debug_assertions));
+    let bed = shield_bed("shield-wake", true, false, 10);
+    let d = &bed.d;
+    away_from_the_minute(Duration::from_secs(20));
+    std::thread::sleep(Duration::from_secs(1)); // the first reading of the flag, the bar drawn
+    shield_rest_window(d, "configured, off");
+    // The mode comes on from outside: the flag's watch reads it (no polling).
+    std::fs::write(&bed.flag, "").unwrap();
+    assert!(d.wait_for("shield: now on", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    shield_rest_window(d, "configured, on");
+    bed.detail_cycle(1);
+    let closed_at = Instant::now();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(closed_at.elapsed() < Duration::from_millis(900));
+    shield_rest_window(d, "after a detail cycle");
+}
+
+/// Shield spec § 12: the workers live only while a job runs: after a switch (through the panel's Space
+/// key) and a listing the daemon's thread count is back to its baseline within 3 s.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn shield_threads_back_to_baseline() {
+    require_release(cfg!(debug_assertions));
+    let bed = shield_bed("shield-threads", true, false, 10);
+    let d = &bed.d;
+    let baseline = wait_for_stable_threads(d, Duration::from_secs(5));
+    bed.toggle();
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    bed.key("space"); // the switch on
+    assert!(d.wait_for("shield: now on", DELAY), "{:?}", d.log());
+    bed.key("Return"); // the detail: one listing
+    bed.wait_lists(1);
+    std::thread::sleep(Duration::from_millis(500));
+    bed.toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    let t = Instant::now();
+    let mut last = d.threads();
+    while last != baseline && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(50));
+        last = d.threads();
+    }
+    eprintln!("shield threads: baseline {baseline}, {last} {:?} after the switch and the listing", t.elapsed());
+    assert_eq!(last, baseline, "threads {last} vs the baseline {baseline} 3 s after a switch and a listing");
 }

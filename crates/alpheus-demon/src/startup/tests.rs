@@ -395,3 +395,82 @@ fn the_quick_panel_reads_the_sound() {
     assert_eq!(sound_scope(&[ModuleId::Quick]), Scope::Bar);
     assert!(!wanted(&[ModuleId::Clock]).sound, "nothing else asks for it");
 }
+
+fn shield_in(flag: &str) -> crate::config::ShieldConfig {
+    crate::config::ShieldConfig {
+        flag: flag.into(),
+        on: vec!["x".into(), "on".into()],
+        off: vec!["x".into(), "off".into()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_partial_shield_table_warns_and_turns_off() {
+    let cfg = Path::new("/home/test/.config/alpheus");
+    let mut s = crate::config::ShieldConfig { flag: "/var/lib/test-shield/on".into(), ..Default::default() };
+    let w = resolve_shield(&mut s, cfg).expect("a warning");
+    assert!(w.contains("needs flag, on and off"), "{w}");
+    assert!(!s.configured() && s == crate::config::ShieldConfig::default());
+    // Only an allow: partial too.
+    let mut s = crate::config::ShieldConfig { allow: vec!["x".into(), "{id}".into()], ..Default::default() };
+    assert!(resolve_shield(&mut s, cfg).is_some());
+    // Nothing at all: silent.
+    let mut s = crate::config::ShieldConfig::default();
+    assert_eq!(resolve_shield(&mut s, cfg), None);
+    // A complete one elsewhere: kept, silent.
+    let mut s = shield_in("/var/lib/test-shield/on");
+    assert_eq!(resolve_shield(&mut s, cfg), None);
+    assert!(s.configured());
+}
+
+#[test]
+fn a_flag_sharing_the_config_directory_is_refused() {
+    let cfg = Path::new("/home/test/.config/alpheus");
+    for flag in [
+        "/home/test/.config/alpheus/on",     // in the config directory
+        "/home/test/.config/on",             // in its parent
+        "/home/test/.config/alpheus/sub/on", // a missing directory waiting in the config directory
+        "/home/test/.config/other/on",       // siblings, both possibly missing
+    ] {
+        let mut s = shield_in(flag);
+        let w = resolve_shield(&mut s, cfg).unwrap_or_else(|| panic!("{flag} accepted"));
+        assert!(w.contains("must not share a directory"), "{w}");
+        assert!(!s.configured(), "{flag}");
+    }
+    for flag in ["/var/lib/test-shield/on", "/home/test/on", "/home/test/state/on", "/home/test/.config/other/deeper/on"] {
+        let mut s = shield_in(flag);
+        assert_eq!(resolve_shield(&mut s, cfg), None, "{flag}");
+        assert!(s.configured());
+    }
+}
+
+#[test]
+fn the_flag_location_is_compared_after_lexical_normalisation() {
+    let cfg = Path::new("/home/test/.config/alpheus");
+    for flag in [
+        "/home/test/.config/alpheus/../alpheus/on",
+        "/home/test/x/../.config/alpheus/on",
+        "/home/test/./.config/alpheus/./on",
+        "/home/test/.config/alpheus/sub/../../on",
+    ] {
+        let mut s = shield_in(flag);
+        assert!(resolve_shield(&mut s, cfg).is_some(), "{flag} accepted");
+        assert!(!s.configured(), "{flag}");
+    }
+    let mut s = shield_in("/var/lib/a/../test-shield/on");
+    assert_eq!(resolve_shield(&mut s, cfg), None);
+    assert!(s.configured());
+}
+
+#[test]
+fn settings_carries_the_shield_warning() {
+    let d = std::env::temp_dir().join(format!("alpheus-shield-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("bar.toml"), "[shield]\nflag = \"/var/lib/test-shield/on\"\n").unwrap();
+    let (c, w) = settings(&d);
+    assert!(!c.shield.configured());
+    assert!(w.iter().any(|m| m.starts_with("shield:")), "{w:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -90,7 +90,7 @@ const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
     ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
 }
 
-pub(crate) const COUNT: usize = 18;
+pub(crate) const COUNT: usize = 19;
 
 pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec { segment: Some(|_, _| Some(segments::launcher())), ..row(ModuleId::Launcher, "launcher", GroupKind::Launcher) },
@@ -115,6 +115,13 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Privacy),
         needs: Needs::SOUND.or(Needs::CAMERA),
         ..row(ModuleId::Privacy, "privacy", GroupKind::Privacy)
+    },
+    ModuleSpec {
+        hue: Some(Hue::Green),
+        segment: Some(|bar, _| segments::shield(bar.shield.and_then(|v| v.state))),
+        popup: Some(ModulePopup::Quick),
+        popup_needs_quick: true,
+        ..row(ModuleId::Shield, "shield", GroupKind::Shield)
     },
     ModuleSpec {
         hue: Some(Hue::Blue),

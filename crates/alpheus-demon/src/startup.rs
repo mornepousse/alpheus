@@ -68,6 +68,8 @@ pub enum Mail {
         generation: u64,
         entries: Entries,
     },
+    /// A Shield worker's report (shield spec § 7).
+    Shield(crate::shield::ShieldMail),
     Stop,
 }
 
@@ -79,7 +81,53 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_vpn_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_mixer(&mut config.quick, &launcher.terminal);
-    (config, warning.into_iter().collect())
+    let mut warnings: Vec<String> = warning.into_iter().collect();
+    warnings.extend(resolve_shield(&mut config.shield, directory));
+    (config, warnings)
+}
+
+/// `[shield]` once the config directory is known (shield plan, decisions 8 and 9): a partial table
+/// or a flag whose watch would share a descriptor with the theme's turns Shield mode off, with the
+/// warning to log. The flag's directory and its parent may equal neither the config directory nor
+/// its parent (compared as written: an alias the paths do not show is caught when the watch arms).
+pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &Path) -> Option<String> {
+    if *s == crate::config::ShieldConfig::default() {
+        return None;
+    }
+    let warning = if !s.configured() {
+        Some("shield: needs flag, on and off; Shield mode off")
+    } else {
+        // Compared lexically normalised (`..` and `.` resolved as written).
+        let flag = normalise(Path::new(&s.flag));
+        let config_dir = &normalise(config_dir);
+        let flag_dir = flag.parent();
+        let mine = [flag_dir, flag_dir.and_then(Path::parent)];
+        let theirs = [Some(config_dir.as_path()), config_dir.parent()];
+        let shared = mine.iter().flatten().any(|m| theirs.iter().flatten().any(|t| m == t));
+        shared.then_some("shield.flag: must not share a directory with alpheus's config; Shield mode off")
+    };
+    let warning = warning?;
+    *s = crate::config::ShieldConfig::default();
+    Some(warning.to_string())
+}
+
+/// `path` with its `.` and `..` components resolved lexically (no file system access; a `..` at
+/// the root stays at the root).
+fn normalise(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() && !path.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode
@@ -574,6 +622,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
+        channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
@@ -759,6 +808,12 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
+    // Every child the executor registered is killed with its group and no new one starts: the
+    // pw-dump stream, a launcher source's capture, a Shield action still waiting (a pkexec on its
+    // password is cancelled; a privileged helper already running cannot be signalled and is left to
+    // end, its output being /dev/null). The sound source then sees its stream end and may log one
+    // `sound source down` line just before `shutdown`: accepted, it is the supervisor's own line.
+    state.exec.stop_running();
     // The history is wiped before the app is dropped.
     state.clipboard_guarded("shutdown", |app| app.clipboard_shutdown());
     drop(core.state); // surfaces destroyed

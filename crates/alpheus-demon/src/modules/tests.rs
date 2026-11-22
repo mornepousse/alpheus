@@ -16,9 +16,9 @@ macro_rules! rows {
 }
 
 rows! {
-    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Volume => 5, Network => 6,
-    Bluetooth => 7, Battery => 8, Resources => 9, Tray => 10, Notifications => 11, Osd => 12,
-    Quick => 13, Displays => 14, Timer => 15, Clock => 16, Power => 17,
+    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Shield => 5, Volume => 6,
+    Network => 7, Bluetooth => 8, Battery => 9, Resources => 10, Tray => 11, Notifications => 12, Osd => 13,
+    Quick => 14, Displays => 15, Timer => 16, Clock => 17, Power => 18,
 }
 
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
@@ -48,7 +48,7 @@ fn segments_and_popups_belong_to_the_right_modules() {
     let no_segment: Vec<ModuleId> = MODULES.iter().filter(|m| m.segment.is_none()).map(|m| m.id).collect();
     assert_eq!(no_segment, [ModuleId::Osd, ModuleId::Quick, ModuleId::Displays]);
     let gated: Vec<ModuleId> = MODULES.iter().filter(|m| m.popup_needs_quick).map(|m| m.id).collect();
-    assert_eq!(gated, [ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth]);
+    assert_eq!(gated, [ModuleId::Shield, ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth]);
     assert!(MODULES.iter().filter(|m| m.popup_needs_quick).all(|m| m.popup == Some(ModulePopup::Quick)));
     assert_eq!(ModuleId::Notifications.spec().group, GroupKind::Status, "the bell joins the status block");
 }

@@ -258,12 +258,22 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 18);
+    assert_eq!(ModuleId::ALL.len(), 19);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
     let c = BarConfig::from_text("modules = [\"privacy\", \"clock\"]").unwrap();
     assert_eq!(c.modules, vec![ModuleId::Privacy, ModuleId::Clock]);
+}
+
+#[test]
+fn shield_sits_right_after_privacy_and_is_on_by_default() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Shield), at(ModuleId::Privacy) + 1, "right after privacy");
+    assert_eq!(ModuleId::Shield.name(), "shield");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Shield), "on by default");
+    let c = BarConfig::from_text("modules = [\"shield\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Shield, ModuleId::Clock]);
 }
 
 #[test]
@@ -750,6 +760,7 @@ fn hooks_are_read_in_order() {
         "bluetooth",
         "privacy",
         "displays",
+        "shield",
     ];
     let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
     let c = BarConfig::from_text(&text).unwrap();
@@ -768,6 +779,15 @@ fn hooks_check_their_commands() {
     assert!(e.contains("hooks.vpn: an argument holds a NUL"), "{e}");
     assert!(BarConfig::from_text("[hooks]\nwifi = [\"x\"]").is_err(), "unknown field");
     assert!(BarConfig::from_text("[hooks]\ndnd = []").is_ok());
+}
+
+#[test]
+fn hooks_accept_shield() {
+    let c = BarConfig::from_text("[hooks]\nshield = [\"notify-send\", \"shield\"]\n").unwrap();
+    assert_eq!(c.hooks.shield, ["notify-send", "shield"]);
+    assert!(!c.hooks.is_empty());
+    let e = BarConfig::from_text("[hooks]\nshield = [\" \"]").unwrap_err();
+    assert!(e.contains("hooks.shield"), "{e}");
 }
 
 #[test]
@@ -816,4 +836,67 @@ fn clipboard_is_off_by_default() {
     assert!(BarConfig::from_text("[clipboard]\nenabled = true\n").unwrap().clipboard.enabled);
     let e = BarConfig::from_text("[clipboard]\nenabeld = true\n").unwrap_err();
     assert!(e.contains("enabeld"), "{e}");
+}
+
+fn shield_text() -> &'static str {
+    r#"
+[shield]
+flag = "/var/lib/test-shield/on"
+on = ["pkexec", "/x/helper", "on"]
+off = ["pkexec", "/x/helper", "off"]
+allow = ["pkexec", "/x/helper", "allow", "{id}"]
+"#
+}
+
+#[test]
+fn shield_is_empty_by_default() {
+    let d = BarConfig::default();
+    assert_eq!(d.shield, ShieldConfig::default());
+    assert!(!d.shield.configured());
+    assert!(!BarConfig::from_text("").unwrap().shield.configured());
+}
+
+#[test]
+fn shield_reads() {
+    let c = BarConfig::from_text(shield_text()).unwrap();
+    assert!(c.shield.configured());
+    assert_eq!(c.shield.flag, "/var/lib/test-shield/on");
+    assert_eq!(c.shield.blocked_argv(), ["usbguard", "list-devices", "--blocked"]);
+    assert_eq!(c.shield.on_body(), "Protections for public networks are on.");
+    assert_eq!(c.shield.off_body(), "Back to the usual settings.");
+    let c = BarConfig::from_text(&format!("{}blocked = []\non_text = \"Up\"\n", shield_text())).unwrap();
+    assert!(c.shield.blocked_argv().is_empty());
+    assert_eq!(c.shield.on_body(), "Up");
+    // Only some of the three: not configured (startup warns).
+    let c = BarConfig::from_text("[shield]\nflag = \"/a/b\"\n").unwrap();
+    assert!(!c.shield.configured());
+    assert!(BarConfig::from_text("[shield]\nbogus = 1\n").is_err(), "unknown keys refused");
+}
+
+#[test]
+fn shield_hard_checks_refuse_the_file() {
+    let with = |extra: &str| format!("{}{extra}", shield_text().replace("allow = [\"pkexec\", \"/x/helper\", \"allow\", \"{id}\"]\n", ""));
+    let err = |t: String| BarConfig::from_text(&t).unwrap_err();
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "relative/flag")).contains("shield.flag"));
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/")).contains("shield.flag"), "no file name");
+    // Final fix wave M4: a trailing slash names a directory (`Path::file_name` ignores it).
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield/on/")).contains("shield.flag"));
+    assert!(err(shield_text().replace("/var/lib/test-shield/on", "/var/lib/test-shield//")).contains("shield.flag"));
+    assert!(err(with("allow = [\"x\", \"--id={id}\"]\n")).contains("shield.allow"), "allow_with_a_partial_placeholder_is_refused");
+    assert!(err(with("allow = [\"x\", \"{id}\", \"{id}\"]\n")).contains("shield.allow"));
+    assert!(err(with("allow = [\"x\"]\n")).contains("shield.allow"), "absent {{id}}");
+    assert!(BarConfig::from_text(&with("allow = []\n")).is_ok(), "no allow: list only");
+    assert!(err(with(&format!("on_text = \"{}\"\n", "a".repeat(300)))).contains("shield.on_text"));
+    assert!(err(with("off_text = \"a\\nb\"\n")).contains("shield.off_text"));
+    // Every control character, not only the line breaks (the text is shown in a bubble).
+    // and the format characters that reorder or hide text (bidi controls, zero width, soft hyphen, BOM).
+    for c in ["\\t", "\\u001b", "\\u007f", "\\u0085", "\\u202e", "\\u2066", "\\u200b", "\\u00ad", "\\ufeff", "\\u2060"] {
+        assert!(err(with(&format!("on_text = \"a{c}b\"\n"))).contains("shield.on_text"), "{c}");
+        assert!(err(with(&format!("off_text = \"a{c}b\"\n"))).contains("shield.off_text"), "{c}");
+    }
+    assert!(
+        err(shield_text().replace("\"/x/helper\", \"on\"", "\"\", \"on\"").replace("\"pkexec\", \"\"", "\" \", \"\""))
+            .contains("shield.on")
+    );
+    assert!(err(shield_text().replace("\"off\"]", "\"o\\u0000ff\"]")).contains("shield.off"), "NUL");
 }

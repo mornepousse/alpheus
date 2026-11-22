@@ -28,6 +28,10 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// `outputs-try` is answered once the compositor has answered the configuration (the daemon's
 /// watchdog is 5 s).
 pub const OUTPUTS_TRY_TIMEOUT: Duration = Duration::from_secs(7);
+/// `shield status` runs the blocked-devices read (its own bound is 2 s) before it answers.
+pub const STATUS_TIMEOUT: Duration = Duration::from_secs(4);
+/// The `shield status` text, in bytes.
+pub const MAX_SHIELD_BODY: usize = 16 * 1024;
 
 pub fn socket_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join(SOCKET_NAME)
@@ -87,6 +91,36 @@ impl OsdVerb {
 
     pub fn parse(s: &str) -> Option<OsdVerb> {
         OsdVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
+/// `--shield`'s word (shield spec § 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldVerb {
+    On,
+    Off,
+    Toggle,
+    /// Prints the state, and the blocked USB devices while on.
+    Status,
+    /// Opens the picker of the blocked USB devices in the launcher's box.
+    Allow,
+}
+
+impl ShieldVerb {
+    pub const ALL: [ShieldVerb; 5] = [ShieldVerb::On, ShieldVerb::Off, ShieldVerb::Toggle, ShieldVerb::Status, ShieldVerb::Allow];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            ShieldVerb::On => "on",
+            ShieldVerb::Off => "off",
+            ShieldVerb::Toggle => "toggle",
+            ShieldVerb::Status => "status",
+            ShieldVerb::Allow => "allow",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ShieldVerb> {
+        ShieldVerb::ALL.into_iter().find(|v| v.word() == s)
     }
 }
 
@@ -241,6 +275,9 @@ pub enum Request {
     OutputsKeep,
     /// Reverts the trial that is open: answered Done.
     OutputsRevert,
+    /// Shield mode (shield spec § 9): answered Done, `Reply::Shield` for `status`, Cancelled for an
+    /// escaped picker. An older daemon refuses it as an unknown request.
+    Shield(ShieldVerb),
 }
 
 impl Request {
@@ -267,6 +304,9 @@ impl Request {
         match self {
             Request::Dmenu { .. } => None,
             Request::OutputsTry(_) => Some(OUTPUTS_TRY_TIMEOUT),
+            // The picker waits for the person, as dmenu does.
+            Request::Shield(ShieldVerb::Allow) => None,
+            Request::Shield(ShieldVerb::Status) => Some(STATUS_TIMEOUT),
             _ => Some(REPLY_TIMEOUT),
         }
     }
@@ -288,6 +328,8 @@ pub enum Reply {
     Error(String),
     /// `outputs`: the encoded snapshot (`displays::wire::encode_snapshot`).
     Outputs(String),
+    /// `shield status`: the text to print (`MAX_SHIELD_BODY` bytes at most).
+    Shield(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +357,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
 ///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
 ///   "alpheus-launcher/1 clipboard\n" | "alpheus-launcher/1 clipboard-clear\n"
+///   "alpheus-launcher/1 shield on|off|toggle|status|allow\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
 ///   "alpheus-launcher/1 outputs-try <body_len>\n" <body bytes>
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
@@ -349,6 +392,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         },
         Request::Timer(TimerVerb::Start(secs)) => format!("{MAGIC} timer start {secs}\n").into_bytes(),
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
+        Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -393,6 +437,7 @@ enum Header {
     OutputsTry { body: usize },
     OutputsKeep,
     OutputsRevert,
+    Shield(ShieldVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -544,6 +589,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Outputs => Some(Request::Outputs),
         Header::OutputsKeep => Some(Request::OutputsKeep),
         Header::OutputsRevert => Some(Request::OutputsRevert),
+        Header::Shield(v) => Some(Request::Shield(v)),
         Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
@@ -589,6 +635,9 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         }
         ["timer", word] => {
             TimerVerb::parse_word(word).map(Header::Timer).ok_or_else(|| IpcError::Malformed(format!("unknown timer word {:?}", cut(word))))
+        }
+        ["shield", word] => {
+            ShieldVerb::parse(word).map(Header::Shield).ok_or_else(|| IpcError::Malformed(format!("unknown shield word {:?}", cut(word))))
         }
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),
@@ -654,7 +703,7 @@ fn cut(s: &str) -> String {
     s.chars().take(64).collect()
 }
 
-/// "done\n" | "chosen <len>\n<bytes>" | "outputs <len>\n<bytes>" | "index <n>\n" | "index -\n" | "cancelled\n" | "busy\n" | "error <text>\n"
+/// "done\n" | "chosen <len>\n<bytes>" | "outputs <len>\n<bytes>" | "shield <len>\n<bytes>" | "index <n>\n" | "index -\n" | "cancelled\n" | "busy\n" | "error <text>\n"
 pub fn encode_reply(r: &Reply) -> Vec<u8> {
     match r {
         Reply::Done => b"done\n".to_vec(),
@@ -670,6 +719,11 @@ pub fn encode_reply(r: &Reply) -> Vec<u8> {
         Reply::Error(t) => format!("error {}\n", one_line(t)).into_bytes(),
         Reply::Outputs(s) => {
             let mut out = format!("outputs {}\n", s.len()).into_bytes();
+            out.extend_from_slice(s.as_bytes());
+            out
+        }
+        Reply::Shield(s) => {
+            let mut out = format!("shield {}\n", s.len()).into_bytes();
             out.extend_from_slice(s.as_bytes());
             out
         }
@@ -725,6 +779,17 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, IpcError> {
                 std::cmp::Ordering::Less => Err(IpcError::Truncated),
                 std::cmp::Ordering::Greater => Err(IpcError::Malformed("bytes after the reply".into())),
                 std::cmp::Ordering::Equal => Ok(Reply::Outputs(text(rest.to_vec(), "outputs body")?)),
+            }
+        }
+        Some(("shield", len)) => {
+            let n = number(len, "shield length")?;
+            if n > MAX_SHIELD_BODY {
+                return Err(IpcError::TooLarge("shield body"));
+            }
+            match rest.len().cmp(&n) {
+                std::cmp::Ordering::Less => Err(IpcError::Truncated),
+                std::cmp::Ordering::Greater => Err(IpcError::Malformed("bytes after the reply".into())),
+                std::cmp::Ordering::Equal => Ok(Reply::Shield(text(rest.to_vec(), "shield body")?)),
             }
         }
         Some(("chosen", len)) => {

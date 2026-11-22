@@ -646,3 +646,45 @@ fn env_ok_refuses_what_command_envs_cannot_carry() {
     assert!(!env_ok(&[("A=B", "v")]), "a name holding =");
     assert!(!env_ok(&[("A", "v"), ("B=", "v")]), "one bad pair among good ones");
 }
+
+/// Shield final fix wave I1: a command that writes a lot, late, on its standard output and error still
+/// completes (they are `/dev/null`, never a pipe that closes under it) and its code is returned.
+#[test]
+fn run_silent_waits_and_a_late_writer_never_meets_a_closed_pipe() {
+    let f = std::env::temp_dir().join(format!("alpheus-silent-{}-late", std::process::id()));
+    let _ = std::fs::remove_file(&f);
+    let script =
+        format!("sleep 0.3; head -c 1 /dev/zero || exit 9; head -c 1 /dev/zero >&2 || exit 9; echo done > {}; exit 7", f.display());
+    let t = Instant::now();
+    assert_eq!(exec().run_silent("sh", &["-c", &script]), Ok(Some(7)));
+    assert!(t.elapsed() >= Duration::from_millis(250), "it waited for the command: {:?}", t.elapsed());
+    assert_eq!(std::fs::read_to_string(&f).unwrap().trim(), "done", "the command ran to its end");
+    let _ = std::fs::remove_file(&f);
+}
+
+#[test]
+fn run_silent_reports_a_signal_a_missing_program_and_none_after_closing() {
+    assert_eq!(exec().run_silent("sh", &["-c", "kill -9 $$"]), Ok(None));
+    assert_eq!(exec().run_silent("alpheus-nonexistent-program", &[]), Err(ExecError::NotFound));
+    let e = exec();
+    e.stop_running();
+    assert!(matches!(e.run_silent("sh", &["-c", "true"]), Err(ExecError::Io(_))));
+}
+
+/// `stop_running` kills the group of a command in progress (and its children), and the waiter returns.
+#[test]
+fn stop_running_kills_a_silent_command_s_group() {
+    let f = std::env::temp_dir().join(format!("alpheus-grandchild-{}-silent-stop", std::process::id()));
+    let _ = std::fs::remove_file(&f);
+    let script = format!("sleep 30 & echo $! > {}; wait", f.display());
+    let e = Arc::new(exec());
+    let waiter = {
+        let e = e.clone();
+        std::thread::spawn(move || e.run_silent("sh", &["-c", &script]))
+    };
+    let pid = pid_written(&f);
+    let _ = std::fs::remove_file(&f);
+    e.stop_running();
+    assert_eq!(waiter.join().unwrap(), Ok(None), "ended by the kill");
+    wait_for_death(pid);
+}

@@ -221,10 +221,23 @@ fn shown(mic: bool, camera: bool, screen: bool) -> Privacy {
     p
 }
 
+/// The styles of the cells `glyphs` sit on in a whole bar's grid, under `mc` (the layout is where
+/// `module_colors` acts: a segment alone never sees it).
+fn bar_styles(b: &mut Bar, mc: ModuleColors, glyphs: &str) -> String {
+    b.module_colors = mc;
+    let g = b.grid("HDMI-A-1", 200);
+    let (text, styles) = (g.text(), g.styles());
+    let styles: Vec<char> = styles.chars().collect();
+    text.chars().enumerate().filter(|(_, c)| glyphs.contains(*c)).map(|(i, _)| styles[i]).collect()
+}
+
 /// Privacy spec § 1: each active glyph in its fixed hue, whatever `module_colors` says.
 #[test]
 fn the_privacy_segment_shows_each_active_glyph_in_its_hue() {
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        let mut b = full_bar();
+        b.privacy = shown(true, true, true);
+        assert_eq!(bar_styles(&mut b, mc, "\u{f036c}\u{f0100}\u{f0379}"), "ogr", "in the bar under {mc:?}");
         let s = super::privacy(&shown(true, true, true)).unwrap();
         assert_eq!(draw(&s), ("\u{f036c} \u{f0100} \u{f0379}".into(), "oggrr".into()), "{mc:?}");
         assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Privacy, &Some(Target::Module(ModuleId::Privacy)), true));
@@ -973,4 +986,20 @@ fn the_timer_chip_by_look() {
     for (c, withheld) in [(&running, false), (&paused, true), (&done, false), (&idle, true)] {
         assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
     }
+}
+
+/// Shield spec § 4: the glyph only while on, always green whatever `module_colors` says.
+#[test]
+fn the_shield_glyph_shows_only_while_on() {
+    for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+        let mut b = full_bar();
+        b.shield =
+            Some(crate::shield::ShieldView { state: Some(true), switching: false, failed_until: None, can_list: true, can_allow: true });
+        assert_eq!(bar_styles(&mut b, mc, "\u{f0498}"), "g", "in the bar under {mc:?}");
+        let s = super::shield(Some(true)).unwrap_or_else(|| panic!("{mc:?}"));
+        assert_eq!(draw(&s), ("\u{f0498}".into(), "g".into()), "{mc:?}");
+        assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Shield, &Some(Target::Module(ModuleId::Shield)), true));
+    }
+    assert!(super::shield(Some(false)).is_none(), "off: nothing");
+    assert!(super::shield(None).is_none(), "unknown: nothing");
 }

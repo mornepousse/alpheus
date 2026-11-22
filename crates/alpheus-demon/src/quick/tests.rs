@@ -34,6 +34,7 @@ struct World {
     profile: ProfileState,
     config: QuickConfig,
     bluetooth: Option<BtState>,
+    shield: Option<crate::shield::ShieldView>,
 }
 
 impl World {
@@ -47,6 +48,7 @@ impl World {
             profile: ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() },
             config: QuickConfig::default(),
             bluetooth: None,
+            shield: None,
         }
     }
 
@@ -58,6 +60,7 @@ impl World {
             profile: Some(&self.profile),
             config: &self.config,
             bluetooth: self.bluetooth.as_ref(),
+            shield: self.shield,
         }
     }
 }
@@ -341,7 +344,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
 #[test]
 fn with_nothing_to_show_the_panel_is_empty() {
     let c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
-    let l = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &c, bluetooth: None };
+    let l = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &c, bluetooth: None, shield: None };
     let q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 40);
     assert!(q.is_empty(&l), "nothing to open: the wiring logs it and opens nothing");
     assert!(lines(&l, &q).is_empty());
@@ -1413,8 +1416,8 @@ macro_rules! rows {
 }
 
 rows! {
-    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Vpn => 5, Mic => 6, Mixer => 7, Dnd => 8,
-    Profile => 9, KeepAwake => 10, NightLight => 11, Session => 12,
+    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Vpn => 5, Shield => 6, Mic => 7, Mixer => 8,
+    Dnd => 9, Profile => 10, KeepAwake => 11, NightLight => 12, Session => 13,
 }
 
 /// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
@@ -1435,6 +1438,7 @@ fn one_spec_per_row_in_variant_order() {
             "wifi",
             "bluetooth",
             "vpn",
+            "shield",
             "mic",
             "mixer",
             "dnd",
@@ -1445,7 +1449,7 @@ fn one_spec_per_row_in_variant_order() {
         ]
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
-    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
 }
 
 /// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
@@ -1907,4 +1911,183 @@ fn the_window_follows_the_selection_in_the_vpn_detail() {
     assert_eq!(all[q.selected_line(&all).expect("selected")], Line::VpnMore);
     assert_eq!(q.top, all.len() - 6, "More… at the bottom of the window");
     assert_eq!(texts(&rows(&l, &q)).last().map(|s| s.trim()), Some("More…"));
+}
+
+#[test]
+fn a_click_on_the_shield_module_asks_for_the_shield_focus() {
+    assert_eq!(Focus::of(&Target::Module(ModuleId::Shield)), Focus::Shield);
+}
+
+// ---- the Shield row (shield spec § 5) ----
+
+fn shield_view(state: Option<bool>, can_list: bool, can_allow: bool) -> crate::shield::ShieldView {
+    crate::shield::ShieldView { state, switching: false, failed_until: None, can_list, can_allow }
+}
+
+fn shield_world(view: crate::shield::ShieldView) -> World {
+    let mut w = World::full();
+    w.shield = Some(view);
+    w
+}
+
+#[test]
+fn the_shield_row_sits_under_vpn_and_needs_shield() {
+    let none = World::full();
+    assert!(!shown(&none.live(), &quick(&none, Focus::Top)).contains(&Row::Shield), "no [shield]: no row");
+    let w = shield_world(shield_view(Some(false), true, true));
+    let (l, q) = (w.live(), quick(&w, Focus::Top));
+    let all = shown(&l, &q);
+    let at = all.iter().position(|r| *r == Row::Shield).expect("the row");
+    assert_eq!(all[at + 1], Row::Mic);
+    assert_eq!(ROWS[Row::Shield as usize].group, 1);
+    assert_eq!(Row::Shield as usize, Row::Vpn as usize + 1, "right under the VPN row");
+    assert_eq!(quick(&w, Focus::Shield).selected, Row::Shield, "a click on the glyph selects the row");
+    assert!(!quick(&w, Focus::Shield).shield.open, "and opens nothing");
+    assert_eq!(quick(&none, Focus::Shield).selected, Row::Volume, "no row: the first one");
+}
+
+#[test]
+fn the_shield_row_draws_its_switch() {
+    let text = |v: crate::shield::ShieldView| {
+        let w = shield_world(v);
+        let (l, q) = (w.live(), quick(&w, Focus::Shield));
+        let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Shield)).unwrap();
+        texts(&rows(&l, &q))[at].clone()
+    };
+    let glyph = crate::segments::SHIELD;
+    assert_eq!(text(shield_view(Some(true), true, true)), format!(" {glyph} Shield{} ON  ●", " ".repeat(17)));
+    assert_eq!(text(shield_view(Some(false), true, true)), format!(" {glyph} Shield{} ○ off", " ".repeat(17)));
+    assert!(text(shield_view(None, true, true)).ends_with(" ·"));
+    let mut v = shield_view(Some(false), true, true);
+    v.switching = true;
+    assert!(text(v).ends_with(" …"), "{}", text(v));
+    let mut v = shield_view(Some(false), true, true);
+    v.failed_until = Some(Instant::now() + Duration::from_secs(4));
+    assert!(text(v).ends_with(" failed"), "{}", text(v));
+}
+
+#[test]
+fn space_toggles_and_a_repeat_runs_nothing() {
+    let t = Instant::now();
+    let w = shield_world(shield_view(Some(false), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Shield(ShieldAsk::Toggle));
+    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space starts one command");
+    let mut v = shield_view(Some(false), true, true);
+    v.switching = true;
+    let w = shield_world(v);
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "while a command runs");
+    let w = shield_world(shield_view(None, true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "unknown state");
+}
+
+#[test]
+fn enter_opens_the_detail_unless_blocked_is_empty() {
+    let t = Instant::now();
+    for key in [Key::Enter, Key::Right] {
+        let w = shield_world(shield_view(Some(true), true, true));
+        let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+        assert_eq!(q.key(&l, key, false, t), QuickAction::Redraw);
+        assert!(q.shield.open && q.shield.read_wanted, "{key:?}");
+        assert_eq!(lines(&l, &q)[0], Line::ShieldHeader);
+    }
+    let w = shield_world(shield_view(Some(true), false, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing);
+    assert!(!q.shield.open);
+    // A left click on the row is Enter.
+    let w = shield_world(shield_view(Some(true), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Shield)).unwrap() as u16;
+    q.press(&l, (5, at), Button::Left, t);
+    assert!(q.shield.open);
+}
+
+#[test]
+fn escape_comes_back_to_the_row() {
+    let t = Instant::now();
+    let w = shield_world(shield_view(Some(true), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    q.key(&l, Key::Enter, false, t);
+    assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
+    assert!(!q.shield.open && q.selected == Row::Shield, "back on the row, the panel open");
+    assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Close, "a second Esc closes the panel");
+    // The row going (the config reloaded away, say) closes the detail under it.
+    q.key(&l, Key::Enter, false, t);
+    let none = World::full();
+    q.fit(&none.live());
+    assert!(!q.shield.open);
+}
+
+#[test]
+fn a_device_row_is_reached_through_the_panels_keys() {
+    let t = Instant::now();
+    let w = shield_world(shield_view(Some(true), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    q.key(&l, Key::Enter, false, t);
+    q.shield.set_listing(
+        &l.shield.unwrap(),
+        Ok(vec![crate::shield_usb::UsbDevice { id: 7, vid_pid: "1234:5678".into(), name: "Test Stick".into() }]),
+    );
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Shield(ShieldAsk::Allow(7)));
+    // A repeat of Enter allows nothing.
+    assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing);
+}
+
+#[test]
+fn failed_ends_with_a_redraw_and_is_not_stale() {
+    let t = Instant::now();
+    let mut v = shield_view(Some(false), true, true);
+    v.failed_until = Some(t + Duration::from_secs(4));
+    let w = shield_world(v);
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    q.fit(&l);
+    assert_eq!(q.deadline(), Some(t + Duration::from_secs(4)));
+    let d = q.due(t + Duration::from_secs(1));
+    assert!(!d.redraw && !d.shield_failed);
+    let d = q.due(t + Duration::from_secs(4));
+    assert!(d.redraw && d.shield_failed, "the wiring clears the model's `failed`");
+    assert_eq!(q.deadline(), None);
+}
+
+#[test]
+fn shield_open_detail_opens_on_the_detail() {
+    // What `App::shield_open_detail` does inside the panel: the row selected, its detail open and
+    // one read asked, the focus asked at open honoured (no caller reaches it end to end before the
+    // tools menu delivery).
+    let w = shield_world(shield_view(Some(true), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.selected, Row::Shield);
+    assert_eq!(q.open_shield(&l), QuickAction::Redraw);
+    assert!(q.shield.open && q.shield.read_wanted);
+    assert_eq!(lines(&l, &q)[0], Line::ShieldHeader);
+    // Without a listable `blocked` nothing opens.
+    let w = shield_world(shield_view(Some(true), false, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.open_shield(&l), QuickAction::Nothing);
+    assert!(!q.shield.open);
+}
+
+#[test]
+fn one_detail_at_a_time() {
+    let w = shield_world(shield_view(Some(true), true, true));
+    let l = w.live();
+    let mut q = quick(&w, Focus::Shield);
+    assert!(!q.other_detail_open());
+    q.vpn.open = true;
+    assert!(!q.other_detail_open(), "the VPN detail closes in place: no panel re-open");
+    q.open_shield(&l);
+    assert!(q.shield.open && !q.vpn.open, "the VPN detail closed in place");
+    q.dnd.open = true;
+    q.open_shield(&l);
+    assert!(!q.dnd.open, "and the do-not-disturb one");
+    assert!(!q.other_detail_open());
+    // Orders-carrying details (Bluetooth) and Wi-Fi are the wiring's: it sees them and re-opens the panel.
+    q.bt.open = true;
+    assert!(q.other_detail_open());
+    q.bt.open = false;
+    q.wifi.open = true;
+    assert!(q.other_detail_open());
 }

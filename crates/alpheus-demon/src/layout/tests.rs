@@ -574,6 +574,33 @@ fn privacy_is_its_own_block_with_no_hue_removed_just_before_power() {
     assert_eq!(REMOVAL[REMOVAL.len() - 2..], [ModuleId::Privacy, ModuleId::Power]);
 }
 
+/// Shield spec § 4: its own block, always green, dropped on a narrow bar just before privacy.
+#[test]
+fn shield_is_its_own_block_dropped_just_before_privacy() {
+    assert_eq!(ModuleId::Shield.spec().group, GroupKind::Shield);
+    assert_eq!(ModuleId::Shield.spec().hue, Some(Hue::Green));
+    assert_eq!(REMOVAL[REMOVAL.len() - 3..], [ModuleId::Shield, ModuleId::Privacy, ModuleId::Power]);
+    let mut seen_without_shield = false;
+    for style in BarStyle::ALL {
+        let mut b = styled(bar_with_right_modules(), style);
+        let at = b.config.modules.iter().position(|m| *m == ModuleId::Volume).unwrap();
+        b.config.modules.splice(at..at, [ModuleId::Privacy, ModuleId::Shield]);
+        b.shield =
+            Some(crate::shield::ShieldView { state: Some(true), switching: false, failed_until: None, can_list: false, can_allow: false });
+        let b = with_mic(b);
+        for w in (45u16..=140).rev() {
+            let g = b.grid("HDMI-A-1", w);
+            let shown = |m: ModuleId| g.zones().iter().any(|z| z.target == Target::Module(m));
+            if !shown(ModuleId::Shield) {
+                seen_without_shield |= shown(ModuleId::Privacy);
+            } else {
+                assert!(shown(ModuleId::Privacy), "{style:?} at {w}: privacy outlives shield");
+            }
+        }
+    }
+    assert!(seen_without_shield, "a width where shield is gone and privacy stays");
+}
+
 /// On a narrow bar, whatever the style, a shown capture outlives the tray, the title and the
 /// system indicators: only the launcher button and the power button leave after it.
 #[test]
@@ -851,7 +878,7 @@ fn the_timer_is_a_block_of_its_own_before_the_clock() {
     assert_eq!(ModuleId::Timer.spec().hue, Some(Hue::Yellow));
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
     assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock), "just before the clock");
-    assert_eq!(REMOVAL[REMOVAL.len() - 4..], [ModuleId::Launcher, ModuleId::Timer, ModuleId::Privacy, ModuleId::Power]);
+    assert_eq!(REMOVAL[REMOVAL.len() - 5..], [ModuleId::Launcher, ModuleId::Timer, ModuleId::Shield, ModuleId::Privacy, ModuleId::Power]);
     // Its own yellow block under a block style.
     let mut b = with_timer(bar());
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];

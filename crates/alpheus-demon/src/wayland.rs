@@ -502,6 +502,8 @@ pub struct App {
     pub(crate) battery_alerts: Option<crate::battery_alert::BatteryAlerts>,
     /// The event hooks (hooks_app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks_app::HooksApp>,
+    /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
+    pub(crate) shield: Option<crate::shield_app::ShieldApp>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
     pub(crate) osd: crate::osd_surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
@@ -617,6 +619,7 @@ impl App {
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         let hooks = crate::hooks_app::HooksApp::new(&bar.config.hooks);
+        let shield = crate::shield_app::ShieldApp::new(&bar.config.shield);
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
@@ -670,6 +673,7 @@ impl App {
             bubbles: crate::bubbles_surface::BubbleSurface::new(),
             battery_alerts,
             hooks,
+            shield,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),

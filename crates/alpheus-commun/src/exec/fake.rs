@@ -1,7 +1,7 @@
 //! Fake executor for tests: programmed responses, logged calls. An
 //! unprogrammed command replies "not found": a test can NEVER reach a real tool.
 
-use super::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
+use super::{CaptureEnd, CaptureLimits, Captured, ExecError, Executor, Output, Stream};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -14,7 +14,9 @@ pub struct FakeExecutor {
     responses: Mutex<HashMap<String, Result<Output, ExecError>>>,
     streams: Mutex<HashMap<String, Result<Vec<u8>, ExecError>>>,
     captures: Mutex<HashMap<String, Result<Captured, ExecError>>>,
+    limits: Mutex<Vec<CaptureLimits>>,
     calls: Mutex<Vec<String>>,
+    stops: Mutex<usize>,
     inputs: Mutex<Vec<(String, Vec<u8>)>>,
     envs: Mutex<Vec<EnvCall>>,
     unsets: Mutex<Vec<Vec<String>>>,
@@ -59,6 +61,16 @@ impl FakeExecutor {
     /// Each `spawn_with_env`'s removed names, in order (parallel to `envs`).
     pub fn unsets(&self) -> Vec<Vec<String>> {
         self.unsets.lock().unwrap().clone()
+    }
+
+    /// How many times `stop_running` was called.
+    pub fn stops(&self) -> usize {
+        *self.stops.lock().unwrap()
+    }
+
+    /// The limits each `capture` was given, in order.
+    pub fn capture_limits(&self) -> Vec<CaptureLimits> {
+        self.limits.lock().unwrap().clone()
     }
 
     /// Programs the output of the stream "prog arg1 arg2" (then its end).
@@ -142,10 +154,29 @@ impl Executor for FakeExecutor {
         }
     }
 
-    fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
+    fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError> {
         let l = line(prog, args);
+        self.limits.lock().unwrap().push(limits);
         self.calls.lock().unwrap().push(l.clone());
         self.captures.lock().unwrap().get(&l).cloned().unwrap_or(Err(ExecError::NotFound))
+    }
+
+    /// Answers from the programmed captures: an `Exited` code is the code, anything else `None`.
+    fn run_silent(&self, prog: &str, args: &[&str]) -> Result<Option<i32>, ExecError> {
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        match self.captures.lock().unwrap().get(&l).cloned() {
+            Some(Ok(c)) => Ok(match c.end {
+                CaptureEnd::Exited(code) => code,
+                _ => None,
+            }),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn stop_running(&self) {
+        *self.stops.lock().unwrap() += 1;
     }
 }
 
