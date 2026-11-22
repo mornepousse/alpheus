@@ -216,13 +216,13 @@ fn the_media_files_have_no_panicking_path() {
 }
 
 /// Small features 1, notification rules: the rules never name an app or a text in a log, and
-/// notify.rs, the pure model, logs nothing.
+/// notify/mod.rs, the pure model, logs nothing.
 #[test]
 fn the_notification_rules_log_nothing() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/mod.rs")).unwrap();
     let prod = production_code(&text);
     for log in ["log(", "log::write", "crate::log"] {
-        assert!(!prod.contains(log), "notify.rs logs nothing ({log})");
+        assert!(!prod.contains(log), "notify/mod.rs logs nothing ({log})");
     }
 }
 
@@ -2305,11 +2305,11 @@ fn every_dnd_change_goes_through_dnd_apply() {
         }
     }
     assert!(prod.contains("self.dnd ="), "dnd_apply sets it");
-    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify_app.rs");
+    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify/app.rs");
 }
 
 /// No panic in the notification server's production code: its model,
-/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, hold no `.expect(`,
+/// consumer, bubbles, panel (and its wiring) and state files, and the signal builders in bus.rs, hold no `.expect(`,
 /// `.unwrap()` nor `panic!(` in their production code (`production_code`: everything but the items
 /// that follow `#[cfg(test)]`).
 #[test]
@@ -2326,6 +2326,7 @@ fn the_notification_server_has_no_panicking_path() {
         "notify/bubbles.rs",
         "notify/bubbles_surface.rs",
         "notify/panel.rs",
+        "notify/panel_app.rs",
         "state_file.rs",
         "session_bus/codec.rs",
     ] {
