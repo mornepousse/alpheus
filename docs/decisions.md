@@ -843,3 +843,37 @@ the opposite of the camera watch, which has an instance of its own.
 Date: 2026-11-21 · Source: shield spec § 3 and § 14, item 4
 
 Status: awaiting confirmation at the trial (shield spec § 14: its decisions are confirmed at the trial)
+
+### The displays are changed by the daemon, and its trial lives there
+
+The resident daemon, not the control center, speaks the compositor's output protocol and holds the
+15 s "keep these settings?" trial. The hotplug behaviour needs the daemon resident anyway, the control
+center must stay free of Wayland (a boundaries test), and a control center that dies mid-trial can no
+longer leave a broken layout, because the daemon reverts at the deadline.
+
+Date: 2026-10-30 · Source: displays protocol spec, "Designer's calls", item 1
+
+### displays.toml is read when the debounce ends, never watched
+
+The daemon reads `displays.toml` at the moment it evaluates the profiles (after the debounce that follows
+a change of screens), not before: it does not watch the file and does not keep it between evaluations
+(reason not recorded).
+
+Date: 2026-10-30 · Source: displays protocol spec § 1, "The daemon applies profiles on hotplug"
+
+### A DisplayLink screen is told from the DRM directory, once per screen name
+
+A screen is DisplayLink when its connector's DRM card is driven by `evdi`: the `card*-<name>` entry of
+`[displays] drm_dir` (default `/sys/class/drm`) whose driver link ends in `evdi`. The answer is read once
+for each new screen name and never watched, and nothing under `/dev` is opened. The directory is
+configurable so that tests can point elsewhere (reason for reading once: not recorded).
+
+Date: 2026-10-30 · Source: displays protocol spec § 1, "DisplayLink detection" (with its amendment at the final review)
+
+### A screen's identity and a profile file's errors are never logged
+
+A profile's name is the user's own word and may be logged (`displays: profile "<name>" does not resolve`);
+a screen's identity is device data and never is, and an invalid `displays.toml` is logged as one fixed line
+with no error text, because the error may quote a screen's identity.
+
+Date: 2026-10-30 · Source: displays protocol spec § 1 ("Match": profile names may be logged, screen identities never are); the code's comment on the invalid-file line

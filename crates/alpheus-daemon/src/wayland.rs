@@ -432,7 +432,7 @@ pub struct App {
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
-    /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
+    /// The screens through the output management protocol (outputs/app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
     /// The clipboard history (clipboard spec); None with `[clipboard] enabled` off (nothing bound) or

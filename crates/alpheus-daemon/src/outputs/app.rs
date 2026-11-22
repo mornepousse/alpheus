@@ -1,9 +1,31 @@
-//! The displays' wiring (displays spec § 1): the output manager bound by `outputs::wlr`, its
-//! events turned into the controller's, the controller's actions run, and one `DeadlineTimer`
-//! following `Controller::next_deadline` (the debounce, the watchdog, the trial or the retry of a
-//! profile the 3-a-minute limit skipped; none at rest).
-//! DisplayLink heads are told from `[displays] drm_dir`, read once per new head name, never
-//! watched, nothing opened under /dev. Logs only the spec's fixed lines.
+//! The displays' wiring on the daemon's state: the output manager bound by `wlr.rs`, its events turned
+//! into the controller's, the controller's actions run, and the replies to the socket's displays
+//! verbs.
+//!
+//! This is the glue between three things. `wlr.rs` speaks the compositor's output protocol; `control.rs`
+//! is the pure controller (one configuration in flight, the hotplug debounce, the automatic profiles,
+//! the DisplayLink 120 Hz rule and the 15 s trial); `model.rs` is the model of the heads. This file hands
+//! the controller what happens (a `done`, a verb, the timer firing) and carries out what it answers: it
+//! sends a configuration, writes a log line, answers the waiting client, tells the hooks which profile
+//! was applied. It is the only file that sends a configuration (a guardrail, `the_daemon_only_reads_from_the_compositor`,
+//! checks that), so every change goes through the controller's rules.
+//!
+//! One `DeadlineTimer` follows `Controller::next_deadline`: the debounce, the watchdog, the trial, or the
+//! retry of a profile the 3-a-minute limit skipped; none at rest. DisplayLink heads are told from
+//! `[displays] drm_dir`, read once per new head name, never watched, and nothing is opened under `/dev`.
+//!
+//! Never:
+//! - send a configuration that the controller did not ask for, or write to the compositor in any other
+//!   way (power management included);
+//! - write a screen's identity or an error text that may quote one into a log line: only the spec's fixed
+//!   lines, and a profile's name, which is the user's own word (`profile_line`);
+//! - start a thread or a command, or read anything unbounded: `displays.toml` is read capped, from a
+//!   regular file only (the module is checked by `the_tray_spawns_no_thread`).
+//!
+//! See: docs/specs/2026-10-30-alpheus-displays-protocol-design.md (§§ 1 and 2),
+//! docs/features/displays.md, and docs/decisions.md ("The displays are changed by the daemon, and its
+//! trial lives there", "displays.toml is read when the debounce ends, never watched", "A DisplayLink
+//! screen is told from the DRM directory, once per screen name").
 
 use crate::config::{DisplaysConfig, ModuleId};
 use crate::deadline::DeadlineTimer;
@@ -101,7 +123,12 @@ impl OutputsApp {
 /// A displays verb behind the error boundary of the other verbs: a panic (a hostile body, a
 /// bug) answers `internal error` and never takes the bar down.
 fn verb_guarded(f: impl FnOnce() -> Option<Reply>) -> Option<Reply> {
-    guarded("displays verb", f).unwrap_or_else(|| Some(Reply::Error("internal error".into())))
+    // `guarded` gives None when `f` panicked; otherwise the verb's own reply, which is itself an
+    // `Option` (None: a try whose client waits), hence the double layer.
+    match guarded("displays verb", f) {
+        Some(reply) => reply,
+        None => Some(Reply::Error("internal error".into())),
+    }
 }
 
 /// Runs the controller's actions; `send` builds and sends one configuration (false: it could
@@ -181,11 +208,13 @@ pub(crate) fn verb(
 /// The answer to a displays verb when there is no controller: the module is off, or the
 /// compositor has no output manager.
 pub(crate) fn unavailable(module_on: bool) -> Reply {
-    Reply::Error(if module_on { ERROR_NO_MANAGER } else { ERROR_OFF }.into())
+    let why = if module_on { ERROR_NO_MANAGER } else { ERROR_OFF };
+    Reply::Error(why.into())
 }
 
 /// The client of the try in flight, and the watch on its hang-up (edge-triggered, as the
-/// dmenu client's: a client that half-closed would stay readable). At most one.
+/// dmenu client's: a client that half-closed would stay readable). At most one. The watch exists
+/// only while the client waits for the compositor's answer (the watchdog's 5 s at most).
 #[derive(Default)]
 pub(crate) struct TryClient {
     pending: Option<Pending>,
@@ -233,7 +262,9 @@ impl TryClient {
     /// The client hung up: it is dropped (its answer, when it comes, goes nowhere). True when
     /// nobody waits any more.
     pub(crate) fn check(&mut self) -> bool {
-        if self.pending.as_ref().is_some_and(Pending::hung_up) {
+        if let Some(pending) = &self.pending
+            && pending.hung_up()
+        {
             self.pending = None;
         }
         if self.pending.is_none() {
@@ -334,7 +365,8 @@ impl App {
         self.displays_applied();
     }
 
-    /// The try's client watch fired: true once nobody waits (the watch is removed).
+    /// The try's client watch fired: true once nobody waits (the watch is removed). `is_none_or` is
+    /// true when there are no displays at all, so a watch left behind removes itself.
     fn displays_client_check(&mut self) -> bool {
         self.displays.as_mut().is_none_or(|d| d.client.check())
     }
@@ -420,13 +452,22 @@ impl InvalidFile {
 /// right under the connector is accepted too. Links are read, never followed into files.
 pub(crate) fn is_displaylink(drm_dir: &Path, name: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(drm_dir) else { return false };
-    entries.flatten().take(MAX_DRM_ENTRIES).any(|e| {
-        e.file_name().to_str().and_then(connector_of) == Some(name)
-            && ["device/device/driver", "device/driver"].iter().any(|link| {
-                std::fs::read_link(e.path().join(link))
-                    .is_ok_and(|target| target.file_name().is_some_and(|f| f.to_string_lossy().ends_with("evdi")))
-            })
-    })
+    // `flatten` skips the entries that could not be read.
+    for entry in entries.flatten().take(MAX_DRM_ENTRIES) {
+        let file_name = entry.file_name();
+        let Some(entry_name) = file_name.to_str() else { continue };
+        if connector_of(entry_name) != Some(name) {
+            continue;
+        }
+        for link in ["device/device/driver", "device/driver"] {
+            let Ok(target) = std::fs::read_link(entry.path().join(link)) else { continue };
+            let Some(driver) = target.file_name() else { continue };
+            if driver.to_string_lossy().ends_with("evdi") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The connector of a `card<N>-<connector>` entry.
@@ -436,7 +477,12 @@ fn connector_of(entry: &str) -> Option<&str> {
     if digits == 0 {
         return None;
     }
-    rest[digits..].strip_prefix('-').filter(|c| !c.is_empty())
+    // The digits are ASCII, so `digits` is a character boundary and the slice cannot panic.
+    let connector = rest[digits..].strip_prefix('-')?;
+    if connector.is_empty() {
+        return None;
+    }
+    Some(connector)
 }
 
 /// The DisplayLink flag of each head, read once per new head name (`is_displaylink` is
@@ -464,13 +510,16 @@ impl DisplayLinks {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the displays' wiring: the DRM directory, `displays.toml` reading, the verbs against a
+    //! controller with a fake sender, and the waiting client. No Wayland and no real `/sys`.
+
     use super::*;
     use alpheus_common::temp_path::TempPath;
     use std::os::unix::fs::symlink;
 
     /// A sysfs-shaped tree: the connector's `device` links to its card, whose `device/driver`
     /// names the driver.
-    fn card(drm: &Path, card: &str, driver: &str, connectors: &[&str]) {
+    fn add_drm_card(drm: &Path, card: &str, driver: &str, connectors: &[&str]) {
         std::fs::create_dir_all(drm.join(card).join("device")).unwrap();
         symlink(format!("../../../bus/pci/drivers/{driver}"), drm.join(card).join("device/driver")).unwrap();
         for c in connectors {
@@ -482,8 +531,8 @@ mod tests {
     #[test]
     fn displaylink_detection_reads_the_driver_link() {
         let drm = TempPath::dir("drm-displaylink");
-        card(&drm, "card0", "i915", &["eDP-1", "DVI-I-10", "HDMI-A-1"]);
-        card(&drm, "card2", "evdi", &["DVI-I-1", "HDMI-A-11"]);
+        add_drm_card(&drm, "card0", "i915", &["eDP-1", "DVI-I-10", "HDMI-A-1"]);
+        add_drm_card(&drm, "card2", "evdi", &["DVI-I-1", "HDMI-A-11"]);
         // The connector's own `device/driver` (the brief's shape).
         std::fs::create_dir_all(drm.join("card3-DP-5/device")).unwrap();
         symlink("../../../../bus/platform/drivers/evdi", drm.join("card3-DP-5/device/driver")).unwrap();
@@ -497,7 +546,22 @@ mod tests {
         assert!(!is_displaylink(&drm.join("missing"), "DVI-I-1"), "no directory: not DisplayLink");
     }
 
-    fn head(name: &str) -> Head {
+    #[test]
+    fn a_driver_name_must_end_in_evdi_and_an_unreadable_name_is_not_displaylink() {
+        use std::os::unix::ffi::OsStrExt;
+        let drm = TempPath::dir("drm-driver-names");
+        add_drm_card(&drm, "card1", "nvidia-evdi", &["DP-7"]);
+        add_drm_card(&drm, "card2", "evdi-extra", &["DP-8"]);
+        add_drm_card(&drm, "card3", "i915", &["eDP-1"]);
+        // A directory whose name is not UTF-8 is skipped, never taken for a match.
+        std::fs::create_dir(drm.join(std::ffi::OsStr::from_bytes(b"card4-DP-9\xff"))).unwrap();
+        assert!(is_displaylink(&drm, "DP-7"), "a driver name ending in evdi");
+        assert!(!is_displaylink(&drm, "DP-8"), "a driver name that only starts with evdi");
+        assert!(!is_displaylink(&drm, "eDP-1"), "another screen is not claimed by the unreadable entry");
+    }
+
+    /// An enabled head called `name`, with nothing else filled in.
+    fn a_head(name: &str) -> Head {
         Head {
             name: name.into(),
             description: String::new(),
@@ -565,14 +629,14 @@ placement = { x = 0, y = 0 }
             reads.push(n.to_string());
             n.starts_with("DVI")
         };
-        let mut heads = vec![head("eDP-1"), head("DVI-I-1")];
+        let mut heads = vec![a_head("eDP-1"), a_head("DVI-I-1")];
         links.mark(&mut heads, &mut read);
         assert_eq!((heads[0].displaylink, heads[1].displaylink), (false, true));
-        let mut again = vec![head("eDP-1"), head("DVI-I-1")];
+        let mut again = vec![a_head("eDP-1"), a_head("DVI-I-1")];
         links.mark(&mut again, &mut read);
         assert!(again[1].displaylink, "kept from the first read");
-        links.mark(&mut [head("eDP-1")], &mut read);
-        let mut back = vec![head("eDP-1"), head("DVI-I-1")];
+        links.mark(&mut [a_head("eDP-1")], &mut read);
+        let mut back = vec![a_head("eDP-1"), a_head("DVI-I-1")];
         links.mark(&mut back, &mut read);
         assert!(back[1].displaylink);
         assert_eq!(reads, ["eDP-1", "DVI-I-1", "DVI-I-1"], "a head that left and came back is new");
@@ -586,8 +650,8 @@ placement = { x = 0, y = 0 }
     use std::time::Duration;
 
     /// An enabled 1920x1080 60 Hz head at `x`.
-    fn moded(name: &str, x: i32) -> Head {
-        let mut h = head(name);
+    fn a_head_with_a_mode(name: &str, x: i32) -> Head {
+        let mut h = a_head(name);
         h.make = format!("Make {name}");
         h.modes = vec![HeadMode { width: 1920, height: 1080, mhz: 60_000, preferred: true }];
         h.current = Some(0);
@@ -596,12 +660,13 @@ placement = { x = 0, y = 0 }
     }
 
     /// A controller that read two screens side by side.
-    fn ready(now: Instant) -> Controller {
+    fn a_controller_with_two_screens(now: Instant) -> Controller {
         let mut c = Controller::new(false);
-        c.on_event(Event::Done(vec![moded("DP-1", 0), moded("DP-2", 1920)]), now);
+        c.on_event(Event::Done(vec![a_head_with_a_mode("DP-1", 0), a_head_with_a_mode("DP-2", 1920)]), now);
         c
     }
 
+    /// The body of an `outputs-try` that puts `output` at `x` with a scale of 2.
     fn scale_two(output: &str, x: i32) -> String {
         let mode = Mode { width: 1920, height: 1080, refresh: 60 };
         encode_desired(&[Step { output: output.into(), active: Some(Active { mode, x, y: 0, scale: Scale(2000), transform: 0 }) }])
@@ -612,6 +677,7 @@ placement = { x = 0, y = 0 }
     struct Sent(Vec<(u64, Vec<Target>)>);
 
     impl Sent {
+        /// A sender that records every configuration and says it was built.
         fn ok(&mut self) -> impl FnMut(u64, &[Target]) -> bool + '_ {
             |g, t| {
                 self.0.push((g, t.to_vec()));
@@ -620,6 +686,7 @@ placement = { x = 0, y = 0 }
         }
     }
 
+    /// The snapshot a reply carries; any other reply fails the test.
     fn snapshot_of(reply: Option<Reply>) -> Snapshot {
         match reply {
             Some(Reply::Outputs(body)) => decode_snapshot(&body).unwrap(),
@@ -628,9 +695,9 @@ placement = { x = 0, y = 0 }
     }
 
     #[test]
-    fn execute_collects_the_applied_profiles() {
+    fn executing_actions_collects_the_profiles_the_compositor_accepted() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         let mut applied = Vec::new();
         let actions = vec![Action::ProfileApplied("Desk-Test".into()), Action::Log("displays: x")];
@@ -640,7 +707,7 @@ placement = { x = 0, y = 0 }
     }
 
     #[test]
-    fn unavailable_says_why() {
+    fn an_unavailable_verb_says_whether_displays_is_off_or_the_compositor_has_no_manager() {
         assert_eq!(unavailable(false), Reply::Error("displays are off in bar.toml".into()));
         assert_eq!(unavailable(true), Reply::Error("the compositor has no output management".into()));
     }
@@ -648,7 +715,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn the_outputs_verb_answers_from_memory() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         let s = snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new()));
         assert_eq!(s.status, Status::Ready);
@@ -663,7 +730,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn a_try_waits_for_the_compositor_and_its_answer_opens_the_trial() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         assert_eq!(
             verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new()),
@@ -682,7 +749,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn a_refused_try_is_answered_with_its_reason() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
         assert_eq!(answer, None);
@@ -696,7 +763,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn a_try_refused_before_the_compositor_is_answered_at_once() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         let ask = |c: &mut Controller, body: &str, sent: &mut Sent| {
             verb(c, &Request::OutputsTry(body.into()), now, &mut sent.ok(), &mut Vec::new())
@@ -720,7 +787,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn a_try_that_cannot_be_built_is_answered_at_once() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut |_, _| false, &mut Vec::new());
         assert!(matches!(answer, Some(Reply::Error(_))), "{answer:?}");
         assert_eq!(c.in_flight(), None, "nothing waits for an answer");
@@ -730,7 +797,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn an_unanswered_try_is_answered_by_the_watchdog_before_the_client_gives_up() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new()), None);
         let at = c.next_deadline().expect("the watchdog");
@@ -743,15 +810,15 @@ placement = { x = 0, y = 0 }
     fn keep_and_revert_answer_done() {
         for (request, end, sends) in [(Request::OutputsKeep, TrialEnd::Kept, 0), (Request::OutputsRevert, TrialEnd::Reverted, 1)] {
             let now = Instant::now();
-            let mut c = ready(now);
+            let mut c = a_controller_with_two_screens(now);
             let mut sent = Sent::default();
             verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
             let answer = c.on_event(Event::Succeeded(sent.0[0].0), now);
             execute(&mut c, answer, now, &mut sent.ok(), &mut Vec::new());
             // The compositor's `done` after the answer: DP-1 at scale 2.
-            let mut applied = moded("DP-1", 0);
+            let mut applied = a_head_with_a_mode("DP-1", 0);
             applied.scale = 2.0;
-            assert!(c.on_event(Event::Done(vec![applied, moded("DP-2", 1920)]), now).is_empty());
+            assert!(c.on_event(Event::Done(vec![applied, a_head_with_a_mode("DP-2", 1920)]), now).is_empty());
             assert_eq!(verb(&mut c, &request, now, &mut sent.ok(), &mut Vec::new()), Some(Reply::Done), "{request:?}");
             assert_eq!(sent.0.len(), 1 + sends, "{request:?}: the state from before sent back, or nothing");
             if sends == 1 {
@@ -759,13 +826,13 @@ placement = { x = 0, y = 0 }
                 assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new())).trial, TrialState::Busy);
                 let answer = c.on_event(Event::Succeeded(sent.0[1].0), now);
                 execute(&mut c, answer, now, &mut sent.ok(), &mut Vec::new());
-                c.on_event(Event::Done(vec![moded("DP-1", 0), moded("DP-2", 1920)]), now);
+                c.on_event(Event::Done(vec![a_head_with_a_mode("DP-1", 0), a_head_with_a_mode("DP-2", 1920)]), now);
             }
             assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new())).trial, TrialState::Ended(end));
         }
         // No trial now, but one was seen (a revert racing the daemon's own deadline): nothing to do.
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
         let refused = c.on_event(Event::Failed(sent.0[0].0), now);
@@ -780,7 +847,7 @@ placement = { x = 0, y = 0 }
     #[test]
     fn keep_and_revert_without_any_trial_say_the_daemon_restarted() {
         let now = Instant::now();
-        let mut c = ready(now);
+        let mut c = a_controller_with_two_screens(now);
         let mut sent = Sent::default();
         for request in [Request::OutputsKeep, Request::OutputsRevert] {
             assert_eq!(

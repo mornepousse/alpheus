@@ -195,7 +195,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 // The ⏻ menu's verb: answered here (it closes an open launcher itself, guarded).
                 Route::Power => reply_guarded(conn, &state.power_verb(&q, &request)),
                 // The displays verbs: answered from the output controller, a try once the
-                // compositor answered (its connection kept until then, `outputs_app.rs`).
+                // compositor answered (its connection kept until then, `outputs/app.rs`).
                 // The clipboard history's clear: answered here, never the launcher's.
                 Route::Clipboard => reply_guarded(conn, &state.clipboard_verb(&request)),
                 Route::Displays => state.displays_verb(&request, conn),

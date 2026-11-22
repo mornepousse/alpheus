@@ -192,7 +192,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         needs: Needs::SOUND.or(Needs::NETWORK).or(Needs::BLUETOOTH).or(Needs::POWER_PROFILE),
         ..row(ModuleId::Quick, "quick", GroupKind::Status)
     },
-    // The screens are read and changed through the output protocol (outputs_app.rs), never drawn.
+    // The screens are read and changed through the output protocol (outputs/app.rs), never drawn.
     row(ModuleId::Displays, "displays", GroupKind::Status),
     // The focus timer's chip (see timer/mod.rs); its popup is timer/popup.rs.
     ModuleSpec {
