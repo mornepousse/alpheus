@@ -142,9 +142,12 @@ Date: 2026-11-15 · Source: timer spec § 4; timer plan 1, decision 17
 
 The timer's log lines are fixed words (`timer: paused`, `timer: countdown ended`) and numbers. They
 never hold the sound's command, a path, or an error's own text, since any of these can name the
-user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`).
+user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`). Every
+command the daemon runs for a menu follows the same rule: the power menu logs `power: power off`
+and the resources popup `resources: monitor`, never the command, and a failed start adds the
+executor's error (`could not start (NotFound)`).
 
-Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18
+Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18; power spec § 3 and plan 1, decision 10; resources popup spec "Constraints"
 
 ### A source that is down is not a state
 
@@ -265,3 +268,58 @@ on Sunday, a row shows the ISO week of its Monday. A sixth row with no day of th
 number.
 
 Date: 2026-10-05 · Source: tray plan 2, decision 5 and "Controller reconciliation"
+
+### The power menu runs the `[quick]` commands and has no setting of its own
+
+The ⏻ menu runs `[quick]`'s `lock`, `logout`, `reboot` and `poweroff`, the commands the quick
+panel's session buttons run, so one setting serves both. A `[power]` table would only repeat them.
+An entry whose command is empty is not shown, and with all four empty the menu and its button do not
+exist. alpheus never handles sleep, so there is no suspend or hibernate entry.
+
+Date: 2026-10-13 · Source: power spec § 3, § 6; power plan 1, decision 1
+
+### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
+
+Lock and Log out run at once. Reboot and Power off turn their row into `Reboot? ⏎` or
+`Power off? ⏎` in the warning colour; a second activation runs the command only from 0.4 s after the
+question appeared and until 3 s after it, so a double click or a double Enter never confirms. Moving
+the selection, hovering or pressing another entry, any other key, or 3 s passing cancels the
+question. The rule is one function shared with the quick panel, so the panel and the menu cannot
+drift apart.
+
+Date: 2026-10-13 · Source: power spec § 2, § 4; quick settings spec § 2 (the 0.4 s rule); power plan 1, decisions 1 and 5
+
+### Nothing is selected when the power menu opens
+
+As in a tray menu, no entry is selected at open: ↓ or Tab selects the first, ↑ or Shift+Tab the
+last, and Enter with nothing selected does nothing; this is also how the spec's own test reads
+("Down and Enter on Lock"). The selection is clamped and never wraps, as in every alpheus list.
+
+Date: 2026-10-13 · Source: power plan 1, decisions 3 and 4
+
+### A held key repeats only to move, in the power menu
+
+The keyboard's auto-repeat moves the selection but never activates: a held Enter acts once. Without
+this the repeat would arrive after 0.4 s and confirm the question that the first Enter had just
+asked. The wheel and the right and middle buttons do nothing in the menu.
+
+Date: 2026-10-13 · Source: power plan 1, decisions 6 and 7
+
+### The power menu has its own timer
+
+The question's 3 s expiry uses a `DeadlineTimer` of the menu's own, armed only while a question is
+pending and released whatever closes the menu. The quick panel's timer is not reused, because that
+one may still serve a followed Wi-Fi attempt after its panel has closed.
+
+Date: 2026-10-13 · Source: power plan 1, decision 12
+
+### `alpheus-launch --power` opens the menu without a grab
+
+The verb opens the menu under the bar's right end on the focused output and takes the keyboard
+without a grab: a verb has no pointer press to grab with, exactly as `--quick` does. It works
+whether or not the `power` module is in `modules`, and is refused (exit 2) only when no `[quick]`
+session command is set or no bar can anchor the menu; both are decided before an open launcher is
+closed. A second verb closes the menu, except within 250 ms of its own open (some compositors fire
+a key bind twice).
+
+Date: 2026-11-21 · Source: tools menu spec § 7; tools menu plan 1, `power_verb`
