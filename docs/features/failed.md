@@ -11,10 +11,16 @@ The `failed` module draws `󰀦 N` in the theme's error colour, in a block of it
 `module_colors` says. `N` is the system manager's count of failed units plus the user manager's
 count, each when it is known.
 
-- **Nothing is drawn** when `N` is 0, or when neither count is known (a source that is down is not
-  a state: the bar draws nothing rather than a placeholder).
+- **Nothing is drawn** when `N` is 0, or while neither count has ever been known (a count never
+  known is left out of the sum, and the bar draws nothing rather than a placeholder: decision 13 of
+  the diagnostics spec's "Decisions written down").
 - **A count that becomes unknown keeps its last value.** The system bus going away, or the session
   link closing, neither hides the module nor changes the notice or the hook.
+- **systemd's system manager failing to answer** (a timeout, an odd reply) is not the session's
+  outage: the count is unknown for that read, one rate-limited log line says so, and the session
+  and the other D-Bus modules go on. Only the bus itself going away ends the session.
+- **The session link is never reconnected.** If it closes, the user count is not read again until
+  the daemon restarts; the bar keeps the last one.
 - The module sits after `shield` and before `power` in `ModuleId::ALL`, so in the default `modules`;
   on a narrow bar it is removed after `timer` and before `shield`.
 
@@ -106,7 +112,8 @@ Measured in release, back to back with the version before it (the full table is 
   by 44 KiB.
 - **Module on, both managers at 0** (`failed_module_pss_at_start`): +28…+36 KB of anonymous memory
   with the default `subscribe = false`, +12…+16 KB with `true`.
-- **A count shown, then 20 more changes** (`failed_module_shown_pss`): a few tens of KB of
-  anonymous memory, bound 64 KB.
+- **A count shown, then 20 more changes** (`failed_module_shown_pss`): with `subscribe = true`,
+  `Pss_Anon` +20…+24 KB shown and +32 KB after 20 changes; with the default, 0…+28 KB (bound
+  64 KB).
 - **Wake-ups:** none at rest, with `subscribe` true or false, and none after a read added to
   another domain's wake-up (`at_rest_no_wakeups_with_failed_units`, `piggyback_costs_no_wakeup`).

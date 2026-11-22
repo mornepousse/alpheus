@@ -495,9 +495,9 @@ pub struct App {
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
-    /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
+    /// The notification bubbles' surface, expiry timer and close memory (notify/bubbles_surface.rs).
     pub(crate) bubbles: crate::notify::bubbles_surface::BubbleSurface,
-    /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
+    /// Low-battery alerts (notify/battery_alert.rs): only with the battery and notifications modules and
     /// a threshold in `[battery] warn`.
     pub(crate) battery_alerts: Option<crate::notify::battery_alert::BatteryAlerts>,
     /// The failed-units notice (failed/mod.rs): only with `[failed] notify` and the failed and
@@ -505,9 +505,9 @@ pub struct App {
     pub(crate) failed_notice: Option<crate::failed::Notice>,
     /// The event hooks (hooks/app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks::app::HooksApp>,
-    /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
+    /// Shield mode (shield/app.rs): None unless `[shield]` is configured.
     pub(crate) shield: Option<crate::shield::app::ShieldApp>,
-    /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
+    /// The OSD's trigger memory, surface and hide timer (osd/surface.rs).
     pub(crate) osd: crate::osd::surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).

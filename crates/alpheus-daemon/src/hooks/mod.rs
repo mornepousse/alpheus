@@ -6,7 +6,8 @@
 //! never an edge; `Hooks::fire` says whether an event runs now, after the quiet window that follows
 //! the start and through the event's token bucket; `Event::env` gives the variables the hook is
 //! handed. The other half, `app.rs`, feeds this file and starts the command: it reads the clock,
-//! the `$PATH` and the systemd scope, and hands this file every instant it needs.
+//! the `$PATH`, and finds out whether a systemd user manager runs, and hands this file every instant
+//! it needs.
 //!
 //! Never:
 //! - read a clock: the caller passes `now`, so a test can pick any instant;
@@ -276,6 +277,9 @@ fn charge_word(c: Charge) -> &'static str {
 /// Keeps `new` as the event's seed, and says whether it is a change: true only when a seed was
 /// already there and differs from `new`. The first value (no seed yet) is never a change.
 ///
+/// It stores the seed whatever it answers, so callers put it last in an `&&`: the seed then moves
+/// only when the checks before it pass.
+///
 /// (The `<T: Copy + PartialEq>` after the name says: any type that can be copied and compared.)
 fn changed<T: Copy + PartialEq>(seed: &mut Option<T>, new: T) -> bool {
     match seed.replace(new) {
@@ -411,8 +415,8 @@ pub struct Hooks {
     commands: [Vec<String>; COUNT],
     quiet_until: Instant,
     buckets: [Bucket; COUNT],
-    // The seeds: the last value seen of each event. None until the first one arrives, which is
-    // then a seed and never a change.
+    // The seeds of the `Option` fields below: the last value seen of each event. None until the
+    // first one arrives, which is then a seed and never a change.
     network: Option<Option<Link>>,
     vpn: Option<bool>,
     /// Powered, the connected devices' names sorted.
@@ -516,8 +520,8 @@ impl Hooks {
                         out.push(Event::Bluetooth(BtChange::On));
                     }
                     // A multiset difference: two devices named alike count twice. A device that was
-                    // connected and is not any more disconnected; what is left of `added` after
-                    // every old device was looked for is the devices that connected.
+                    // connected and no longer is has disconnected; what is left of `added`
+                    // after every old device was looked for is the devices that connected.
                     let mut added = names;
                     for old in was {
                         match added.iter().position(|n| *n == old) {

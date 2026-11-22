@@ -34,7 +34,9 @@ The rules that decide when one fires:
 
 - **Edges only.** A hook fires on a change, never for the state at start. Each event's first value
   is a seed and never fires, and for the first 3 seconds after the daemon starts any change only
-  moves the seed. `started` ignores that window.
+  moves the seed. `started` ignores that window. `failed_units` seeds each manager apart: the
+  first answer of the system manager and the first of the user manager are each a seed, so a user
+  count that arrives late is still a seed and never a change.
 - **A source that is down is not a state.** NetworkManager or BlueZ leaving the bus, a missing
   reading: nothing fires and the seed stays; when the source returns, its value is compared with
   the seed.
@@ -58,7 +60,9 @@ bluetooth = ["sh", "-c", "[ \"$ALPHEUS_BLUETOOTH\" = connected ] && headset-prof
 ```
 
 At most five runs of one event happen at once, then one more every 3 seconds; a run that finds no
-token is dropped, not queued. alpheus never waits for a hook, never reads its output and never kills
+token is dropped, not queued. `started` goes through the same bucket as the other events (it has
+its five tokens at start). The program is looked up on `$PATH` at each run, so one installed after
+the daemon started is found (hooks plan 1, decision 12). alpheus never waits for a hook, never reads its output and never kills
 it.
 
 When a hook does not run, the log says why in fixed words (see "How it is built").

@@ -33,8 +33,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// The hooks' state on the `App`: the model, and how a command is started.
-///
-/// (`pub(crate)` means the item is visible inside the daemon, and nowhere outside it.)
+// `pub(crate)` means the item is visible inside the daemon, and nowhere outside it.
 pub(crate) struct HooksApp {
     pub(crate) model: Hooks,
     /// In a systemd scope, or detached: decided once at start.

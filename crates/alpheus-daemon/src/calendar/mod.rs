@@ -29,7 +29,7 @@ pub const MONDAY: u8 = 1;
 /// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`);
 /// `day` may run past the month's end or below 1.
 ///
-/// The year is counted from March, so that the leap day is the last day of the year it ends.
+/// The year is counted from March, so that the leap day, 29 February, falls at the end of the shifted year.
 fn days_from_civil(year: i32, month: u8, day: i32) -> i64 {
     let y = if month <= 2 { i64::from(year) - 1 } else { i64::from(year) };
     let era = y.div_euclid(400);
@@ -166,9 +166,8 @@ const NL_LOCALE_NAME_TIME: libc::nl_item = 0x2ffff;
 /// `newlocale(…, "")`, so later calls only touch the handful of pages this locale's data lives on,
 /// not a fresh load of the archive. Monday for C or POSIX, or when unreadable. See
 /// docs/decisions.md, "The calendar's first day comes from the locale, read at each open".
-///
-/// (An `unsafe` block lets the code call C functions the compiler cannot check; each one below says
-/// why it is sound.)
+// An `unsafe` block lets the code call C functions the compiler cannot check; each one below says
+// why it is sound.
 pub fn locale_first_day() -> u8 {
     // SAFETY: newlocale(3) with a valid mask, a NUL-terminated name and no
     // base locale; null on failure, checked.
@@ -439,7 +438,7 @@ mod tests {
     }
 
     /// January and February belong to the year that began in March in the date arithmetic, so the
-    /// weeks of those two months are checked on their own (a Thursday in each, week 7 and week 9).
+    /// weeks of those two months are checked on their own (three Thursdays: weeks 2, 7 and 9).
     #[test]
     fn iso_week_numbers_are_right_in_january_and_february() {
         assert_eq!(iso_week(2026, 2, 12), 7, "Thursday 12 February 2026");

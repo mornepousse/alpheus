@@ -23,8 +23,7 @@ use smithay_client_toolkit::reexports::client::QueueHandle;
 
 /// The calendar's row of `popup::POPUPS`: what the shared popup code calls for it. `flush` and
 /// `closed` have nothing to do (`no_hook`): the calendar keeps no timer and no state.
-///
-/// (`pub(crate)` means the item is visible inside the daemon, and nowhere outside it.)
+// `pub(crate)` means the item is visible inside the daemon, and nowhere outside it.
 pub(crate) const OPS: PopupOps = PopupOps {
     kind: ModulePopup::Calendar,
     toggle: |app, qh, anchor, _| app.calendar_toggle(qh, anchor),

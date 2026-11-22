@@ -151,11 +151,19 @@ Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18;
 
 ### A source that is down is not a state
 
-A count or a value that becomes unknown because its source went away (the system bus closing,
-NetworkManager or BlueZ leaving the bus, a battery reading `unknown`) changes nothing: the last
-known value stays, the module does not hide, the notice is not re-armed and no hook fires. The next
-real answer replaces the value. Only a count that was never known is absent, and the `failed`
-module hides then rather than showing a placeholder.
+A value that becomes unknown because its source went away is not taken for a state, and each
+consumer answers in its own way:
+
+- **Hooks:** a source going down (the system bus closing, NetworkManager or BlueZ leaving the bus,
+  a missing reading) fires nothing and keeps the seed; the next real value is compared with it. Of
+  the battery events, only `battery_charge` ignores `unknown`: `battery_level` still fires, and its
+  `ALPHEUS_CHARGE` may read `unknown`.
+- **The `failed` count:** the last known value is kept and the notice is not re-armed. Only a count
+  that was never known is absent, and the `failed` module draws nothing then rather than a
+  placeholder.
+
+The bar's other modules do not keep their value: the network, Bluetooth and battery modules show
+`–` while their bus is out.
 
 Date: 2026-11-15 · Source: hooks spec § 2; hooks plan 1, decision 6; diagnostics spec § 6 and "Decisions written down" 13
 
@@ -168,7 +176,7 @@ on alpheus. The default is `false` until it is chosen after use. Without a subsc
 is read on triggers: session start, resume, `alpheus-launch --failed-refresh`, and a read added to
 another domain's wake-up at most once a minute. No timer is added for it.
 
-Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9; diagnostics plan 1, decision 1 and its final fix wave
+Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9, and its "Decisions written down" 1 (final fix wave, Mae to choose at the trial); diagnostics plan 1, "Decisions written down" 1 said on, which that decision reverses
 
 ### The failed-units count is asked for one property, never the whole interface
 
@@ -188,7 +196,7 @@ so the first notice carries the whole total and not half of it. Like the battery
 as given only while alpheus's own notification server is serving, and the latest total is offered
 again when the server starts.
 
-Date: 2026-11-21 · Source: diagnostics spec § 6 ("Notification"); diagnostics plan 1, decision 11
+Date: 2026-11-21 · Source: diagnostics spec § 6 ("Notification")
 
 ### The bar has no ignore list for failed units
 
@@ -203,8 +211,8 @@ Date: 2026-11-22 · Source: diagnostics spec "Decisions written down" 9
 Each event's first observed value is a seed and never fires, and for the first 3 seconds after the
 daemon starts (`QUIET`) any change only moves the seed, so that the state at start never fires a
 hook. The window covers the portal's first answer, the first PipeWire graph, a camera held across a
-restart and a profile applied at start. `started` is the one event that ignores the window. The window is a timestamp
-compared when an edge arrives, never a timer.
+restart and a profile applied at start. `started` is the one event that ignores the window. The
+window is a timestamp compared when an edge arrives, never a timer.
 
 Date: 2026-11-15 · Source: hooks spec § 2 ("Edges only") and "Constraints"; hooks plan 1, decision 5
 
@@ -250,7 +258,7 @@ Date: 2026-11-15 · Source: hooks spec § 3; hooks plan 1, decision 11
 The month title (`October 2026`) and the weekday initials (`Mo Tu We`) are in English, as the
 clock's text is.
 
-Date: 2026-10-05 · Source: tray plan 2, decision 3
+Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 3 (formerly "Questions for Mae")
 
 ### The calendar's first day comes from the locale, read at each open
 
@@ -259,15 +267,14 @@ locale that cannot be read, give Monday (ISO 8601). The locale is read each time
 opens, through `newlocale`, `nl_langinfo_l` and `freelocale`: this is thread-safe, changes no
 global locale, and nothing is kept while the calendar is closed.
 
-Date: 2026-10-05 · Source: tray plan 2, decisions 4 and 11; tray spec "Calendar"
+Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 4 (formerly "Questions for Mae") and "Controller decisions" 11; tray spec "Calendar"
 
 ### Calendar week numbers are ISO 8601
 
 When `[clock] week_numbers` is on, the numbers are ISO 8601 weeks. In a calendar whose week starts
-on Sunday, a row shows the ISO week of its Monday. A sixth row with no day of the month shows no
-number.
+on Sunday, a row shows the ISO week of its Monday.
 
-Date: 2026-10-05 · Source: tray plan 2, decision 5 and "Controller reconciliation"
+Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions" 5 (formerly "Questions for Mae") and "Controller reconciliation"
 
 ### The power menu runs the `[quick]` commands and has no setting of its own
 

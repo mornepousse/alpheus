@@ -1,7 +1,7 @@
 //! The user manager's count of failed units: the session bus's half of the `failed` module.
 //!
 //! `UserUnits` reads `NFailedUnits` of `org.freedesktop.systemd1` on the session bus, through the
-//! owner's unique name. It `Subscribe`s to systemd unless `[failed] subscribe` is off, and it reads
+//! owner's unique name. It `Subscribe`s to systemd only when `[failed] subscribe` is on, and it reads
 //! the count again whenever the system count was read (`Msg::UnitsRead`: a poke, a resume, a read
 //! added to another domain's wake-up), so with the subscription off the user count follows the same
 //! triggers as the system count. The `impl App` block at the end ties it to the daemon: it starts
@@ -41,8 +41,7 @@ use alpheus_common::launcher_ipc::{Reply as IpcReply, Request};
 const ALREADY_SUBSCRIBED: &str = "org.freedesktop.systemd1.AlreadySubscribed";
 
 /// The user manager's count and the calls in flight for it.
-///
-/// (`pub` on an item makes it visible outside its file; `pub(crate)` only inside the daemon.)
+// `pub` makes the type visible outside the crate too: the integration tests use the library.
 #[derive(Debug)]
 pub struct UserUnits {
     /// Where the fixed log lines go (tests capture them).

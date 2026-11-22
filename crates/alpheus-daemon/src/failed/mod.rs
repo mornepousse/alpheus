@@ -21,9 +21,9 @@ use crate::state::Failed;
 
 /// The system count plus the user count, each when known; None when neither is known.
 ///
-/// A source that is down is not a state: a count that is not known is left out of the sum, and the
-/// bar draws nothing while both are unknown. See docs/decisions.md, "A source that is down is not a
-/// state".
+/// A count never known is left out of the sum, and nothing is drawn while neither has ever been
+/// known (decision 13 of the diagnostics spec's "Decisions written down"). See docs/decisions.md,
+/// "A source that is down is not a state".
 pub fn total(f: &Failed) -> Option<u32> {
     match (f.system, f.user) {
         (None, None) => None,
@@ -43,7 +43,8 @@ pub struct Notice {
     notified: u32,
     /// The latest total seen, to be offered again when the server starts.
     last: Option<u32>,
-    /// The system manager has answered once (or will never: its domain is not running).
+    /// The system manager has answered once (an unknown count included: the bus down or no owner
+    /// also publishes `Units(None)`), or will never: its domain is not running.
     system_seen: bool,
     /// The user manager has answered once (or will never: no session bus, `user_units = false`).
     /// Before both have, the total is half of what it will be, and the first notice would carry it.
