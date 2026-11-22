@@ -86,12 +86,13 @@ connect that to the bar, in `crates/alpheus-daemon/src/tray/`:
   first layout and patches it afterwards, `menu_action` carries out what the user did, and
   `menu_end` closes the session. `TrayMenu` is the state between those calls, one field of `App`.
 
-The one timer is the tray's `DeadlineTimer` (`tray_timer`), armed only while calls are pending (each
-has a 2 s timeout). The other timer, the tooltip's, is armed only while the pointer rests on an icon.
+The tray has two timers: its `DeadlineTimer` (`tray_timer`), armed only while calls are pending (each
+has a 2 s timeout), and the tooltip's, armed only while the pointer rests on an icon.
 
 Rules the tray keeps on what applications send: at most 64 items (16 per connection), 256 characters
 for a title, tooltip, `Id`, `IconName` or menu label (control characters removed), 500 entries per
-menu and a depth of 8. Properties are read one `Get` at a time, never `GetAll`, and a menu layout
+menu and a depth of 8. Properties are read with one `Get` per property (the first eight sent together
+when an item appears), never `GetAll`, and a menu layout
 is always asked at depth 1 with an explicit list of properties, so icon pictures never cross the bus.
 
 **The path of one click.** The bar's click handler finds the icon's zone and calls
@@ -106,14 +107,17 @@ the match rule of the menu's session.
 ## Rules it keeps
 
 - `the_tray_spawns_no_thread`: `tray/` and `session_bus/` start no thread, process or command.
-- `tray_d_bus_is_confined_and_allowlisted`: only the listed files name the D-Bus crates, every call to
-  an application is a typed call to a unique name with auto-start off, and the only name the daemon
-  requests is `org.kde.StatusNotifierWatcher`.
+- `tray_d_bus_is_confined_and_allowlisted`: `dbus_crossroads` is used in `session_bus/watcher.rs`
+  alone, every call under `session_bus/` is built in `session_bus/bus.rs` from a typed `Call`, the
+  list `TrayMethod::ALL` is pinned member by member, some tokens are forbidden (blocking calls,
+  `REPLACE_EXISTING`, `ALLOW_REPLACEMENT`, libdbus's own session lookup), and `RequestName` asks for
+  exactly two names: the watcher's, with `DO_NOT_QUEUE`, and the notification server's, with flags 0.
 - `answers_left_by_the_settle_rounds_are_routed_from_an_idle`: `tray_sync` routes the answers a
   burst left waiting from an idle callback, and `mpris_do` ends in the syncs.
 - `menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards`: the menu finds its bar
   by the popup's parent surface, and the launcher opening drops the remembered press.
-- `nothing_resident_while_the_launcher_is_closed`: counts the timers the daemon builds.
+- `nothing_resident_while_the_launcher_is_closed`: counts the timers, thread starts, event-loop
+  sources and keyboard bindings the daemon builds.
 - `the_tray_adds_no_thread` and `at_rest_no_wakeups_with_a_populated_tray` (release memory tests): no
   thread more, no wake-up at rest with a populated tray.
 - The unit tests of `tray/bridge/tests.rs` and `tray/menu_app/tests.rs` pin the three small rules

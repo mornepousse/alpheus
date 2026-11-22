@@ -563,26 +563,26 @@ Date: 2026-10-09 · Source: OSD plan 1, "Decisions written down", item 7; `descr
 Pressing an icon asks for its menu, but nothing is drawn until the menu's first layout is back, and
 if it takes more than 2 s nothing is drawn at all. A half-built menu is never shown.
 
-Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions (2026-10-05)", item 8; tray spec § 1 ("Menus": no answer within 2 s)
+Date: 2026-10-05 · Source: tray plan 2, the first decisions list (formerly "Questions"), item 8; tray spec § 1 ("Menus": no answer within 2 s)
 
 ### A tray menu opens with its first entry selected
 
 The first selectable entry is selected before the popup is first drawn, so Enter or a key press has
 something to act on at once.
 
-Date: 2026-10-05 · Source: tray plan 2, "Controller reconciliation", "Mae's decisions added after the skeleton"
+Date: 2026-10-05 · Source: tray plan 2, "Controller reconciliation", the bullet on decisions added after the skeleton
 
 ### A submenu opens in the same popup
 
 A submenu replaces the menu's current level inside the same popup (→ or Enter enters it, ← goes back
 one level), with the first row showing `◂ <parent label>`. No cascading popups are opened.
 
-Date: 2026-10-05 · Source: tray plan 2, "Mae's decisions (2026-10-05)", item 2
+Date: 2026-10-05 · Source: tray plan 2, the first decisions list (formerly "Questions"), item 2
 
 ### A failed Activate opens the menu of the icon that was pressed
 
 A left click sends `Activate`; when the item answers with a D-Bus error (Steam's libappindicator has
-no such method) the bar opens its menu instead. That answer comes later, so the bar remembers the icon,
+no such method) the bar opens its menu instead, if the item has a `Menu`, else nothing. That answer comes later, so the bar remembers the icon,
 the cells it occupies and the button that pressed it, and the menu belongs to that press, not to
 whatever is under the pointer when the answer arrives. A press that lands on no icon forgets the
 remembered one, so a late answer never opens a menu for an icon the user has left. A timeout is not a
@@ -596,7 +596,7 @@ A press on the icon whose menu is open only closes that menu, and does nothing e
 with the button that opened it, or with the right button whatever opened it. So Steam's menu, opened
 by a left click, closes with the same left click, with no new Activate and no flicker.
 
-Date: 2026-10-06 · Source: commit 40be9a6 (the 2026-10-06 ruling quoted in its message); tray plan 2, "Controller reconciliation", "Mae's decisions added after the skeleton" (a second right click on the icon whose menu is open closes it)
+Date: 2026-10-06 · Source: commit 40be9a6 (the 2026-10-06 ruling quoted in its message); tray plan 2, "Controller reconciliation", the bullet on decisions added after the skeleton (a second right click on the icon whose menu is open closes it)
 
 ### A press right after the compositor closed a menu only closes it
 
@@ -634,8 +634,8 @@ Date: 2026-10-05 · Source: tray spec § 3 ("No session bus": no retry loop); tr
 
 ### The microphone lights for a recording stream, never a meter or a filter
 
-The microphone indicator lights for a link from an audio source to a `Stream/Input/Audio` that is
-active or whose stream runs. It is not lit for a stream that is a meter (`stream.monitor`, such as
+The microphone indicator lights for a link from an audio source to a `Stream/Input/Audio` where the
+link is active or the stream runs. It is not lit for a stream that is a meter (`stream.monitor`, such as
 pavucontrol's), one that reads a sink's monitor (`stream.capture.sink`, the visualisers), a member of
 a `node.link-group` (filter chains, loopbacks and echo cancellation, which forward sound and do not
 record) or a passive stream.
@@ -649,7 +649,9 @@ indicator stays lit even when the app muted its own stream, since the app still 
 microphone. Only the default source's mute changes how it is drawn: the glyph is dim, and so is the
 popup's heading.
 
-Date: 2026-10-16 · Source: privacy spec § 1 ("Muted microphone"); privacy plan 1, "Review Focus", item 2; privacy plan 1, "Decisions written down", item 1; CLAUDE.md, "Privacy indicators, delivery 1" (the dim glyph also in the popup's heading)
+Date: 2026-10-16 · Source: privacy spec § 1 ("Muted microphone"); privacy plan 1, "Review Focus", item 2; privacy plan 1, "Decisions written down", item 1; CLAUDE.md, "Privacy indicators, delivery 1" (the dim glyph also in the popup's heading); the note "The model has no per-stream mute" in `an_app_muted_stream_still_lights_the_microphone` (`privacy/tests.rs`)
+
+Status: awaiting confirmation at the trial (privacy plan 1, "Decisions written down": handed over to be read over at the trial, see the trial note)
 
 ### A running camera with no link lights it unnamed
 
@@ -676,6 +678,8 @@ in all). niri's hold is zero. A cast that comes back during the hold never blink
 
 Date: 2026-10-16 · Source: privacy spec § 3 (Hyprland); privacy plan 1, "Decisions written down", item 4
 
+Status: awaiting confirmation at the trial (privacy plan 1, "Decisions written down": handed over to be read over at the trial, see the trial note)
+
 ### A screen lit by the compositor alone reads `(unnamed)`
 
 The compositor's cast events say that a screen is captured and what is captured, never who captures
@@ -693,6 +697,8 @@ cells wide; a longer name is cut.
 
 Date: 2026-10-16 · Source: privacy spec § 5; privacy plan 1, "Decisions written down", items 5 and 6
 
+Status: awaiting confirmation at the trial (privacy plan 1, "Decisions written down": handed over to be read over at the trial, see the trial note)
+
 ### The camera is read from `/proc` after a trigger, never counted
 
 An open or a close of a `/dev/video*` node, a node appearing or going, or a lost event queue only
@@ -709,7 +715,7 @@ A trigger moves the scan 300 ms ahead, so that an open and its close (a browser 
 scan once and find nothing. The scan still runs at the latest 1 s after the first trigger of the
 burst, so that a process that opens and closes a node non-stop cannot postpone it for ever.
 
-Date: 2026-10-20 · Source: privacy camera spec § 1 ("The debounce", amended at execution); privacy plan 2, "Decisions written down", item 3
+Date: 2026-10-20 · Source: privacy camera spec § 1 ("The debounce"; the 1 s cap, `SCAN_MAX_WAIT`, was amended at execution); privacy plan 2, "Decisions written down", item 3 (the 300 ms push-back only)
 
 ### PipeWire's own hold on a camera adds no name
 
@@ -730,9 +736,11 @@ Date: 2026-10-20 · Source: privacy camera spec § 1; privacy plan 2, "Decisions
 
 ### The camera scan runs on the event loop
 
-The scan, a few milliseconds over a few hundred processes, is synchronous on the bar's event loop and
-not on a thread of its own. The measured median is 4.0 to 4.1 ms on 120 processes of 30 descriptors,
-under the 10 ms bound beyond which the spec would have moved it to a short-lived thread.
+The scan is synchronous on the bar's event loop and not on a thread of its own. The spec's 10 ms
+rule is judged on a harness of 120 processes of 30 descriptors (the shape of the workstation's own
+user: 93 processes, 2,726 descriptors), where the median is 4.0 to 4.1 ms; beyond 10 ms the spec
+would have moved the scan to a short-lived thread. A 500 by 20 tree, printed only, reads a median of
+14 to 15 ms and a maximum near 20 ms (`camera_scan_duration`).
 
 Date: 2026-10-20 · Source: privacy camera spec § 2 (the 10 ms rule); CLAUDE.md, "Privacy indicators, delivery 2" ("Scan cost", the controller's ruling)
 

@@ -1,6 +1,7 @@
 //! Tests of the privacy model (`mod.rs`): the rules that turn the PipeWire graph into who holds the
 //! microphone, the camera and the screen, the merge with the compositor and the video devices, the
-//! off-delay, and the popup's rows. No clock, no file, no daemon: each test passes the time it wants.
+//! off-delay, and the popup's rows. No file and no daemon; the time is passed in by each test, with
+//! one `Instant::now` per test as the start.
 
 use super::*;
 

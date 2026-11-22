@@ -421,8 +421,9 @@ mod tests {
     }
 
     /// A link whose target has no file name (the root, say) is skipped, and the descriptors after it
-    /// are still looked at: with many of them, the video one is read after some of them whatever the
-    /// order of the directory.
+    /// are still looked at. The order in which `read_dir` lists the descriptors is not guaranteed and
+    /// the scan does not sort it, so with twelve such links and one video link the video one is
+    /// likely, not certainly, read after some of them.
     #[test]
     fn a_link_with_no_file_name_does_not_stop_the_listing() {
         let t = tree("nofile");

@@ -9,7 +9,8 @@
 //! Never:
 //! - start a thread, a process or a command: the item runs its own menu entries, the bar only sends
 //!   the click;
-//! - open the menu before its layout has arrived, or show it more than 2 s after the request.
+//! - open the menu before its layout has arrived, or when the first layout arrives more than 2 s
+//!   after the request.
 //!
 //! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
 //! ("A tray menu is shown only once its layout has arrived", "A tray menu opens with its first entry
@@ -69,8 +70,8 @@ impl App {
         // duplicate failed Activate (two quick left clicks on Steam, each failing in turn) must not
         // close and reopen the session already under way. This is not the case of a second right
         // click on the same icon, which does close the menu (`closes_own_menu` in `wayland.rs`).
-        // `map` kept: clippy (`manual_map`) rejects the plain `match` for this one. It takes the key
-        // out of the pair `(key, anchor)`, if a menu was asked for.
+        // `map` kept: clippy's `manual_map` asks for it. It takes the key out of the pair
+        // `(key, anchor)`, if a menu was asked for.
         let asked_for = self.menu.target.as_ref().map(|(asked, _)| asked);
         if already_requested(asked_for, &key) {
             return;

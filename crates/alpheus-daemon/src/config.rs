@@ -430,7 +430,8 @@ impl Default for MediaConfig {
     }
 }
 
-/// `[privacy]` (privacy spec § 7): the apps never shown.
+/// `[privacy]` (privacy spec § 7): the apps never shown (`ignore`) and, for the camera scan, where
+/// devices and processes are listed (`dev_dir`, `proc_dir`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacyConfig {

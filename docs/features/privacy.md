@@ -64,7 +64,8 @@ In `bar.toml`, read at start (a change needs a restart of the bar). `privacy` is
 
 An unknown key, or a path that is not absolute, makes `bar.toml` invalid: the daemon logs one line and
 runs on the defaults. The two directories exist so that the headless tests can point the real daemon
-at fake trees. Without `privacy` in `modules`, nothing of this is parsed, kept, watched or scanned.
+at fake trees. Without `privacy` in `modules`, nothing of the graph is kept and nothing is watched or
+scanned; the `[privacy]` keys are still checked when `bar.toml` is read.
 
 ## How it is built
 
@@ -112,8 +113,8 @@ repainted by each change and closed when nothing is left.
   or the privacy functions of the sound model.
 - `the_tray_spawns_no_thread` (its list names `privacy/mod.rs`, `camera.rs` and `camera_app.rs`): no
   thread, process or command.
-- `the_theme_and_camera_watches_only_read`: `camera.rs` never writes, creates or removes a file, and
-  names inotify nowhere else than `inotify.rs`, `watch.rs` and `camera.rs`.
+- `the_theme_and_camera_watches_only_read`: `camera.rs`, `watch.rs` and `inotify.rs` never write,
+  create or remove a file, and no other file of the daemon names inotify.
 - `nothing_resident_while_the_launcher_is_closed`: counts the timers, event-loop sources and threads
   the daemon builds, so the camera's timer and fd cannot be joined by another unnoticed.
 - `the_privacy_timer_is_bar_level_and_fired_before_due`: the off-delay's timer is the bar's and not
@@ -121,8 +122,8 @@ repainted by each change and closed when nothing is left.
 - `privacy_changed_follows_sharing_for_dnd`: do-not-disturb is told after the timer is synced.
 - The unit tests of `privacy/tests.rs` and the camera tests pin the rules and the scan, with fake
   `/proc` and `/dev` trees and a temporary directory for inotify; the headless tests (names starting
-  `privacy_`) run the daemon against a fake `pw-dump` and fake trees. No test reads the real `/dev` or
-  `/proc` of the machine, or calls a real tool.
+  `privacy_`) run the daemon against a fake `pw-dump` and fake trees. No privacy test reads the real
+  `/dev` or `/proc` of the machine or calls a real tool.
 - The reasons are in [decisions.md](../decisions.md): "The microphone lights for a recording stream,
   never a meter or a filter", "A muted app stream still lights the microphone", "A running camera
   with no link lights it unnamed", "An indicator going off stays shown for half a second", "A
