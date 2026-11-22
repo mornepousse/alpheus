@@ -30,11 +30,12 @@
           (dejaVuSansMono pkgs)
         ];
       }}";
+      # crate: the Cargo package to build when its name differs from the package's (the daemon).
       # nativeBuildInputs / buildInputs: system libraries a package links
       # (the daemon's libxkbcommon, launcher plan task 12); empty by default.
       # thirdParty: the package embeds third-party data (the daemon's emoji
       # table, Unicode License v3): its licence joins MIT and NOTICE is installed.
-      paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ], thirdParty ? false }:
+      paquet = pkgs: { pname, crate ? pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ], thirdParty ? false }:
         pkgs.rustPlatform.buildRustPackage {
           inherit pname env nativeBuildInputs buildInputs;
           postInstall = pkgs.lib.optionalString thirdParty ''
@@ -46,7 +47,7 @@
           # Workspace: one package per binary. Session tools are called by NAME
           # on the session's PATH; the build's tests launch none of them (fake
           # executor, fake sockets) and those that need sway are ignored.
-          cargoBuildFlags = [ "-p" pname ];
+          cargoBuildFlags = [ "-p" crate ];
           cargoTestFlags = nixpkgs.lib.concatMap (p: [ "-p" p ]) tests;
           meta = {
             inherit description;
@@ -61,12 +62,14 @@
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.alpheus;
         alpheus = paquet pkgs {
           pname = "alpheus";
-          tests = [ "alpheus" "alpheus-commun" ];
+          tests = [ "alpheus" "alpheus-common" ];
           description = "TUI control center (sound, network, Bluetooth, power, displays, theme)";
         };
         alpheus-demon = paquet pkgs {
           pname = "alpheus-demon";
-          tests = [ "alpheus-demon" ];
+          # The crate is alpheus-daemon; its binary (and so the package, the process) stays alpheus-demon.
+          crate = "alpheus-daemon";
+          tests = [ "alpheus-daemon" ];
           description = "alpheus resident daemon: the bar, launcher, notifications and OSD (layer-shell; Hyprland, Sway, Mango and niri)";
           env.ALPHEUS_POLICES = fontDir pkgs;
           thirdParty = true;
@@ -80,7 +83,7 @@
         };
         alpheus-launch = paquet pkgs {
           pname = "alpheus-launch";
-          tests = [ "alpheus-launch" "alpheus-commun" ];
+          tests = [ "alpheus-launch" "alpheus-common" ];
           description = "Bridge to alpheus's launcher: toggle, close, dmenu-style menus";
         };
       });

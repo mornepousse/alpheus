@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::diagnostics::query::{Preset, Scope};
 use crate::exec::fake::FakeExecutor;
 use crate::theme::Theme;
-use alpheus_commun::temp_path::TempPath;
+use alpheus_common::temp_path::TempPath;
 use std::io::Read;
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;

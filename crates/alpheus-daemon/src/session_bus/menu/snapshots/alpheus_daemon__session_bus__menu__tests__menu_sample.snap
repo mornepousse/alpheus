@@ -1,0 +1,21 @@
+---
+source: crates/alpheus-daemon/src/session_bus/menu.rs
+expression: snapshot(&rows)
+---
+   Open     
+ ✓ Mute     
+   Low      
+ ● High     
+            
+   Disabled 
+   More   ▸ 
+
+SSSSSSSSSSSS
+.b..........
+.b..........
+.b..........
+............
+.b.mmmmmmmm.
+.b........m.
+
+separators: [4]

@@ -250,7 +250,7 @@ fn daemon_absent_shows_its_message() {
     use crate::app::worker::{Domain, fetch};
     use crate::displays::wire::{Snapshot, Status, TrialState};
     use std::sync::Arc;
-    let dir = alpheus_commun::temp_path::TempPath::new("ui-daemon-absent");
+    let dir = alpheus_common::temp_path::TempPath::new("ui-daemon-absent");
     let mut b = crate::backends::Backends::system_isolated(Arc::new(crate::exec::fake::FakeExecutor::new()), dir.to_path_buf());
     let fake = Arc::new(FakeDisplays::default());
     b.displays = fake.clone();

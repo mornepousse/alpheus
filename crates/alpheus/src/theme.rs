@@ -1,13 +1,13 @@
-//! TUI theme: the shared resolver (alpheus-commun::theme::settings) turned into ratatui colours. The
+//! TUI theme: the shared resolver (alpheus-common::theme::settings) turned into ratatui colours. The
 //! TUI is short-lived: it resolves once at start (theme.toml, the mode, the colour files). In mode
 //! "auto" the mode is the one the daemon publishes in $XDG_RUNTIME_DIR/alpheus/mode: the TUI never
 //! uses D-Bus (Mae, 2026-10-07). The file outlives the daemon, so a TUI started after the daemon
 //! stopped reads the last published mode: accepted, no cleanup. The rest of the TUI only ever sees `Theme`.
 
-use alpheus_commun::theme::contrast::ratio;
-use alpheus_commun::theme::mode_file::read_mode;
-use alpheus_commun::theme::settings::{BarStyle, resolve_dir};
-use alpheus_commun::theme::{Rgb, Roles};
+use alpheus_common::theme::contrast::ratio;
+use alpheus_common::theme::mode_file::read_mode;
+use alpheus_common::theme::settings::{BarStyle, resolve_dir};
+use alpheus_common::theme::{Rgb, Roles};
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
 
@@ -155,9 +155,9 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alpheus_commun::temp_path::TempPath;
-    use alpheus_commun::theme::mode_file::mode_path;
-    use alpheus_commun::theme::presets::preset;
+    use alpheus_common::temp_path::TempPath;
+    use alpheus_common::theme::mode_file::mode_path;
+    use alpheus_common::theme::presets::preset;
 
     /// A fresh config directory holding `files`.
     fn dir(name: &str, files: &[(&str, &str)]) -> TempPath {

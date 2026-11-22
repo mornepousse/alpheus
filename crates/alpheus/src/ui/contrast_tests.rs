@@ -1,15 +1,15 @@
 //! Contrast of everything the rail chrome draws on a fill (UI refresh, final review): every drawn cell
 //! whose background is not the page's, over all 15 presets in both modes (dark-only ones once), the
 //! five shapes and every tab. Letters and digits must reach 4.5:1; any other glyph (icons, dots,
-//! box lines) 3:1. The presets' own data is tested in alpheus-commun; this checks what is drawn.
+//! box lines) 3:1. The presets' own data is tested in alpheus-common; this checks what is drawn.
 
 use super::testing::buffer_at;
 use crate::app::action::Tab;
 use crate::app::testing::ready_app;
 use crate::theme::{Shape, Theme};
-use alpheus_commun::theme::contrast::ratio;
-use alpheus_commun::theme::presets::PRESETS;
-use alpheus_commun::theme::{Rgb, Roles};
+use alpheus_common::theme::contrast::ratio;
+use alpheus_common::theme::presets::PRESETS;
+use alpheus_common::theme::{Rgb, Roles};
 use ratatui::style::Color;
 
 /// The role a colour came from, for the failure report.
@@ -67,7 +67,7 @@ fn decoration(s: &str) -> bool {
 }
 
 /// What a pair must reach. Glyphs 3:1. Text 4.5:1, except where the presets' own data cannot give it
-/// (and alpheus-commun tests only the floor): `fg` on `raised`, `pill` and `selection` 3.5 (Mae's
+/// (and alpheus-common tests only the floor): `fg` on `raised`, `pill` and `selection` 3.5 (Mae's
 /// 2026-10-08 ruling), `on_accent` on a hue 3.0, `fg_dim` anywhere 3.0.
 fn need(th: &Theme, fg: Color, bg: Color, text: bool) -> f32 {
     if !text {

@@ -16,7 +16,7 @@ use crate::backends::UnitAction;
 use crate::diagnostics::crashes::signal_name;
 use crate::diagnostics::query::Scope;
 use crate::theme::Shape;
-use alpheus_commun::text::clean_line;
+use alpheus_common::text::clean_line;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

@@ -1,0 +1,13 @@
+---
+source: crates/alpheus-daemon/src/session_bus/menu.rs
+expression: snapshot(&rows)
+---
+ ◂ More   
+ Settings 
+ About    
+
+.m.mmmm...
+SSSSSSSSSS
+..........
+
+separators: []

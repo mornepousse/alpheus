@@ -21,7 +21,7 @@ pub const KEEP_DELAY: Duration = Duration::from_secs(15);
 pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
 
 /// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
-use alpheus_commun::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_NO_TRIAL as NO_TRIAL, ERROR_OFF as OFF};
+use alpheus_common::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_NO_TRIAL as NO_TRIAL, ERROR_OFF as OFF};
 
 /// Tab state outside the data read.
 #[derive(Debug, Default)]

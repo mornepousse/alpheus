@@ -17,7 +17,7 @@ for the shape of the code and its guardrails.
 - **Never a real session tool in a test.** `wpctl`, `nmcli`, `bluetoothctl`,
   `systemctl`, `loginctl`, `wm-set`, `shell-ctl`, `brightnessctl`… can act on
   the machine running the tests. Everything goes through the injectable
-  `Executor` (`alpheus-commun::exec`); tests use `FakeExecutor` and assert the
+  `Executor` (`alpheus-common::exec`); tests use `FakeExecutor` and assert the
   exact command line. The same goes for sockets and buses: use the private
   `dbus-daemon`, the fake compositor sockets and the headless sway the existing
   tests set up, never your session's.
@@ -51,17 +51,17 @@ Some tests are `#[ignore]`d because they need a headless sway or a private bus.
 Run them in the dev shell:
 
 ```sh
-nix develop -c cargo test -p alpheus-demon --test headless_session -- --ignored --test-threads=1
+nix develop -c cargo test -p alpheus-daemon --test headless_session -- --ignored --test-threads=1
 ```
 
 ### Budget (memory and wake-up) tests
 
-`crates/alpheus-demon/tests/memory.rs` measures the real daemon's PSS, thread
+`crates/alpheus-daemon/tests/memory.rs` measures the real daemon's PSS, thread
 count and wake-ups. Its budgets are tuned for the **release** binary (a debug
 build inflates PSS and the test refuses to run):
 
 ```sh
-nice -n 19 nix develop -c cargo test --release -p alpheus-demon --test memory -- --ignored --test-threads=1
+nice -n 19 nix develop -c cargo test --release -p alpheus-daemon --test memory -- --ignored --test-threads=1
 ```
 
 To record what a change costs, build the commit before and after in separate

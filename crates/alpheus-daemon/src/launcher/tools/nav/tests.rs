@@ -1,0 +1,663 @@
+use super::*;
+use crate::keys::Key;
+use crate::launcher::config::LauncherConfig;
+use crate::launcher::history::History;
+use crate::launcher::matching::{Mode, Source};
+use crate::launcher::model::{Activation, Launcher, Outcome};
+use crate::launcher::tools::catalog::{Catalog, Context};
+use std::time::{Duration, Instant};
+
+const MS: Duration = Duration::from_millis(1);
+
+const CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Nix"
+[[tools.category]]
+name = "Zed"
+[[tools.entry]]
+name = "Update"
+category = "Nix"
+run = ["x", "update"]
+[[tools.entry]]
+name = "Collect"
+category = "Nix"
+run = ["x", "gc"]
+confirm = true
+[[tools.entry]]
+name = "Generation"
+category = "Nix"
+run = ["x", "{choice}"]
+choices = ["list", "diff"]
+[[tools.entry]]
+name = "Pick"
+category = "Zed"
+run = ["x", "{choice}"]
+choices_cmd = ["lines"]
+[[tools.entry]]
+name = "Home thing"
+run = ["x", "home"]
+state = ["s"]
+[[tools.entry]]
+name = "Nixify"
+category = "Zed"
+run = ["x", "nixify"]
+"#;
+
+fn context() -> Context {
+    Context { quick: true, notifications: true, timer: true, ..Context::default() }
+}
+
+fn catalog(text: &str) -> (LauncherConfig, Catalog) {
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = Catalog::build(&config.tools, &context(), &mut |_| {});
+    (config, catalog)
+}
+
+fn tools(text: &str) -> Launcher {
+    let (config, catalog) = catalog(text);
+    Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000)
+}
+
+/// A Mod+Space launcher whose Tools catalog is set (the `/` prefix works).
+fn apps(text: &str) -> Launcher {
+    let (config, catalog) = catalog(text);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l
+}
+
+fn typed(l: &mut Launcher, text: &str) {
+    for c in text.chars() {
+        l.key(Key::Char(c));
+    }
+}
+
+/// The texts of the rows the list shows, in order.
+fn texts(l: &Launcher) -> Vec<String> {
+    l.results
+        .iter()
+        .map(|h| match h.source {
+            Source::Tool(i) => l.tool_rows()[i].text.clone(),
+            other => panic!("not a tool row: {other:?}"),
+        })
+        .collect()
+}
+
+fn selected_text(l: &Launcher) -> String {
+    texts(l)[l.selected].clone()
+}
+
+/// Selects the row named `name` (keys only: Home, then Down).
+fn select(l: &mut Launcher, name: &str) {
+    let at = texts(l).iter().position(|t| t == name).unwrap_or_else(|| panic!("{name} in {:?}", texts(l)));
+    l.key(Key::Home);
+    for _ in 0..at {
+        l.key(Key::Down);
+    }
+    assert_eq!(selected_text(l), name);
+}
+
+/// A key at `t`.
+fn key_at(l: &mut Launcher, k: Key, t: Instant) -> Outcome {
+    l.set_now(t);
+    l.key(k)
+}
+
+fn breadcrumb(l: &Launcher) -> String {
+    l.tools().unwrap().breadcrumb()
+}
+
+#[test]
+fn enter_and_right_drill_left_and_esc_go_up() {
+    let mut l = tools(CFG);
+    assert_eq!(texts(&l), ["Home thing", "Nix", "Zed"], "the root: categories and root entries by order, then name");
+    assert_eq!(breadcrumb(&l), "Tools");
+    select(&mut l, "Nix");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!(texts(&l), ["Update", "Collect", "Generation"]);
+    assert_eq!(breadcrumb(&l), "Tools › Nix");
+    assert_eq!(l.key(Key::Left), Outcome::Redraw);
+    assert_eq!(breadcrumb(&l), "Tools");
+    select(&mut l, "Zed");
+    assert_eq!(l.key(Key::Right), Outcome::Redraw, "→ drills like Enter");
+    assert_eq!(texts(&l), ["Pick", "Nixify"]);
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw, "Esc goes up below the root");
+    assert_eq!(breadcrumb(&l), "Tools");
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "← at the root does nothing");
+    assert_eq!(l.key(Key::Escape), Outcome::Close, "Esc at the root closes");
+}
+
+#[test]
+fn right_does_nothing_on_a_plain_entry_and_left_with_a_query_nothing() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Update");
+    assert_eq!(l.key(Key::Right), Outcome::Nothing);
+    typed(&mut l, "up");
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "← with a typed query does nothing");
+    assert_eq!(breadcrumb(&l), "Tools › Nix");
+}
+
+#[test]
+fn esc_at_the_root_closes_even_with_a_query() {
+    let mut l = tools(CFG);
+    typed(&mut l, "ni");
+    assert_eq!(l.key(Key::Escape), Outcome::Close);
+}
+
+#[test]
+fn esc_below_the_root_drops_the_query_and_goes_up() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    typed(&mut l, "col");
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert_eq!((breadcrumb(&l), l.query.as_str()), ("Tools".to_string(), ""));
+}
+
+#[test]
+fn backspace_on_an_empty_root_query_goes_back_to_all_only_from_mod_space() {
+    let mut l = tools(CFG);
+    assert_eq!(l.key(Key::Backspace), Outcome::Nothing, "a --tools open has no All to go back to");
+    assert_eq!(l.mode, Mode::Tools);
+    let mut l = apps(CFG);
+    typed(&mut l, "/");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::Tools, ""));
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw, "below the root: up one level");
+    assert_eq!((l.mode, breadcrumb(&l)), (Mode::Tools, "Tools".to_string()));
+    assert_eq!(l.key(Key::Backspace), Outcome::BackToAll);
+    assert_eq!(l.mode, Mode::All);
+}
+
+#[test]
+fn going_up_restores_the_selection() {
+    let mut l = tools(CFG);
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    l.key(Key::Down);
+    assert_eq!(l.selected, 1);
+    l.key(Key::Left);
+    assert_eq!(selected_text(&l), "Zed", "the parent's selection comes back");
+    l.key(Key::Enter);
+    assert_eq!(l.selected, 0, "going down selects the first row");
+}
+
+#[test]
+fn a_level_change_empties_the_query() {
+    let mut l = tools(CFG);
+    typed(&mut l, "generation");
+    assert_eq!(selected_text(&l), "Generation", "the flat search at the root");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "an entry with choices drills");
+    assert_eq!(l.query, "");
+    assert_eq!(texts(&l), ["list", "diff"]);
+    assert_eq!(breadcrumb(&l), "Tools › Nix › Generation");
+}
+
+#[test]
+fn the_query_filters_the_current_level() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    typed(&mut l, "col");
+    assert_eq!(texts(&l), ["Collect"], "only the level's entries, not the whole catalog");
+    typed(&mut l, "zzz");
+    assert!(texts(&l).is_empty());
+    // An entry of another category is not reached from here (the flat search is the root's).
+    l.key(Key::CtrlU);
+    typed(&mut l, "nixify");
+    assert!(texts(&l).is_empty(), "{:?}", texts(&l));
+    l.key(Key::CtrlU);
+    l.key(Key::Left);
+    typed(&mut l, "nixify");
+    assert_eq!(texts(&l), ["Nixify"], "at the root it is");
+}
+
+#[test]
+fn root_search_ranks_entry_hits_before_category_hits() {
+    let mut l = tools(CFG);
+    typed(&mut l, "nix");
+    assert_eq!(
+        texts(&l),
+        ["Nixify", "Update", "Collect", "Generation", "Generation · list", "Generation · diff"],
+        "the entry that names it first, then what only its category matches, in catalog order"
+    );
+}
+
+#[test]
+fn rows_have_the_right_trails() {
+    let mut l = tools(CFG);
+    let trail = |l: &Launcher, name: &str| {
+        let i = texts(l).iter().position(|t| t == name).unwrap();
+        match l.results[i].source {
+            Source::Tool(r) => l.tool_rows()[r].trail.clone(),
+            _ => unreachable!(),
+        }
+    };
+    assert_eq!(trail(&l, "Home thing"), Trail::None, "no state read yet: nothing");
+    assert_eq!(trail(&l, "Nix"), Trail::Chevron);
+    let home = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Home thing").unwrap();
+    l.adopt_state(home, Some(true));
+    assert_eq!(trail(&l, "Home thing"), Trail::Switch(true));
+    l.adopt_state(home, Some(false));
+    assert_eq!(trail(&l, "Home thing"), Trail::Switch(false));
+    l.adopt_state(home, None);
+    assert_eq!(trail(&l, "Home thing"), Trail::None, "unknown: no switch");
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    assert_eq!(trail(&l, "Generation"), Trail::Chevron);
+    assert_eq!(trail(&l, "Update"), Trail::None);
+    select(&mut l, "Generation");
+    l.key(Key::Enter);
+    assert_eq!(trail(&l, "list"), Trail::None);
+}
+
+#[test]
+fn confirm_asks_waits_runs_and_expires() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Collect");
+    let collect = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Collect").unwrap();
+    let t0 = Instant::now();
+    assert_eq!(l.tools().unwrap().next_deadline(), None, "no question, no deadline");
+    assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked);
+    assert!(l.tools().unwrap().asking(RowId::Entry(collect)));
+    assert_eq!(l.tools().unwrap().next_deadline(), Some(t0 + crate::session::CONFIRM));
+    assert_eq!(key_at(&mut l, Key::Enter, t0 + 300 * MS), Outcome::Nothing, "a double Enter never confirms");
+    assert_eq!(
+        key_at(&mut l, Key::Enter, t0 + 500 * MS),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None }))
+    );
+    assert_eq!(l.tools().unwrap().next_deadline(), None, "answered: no deadline");
+    // Asked again, then left alone: 3 s expires it (the host redraws).
+    assert_eq!(key_at(&mut l, Key::Enter, t0 + 10_000 * MS), Outcome::Asked);
+    assert!(!l.tools_expire(t0 + 12_999 * MS));
+    assert!(l.tools_expire(t0 + 13_000 * MS));
+    assert_eq!(l.tools().unwrap().next_deadline(), None);
+    assert_eq!(key_at(&mut l, Key::Enter, t0 + 20_000 * MS), Outcome::Asked, "an expired question never answers");
+}
+
+#[test]
+fn any_other_key_cancels_the_question() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Collect");
+    let t0 = Instant::now();
+    assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked);
+    assert_eq!(key_at(&mut l, Key::Down, t0 + 100 * MS), Outcome::Redraw);
+    assert_eq!(key_at(&mut l, Key::Up, t0 + 200 * MS), Outcome::Redraw);
+    assert_eq!(l.tools().unwrap().next_deadline(), None);
+    assert_eq!(key_at(&mut l, Key::Enter, t0 + 600 * MS), Outcome::Asked, "asks again instead of running");
+    // Another row's activation answers no question of this one.
+    l.key(Key::Up);
+    assert_eq!(selected_text(&l), "Update");
+    assert!(matches!(key_at(&mut l, Key::Enter, t0 + 1_200 * MS), Outcome::Activate(_)));
+}
+
+#[test]
+fn a_confirm_choice_asks_with_its_own_row() {
+    let text = CFG.replace("choices = [\"list\", \"diff\"]", "choices = [\"list\", \"diff\"]\nconfirm = true");
+    let mut l = tools(&text);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Generation");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "the entry itself only drills");
+    select(&mut l, "diff");
+    let t0 = Instant::now();
+    assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked);
+    let generation = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Generation").unwrap();
+    assert!(l.tools().unwrap().asking(RowId::Choice(generation, 1)));
+    assert!(!l.tools().unwrap().asking(RowId::Choice(generation, 0)), "the question is the row's, not the level's");
+    assert_eq!(
+        key_at(&mut l, Key::Enter, t0 + 500 * MS),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()) }))
+    );
+}
+
+#[test]
+fn a_held_enter_does_nothing_in_tools() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing);
+    assert_eq!(breadcrumb(&l), "Tools", "a repeat never drills");
+    l.key(Key::Enter);
+    select(&mut l, "Update");
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing, "nor runs");
+    assert!(matches!(l.key(Key::Enter), Outcome::Activate(_)), "the first press does");
+    let t0 = Instant::now();
+    select(&mut l, "Collect");
+    l.set_now(t0);
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing, "nor asks");
+    assert_eq!(l.tools().unwrap().next_deadline(), None);
+}
+
+#[test]
+fn ctrl_enter_and_tab_do_nothing_in_tools() {
+    let mut l = tools(CFG);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing);
+    assert_eq!(l.key(Key::BackTab), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Tools);
+}
+
+#[test]
+fn a_choices_cmd_entry_drills_with_a_job_and_reading() {
+    let mut l = tools(CFG);
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    select(&mut l, "Pick");
+    let o = l.key(Key::Enter);
+    let Outcome::ReadChoices(Job::Choices { entry, position, argv, token }) = o else { panic!("{o:?}") };
+    assert_eq!((position, argv), (4, vec!["lines".to_string()]));
+    assert_eq!(breadcrumb(&l), "Tools › Zed › Pick");
+    assert!(l.tools().unwrap().reading);
+    assert!(texts(&l).is_empty(), "nothing selectable while reading");
+    assert!(l.adopt_choices(entry, token, vec!["alpha".into(), "beta".into()], false));
+    assert!(!l.tools().unwrap().reading);
+    assert_eq!(texts(&l), ["alpha", "beta"]);
+    select(&mut l, "beta");
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry, choice: Some("beta".into()) })));
+}
+
+#[test]
+fn a_failed_read_leaves_the_level_empty_and_says_so() {
+    let mut l = tools(CFG);
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    select(&mut l, "Pick");
+    let Outcome::ReadChoices(Job::Choices { entry, token, .. }) = l.key(Key::Enter) else { panic!() };
+    assert!(l.adopt_choices(entry, token, Vec::new(), true));
+    assert!(texts(&l).is_empty());
+    assert_eq!(l.message.as_deref(), Some("could not read the choices"));
+    assert!(!l.tools().unwrap().reading);
+}
+
+#[test]
+fn a_stale_choices_delivery_is_refused() {
+    let mut l = tools(CFG);
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    select(&mut l, "Pick");
+    let Outcome::ReadChoices(Job::Choices { entry, token, .. }) = l.key(Key::Enter) else { panic!() };
+    assert!(!l.adopt_choices(entry, token + 1, vec!["x".into()], false), "another token");
+    assert!(l.tools().unwrap().reading, "still waiting for the right one");
+    // The level was left: its delivery is dropped.
+    l.key(Key::Left);
+    assert!(!l.adopt_choices(entry, token, vec!["x".into()], false));
+    // Opened again: a new token, the old delivery still refused.
+    select(&mut l, "Pick");
+    let Outcome::ReadChoices(Job::Choices { token: second, .. }) = l.key(Key::Enter) else { panic!() };
+    assert_ne!(second, token);
+    assert!(!l.adopt_choices(entry, token, vec!["old".into()], false));
+    assert!(l.adopt_choices(entry, second, vec!["new".into()], false));
+    assert_eq!(texts(&l), ["new"]);
+}
+
+#[test]
+fn has_modes_is_false_in_tools_and_is_bare_unchanged() {
+    let l = tools(CFG);
+    assert!(!l.has_modes() && !l.is_bare());
+    assert!(Launcher::for_calc(LauncherConfig::default()).is_bare());
+    assert!(Launcher::for_script(LauncherConfig::default(), None, Vec::new()).is_bare());
+    assert!(Launcher::for_clipboard(LauncherConfig::default(), Vec::new()).is_bare());
+    // Entered from Mod+Space, the box keeps the row count it was laid out with.
+    let mut l = apps(CFG);
+    assert!(l.has_modes());
+    typed(&mut l, "/");
+    assert_eq!(l.mode, Mode::Tools);
+    assert!(l.has_modes(), "the layout is decided once per open");
+}
+
+// -- Mod+Space's search, the `/` prefix (Task 4) --
+
+fn catalog_entry(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+fn tool_hits(l: &Launcher) -> Vec<String> {
+    l.results.iter().filter_map(|h| if let Source::Tool(i) = h.source { Some(l.tool_rows()[i].text.clone()) } else { None }).collect()
+}
+
+#[test]
+fn tool_rows_join_a_typed_all_query_only() {
+    let mut l = apps(CFG);
+    assert!(tool_hits(&l).is_empty(), "an empty query shows what it shows today");
+    typed(&mut l, "upd");
+    assert_eq!(tool_hits(&l), ["Update"]);
+    for (prefix, other) in [("?", "?upd"), (":", ":upd"), ("$", "$upd"), (">", ">upd")] {
+        let mut l = apps(CFG);
+        typed(&mut l, other);
+        assert!(tool_hits(&l).is_empty(), "{prefix}: a prefix lists only its own rows");
+    }
+    let mut l = apps(CFG);
+    l.key(Key::Tab); // Apps
+    typed(&mut l, "upd");
+    assert!(tool_hits(&l).is_empty(), "Apps");
+    l.key(Key::Tab); // Windows
+    assert!(tool_hits(&l).is_empty(), "Windows");
+    l.key(Key::Tab); // Commands
+    assert!(tool_hits(&l).is_empty(), "Commands");
+}
+
+#[test]
+fn the_slash_prefix_jumps_into_tools_and_backspace_returns() {
+    let mut l = apps(CFG);
+    let o = l.key(Key::Char('/'));
+    let Outcome::EnterTools(Some(Job::States(jobs, _))) = o else { panic!("{o:?}") };
+    assert_eq!(jobs.len(), 1);
+    assert_eq!((jobs[0].position, jobs[0].argv.clone()), (5, vec!["s".to_string()]), "Home thing, the entry that has a state");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::Tools, ""));
+    assert_eq!(texts(&l), ["Home thing", "Nix", "Zed"]);
+    assert_eq!(l.key(Key::Backspace), Outcome::BackToAll);
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, ""));
+    // Typed again: the jump is back at the root, whatever was left open.
+    l.key(Key::Char('/'));
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    l.key(Key::Escape);
+    l.key(Key::Escape);
+    assert_eq!(l.mode, Mode::Tools, "Esc at the Tools root closes the whole box, it does not go back");
+}
+
+#[test]
+fn a_prefix_jump_without_a_state_reads_nothing() {
+    let mut l = apps("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    assert_eq!(l.key(Key::Char('/')), Outcome::EnterTools(None), "the host still reads the built-ins' states");
+}
+
+#[test]
+fn an_empty_catalog_installs_nothing_and_the_slash_stays_text() {
+    let mut l = apps("[tools]\nbuiltins = false\n");
+    assert!(l.tools().is_none(), "no rows, no Tools state");
+    assert_eq!(l.key(Key::Char('/')), Outcome::Redraw);
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, "/"), "the query is kept");
+}
+
+#[test]
+fn the_query_setter_never_jumps_by_prefix() {
+    let mut l = apps("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    l.config.prefixes.tools = ":".into();
+    l.set_query(":");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, ":"));
+}
+
+#[test]
+fn with_the_prefix_off_a_slash_is_plain_text() {
+    let mut l = apps(&format!("[prefixes]\ntools = \"\"\n{CFG}"));
+    typed(&mut l, "/x");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, "/x"));
+    // A catalog never set: the jump has nothing to show, so the slash stays text.
+    let mut l = Launcher::for_apps(LauncherConfig::default(), Vec::new(), History::empty(200), 1_800_000_000);
+    typed(&mut l, "/");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::All, "/"));
+}
+
+#[test]
+fn enter_on_a_plain_tool_runs_it_and_a_builtin_is_handed_out() {
+    let mut l = apps(CFG);
+    typed(&mut l, "update");
+    let update = catalog_entry(&l, "Update");
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry: update, choice: None })));
+    // The built-ins join the search as well (a context that shows Notes).
+    let (config, catalog) = catalog("");
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    typed(&mut l, "notes");
+    let Outcome::Activate(Activation::Tool(ToolAction::Builtin(b))) = l.key(Key::Enter) else { panic!() };
+    assert_eq!(crate::launcher::tools::catalog::BUILTINS[b].id, "notes");
+}
+
+#[test]
+fn enter_on_a_tool_with_choices_drills() {
+    let mut l = apps(CFG);
+    typed(&mut l, "generation");
+    assert_eq!(selected_text(&l), "Generation");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!((l.mode, l.origin), (Mode::Tools, crate::launcher::model::Origin::Apps), "origin unchanged");
+    assert_eq!(breadcrumb(&l), "Tools › Nix › Generation");
+    assert_eq!(texts(&l), ["list", "diff"]);
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw, "up to the category");
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw, "and the root");
+    assert_eq!(breadcrumb(&l), "Tools");
+    assert_eq!(l.key(Key::Backspace), Outcome::BackToAll);
+    // A fixed choice from the flat search runs at once.
+    typed(&mut l, "generation diff");
+    assert_eq!(selected_text(&l), "Generation · diff");
+    let generation = catalog_entry(&l, "Generation");
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()) })));
+    // A choices_cmd entry drills with its read.
+    let mut l = apps(CFG);
+    typed(&mut l, "pick");
+    let o = l.key(Key::Enter);
+    assert!(matches!(o, Outcome::ReadChoices(Job::Choices { position: 4, .. })), "{o:?}");
+    assert_eq!(breadcrumb(&l), "Tools › Zed › Pick");
+}
+
+#[test]
+fn enter_on_a_confirm_tool_in_all_asks_in_the_tools_mode() {
+    let mut l = apps(CFG);
+    typed(&mut l, "collect");
+    let collect = catalog_entry(&l, "Collect");
+    let t0 = Instant::now();
+    assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked);
+    assert_eq!(l.mode, Mode::Tools);
+    assert_eq!(breadcrumb(&l), "Tools › Nix");
+    assert_eq!(selected_text(&l), "Collect");
+    assert!(l.tools().unwrap().asking(RowId::Entry(collect)));
+    assert_eq!(l.tools_deadline(), Some(t0 + crate::session::CONFIRM));
+    assert_eq!(key_at(&mut l, Key::Enter, t0 + 100 * MS), Outcome::Nothing, "a double Enter never confirms");
+    assert_eq!(
+        key_at(&mut l, Key::Enter, t0 + 500 * MS),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None }))
+    );
+    // A root confirm entry asks at the root.
+    let mut l = apps(&CFG.replace("run = [\"x\", \"home\"]", "run = [\"x\", \"home\"]\nconfirm = true"));
+    typed(&mut l, "home");
+    assert_eq!(l.key(Key::Enter), Outcome::Asked);
+    assert_eq!((breadcrumb(&l), selected_text(&l)), ("Tools".to_string(), "Home thing".to_string()));
+}
+
+#[test]
+fn a_confirm_choice_from_all_asks_at_its_own_row() {
+    let text = CFG.replace("choices = [\"list\", \"diff\"]", "choices = [\"list\", \"diff\"]\nconfirm = true");
+    let mut l = apps(&text);
+    typed(&mut l, "generation diff");
+    let generation = catalog_entry(&l, "Generation");
+    assert_eq!(l.key(Key::Enter), Outcome::Asked);
+    assert_eq!(breadcrumb(&l), "Tools › Nix › Generation");
+    assert_eq!(selected_text(&l), "diff");
+    assert!(l.tools().unwrap().asking(RowId::Choice(generation, 1)));
+}
+
+#[test]
+fn drilling_from_a_flat_search_pushes_the_category_level() {
+    for mut l in [tools(CFG), apps(CFG)] {
+        if l.origin == crate::launcher::model::Origin::Apps {
+            typed(&mut l, "/");
+        }
+        typed(&mut l, "generation");
+        assert_eq!(selected_text(&l), "Generation");
+        assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools › Nix › Generation");
+        assert_eq!(l.key(Key::Left), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools › Nix", "← lands on the category the breadcrumb shows");
+        assert_eq!(selected_text(&l), "Generation", "on the row it came through");
+        assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+        assert_eq!(breadcrumb(&l), "Tools");
+        assert_eq!(selected_text(&l), "Nix");
+    }
+}
+
+#[test]
+fn a_jump_from_all_restores_the_row_it_came_through() {
+    let mut l = apps(CFG);
+    typed(&mut l, "pick");
+    l.key(Key::Enter);
+    assert_eq!(breadcrumb(&l), "Tools › Zed › Pick");
+    l.key(Key::Left);
+    assert_eq!(selected_text(&l), "Pick");
+    l.key(Key::Left);
+    assert_eq!(selected_text(&l), "Zed");
+    // An entry with choices that is not first in its category.
+    let mut l = apps(CFG);
+    typed(&mut l, "generation");
+    l.key(Key::Enter);
+    l.key(Key::Left);
+    assert_eq!((breadcrumb(&l), selected_text(&l)), ("Tools › Nix".to_string(), "Generation".to_string()));
+    // A confirm entry asked from All: up lands on its own row too.
+    let mut l = apps(CFG);
+    typed(&mut l, "collect");
+    l.key(Key::Enter);
+    l.key(Key::Left);
+    assert_eq!((breadcrumb(&l), selected_text(&l)), ("Tools".to_string(), "Nix".to_string()));
+}
+
+#[test]
+fn a_right_click_on_another_row_cancels_the_question() {
+    let mut l = tools(CFG);
+    select(&mut l, "Nix");
+    l.key(Key::Enter);
+    select(&mut l, "Collect");
+    let collect = l.selected;
+    assert_eq!(l.key(Key::Enter), Outcome::Asked);
+    assert_eq!(l.click(collect, true), Outcome::Nothing, "its own row's right click leaves the question");
+    assert!(l.tools().unwrap().next_deadline().is_some());
+    assert_eq!(l.click(0, true), Outcome::Redraw, "another row's cancels it");
+    assert!(l.tools().unwrap().next_deadline().is_none());
+}
+
+/// A jump while a read is out drops it: its late delivery is stale.
+#[test]
+fn a_jump_cancels_the_pending_choices_read() {
+    let (config, catalog) = catalog(CFG);
+    let pick = catalog.entries.iter().position(|e| e.name == "Pick").unwrap();
+    let mut t = ToolsState::new(catalog);
+    let Step::Drill(Some(Job::Choices { token, .. })) = t.goto_choices(&config.tools, pick) else { panic!() };
+    assert!(t.reading);
+    t.goto_entry(pick);
+    assert!(!t.reading, "the read is no longer waited for");
+    assert!(!t.adopt_choices(pick, token, vec!["late".into()], false));
+}
+
+/// Leaving the Tools mode for another drops a pending read, so All never holds a stale level.
+#[test]
+fn leaving_tools_by_a_mode_click_cancels_the_pending_read() {
+    let (config, catalog) = catalog(CFG);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l.key(Key::Char('/'));
+    select(&mut l, "Zed");
+    l.key(Key::Enter);
+    select(&mut l, "Pick");
+    let Outcome::ReadChoices(Job::Choices { entry, token, .. }) = l.key(Key::Enter) else { panic!() };
+    l.click_mode(Mode::All);
+    assert!(!l.tools().unwrap().reading);
+    assert!(!l.adopt_choices(entry, token, vec!["late".into()], false));
+    assert_eq!(l.message, None, "no message nor refilter in All");
+}

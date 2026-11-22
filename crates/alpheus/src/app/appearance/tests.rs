@@ -1,10 +1,10 @@
 use super::super::action::Tab;
 use super::super::testing::*;
 use super::*;
-use alpheus_commun::temp_path::TempPath;
-use alpheus_commun::theme::Rgb;
-use alpheus_commun::theme::presets::preset;
-use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+use alpheus_common::temp_path::TempPath;
+use alpheus_common::theme::Rgb;
+use alpheus_common::theme::presets::preset;
+use alpheus_common::theme::settings::{BarStyle, ModuleColors};
 use ratatui::style::Color;
 
 /// A fresh config directory holding `files`, and an App opened on the Appearance tab with it.
@@ -417,7 +417,7 @@ fn the_preview_includes_the_users_colour_overrides() {
 /// Every module-colours value the TUI can write is one theme.toml reads back, `pills` included.
 #[test]
 fn every_module_colours_value_reads_back() {
-    use alpheus_commun::theme::settings::parse_settings;
+    use alpheus_common::theme::settings::parse_settings;
     for m in ModuleColors::ALL {
         let (s, w) = parse_settings(&format!("module_colors = \"{}\"\n", m.name()));
         assert_eq!((s.module_colors, w), (m, Vec::<String>::new()), "{m:?}");

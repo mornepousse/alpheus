@@ -1,0 +1,6 @@
+---
+source: crates/alpheus-daemon/src/segments.rs
+expression: snapshot(&g)
+---
+ 日 K 
+....G.

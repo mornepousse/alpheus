@@ -1,6 +1,0 @@
----
-source: crates/alpheus-demon/src/segments.rs
-expression: "snapshot(&lay_out(std::slice::from_ref(&s), s.width() + 2, None))"
----
- 󰓓 K 󰙯 N 
-...G.e.e.

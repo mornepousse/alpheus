@@ -1,0 +1,6 @@
+---
+source: crates/alpheus-daemon/src/layout/tests.rs
+expression: "snapshot(&styled(bar_with_bell(THREE),\nBarStyle::Islands).grid(\"HDMI-A-1\", 100))"
+---
+   2·  4!····+  5    󰈹 Web page — Mozilla Firefox                     󰕾 84%  󰂚 3   Sun 4 Oct 14:05  
+..AAAAuuuuuuuuummm............................................................aa...mmmmmmmmmmGGGGG..

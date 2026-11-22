@@ -1,9 +1,0 @@
----
-source: crates/alpheus-demon/src/session_bus/hover.rs
-expression: "text.join(\"\\n\")"
----
-"Nimbus — 3 new messages"
-.......................
-"Kettle Kettle Kettle Kettle…"
-............................
-""
