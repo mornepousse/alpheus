@@ -15,12 +15,19 @@ use super::hit::{HitMap, Target};
 use super::rail::plural;
 use super::shape;
 use crate::app::action::{Action, profile_label};
+use crate::app::keymap::Keymap;
 use crate::app::{App, Loadable, SliderId, ToggleId};
 use crate::theme::{Shape, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
+
+/// The keys the status line offers on this tab; `adjust` is the label of the two adjust keys.
+pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, km: &Keymap, adjust: String) {
+    pairs.push((km.label(Action::Toggle), "Toggle"));
+    pairs.push((adjust, "Adjust"));
+}
 
 /// The smallest body that gets the dashboard.
 pub const MIN_W: u16 = 64;

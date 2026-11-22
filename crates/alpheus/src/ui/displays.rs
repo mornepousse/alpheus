@@ -5,14 +5,51 @@ use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
 use super::shape::{self, Ink};
+use super::tabs::Row;
+use crate::app::action::Action;
 use crate::app::displays::{panel_fields, place_label, placement_labels};
-use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
+use crate::app::keymap::Keymap;
+use crate::app::{App, Item, Keep, Loadable, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
 use crate::displays::{Output, active_count, rotation_label, short_from_description, short_names};
 use crate::theme::Shape;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+
+/// Adds the Displays tab's rows to `rows`; `map_rows` is the height of the map.
+pub(super) fn rows(app: &App, map_rows: usize, rows: &mut Vec<Row>) {
+    rows.push(Row::Item(0));
+    rows.push(Row::Blank);
+    match &app.data.displays {
+        Loadable::Loading => rows.push(Row::Text("…".into())),
+        Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
+        Loadable::Ready(outs) => {
+            rows.push(Row::Heading("Map"));
+            rows.extend((0..map_rows).map(Row::Map));
+            rows.push(Row::Blank);
+            rows.push(Row::Heading("Displays"));
+            if outs.is_empty() {
+                rows.push(Row::Text("no output".into()));
+            }
+            rows.extend((1..=outs.len()).map(Row::Item));
+        }
+    }
+}
+
+/// The keys the status line offers on this tab.
+pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
+    match app.focused() {
+        Some(Item::DisplayProfiles) => {
+            pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
+            pairs.push((km.label(Action::Activate), "Apply"));
+        }
+        _ => {
+            pairs.push((km.label(Action::Toggle), "Toggle"));
+            pairs.push((km.label(Action::Activate), "Adjust"));
+        }
+    }
+}
 
 /// Maximum map height, in rows.
 pub const MAP_ROWS: u16 = 8;
@@ -391,3 +428,6 @@ pub fn focused_output(app: &App) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

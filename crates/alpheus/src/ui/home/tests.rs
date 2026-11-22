@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::action::Action;
+use crate::app::action::{Action, Tab};
 use crate::app::testing::{app, ready_app};
 use crate::app::worker::{Op, Request};
 use crate::app::{Item, SliderId};
@@ -370,4 +370,11 @@ fn no_time_draws_no_clock() {
     let hero = Rect::new(RAIL_BODY_X, 5, 100, 4);
     assert!(!inside(&rows, hero).contains('▀'), "no digits:\n{}", inside(&rows, hero));
     assert!(hits.find(Target::Item(VOLUME)).is_some());
+}
+
+#[test]
+fn the_home_tab_at_80_by_24_matches_its_snapshot() {
+    let mut a = ready_app();
+    a.go_tab(Tab::Home, Instant::now());
+    insta::assert_snapshot!("home_tab", draw(&a, 80, 24).0.join("\n"));
 }

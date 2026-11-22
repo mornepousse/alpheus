@@ -7,10 +7,14 @@ use super::Chrome;
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::home::LocalTime;
+use super::journal;
 use super::overlays::frame;
 use super::rail::tab_hue;
+use super::report_views;
 use super::shape::{self, Ink};
+use crate::app::action::Action;
 use crate::app::diagnostics::{DiagItem, Section, View, middle_cut, unit_question_cut};
+use crate::app::keymap::Keymap;
 use crate::app::{App, Item, Loadable};
 use crate::backends::UnitAction;
 use crate::diagnostics::crashes::signal_name;
@@ -24,6 +28,23 @@ use ratatui::style::{Color, Modifier, Style};
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /// The unit column of a row, in cells.
 const UNIT_W: usize = 30;
+
+/// The keys the status line offers on this tab, by the view that is open.
+pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
+    match &app.diag.view {
+        View::Journal(j) => journal::hints(pairs, j),
+        View::Report(_) => report_views::report_hints(pairs, app, km),
+        View::Boot(_) => report_views::boot_hints(pairs),
+        View::Overview => {
+            pairs.push((km.label(Action::Activate), "Open"));
+            if app.unit_keys_apply() {
+                pairs.push((km.label(Action::UnitRestart), "Restart"));
+                pairs.push((km.label(Action::UnitReset), "Clear"));
+            }
+            pairs.push((km.label(Action::Refresh), "Refresh"));
+        }
+    }
+}
 
 /// Outside text, made safe for a cell and cut to `max` characters.
 fn cell(s: &str, max: usize) -> String {

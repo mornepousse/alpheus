@@ -2,6 +2,7 @@ use super::super::testing::draw;
 use super::*;
 use crate::app::action::{Action, Tab};
 use crate::app::appearance::tests::open;
+use crate::app::testing::ready_app;
 use alpheus_common::theme::Rgb;
 use alpheus_common::theme::contrast::ratio;
 use alpheus_common::theme::presets::preset;
@@ -9,6 +10,7 @@ use alpheus_common::theme::settings::{BarStyle, ModuleColors};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
+use std::time::Instant;
 
 const WALL: &str = "bg = \"#101820\"\nfg = \"#e8eef2\"\naccent = \"#ff8800\"\nmuted = \"#7a8894\"\nsurface = \"#1b2631\"\nerror = \"#ff5555\"\nok = \"#50fa7b\"\n";
 
@@ -556,4 +558,11 @@ fn the_theme_tab_fits_mae_window_87x26() {
         assert_eq!(text, format!(" {label} "), "{label}");
         assert!(r.right() <= 87 - 2, "{label} stays inside the body");
     }
+}
+
+#[test]
+fn the_appearance_tab_at_80_by_24_matches_its_snapshot() {
+    let mut a = ready_app();
+    a.go_tab(Tab::Appearance, Instant::now());
+    insta::assert_snapshot!("appearance_tab", draw(&a, 80, 24).0.join("\n"));
 }

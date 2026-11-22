@@ -17,6 +17,24 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+/// The keys the status line offers in the journal view: a picker, the filter being typed, or the
+/// view itself.
+pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, j: &JournalView) {
+    if j.picker.is_some() {
+        pairs.push(("Enter".into(), "Choose"));
+        pairs.push(("Esc".into(), "Close"));
+    } else if j.filter_editing {
+        pairs.push(("Enter".into(), "Keep"));
+        pairs.push(("Esc".into(), "Clear"));
+    } else {
+        pairs.push(("/".into(), "Filter"));
+        pairs.push(("u".into(), "Unit"));
+        pairs.push(("p".into(), "Level"));
+        pairs.push(("f".into(), "Follow"));
+        pairs.push(("PgUp/Dn/End".into(), "Scroll"));
+    }
+}
+
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// "14:02:11", or "Nov 20 14:02:11" when the entry is not from today. In the tests the zone is

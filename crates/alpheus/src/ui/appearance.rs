@@ -6,7 +6,9 @@
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use crate::app::App;
+use crate::app::action::Action;
 use crate::app::appearance::{Focus, STYLES, colors_label, mode_label, style_label};
+use crate::app::keymap::Keymap;
 use crate::theme::color;
 use alpheus_common::theme::contrast::ratio;
 use alpheus_common::theme::settings::{BarStyle, ModeSetting, ModuleColors};
@@ -14,6 +16,16 @@ use alpheus_common::theme::{Mode, Rgb, Roles};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+
+/// The keys the status line offers on this tab: choose in the list or along the focused row, apply.
+pub(super) fn hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
+    if app.appearance.focus != Focus::List {
+        pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
+    } else {
+        pairs.push((format!("{}/{}", km.label(Action::Up), km.label(Action::Down)), "Choose"));
+    }
+    pairs.push((km.label(Action::Activate), "Apply"));
+}
 
 /// Width of the list column, and the gap before the preview.
 const LIST_W: u16 = 30;

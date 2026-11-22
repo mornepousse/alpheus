@@ -242,3 +242,10 @@ fn long_unit_names_stay_apart_in_the_rows() {
     let all = rows(&a, 120, 60);
     assert!(all.contains("alpha.service") && all.contains("bravo.service"), "{all}");
 }
+
+#[test]
+fn the_diagnostics_tab_at_80_by_24_matches_its_snapshot() {
+    let mut a = ready_app();
+    a.go_tab(Tab::Diagnostics, Instant::now());
+    insta::assert_snapshot!("diagnostics_tab", draw(&a, 80, 24).0.join("\n"));
+}

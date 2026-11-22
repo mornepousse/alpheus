@@ -109,24 +109,7 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
         Tab::Sound => sound::rows(app, &items, &mut rows),
         Tab::Network => network::rows(app, rail, &mut rows),
         Tab::Appearance | Tab::Diagnostics => {}
-        Tab::Displays => {
-            rows.push(Row::Item(0));
-            rows.push(Row::Blank);
-            match &app.data.displays {
-                Loadable::Loading => rows.push(Row::Text("…".into())),
-                Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                Loadable::Ready(outs) => {
-                    rows.push(Row::Heading("Map"));
-                    rows.extend((0..map_rows).map(Row::Map));
-                    rows.push(Row::Blank);
-                    rows.push(Row::Heading("Displays"));
-                    if outs.is_empty() {
-                        rows.push(Row::Text("no output".into()));
-                    }
-                    rows.extend((1..=outs.len()).map(Row::Item));
-                }
-            }
-        }
+        Tab::Displays => displays::rows(app, map_rows, &mut rows),
         Tab::Bluetooth => bluetooth::rows(app, rail, &mut rows),
     }
     rows

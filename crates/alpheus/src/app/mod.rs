@@ -8,6 +8,7 @@ pub mod appearance;
 mod bluetooth;
 pub mod diagnostics;
 pub mod displays;
+mod home;
 mod input;
 pub mod journal;
 pub mod keymap;
@@ -565,24 +566,14 @@ impl App {
 
     pub fn items(&self) -> Vec<Item> {
         match self.tab {
-            Tab::Home => vec![
-                Item::Slider(SliderId::Volume),
-                Item::Slider(SliderId::Brightness),
-                Item::Toggle(ToggleId::Wifi),
-                Item::Toggle(ToggleId::Bluetooth),
-                Item::Toggle(ToggleId::Dnd),
-                Item::Toggle(ToggleId::KeepAwake),
-                Item::Profile,
-            ],
+            Tab::Home => home::items(),
             Tab::Sound => sound::items(self),
             Tab::Network => network::items(),
             Tab::Bluetooth => bluetooth::items(),
             Tab::Power => power::items(),
-            Tab::Appearance => Vec::new(),
+            Tab::Appearance => appearance::items(),
             Tab::Diagnostics => self.diag_items(),
-            Tab::Displays => {
-                std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
-            }
+            Tab::Displays => displays::items(self),
         }
     }
 

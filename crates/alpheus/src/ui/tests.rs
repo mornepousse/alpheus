@@ -402,16 +402,6 @@ fn displays_snapshots() {
 }
 
 #[test]
-fn tab_snapshots() {
-    let mut a = ready_app();
-    // The Sound, Network, Bluetooth and Power snapshots live in each tab's own `tests.rs`.
-    for t in Tab::ALL.into_iter().filter(|t| !matches!(t, Tab::Sound | Tab::Network | Tab::Bluetooth | Tab::Power)) {
-        a.go_tab(t, Instant::now());
-        insta::assert_snapshot!(format!("tab_{}", t.index() + 1), draw(&a, 80, 24).0.join("\n"));
-    }
-}
-
-#[test]
 fn help_screen() {
     let mut a = ready_app();
     a.overlay = Overlay::Help;

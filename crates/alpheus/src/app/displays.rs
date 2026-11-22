@@ -5,7 +5,7 @@
 //! or Cancel, and learns from the 2 s refresh how a trial ended.
 
 use super::worker::{Domain, Op};
-use super::{App, Loadable, Overlay};
+use super::{App, Item, Loadable, Overlay};
 use crate::backends::{BResult, BackendError};
 use crate::displays::geometry::{Align, GeoError, Placement, Relation, Screen, deduce, logical_size, resolve};
 use crate::displays::profiles::{self, Profile, from_outputs, placed, plan_profile};
@@ -13,6 +13,11 @@ use crate::displays::wire::{Snapshot, Status, TrialEnd, TrialState};
 use crate::displays::{Active, Mode, Output, Plan, Scale, Step, active_count, rotation_label, short_from_description, short_names};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+/// The focusable items of the Displays tab: the profile bar, then one row per output.
+pub(super) fn items(app: &App) -> Vec<Item> {
+    std::iter::once(Item::DisplayProfiles).chain(app.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
+}
 
 /// Delay before the daemon rolls back to the previous settings.
 pub const KEEP_DELAY: Duration = Duration::from_secs(15);

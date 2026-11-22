@@ -5,13 +5,28 @@ use super::Chrome;
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use super::rail::tab_hue;
+use crate::app::action::Action;
 use crate::app::diagnostics::View;
+use crate::app::keymap::Keymap;
 use crate::app::report_views::wrap_rows;
 use crate::app::{App, Loadable};
 use alpheus_common::text::clean_line;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+
+/// The keys the status line offers on the bug report: copy when it can be copied, and scroll.
+pub(super) fn report_hints(pairs: &mut Vec<(String, &'static str)>, app: &App, km: &Keymap) {
+    if app.report_can_copy() {
+        pairs.push((km.label(Action::Activate), "Copy"));
+    }
+    pairs.push(("PgUp/PgDn".into(), "Scroll"));
+}
+
+/// The keys the status line offers on the boot report: scroll.
+pub(super) fn boot_hints(pairs: &mut Vec<(String, &'static str)>) {
+    pairs.push(("PgUp/PgDn".into(), "Scroll"));
+}
 
 /// "812ms", "12.345s", "1min 2.345s".
 pub fn duration(ms: u64) -> String {

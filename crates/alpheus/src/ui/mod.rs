@@ -24,7 +24,6 @@ pub use hit::{HitMap, Target};
 
 use crate::app::App;
 use crate::app::action::{Action, Tab};
-use crate::app::appearance::Focus;
 use draw::put;
 use home::LocalTime;
 use ratatui::Frame;
@@ -123,65 +122,14 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     } else {
         let adjust = format!("{}/{}", km.label(Action::Decrease), km.label(Action::Increase));
         match app.tab {
-            Tab::Home => {
-                pairs.push((km.label(Action::Toggle), "Toggle"));
-                pairs.push((adjust, "Adjust"));
-            }
+            Tab::Home => home::hints(&mut pairs, km, adjust),
             Tab::Sound => sound::hints(&mut pairs, km, adjust),
             Tab::Network => network::hints(&mut pairs, km),
             Tab::Bluetooth => bluetooth::hints(&mut pairs, km),
             Tab::Power => power::hints(&mut pairs, km),
-            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Journal(_)) => {
-                let crate::app::diagnostics::View::Journal(j) = &app.diag.view else { unreachable!() };
-                if j.picker.is_some() {
-                    pairs.push(("Enter".into(), "Choose"));
-                    pairs.push(("Esc".into(), "Close"));
-                } else if j.filter_editing {
-                    pairs.push(("Enter".into(), "Keep"));
-                    pairs.push(("Esc".into(), "Clear"));
-                } else {
-                    pairs.push(("/".into(), "Filter"));
-                    pairs.push(("u".into(), "Unit"));
-                    pairs.push(("p".into(), "Level"));
-                    pairs.push(("f".into(), "Follow"));
-                    pairs.push(("PgUp/Dn/End".into(), "Scroll"));
-                }
-            }
-            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Report(_)) => {
-                if app.report_can_copy() {
-                    pairs.push((km.label(Action::Activate), "Copy"));
-                }
-                pairs.push(("PgUp/PgDn".into(), "Scroll"));
-            }
-            Tab::Diagnostics if matches!(app.diag.view, crate::app::diagnostics::View::Boot(_)) => {
-                pairs.push(("PgUp/PgDn".into(), "Scroll"));
-            }
-            Tab::Diagnostics => {
-                pairs.push((km.label(Action::Activate), "Open"));
-                if app.unit_keys_apply() {
-                    pairs.push((km.label(Action::UnitRestart), "Restart"));
-                    pairs.push((km.label(Action::UnitReset), "Clear"));
-                }
-                pairs.push((km.label(Action::Refresh), "Refresh"));
-            }
-            Tab::Appearance if app.appearance.focus != Focus::List => {
-                pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
-                pairs.push((km.label(Action::Activate), "Apply"));
-            }
-            Tab::Appearance => {
-                pairs.push((format!("{}/{}", km.label(Action::Up), km.label(Action::Down)), "Choose"));
-                pairs.push((km.label(Action::Activate), "Apply"));
-            }
-            Tab::Displays => match app.focused() {
-                Some(crate::app::Item::DisplayProfiles) => {
-                    pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
-                    pairs.push((km.label(Action::Activate), "Apply"));
-                }
-                _ => {
-                    pairs.push((km.label(Action::Toggle), "Toggle"));
-                    pairs.push((km.label(Action::Activate), "Adjust"));
-                }
-            },
+            Tab::Diagnostics => diagnostics::hints(&mut pairs, app, km),
+            Tab::Appearance => appearance::hints(&mut pairs, app, km),
+            Tab::Displays => displays::hints(&mut pairs, app, km),
         }
         // Generic keys last: a bar too narrow for every pair drops Back, then Palette, then Help
         // then Quit before any key that acts on the focused item.

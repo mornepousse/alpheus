@@ -4,8 +4,8 @@
 //! the preview; Enter writes (`crate::theme_file::write_settings`) and reloads the TUI's own theme.
 //! The daemon follows through its inotify reload; the TUI never touches D-Bus.
 
-use super::App;
 use super::action::Action;
+use super::{App, Item};
 use crate::theme::Theme;
 use crate::theme_file::{Entry, WALLPAPER, entries, write_settings};
 use alpheus_common::theme::mode_file::read_mode;
@@ -15,6 +15,11 @@ use alpheus_common::theme::settings::{
 use alpheus_common::theme::{Mode, Roles};
 use std::path::PathBuf;
 use std::time::Instant;
+
+/// The Appearance tab has no focusable items: its cursor and its rows are its own (`Focus`).
+pub(super) fn items() -> Vec<Item> {
+    Vec::new()
+}
 
 pub fn mode_label(m: ModeSetting) -> &'static str {
     match m {
