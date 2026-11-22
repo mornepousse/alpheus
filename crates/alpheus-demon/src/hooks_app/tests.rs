@@ -100,10 +100,19 @@ fn start_lines_name_what_never_fires() {
     let cfg = crate::config::BarConfig::from_text("[hooks]\npower_profile = [\"a\"]\ndnd = [\"b\"]\n").unwrap();
     let model = Hooks::new(&cfg.hooks, Instant::now()).unwrap();
     assert_eq!(
-        start_lines(&model, &[ModuleId::Clock]),
+        start_lines(&model, &[ModuleId::Clock], false),
         ["hooks: 2 set", "hooks: dnd never fires (needs notifications)", "hooks: power_profile never fires (needs quick)"]
     );
-    assert_eq!(start_lines(&model, &crate::config::BarConfig::default().modules), ["hooks: 2 set"]);
+    assert_eq!(start_lines(&model, &crate::config::BarConfig::default().modules, false), ["hooks: 2 set"]);
+}
+
+#[test]
+fn start_lines_name_the_shield_hook_without_a_shield() {
+    let cfg = crate::config::BarConfig::from_text("[hooks]\nshield = [\"a\"]\n").unwrap();
+    let model = Hooks::new(&cfg.hooks, Instant::now()).unwrap();
+    let modules = crate::config::BarConfig::default().modules;
+    assert_eq!(start_lines(&model, &modules, false), ["hooks: 1 set", "hooks: shield never fires (needs [shield])"]);
+    assert_eq!(start_lines(&model, &modules, true), ["hooks: 1 set"]);
 }
 
 #[test]

@@ -554,11 +554,12 @@ pub struct HooksConfig {
     pub bluetooth: Vec<String>,
     pub privacy: Vec<String>,
     pub displays: Vec<String>,
+    pub shield: Vec<String>,
 }
 
 impl HooksConfig {
     /// Every hook with its TOML key, in field order.
-    pub fn commands(&self) -> [(&'static str, &[String]); 11] {
+    pub fn commands(&self) -> [(&'static str, &[String]); 12] {
         [
             ("started", &self.started),
             ("theme_mode", &self.theme_mode),
@@ -571,6 +572,7 @@ impl HooksConfig {
             ("bluetooth", &self.bluetooth),
             ("privacy", &self.privacy),
             ("displays", &self.displays),
+            ("shield", &self.shield),
         ]
     }
 

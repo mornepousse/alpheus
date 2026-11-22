@@ -99,7 +99,13 @@ fn parse_line(line: &str) -> Option<UsbDevice> {
         return None;
     }
     let vid_pid = toks.get(2).filter(|t| !t.quoted && is_vid_pid(&t.text))?.text.clone();
-    let name = toks.windows(2).find(|w| !w[0].quoted && w[0].text == "name" && w[1].quoted).map(|w| w[1].text.as_str()).unwrap_or("");
+    let name = toks
+        .windows(2)
+        .find_map(|w| match w {
+            [key, value] if !key.quoted && key.text == "name" && value.quoted => Some(value.text.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
     let name: String = crate::text::clean(name).trim().chars().take(NAME_CHARS).collect();
     let name = if name.trim().is_empty() { "?".to_string() } else { name };
     Some(UsbDevice { id, vid_pid, name })

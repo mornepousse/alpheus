@@ -131,6 +131,9 @@ impl App {
             Some(Edge::Off) => self.shield_notice(NoticeKind::Off),
             None => {}
         }
+        if let Some(e) = edge {
+            self.hooks_shield(e == Edge::On);
+        }
         self.shield_publish();
         self.shield_timer_sync();
         edge

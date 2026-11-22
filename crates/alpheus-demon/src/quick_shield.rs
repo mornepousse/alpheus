@@ -74,7 +74,7 @@ pub struct ShieldPanel {
 impl ShieldPanel {
     fn devices(&self) -> &[UsbDevice] {
         match &self.listing {
-            Some(Listing::Devices(d)) => &d[..d.len().min(ROWS_MAX)],
+            Some(Listing::Devices(d)) => d.get(..ROWS_MAX).unwrap_or(d),
             _ => &[],
         }
     }

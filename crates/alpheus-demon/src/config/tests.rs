@@ -760,6 +760,7 @@ fn hooks_are_read_in_order() {
         "bluetooth",
         "privacy",
         "displays",
+        "shield",
     ];
     let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
     let c = BarConfig::from_text(&text).unwrap();
@@ -778,6 +779,15 @@ fn hooks_check_their_commands() {
     assert!(e.contains("hooks.vpn: an argument holds a NUL"), "{e}");
     assert!(BarConfig::from_text("[hooks]\nwifi = [\"x\"]").is_err(), "unknown field");
     assert!(BarConfig::from_text("[hooks]\ndnd = []").is_ok());
+}
+
+#[test]
+fn hooks_accept_shield() {
+    let c = BarConfig::from_text("[hooks]\nshield = [\"notify-send\", \"shield\"]\n").unwrap();
+    assert_eq!(c.hooks.shield, ["notify-send", "shield"]);
+    assert!(!c.hooks.is_empty());
+    let e = BarConfig::from_text("[hooks]\nshield = [\" \"]").unwrap_err();
+    assert!(e.contains("hooks.shield"), "{e}");
 }
 
 #[test]

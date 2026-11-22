@@ -3635,6 +3635,7 @@ fn the_hooks_are_fed_where_state_changes() {
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
         ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
+        ("shield_app.rs", "fn shield_readable(", "hooks_shield("),
     ] {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
@@ -3647,7 +3648,7 @@ fn the_hooks_are_fed_where_state_changes() {
         assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
         checked += 1;
     }
-    assert_eq!(checked, 6);
+    assert_eq!(checked, 7);
 }
 
 /// Quick notes: nothing of the pad outlives it. `notes_close` takes the pad out before it syncs the
@@ -4184,4 +4185,144 @@ fn the_clipboard_shutdown_wipes_pins_too() {
     let prod = production_code(t);
     let body = function_body(&prod, "fn clipboard_shutdown(");
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
+}
+
+/// The string literals of `call` (escapes skipped) and what is left of it once they are removed.
+fn literals_and_rest(call: &str) -> (Vec<String>, String) {
+    let (mut lits, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
+    for c in call.chars() {
+        if inside {
+            if escaped {
+                cur.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                cur.push(c);
+                escaped = true;
+            } else if c == '"' {
+                inside = false;
+                lits.push(std::mem::take(&mut cur));
+                rest.push('"');
+            } else {
+                cur.push(c);
+            }
+        } else {
+            if c == '"' {
+                inside = true;
+            }
+            rest.push(c);
+        }
+    }
+    (lits, rest)
+}
+
+/// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
+/// command, argument or path: what is left of each whole `log(` call once its literals are removed
+/// names none of them, and every literal is one of the list's (a `<reason>` slot is filled by
+/// `Reason::text` alone).
+#[test]
+fn the_shield_logs_name_nothing() {
+    const CLOSED: [&str; 19] = [
+        "shield: on",
+        "shield: off",
+        "shield: allow",
+        "shield: now on",
+        "shield: now off",
+        "shield: switching {} failed ({})",
+        "shield: allow failed ({})",
+        "shield: listing failed ({})",
+        "shield: more than 64 blocked devices; the rest not listed",
+        "shield: the flag cannot be read",
+        "shield: flag not watched ({})",
+        "shield: flag not watched ({e})",
+        "shield: flag not watched (shares the config directory's watch)",
+        "shield: no notification (not serving)",
+        "shield: worker failed",
+        "shield: not started ({why})",
+        "theme: mask not restored; watching again",
+        "on",
+        "off",
+    ];
+    const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    // Every log call of the Shield's own files, and the Shield's lines of the others.
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        calls.extend(log_calls(&src(name)).into_iter().map(|c| (name.to_string(), c.to_string())));
+    }
+    for name in
+        ["quick_app.rs", "notify_app.rs", "launcher/socket_glue.rs", "launcher/host.rs", "launcher/surface.rs", "hooks_app.rs", "watch.rs"]
+    {
+        calls.extend(
+            log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
+        );
+    }
+    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same way.
+    let watch = src("watch.rs");
+    calls.push(("watch.rs".into(), function_body(&watch, "fn shield_unwatched_line(").to_string()));
+    // The theme watch's own line for the flag's rearm.
+    calls
+        .extend(log_calls(&watch).into_iter().filter(|c| c.contains("mask not restored")).map(|c| ("watch.rs".to_string(), c.to_string())));
+    calls.sort();
+    calls.dedup();
+    assert!(calls.len() >= 10, "the Shield's log calls were found: {}", calls.len());
+    for (name, call) in &calls {
+        let (lits, rest) = literals_and_rest(call);
+        for l in &lits {
+            assert!(CLOSED.contains(&l.as_str()), "a literal outside the closed list in {name}: {l:?} in {call}");
+        }
+        for word in rest.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            assert!(!FORBIDDEN.contains(&word), "a log call in {name} names `{word}`: {call}");
+        }
+    }
+    // The `<reason>` slot of the failure lines is `Reason::text`.
+    for call in calls.iter().map(|(_, c)| c).filter(|c| c.contains("failed ({})")) {
+        assert!(call.contains("why.text()"), "{call}");
+    }
+}
+
+/// Shield spec § 3 and decision 4: the flag is watched in the theme watch's one inotify instance; the
+/// Shield's own files create none.
+#[test]
+fn the_shield_watch_is_the_theme_watchs_instance() {
+    let files = source_files();
+    for name in ["shield_app.rs", "shield.rs", "shield_run.rs", "shield_usb.rs", "quick_shield.rs"] {
+        let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for never in ["Inotify::new", "inotify_", "inotify::"] {
+            assert!(!t.contains(never), "{never} in {name}");
+        }
+    }
+    let watch = production_code(&files.iter().find(|(p, _)| relative_path(p) == "watch.rs").expect("watch.rs").1);
+    assert_eq!(watch.matches("Inotify::new()").count(), 1, "one inotify instance, the theme watch's, carries both targets");
+}
+
+/// Shield spec § 12 and the plan's constraints: the pure model, the parser, the runner and the panel
+/// detail have no panicking path (a USB name is hostile text).
+#[test]
+fn the_shield_files_have_no_panicking_path() {
+    let files = source_files();
+    for name in ["shield.rs", "shield_usb.rs", "shield_run.rs", "quick_shield.rs"] {
+        let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
+/// Shield spec § 5 (I1 of the Task 4-5 review): the panel's timer follows its view from the open, so a
+/// `failed` shown at open (a switch that failed a moment before the panel was reopened) clears at its
+/// 4 s: `quick_toggle` syncs it itself, whatever refresh happens to follow.
+#[test]
+fn the_quick_panels_timer_follows_the_view_from_the_open() {
+    let files = source_files();
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
+    }
 }
