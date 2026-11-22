@@ -5727,7 +5727,7 @@ fn power_off_asks_then_a_second_enter_after_half_a_second_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Power spec § 2, § 5 (docs/decisions.md, "Reboot and power off ask first…"): two Enters 0.1 s apart never confirm. Nothing runs, the menu
+/// Power spec § 2, § 5 (docs/decisions.md, "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s"): two Enters 0.1 s apart never confirm. Nothing runs, the menu
 /// stays open with its question; a third Enter, past 0.4 s and inside 3 s, runs it.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]

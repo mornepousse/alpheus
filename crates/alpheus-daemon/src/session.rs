@@ -195,7 +195,8 @@ mod tests {
         assert_eq!(q, None, "never a question of their own");
     }
 
-    /// The rule of "Reboot and power off ask first…" (docs/decisions.md): the second activation counts from 0.4 s after the question, until 3 s.
+    /// The rule of "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s" (docs/decisions.md): the second
+    /// activation counts from 0.4 s after the question, until 3 s.
     #[test]
     fn reboot_and_power_off_ask_then_confirm_from_0_4_s_until_3_s() {
         for s in [Session::Reboot, Session::Poweroff] {

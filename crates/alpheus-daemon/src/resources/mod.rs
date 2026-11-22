@@ -92,8 +92,8 @@ pub fn series(item: ResourceItem, h: &History) -> Vec<Vec<Option<u16>>> {
     let mut out = vec![vec![None; HISTORY - h.len()]; count];
     for s in h.iter() {
         // Two slots for every item, the second used by the network (its upload) alone. Each
-        // scale is described in docs/decisions.md, "The resources graphs have fixed scales, and
-        // the network's has a floor".
+        // scale is described in docs/decisions.md, "Each resources graph has a set scale; the
+        // network's follows its peak, with a floor".
         let points: [Option<u16>; 2] = match item {
             ResourceItem::Cpu => [s.cpu.map(|p| permille(u64::from(p), 100)), None],
             ResourceItem::Disk => [s.disk.map(|p| permille(u64::from(p), 100)), None],
