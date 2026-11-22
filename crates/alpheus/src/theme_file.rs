@@ -1,6 +1,18 @@
-//! The Appearance tab's data and its one write: the theme list with its display names, and
-//! `theme.toml`'s `theme`, `mode`, `module_colors` and `style` lines, edited in place (everything else byte
-//! for byte).
+//! The Theme tab's data and its one write: the theme list with its display names, and
+//! `theme.toml`'s `theme`, `mode`, `module_colors` and `style` lines, edited in place (everything
+//! else byte for byte).
+//!
+//! The tab's code name is Appearance (`app/appearance.rs`, `ui/appearance.rs`). The text editing
+//! (`set_one`, `set_keys`) is pure and takes and returns strings; `write_settings` is the one
+//! function that touches the disk.
+//!
+//! Never:
+//! - overwrite a `theme.toml` it could not read: that is an error, not an empty file;
+//! - leave a half-written file or a temporary file behind: it writes a temporary file beside
+//!   the target and renames it, and removes the temporary file when that fails;
+//! - replace a symlinked `theme.toml` by a regular file: the link's target is what gets replaced.
+//!
+//! See: docs/specs/2026-10-07-alpheus-themes-design.md, docs/features/control-center.md (Theme).
 
 use alpheus_common::theme::presets::PRESETS;
 use alpheus_common::theme::settings::THEME_FILE;
@@ -44,7 +56,13 @@ pub struct Entry {
 pub fn entries() -> Vec<Entry> {
     let wallpaper = Entry { key: WALLPAPER, label: "Wallpaper (matugen)", dark_only: false };
     let presets = PRESETS.iter().map(|p| {
-        let label = NAMES.iter().find(|(k, _)| *k == p.name).map_or(p.name, |(_, l)| *l);
+        let mut label = p.name;
+        for (key, human) in NAMES {
+            if key == p.name {
+                label = human;
+                break;
+            }
+        }
         Entry { key: p.name, label, dark_only: p.light.is_none() }
     });
     std::iter::once(wallpaper).chain(presets).collect()
@@ -53,6 +71,15 @@ pub fn entries() -> Vec<Entry> {
 /// Index of the first `[table]` / `[[array]]` header line, or the line count.
 fn first_header(lines: &[&str]) -> usize {
     lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len())
+}
+
+/// Whether `line` is the `key = ...` line (indentation allowed). A longer key that starts with
+/// `key` does not count: what follows the key must be the `=`.
+fn is_key_line(line: &str, key: &str) -> bool {
+    match line.trim_start().strip_prefix(key) {
+        Some(rest) => rest.trim_start().starts_with('='),
+        None => false,
+    }
 }
 
 /// `text` with the top-level `key = "value"` line replaced in place (indentation and line ending
@@ -65,7 +92,7 @@ fn set_one(text: &str, key: &str, value: &str) -> String {
         let body = l.trim_start();
         !body.is_empty() && !body.starts_with('#')
     };
-    let mine = lines[..header].iter().position(|l| l.trim_start().strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('=')));
+    let mine = lines[..header].iter().position(|l| is_key_line(l, key));
     if let Some(i) = mine {
         let line = lines[i];
         let indent = &line[..line.len() - line.trim_start().len()];
@@ -98,7 +125,11 @@ fn set_one(text: &str, key: &str, value: &str) -> String {
     }
     out.push_str(&format!("{key} = \"{value}\"\n"));
     // A table (or its comment) right after: keep a blank line between.
-    if before_header && lines.get(pos).is_some_and(|l| !l.trim().is_empty()) {
+    let next_has_text = match lines.get(pos) {
+        Some(l) => !l.trim().is_empty(),
+        None => false,
+    };
+    if before_header && next_has_text {
         out.push('\n');
     }
     out.push_str(&lines[pos..].concat());
@@ -109,7 +140,11 @@ fn set_one(text: &str, key: &str, value: &str) -> String {
 /// alone). Every other line is kept byte for byte: comments, blank lines, `opacity`, the
 /// `[colors]` overrides. A replaced line loses its own trailing comment.
 pub fn set_keys(text: &str, keys: &[(&str, &str)]) -> String {
-    keys.iter().fold(text.to_string(), |out, (key, value)| set_one(&out, key, value))
+    let mut out = text.to_string();
+    for (key, value) in keys {
+        out = set_one(&out, key, value);
+    }
+    out
 }
 
 /// Writes the `(key, value)` lines into `dir/theme.toml`: reads it (absent: empty), edits it with
@@ -137,6 +172,9 @@ pub fn write_settings(dir: &Path, keys: &[(&str, &str)]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the Theme tab's file (`theme_file.rs`): the theme list, the in-place editing of
+    //! `theme.toml` line by line, and the write (temporary file, symlink, unreadable file).
+
     use super::*;
 
     #[test]

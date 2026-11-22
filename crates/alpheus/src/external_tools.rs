@@ -1,7 +1,18 @@
-//! External tools (wiremix, nmtui, bluetui) opened INSIDE alpheus's window:
-//! alpheus gives up the terminal, the tool runs in the foreground, then
-//! alpheus takes its screen back. The sequence is tested with a fake screen
-//! and launcher; no real terminal in tests.
+//! Opening an external tool (wiremix, nmtui, bluetui, or a systemd action that asks for a password)
+//! inside the control center's own window.
+//!
+//! The control center gives up the terminal (`Screen::suspend`), the tool runs in the foreground
+//! (`Launcher::run`), then the control center takes its screen back (`Screen::resume`). `open` is
+//! that sequence; `open_noticed` adds a line printed first and a wait for Enter after a failure, so
+//! the error is read before the screen is redrawn. `ProcessLauncher` and `CrosstermScreen` are the
+//! real ones; the sequence is tested with a fake screen and a fake launcher.
+//!
+//! Never:
+//! - run a tool in a test: the tests use the fakes, no real terminal and no real process;
+//! - leave the control center killed by the tool's Ctrl+C: `ProcessLauncher` swaps the SIGINT and
+//!   SIGQUIT handlers for an empty one for the length of the run.
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the "per-app mixer", "choose a network" and "pair" buttons).
 
 use std::io;
 use std::process::Command;
@@ -18,11 +29,15 @@ pub trait Screen {
     fn wait_enter(&mut self) -> io::Result<()>;
 }
 
+/// Runs a program in the foreground.
 pub trait Launcher {
     /// Runs `argv` in the foreground and waits for it to finish.
     fn run(&mut self, argv: &[String]) -> Result<(), String>;
 }
 
+/// Opens `argv` in the window: suspends the screen, runs it, resumes the screen. An empty command, a
+/// screen that cannot be given up, a screen that is not restored, or the tool failing, each is an
+/// error message for the user. A screen that is not restored is reported even if the tool ran.
 pub fn open(screen: &mut dyn Screen, launcher: &mut dyn Launcher, argv: &[String]) -> Result<(), String> {
     if argv.is_empty() {
         return Err("empty command in config.toml".into());
@@ -55,6 +70,7 @@ pub fn open_noticed(screen: &mut dyn Screen, launcher: &mut dyn Launcher, argv: 
     }
 }
 
+/// A signal handler that does nothing: see `SIGNALS` and `ProcessLauncher::run`.
 extern "C" fn ignore_signal(_: libc::c_int) {}
 
 /// The SIGINT/SIGQUIT handlers are GLOBAL process state (not data owned by
@@ -67,7 +83,7 @@ extern "C" fn ignore_signal(_: libc::c_int) {}
 /// also serializes the two tests that used to run it in parallel.
 static SIGNALS: Mutex<()> = Mutex::new(());
 
-/// Real launcher.
+/// The real launcher: runs the program with `std::process::Command` and waits for it.
 pub struct ProcessLauncher;
 
 impl Launcher for ProcessLauncher {
@@ -101,7 +117,7 @@ impl Launcher for ProcessLauncher {
     }
 }
 
-/// Real screen (crossterm).
+/// The real screen, driven through crossterm.
 pub struct CrosstermScreen;
 
 impl Screen for CrosstermScreen {
@@ -131,6 +147,9 @@ impl Screen for CrosstermScreen {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the hand-over (`external_tools.rs`): the order of suspend, run and resume with a fake
+    //! screen and launcher, and the real launcher on harmless programs.
+
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;

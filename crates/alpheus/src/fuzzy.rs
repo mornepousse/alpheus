@@ -1,6 +1,14 @@
-//! Minimal fuzzy search (palette, list filtering): subsequence match,
-//! case- and accent-insensitive (plain letters still match accented ones,
-//! e.g. "cafe" finds "Café").
+//! A small fuzzy search for the command palette and the lists' filter: the query's characters
+//! must appear in order in the candidate, case- and accent-insensitive ("cafe" finds "Café").
+//!
+//! `score` says whether and how well one candidate matches; `rank` orders a list of labels by it.
+//! A match scores higher when its characters are contiguous or start a word, and a shorter
+//! candidate wins a tie by a small margin.
+//!
+//! Never:
+//! - read or write anything but its arguments: it is a pure function of the query and the candidates.
+//!
+//! See: docs/features/control-center.md.
 
 fn fold(c: char) -> char {
     match c {
@@ -31,8 +39,10 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
     for (i, &ch) in c.iter().enumerate() {
         if qi < q.len() && ch == q[qi] {
             score += 1;
-            if prev.is_some_and(|p| p + 1 == i) {
-                score += 5; // contiguous
+            if let Some(p) = prev {
+                if p + 1 == i {
+                    score += 5; // contiguous
+                }
             }
             if i == 0 || !c[i - 1].is_alphanumeric() {
                 score += 8; // start of word
@@ -41,19 +51,27 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
             qi += 1;
         }
     }
-    (qi == q.len()).then(|| score - c.len() as i32 / 10)
+    // Every character of the query was found. A longer candidate loses a point per ten characters.
+    if qi == q.len() { Some(score - c.len() as i32 / 10) } else { None }
 }
 
 /// Indices of the labels that match, best first (original order on a tie;
 /// an empty query matches everything, in order).
 pub fn rank<S: AsRef<str>>(query: &str, labels: &[S]) -> Vec<usize> {
-    let mut v: Vec<(usize, i32)> = labels.iter().enumerate().filter_map(|(i, l)| score(query, l.as_ref()).map(|s| (i, s))).collect();
+    let mut v: Vec<(usize, i32)> = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        if let Some(s) = score(query, label.as_ref()) {
+            v.push((i, s));
+        }
+    }
     v.sort_by_key(|&(_, s)| std::cmp::Reverse(s)); // stable sort: original order on a tie
     v.into_iter().map(|(i, _)| i).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the fuzzy search (`fuzzy.rs`): accents and case, word starts and contiguity, ranking.
+
     use super::*;
 
     #[test]
@@ -68,6 +86,15 @@ mod tests {
         let labels = ["Keep awake", "Wi-Fi", "Lock"];
         assert_eq!(rank("wifi", &labels), vec![1]);
         assert_eq!(rank("loc", &labels)[0], 2);
+    }
+
+    /// Among labels that match the same way, the shorter one comes first, and a contiguous match
+    /// beats a scattered one.
+    #[test]
+    fn a_shorter_label_and_a_contiguous_match_rank_first() {
+        let long = "lock the session and wait for a very long time here";
+        assert_eq!(rank("lock", &[long, "lock"]), vec![1, 0]);
+        assert!(score("abc", "xabc").unwrap() > score("abc", "xaxbxc").unwrap());
     }
 
     #[test]

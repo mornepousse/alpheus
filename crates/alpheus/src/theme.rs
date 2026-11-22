@@ -1,8 +1,19 @@
-//! TUI theme: the shared resolver (alpheus-common::theme::settings) turned into ratatui colours. The
-//! TUI is short-lived: it resolves once at start (theme.toml, the mode, the colour files). In mode
-//! "auto" the mode is the one the daemon publishes in $XDG_RUNTIME_DIR/alpheus/mode: the TUI never
-//! uses D-Bus (Mae, 2026-10-07). The file outlives the daemon, so a TUI started after the daemon
-//! stopped reads the last published mode: accepted, no cleanup. The rest of the TUI only ever sees `Theme`.
+//! The control center's theme: the shared resolver (`alpheus_common::theme::settings`) turned into
+//! ratatui colours, plus the shape the bar's `style` gives the controls.
+//!
+//! The control center is short-lived, so it resolves once at start (theme.toml, the mode, the
+//! colour files). In mode `auto` the mode is the one the daemon publishes in
+//! `$XDG_RUNTIME_DIR/alpheus/mode`; a missing file means dark. The file outlives the daemon, so
+//! a control center started after the daemon stopped reads the last published mode: accepted, no
+//! cleanup. The rest of the control center only ever sees `Theme`.
+//!
+//! Never:
+//! - use D-Bus, to learn the mode or for anything else (the themes spec's amendment of
+//!   2026-10-07: "the TUI never uses D-Bus");
+//! - write a file: the Theme tab's one write is in `theme_file.rs`.
+//!
+//! See: docs/specs/2026-10-07-alpheus-themes-design.md (the TUI paragraph),
+//! docs/specs/2026-10-07-alpheus-shapes-design.md, docs/features/control-center.md (Theme).
 
 use alpheus_common::theme::contrast::ratio;
 use alpheus_common::theme::mode_file::read_mode;
@@ -11,7 +22,8 @@ use alpheus_common::theme::{Rgb, Roles};
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
 
-/// The roles the TUI draws with (spec § 4); see the plan's mapping table.
+/// The roles the control center draws with (the themes spec, § 4, "Applying the roles"); the
+/// themes plan has the mapping table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// `bar_bg`: the screen's background.
@@ -64,6 +76,7 @@ pub enum Shape {
 }
 
 impl Shape {
+    /// The shape of a bar style: flat and translucent are square, the others have their own.
     pub fn of(style: BarStyle) -> Shape {
         match style {
             BarStyle::Flat | BarStyle::Translucent => Shape::Flat,
@@ -75,6 +88,7 @@ impl Shape {
     }
 }
 
+/// A shared-resolver colour as a ratatui one.
 pub(crate) fn color(Rgb(r, g, b): Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
@@ -117,7 +131,7 @@ impl Default for Theme {
 impl Theme {
     /// `dir`'s theme.toml through the shared resolver (so colors.toml alone means the wallpaper),
     /// the mode (in mode auto, the daemon's mode file under `runtime`; None or no file: dark), then
-    /// the colour files. Warnings: one line each, for the status bar; only errors, never the
+    /// the colour files. Warnings: one line each, for the status line; only errors, never the
     /// informational notes (a missing light file, a preset without a light variant), which the
     /// daemon logs once.
     pub fn load(dir: &Path, runtime: Option<&Path>) -> (Theme, Vec<String>) {
@@ -154,6 +168,9 @@ impl Theme {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the control center's theme (`theme.rs`): every role taken from the shared roles, the
+    //! shape of each style, loading from a config directory and the mode file, and `ink`.
+
     use super::*;
     use alpheus_common::temp_path::TempPath;
     use alpheus_common::theme::mode_file::mode_path;
