@@ -666,7 +666,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
-        // The Tools menu's reader (tools_app.rs): one entry's state, the end of a states read, a choices read.
+        // The Tools menu's reader (launcher/tools/app.rs): one entry's state, the end of a states read, a choices read.
         channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
         channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
         channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {

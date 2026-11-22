@@ -877,3 +877,60 @@ a screen's identity is device data and never is, and an invalid `displays.toml` 
 with no error text, because the error may quote a screen's identity.
 
 Date: 2026-10-30 · Source: displays protocol spec § 1 ("Match": profile names may be logged, screen identities never are); the code's comment on the invalid-file line
+
+### The Tools menu reaches the clipboard, the shield and the diagnostics tab through one file
+
+The three features were built in parallel with the menu. `launcher/tools/join.rs` is the only file of the
+menu that names them, with one function each for "does its row show" and "open it" (the diagnostics tab
+is a constant), and a guardrail reads the other files' code for their names. All three are real since the
+merges.
+
+Date: 2026-11-21 · Source: tools menu spec § 8 and "Decisions written down", item 19
+
+Status: awaiting confirmation at the trial (tools menu spec, "Decisions written down": to be confirmed at the trial)
+
+### A built-in replays the daemon's own verb after the box has closed
+
+A built-in that opens a feature (the quick panel, Notes, Timer, the power menu) calls the daemon's own
+verb internally, with no process and no socket round trip, and does so after the launcher's box has
+closed, in the same pass. The verbs open their popups with the keyboard taken as a socket verb would,
+which is why a held Enter does nothing in the Tools mode: the repeat of the key that ran a built-in must
+not act in the popup it opened. Every action closes the box (the reason for that is not recorded).
+
+Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", items 6, 8 and 23; tools menu plan 1, "Decisions written down", item 5
+
+Status: awaiting confirmation at the trial (tools menu spec and plan 1, "Decisions written down": to be confirmed at the trial)
+
+### A tab opens through `[actions] open_tab`, else in the terminal
+
+A built-in for a control center tab runs `[actions] open_tab` with `{tab}` replaced by the tab's name, when
+its program is on the `$PATH` of the open. When it is not, it runs the launcher's terminal with
+`alpheus --tab <name>`. When neither program is there, the box says `program not found` and stays open
+(reason not recorded; the spec notes that an empty `open_tab` is refused by `bar.toml` itself).
+
+Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", item 5; tools menu plan 1, "Decisions written down", item 9
+
+Status: awaiting confirmation at the trial (tools menu spec and plan 1, "Decisions written down": to be confirmed at the trial)
+
+### Everything a built-in spawns runs in its own scope
+
+A command spawned for a built-in (a tab, a toggle, Lock, Reload the bar) runs in its own
+`systemd-run --user --scope`, bare when there is no systemd, and its program is looked up first. The plan's
+reason is that `[tools] reload` (for example `shell-ctl reload-bar`) must survive the daemon's own control
+group being killed.
+
+Date: 2026-11-21 · Source: tools menu plan 1, "Decisions written down", item 10
+
+Status: awaiting confirmation at the trial (tools menu plan 1, "Decisions written down": to be confirmed at the trial)
+
+### The Tools menu reads states and choices one job at a time on a short-lived thread
+
+The state of each entry and the lines of a `choices_cmd` are read on a thread of their own that lives only
+during a read, one job at a time, shaped like the launcher's scan thread. The `--tools` open runs no apps
+scan, so the reader is its own thread. States are delivered one entry at a time; a choices read that
+a drill-in asks for goes first, the states read stops after its current entry and its unread entries wait
+behind it; a delivery for a closed open still frees the slot.
+
+Date: 2026-11-21 · Source: tools menu spec, "Decisions written down", items 9 and 22; tools menu plan 1, "Decisions written down", item 4
+
+Status: awaiting confirmation at the trial (tools menu spec and plan 1, "Decisions written down": to be confirmed at the trial)

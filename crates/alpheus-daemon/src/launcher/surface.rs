@@ -690,7 +690,7 @@ impl App {
             Outcome::Nothing => {}
             Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
             // The `/` jump into the Tools mode: the daemon's own states are read now (never at a
-            // plain Mod+Space open), the reader starts the entries' (tools_app.rs).
+            // plain Mod+Space open), the reader starts the entries' (launcher/tools/app.rs).
             Outcome::EnterTools(job) => {
                 self.tools_adopt_builtin_states();
                 if let Some(job) = job {

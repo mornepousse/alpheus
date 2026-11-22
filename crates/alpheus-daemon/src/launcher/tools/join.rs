@@ -1,6 +1,19 @@
-//! The hook points for the parallel deliveries (tools spec § 8): the only file that names the
-//! clipboard, the shield and the diagnostics tab for the Tools menu. One function each for
-//! "shown?" and "open it"; the diagnostics tab is a constant.
+//! The hook points of the Tools menu for the clipboard, the shield and the diagnostics tab: the only
+//! file that names them.
+//!
+//! Each of the three is a feature of its own, built in parallel with the menu and merged into it. The
+//! menu's other files do not know them; this one gives, for each, what the menu needs: a function that
+//! says whether its row shows, and one that opens it (the diagnostics tab, which is a page of the
+//! control center, is a constant instead).
+//!
+//! Never:
+//! - hold any state or start anything: each function asks the app or hands it a request;
+//! - let another file of the menu name these three (a guardrail,
+//!   `the_parallel_branches_are_named_only_in_tools_join`, reads their production code).
+//!
+//! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§ 8), docs/features/tools-menu.md, and
+//! docs/decisions.md ("The Tools menu reaches the clipboard, the shield and the diagnostics tab
+//! through one file").
 
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -31,5 +44,5 @@ pub fn open_shield(app: &mut App) {
 }
 
 /// The control center tab of the diagnostics page, if this build has one: the slug `alpheus --tab`
-/// accepts.
+/// accepts. `None` would hide the row.
 pub const DIAGNOSTICS_TAB: Option<&str> = Some("diagnostics");

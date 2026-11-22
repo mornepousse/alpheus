@@ -518,7 +518,7 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
-    /// The Tools menu's question timer and reader schedule (tools_app.rs); nothing armed or
+    /// The Tools menu's question timer and reader schedule (launcher/tools/app.rs); nothing armed or
     /// running while the menu is closed.
     pub(crate) tools: crate::launcher::tools::app::ToolsApp,
     /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
