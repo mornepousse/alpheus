@@ -1024,6 +1024,88 @@ fn production_code(text: &str) -> String {
     out
 }
 
+/// `text` without its comments (`//`, `///`, `//!` to the end of the line, and `/* … */` blocks),
+/// for the guardrails that read code: a comment naming a call must not satisfy them, nor a
+/// comment holding `fn ` or a brace move the function a line belongs to. Newlines stay, so line
+/// numbers keep their meaning. String and char literals are skipped over, so a `//` inside a URL
+/// string is not a comment; raw strings are not recognised (none in the files read this way).
+fn without_comments(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (c, next) {
+            ('/', Some('/')) => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match (chars[i], chars.get(i + 1).copied()) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        (n, _) => {
+                            if n == '\n' {
+                                out.push('\n');
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            ('"', _) => {
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    out.push(chars[i]);
+                    i += 1;
+                    if chars[i - 1] == '\\' && i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    } else if chars[i - 1] == '"' {
+                        break;
+                    }
+                }
+            }
+            // A char literal (`'"'`, `'\\n'`, `'x'`) is copied whole; a lifetime has no closing quote.
+            ('\'', _) => {
+                let len = match (next, chars.get(i + 2).copied()) {
+                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some(_), Some('\'')) => Some(3),
+                    _ => None,
+                };
+                let len = len.unwrap_or(1);
+                out.extend(&chars[i..i + len]);
+                i += len;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn without_comments_drops_comments_and_keeps_code_and_lines() {
+    let text = "a(); // self.x(\n/// fn doc(\nb(\"//not\"); /* c { */ d('\"'); e('\\'');\n/* one\ntwo */f<'a>();\n";
+    assert_eq!(without_comments(text), "a(); \n\nb(\"//not\");  d('\"'); e('\\'');\n\nf<'a>();\n");
+}
+
 /// The brace-matched body of the first function in `text` whose signature
 /// starts with `signature` (e.g. `"fn new_capability("`): same brace-counting
 /// approach as `production_code`, reused here to pull out one function's own
@@ -2285,7 +2367,7 @@ fn the_clock_rechecks_a_timed_dnd() {
 fn every_dnd_change_goes_through_dnd_apply() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        let prod = production_code(&t);
+        let prod = without_comments(&production_code(&t));
         assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
         // notify.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
         if name == "notify/app.rs" || name == "notify/mod.rs" {
@@ -2294,7 +2376,7 @@ fn every_dnd_change_goes_through_dnd_apply() {
         assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
     }
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap();
-    let prod = production_code(&text);
+    let prod = without_comments(&production_code(&text));
     let mut owner = String::new();
     let mut allowed = true;
     for line in prod.lines() {
@@ -3096,7 +3178,7 @@ fn the_power_menu_has_no_panicking_path() {
 /// `timer_do`, `timer_check_clock` and `timer_load` only.
 #[test]
 fn the_timer_is_wired_through_one_path() {
-    let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap();
+    let src = |f: &str| without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap());
     let app = src("timer/app.rs");
     let tick = function_body(&app, "fn timer_tick(");
     let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
@@ -3113,7 +3195,7 @@ fn the_timer_is_wired_through_one_path() {
     // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
     for (path, text) in source_files() {
         let name = relative_path(&path);
-        let prod = production_code(&text);
+        let prod = without_comments(&production_code(&text));
         let mut owner = String::new();
         for line in prod.lines() {
             if let Some(i) = line.find("fn ") {
@@ -3559,7 +3641,9 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 #[test]
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        without_comments(&production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1))
+    };
     let app = src("timer/app.rs");
     let row = popup_ops_row(&app);
     assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
