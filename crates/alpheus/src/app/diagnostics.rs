@@ -12,6 +12,9 @@
 //! - run a tool: the worker runs `systemctl`, `journalctl` and the others; the one command that does
 //!   not go through the executor, a system unit's restart or reset, runs in the control center's own
 //!   window so that systemd asks for authorisation there (never `sudo` or `pkexec`);
+//!   The one exception is `health()`, which only the worker thread calls: it reads the session
+//!   environment through the backend, connects to the compositor's socket and checks the Wayland
+//!   socket file;
 //! - run a fix: a failing health row shows what would fix it, and nothing here runs it;
 //! - write to a compositor: `socket_answers` connects to a socket and closes it at once;
 //! - draw anything: `ui/diagnostics.rs` draws the tab from this state.

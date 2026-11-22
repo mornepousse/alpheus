@@ -1,9 +1,9 @@
 //! The per-tab facts that are plain data: one `TabSpec` row per `Tab`, in tab order.
 //!
 //! To add a tab: add its `Tab` variant (`action.rs`) and one row here (a test checks there is
-//! exactly one, in variant order), then its items (`App::items`), its view (`ui/tabs.rs`) and its
-//! shortcut hints (`ui/mod.rs`), which are code, not data. A tab's own code goes in `app/<tab>.rs`
-//! and `ui/<tab>.rs`, which every tab has.
+//! exactly one, in variant order), then its own files: `app/<tab>.rs` for its items and keys,
+//! `ui/<tab>.rs` for its rows and shortcut hints. `App::items` (`app/mod.rs`), `ui/tabs.rs` and
+//! `shortcut_pairs` (`ui/mod.rs`) only dispatch to them, one arm per tab.
 //!
 //! Never:
 //! - read anything or draw anything: this file is constants and one function (`digit`);

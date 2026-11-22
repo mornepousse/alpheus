@@ -990,6 +990,7 @@ fn an_off_output_after_the_anchor_does_not_move_the_layout() {
     let mut screens = screens_as_is(&outs, &labels);
     screens[1].placement = Placement::Relative { relation: Relation::LeftOf, reference: outs[0].description.clone(), align: Align::Start };
     let pos = resolve(&screens).unwrap();
-    // A keeps its place (0,0) as the anchor, so B lands where A was and A is pushed right by B's width.
+    // B goes left of A, and the layout slides right so that no screen is at a negative position:
+    // A ends at (1920, 0) and B at (0, 0). Without the `break`, the off C would reset the anchor.
     assert_eq!(kept_in_place(&outs, &screens, pos, 1), vec![Some((1920, 0)), Some((0, 0)), None]);
 }
