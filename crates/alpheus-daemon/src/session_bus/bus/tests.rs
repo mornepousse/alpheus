@@ -395,6 +395,9 @@ fn the_user_manager_is_asked_for_its_count_and_subscribed_to() {
 
 const SYSTEM_MANAGER_FOR_TEST: &str = "org.freedesktop.systemd1.Manager";
 
+/// The check is a `debug_assert!`, compiled out of release builds (the flake's package runs the
+/// tests in release), so this test exists in debug builds only.
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "not a unique name")]
 fn a_subscribe_to_a_well_known_name_is_a_bug() {
