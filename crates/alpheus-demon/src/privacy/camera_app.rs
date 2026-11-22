@@ -4,9 +4,9 @@
 //! decides what is shown. The start scan runs once the watches are set, so a camera held across a
 //! daemon restart lights with no event. Logs never name a process or a pid.
 
-use crate::camera_dev::{CameraWatch, scan, scan_deadline};
 use crate::deadline::DeadlineTimer;
 use crate::log::write as log;
+use crate::privacy::camera::{CameraWatch, scan, scan_deadline};
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};

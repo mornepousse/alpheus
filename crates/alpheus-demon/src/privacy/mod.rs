@@ -413,5 +413,9 @@ impl Privacy {
     }
 }
 
+pub mod app;
+pub mod camera;
+pub mod camera_app;
+
 #[cfg(test)]
 mod tests;

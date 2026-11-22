@@ -30,7 +30,7 @@ use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus,
     PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder,
     fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
-    write_atomically, wtype, wtype_spawn,
+    wait_until_executable, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -2744,7 +2744,7 @@ fn scan_times(proc: &Path, dev: &Path) -> (Duration, Duration) {
     let mut times: Vec<Duration> = (0..21)
         .map(|_| {
             let t = Instant::now();
-            let scan = alpheus_demon::camera_dev::scan(proc, dev, uid, std::process::id());
+            let scan = alpheus_demon::privacy::camera::scan(proc, dev, uid, std::process::id());
             let took = t.elapsed();
             assert_eq!(scan.camera.names, ["worker"], "the one holder, found");
             assert!(!scan.bounded);
@@ -4135,6 +4135,328 @@ fn at_rest_no_wakeups_after_copies() {
     let after_cycle = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("loop-thread wake-ups at rest after a clipboard cycle (5 s): {after_cycle}");
     assert_eq!(after_cycle, 0, "{after_cycle} loop-thread wake-ups in 5 s after a clipboard cycle: {:?}", d.log());
+}
+
+// ---- the Tools menu (tools spec § 8, plan task 9) ----
+
+/// An executable `<runtime>/bin/<name>` with `body` (after the shebang).
+fn tools_mem_script(sway: &Sway, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = sway.runtime.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let path = bin.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// A bar that makes every built-in shown (quick, notifications, timer, the two toggles, the
+/// session commands, the clipboard) and a launcher.toml with 40 user entries in 6 categories,
+/// the first 16 with a `state` (the reader's bound), the other 24 with 5 fixed choices (a state
+/// and choices exclude each other).
+fn tools_mem_config(on: &Path, run: &Path) -> (String, String) {
+    let bar = format!(
+        "modules = [\"workspaces\", \"window\", \"quick\", \"notifications\", \"timer\", \"clock\"]\n[clipboard]\nenabled = true\n\
+         [quick]\nkeep_awake = {{ toggle = [{run:?}], state = \"process:sleep\" }}\n\
+         night_light = {{ toggle = [{run:?}], state = \"file:/nonexistent\" }}\n",
+        run = run.display().to_string()
+    );
+    let mut launcher = String::from("[tools]\n");
+    for c in 0..6 {
+        launcher.push_str(&format!("[[tools.category]]\nname = \"Category {c}\"\n"));
+    }
+    // A state excludes choices (validation): the first 16 entries carry a state, the other 24 five choices.
+    for i in 0..40 {
+        let run_line = if i < 16 {
+            format!("[{:?}]", run.display().to_string())
+        } else {
+            format!("[{:?}, \"{{choice}}\"]", run.display().to_string())
+        };
+        launcher.push_str(&format!("[[tools.entry]]\nname = \"Entry {i}\"\ncategory = \"Category {}\"\nrun = {run_line}\n", i % 6));
+        if i < 16 {
+            launcher.push_str(&format!("state = [{:?}]\n", on.display().to_string()));
+        } else {
+            launcher.push_str("choices = [\"one\", \"two\", \"three\", \"four\", \"five\"]\n");
+        }
+    }
+    (bar, launcher)
+}
+
+fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let on = tools_mem_script(&sway, "fake-on", "exit 0");
+    wait_until_executable(&on);
+    let run = tools_mem_script(&sway, "fake-run", "exit 0");
+    wait_until_executable(&run);
+    let (bar, launcher_toml) = tools_mem_config(&on, &run);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(&bar),
+            launcher_toml: Some(&launcher_toml),
+            system_bus: Some(&bus.address),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    (sway, d)
+}
+
+/// One `--tools` cycle, closed by the verb (no key: no repeat timer): the n-th open waits for its
+/// states line. Returns the reading taken with the menu open and drawn: (PSS, anonymous, shm
+/// pools) in KB.
+fn tools_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64, u64) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("tools: states read (", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
+    let (pss, pools) = d.pss_and_shm_kb();
+    let open = (pss, anon_kb(d), pools);
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    open
+}
+
+/// The Tools menu with every built-in, 40 user entries and 16 states: open, closed again, 20 more
+/// cycles. `closed` is read after one cycle (what that first open leaves behind is not
+/// attributed here). Total PSS moves with the page cache (fault-around), so the bounds are on the
+/// daemon's anonymous memory (every mapping but the shm pools); PSS and the pools are printed,
+/// the open reading's pools included, so the open delta can be split into pools and anonymous.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn tools_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tools-cost");
+    let _workstation = Workstation::serve(&bus);
+    let (sway, d) = tools_mem_start("tools-cost", &bus);
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let cold = (d.pss_kb(), anon_kb(&d));
+    let first_open = tools_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let (_, closed_pools) = d.pss_and_shm_kb();
+    assert_eq!(d.threads(), threads, "the reader thread is gone once the box closed");
+    let open = tools_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    let (_, again_pools) = d.pss_and_shm_kb();
+    for n in 3..=22 {
+        tools_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "tools PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
+        cold.0,
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "tools anonymous (KB): cold {}, closed {}, open {} (+{}), closed again {} ({:+}), after 20 more {} ({:+})",
+        cold.1,
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64
+    );
+    eprintln!(
+        "tools shm pools (KB): closed {closed_pools}, open {} (+{}), closed again {again_pools}; threads {threads} -> {}",
+        open.2,
+        open.2 as i64 - closed_pools as i64,
+        d.threads()
+    );
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert!(again_pools <= closed_pools + 128, "the pools closed again {again_pools} KB vs {closed_pools} KB: the box's pool kept");
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// A `choices_cmd` printing 2,000 lines of 200 bytes (400 KB: past the reader's 256 KiB cap, so
+/// the cap is what is measured), drilled into, then closed.
+fn choices_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "-k", "Return", "-s", "4000", "-k", "Escape", "-k", "Escape"]);
+    assert!(d.wait_for_count("tools: entry 1: choices output cap reached", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(1000));
+    let open = (d.pss_kb(), anon_kb(d));
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tools_choices_2000_lines() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("tools-choices", 1);
+    let data = sway.runtime.join("choices.txt");
+    let lines: String = (0..2000).map(|i| format!("{i:04} {}\n", "x".repeat(194))).collect();
+    std::fs::write(&data, &lines).unwrap();
+    let lister = tools_mem_script(&sway, "fake-lister", &format!("cat '{}'", data.display()));
+    let run = tools_mem_script(&sway, "fake-run", "exit 0");
+    wait_until_executable(&run);
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Pick\"\nrun = [{:?}, \"{{choice}}\"]\nchoices_cmd = [{:?}]\n",
+        run.display().to_string(),
+        lister.display().to_string()
+    );
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(&toml),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let first_open = choices_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let open = choices_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    for n in 3..=7 {
+        choices_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "tools choices_cmd 2,000 lines PSS (KB): first open {}, closed {}, open {} (+{}), closed again {}, after 5 more {}",
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "tools choices_cmd anonymous (KB): closed {}, open {} (+{}), closed again {} ({:+}), after 5 more {} ({:+})",
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64
+    );
+    // The plan's bound was 256 KB; a read of 2,000 capped lines leaves the allocator's high-water
+    // behind once (measured +152…+272 KB over 3 runs, flat after), so the bounds are 384 KB for the
+    // first close and 128 KB over five more cycles (a leak per open grows with them). The
+    // controller accepted the 384 KB (final fix wave): the first read grows the heap to hold the
+    // lines (+1.9–2.0 MB anonymous open, freed at close). Most likely (attributed by elimination, not
+    // by smaps): glibc cannot return the heap's top, pinned by chunks that outlive the read, and
+    // keeps the rest on its free lists, so the first close sits above the pre-open heap; a second
+    // read reuses those free chunks instead of growing, which is why the high-water rises once and
+    // is flat after (+36 KB over five more cycles). The five-cycle bound is what guards a leak.
+    assert!(again.1 <= closed.1 + 384, "closed again {} KB anon vs {} KB before: more than 384 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "5 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// Nothing at rest after a Tools cycle that read states and asked a question, the box closed by
+/// the `--tools` verb (past the debounce) with the question still pending, and after one left to
+/// expire: no loop wake-up in 5 s (SCTK's key-repeat firing, once ~0.6 s after a key, is past
+/// before the window starts), the thread count where it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn at_rest_no_wakeups_after_tools() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("tools-rest", 1);
+    let on = tools_mem_script(&sway, "fake-on", "exit 0");
+    wait_until_executable(&on);
+    let run = tools_mem_script(&sway, "fake-run", "exit 0");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Danger\"\ncategory = \"Fake\"\n\
+         run = [{:?}]\nconfirm = true\nstate = [{:?}]\n",
+        run.display().to_string(),
+        on.display().to_string()
+    );
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(&toml),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    const REST: Duration = Duration::from_secs(5);
+    let rest = |what: &str| {
+        std::thread::sleep(Duration::from_millis(1500));
+        away_from_the_minute(REST);
+        let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+        std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, what);
+        let delta = d.main_thread_wakeups().saturating_sub(before);
+        eprintln!("loop-thread wake-ups at rest {what} (5 s): {delta}");
+        assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s {what}: {:?}", d.log());
+    };
+    // A question asked (Enter on the category, Enter on the entry), the box closed by the verb
+    // with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The
+    // typist stays alive for 2.5 s so that no focus loss closes the box before the verb.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "2500"]);
+    assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
+    assert_eq!(d.count("launcher closed ("), 0, "the box is still open with its question: {:?}", d.log());
+    // The entry asks (`confirm`): the second Return did not run it, so a question is pending.
+    assert_eq!(d.count("tools: entry 1 run"), 0, "the question was never asked, the entry ran: {:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (toggle)", 1, DELAY), "{:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert_eq!(d.count("tools: entry 1 run"), 0, "closing with the question pending ran nothing: {:?}", d.log());
+    rest("after a question closed with the box");
+    // A question left to expire (3.5 s), then the box closed.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 2, DELAY), "{:?}", d.log());
+    assert!(
+        wtype(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "3500", "-k", "Escape", "-k", "Escape", "-k", "Escape"])
+            .success()
+    );
+    assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
+    rest("after an expired question");
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// Mod+Space's open latency with a `process:` keep-awake configured: a plain open reads no state
+/// (review fix I1), and the catalog it builds costs next to nothing. The same body runs on the
+/// base commit (no Tools menu there), so the figures compare.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_open_latency_with_a_process_state_toggle() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("latency-tools");
+    let bar = "modules = [\"workspaces\", \"window\", \"quick\", \"clock\"]\n[quick]\n\
+               keep_awake = { toggle = [\"/bin/true\"], state = \"process:sleep\" }\n";
+    let (sway, _hypr, d) = start_launcher("latency-tools", &bus, Some(bar), &many_apps(), None);
+    std::thread::sleep(Duration::from_secs(2));
+    let mut us = Vec::new();
+    for n in 1..=20 {
+        cycle(&sway, &d, n);
+        us.push(d.last_open_latency_us().expect("the latency is logged"));
+    }
+    us.sort_unstable();
+    let (median, max) = (us[us.len() / 2], us[us.len() - 1]);
+    eprintln!("launcher open latency with a process: keep-awake, 20 opens: median {median} µs, max {max} µs; {us:?}");
+    assert!(median < 20_000, "median {median} µs >= 20 ms: report to Mae with these figures");
 }
 
 // ---- Shield mode (shield spec § 12): the module, the row, the blocked-USB detail ----

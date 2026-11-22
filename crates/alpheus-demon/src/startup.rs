@@ -722,7 +722,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     crate::watch::start(state, handle);
     // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
     if plan.privacy {
-        crate::camera_app::start(state, handle, &plan.camera_roots.0, &plan.camera_roots.1);
+        crate::privacy::camera_app::start(state, handle, &plan.camera_roots.0, &plan.camera_roots.1);
     }
     if want.tray {
         start_tray(state, handle);

@@ -530,7 +530,7 @@ pub struct App {
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
     /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
-    pub(crate) camera: crate::camera_app::Camera,
+    pub(crate) camera: crate::privacy::camera_app::Camera,
     /// The tray menus' and tooltip's state (menu_app.rs).
     pub(crate) menu: crate::menu_app::TrayMenu,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
@@ -695,7 +695,7 @@ impl App {
             power_verb_opened: None,
             timer,
             privacy_timer: DeadlineTimer::new(),
-            camera: crate::camera_app::Camera::new(),
+            camera: crate::privacy::camera_app::Camera::new(),
             menu: Default::default(),
             recently_closed_popup: None,
             // Asked of the compositor actually on the other end of the connection (its own

@@ -1131,7 +1131,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("wayland.rs", "Timer::", 5),
         // The camera scan's debounce (privacy delivery 2), built in `Camera::new`: armed only for
         // 300 ms after a device open, close, creation or removal.
-        ("camera_app.rs", "Timer::", 1),
+        ("privacy/camera_app.rs", "Timer::", 1),
         // The quick panel's timer, built in `QuickApp::new`: armed only while it is open and a
         // re-read (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
@@ -1174,7 +1174,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("watch.rs", "Generic::new", 1),
         // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
         // creation or removal of a video device; `drain` reads it to EAGAIN.
-        ("camera_app.rs", "Generic::new", 1),
+        ("privacy/camera_app.rs", "Generic::new", 1),
         // The quick panel's acting Bluetooth connection (quick delivery 3): inserted only while the
         // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
         // answers or calls the agent.
@@ -1612,9 +1612,9 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "sources/sway.rs",
     "session.rs",
     "power/mod.rs",
-    "privacy.rs",
-    "camera_dev.rs",
-    "camera_app.rs",
+    "privacy/mod.rs",
+    "privacy/camera.rs",
+    "privacy/camera_app.rs",
     "sources/dbus/bt.rs",
     "sources/dbus/bt_act.rs",
     "bt_app.rs",
@@ -2201,15 +2201,15 @@ fn the_daemon_paints_with_roles_never_the_legacy_palette() {
 
 /// Privacy delivery 2: the config directory and the video devices are only watched,
 /// never written by the daemon; inotify lives in inotify.rs (the wrapper), watch.rs (the theme) and
-/// camera_dev.rs (the cameras) alone.
+/// privacy/camera.rs (the cameras) alone.
 #[test]
 fn the_theme_and_camera_watches_only_read() {
     let mut found = false;
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
-        // camera_dev.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
-        if name == "watch.rs" || name == "camera_dev.rs" || name == "inotify.rs" {
+        // privacy/camera.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
+        if name == "watch.rs" || name == "privacy/camera.rs" || name == "inotify.rs" {
             found |= name == "watch.rs";
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
@@ -2218,7 +2218,7 @@ fn the_theme_and_camera_watches_only_read() {
             }
         } else {
             for raw in ["inotify_", "Inotify::new", "inotify::"] {
-                assert!(!prod.contains(raw), "inotify ({raw}) outside inotify.rs, watch.rs and camera_dev.rs: {name}");
+                assert!(!prod.contains(raw), "inotify ({raw}) outside inotify.rs, watch.rs and privacy/camera.rs: {name}");
             }
         }
     }
@@ -3551,7 +3551,7 @@ fn the_privacy_module_has_no_panicking_path() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let pipewire = src("pipewire/graph.rs");
-    let mut texts = vec![src("privacy.rs"), src("privacy_app.rs")];
+    let mut texts = vec![src("privacy/mod.rs"), src("privacy/app.rs")];
     for f in ["fn flag(", "fn graph_node(", "pub fn apply_privacy(", "fn track(", "fn bound(", "fn bound_line(", "fn held("] {
         texts.push(function_body(&pipewire, f).to_string());
     }
@@ -3568,7 +3568,7 @@ fn the_privacy_module_has_no_panicking_path() {
 #[test]
 fn privacy_changed_follows_sharing_for_dnd() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy_app.rs").expect("privacy_app.rs").1);
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy/app.rs").expect("privacy/app.rs").1);
     let changed = function_body(&app, "pub(crate) fn privacy_changed(");
     let (sync, follow) = (changed.find("self.privacy_timer_sync()"), changed.find("self.dnd_sharing_follow()"));
     assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
@@ -3581,7 +3581,7 @@ fn privacy_changed_follows_sharing_for_dnd() {
 fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (app, popup) = (src("privacy_app.rs"), src("popup.rs"));
+    let (app, popup) = (src("privacy/app.rs"), src("popup.rs"));
     let tick = function_body(&app, "pub(crate) fn privacy_tick(");
     let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
     assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
@@ -3636,7 +3636,7 @@ fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
 
 fn camera_sources() -> Vec<(&'static str, String)> {
     let files = source_files();
-    ["camera_dev.rs", "camera_app.rs"]
+    ["privacy/camera.rs", "privacy/camera_app.rs"]
         .into_iter()
         .map(|name| (name, production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)))
         .collect()
@@ -3658,9 +3658,9 @@ fn the_camera_watch_has_no_panicking_path() {
 fn the_camera_watch_opens_nothing_under_dev() {
     let sources = camera_sources();
     let dev = &sources[0];
-    assert_eq!(dev.0, "camera_dev.rs");
+    assert_eq!(dev.0, "privacy/camera.rs");
     for never in ["File::open", "OpenOptions", "fs::read("] {
-        assert!(!dev.1.contains(never), "{never} in camera_dev.rs's production code");
+        assert!(!dev.1.contains(never), "{never} in privacy/camera.rs's production code");
     }
     let mut reads = 0;
     for line in dev.1.lines().filter(|l| l.contains("read_to_string")) {
@@ -3859,7 +3859,7 @@ fn the_hooks_are_fed_where_state_changes() {
         ("startup.rs", "fn on_bar_message(", "hooks_msg("),
         ("notify_app.rs", "fn dnd_apply(", "hooks_dnd("),
         ("appearance.rs", "fn publish_mode(", "hooks_mode("),
-        ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
+        ("privacy/app.rs", "fn privacy_changed(", "hooks_capture("),
         ("startup.rs", "pub fn run(", "hooks_started("),
         ("shield_app.rs", "fn shield_readable(", "hooks_shield("),
     ] {
