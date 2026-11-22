@@ -350,6 +350,11 @@ impl App {
         if self.shield.is_none() || !self.quick_enabled() {
             return;
         }
+        // One detail at a time: another one open (the Bluetooth one holds orders for the acting
+        // connection) closes the whole panel through its proper path, and it opens again.
+        if matches!(self.popup_body(), Some(PopupBody::Quick(q)) if q.other_detail_open()) {
+            self.popup_close(crate::popup::PopupClose::Replaced);
+        }
         if !self.quick_shown() {
             let qh = self.qh.clone();
             self.quick_toggle(&qh, None, crate::quick::Focus::Shield);

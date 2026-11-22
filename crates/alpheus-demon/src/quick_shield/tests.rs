@@ -189,3 +189,18 @@ fn the_rows_failed_tag_has_its_own_deadline() {
     assert!(p.row_failed_due, "the wiring clears the model's `failed` and republishes");
     assert_eq!(p.deadline(), None);
 }
+
+#[test]
+fn an_unknown_state_has_its_own_note() {
+    let unknown = view(None, true, true);
+    let mut p = ShieldPanel::default();
+    assert_eq!(p.open_detail(&unknown), QuickAction::Redraw);
+    assert_eq!(p.lines()[2], Line::ShieldNote(NOTE_UNKNOWN));
+    assert_ne!(NOTE_UNKNOWN, NOTE_OFF);
+    assert!(!p.read_wanted, "unknown: nothing is run");
+    // The state turning off, then known again, follows the view.
+    p.fit(Some(&view(Some(false), true, true)));
+    assert_eq!(p.lines()[2], Line::ShieldNote(NOTE_OFF));
+    p.fit(Some(&unknown));
+    assert_eq!(p.lines()[2], Line::ShieldNote(NOTE_UNKNOWN));
+}

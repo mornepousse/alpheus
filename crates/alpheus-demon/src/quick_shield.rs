@@ -18,6 +18,7 @@ pub const NOTE_READING: &str = "Reading…";
 pub const NOTE_NONE: &str = "No blocked device";
 pub const NOTE_FAILED: &str = "Cannot list the devices";
 pub const NOTE_OFF: &str = "Shield is off";
+pub const NOTE_UNKNOWN: &str = "Shield state unknown";
 /// The tag column: `vid:pid` (nine cells) is the widest tag.
 const TAG_ROOM: u16 = 9;
 
@@ -38,6 +39,15 @@ pub enum Listing {
     Failed,
     /// The mode is off: nothing is run, nothing listed.
     Off,
+    /// The flag cannot be read: nothing is run, nothing listed, and the note does not say "off".
+    Unknown,
+}
+
+impl Listing {
+    /// What the detail says while nothing is listed: off, or unknown (never "off" on a guess).
+    fn idle(state: Option<bool>) -> Listing {
+        if state.is_none() { Listing::Unknown } else { Listing::Off }
+    }
 }
 
 /// The detail's own state, dropped with the panel.
@@ -84,7 +94,7 @@ impl ShieldPanel {
             self.listing = Some(Listing::Reading);
             self.read_wanted = true;
         } else {
-            self.listing = Some(Listing::Off);
+            self.listing = Some(Listing::idle(view.state));
         }
         QuickAction::Redraw
     }
@@ -105,12 +115,12 @@ impl ShieldPanel {
             return;
         }
         match (v.state == Some(true), &self.listing) {
-            (true, None | Some(Listing::Off)) => {
+            (true, None | Some(Listing::Off | Listing::Unknown)) => {
                 self.listing = Some(Listing::Reading);
                 self.read_wanted = true;
             }
-            (false, l) if *l != Some(Listing::Off) => {
-                self.listing = Some(Listing::Off);
+            (false, l) if *l != Some(Listing::idle(v.state)) => {
+                self.listing = Some(Listing::idle(v.state));
                 self.pick = 0;
             }
             _ => {}
@@ -147,6 +157,7 @@ impl ShieldPanel {
             Some(Listing::Devices(_)) => v.push(Line::ShieldNote(NOTE_NONE)),
             Some(Listing::Failed) => v.push(Line::ShieldNote(NOTE_FAILED)),
             Some(Listing::Off) => v.push(Line::ShieldNote(NOTE_OFF)),
+            Some(Listing::Unknown) => v.push(Line::ShieldNote(NOTE_UNKNOWN)),
             Some(Listing::Reading) | None => v.push(Line::ShieldNote(NOTE_READING)),
         }
         v

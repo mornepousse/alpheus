@@ -511,6 +511,8 @@ impl App {
             self.quick_wifi_sync();
             self.quick_bt_sync();
             self.quick_vpn_sync();
+            // A `failed` shown at open expires after its 4 s (the panel's timer follows the view).
+            self.quick_timer_sync();
         } else {
             self.quick_closed();
         }

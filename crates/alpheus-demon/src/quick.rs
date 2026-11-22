@@ -1396,8 +1396,16 @@ impl Quick {
         let (Some(view), true) = (live.shield, present(Row::Shield, live, self)) else { return QuickAction::Nothing };
         self.detail = false;
         self.wifi.close_detail();
+        self.vpn.close_detail();
+        self.dnd.open = false;
         self.top = 0;
         self.shield.open_detail(&view)
+    }
+
+    /// A detail other than the Shield's is open (the Bluetooth one carries orders for the acting
+    /// connection, so the wiring closes the whole panel before opening the Shield's: one at a time).
+    pub fn other_detail_open(&self) -> bool {
+        self.bt.open || self.wifi.open || self.vpn.open || self.dnd.open
     }
 
     /// What the Bluetooth reading covers while the panel is open: the detail's lists, else the row.

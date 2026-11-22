@@ -2051,3 +2051,42 @@ fn failed_ends_with_a_redraw_and_is_not_stale() {
     assert!(d.redraw && d.shield_failed, "the wiring clears the model's `failed`");
     assert_eq!(q.deadline(), None);
 }
+
+#[test]
+fn shield_open_detail_opens_on_the_detail() {
+    // What `App::shield_open_detail` does inside the panel: the row selected, its detail open and
+    // one read asked, the focus asked at open honoured (no caller reaches it end to end before the
+    // tools menu delivery).
+    let w = shield_world(shield_view(Some(true), true, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.selected, Row::Shield);
+    assert_eq!(q.open_shield(&l), QuickAction::Redraw);
+    assert!(q.shield.open && q.shield.read_wanted);
+    assert_eq!(lines(&l, &q)[0], Line::ShieldHeader);
+    // Without a listable `blocked` nothing opens.
+    let w = shield_world(shield_view(Some(true), false, true));
+    let (l, mut q) = (w.live(), quick(&w, Focus::Shield));
+    assert_eq!(q.open_shield(&l), QuickAction::Nothing);
+    assert!(!q.shield.open);
+}
+
+#[test]
+fn one_detail_at_a_time() {
+    let w = shield_world(shield_view(Some(true), true, true));
+    let l = w.live();
+    let mut q = quick(&w, Focus::Shield);
+    assert!(!q.other_detail_open());
+    q.vpn.open = true;
+    assert!(q.other_detail_open());
+    q.open_shield(&l);
+    assert!(q.shield.open && !q.vpn.open, "the VPN detail closed in place");
+    q.dnd.open = true;
+    q.open_shield(&l);
+    assert!(!q.dnd.open, "and the do-not-disturb one");
+    // Orders-carrying details (Bluetooth) and Wi-Fi are the wiring's: it sees them and re-opens the panel.
+    q.bt.open = true;
+    assert!(q.other_detail_open());
+    q.bt.open = false;
+    q.wifi.open = true;
+    assert!(q.other_detail_open());
+}
