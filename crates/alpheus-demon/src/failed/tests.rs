@@ -14,9 +14,37 @@ fn the_total_adds_the_known_counts() {
     assert_eq!(total(&f(Some(u32::MAX), Some(1))), Some(u32::MAX), "saturates");
 }
 
+/// A notice that has heard both managers (what the daemon does once each answered).
+fn settled() -> Notice {
+    let mut n = Notice::default();
+    n.settle_system();
+    n.settle_user();
+    n
+}
+
+#[test]
+fn a_notice_waits_until_both_managers_answered_once() {
+    let mut n = Notice::default();
+    assert_eq!(n.feed(Some(1), true), None, "neither answered: the first notice would carry half the total");
+    n.settle_system();
+    assert_eq!(n.feed(Some(1), true), None, "the user manager has not answered");
+    n.settle_user();
+    assert_eq!(n.feed(Some(2), true), Some(2), "one notice, the whole total");
+    assert_eq!(n.feed(Some(2), true), None);
+}
+
+#[test]
+fn a_notice_offered_again_after_settling_carries_the_total() {
+    let mut n = Notice::default();
+    n.settle_system();
+    assert_eq!(n.feed(Some(1), true), None);
+    n.settle_user();
+    assert_eq!(n.feed(n.last(), true), Some(1), "the latest total seen while unsettled is kept");
+}
+
 #[test]
 fn a_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
-    let mut n = Notice::default();
+    let mut n = settled();
     assert_eq!(n.feed(Some(0), true), None);
     assert_eq!(n.feed(Some(2), true), Some(2));
     assert_eq!(n.feed(Some(2), true), None, "the same total: once");
@@ -29,7 +57,7 @@ fn a_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
 
 #[test]
 fn a_notice_waits_for_the_server() {
-    let mut n = Notice::default();
+    let mut n = settled();
     assert_eq!(n.feed(Some(2), false), None, "nobody to show it: still armed");
     assert_eq!(n.last(), Some(2));
     assert_eq!(n.feed(n.last(), true), Some(2), "offered again when the server starts");
@@ -38,7 +66,7 @@ fn a_notice_waits_for_the_server() {
 
 #[test]
 fn an_unknown_total_changes_nothing() {
-    let mut n = Notice::default();
+    let mut n = settled();
     assert_eq!(n.feed(Some(2), true), Some(2));
     assert_eq!(n.feed(None, true), None);
     assert_eq!(n.last(), Some(2));

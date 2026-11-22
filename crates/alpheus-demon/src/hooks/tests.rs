@@ -393,8 +393,10 @@ fn failed_units_edges_on_the_total() {
     assert!(h.on_msg(&Msg::Units(Some(0))).is_empty(), "the first total seeds");
     assert!(h.on_msg(&Msg::Units(Some(0))).is_empty());
     assert_eq!(h.on_msg(&Msg::Units(Some(2))), [ev(2, Some(2), None)]);
-    assert_eq!(h.on_msg(&Msg::UserUnits(Some(1))), [ev(3, Some(2), Some(1))]);
+    assert!(h.on_msg(&Msg::UserUnits(Some(1))).is_empty(), "a manager's first answer is a seed, not an edge, whenever it comes");
     assert!(h.on_msg(&Msg::UserUnits(Some(1))).is_empty(), "the same total");
+    assert_eq!(h.on_msg(&Msg::UserUnits(Some(2))), [ev(4, Some(2), Some(2))]);
+    assert_eq!(h.on_msg(&Msg::UserUnits(Some(1))), [ev(3, Some(2), Some(1))]);
     assert!(h.on_msg(&Msg::Units(None)).is_empty(), "the system bus going down is no state");
     assert!(h.on_msg(&Msg::UserUnits(None)).is_empty(), "nor the user manager's");
     assert_eq!(h.on_msg(&Msg::UserUnits(Some(0))), [ev(2, Some(2), Some(0))], "the last known system count stays");

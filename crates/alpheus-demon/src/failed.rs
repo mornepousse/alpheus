@@ -22,9 +22,23 @@ pub fn total(f: &Failed) -> Option<u32> {
 pub struct Notice {
     notified: u32,
     last: Option<u32>,
+    /// Each manager has answered once (or will never: no session bus, `user_units = false`): before
+    /// that the total is half of what it will be, and the first notice would be the wrong one.
+    system_seen: bool,
+    user_seen: bool,
 }
 
 impl Notice {
+    /// The system manager answered (or its domain says it never will).
+    pub fn settle_system(&mut self) {
+        self.system_seen = true;
+    }
+
+    /// The user manager answered (or no client will ask it).
+    pub fn settle_user(&mut self) {
+        self.user_seen = true;
+    }
+
     /// The latest total seen.
     pub fn last(&self) -> Option<u32> {
         self.last
@@ -34,6 +48,9 @@ impl Notice {
     pub fn feed(&mut self, total: Option<u32>, serving: bool) -> Option<u32> {
         let n = total?;
         self.last = Some(n);
+        if !(self.system_seen && self.user_seen) {
+            return None;
+        }
         if n == 0 {
             self.notified = 0;
             return None;

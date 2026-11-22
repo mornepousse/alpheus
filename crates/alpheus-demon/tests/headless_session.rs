@@ -6901,6 +6901,60 @@ fn failed_module_follows_failed_refresh_unsubscribed() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_none()), "never gone: {:?}", d.log());
 }
 
+/// `[failed] user_units = false`: the session bus is never asked (no `Get`, no `Subscribe`), the
+/// system count alone shows.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_user_units_off_never_touches_the_session_bus() {
+    let toml = format!("{FAILED_BAR}[failed]\nuser_units = false\n");
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-nouser", &toml, 1, 5, |_| ());
+    sys.wait_until("the system count read", |s| s.calls("Get") >= 1);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!((usr.calls("Get"), usr.calls("Subscribe")), (0, 0), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("the user manager")), "no user client started: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, privacy_red()).is_some()), "the system count shows: {:?}", d.log());
+    assert_eq!(script(&sway, &["--failed-refresh"], "").join().unwrap().0, EXIT_OK);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(usr.calls("Get"), 0, "a refresh reads no user count either: {:?}", d.log());
+}
+
+/// With `battery` in `modules` (the D-Bus thread is up) and no `failed`, neither manager is read,
+/// nothing is subscribed to, and no systemd match rule is added on either bus: the domain and the
+/// user client cost nothing unless asked for.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn failed_module_off_with_the_dbus_thread_up_touches_no_systemd() {
+    let sway = Sway::start("failed-off-battery", 1);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let (sys_bus, user_bus) = (PrivateBus::start("failed-off-battery-sys"), PrivateBus::start("failed-off-battery-user"));
+    let (sys_watch, user_watch) = (common::MatchMonitor::start(&sys_bus), common::MatchMonitor::start(&user_bus));
+    let (sys, usr) = (FakeSystemd::serve(&sys_bus, 3), FakeSystemd::serve(&user_bus, 3));
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some("modules = [\"workspaces\", \"battery\", \"clock\"]\n"),
+            system_bus: Some(&sys_bus.address),
+            session_bus: Some(&user_bus.address),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    ready(&d);
+    // The system bus's rules prove the monitor works and the D-Bus thread is up (UPower's).
+    let until = Instant::now() + DELAY;
+    while sys_watch.rules().is_empty() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(50));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let (system_rules, user_rules) = (sys_watch.rules(), user_watch.rules());
+    assert!(!system_rules.is_empty(), "the D-Bus thread added its rules: {:?}", d.log());
+    assert!(system_rules.iter().chain(&user_rules).all(|r| !r.contains("systemd1")), "{system_rules:?} {user_rules:?}");
+    assert_eq!((sys.calls("Get"), sys.calls("Subscribe"), usr.calls("Get"), usr.calls("Subscribe")), (0, 0, 0, 0), "{:?}", d.log());
+}
+
 /// The verb with the module off: Done, and nothing is read.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -6944,6 +6998,19 @@ fn the_failed_units_hook_fires_on_change() {
     assert_eq!(recorded(&sway, "hook-rec").len(), 2, "no more than the changes of the total: {:?}", d.log());
     assert!(d.wait_for("hook: failed_units", DELAY), "{:?}", d.log());
     assert!(d.log().iter().filter(|l| l.contains("hook")).all(|l| !l.contains("ALPHEUS")), "the log names the event only: {:?}", d.log());
+}
+
+/// Both managers already failing at start: one notice, not one per manager (the notice waits for
+/// both to answer once, so it carries the total).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_failed_notice_at_start_is_one_with_the_total() {
+    let toml = "modules = [\"workspaces\", \"notifications\", \"failed\", \"clock\"]\n[failed]\nnotify = true\n";
+    let (_sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-notice-start", toml, 2, 1, |_| ());
+    failed_counts_read(&sys, &usr);
+    assert!(d.wait_for_count("failed: notice", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("failed: notice"), 1, "one notice for both managers: {:?}", d.log());
 }
 
 /// Spec § 6, the notice: with `[failed] notify` and the notifications module, a total that rises

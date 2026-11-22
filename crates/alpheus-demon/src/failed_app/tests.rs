@@ -83,7 +83,9 @@ fn no_user_manager_is_unknown() {
     let who = id(&out, &owner_call());
     u.answer(&mut out, who, Err(CallError::Remote("org.freedesktop.DBus.Error.NameHasNoOwner".into())));
     assert_eq!(u.count(), None);
-    assert_eq!(u.take_change(), None, "unknown stays unknown: nothing to tell");
+    assert_eq!(u.take_change(), Some(None), "the first answer is told, even unknown: the notice waits for it");
+    u.lost();
+    assert_eq!(u.take_change(), None, "unknown stays unknown: nothing more to tell");
     assert_eq!(out.calls.len(), 1, "no Get, no Subscribe");
     // A timeout is unknown too, and one fixed line says so.
     let (mut out, mut u) = started(true);

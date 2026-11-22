@@ -241,9 +241,11 @@ impl Bar {
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
             Msg::Vpn { .. } => false,
-            Msg::Units(n) => set_if_changed(&mut self.failed.system, n),
+            // A count going unknown keeps the last known one (spec § 6): a transient outage neither
+            // hides the module nor re-arms the notice.
+            Msg::Units(n) => n.is_some() && set_if_changed(&mut self.failed.system, n),
             Msg::UnitsRead => false,
-            Msg::UserUnits(n) => set_if_changed(&mut self.failed.user, n),
+            Msg::UserUnits(n) => n.is_some() && set_if_changed(&mut self.failed.user, n),
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
             Msg::Media(view) => set_if_changed(&mut self.media, view),
@@ -273,11 +275,15 @@ mod tests {
         assert!(b.apply(Msg::UserUnits(Some(1))));
         assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
         assert!(!b.apply(Msg::UserUnits(Some(1))), "the same count: no redraw");
-        assert!(b.apply(Msg::UserUnits(None)));
-        assert_eq!(b.failed.user, None);
-        assert_eq!(b.failed.system, Some(2));
-        assert!(b.apply(Msg::Units(None)), "unknown again");
-        assert_eq!(b.failed.system, None);
+        // A count going unknown keeps the last known one (no flicker, a source down is no state).
+        assert!(!b.apply(Msg::UserUnits(None)));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(!b.apply(Msg::Units(None)));
+        assert_eq!(b.failed, Failed { system: Some(2), user: Some(1) });
+        assert!(b.apply(Msg::Units(Some(0))), "known again: the new value");
+        let mut fresh = Bar::new(BarConfig::default());
+        assert!(!fresh.apply(Msg::Units(None)) && !fresh.apply(Msg::UserUnits(None)), "unknown from the start: nothing");
+        assert_eq!(fresh.failed, Failed::default());
     }
 
     const H: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };

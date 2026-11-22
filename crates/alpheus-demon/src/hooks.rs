@@ -435,12 +435,12 @@ impl Hooks {
             }
             // A count that is down (None) is no state: the last known one stays.
             Msg::Units(Some(n)) if self.wants(HookId::FailedUnits) => {
-                self.failed.system = Some(*n);
-                out.extend(self.failed_edge());
+                let first = self.failed.system.replace(*n).is_none();
+                out.extend(self.failed_edge(first));
             }
             Msg::UserUnits(Some(n)) if self.wants(HookId::FailedUnits) => {
-                self.failed.user = Some(*n);
-                out.extend(self.failed_edge());
+                let first = self.failed.user.replace(*n).is_none();
+                out.extend(self.failed_edge(first));
             }
             Msg::Profile(Some(ProfileState { active: Some(p), .. }))
                 if self.wants(HookId::PowerProfile) && self.profile.replace(*p).is_some_and(|old| old != *p) =>
@@ -452,14 +452,15 @@ impl Hooks {
         out
     }
 
-    /// The total of the known counts against the last one seen (the first is a seed).
-    fn failed_edge(&mut self) -> Option<Event> {
+    /// The total of the known counts against the last one seen. A manager's first answer (`seed`),
+    /// whenever it arrives, only moves the seed: it is no change, just one more count known.
+    fn failed_edge(&mut self, seed: bool) -> Option<Event> {
         let total = crate::failed::total(&self.failed)?;
-        self.failed_total.replace(total).filter(|old| *old != total).map(|_| Event::FailedUnits {
-            total,
-            system: self.failed.system,
-            user: self.failed.user,
-        })
+        let old = self.failed_total.replace(total);
+        if seed {
+            return None;
+        }
+        old.filter(|old| *old != total).map(|_| Event::FailedUnits { total, system: self.failed.system, user: self.failed.user })
     }
 
     /// The mode in effect: a seed, then an edge on each change. `settled`: the mode is the user's

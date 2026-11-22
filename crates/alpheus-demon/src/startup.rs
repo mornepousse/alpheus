@@ -283,6 +283,9 @@ impl App {
         let units = matches!(m, Msg::Units(_));
         on_message(self, m, || LocalTime::now().0);
         if units {
+            if let Some(notice) = self.failed_notice.as_mut() {
+                notice.settle_system();
+            }
             self.failed_notify();
         }
         if quick {
@@ -646,7 +649,11 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
     // The user manager's failed-units count, on the same connection.
-    state.start_failed(want.failed);
+    if want.failed && state.bar.config.failed.user_units {
+        state.start_failed(true);
+    } else {
+        state.failed_user_never();
+    }
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {

@@ -15,6 +15,12 @@ const MAX_ERRORS: usize = 40;
 const MESSAGE_MAX: usize = 200;
 /// Shortest user or host name replaced everywhere: a two-letter name would shred ordinary words.
 const MIN_NAME: usize = 3;
+/// Top-level directories of a Linux root and the words next to them: a login or a real-name word
+/// spelled like one (`dev`, `run`) is not replaced as a word, or `/dev/sda` and `dev-sda.device`
+/// would read `/<user>/sda`. The home path is replaced first, so such a login still leaves no
+/// path behind.
+const COMMON_DIRS: [&str; 18] =
+    ["dev", "run", "etc", "usr", "var", "bin", "sbin", "sys", "proc", "tmp", "opt", "srv", "mnt", "lib", "boot", "home", "nix", "root"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportUnit {
@@ -91,14 +97,19 @@ impl Redactions {
             // "/" alone, or an empty home, would eat every path.
             add(h.trim_end_matches('/'), "~", 3, false);
         }
+        // Whole words, like the login: a host called `work` must not shred `network`.
         if let Some(h) = host {
-            add(h, "<host>", MIN_NAME, false);
+            add(h, "<host>", MIN_NAME, true);
             if let Some((short, _)) = h.split_once('.') {
-                add(short, "<host>", MIN_NAME, false);
+                add(short, "<host>", MIN_NAME, true);
             }
         }
         for u in users {
-            add(u, "<user>", MIN_NAME, !u.trim().contains(char::is_whitespace));
+            let word = !u.trim().contains(char::is_whitespace);
+            if word && COMMON_DIRS.iter().any(|d| d.eq_ignore_ascii_case(u.trim())) {
+                continue;
+            }
+            add(u, "<user>", MIN_NAME, word);
         }
         exact.sort_by_key(|(s, ..)| std::cmp::Reverse(s.len()));
         Redactions { exact }
@@ -418,10 +429,12 @@ fn redact_emails(text: &str) -> String {
             end -= 1;
         }
         let host: String = chars[i + marker..end].iter().collect();
-        // A templated unit (`getty@tty1.service`, `user@1000.service`) is not an address: one
-        // dotless instance name, then the suffix. `mbsync@alice@example.org.service` is one.
+        // A templated unit (`getty@tty1.service`, `user@1000.service`) is not an address: an
+        // instance name, then the suffix. `mbsync@alice@example.org.service` is one.
+        // The instance may hold dots (`openvpn-client@my.vpn.service`); a second `@` before it
+        // (the local part is itself preceded by one) makes it an address.
         let unit = marker == 1
-            && host.matches('.').count() == 1
+            && !(start > 0 && chars[start - 1] == '@')
             && host.rsplit('.').next().is_some_and(|l| UNIT_SUFFIXES.iter().any(|u| l.eq_ignore_ascii_case(u)));
         if start < i && host.contains('.') && !host.starts_with('.') && !unit {
             out.extend(&chars[copied..start]);
@@ -674,8 +687,15 @@ impl HostFacts {
         }
     }
 
+    /// A host name that is one of the words of the distribution's own name (`nixos` on NixOS, the
+    /// installer's default) is no secret, and replacing it would shred `NixOS 25.05` and the store
+    /// paths: it is left out.
     pub fn redactions(&self) -> Redactions {
-        Redactions::new(&self.users, &self.homes, self.host.as_deref(), self.machine_id.as_deref())
+        let host = self
+            .host
+            .as_deref()
+            .filter(|h| !self.os.split(|c: char| !c.is_alphanumeric()).any(|w| !w.is_empty() && w.eq_ignore_ascii_case(h.trim())));
+        Redactions::new(&self.users, &self.homes, host, self.machine_id.as_deref())
     }
 }
 

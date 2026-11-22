@@ -1802,6 +1802,63 @@ impl Drop for FakeSystemd {
     }
 }
 
+/// A monitor on a private bus (`BecomeMonitor`): it records the match rules every client adds
+/// (the `AddMatch` calls to the bus driver), so a test can say a rule was never asked for.
+pub struct MatchMonitor {
+    rules: Arc<Mutex<Vec<String>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl MatchMonitor {
+    /// Start it before the daemon under test connects.
+    pub fn start(bus: &PrivateBus) -> MatchMonitor {
+        let peer = Peer::connect(bus);
+        let m = dbus::Message::new_method_call(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.Monitoring",
+            "BecomeMonitor",
+        )
+        .unwrap()
+        .append2(Vec::<String>::new(), 0u32);
+        peer.call(m).expect("BecomeMonitor");
+        let rules = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (seen, flag) = (rules.clone(), stop.clone());
+        let thread = thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                match peer.channel.blocking_pop_message(Duration::from_millis(100)) {
+                    Ok(Some(msg)) => {
+                        if msg.member().is_some_and(|m| &*m == "AddMatch")
+                            && let Some(rule) = msg.get1::<String>()
+                        {
+                            seen.lock().unwrap().push(rule);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        MatchMonitor { rules, stop, thread: Some(thread) }
+    }
+
+    /// The rules added so far.
+    pub fn rules(&self) -> Vec<String> {
+        self.rules.lock().unwrap().clone()
+    }
+}
+
+impl Drop for MatchMonitor {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// `session` with the failed-units count's defaults and nobody to tell (the other private-bus
 /// tests do not read it).
 pub fn session_plain(

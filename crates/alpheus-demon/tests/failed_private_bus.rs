@@ -116,14 +116,14 @@ fn no_user_manager_is_unknown_until_it_arrives() {
     let mut link = link_on(&bus, true);
     let mut seen = Vec::new();
     pump(&mut link, Duration::from_millis(500), &mut seen, |_| false);
-    assert_eq!(seen, [], "unknown stays unknown: nothing to tell");
+    assert_eq!(seen, [None], "the first answer is told, unknown: the notice waits for it, then nothing more");
     let systemd = FakeSystemd::serve(&bus, 2);
-    pump(&mut link, Duration::from_secs(5), &mut seen, |s| !s.is_empty());
-    assert_eq!(seen, [Some(2)], "its NameOwnerChanged is followed");
+    pump(&mut link, Duration::from_secs(5), &mut seen, |s| s.len() == 2);
+    assert_eq!(seen, [None, Some(2)], "its NameOwnerChanged is followed");
     systemd.wait_until("the subscription", |s| s.subscribers() == 1);
     drop(systemd);
-    pump(&mut link, Duration::from_secs(5), &mut seen, |s| s.len() == 2);
-    assert_eq!(seen, [Some(2), None], "gone: unknown");
+    pump(&mut link, Duration::from_secs(5), &mut seen, |s| s.len() == 3);
+    assert_eq!(seen, [None, Some(2), None], "gone: unknown");
 }
 
 #[test]

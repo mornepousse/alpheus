@@ -47,8 +47,11 @@ pub struct UserUnits {
     sub_call: Option<CallId>,
     /// A change came while a read was in flight: read once more after it.
     reread: bool,
-    /// `count` changed since `take_change`.
+    /// `count` changed since `take_change`, or this is its first answer (even an unknown one: the
+    /// notice waits for it).
     dirty: bool,
+    /// The count was set at least once.
+    answered: bool,
 }
 
 impl UserUnits {
@@ -74,6 +77,7 @@ impl UserUnits {
             sub_call: None,
             reread: false,
             dirty: false,
+            answered: false,
         };
         u.ask_owner(out);
         u
@@ -91,7 +95,8 @@ impl UserUnits {
         [self.owner_call, self.get_call, self.sub_call].contains(&Some(id))
     }
 
-    /// The count when it changed since the last call (Some(None): it became unknown).
+    /// The count when it changed since the last call (Some(None): it became unknown, or the first
+    /// answer is that nobody runs the manager).
     pub fn take_change(&mut self) -> Option<Option<u32>> {
         std::mem::take(&mut self.dirty).then_some(self.count)
     }
@@ -113,9 +118,10 @@ impl UserUnits {
     }
 
     fn set_count(&mut self, count: Option<u32>) {
-        if self.count != count {
+        if self.count != count || !self.answered {
             self.count = count;
             self.dirty = true;
+            self.answered = true;
         }
     }
 
@@ -241,8 +247,11 @@ impl App {
     pub(crate) fn start_failed(&mut self, wanted: bool) {
         let subscribe = self.bar.config.failed.subscribe;
         match host(wanted, self.buses()) {
-            Host::Nothing => {}
-            Host::NoBus => log("failed: no session bus"),
+            Host::Nothing => self.failed_user_never(),
+            Host::NoBus => {
+                log("failed: no session bus");
+                self.failed_user_never();
+            }
             Host::OnTray => {
                 if let Some(tray) = self.tray.as_mut() {
                     tray.start_failed(subscribe);
@@ -253,6 +262,7 @@ impl App {
             }
             Host::OnLink | Host::OwnBus => {
                 if self.link.session.is_none() && !self.open_link(LinkUser::Failed) {
+                    self.failed_user_never();
                     return;
                 }
                 if let Some(link) = self.link.session.as_mut() {
@@ -266,11 +276,25 @@ impl App {
 
     /// The user manager's count, from either connection: the bar repaints only when it changed.
     pub(crate) fn failed_user(&mut self, count: Option<u32>) {
+        self.failed_user_settled();
         self.hooks_msg(&Msg::UserUnits(count));
         if self.bar.apply(Msg::UserUnits(count)) {
             self.dirty = true;
         }
         self.failed_notify();
+    }
+
+    /// The user manager answered once (an unknown count included): the notice may go.
+    fn failed_user_settled(&mut self) {
+        if let Some(notice) = self.failed_notice.as_mut() {
+            notice.settle_user();
+        }
+    }
+
+    /// No client will ask the user manager (`user_units = false`, no session bus, no link): the
+    /// notice does not wait for it.
+    pub(crate) fn failed_user_never(&mut self) {
+        self.failed_user_settled();
     }
 
     /// Runs `f` on the user manager's count wherever it lives, flushed; what the flush drained comes

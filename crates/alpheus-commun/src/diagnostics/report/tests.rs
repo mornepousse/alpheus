@@ -294,3 +294,48 @@ fn the_real_name_gives_each_long_word() {
     let r = Redactions::new(&real_name_words("Alice Dupont"), &[], None, None);
     assert_eq!(r.apply("dupont wrote"), "<user> wrote");
 }
+
+/// Review of Task 9, item 6: a host name matches whole words, a default host name equal to the
+/// distribution's own name is no secret, a dotted unit instance keeps its unit name, a pointer-shaped
+/// token is redacted as a MAC (the safe side), a login that is a top-level directory is not replaced.
+#[test]
+fn the_host_name_matches_whole_words() {
+    let r = Redactions::new(&[], &[], Some("work"), None);
+    assert_eq!(r.apply("network framework work and WORK-pc"), "network framework <host> and <host>-pc");
+}
+
+#[test]
+fn a_host_named_like_the_distribution_is_left_alone() {
+    let facts =
+        HostFacts { os: "NixOS 25.05 (Warbler)".into(), host: Some("nixos".into()), users: vec!["alice".into()], ..HostFacts::default() };
+    let text = "NixOS 25.05 on /nix/store/abc123-nixos-system-nixos-25.05 by alice";
+    assert_eq!(facts.redactions().apply(text), "NixOS 25.05 on /nix/store/abc123-nixos-system-nixos-25.05 by <user>");
+    // Any other host name is still replaced, the distribution's word or not.
+    let other = HostFacts { host: Some("laptop".into()), ..facts };
+    assert_eq!(other.redactions().apply("laptop runs NixOS"), "<host> runs NixOS");
+}
+
+#[test]
+fn a_dotted_unit_instance_keeps_its_unit_name() {
+    let r = none();
+    for unit in ["openvpn-client@my.vpn.service", "wg-quick@vpn.home.service", "getty@tty1.service", "user@1000.service"] {
+        assert_eq!(r.apply(unit), unit);
+    }
+    // A second `@` inside the instance is an address.
+    assert_eq!(r.apply("mbsync@carol@example.org.service"), "mbsync@<email>");
+    assert_eq!(r.apply("bob@example.org"), "<email>");
+}
+
+/// `0x` and twelve hex digits look like a user-space pointer too: redacted as a MAC anyway
+/// (over-redaction is the safe side; the report says so in the view's notice).
+#[test]
+fn a_twelve_digit_pointer_is_redacted_as_a_mac() {
+    assert_eq!(none().apply("ptr 0x7ffd12345678 end"), "ptr 0x<mac> end");
+}
+
+#[test]
+fn a_login_that_is_a_top_level_directory_is_not_replaced() {
+    let r = Redactions::new(&["dev".into(), "alice".into()], &["/home/dev".into()], None, None);
+    assert_eq!(r.apply("/dev/sda1 and dev-sda1.device and /home/dev/x"), "/dev/sda1 and dev-sda1.device and ~/x");
+    assert_eq!(r.apply("alice"), "<user>");
+}
