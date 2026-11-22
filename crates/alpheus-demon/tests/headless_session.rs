@@ -23,9 +23,10 @@ use common::sway_client::{TestWindow, con_id};
 use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
-    capture_delta, capture_gone, default_sink_delta, fake_env_recorder, fake_program, fake_pw_dump_in, fake_recorder, fake_source,
-    fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon,
-    start_daemon_with, volume_delta, wait_for_pid_file, wl_copy, wl_paste, write_atomically, wtype, wtype_spawn,
+    capture_delta, capture_gone, default_sink_delta, fake_argv_recorder, fake_env_recorder, fake_program, fake_pw_dump_in, fake_recorder,
+    fake_source, fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_argv, recorded_stdin,
+    start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy, wl_paste, write_atomically, wtype,
+    wtype_spawn,
 };
 use common::{FakeVpn, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
@@ -343,6 +344,389 @@ fn tools_opens_and_a_builtin_runs_after_the_box_closed() {
     assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
     assert!(!d.log().iter().any(|l| l.contains("fake-reload") || l.contains("--now")), "never the command: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+// ---- the Tools menu (tools spec § 9, plan task 8) ----
+//
+// Each test names only fake scripts (never a real tool). Assertions are recorders and log lines,
+// never drawn text (the rows are pinned by the view's snapshots).
+
+/// An executable `<runtime>/bin/<name>` with `body` (after the shebang); returns its path.
+fn tools_script(sway: &Sway, name: &str, body: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let path = bin.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// A daemon on the Sway-less default (fake Hyprland) with this launcher.toml.
+fn tools_daemon(name: &str, launcher_toml: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(launcher_toml), ..DaemonOptions::default() });
+    ready(&d);
+    (sway, hypr, d)
+}
+
+/// `--tools` once more, the `n`th box of the test shown, then wtype's `args` (its own 300 ms start).
+fn tools_open_and_type(sway: &Sway, d: &Daemon, n: usize, args: &[&str]) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, n, DELAY), "{:?}", d.log());
+    let mut all = vec!["-s", "300"];
+    all.extend_from_slice(args);
+    assert!(wtype(sway, &all).success());
+}
+
+/// `--tools` opens with no scan; a second one inside the debounce changes nothing, one past it
+/// closes; a plain Toggle (the control) scans.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tools_opens_with_no_scan_and_toggles() {
+    let (sway, _hypr, mut d) =
+        tools_daemon("tools-toggle", "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done, "inside the debounce");
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(d.count("launcher closed ("), 0, "the quick second --tools must not close it: {:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the Tools menu alone scans nothing: {:?}", d.log());
+    // The control: a Toggle opens the apps launcher, which logs the scan line.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// A category, an entry with fixed choices and `run = [rec, "fixed", "{choice}"]`: the argv the
+/// recorder gets is one element per line, the choice whole (`a b`, `it's "q"`), never split or quoted.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_drills_runs_and_keeps_argv_whole() {
+    let sway = Sway::start("tools-argv", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "argv-rec");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Pick\"\ncategory = \"Fake\"\n\
+         run = [\"{}\", \"fixed\", \"{{choice}}\"]\nchoices = [\"a b\", \"it's \\\"q\\\"\", \"c\"]\n",
+        rec.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    // Return (the category), Return (the entry's choices), Down, Down, Return: the third choice.
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return", "-k", "Return", "-k", "Down", "-k", "Down", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "argv-rec")[0], ["fixed", "c"]);
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // Typed: the filter keeps the choice whole, spaces included.
+    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-k", "Return", "-s", "200", "a b", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 2), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "argv-rec")[1], ["fixed", "a b"]);
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 3, &["-k", "Return", "-k", "Return", "-s", "200", "q", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 3), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "argv-rec")[2], ["fixed", "it's \"q\""], "quotes survive: one argument");
+    assert!(
+        d.log().iter().all(|l| !l.contains("it's") && !l.contains("a b") && !l.contains("fixed")),
+        "never a choice in the log: {:?}",
+        d.log()
+    );
+}
+
+/// A `confirm` entry: a second Enter inside 0.4 s of the question does nothing, one between 0.4 s
+/// and 3 s runs it once, one after 3 s only asks again.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_confirm_needs_a_second_enter_after_0_4_s() {
+    let sway = Sway::start("tools-confirm", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_recorder(&sway, "fake-danger");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Danger\"\nrun = [\"{}\"]\nconfirm = true\n",
+        sway.runtime.join("bin/fake-danger").display()
+    );
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    // Inside 0.4 s: asked, not run.
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return", "-s", "50", "-k", "Return"]);
+    thread::sleep(Duration::from_millis(700));
+    assert!(recorded(&sway, "fake-danger").is_empty(), "a double press never confirms: {:?}", d.log());
+    // wtype's keyboard goes with its process: the box closes on the lost focus.
+    assert!(d.wait_for("launcher closed (focus lost)", DELAY), "{:?}", d.log());
+    // After 0.6 s: runs, once.
+    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-s", "600", "-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-danger").len() == 1), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // After 3.5 s the question is gone: the second Enter asks again, runs nothing.
+    tools_open_and_type(&sway, &d, 3, &["-k", "Return", "-s", "3500", "-k", "Return"]);
+    thread::sleep(Duration::from_millis(700));
+    assert_eq!(recorded(&sway, "fake-danger").len(), 1, "still once: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// States read at open: one on, one off, one hung (killed at 1 s, unknown); the summary line has
+/// the counts, the position line the entry's place, and no line holds a name.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tools_states_are_read_and_a_hung_one_killed() {
+    let sway = Sway::start("tools-states", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let on = tools_script(&sway, "fake-on", "exit 0");
+    let off = tools_script(&sway, "fake-off", "exit 1");
+    wait_until_executable(&on);
+    let pid_file = sway.runtime.join("hung.pid");
+    let hung = tools_script(&sway, "fake-hung", &format!("echo $$ > '{}'\nexec sleep 300", pid_file.display()));
+    let entry = |n: &str, state: &Path| format!("[[tools.entry]]\nname = \"{n}\"\nrun = [\"x\"]\nstate = [\"{}\"]\n", state.display());
+    let toml = format!(
+        "[tools]\nbuiltins = false\n{}{}{}",
+        entry("Zulu-secret-name", &on),
+        entry("Yankee-secret-name", &off),
+        entry("Xray-secret-name", &hung)
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for("tools: entry 3: state timed out after 1 s", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tools: states read (1 on, 1 off, 1 unknown)", DELAY), "{:?}", d.log());
+    wait_for_file(&pid_file, DELAY);
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let t = Instant::now();
+    while process_alive(pid) {
+        assert!(t.elapsed() < Duration::from_millis(1500), "the hung state command {pid} survived its timeout");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(d.log().iter().all(|l| !l.contains("secret-name")), "no entry name in the log: {:?}", d.log());
+}
+
+/// `choices_cmd`: run at each drill-in (a counter file), its lines filtered by typing, the chosen
+/// line passed whole.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_choices_cmd_filters_and_runs() {
+    let sway = Sway::start("tools-choices-cmd", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "argv-rec");
+    let counter = sway.runtime.join("choices-runs");
+    let lister =
+        tools_script(&sway, "fake-choices", &format!("echo x >> '{}'\nprintf '%s\\n' 'one' 'two three' 'four'", counter.display()));
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Pick\"\nrun = [\"{}\", \"pick\", \"{{choice}}\"]\nchoices_cmd = [\"{}\"]\n",
+        rec.display(),
+        lister.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    let runs = || std::fs::read_to_string(&counter).unwrap_or_default().lines().count();
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return", "-s", "800", "three", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "argv-rec")[0], ["pick", "two three"]);
+    assert_eq!(runs(), 1);
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-s", "800", "-k", "Escape"]);
+    assert!(wait_until(|| runs() == 2), "the command runs at each drill-in: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("two three")), "never a line in the log: {:?}", d.log());
+}
+
+/// Enter held on a category drills once: the repeats do nothing (they would otherwise run the
+/// category's first entry), so a key held past a box never acts in what it opened.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_a_held_enter_drills_once_and_runs_nothing() {
+    let sway = Sway::start("tools-held", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_recorder(&sway, "fake-plain");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [\"{}\"]\n",
+        sway.runtime.join("bin/fake-plain").display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["-P", "Return", "-s", "1500", "-p", "Return"]);
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-plain").is_empty(), "a held Enter ran the entry: {:?}", d.log());
+    assert_eq!(d.count("launcher closed (activated)"), 0, "{:?}", d.log());
+}
+
+/// The Wi-Fi built-in opens the quick panel on the Wi-Fi detail, and the Enter still held when the
+/// panel opens does not act in it (no connect, no log).
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn tools_wifi_builtin_opens_the_quick_detail_and_the_repeat_stays_out() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("tools-wifi");
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    // `wifi` finds the one row; Return held 1.2 s: the press runs it, the repeats (after 600 ms) come
+    // after the panel took the keyboard.
+    let held = wtype_spawn(&sway, &["-s", "300", "wifi", "-s", "200", "-P", "Return", "-s", "1200", "-p", "Return"]);
+    assert!(d.wait_for("tools: built-in quick.wifi", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_call(&sway, "nmcli", "nmcli device wifi rescan"), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(wait_for_the_detail(&nm), "{:?}", nm.calls());
+    held.wait().unwrap();
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        recorded(&sway, "nmcli").iter().all(|c| !c.contains("connection up") && !c.contains("connect ")),
+        "the held Enter acted in the panel: {:?}",
+        recorded(&sway, "nmcli")
+    );
+    assert_eq!(d.count("quick: wifi connect"), 0, "{:?}", d.log());
+    keys(&sway, &["Escape", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// The Clipboard built-in opens the history (its Enter copies the newest back); with the history
+/// off the row is absent (typing `clip` and Enter runs nothing).
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn tools_clipboard_builtin_opens_the_history() {
+    let (sway, d) = clip_daemon("tools-clip", Some(CLIP_ON));
+    drop(clip_copy(&sway, "alpha", false));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "clip", "-k", "Return"]).success());
+    assert!(d.wait_for("tools: built-in clipboard", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "the history box shown: {:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(wl_paste(&sway).as_deref(), Some("alpha"), "the history row's Enter copied it back: {:?}", d.log());
+    // Off: no row, so nothing runs.
+    let (sway, d) = clip_daemon("tools-clip-off", None);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "clip", "-k", "Return"]).success());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("tools: built-in"), 0, "{:?}", d.log());
+    assert_eq!(d.count("launcher closed (activated)"), 0, "{:?}", d.log());
+}
+
+/// `/` in Mod+Space jumps into the Tools menu (its states are read); Backspace returns to All with
+/// the apps the scan delivered, and a slow source's entries, still there.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_slash_prefix_keeps_the_apps() {
+    let sway = Sway::start("tools-slash", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_program(&sway, "fake-notes");
+    let on = tools_script(&sway, "fake-on", "exit 0");
+    wait_until_executable(&on);
+    let entry = desktop("Fakenotes", "fake-notes");
+    let files = [("alpheus-fake-notes.desktop", entry.as_str())];
+    let rec = fake_argv_recorder(&sway, "argv-rec");
+    let slow = tools_script(&sway, "fake-slow-list", "sleep 0.7\necho 'Zulu line'");
+    let toml = format!(
+        "[[tools.entry]]\nname = \"Zed\"\nrun = [\"x\"]\nstate = [\"{}\"]\n[[sources]]\nname = \"Slow\"\nlist = [\"{}\"]\nrun = [\"{}\", \"{{line}}\"]\n",
+        on.display(),
+        slow.display(),
+        rec.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), desktop_files: &files, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("tools: states read"), 0, "a plain Mod+Space open reads no state: {:?}", d.log());
+    // `/` (the Tools mode: its states line), a wait for the scan, Backspace (All), the app's name.
+    assert!(wtype(&sway, &["-s", "800", "/", "-s", "300", "-k", "BackSpace", "-s", "200", "fakeno", "-k", "Return"]).success());
+    assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "the jump reads the states: {:?}", d.log());
+    wait_for_file(&sway.runtime.join("launched-fake-notes"), DELAY);
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // The same for the second delivery, slower than the jump: the source's entries arrive while the
+    // Tools mode shows, and are there when Backspace goes back.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "/", "-s", "2000", "-k", "BackSpace", "-s", "200", "zulu", "-k", "Return"]).success());
+    assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 1), "the slow source's entry was lost: {:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "argv-rec")[0], ["Zulu line"]);
+}
+
+/// The Tab built-in runs `[actions] open_tab` with `{tab}`; with its program missing, the launcher's
+/// terminal runs `alpheus --tab <slug>`, argument by argument.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_tab_builtin_runs_open_tab_or_falls_back() {
+    let sway = Sway::start("tools-tab", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let open = fake_recorder(&sway, "fake-open");
+    let bar = format!("[actions]\nopen_tab = [\"{}\", \"{{tab}}\"]\n", open.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&bar), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["Displays", "-k", "Return"]);
+    assert!(wait_for_call(&sway, "fake-open", "fake-open displays"), "{:?} {:?}", recorded(&sway, "fake-open"), d.log());
+    assert!(d.wait_for("tools: built-in tab.displays", DELAY), "{:?}", d.log());
+    drop(d);
+    // The fallback: open_tab's program is not there; the terminal gets `alpheus --tab displays`.
+    let sway = Sway::start("tools-tab-fallback", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let term = fake_argv_recorder(&sway, "term-rec");
+    let bar = "[actions]\nopen_tab = [\"no-such-program-xyz\", \"{tab}\"]\n";
+    let toml = format!("terminal = [\"{}\"]\n", term.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["Displays", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "term-rec").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "term-rec")[0], ["alpheus", "--tab", "displays"]);
+}
+
+/// Nothing at rest after a cycle that read states, asked a question (closed with it pending, and
+/// left to expire): no loop wake-up in 5 s each, the thread count where it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_at_rest_no_wakeups_after_a_cycle() {
+    let sway = Sway::start("tools-rest", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_recorder(&sway, "fake-danger");
+    let on = tools_script(&sway, "fake-on", "exit 0");
+    wait_until_executable(&on);
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Danger\"\ncategory = \"Fake\"\n\
+         run = [\"{}\"]\nconfirm = true\nstate = [\"{}\"]\n",
+        sway.runtime.join("bin/fake-danger").display(),
+        on.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    thread::sleep(Duration::from_millis(500));
+    let threads = d.threads();
+    // A question asked, the box closed with it pending.
+    tools_open_and_type(
+        &sway,
+        &d,
+        1,
+        &["-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "100", "-k", "Escape", "-k", "Escape", "-k", "Escape"],
+    );
+    assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-danger").len(), 0, "only ever asked: {:?}", d.log());
+    thread::sleep(Duration::from_millis(1500));
+    away_from_the_minute();
+    let first = rest_over_5_s(&d);
+    assert_eq!(first, 0, "the loop woke {first} times at rest after a question closed with the box: {:?}", d.log());
+    // A question left to expire (3.5 s), then the box closed.
+    tools_open_and_type(
+        &sway,
+        &d,
+        2,
+        &["-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "3500", "-k", "Escape", "-k", "Escape", "-k", "Escape"],
+    );
+    assert!(d.wait_for_count("launcher closed (escape)", 2, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1500));
+    away_from_the_minute();
+    let second = rest_over_5_s(&d);
+    assert_eq!(second, 0, "the loop woke {second} times at rest after an expired question: {:?}", d.log());
+    // The box left open after a question expired: no timer keeps ticking (wtype's keyboard stays up).
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "11000"]);
+    thread::sleep(Duration::from_millis(4000)); // asked at 0.4 s, expired at 3.4 s, redrawn
+    let open = rest_over_5_s(&d);
+    assert_eq!(open, 0, "the loop woke {open} times with the box open after the question expired: {:?}", d.log());
+    held.wait().unwrap();
+    assert_eq!(d.threads(), threads, "no thread left behind");
 }
 
 /// Launcher 2, `?`: Enter opens the percent-encoded search URL through `open` (a stub script,

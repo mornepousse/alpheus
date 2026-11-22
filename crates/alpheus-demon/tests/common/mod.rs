@@ -894,6 +894,38 @@ pub fn fake_recorder(sway: &Sway, name: &str) -> PathBuf {
     path
 }
 
+/// A program that appends its arguments to `<runtime>/calls-<name>`, ONE PER LINE, then a `--`
+/// line: what `fake_recorder`'s single line cannot prove (an argument with spaces or quotes stays
+/// whole). Read back with `recorded_argv`.
+pub fn fake_argv_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the tools menu tests: records each argument on its own line, then `--`.\n{{\n  for a in \"$@\"; do printf '%s\\n' \"$a\"; done\n  printf '%s\\n' '--'\n}} >> '{}'\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// The calls of a `fake_argv_recorder`: one `Vec` of arguments per call, in order.
+pub fn recorded_argv(sway: &Sway, name: &str) -> Vec<Vec<String>> {
+    let text = fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default();
+    let mut calls = Vec::new();
+    let mut current = Vec::new();
+    for line in text.lines() {
+        if line == "--" {
+            calls.push(std::mem::take(&mut current));
+        } else {
+            current.push(line.to_string());
+        }
+    }
+    calls
+}
+
 /// Like `fake_recorder`, and the `ALPHEUS_*` variables it was started with, sorted, each followed by
 /// a space: `<name> <arguments>|ALPHEUS_DND=off ALPHEUS_EVENT=dnd `, read back with `recorded`. Built
 /// in `sh` from `env` and `sort` only (no `grep` on the harness's PATH); the daemon's own
