@@ -1,5 +1,11 @@
-//! The dashboard's block digits: a 3×5 font drawn three cells tall with half blocks (the
-//! `spike/tui-dashboard` font, ported as is).
+//! The block digits of Home's dashboard clock: a 3×5 font drawn three cells tall with half blocks
+//! (the `spike/tui-dashboard` font, ported as is).
+//!
+//! Never:
+//! - write outside the clip it is given (`draw::put`);
+//! - draw anything but the ten digits and the colon: any other character is blank.
+//!
+//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md (Home).
 
 use super::draw::put;
 use ratatui::buffer::Buffer;
@@ -30,6 +36,8 @@ pub fn big_glyph(buf: &mut Buffer, clip: Rect, x: u16, y: u16, ch: char, scale: 
     let bm = bitmap(ch);
     let (cols, shift) = if ch == ':' { (1, 1) } else { (3, 0) };
     for row in 0..3u16 {
+        // Three cells hold six pixel rows and a glyph has five: the sixth, past the end of the
+        // bitmap, is blank. `get` gives None there.
         let top = bm.get(usize::from(row * 2)).copied().unwrap_or(0);
         let bot = bm.get(usize::from(row * 2 + 1)).copied().unwrap_or(0);
         for c in 0..cols {

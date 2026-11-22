@@ -1,5 +1,20 @@
-//! ratatui rendering. `render` draws everything and returns the map of
-//! clickable regions: each component knows its own region for click testing.
+//! The control center's drawing: `render` draws the whole screen from an `App` and returns the map
+//! of clickable regions.
+//!
+//! Two layouts share the work. The classic one (a terminal smaller than `rail::RAIL_MIN_W` by
+//! `rail::RAIL_MIN_H`) has the tab bar on top, the tab in the middle, then the status line and the
+//! shortcut bar at the foot; the rail one (`rail.rs`) has a left rail of tabs, a header with a live
+//! summary and, on the last row, the same shortcuts drawn as keycaps. The tab's body is drawn by
+//! `tabs.rs` (and the tab's own `ui/<tab>.rs`), the overlays last (`overlays.rs`) so that their
+//! regions win a click. Below `MIN_W` by `MIN_H` only a message is drawn.
+//!
+//! Never:
+//! - change the `App`: it is read-only here, so a draw can happen any number of times;
+//! - write outside the area it was given: every write goes through `draw::put`, which clips;
+//! - panic on a small window (`small_sizes_never_panic`, `overlays_never_panic_in_a_small_window`).
+//!
+//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2), docs/specs/2026-11-15-alpheus-ui-refresh-design.md,
+//! docs/features/control-center.md.
 
 mod appearance;
 mod bluetooth;
@@ -31,7 +46,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// Below this, only a message is shown (never a panic).
+/// Below this size only a message is shown (never a panic). The width and the height are checked
+/// together: either one too small is enough.
 pub const MIN_W: u16 = 30;
 pub const MIN_H: u16 = 8;
 /// "alpheus" and the two spaces after it, in the tab bar.
@@ -46,6 +62,7 @@ pub enum Chrome {
     Rail,
 }
 
+/// The rail chrome needs both its minimum width and its minimum height; otherwise the classic one.
 pub fn chrome(area: Rect) -> Chrome {
     if area.width >= rail::RAIL_MIN_W && area.height >= rail::RAIL_MIN_H { Chrome::Rail } else { Chrome::Classic }
 }
@@ -81,6 +98,8 @@ pub fn render_at(f: &mut Frame, app: &App, now: Option<LocalTime>) -> HitMap {
     hits
 }
 
+/// The classic layout's tab bar: the brand when there is room, then one label per tab (`1 Home`),
+/// each a click target.
 fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let mut x = r.x + 1;
@@ -100,6 +119,8 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     }
 }
 
+/// The classic layout's status line: the tab's name and the last message, then the last action's
+/// error and the startup warning in the error colour.
 fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let style = Style::default().fg(th.fg).bg(th.surface);
@@ -113,6 +134,9 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     }
 }
 
+/// The keys to name at the foot of the screen, as (key, what it does): the shown tab's own first,
+/// then the generic ones. The classic layout draws them on the shortcut bar, the rail layout as
+/// keycaps; both take this list.
 pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     let km = &app.keymap;
     let mut pairs: Vec<(String, &'static str)> = Vec::new();
@@ -141,6 +165,8 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     pairs
 }
 
+/// The classic layout's shortcut bar: the pairs in order, stopping before the first one that does
+/// not fit whole.
 fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let mut x = r.x + 1;

@@ -1,5 +1,17 @@
-//! Tab content, as rows: one focusable element per row, headings and lists
-//! around it; scrolling keeps the focus visible.
+//! The body of a tab, drawn as rows: one focusable item per row, headings and lists around it.
+//!
+//! `render` sends the Theme and Diag tabs, and Home when it fits as a dashboard, to their own
+//! drawing; every other tab is a list of `Row`s that its `ui/<tab>.rs` builds (`rows`) and that
+//! this file scrolls so that the focused row stays visible and draws (`draw_item`). An item is
+//! drawn in the classic way (a `▶` marker, brackets) or in the rail way (`controls.rs`: a band
+//! under the focus, gauges, switches, chips), and every region it makes clickable goes into the
+//! `HitMap`.
+//!
+//! Never:
+//! - change the `App`;
+//! - write outside the body it was given (`draw::put` clips).
+//!
+//! See: docs/features/control-center.md, docs/specs/2026-11-15-alpheus-ui-refresh-design.md.
 
 use super::Chrome;
 use super::appearance;
@@ -21,9 +33,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// Maximum width of a slider bar.
+/// Maximum width of a slider bar, in cells.
 const BAR_W: u16 = 24;
 
+/// One line of a tab's body.
 pub(super) enum Row {
     Blank,
     Heading(&'static str),
@@ -34,6 +47,7 @@ pub(super) enum Row {
     Map(usize),
 }
 
+/// Draws the shown tab into `body` and records its clickable regions.
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     if app.tab == Tab::Appearance {
         return appearance::render(buf, body, app, hits);
@@ -55,6 +69,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
     let hue = tab_hue(&app.theme, app.tab);
     let rows = rows(app, map.len(), rail);
     let label_w = app.tab.spec().label_width;
+    // The rows scroll up just enough to show the focused item; with no focused item they stay on top.
     let focus_row = rows.iter().position(|r| matches!(r, Row::Item(i) if *i == app.focus)).unwrap_or(0);
     let h = usize::from(body.height);
     let offset = if focus_row >= h { focus_row + 1 - h } else { 0 };
@@ -115,6 +130,9 @@ fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
     rows
 }
 
+/// Draws one item on row `y`, and records its regions (the row, a slider's bar, a chip). The
+/// kinds of item that belong to a tab's own file are drawn by that file.
+// It takes more arguments than clippy's default limit allows.
 #[allow(clippy::too_many_arguments)]
 fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &App, label_w: u16, chrome: Chrome, hits: &mut HitMap) {
     let th = &app.theme;
@@ -206,6 +224,8 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
     }
 }
 
+/// The classic slider: a bar of `█` and `░`, then the value and `muted`. Returns the bar's rectangle
+/// for the click, or None when there is no bar to click (loading, failed, or no room).
 fn draw_slider(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, muted: bool, th: &Theme) -> Option<Rect> {
     match v {
         Loadable::Loading => {
@@ -236,6 +256,7 @@ fn draw_slider(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, m
     }
 }
 
+/// The classic toggle: `[■] on` or `[ ] off`, or `…` while loading and the error when failed.
 fn draw_toggle(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<bool>, th: &Theme) {
     let (text, style) = match v {
         Loadable::Loading => ("…".to_string(), Style::default().fg(th.muted)),

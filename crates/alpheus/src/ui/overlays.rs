@@ -1,5 +1,13 @@
-//! Overlays: help, command palette, confirmation; and the ephemeral corner
-//! messages. Drawn last: their regions win on click.
+//! The overlays and the corner messages: help, the command palette, the power confirmation, and
+//! the toasts. The display overlays (Keep, an output's panel, the save box) and the unit
+//! confirmation are drawn by `displays.rs` and `diagnostics.rs`; this file only calls them.
+//!
+//! They are drawn last, so their regions win a click (`HitMap::at`).
+//!
+//! Never:
+//! - change the `App`.
+//!
+//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Visual cues").
 
 use super::draw::{centered, clear, put, truncate};
 use super::hit::{HitMap, Target};
@@ -14,6 +22,7 @@ use ratatui::widgets::{Block, Widget};
 /// Visible result rows in the palette.
 const PALETTE_ROWS: usize = 10;
 
+/// Draws the toasts, then the open overlay if there is one.
 pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
     toasts(buf, area, app);
     match &app.overlay {
@@ -42,6 +51,7 @@ pub(super) fn frame(buf: &mut Buffer, r: Rect, title: &str, app: &App, hits: &mu
     inner
 }
 
+/// The corner messages, one per row from the top right, each with `✓` or `✗`.
 fn toasts(buf: &mut Buffer, area: Rect, app: &App) {
     let th = &app.theme;
     for (n, t) in app.toasts.iter().enumerate() {
@@ -54,24 +64,31 @@ fn toasts(buf: &mut Buffer, area: Rect, app: &App) {
     }
 }
 
+/// The help box: one line per action with its keys, and the mouse line.
 fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
     let line = |label: &str, keys: &[String]| format!("{label:<24}{}", keys.join(", "));
     let mut lines: Vec<String> = Vec::new();
-    // The six "Tab X" entries fit on one line, in place of the first one:
+    // The "Tab X" entries (one per tab) fit on one line, in place of the first one:
     // the whole help screen thus fits in 80×26.
     let mut tab_keys: Vec<String> = Vec::new();
     let mut tab_line: Option<usize> = None;
     for (a, keys) in app.keymap.all() {
         let k: Vec<String> = keys.iter().map(|c| c.label()).collect();
         if matches!(a, Action::GoTab(_)) {
-            tab_line.get_or_insert(lines.len());
+            // The tab line goes where the first tab entry was.
+            if tab_line.is_none() {
+                tab_line = Some(lines.len());
+            }
             tab_keys.extend(k);
         } else if !k.is_empty() {
             lines.push(line(&a.label(), &k));
         }
     }
-    if let (Some(i), false) = (tab_line, tab_keys.is_empty()) {
-        lines.insert(i, line(&format!("Tabs 1 to {}", Tab::ALL.len()), &tab_keys));
+    // No tab line when every tab key is unbound.
+    if let Some(i) = tab_line {
+        if !tab_keys.is_empty() {
+            lines.insert(i, line(&format!("Tabs 1 to {}", Tab::ALL.len()), &tab_keys));
+        }
     }
     lines.push(line("Mouse", &["click, drag, scroll".to_string()]));
     let r = centered(area, 64, lines.len() as u16 + 2);
@@ -81,6 +98,8 @@ fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
     }
 }
 
+/// The command palette: the typed text, then the matching entries, scrolled to keep the selection
+/// visible.
 fn palette(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, hits: &mut HitMap) {
     let th = &app.theme;
     let matches = app.palette_matches();
@@ -104,6 +123,7 @@ fn palette(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, hits: &mut HitM
     }
 }
 
+/// The power confirmation: the question and a Cancel and a Confirm button, the focused one filled.
 fn confirm(buf: &mut Buffer, area: Rect, app: &App, c: &Confirm, hits: &mut HitMap) {
     let th = &app.theme;
     let r = centered(area, 46, 6);

@@ -1,5 +1,13 @@
-//! Bounded writes into the buffer: nothing ever overflows its frame,
+//! Bounded writes into the terminal buffer: `put`, `clear`, `centered` and `truncate`.
+//!
+//! Every drawing function writes through these, so nothing leaves the rectangle it was given,
 //! whatever the window size.
+//!
+//! Never:
+//! - write a cell outside the given clip, or outside the buffer's own area even if the clip is
+//!   larger.
+//!
+//! See: docs/features/control-center.md.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

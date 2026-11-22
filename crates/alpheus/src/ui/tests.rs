@@ -1,3 +1,8 @@
+//! Tests of the drawing (`mod.rs`, `tabs.rs`, `overlays.rs`): each tab and overlay drawn on a
+//! `TestBackend` at fixed sizes, in both layouts, with the clickable regions it records and the
+//! snapshots of the whole screens. Nothing here runs a tool; the data is the anonymised recording
+//! `ready_app` holds.
+
 use super::testing::draw;
 use super::*;
 use crate::app::keymap::Keymap;
@@ -424,6 +429,31 @@ fn full_help_fits_in_80x26() {
     assert!(!all.contains("Tab Sound"), "the eight tabs fit on one line");
 }
 
+/// With every tab key unbound the help names no tab line at all, not an empty one.
+#[test]
+fn help_has_no_tab_line_when_every_tab_key_is_unbound() {
+    let mut bindings = BTreeMap::new();
+    for n in 1..=8 {
+        bindings.insert(format!("tab_{n}"), Vec::new());
+    }
+    let mut a = ready_app();
+    a.keymap = Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings }).unwrap();
+    a.overlay = Overlay::Help;
+    let all = draw(&a, 80, 26).0.join("\n");
+    assert!(all.contains("Help — Esc to close") && all.contains("Mouse"), "{all}");
+    assert!(!all.contains("Tabs 1 to") && !all.contains("Tab Sound"), "{all}");
+}
+
+/// A focus past the last item (a list that just got shorter) leaves the rows on top instead of
+/// scrolling them away.
+#[test]
+fn a_focus_with_no_row_leaves_the_rows_unscrolled() {
+    let mut a = ready_app();
+    a.focus = 99;
+    let (rows, _) = draw(&a, 80, 24);
+    assert!(rows[2].contains("Volume"), "{:?}", rows[2]);
+}
+
 #[test]
 fn palette_screen() {
     let mut a = ready_app();
@@ -622,10 +652,10 @@ fn rail_tab_snapshots() {
     }
 }
 
-/// Mae's window (87×26, a 67×20 body): nothing the classic layout showed whole is cut, the
+/// An 87 by 26 window (a 67×20 body; the UI refresh spec sizes the rail for the real 87×26 window): nothing the classic layout showed whole is cut, the
 /// controls are whole, and what is clickable is what is drawn.
 #[test]
-fn rail_controls_fit_mae_window_87x26() {
+fn rail_controls_fit_an_87_by_26_window() {
     let cut = |rows: &[String]| assert!(!rows.join("\n").contains('…'), "a cut row:\n{}", rows.join("\n"));
     // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show in a body
     // below 64×20 (else the dashboard, see `home::tests::an_87_by_26_window_shows_the_whole_dashboard`).

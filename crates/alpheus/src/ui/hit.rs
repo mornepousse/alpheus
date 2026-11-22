@@ -1,10 +1,21 @@
-//! Clickable regions recorded at render time, looked up by the mouse.
+//! The clickable regions: what the drawing records and what the mouse looks up.
+//!
+//! While drawing, each component pushes a rectangle with a `Target` (a tab, an item, a slider's
+//! bar, a dialog button...) into a `HitMap`; `app/mouse.rs` asks which one is under the pointer.
+//! The last rectangle pushed wins where several overlap, which is why the overlays are drawn last.
+//!
+//! Never:
+//! - hold anything beyond rectangles and targets: it knows no layout and no `App`;
+//! - keep an empty rectangle: `push` drops it.
+//!
+//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Mouse (everywhere)").
 
 use crate::app::PanelField;
 use crate::app::action::Tab;
 use alpheus_common::theme::settings::{BarStyle, ModeSetting, ModuleColors};
 use ratatui::layout::Rect;
 
+/// What a click on a region means. The Theme tab's targets are named `Appearance...`, its code name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Tab(Tab),
@@ -33,13 +44,13 @@ pub enum Target {
     },
     PanelCancel,
     PanelApply,
-    /// A row of the Appearance theme list (index into `theme_file::entries()`).
+    /// A row of the Theme tab's theme list (index into `theme_file::entries()`).
     AppearanceTheme(usize),
-    /// A chip of the Appearance mode row.
+    /// A chip of the Theme tab's mode row.
     AppearanceMode(ModeSetting),
-    /// A chip of the Appearance module-colours row.
+    /// A chip of the Theme tab's module-colours row.
     AppearanceColors(ModuleColors),
-    /// A chip of the Appearance style row.
+    /// A chip of the Theme tab's style row.
     AppearanceStyle(BarStyle),
     /// The bug report's `[ Copy ]`.
     ReportCopy,
@@ -47,27 +58,34 @@ pub enum Target {
     Overlay,
 }
 
+/// The regions of one drawn screen, oldest first.
 #[derive(Debug, Clone, Default)]
 pub struct HitMap {
     regions: Vec<(Rect, Target)>,
 }
 
 impl HitMap {
+    /// Records a region; an empty one is dropped.
     pub fn push(&mut self, r: Rect, t: Target) {
         if r.width > 0 && r.height > 0 {
             self.regions.push((r, t));
         }
     }
 
+    /// The region under (`x`, `y`): the most recently pushed that holds the point. The right and
+    /// bottom edges are outside.
     pub fn at(&self, x: u16, y: u16) -> Option<(Rect, Target)> {
         self.regions.iter().rev().find(|(r, _)| x >= r.x && x < r.right() && y >= r.y && y < r.bottom()).copied()
     }
 
+    /// The region of the most recently pushed `t`, if any.
     pub fn find(&self, t: Target) -> Option<Rect> {
         self.regions.iter().rev().find(|(_, u)| *u == t).map(|(r, _)| *r)
     }
 }
 
+/// The percent a click or drag at column `x` means on a slider's `bar`: 0 at its left cell, 100 at
+/// its right one, and 0 or 100 beyond (a drag may leave the bar).
 pub fn slider_pick(bar: Rect, x: u16) -> i32 {
     if bar.width <= 1 {
         return 0;
