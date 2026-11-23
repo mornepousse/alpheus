@@ -47,7 +47,7 @@ source thread --Mail::Bar(Msg)--> event loop --on_bar_message--> state::Bar
 
 The guardrails of [`SCOPE.md`](SCOPE.md), checked mechanically by
 `crates/alpheus-daemon/tests/guardrails.rs`, which reads the source files (comments stripped by
-`without_comments` where a comment could fool a check) and fails on a forbidden pattern.
+`code_without_comments` wherever a comment could fool a check) and fails on a forbidden pattern.
 
 1. **No sleep or `dpms` handling.** Locking and blanking are left to a separate idle manager
    (hypridle, swayidle); alpheus never turns a screen off or suspends.

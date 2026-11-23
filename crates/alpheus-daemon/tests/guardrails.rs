@@ -509,14 +509,14 @@ fn compositor_sockets_opened_only_in_sources() {
 #[test]
 fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs");
-    let prod = production_code(&text);
+    let prod = code_without_comments(&text);
     let body = function_body(&prod, "pub fn launcher_open(");
     let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
     assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
     // Quick notes: the pad's box follows the same rule, its scrims under their own namespace.
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs");
-    let prod = production_code(&text);
+    let prod = code_without_comments(&text);
     let body = function_body(&prod, "pub(crate) fn notes_open(");
     let scrims_at = body.find("self.notes_scrims(qh)").expect("the scrims are created in notes_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in notes_open");
@@ -529,7 +529,7 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
 #[test]
 fn shutting_down_closes_and_saves_the_pad() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs");
-    let prod = production_code(&text);
+    let prod = code_without_comments(&text);
     let body = function_body(&prod, "fn shut_down(");
     let close = body.find("notes_guarded(\"shutdown\", |app| app.notes_close(").expect("shut_down closes the pad, guarded");
     let drop_at = body.find("drop(core.state)").expect("shut_down drops the app");
@@ -546,7 +546,7 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
     for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let prod = production_code(text);
+        let prod = code_without_comments(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
         let body = function_body(&prod, create);
         let call =
@@ -578,7 +578,7 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
 fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
-    let wayland_prod = production_code(wayland);
+    let wayland_prod = code_without_comments(wayland);
     for (func, call) in
         [("fn new_capability(", "keyboard_acquire"), ("fn remove_capability(", "keyboard_lost"), ("fn remove_seat(", "keyboard_lost")]
     {
@@ -586,7 +586,7 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
         assert!(body.contains(call), "{func} must still call {call}: {body}");
     }
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = code_without_comments(popup);
     let key_event = function_body(&popup_prod, "fn key_event(");
     assert!(key_event.contains("launcher_guarded("), "key_event must guard its launcher call: {key_event}");
     let leave = function_body(&popup_prod, "fn leave(");
@@ -609,7 +609,7 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
 fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = code_without_comments(popup);
     for func in ["fn press_key(", "fn repeat_key("] {
         let body = function_body(&popup_prod, func);
         assert!(body.contains("key_event("), "{func} must go through key_event: {body}");
@@ -638,7 +638,7 @@ fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
 fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let prod = production_code(popup);
+    let prod = code_without_comments(popup);
     let popup_close = function_body(&prod, "pub fn popup_close(");
     assert!(!popup_close.contains(".name =="), "popup_close must not look up its parent by name: {popup_close}");
     assert!(popup_close.contains("position_by"), "popup_close must look up its parent by identity: {popup_close}");
@@ -661,7 +661,7 @@ fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
 fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
-    let prod = production_code(wayland);
+    let prod = code_without_comments(wayland);
     let hover_fire = function_body(&prod, "pub(crate) fn hover_fire(");
     assert!(!hover_fire.contains(".name =="), "hover_fire must not look up its bar by name: {hover_fire}");
     assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
@@ -680,7 +680,7 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
 fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_early() {
     let files = source_files();
     let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
-    let prod = production_code(host);
+    let prod = code_without_comments(host);
     let body = function_body(&prod, "fn launcher_fail(");
     let take_at = body.find("self.launcher.take()").expect("launcher_fail must take the launcher");
     let close_at = body.find("guarded(\"close\"").expect("launcher_fail must drop the box in a guarded close");
@@ -700,7 +700,8 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
 #[test]
 fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, startup) = (src("popup.rs"), src("startup.rs"));
     for f in ["pub(crate) fn keyboard_release(", "pub(crate) fn keyboard_lost("] {
         let body = function_body(&popup, f);
@@ -720,7 +721,8 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
 #[test]
 fn the_panel_marks_read_only_after_it_opened() {
     let files = source_files();
-    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/panel_app.rs").expect("notify/panel_app.rs").1);
+    let panel_app =
+        code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "notify/panel_app.rs").expect("notify/panel_app.rs").1);
     let body = function_body(&panel_app, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
@@ -739,7 +741,8 @@ fn the_panel_marks_read_only_after_it_opened() {
 #[test]
 fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (link, bridge) = (src("link.rs"), src("tray/bridge.rs"));
     for (body, ready, read) in [
         (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
@@ -761,7 +764,8 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 #[test]
 fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (menu_app, popup, surface) = (src("tray/menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
     let repaint = function_body(&menu_app, "fn menu_repaint(");
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
@@ -791,11 +795,11 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
 fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = code_without_comments(popup);
     let popup_output_gone = function_body(&popup_prod, "pub(crate) fn popup_output_gone(");
     assert!(popup_output_gone.contains("hover.cancel()"), "popup_output_gone must also cancel a stale hover: {popup_output_gone}");
     let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("launcher/surface.rs").1;
-    let surface_prod = production_code(surface);
+    let surface_prod = code_without_comments(surface);
     let launcher_open = function_body(&surface_prod, "pub fn launcher_open(");
     assert!(launcher_open.contains("hover.cancel()"), "launcher_open must also cancel a stale hover: {launcher_open}");
 }
@@ -810,7 +814,7 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
 fn popup_close_resets_tooltip_item_for_a_closed_tooltip() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let prod = production_code(popup);
+    let prod = code_without_comments(popup);
     let popup_close = function_body(&prod, "pub fn popup_close(");
     assert!(popup_close.contains("tooltip_item = None"), "popup_close must reset tooltip_item on a closed tooltip: {popup_close}");
 }
@@ -1100,10 +1104,33 @@ fn without_comments(text: &str) -> String {
     out
 }
 
+/// A file's production code with its comments gone: what every scan that reads code must be given,
+/// whether it asks what calls what, which function owns a line, or how many times a call appears.
+/// `production_code` keeps the comments, so without this a call named in a comment would satisfy
+/// such a scan, and a `fn ` or a brace inside one would move the boundaries `function_body` finds.
+///
+/// The word lists that forbid a token outright (`.unwrap()`, `thread::`, `spawn(`) keep reading the
+/// comments on purpose, so that the token appears in neither (docs/STYLE.md says so, and a comment
+/// says it in words instead).
+fn code_without_comments(text: &str) -> String {
+    without_comments(&production_code(text))
+}
+
 #[test]
 fn without_comments_drops_comments_and_keeps_code_and_lines() {
     let text = "a(); // self.x(\n/// fn doc(\nb(\"//not\"); /* c { */ d('\"'); e('\\'');\n/* one\ntwo */f<'a>();\n";
     assert_eq!(without_comments(text), "a(); \n\nb(\"//not\");  d('\"'); e('\\'');\n\nf<'a>();\n");
+}
+
+#[test]
+fn code_without_comments_drops_the_tests_and_the_comments_and_keeps_the_calls() {
+    let text = "fn open() {\n    // self.timer_sync() is not a call\n    self.show();\n}\n\
+                #[cfg(test)]\nmod tests {\n    fn t() {\n        self.timer_sync();\n    }\n}\n";
+    let code = code_without_comments(text);
+    assert!(code.contains("self.show()"), "the code stays: {code}");
+    assert!(!code.contains("self.timer_sync()"), "neither the comment nor the test module: {code}");
+    // A scan that reads code sees the body of `open` alone, whatever a comment says inside it.
+    assert_eq!(function_body(&code, "fn open(").trim(), "{\n    \n    self.show();\n}".trim());
 }
 
 /// The brace-matched body of the first function in `text` whose signature
@@ -1491,7 +1518,7 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
 fn the_bluetooth_connection_serves_only_the_agent() {
     assert_eq!((AGENT_PATH, CAPABILITY), ("/org/alpheus/bluetooth/agent", "KeyboardDisplay"));
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
-    let prod = production_code(&file);
+    let prod = code_without_comments(&file);
     assert_eq!(prod.matches("method_return(").count(), 1);
     assert_eq!(prod.matches(".error(").count(), 1);
     let answer = function_body(&prod, "fn answer(");
@@ -2878,7 +2905,8 @@ fn the_quick_panel_has_no_panicking_path() {
 #[test]
 fn the_bluetooth_connection_goes_with_the_panel() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (quick_app, bt_app) = (src("quick/app.rs"), src("quick/bt_app.rs"));
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("BtScope::Closed") && closed.contains("self.bt_close()"), "{closed}");
@@ -2977,7 +3005,8 @@ fn the_bluetooth_logs_name_no_device() {
 #[test]
 fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let quick_app = src("quick/app.rs");
     let body = function_body(&quick_app, "fn quick_spawn_secret(");
     let (input, sent) = (body.find("spawn_with_input("), body.find("password_sent()"));
@@ -3029,7 +3058,8 @@ fn the_panel_readers_have_no_panicking_path() {
 #[test]
 fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick/app.rs"), src("notify/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     // A slider level still waiting for its window is sent before the panel's body goes:
@@ -3197,7 +3227,7 @@ fn the_timer_is_wired_through_one_path() {
     // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
     for (path, text) in source_files() {
         let name = relative_path(&path);
-        let prod = without_comments(&production_code(&text));
+        let prod = code_without_comments(&text);
         let mut owner = String::new();
         for line in prod.lines() {
             if let Some(i) = line.find("fn ") {
@@ -3611,7 +3641,8 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
 #[test]
 fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, power_app) = (src("popup.rs"), src("power/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("(p.ops().closed)(self)"), "popup_close must let a module popup's hooks run: {close}");
@@ -3643,9 +3674,8 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 #[test]
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
-    let src = |name: &str| {
-        without_comments(&production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1))
-    };
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let app = src("timer/app.rs");
     let row = popup_ops_row(&app);
     assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
@@ -3660,7 +3690,7 @@ fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
 #[test]
 fn the_keyboards_own_repeat_is_told_from_a_press() {
     let files = source_files();
-    let popup = production_code(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
+    let popup = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
     for f in ["pub(crate) fn keyboard_acquire(", "fn repeat_key("] {
         let body = function_body(&popup, f);
         let (raised, lowered) = (body.find("keyboard.repeat = true"), body.find("keyboard.repeat = false"));
@@ -3693,7 +3723,7 @@ fn the_privacy_module_has_no_panicking_path() {
 #[test]
 fn privacy_changed_follows_sharing_for_dnd() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy/app.rs").expect("privacy/app.rs").1);
+    let app = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "privacy/app.rs").expect("privacy/app.rs").1);
     let changed = function_body(&app, "pub(crate) fn privacy_changed(");
     let (sync, follow) = (changed.find("self.privacy_timer_sync()"), changed.find("self.dnd_sharing_follow()"));
     assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
@@ -3705,7 +3735,8 @@ fn privacy_changed_follows_sharing_for_dnd() {
 #[test]
 fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (app, popup) = (src("privacy/app.rs"), src("popup.rs"));
     let tick = function_body(&app, "pub(crate) fn privacy_tick(");
     let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
@@ -3744,7 +3775,8 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
 #[test]
 fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let app = src("resources/app.rs");
     let tick = function_body(&app, "pub(crate) fn resources_tick(");
     let (applied, shown, painted) = (tick.find("on_message("), tick.find("self.resources_shown()"), tick.find("self.resources_refresh()"));
@@ -3849,7 +3881,9 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
 fn on_bar_message_feeds_the_battery_alerts() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let startup = src("startup.rs");
+    // The order is read from the code alone; the no-panic scan below keeps the comments, as every
+    // word list does.
+    let startup = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
     let body = function_body(&startup, "pub(crate) fn on_bar_message(");
     let (fed, kept) = (body.find("self.battery_feed(&m)"), body.find("on_message("));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "battery_feed, then on_message: {body}");
@@ -3866,7 +3900,7 @@ fn on_bar_message_feeds_the_battery_alerts() {
 #[test]
 fn a_new_server_gets_the_last_battery_reading() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/app.rs").expect("notify/app.rs").1);
+    let app = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "notify/app.rs").expect("notify/app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }
@@ -3894,7 +3928,7 @@ fn spawn_with_env_only_runs_hooks() {
 #[test]
 fn hooks_read_a_message_before_the_privacy_feed() {
     let files = source_files();
-    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let t = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
     let body = function_body(&t, "pub(crate) fn on_bar_message(");
     let hooks = body.find("self.hooks_msg(&m)").expect("hooks_msg");
     let privacy = body.find("self.privacy_feed(&m)").expect("privacy_feed");
@@ -3991,7 +4025,7 @@ fn the_hooks_are_fed_where_state_changes() {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
     }
-    let app = production_code(&text("hooks/app.rs"));
+    let app = code_without_comments(&text("hooks/app.rs"));
     let mut checked = 0;
     for (at, _) in app.match_indices("pub(crate) fn hooks_") {
         let body = function_body(&app[at..], "pub(crate) fn hooks_");
@@ -4009,7 +4043,7 @@ fn the_hooks_are_fed_where_state_changes() {
 fn the_notes_timer_and_pipe_live_only_while_open() {
     let files = source_files();
     let app = &files.iter().find(|(p, _)| relative_path(p) == "notes/app.rs").expect("notes/app.rs").1;
-    let prod = production_code(app);
+    let prod = code_without_comments(app);
     let close = function_body(&prod, "pub(crate) fn notes_close(");
     let take = close.find("self.notes.open.take()").expect("notes_close takes the pad out");
     for later in ["notes_timer_sync()", "keyboard_release()"] {
@@ -4081,7 +4115,7 @@ fn the_notes_spawn_only_the_copy_command() {
             continue;
         }
         seen += 1;
-        let prod = production_code(&t);
+        let prod = code_without_comments(&t);
         for never in [".spawn(", ".capture(", ".stream(", ".run(", ".run_silent("] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
@@ -4123,7 +4157,7 @@ fn the_notes_glue_has_no_panicking_path() {
 #[test]
 fn a_bar_press_swallows_only_a_launcher_it_closed() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs");
-    let prod = production_code(&text);
+    let prod = code_without_comments(&text);
     let body = function_body(&prod, "fn pointer_frame(");
     assert!(body.contains("self.click(qh, i, ev.position.0, b, launcher_was_open)"), "click gets the launcher's own state: {body}");
     assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
@@ -4136,7 +4170,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let mut seen = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        let prod = production_code(&t);
+        let prod = code_without_comments(&t);
         if name.starts_with("notes/") {
             seen += 1;
         }
@@ -4155,7 +4189,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(seen >= 9, "the notes files were found: {seen}");
     let files = source_files();
     let surface = &files.iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs").1;
-    let prod = production_code(surface);
+    let prod = code_without_comments(surface);
     let drop = function_body(&prod, "fn drop(&mut self)");
     assert!(drop.contains("stop_paste()"), "OpenNotes's Drop removes the paste source: {drop}");
     assert!(
@@ -4165,7 +4199,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let stop = function_body(&prod, "fn stop_paste(");
     assert!(stop.contains("paste.take()") && stop.contains(".remove("), "stop_paste takes the token and removes the source: {stop}");
     let paste = &files.iter().find(|(p, _)| relative_path(p) == "notes/paste.rs").expect("notes/paste.rs").1;
-    let paste = production_code(paste);
+    let paste = code_without_comments(paste);
     assert_eq!(paste.matches("insert_source(").count(), 1, "one source, the pipe");
     let notes_paste = function_body(&paste, "fn notes_paste(");
     let (ro, rx) = (notes_paste.find("read_only"), notes_paste.find(".receive("));
@@ -4180,14 +4214,14 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
     let files = source_files();
     for (p, t) in &files {
         let name = relative_path(p);
-        let prod = production_code(t);
+        let prod = code_without_comments(t);
         assert!(!prod.contains("set_primary_selection"), "the primary selection is never set: {name}");
         if name != "clipboard/control.rs" {
             assert!(!prod.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
         }
     }
     let control = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/control.rs").expect("control.rs").1;
-    let prod = production_code(control);
+    let prod = code_without_comments(control);
     assert_eq!(prod.matches("set_selection(").count(), 2, "one call per protocol, in the macro-free own_selection: {prod}");
     assert!(!prod.contains("set_selection(None"), "the selection is never cleared");
     let body = function_body(&prod, "fn own_selection(");
@@ -4202,7 +4236,7 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
 fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
     let files = source_files();
     let app = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("clipboard/app.rs").1;
-    let prod = production_code(app);
+    let prod = code_without_comments(app);
     let body = function_body(&prod, "fn clipboard_selection_inner(");
     let take = body.find("slot.take()").expect("the offer is taken out of its slot");
     let guard = body.find("DestroyOnDrop::new(offer)").expect("the offer is wrapped in DestroyOnDrop");
@@ -4345,7 +4379,7 @@ fn the_panic_hook_is_installed_before_anything_else() {
 fn the_launcher_guard_never_logs_a_panic_payload() {
     let files = source_files();
     let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
-    let prod = production_code(host);
+    let prod = code_without_comments(host);
     let guard = function_body(&prod, "fn guarded_with<R>(");
     assert!(guard.contains("Err(_) =>"), "the payload is not even bound: {guard}");
     for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)"] {
@@ -4354,7 +4388,7 @@ fn the_launcher_guard_never_logs_a_panic_payload() {
     assert!(!prod.contains("panic_text"), "launcher/host.rs formats no panic payload");
     // The scan threads read .desktop files and source lines: a payload there can quote them.
     let scan = &files.iter().find(|(p, _)| relative_path(p) == "launcher/scan.rs").expect("launcher/scan.rs").1;
-    let scan = production_code(scan);
+    let scan = code_without_comments(scan);
     for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)", "|p|"] {
         assert!(!scan.contains(leak), "launcher/scan.rs must never read a panic's message ({leak})");
     }
@@ -4407,7 +4441,7 @@ fn vpn_log_statements(text: &str) -> Vec<&str> {
 #[test]
 fn the_vpn_tap_follows_the_panel() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
+    let quick_app = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("VpnScope::Closed"), "{closed}");
     for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
@@ -4455,7 +4489,7 @@ fn every_clipboard_read_start_and_end_syncs_the_timer() {
     let files = source_files();
     let body = |file: &str, sig: &str| {
         let t = &files.iter().find(|(p, _)| relative_path(p) == file).unwrap_or_else(|| panic!("{file}")).1;
-        function_body(&production_code(t), sig).to_string()
+        function_body(&code_without_comments(t), sig).to_string()
     };
     for (file, sig) in [
         ("clipboard/control.rs", "fn start_read("),
@@ -4522,7 +4556,7 @@ fn clipboard_logs_only_fixed_words() {
 fn a_cleared_selection_does_not_drop_a_read() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
-    let prod = production_code(t);
+    let prod = code_without_comments(t);
     let body = function_body(&prod, "fn clipboard_selection_inner(");
     let (take, stop) = (body.find("let Some(offer) = slot.take() else { return }"), body.find("clipboard_stop_read()"));
     assert!(take.is_some() && take < stop, "returns on None before any read is stopped: {body}");
@@ -4533,7 +4567,7 @@ fn a_cleared_selection_does_not_drop_a_read() {
 fn the_clipboard_shutdown_wipes_pins_too() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
-    let prod = production_code(t);
+    let prod = code_without_comments(t);
     let body = function_body(&prod, "fn clipboard_shutdown(");
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }
@@ -4715,12 +4749,12 @@ fn the_tools_logs_are_fixed_words() {
     let mut seen = 0;
     for name in ["launcher/tools/read.rs", "launcher/tools/app.rs", "launcher/tools/join.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        let code: String = code_without_comments(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
         assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
         seen += code.matches("log(").count() + code.matches("note(").count();
     }
     let run = &files.iter().find(|(p, _)| relative_path(p) == "launcher/run.rs").expect("run.rs").1;
-    let run_production = production_code(run);
+    let run_production = code_without_comments(run);
     let perform_tool = function_body(&run_production, "fn perform_tool");
     assert_eq!(tools_unfixed_log(perform_tool), None, "a log call in perform_tool names more than fixed words");
     assert!(seen >= 8 && perform_tool.contains("log("), "the log calls were found: {seen}");
@@ -4744,7 +4778,8 @@ fn the_tools_log_guardrail_helper_bites() {
 #[test]
 fn the_tools_timer_is_disarmed_by_close_and_by_a_panic() {
     let files = source_files();
-    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let text =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let surface = text("launcher/surface.rs");
     assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_timer_sync()"), "launcher_close");
     assert!(function_body(&surface, "fn launcher_outcome(").contains("tools_timer_sync()"), "launcher_outcome");
@@ -4817,7 +4852,8 @@ fn every_builtin_argv_stays_on_the_allowlist() {
 #[test]
 fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
     let files = source_files();
-    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let text =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let host = text("launcher/host.rs");
     let apps = function_body(&host, "pub(crate) fn launcher_open_apps(");
     for word in ["tools_builtin_states", "tools_adopt_builtin_states", "tools_known_states"] {
@@ -4901,7 +4937,8 @@ fn the_shield_logs_name_nothing() {
     ];
     const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src =
+        |name: &str| code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     // Every log call of the Shield's own files, and the Shield's lines of the others.
     let mut calls: Vec<(String, String)> = Vec::new();
     for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick/shield.rs"] {
@@ -4979,14 +5016,14 @@ fn the_shield_files_have_no_panicking_path() {
 #[test]
 fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     let files = source_files();
-    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/run.rs").expect("shield/run.rs").1);
+    let t = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "shield/run.rs").expect("shield/run.rs").1);
     let body = function_body(&t, "pub fn run_job(");
     let list_at = body.find("exec.capture(").expect("the listing's capture");
     let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
     assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
     assert_eq!(body.matches("exec.capture(").count(), 1);
     // A failed switch and a deadline are judged after one look at the flag.
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
+    let app = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
     let mail = function_body(&app, "fn shield_mail(");
     assert!(
         mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),
@@ -5008,7 +5045,7 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
 #[test]
 fn the_quick_panels_timer_follows_the_view_from_the_open() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
+    let quick_app = code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
         assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
     }
