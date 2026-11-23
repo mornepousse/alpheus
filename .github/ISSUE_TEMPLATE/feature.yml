@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest something alpheus does not do yet.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you cannot do today, and why it matters to you.
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it would cost at rest
+      description: Memory, threads, timers and wake-ups while it is idle. alpheus keeps an unused feature at zero.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing ways
+      description: Whether a script, a configured command or an existing feature already does it, and what is missing.

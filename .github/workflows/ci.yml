@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Ubuntu without Nix: what a contributor on a common distribution gets.
+  distro:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # pkg-config, libdbus-1-dev, libxkbcommon-dev: linked by the daemon.
+      # sway: the headless compositor of the ignored end-to-end tests.
+      # dbus: the private dbus-daemon of the ignored tests (never a session bus).
+      # wtype, grim, wl-clipboard: the headless tests' virtual keyboard, pixel
+      #   reader and clipboard helper (test-only, as in flake.nix's dev shell).
+      # fonts-dejavu-core: DejaVu Sans Mono, the daemon's fallback face.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libdbus-1-dev libxkbcommon-dev \
+            sway dbus wtype grim wl-clipboard fonts-dejavu-core
+
+      # The default font, JetBrainsMono Nerd Font Mono, from its release at a
+      # pinned version and checked against a pinned checksum.
+      - name: Font cache
+        id: font-cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/nerd-font
+          key: nerd-font-jetbrainsmono-v3.5.1
+
+      - name: Nerd Font (download)
+        if: steps.font-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/nerd-font
+          curl -fsSL -o "$RUNNER_TEMP/JetBrainsMono.tar.xz" \
+            https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/JetBrainsMono.tar.xz
+          echo "04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf  $RUNNER_TEMP/JetBrainsMono.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/JetBrainsMono.tar.xz" -C ~/nerd-font --wildcards 'JetBrainsMonoNerdFontMono-*.ttf'
+
+      # ALPHEUS_POLICES is one folder: the Nerd Font and DejaVu Sans Mono.
+      - name: Fonts folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/alpheus-fonts"
+          ln -s ~/nerd-font/*.ttf "$RUNNER_TEMP/alpheus-fonts/"
+          ln -s /usr/share/fonts/truetype/dejavu/DejaVuSansMono*.ttf "$RUNNER_TEMP/alpheus-fonts/"
+          echo "ALPHEUS_POLICES=$RUNNER_TEMP/alpheus-fonts" >> "$GITHUB_ENV"
+
+      # The headless harness wants `cat` to resolve into a directory holding
+      # no session tool, and Ubuntu's /usr/bin has systemctl and loginctl.
+      # A directory of copies (a symlink would resolve back to /usr/bin) put
+      # first on PATH gives it one.
+      - name: Coreutils-only directory
+        run: |
+          d="$RUNNER_TEMP/coreutils"
+          mkdir -p "$d"
+          for t in cat sleep mv cp rm mkdir touch env sort date head tail tr dirname basename true false; do
+            cp "$(command -v "$t")" "$d/$t"
+          done
+          echo "$d" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # The suite must run: a skipped one (no sway, wrong environment) reads
+      # "0 passed" and fails here instead of going green.
+      - name: Headless suite
+        env:
+          WLR_BACKENDS: headless
+          WLR_RENDERER: pixman
+        run: |
+          set -o pipefail
+          cargo test -q -p alpheus-daemon --test headless_session -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/headless.log"
+          passed=$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' "$RUNNER_TEMP/headless.log" | tail -n 1)
+          echo "headless tests passed: ${passed:-none}"
+          test "${passed:-0}" -gt 0
+
+  # The declared minimum Rust version (workspace rust-version).
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2.9.3
+      - run: cargo check --workspace --locked
+
+  nix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: cachix/install-nix-action@v32.1.0
+      - run: nix flake check
+      - run: nix build .#alpheus .#alpheus-demon .#alpheus-launch
+
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.3
+      - uses: crate-ci/typos@v1.52.2

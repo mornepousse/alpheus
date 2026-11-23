@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: dropdown
+    id: compositor
+    attributes:
+      label: Compositor
+      options:
+        - Mango
+        - Sway
+        - Hyprland
+        - niri
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: alpheus version
+      description: The binaries have no `--version` flag. Give the commit you built (`git rev-parse --short HEAD`) or the package version.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: |
+        The daemon logs to standard error (`alpheus-demon`), and `alpheus-launch` prints its reply or error.
+        Logs carry no private data by design (no window titles, commands, names or passwords), but read them before posting.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: The section of `bar.toml` involved (and `theme.toml` or `launcher.toml` if relevant). Remove anything private.
+      render: toml
