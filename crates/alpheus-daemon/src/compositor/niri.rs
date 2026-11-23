@@ -10,7 +10,6 @@ use super::{CompositorState, Toplevel, Window, Workspace};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
-#[cfg(test)]
 use std::time::Duration;
 
 /// Casts kept (privacy spec § 3); a new id past it is ignored.
