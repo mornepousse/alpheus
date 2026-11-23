@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn wheel() {
+    fn the_wheel_moves_the_selection() {
         let mut a = ready_app();
         let (x, y) = center(&a, Target::Slider { item: 1 });
         send(&mut a, MouseEventKind::ScrollUp, x, y);

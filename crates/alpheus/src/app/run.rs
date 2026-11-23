@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn command_line_options() {
+    fn the_command_line_options_are_read() {
         assert_eq!(parse_options(&[]), Ok(Options { tab: Tab::Home }));
         assert_eq!(parse_options(&args(&["--tab", "sound"])), Ok(Options { tab: Tab::Sound }));
         assert_eq!(parse_options(&args(&["--tab=Network"])), Ok(Options { tab: Tab::Network }));
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_decision() {
+    fn the_exit_code_follows_how_the_loop_ended() {
         let mut a = ready_app();
         let done = AtomicBool::new(false);
         assert!(!should_exit(&a, &done));

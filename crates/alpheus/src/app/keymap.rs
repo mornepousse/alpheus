@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn default_keys_work() {
+    fn the_default_keys_reach_their_actions() {
         let k = Keymap::default();
         assert_eq!(k.lookup(&ch('q')), Some(Action::Quit));
         assert_eq!(k.lookup(&ev(KeyCode::F(1), KeyModifiers::NONE)), Some(Action::Help));
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_with_shift() {
+    fn a_shifted_key_is_told_from_its_plain_one() {
         // The terminal sends SHIFT along with "?", "+" and Shift+Tab.
         let k = Keymap::default();
         assert_eq!(k.lookup(&ev(KeyCode::Char('?'), KeyModifiers::SHIFT)), Some(Action::Help));
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn key_parsing() {
+    fn a_binding_is_parsed_from_its_text() {
         assert_eq!(Chord::parse("ctrl+p"), Ok(Chord { code: KeyCode::Char('p'), mods: KeyModifiers::CONTROL }));
         assert_eq!(Chord::parse("Ctrl+P"), Ok(Chord { code: KeyCode::Char('p'), mods: KeyModifiers::CONTROL }));
         assert_eq!(Chord::parse("shift+tab"), Ok(Chord { code: KeyCode::BackTab, mods: KeyModifiers::NONE }));
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn labels() {
+    fn every_binding_has_a_label() {
         let k = Keymap::default();
         assert_eq!(k.label(Action::Help), "F1");
         assert_eq!(k.label(Action::Palette), "Ctrl+P");
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_override() {
+    fn an_invalid_override_is_refused_with_a_reason() {
         let mut b = BTreeMap::new();
         b.insert("fly".to_string(), vec!["v".to_string()]);
         assert!(Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).unwrap_err().contains("fly"));

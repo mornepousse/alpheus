@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_command() {
+    fn an_empty_command_is_refused() {
         let (log, mut s, mut l) = fakes(false, Ok(()));
         assert!(open(&mut s, &mut l, &[]).is_err());
         assert!(log.borrow().is_empty());
@@ -271,7 +271,7 @@ mod tests {
 
     // Real launcher: only `sh` (no session tool).
     #[test]
-    fn real_launcher() {
+    fn the_real_launcher_is_the_one_configured() {
         let mut l = ProcessLauncher;
         assert_eq!(l.run(&argv("sh -c true")), Ok(()));
         assert!(l.run(&["sh".into(), "-c".into(), "exit 4".into()]).unwrap_err().contains("4"));

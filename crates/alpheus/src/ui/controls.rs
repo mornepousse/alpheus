@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn command_glyphs() {
+    fn every_command_row_has_its_glyph() {
         use crate::app::action::Command::*;
         for (c, g) in [
             (Power(PowerAction::Lock), "󰌾"),
