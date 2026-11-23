@@ -1,7 +1,14 @@
-//! alpheus-daemon — resident daemon (sub-project 2 of docs/SCOPE.md,
-//! spec docs/specs/2026-10-04-alpheus-demon-barre-design.md). A pure state
-//! (`state::Bar`) changed by messages, sources that send them, a grid of
-//! cells drawn by cosmic-text into a layer-shell surface per screen.
+//! alpheus-daemon: the resident daemon (`alpheus-demon`) and the client that talks to it
+//! (`alpheus-launch`).
+//!
+//! A pure state (`state::Bar`) changed by messages, sources that send them from their own threads,
+//! and a grid of cells drawn by cosmic-text into one layer-shell surface per screen. Each feature
+//! is a folder; the files beside this one are the core they share. The crate is a library so that
+//! the tests can reach every part of it, and the two binaries are three lines each.
+//!
+//! See: docs/ARCHITECTURE.md (the codemap and the rules), docs/tour.md (one event from end to end),
+//! docs/features/README.md (one page per feature), docs/SCOPE.md (sub-project 2) and
+//! docs/specs/2026-10-04-alpheus-demon-barre-design.md (the first design, historical).
 
 pub mod actions;
 pub mod appearance;

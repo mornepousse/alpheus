@@ -1,9 +1,24 @@
-//! The daemon's only executor. `Executor::run` waits for its command (up to
-//! 2 s): on the event loop, every bar would freeze. Nothing in the daemon
-//! needs it — clicks `spawn`, the sound source `stream`s on its own thread —
-//! so this wrapper refuses it outright, without even trying. `capture` blocks
-//! too, up to its deadline: only the launcher's scan thread calls it (a
-//! guardrail), so it is delegated; so is `run_silent`, on the Shield worker's own thread.
+//! The daemon's only executor: a wrapper that refuses the one call that blocks.
+//!
+//! `Executor::run` waits for the command it starts, up to two seconds. On the event loop that
+//! would freeze every bar on every screen, and nothing in the daemon needs it: a click `spawn`s,
+//! the sound source `stream`s on its own thread. So this wrapper answers an error without even
+//! trying, and logs which program asked. `capture` blocks too, up to its own deadline, and
+//! `run_silent` waits: both are delegated, because the only callers are the launcher's scan thread
+//! and the Shield's worker, each on a thread of its own.
+//!
+//! Never:
+//! - be bypassed: `the_only_system_executor_is_wrapped_in_non_blocking` checks that the one system
+//!   executor the daemon builds is built inside `NonBlocking(…)`;
+//! - let a second command stream: `the_only_stream_is_pw_dump_monitor` pins the one `stream` call,
+//!   the sound source's `pw-dump`;
+//! - let anything but those two runners capture, or either of them through a shell
+//!   (`only_the_runners_capture_and_never_through_a_shell`);
+//! - start a command with an environment anywhere but the hooks
+//!   (`spawn_with_env_only_runs_hooks`).
+//!
+//! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/hooks.md,
+//! docs/features/launcher.md (the scan thread), docs/features/shield.md (the worker).
 
 use crate::log::write as log;
 use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};

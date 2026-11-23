@@ -1,6 +1,20 @@
-//! One calloop `Timer` at a deadline while there is one, none otherwise:
-//! the tray's 2 s call timeouts and the tooltip's hover delay cost
-//! nothing at rest — no source, no wake-up — instead of a periodic tick.
+//! One calloop timer at a deadline while something is pending, and none otherwise.
+//!
+//! A `DeadlineTimer` is how a feature of the daemon waits for a moment to come: the tray's 2 s call
+//! timeouts, the tooltip's hover delay, the timer chip's next minute, a `failed` tag's four
+//! seconds. `sync` arms it, moves it, or removes it when the deadline is None; a deadline it
+//! already holds is left alone, so a repeated sync does not churn the loop. The callback marks it
+//! fired before anything arms it again. A periodic tick would cost a wake-up a second for ever:
+//! this costs nothing at rest.
+//!
+//! Never:
+//! - stay armed with nothing pending: `nothing_resident_while_the_launcher_is_closed` holds every
+//!   timer the daemon builds with the reason it does not run at rest, and each feature's
+//!   `at_rest_no_wakeups_*` test measures that nothing wakes;
+//! - fire twice for one deadline: the callback drops its own timer (`fired`).
+//!
+//! See: docs/ARCHITECTURE.md ("The core", "Threads"), docs/decisions.md ("One deadline, armed only
+//! while a timer runs"), docs/measurements.md (the wake-up counts at rest).
 
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
 use smithay_client_toolkit::reexports::calloop::RegistrationToken;
