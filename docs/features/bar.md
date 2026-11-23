@@ -1,7 +1,16 @@
 # The bar
 
-In the default `flat` style, a line of monospace characters on the theme's bar colour, modules separated by
-a dim dot (`  ·  `), the active workspace on the theme's accent (see [Themes](themes.md) and [Bar styles](themes.md#bar-styles)).
+One line per screen, with the modules you choose. This page says what it does, how to use it, how to
+configure it, how it is built, which rules the tests enforce on it, and what it costs. It describes
+the code as it is today. Most modules have a page of their own, linked below; the ones that do not
+are described here.
+
+## What it does
+
+In the default `flat` style, the bar is a line of monospace characters on the theme's bar colour,
+modules separated by a dim dot (`  ·  `), the active workspace on the theme's accent (see
+[Themes](themes.md) and [Bar styles](themes.md#bar-styles)). There is one bar per screen, and screens
+plugged and unplugged are tracked live.
 
 ![The alpheus bar, sample data, real font, default theme (catppuccin, dark) (zoomed ×2, split in two halves)](../images/bar.png)
 
@@ -19,48 +28,208 @@ a dim dot (`  ·  `), the active workspace on the theme's accent (see [Themes](t
 
 ![The quick settings' Wi-Fi detail: the connected network, saved ones, one connecting (`…`), signal and lock marks, More… (fictional networks, real font, default theme (catppuccin, dark), zoomed ×2)](../images/quick-wifi.png)
 
-Shipped: **launcher** (an icon that opens it, first module by default),
-**workspaces** (one dot per window, empty workspace dimmed, the active one
-on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
-window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
-**privacy** (nothing while nothing is captured; then one glyph per capture in an own block: `󰍬` microphone in orange, `󰄀` camera in green, `󰍹` screen in red, whatever `module_colors` says; the microphone glyph is dim while the default source is muted. Read from PipeWire's graph by the `pw-dump` child the sound module already runs, so a meter (pavucontrol, cava), a filter chain or a loopback never lights it, and an app muting itself in its own call still does; a screen cast announced by niri or Hyprland lights the screen too. A glyph goes 0.5 s after its capture ends, never blinking on a renegotiation. A left click opens a popup listing the apps by name (`(unnamed)` when only the compositor knows); a middle click mutes or unmutes the default microphone. A camera opened directly (`/dev/video*` outside PipeWire) lights it too: the daemon watches the device nodes with inotify (`[privacy] dev_dir`, `proc_dir`: where video devices and processes are listed) and, 300 ms after an open or close, scans its own user's `/proc/<pid>/fd` for a link to a `video*` node (never opening one; PipeWire, WirePlumber and the daemon itself excluded). **Not seen:** wf-recorder under Sway and Mango, which announce nothing, a camera held by another user's process, and a same-user process named `pipewire` or `wireplumber`; under Hyprland, a cast running before the daemon started shows only through PipeWire (niri reports it at connection). **Known:** on boards whose hardware codec nodes are named `video*` (some ARM boards), a codec in use also lights the camera; the nodes are never opened to tell them apart),
-**shield** (nothing unless `[shield]` is set in `bar.toml` and the mode is on; then `󰒘`, always green, in an own block right after the privacy indicators, removed on a narrow bar just before them. Its state is a file: the mode is on while `flag` exists, watched through the theme watch's one inotify instance, so a change made in a terminal shows at once. A left click opens the quick panel on the Shield row (with the `quick` module): Space switches it with the `on` or `off` command, which asks for authorisation itself (`pkexec` shows polkit's dialog), `…` until the flag follows, `failed` for 4 s on a refusal; Enter opens the detail, the USB devices blocked since the mode went on (read once each time it opens), Enter on one runs `allow` with its id. `alpheus-launch --shield` does the same from a script, and the notices come from alpheus's own server; see [Shield mode](shield.md)), **volume** (an icon and the percentage, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
-mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
-battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU, memory, temperature: each an icon and a figure; a left click opens a popup with each item's figure and a graph of its last 60 samples, drawn in pixels (`last N min`: 60 × `interval` seconds), and a `Monitor…` row; the right click runs `[actions] resources`; the 60 samples are kept in a fixed ring of about 3 KB, fed by the tick that already runs, so nothing more wakes; `[resources] show` adds `net` (the default route's interface, receive and send rates; IPv4 only), `disk` ($HOME's filesystem, percent used, rounded up like `df`) and `gpu` (the GPU's temperature, from its hwmon); all read at the same tick, nothing more is read for an item left out. `disk` calls `statvfs` on `$HOME` at each pass, on the event loop: a hung network `$HOME` would block the bar. Reading a discrete GPU's hwmon can wake it on a hybrid laptop: set `gpu_sensor` to the integrated GPU's driver (`i915`, `xe`, `amdgpu`) to read that one instead), **tray** (status icons of running apps as Nerd
-Font glyphs — or a letter —, left click activates, right click opens the
-app's menu in a popup, keyboard and mouse),
-**notifications** (a bell with the unread count, crossed under do-not-disturb, dim while another
-server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
-disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
-a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi|bluetooth|vpn]`: the volume with its output devices and, for a Bluetooth headset, its Hi-Fi/Mic mode (a switch of its PipeWire profile with `wpctl set-profile`), the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the Bluetooth (power, and a detail of the paired devices and of the nearby ones found while it is open: connect or disconnect, pair a new one — a keyboard's code to type or a code to confirm shown in the panel by alpheus's own pairing agent, then trusted and connected —, and forget one after `Forget? ⏎`; the Bluetooth module's left click opens it), the VPN (a row under Bluetooth with the active profile, else `off`; Space brings the last used one up or down, and a detail lists the NetworkManager VPN profiles, OpenVPN-style and WireGuard alike, to bring one up or down with `nmcli connection up|down uuid`, no secret ever read or typed in the panel; `More…` opens nmtui-edit; a failing `nmcli` itself is not seen: the profile shows `…` until NetworkManager says otherwise or 20 s pass (60 s while it reports the connection activating), then `failed`, on the row too; a profile that needs a secret no agent provides (a password asked each time, with no secret agent running) fails, and `More…` (nmtui-edit) is where to store the secret), the microphone and a `Mixer…` row that opens wiremix in a terminal (`[quick] mixer`; `[]` hides it), do-not-disturb (Space toggles; Enter or → opens a detail: Off, 30 minutes, 1 hour, 2 hours, Until `[quick] dnd_until`, Until I turn it off; a timed one reads `until HH:MM` on the row), the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show (except the default `Mixer…`, not checked: without wiremix its terminal closes at once)), **displays** (nothing drawn: the daemon reads the screens through `zwlr_output_manager_v1` for the Displays tab, holds the tab's 15 s trial and applies the matching `displays.toml` profile on hotplug, 500 ms after the screens settle, at most 3 times a minute per set of screens (one held back is applied when the minute ends); a trial still open when the daemon stops is rolled back, one lost to a crash is not, and a try still waiting for the compositor at shutdown may keep its layout; `[displays] auto = false` keeps the tab and drops the hotplug behaviour), **clock** (a click opens the
-month's calendar), **timer** (a dim `󰔛` while idle, in its own yellow block just before the clock; `[timer] idle = "hidden"` draws nothing then. Running: the minutes left, rounded up (`󰔛 25m`, `󰔛 1h05`); a Pomodoro shows `󰔟` while working and `󰅶` on a break; the stopwatch `󱎫 12m`; paused `󰏤 24m`, dim; ended `󰂞 done` in the warn colour. The chip changes once a minute, never each second. A left click opens a popup (Timer ‹ 10 min › with ← → and the wheel, Pomodoro, Stopwatch; while one runs Pause or Resume, Add 1 min or Skip, Stop; the time ticks each second only while it is open), a middle click pauses or resumes. The end is a notification from alpheus's own server (kept in the history only under do-not-disturb, which also mutes the sound) and `[timer] sound`, an argv run at each end; the state survives a restart in `$XDG_STATE_HOME/alpheus/timer`), **failed** (`󰀦 N` in the error colour, drawn only above 0: systemd's `NFailedUnits` for the system manager plus the user manager, each read through one `Get` of that property on the D-Bus connections the bar already has, never the Manager's other properties; a left click opens the Diag tab. By default (`[failed] subscribe = false`) the count is read at start, on resume, on `alpheus-launch --failed-refresh` and the Diag tab's refresh, and piggybacked on another domain's wake-up at most once a minute, never with a timer of its own; with `true` alpheus calls `Subscribe()` once on each manager so that systemd sends the change at once (the icon is instant, and systemd and dbus-daemon then serialize their signals for every client on that bus; the piggyback is skipped). If the session link closes, the user count stays as last known (the link is never reconnected). A systemd1 that fails to answer leaves the count unknown for that read (one rate-limited log line, the session and the other modules unaffected). A count going unknown keeps its last value. `[failed] user_units = false` leaves the session bus alone; `notify = true` sends one notification when the total rises), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
-of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
-are tracked live. On a narrow screen, secondary modules disappear;
-workspaces and the clock remain.
+### The modules
 
-The lock screen is paused (the wallpaper, swaybg, is optional): the focus is
-polishing the bar, the launcher, the notifications and the control center.
+In the order of the default `modules` list, left to right. A module that is not in `modules` costs
+nothing: its source is never started.
 
-At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
-of memory at start (≈ 8.4–8.5 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
-on three outputs. The
-compositor is only **read** (Hyprland's or niri's event stream, Sway's i3 IPC, Mango's watch sockets); switching
-workspace goes through a configurable command. Sound comes from
-`pw-dump`, network, battery and Bluetooth from D-Bus (read-only, and no service is ever D-Bus-activated, with one exception: when the battery is wanted and UPower has no owner — it is activated only on demand on some systems, NixOS among them — the daemon asks the bus for UPower once per session start, so the battery shows without another client starting it first; the quick panel's Bluetooth acts through a second system-bus connection (BlueZ's own calls and its pairing agent), open only while its detail is open or a call is in flight),
-resources from `/proc`. The tray talks to the session bus
-(StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
-thread. The media module speaks MPRIS on that same connection (or on one of its own when the tray is off,
-shared with the light/dark portal): players found at start and on arrival, their changes read from
-signals, never polled; while its popup is open the time ticks once a second, and only then.
-The notifications module is the `org.freedesktop.Notifications` server on that same connection. It
-waits in the D-Bus queue while another server (mako) holds the name, and takes over as soon as it is
-released; a mako started after it is refused and exits. Text is capped and cleaned: markup is
-stripped, never rendered, and images are skipped unread. A noisy app is rate-limited, and the bubbles
-exist only while one shows. One timer is armed for the earliest expiry, and none at rest. **Rules** (`[[notifications.rules]]`, at most 32, the first match wins) are applied to each notification before anything else: `action = "mute"` shows no bubble but keeps it in the history and counts it unread, `action = "drop"` ignores it entirely (the sender is answered as usual, nothing is stored), `urgency = "low"|"normal"|"critical"` replaces the app's own; the app name is compared whole, in any case, and never logged. **Battery alerts** (`[battery] warn = [20, 10, 5]`, with `battery` and `notifications` in `modules`) are notifications from `alpheus` itself when the battery, discharging, crosses a threshold from UPower's state the bar already reads (no new timer, thread or match rule); one per threshold, all armed again once it charges, the lowest one critical; given only while the server holds the name, and offered again when it starts. With `[notifications] dnd_while_sharing = true` (and `privacy` and `notifications` in `modules`), do-not-disturb turns on while a screen capture runs and off when it ends, unless you set it yourself meanwhile (your choice wins). A timed do-not-disturb whose end falls during a share hands over to sharing instead of turning off: it stays on, and the capture's end turns it off. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
-do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`; `--dnd on --for 30m` (`2h`, `1h30m`; 1 minute to 24 hours) or `--dnd on --until 22:30` (local time, tomorrow if already past) ends it by itself: one timer, armed only while it runs, and a restarted daemon keeps the end or turns it off if it passed; `off` and `toggle` cancel it, an older daemon exits 3); an alpheus older than this feature reads any state file as plain on, so a rollback keeps do-not-disturb on (untimed) until you toggle it, `--clear-notifications`
-empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
-is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
-show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--windows` opens the window switcher (see [The launcher](launcher.md)); a second `--windows` while it is open steps to the next window, and it replaces any other open launcher, cancelling a waiting `--dmenu` (a password prompt included); exit 3 when the bar is not running or older than `--windows`. `--notes` opens or closes the quick notepad (see [The quick notepad](notes.md); a `--notes` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--notes`). `--quick [sound|wifi|bluetooth|vpn]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`, `vpn`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi`, `bluetooth` or `vpn` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. `--timer start <duration>` (`90s`, `25m`, `1h30m`, or a bare number of minutes: 1 second to 24 hours), `--timer pomodoro`, `--timer stopwatch`, `--timer pause|resume|toggle|stop|skip` (on whatever runs; nothing to act on is no error) and `--timer popup` (opens or closes the popup under the chip, the keyboard taken without a grab; a second within 250 ms of its own open is ignored) drive the focus timer (exit 2 without the `timer` module, 3 when the bar is not running or older than `--timer`). `--shield on|off|toggle|status|allow` drives Shield mode (see [Shield mode](shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run; 3 when the bar is not running or older than `--shield`), `--clipboard` opens or closes the clipboard history in the launcher's box (any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored) and `--clipboard-clear` forgets every unpinned entry without touching the current clipboard (exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol, 3 when the bar is not running or older than the verb). A known
-limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
+| Module | What it draws | Its page |
+| --- | --- | --- |
+| `launcher` | an icon that opens the launcher | [the launcher](launcher.md) |
+| `workspaces` | one dot per window, the active workspace on the accent | below |
+| `window` | the active window's app icon and title | below |
+| `media` | `▶ Title` while a player plays, `⏸ Title` paused, nothing when nothing plays | [media](media.md) |
+| `privacy` | one glyph per capture: microphone, camera, screen | [privacy indicators](privacy.md) |
+| `shield` | `󰒘`, green, only while Shield mode is on | [Shield mode](shield.md) |
+| `failed` | `󰀦 N` when systemd has failed units, nothing at 0 | [failed units](failed.md) |
+| `volume` | an icon and the percentage | below |
+| `network` | the link icon and the VPN count | below |
+| `bluetooth` | the connected device and its battery | below |
+| `battery` | the laptop's battery and its peripherals' | below |
+| `resources` | CPU, memory and temperature, each an icon and a figure | [the resources popup](resources.md) |
+| `tray` | one glyph per application that registers a status icon | [the system tray](tray.md) |
+| `notifications` | a bell with the unread count | [notifications](notifications.md) |
+| `osd` | nothing in the bar: a pill at the bottom of the focused output | [the OSD](osd.md) |
+| `quick` | nothing in the bar: the quick settings panel under a module | [quick settings](quick-settings.md) |
+| `displays` | nothing: the screens read through the output protocol, and the profiles | [displays](displays.md) |
+| `timer` | the focus timer's chip, a dim `󰔛` at rest | [the focus timer](timer.md) |
+| `clock` | the time, and the calendar under it | [the calendar](calendar.md) |
+| `power` | `⏻` at the bar's end, and its menu | [the power menu](power.md) |
+
+### The modules described here
+
+- **The launcher button.** An icon, the first module of the default list. A left click opens or
+  closes the launcher inside the daemon, so nothing is run.
+- **Workspaces.** One dot per window in each workspace, an empty workspace dimmed, the active one on
+  `accent_container`, an urgent one in `urgent`. Beyond four windows the dots are summarized with a
+  `+`, and a name longer than 12 cells is cut. A left click goes to that workspace, and the wheel
+  moves to the next or the previous one; both go through the `[workspaces] command`, never a write to
+  the compositor.
+- **The active window.** The application's icon and the window's title. The module is elastic: it
+  takes the free space, so the modules on its right stay right-aligned. With no active window it
+  draws nothing at all (no empty `· ·`), and the free space stays where the module sits in the
+  configured order. A title shorter than 8 cells' worth of room disappears.
+- **Volume.** An icon by the level (low below 34 %, medium below 67 %, high above) and the
+  percentage; muted, the off glyph and the word `muted`, both dim. The wheel changes the level by
+  5 %, never above 100 %. With the `quick` module a left click opens the quick panel and a right
+  click opens the control center's Sound tab; without it, a right click mutes.
+- **Network.** The link icon (Wi-Fi by signal, or wired), a dim glyph when the link is offline, and
+  `!` in the error colour when connectivity is limited. A VPN that is up adds its glyph, with the
+  count from two VPNs on. A left click opens the quick panel, a right click (or the left one
+  without `quick`) the control center's Network tab.
+- **Bluetooth.** The connected device, cut to fit, with its battery when the device reports one and
+  `+N` when more than one is connected; the plain glyph, dim, with nothing connected or no adapter.
+  A left click opens the quick panel, a right click (or the left one without `quick`) the control
+  center's Bluetooth tab.
+- **Battery.** The laptop's battery and the peripherals that report one: an icon and the percentage,
+  in `warn` below 20 % and `error` below 10 % (`[battery] warn` also sends the low-battery
+  notifications; see [notifications](notifications.md)). A left click opens the control center's Home
+  tab.
+- **The clock.** The date, muted, then the time in bold accent (`[clock] date` and `format`, both
+  strftime). A left click opens the month's calendar under it.
+
+A module that is waiting for its first reading draws nothing; a source that is down shows its icon
+and then `–`.
+
+### On a narrow screen
+
+Modules disappear in a fixed order until the bar fits: the resources, the tray, media, the window
+title, then Bluetooth, the network, the volume, the battery, the launcher button, the timer chip, the
+failed-units count, the Shield glyph, the privacy indicators, and last the power button. The
+workspaces, the clock and the notification bell always stay.
+
+## Using it
+
+**Clicks.** A left click opens the module's popup where it has one (media, privacy, the resources
+figures, the timer chip, the bell, the clock, the power button, and the quick panel on volume,
+network, Bluetooth and the Shield glyph); the click that is left over opens the matching tab of the
+control center, through `[actions] open_tab`. A middle click toggles do-not-disturb on the bell,
+pauses or resumes the timer on its chip, and mutes the microphone on the privacy indicators. The
+wheel changes the volume on the volume module, the track on media, and the workspace on the
+workspaces. Each module's page has its own table.
+
+**From a script or a key bind.** `alpheus-launch` drives the launcher, the notepad, the clipboard
+history, the Tools menu, do-not-disturb, the notification history, the OSD, the quick panel, the
+focus timer, Shield mode, the window switcher, the calculator, the power menu and the failed-units
+refresh. Every verb, option and exit code is in [`docs/cli.md`](../cli.md). alpheus sets no key bind
+itself.
+
+**Known limits.**
+
+- Right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered.
+- On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2) the bar's keyboard
+  interactivity stays `None` while a menu or the calendar holds a grab, which is detected from its
+  `hyprland_*` globals. That is why a popup opened with a grab behaves differently there: the pages
+  of the calendar, the power menu and the resources popup point here.
+
+## Configuration
+
+`bar.toml` in alpheus's configuration directory, read once at start, so a change takes effect when
+`alpheus-demon` restarts. Every key is in [`docs/configuration.md`](../configuration.md), which is
+generated from `config.rs`: `modules` decides which modules exist and in which order, and each module
+has its own table there ([`[clock]`](../configuration.md#clock),
+[`[workspaces]`](../configuration.md#workspaces), [`[battery]`](../configuration.md#battery),
+[`[resources]`](../configuration.md#resources), and so on). An unknown module name, like any other
+invalid key, makes the whole file fall back to its defaults with one warning in the log.
+
+```toml
+# ~/.config/alpheus/bar.toml
+modules = ["launcher", "workspaces", "window", "volume", "clock"]
+```
+
+The colours and the bar's shape are in `theme.toml` ([Themes](themes.md)), and the launcher's own
+settings in `launcher.toml` ([the launcher](launcher.md)).
+
+## How it is built
+
+The daemon is one event loop (calloop) on one thread. Sources on threads of their own feed one `Mail`
+channel; the state is applied, then the grid is derived, then the painter draws. The map of the
+modules and the walk through one event are in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) and
+[`docs/tour.md`](../tour.md); the files that carry the bar itself are:
+
+- `wayland.rs`: one layer-shell surface per screen (the `Top` layer, anchored at the top, with an
+  exclusive zone), tracked live, and a pointer for the clicks and the wheel. Nothing else is asked of
+  the compositor, and a screen is redrawn only when its grid changes.
+- `state.rs`: the bar's pure state — what the sources have said, and nothing else.
+- `modules.rs`: every per-module fact, one row per module (its block, its hue, the control center tab
+  of its click, its segment function, its popup, and the sources it needs).
+- `segments.rs`: the segments of the system modules, each returning nothing when it has nothing to
+  show. The whole segment is one click zone, except the tray's, which has one per icon.
+- `layout.rs`: from the state to a screen's grid — the segments laid out left to right in the
+  configured order, the elastic window module, the narrow-screen removal order, and the blocks of the
+  block styles.
+- `popup.rs`: the bar's popups, each an `xdg_popup` attached to the bar's own layer surface and placed
+  under the cells it hangs from, drawn as rows of cells into a pool of its own. One at a time, and
+  everything is dropped whole on close.
+- `startup.rs`: assembling the daemon — the signals, the single-instance lock, the settings, the
+  fonts, Wayland, the loop, and only the sources the modules need.
+
+**What the bar reads, and what it writes.**
+
+- **The compositor is only read**: Hyprland's and niri's event streams, Sway's i3 IPC, Mango's watch
+  sockets. Switching workspace goes through the configurable command, and the only other write is an
+  output configuration ([displays](displays.md)); alpheus never touches output power management.
+- **Sound** comes from one `pw-dump` child, the only command the daemon keeps running.
+- **Network, battery and Bluetooth** come from D-Bus, read-only, and no service is ever
+  D-Bus-activated, with one exception: when the battery is wanted and UPower has no owner — it is
+  activated on demand on some systems, NixOS among them — the daemon asks the bus for UPower once per
+  session start, so the battery shows without another client starting it first. The quick panel's
+  Bluetooth calls go through a second system-bus connection, open only while its detail is open or a
+  call is in flight ([quick settings](quick-settings.md)).
+- **The resources** come from `/proc` and `/sys`, at the tick of their own timer.
+- **The tray** talks to the session bus (StatusNotifierItem, dbusmenu): one connection on the bar's
+  own loop, with no thread. The media module speaks MPRIS on that same connection, or on one of its
+  own when the tray is off, shared with the light/dark portal; the notification server and the
+  failed-units user count ride it too. A closed session link is never reconnected.
+- **The theme** is watched with one inotify instance ([Themes](themes.md)).
+
+## Rules it keeps
+
+These are enforced by tests, so a change that breaks one fails the build.
+
+- `the_daemon_only_reads_from_the_compositor` (`tests/guardrails.rs`): the only writes to the
+  compositor are the workspace command and the output configurations, built in `outputs/wlr.rs` and
+  sent only from `outputs/app.rs`, plus the clipboard's own selection for a re-copy
+  ([clipboard](clipboard.md)). `compositor_requests_are_read_only`,
+  `mango_writes_only_its_request_lines`, `sway_writes_only_its_three_messages` and
+  `compositor_sockets_opened_only_in_sources` pin each backend's requests, and
+  `output_power_management_never_appears` keeps `dpms` and output power management out of alpheus
+  altogether.
+- `every_click_on_a_full_bar_stays_on_the_allowlist` and `every_click_only_runs_the_workspace_command`:
+  every zone of a bar where every module is shown, every button, with the quick panel and without it,
+  runs only a command of the allowlist, and each of those commands is reached by the test.
+- `d_bus_is_confined_to_sources_and_read_only`: D-Bus lives in `src/sources/` only, through one file,
+  which can only call read methods; `the_portal_is_read_through_exactly_two_members` and
+  `tray_d_bus_is_confined_and_allowlisted` pin the portal's and the tray's calls.
+- `the_only_system_executor_is_wrapped_in_non_blocking`: `Executor::run` blocks for up to 2 s, so it
+  is never reachable from the daemon, whose loop would freeze every bar.
+- `the_only_stream_is_pw_dump_monitor`: the daemon keeps exactly one command running, `pw-dump`,
+  started only by the sound source.
+- `nothing_resident_while_the_launcher_is_closed`: every place that can start a thread, arm a timer,
+  watch a descriptor or bind a keyboard is in one table with the reason it does not run at rest; a
+  new one fails the test until it is added and justified.
+- `the_tray_spawns_no_thread`: the files on its list start no thread, process or command.
+- `the_daemon_paints_with_roles_never_the_legacy_palette`: the daemon paints with the 16 theme roles
+  only.
+- `eprint_forbidden_outside_tests`: the daemon's production code never uses `eprintln!`, which panics
+  on a closed standard error; every line goes through its own log writer.
+- `the_panic_hook_is_installed_before_anything_else`: the hook names the thread and the place, never
+  the panic's message.
+- The headless suite (`tests/headless_session.rs`) runs the real daemon against a disposable Sway and
+  fake tools for each module's behaviour, and `tests/memory.rs` holds the budgets below.
+
+## What it costs
+
+Measured in release on the headless harness (the full tables and the method are in
+[measurements](../measurements.md); the tests that measure are named here).
+
+- **At start**, all modules and the launcher, 3 outputs: ≈ 8.0 MB
+  (`startup_pss_per_source`, 8,144–8,246 KB over 3 runs), and ≈ 8.4–8.5 MB with the tray and 10 fake
+  items, the launcher module off (`startup_pss_with_the_tray_under_15_mb`).
+- **Under load:** ≈ 9.6–9.7 MB after 8,300 events and 5 plug cycles, stable, with 6 threads (D-Bus
+  through libdbus accounts for one; the launcher and the tray add none).
+- **Per style at start** (all modules, 3 outputs): `flat` ≈ 8.0 MB, the others −76…+116 KB over it
+  (`startup_pss_per_style`).
+- **At rest:** 0 wake-ups, the theme watch included. The bar's only timers are the clock's and the
+  resources' (every 2 s, and only while the resources module is shown); every feature has its own
+  `at_rest_no_wakeups_*` test, and each popup, panel and overlay is bounded by its own PSS test.
