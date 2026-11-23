@@ -57,7 +57,7 @@ cargo build --release          # all three programs, in target/release/
 
 Build-time requirements:
 
-- A recent stable Rust (edition 2024). No minimum version is promised: the project is built and tested with the latest stable release.
+- Rust 1.95 or newer (edition 2024; the `rust-version` in the workspace `Cargo.toml`, which CI builds with on every push).
 - `pkg-config`.
 - The development files of **libdbus-1** (the system-bus connection goes
   through the `dbus` crate, which links libdbus) and **libxkbcommon** (the
