@@ -1038,7 +1038,7 @@ fn production_code(text: &str) -> String {
 
 /// Whether the `r` at `i` opens a raw string: `r`, then any number of `#`, then a quote, and
 /// nothing before it that would make it the last letter of an identifier — `b` is allowed, since
-/// `br"…"` is the byte form, as long as the `b` itself starts a token.
+/// `br"…"` is the byte form and `cr"…"` the C one, as long as that letter itself starts a token.
 fn raw_string_opens(chars: &[char], i: usize) -> bool {
     let mut j = i + 1;
     while chars.get(j) == Some(&'#') {
@@ -1050,7 +1050,7 @@ fn raw_string_opens(chars: &[char], i: usize) -> bool {
     let part_of_a_name = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_alphanumeric() || *c == '_');
     match i.checked_sub(1) {
         None => true,
-        Some(p) if chars.get(p) == Some(&'b') => !part_of_a_name(i.checked_sub(2)),
+        Some(p) if matches!(chars.get(p), Some('b' | 'c')) => !part_of_a_name(i.checked_sub(2)),
         Some(p) => !part_of_a_name(Some(p)),
     }
 }
@@ -1059,10 +1059,12 @@ fn raw_string_opens(chars: &[char], i: usize) -> bool {
 /// for the guardrails that read code: a comment naming a call must not satisfy them, nor a
 /// comment holding `fn ` or a brace move the function a line belongs to. Newlines stay, so line
 /// numbers keep their meaning. String and char literals are skipped over, so a `//` inside a URL
-/// string is not a comment. Raw strings (`r"…"`, `r#"…"#`) are not recognised: they are kept away
-/// another way, since every one under `src/` sits inside a `#[cfg(test)]` item or a `tests.rs` file,
-/// which `production_code` and `source_files` drop first. The first raw string written in
-/// production code would have to be handled here before any scan could read that file.
+/// string is not a comment. A raw string (`r"…"`, `r#"…"#`, and the byte and C forms `br`, `cr`) is
+/// copied whole, with no escape rule, so neither a `//` nor a quote inside one is read as anything
+/// else. Braces inside a literal are kept, and `production_code` counts them: an unbalanced one
+/// inside a test item still takes the rest of that file out of the production view
+/// (`a_brace_in_a_string_of_a_test_item_still_fools_production_code` shows it, and `compositor/mango.rs`
+/// has one today, harmless only because its test module is the file's last item).
 fn without_comments(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -1189,6 +1191,98 @@ fn without_comments_keeps_a_raw_string_whole() {
 }
 
 #[test]
+fn without_comments_reads_every_raw_string_shape() {
+    // Two hashes, with a lone `"#` inside the body: only `"##` ends it, so the `//` between them is text.
+    let two = "a(r##\"body \"# // not a comment\"##); // gone\n";
+    assert_eq!(without_comments(two), "a(r##\"body \"# // not a comment\"##); \n");
+    // Three hashes, and a `#` right after a zero-hash close: the trailing `#` is code, not a delimiter.
+    assert_eq!(without_comments("a(r###\"x\"###); // gone\n"), "a(r###\"x\"###); \n");
+    assert_eq!(without_comments("m!(r\"a\"#); // gone\n"), "m!(r\"a\"#); \n");
+    // Empty bodies of both shapes: the quote right after the opening delimiter does not end them early.
+    assert_eq!(without_comments("a(r\"\", r#\"\"#); // gone\n"), "a(r\"\", r#\"\"#); \n");
+    // A `#` inside the body of a zero-hash raw string.
+    assert_eq!(without_comments("a(r\"# /* x */\"); // gone\n"), "a(r\"# /* x */\"); \n");
+    // Multi-line: every line kept, nothing inside stripped, the comment after it still goes.
+    let lines = "a(r#\"one // two\n/* three */\nfour\"#); // gone\nb();\n";
+    assert_eq!(without_comments(lines), "a(r#\"one // two\n/* three */\nfour\"#); \nb();\n");
+    // The byte form with hashes, a brace inside, whole.
+    assert_eq!(without_comments("a(br#\"{\"k\": 1}\"#); // gone\n"), "a(br#\"{\"k\": 1}\"#); \n");
+}
+
+/// A raw string that never closes (a half-written file, a bad paste) must not panic and must not
+/// read past the end of the text: it is copied as it stands.
+#[test]
+fn without_comments_survives_an_unterminated_raw_string() {
+    assert_eq!(without_comments("a(r\""), "a(r\"");
+    assert_eq!(without_comments("a(r#\""), "a(r#\"");
+    assert_eq!(without_comments("a(r##\"x\"#"), "a(r##\"x\"#");
+    assert_eq!(without_comments("a(r\"x // y\n"), "a(r\"x // y\n");
+}
+
+#[test]
+fn raw_string_opens_only_on_a_real_opening_delimiter() {
+    let opens = |text: &str, i: usize| {
+        let chars: Vec<char> = text.chars().collect();
+        assert_eq!(chars[i], 'r', "{text}: index {i} is not the r");
+        raw_string_opens(&chars, i)
+    };
+    assert!(opens("r\"x\"", 0), "the first character of the file");
+    assert!(opens("(r\"x\")", 1));
+    assert!(opens("(r#\"x\"#)", 1));
+    assert!(opens("(r###\"x\"###)", 1));
+    assert!(opens("(br\"x\")", 2), "the byte form");
+    assert!(opens("(cr\"x\")", 2), "the C form (Rust 1.77, and this workspace is newer)");
+    assert!(opens("[cr#\"x\"#]", 2));
+    assert!(!opens("for r in v {}", 4), "a binding named r");
+    assert!(!opens("let r = \"x\";", 4));
+    assert!(!opens("foo(bar\"x\")", 6), "an identifier ending in r, quote right after");
+    assert!(!opens("foo_br\"x\"", 5), "br at the end of a name is not the byte form");
+    assert!(!opens("let r#type = 1;", 4), "a raw identifier");
+    assert!(!opens("fn f<'r>(x: &'r str) {}", 6), "a lifetime");
+    assert!(!opens("char::from('r')", 12), "a char literal");
+    assert!(!opens("r", 0), "an r at the very end of the file");
+    assert!(!opens("r#", 0), "hashes with no quote");
+}
+
+/// The composition's own pins. `production_code` is tested alone above; with the comments stripped
+/// first, a comment between the marker and its item, or one holding the `;` of a brace-less item,
+/// decides nothing. Read the other way round, each of these strips real production code.
+#[test]
+fn a_comment_between_the_cfg_test_marker_and_its_item_keeps_the_production_code() {
+    let doc = "#[cfg(test)]\n/// a { in the doc of the test mod\nmod tests {\n    fn t() {}\n}\nfn real() {}\n";
+    let code = production_code_without_comments(doc);
+    assert!(code.contains("fn real()") && !code.contains("fn t()"), "{code}");
+    let semi = "#[cfg(test)] /* a ; in a comment */ mod tests {\n    fn t() {}\n}\nfn real() {}\n";
+    let code = production_code_without_comments(semi);
+    assert!(code.contains("fn real()") && !code.contains("fn t()"), "the test item does not leak: {code}");
+    let brace_less = "#[cfg(test)]\n// a { in a comment\npub mod fake;\nfn real_code() {}\n";
+    let code = production_code_without_comments(brace_less);
+    assert!(code.contains("fn real_code()") && !code.contains("mod fake"), "a brace-less item ends at its `;`: {code}");
+}
+
+/// A raw string inside a test item is now parsed before the item is stripped (the comments go
+/// first), so its quotes must not reach the production code that follows it in the same file.
+#[test]
+fn a_raw_string_in_a_test_item_leaves_the_production_code_after_it_alone() {
+    let text = "#[cfg(test)]\nmod tests {\n    const T: &str = r#\"a \" quote\"#;\n}\n\
+                fn real() { self.x(); } // self.from_a_comment()\n";
+    let code = production_code_without_comments(text);
+    assert!(code.contains("self.x()"), "{code}");
+    assert!(!code.contains("from_a_comment"), "the comment after the test item's raw string still goes: {code}");
+}
+
+/// What this file does today, not what it should do: `production_code` counts the braces inside a
+/// string literal too, so an unbalanced one in a test item takes the rest of the file out of the
+/// production view. `compositor/mango.rs` holds such a fixture (`r#"{"monitors":["#`), harmless only
+/// because its test module is the file's last item. A `production_code` that skipped literals would
+/// turn this test red, and that would be the improvement, not a regression.
+#[test]
+fn a_brace_in_a_string_of_a_test_item_still_fools_production_code() {
+    let text = "#[cfg(test)]\nmod tests {\n    let j = r#\"{\"#;\n}\nfn real() {}\n";
+    assert!(!production_code_without_comments(text).contains("fn real()"), "the hole that stays");
+}
+
+#[test]
 fn production_code_without_comments_drops_the_tests_and_the_comments_and_keeps_the_calls() {
     let text = "fn open() {\n    // self.from_a_comment() and a stray } brace\n    self.show();\n}\n\
                 #[cfg(test)]\nmod tests {\n    fn t() {\n        self.from_a_test();\n    }\n}\n";
@@ -1276,9 +1370,11 @@ fn a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone() {
     let code = production_code_without_comments(text);
     assert!(code.contains("fn a()") && code.contains("fn b()"), "both production items stay: {code}");
     assert!(!code.contains("mod tests"), "the test item goes: {code}");
-    // `production_code` alone counts the comment's brace, so the test item never closes and it
-    // strips to the end of the file: the word lists read less than they should in that one case.
-    assert!(!production_code(text).contains("fn b()"), "the known cost of reading the comments");
+    // What this says about `production_code` alone, the view the word lists are given: it counts the
+    // comment's brace, so the test item never closes and it strips to the end of the file. A
+    // `production_code` that skipped comments or literals would turn the line below red, and that
+    // would be the improvement, not a regression.
+    assert!(!production_code(text).contains("fn b()"), "the cost of reading the comments, as it stands");
 }
 
 /// `Executor::run` blocks (up to 2 s): it must never be reachable from the
@@ -4443,6 +4539,16 @@ fn stray_clipboard_spawns_are_found() {
             "alpheus/tests/guardrails.rs names wl-paste"
         ]
     );
+}
+
+/// What the helper changed: a trailing comment is no longer read as a call (the old per-line filter
+/// kept it), and a line inside a raw string is no longer read as a comment (the old filter deleted
+/// it out of a fixture).
+#[test]
+fn stray_clipboard_spawns_reads_the_code_not_the_comments() {
+    let one = |text: &str| stray_clipboard_spawns(&[("a.rs".to_string(), text.to_string())]);
+    assert!(one("fn t() {} // wl-copy serves it\n").is_empty(), "a trailing comment is not a spawn");
+    assert_eq!(one("fn t() { let s = r#\"\n// wl-paste --no-newline\n\"#; }\n"), ["a.rs names wl-paste"]);
 }
 
 /// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which checks
