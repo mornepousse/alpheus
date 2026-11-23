@@ -33,7 +33,8 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-# The async stacks stay out of the tree. The cargo-tree guard lives in
+# The async stacks stay out of the tree, and so does `blocking` (zbus's thread
+# pool, gone with zbus). The cargo-tree guard lives in
 # crates/alpheus-common/tests/boundaries.rs: see
 # `neither_zbus_nor_blocking_is_in_the_daemon` and
 # `the_absence_check_bites_on_a_tree_with_zbus`.
@@ -41,6 +42,7 @@ deny = [
     { name = "tokio" },
     { name = "async-std" },
     { name = "zbus" },
+    { name = "blocking" },
 ]
 
 [sources]

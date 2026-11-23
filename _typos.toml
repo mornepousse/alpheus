@@ -37,19 +37,35 @@ unparseable = "unparseable"
 # Deliberate misspellings, typed to check an unknown-key or did-you-mean path.
 cpoy = "cpoy"
 enabeld = "enabeld"
-# Truncated words the tests type on purpose: the `h`, `he`, `hel`, `help`
-# prefixes of nmcli's refusal rule, a "gam" query, an `fre`quency closure,
-# Santa "Claus" in the Unicode emoji names, "Caf" cut from "Café", a
-# `lits` tuple of literals, `ue`/`fo`/`ba` short test variables and values.
-hel = "hel"
-gam = "gam"
-fre = "fre"
-claus = "claus"
-caf = "caf"
-lits = "lits"
-ue = "ue"
-fo = "fo"
-ba = "ba"
-mor = "mor"
-inh = "inh"
-hda = "hda"
+
+# Short or truncated words that real typos could hide behind are not listed as
+# words (that would allow them in every file): each is matched in the context
+# the tests and notes use it in, and nowhere else.
+[default]
+extend-ignore-re = [
+    # `ue`: the scale in the bubbles' and the pill's pixel code.
+    "let ue\\b|\\* ue\\b",
+    # `fo`: the focused flag of the workspace test builders; `fo"o`, a key
+    # with a quote in the tray-icon config tests.
+    "\\bfo: bool|, fo\\)|[Ff]o\\\\+\"o",
+    # `mor`: unknown keys the config tests type on purpose.
+    "(?:vpn|wifi)_mor\\b",
+    # `caf`: "café" cut by lossy decoding, or typed as a prefix query.
+    "(?:\\\\?\"|app:)[Cc]af\\b",
+    # `hel`: the `h`, `he`, `hel`, `help` prefixes of nmcli's refusal rule.
+    "\\bhe[`\", ]+hel\\b",
+    # `fre`: the frecency closure of the ranking tests.
+    "\\bfre(?: =|\\()",
+    # `gam`: a prefix query typed in the launcher tests.
+    "\"gam\"",
+    # `Claus`: Santa, Mrs. and Mx Claus in the emoji table.
+    "(?:Santa|Mrs\\.|Mx) Claus",
+    # `BA`: the start of `BATn` (battery names) in the D-Bus tests and notes.
+    "\\bBATn\\b",
+    # A commit hash starting with a digit (`55ba754` in the measurements).
+    "\\b\\d[0-9a-f]{6,39}\\b",
+    # `hda`: the sound card's driver in a recorded node name.
+    "skl_hda_dsp_generic",
+    # `inh`: a temporary directory's name.
+    "alpheus-env-inh-",
+]

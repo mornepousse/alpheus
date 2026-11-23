@@ -4846,7 +4846,7 @@ fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
 
 /// The string literals of `call` (escapes skipped) and what is left of it once they are removed.
 fn literals_and_rest(call: &str) -> (Vec<String>, String) {
-    let (mut lits, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
+    let (mut quoted, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
     for c in call.chars() {
         if inside {
             if escaped {
@@ -4857,7 +4857,7 @@ fn literals_and_rest(call: &str) -> (Vec<String>, String) {
                 escaped = true;
             } else if c == '"' {
                 inside = false;
-                lits.push(std::mem::take(&mut cur));
+                quoted.push(std::mem::take(&mut cur));
                 rest.push('"');
             } else {
                 cur.push(c);
@@ -4869,7 +4869,7 @@ fn literals_and_rest(call: &str) -> (Vec<String>, String) {
             rest.push(c);
         }
     }
-    (lits, rest)
+    (quoted, rest)
 }
 
 /// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
@@ -4924,8 +4924,8 @@ fn the_shield_logs_name_nothing() {
     calls.dedup();
     assert!(calls.len() >= 10, "the Shield's log calls were found: {}", calls.len());
     for (name, call) in &calls {
-        let (lits, rest) = literals_and_rest(call);
-        for l in &lits {
+        let (quoted, rest) = literals_and_rest(call);
+        for l in &quoted {
             assert!(CLOSED.contains(&l.as_str()), "a literal outside the closed list in {name}: {l:?} in {call}");
         }
         for word in rest.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
