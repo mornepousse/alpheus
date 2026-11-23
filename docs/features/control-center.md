@@ -16,9 +16,9 @@ and the shortcut hints). The hints are drawn on the shortcut bar, the last row o
 layout; in the layout with the rail they are the keycaps row (`ui/rail.rs`). The status line, above
 the shortcut bar, shows the tab's name and the last message.
 
-The default keymap has Dvorak navigation as well as the arrow keys: `d`, `h`, `t`, `n` for left,
-down, up and right (`KeysConfig::default`, `dvorak_nav: true`; `[keys] dvorak_nav = false` turns it
-off). The key tables below name the arrow keys only.
+The default keymap moves with the arrow keys. Dvorak navigation, `d`, `h`, `t`, `n` for left, down,
+up and right, is off by default (`KeysConfig::default`, `dvorak_nav: false`); `[keys] dvorak_nav =
+true` turns it on beside the arrows. The key tables below name the arrow keys only.
 
 The next section, "How it is built (the whole program)", describes what every tab shares: the event
 loop, the worker thread, the refresh rule, the keymap, the theme and the drawing. The sections
@@ -99,8 +99,8 @@ because one launched before the action would bring the old state back over the n
 shown at once. A displays trial's end is the one thing still told from such a read.
 
 **The keymap (`app/keymap.rs`).** `Keymap` maps a key press to an `Action`. The defaults are the
-usual conventions (Ctrl+P, F1, Esc, the arrows, `1` to `8` for the tabs) plus the Dvorak
-navigation keys; `[keys]` in config.toml overrides any action by name and takes its keys from every
+usual conventions (Ctrl+P, F1, Esc, the arrows, `1` to `8` for the tabs), plus the Dvorak
+navigation keys when `[keys] dvorak_nav = true`; `[keys]` in config.toml overrides any action by name and takes its keys from every
 other action, so one key never has two meanings. `app/input.rs` decides who gets a key first: an
 open overlay (a confirmation, the command palette, help, the display trial's Keep box, an output's
 settings panel, the save-profile box), then the search box, then the Diag tab's own views, then the
@@ -580,8 +580,7 @@ Two small files and the tab's row in `app/tab.rs`.
 - `confirmation_from_the_keyboard`, `arrow_keys_in_the_confirmation` (`app/input/tests.rs`) and
   `confirmation_with_the_mouse` (`app/mouse.rs`): the question starts on Cancel. The keyboard
   test covers `q` (cancels, does not quit), Enter on Cancel (sends nothing), → then Enter on
-  Confirm (queues `Op::Power`) and Esc; the arrow test covers ←, →, `d` and `n` (the Dvorak
-  keys), Tab and Shift+Tab, and that nothing is queued without Enter. The mouse test covers a
+  Confirm (queues `Op::Power`) and Esc; the arrow test covers ←, → and, with Dvorak navigation turned on, `d` and `n`, Tab and Shift+Tab, and that nothing is queued without Enter. The mouse test covers a
   click on Confirm (queues `Op::Power`), and that a click outside or on a tab under the question
   does nothing; a click on Cancel has no test.
 - `tick_reads_nothing_on_power` and `changing_tab` (`app/tests.rs`): nothing is read on this tab,

@@ -14,19 +14,14 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeysConfig {
-    /// D/H/T/N = left/down/up/right (hjkl positions on a Dvorak layout).
+    /// D/H/T/N = left/down/up/right (hjkl positions on a Dvorak layout). Off by default: a
+    /// shareable product does not assume one keyboard layout.
     pub dvorak_nav: bool,
     /// Overrides: action name → keys (replace the defaults).
     pub bindings: BTreeMap<String, Vec<String>>,
-}
-
-impl Default for KeysConfig {
-    fn default() -> Self {
-        KeysConfig { dvorak_nav: true, bindings: BTreeMap::new() }
-    }
 }
 
 /// External tools opened in alpheus's window (program + arguments).
@@ -148,20 +143,20 @@ mod tests {
         assert_eq!(c, Config::default());
         assert_eq!(w, None);
         assert_eq!(c.commands.mixer, vec!["wiremix"]);
-        assert!(c.keys.dvorak_nav);
+        assert!(!c.keys.dvorak_nav);
     }
 
     #[test]
     fn partial_file() {
         let p = file(
             "partial",
-            "[commands]\nmixer = [\"pavucontrol\"]\n\n[keys]\ndvorak_nav = false\n\n[keys.bindings]\npalette = [\"ctrl+k\"]\n",
+            "[commands]\nmixer = [\"pavucontrol\"]\n\n[keys]\ndvorak_nav = true\n\n[keys.bindings]\npalette = [\"ctrl+k\"]\n",
         );
         let (c, w) = Config::load(&p);
         assert_eq!(w, None);
         assert_eq!(c.commands.mixer, vec!["pavucontrol"]);
         assert_eq!(c.commands.network, vec!["nmtui"]);
-        assert!(!c.keys.dvorak_nav);
+        assert!(c.keys.dvorak_nav);
         assert_eq!(c.keys.bindings["palette"], vec!["ctrl+k"]);
     }
 

@@ -384,12 +384,12 @@ fn with_keys(keys: &[(&str, &[&str])], t0: Instant) -> App {
 #[test]
 fn scrolling_follows_the_key_table() {
     let t0 = Instant::now();
-    // The Dvorak navigation keys (on by default) scroll: t up, h down.
+    // The navigation keys scroll: up, down.
     let mut a = on_diag(t0);
     opened(&mut a, Preset::Live, (0..100).map(|n| entry(n, "x")).collect(), t0);
-    key(&mut a, KeyCode::Char('t'), t0);
+    key(&mut a, KeyCode::Up, t0);
     assert_eq!(view(&a).scroll, Scroll::At(1));
-    key(&mut a, KeyCode::Char('h'), t0);
+    key(&mut a, KeyCode::Down, t0);
     assert_eq!(view(&a).scroll, Scroll::Tail);
     // A user's own keys for the actions do too, and the arrow they replaced does not.
     let mut a = with_keys(&[("up", &["k"]), ("down", &["j"])], t0);
