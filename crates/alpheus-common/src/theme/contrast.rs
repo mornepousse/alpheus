@@ -1,5 +1,11 @@
 //! WCAG 2 contrast (relative luminance, contrast ratio), used by the
 //! presets' legibility test and available to the Appearance tab later.
+//!
+//! Never:
+//! - guess a ratio: the formula is WCAG 2's, which is what makes the presets' legibility a test and
+//!   not an opinion.
+//!
+//! See: docs/features/themes.md ("Rules it keeps").
 
 use super::Rgb;
 

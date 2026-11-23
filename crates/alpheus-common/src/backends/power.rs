@@ -1,5 +1,13 @@
 //! Session power. Lock: detached hyprlock; log out of the session: wm-set
 //! (never the compositor directly); the rest: systemctl.
+//!
+//! Never:
+//! - call the service behind the tool: the tool is the interface, and a missing one leaves the row
+//!   or the tab empty rather than failing;
+//! - run anything in a test: the fake executor answers (AGENTS.md).
+//!
+//! See: docs/features/control-center.md, docs/install.md (the tools), docs/compositors.md (what
+//! `wm-set` and `shell-ctl` stand for).
 
 use super::{BResult, run_ok, spawn_ok};
 use crate::exec::Executor;

@@ -1,6 +1,15 @@
 //! One interface (trait) per domain; v1 implementation = existing tools
 //! called through the injectable executor. A D-Bus backend will be able to
 //! replace an implementation without touching `ui`.
+//!
+//! Never:
+//! - talk to a service directly: each domain is a trait, and v1 calls the tool the desktop already
+//!   has through the executor, so a D-Bus implementation can replace one without touching the UI;
+//! - run a state-changing command in a test: the fake executor answers instead
+//!   (AGENTS.md's list).
+//!
+//! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/control-center.md
+//! (the tabs these serve), docs/install.md (the tools each one needs).
 
 use crate::exec::{ExecError, Executor};
 use std::fmt;

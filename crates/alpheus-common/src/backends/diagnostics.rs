@@ -1,6 +1,14 @@
 //! Diagnostics: systemd's own tools (`systemctl`, `journalctl`, `coredumpctl`, `systemd-analyze`)
 //! read through `Executor::capture` (a deadline, a byte cap and a line cap, the process group
 //! killed after), plus the bug report's clipboard program. Only the Diag tab's worker calls these.
+//!
+//! Never:
+//! - call the service behind the tool: the tool is the interface, and a missing one leaves the row
+//!   or the tab empty rather than failing;
+//! - run anything in a test: the fake executor answers (AGENTS.md).
+//!
+//! See: docs/features/control-center.md, docs/install.md (the tools), docs/compositors.md (what
+//! `wm-set` and `shell-ctl` stand for).
 
 use super::{BResult, BackendError, exec_error, unparsable};
 use crate::config::Check;

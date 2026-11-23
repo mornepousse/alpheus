@@ -5,6 +5,13 @@
 //! What it never holds, by construction: an environment, a command line, a boot id, a machine id
 //! (replaced if it slipped into a message), a cursor, a pid, a host name. The inputs have no
 //! field for them.
+//!
+//! Never:
+//! - add a field the list does not name, and never show one thing and copy another: the redaction
+//!   happens before anyone sees the text;
+//! - grow past the copy program's one page of standard input (`exec::MAX_INPUT`).
+//!
+//! See: docs/features/control-center.md ("Diag", the bug report), AGENTS.md ("No private data").
 
 use crate::exec::MAX_INPUT;
 use crate::text::clean_line;

@@ -2,6 +2,14 @@
 //! the resolver that turns them and the wallpaper colour files into `Roles`,
 //! with spec § 6's fallbacks (one line each, never fatal); and the portal's
 //! `color-scheme` value. Pure apart from reading the files it is given.
+//!
+//! Never:
+//! - be fatal: an unknown key, a bad colour or a missing light half falls back with one line each
+//!   (docs/features/themes.md, "Configuration");
+//! - read a file it was not given: the resolver takes the texts, which is what lets the tests drive
+//!   it without a configuration directory.
+//!
+//! See: docs/features/themes.md, docs/configuration.md (`theme.toml`).
 
 use super::presets::{self, DEFAULT_PRESET, PRESETS, Preset};
 use super::{HUE_NAMES, Mode, ROLE_NAMES, Rgb, Roles, parse_colors, parse_hex};

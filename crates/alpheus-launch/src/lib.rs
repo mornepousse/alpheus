@@ -10,6 +10,15 @@
 //! unreachable (not running) or too old for a flag it was sent (`--index`/`--password`/`--visible`
 //! and the later ones, `--failed-refresh` among them), the only cases where a caller may fall
 //! back to another menu.
+//!
+//! Never:
+//! - grow: std and alpheus-common only — no Wayland, no fonts, no TUI, no D-Bus, no matcher and no
+//!   keyboard library (`alpheus_launch_stays_tiny`, in the foundation's boundaries.rs), because
+//!   this runs on every key press and in every script menu;
+//! - wait for ever: every verb but `--dmenu` gives up after two seconds, and exit code 3 is the one
+//!   a script falls back on (docs/cli.md).
+//!
+//! See: docs/cli.md (every verb, option and exit code), docs/features/launcher.md.
 
 use alpheus_common::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,

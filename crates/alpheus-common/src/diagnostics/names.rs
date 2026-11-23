@@ -1,5 +1,13 @@
 //! What may become an argument: a unit name and a journal cursor, checked before any command line
 //! is built (a name from a list or a file is never trusted to be only a name).
+//!
+//! Never:
+//! - let a name or a cursor become an option: a unit is checked against systemd's own characters
+//!   and attached as `--unit=<name>`, a cursor against printable ASCII, so nothing a tool printed
+//!   or a person typed can turn into a flag;
+//! - trust a name because it came from a list: a file or a reply is checked like any input.
+//!
+//! See: docs/features/control-center.md ("Diag"), docs/decisions.md (the Diag entries).
 
 /// A systemd unit name: 1 to 256 bytes of `[A-Za-z0-9:_.\@-]`, with a `.` and an alphabetic type
 /// after the last one (`-.mount` is the root mount and valid; `--now` and `a b.service` are not).

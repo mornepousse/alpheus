@@ -2,6 +2,14 @@
 //! read from a colour file holding either the 16 roles or the legacy 7 keys
 //! (derived per mode). Independent of any display: the TUI converts to
 //! ratatui colours (alpheus::theme), the daemon to pixels.
+//!
+//! Never:
+//! - name a display library: the roles are plain values, which the control center turns into
+//!   ratatui colours and the daemon into pixels (`the_foundation_carries_no_display_dependency`);
+//! - fail on a colour file: a missing or malformed key falls back with one log line
+//!   (docs/features/themes.md).
+//!
+//! See: docs/features/themes.md, docs/configuration.md ("Roles", "Presets").
 
 pub mod contrast;
 pub mod mode_file;

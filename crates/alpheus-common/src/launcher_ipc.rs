@@ -4,6 +4,15 @@
 //! length-prefixed blobs. Every size is bounded and checked as soon as it is
 //! known, so a hostile or broken client can never make the daemon buffer
 //! more than `MAX_HEADER + MAX_PROMPT + MAX_DMENU_BYTES` bytes.
+//!
+//! Never:
+//! - spell the socket's path out: `socket_path` builds it, so the client and the server cannot
+//!   drift (`the_launcher_socket_is_bound_only_in_socket_rs`, in the daemon's guardrails);
+//! - read an unbounded field: every size is checked as it is read, because the peer may be any
+//!   program on the machine (the socket is owner-only, mode 0600, and the uid is checked);
+//! - add a dependency: std only, so `alpheus-launch` stays tiny (`alpheus_launch_stays_tiny`).
+//!
+//! See: docs/cli.md (`alpheus-launch`'s verbs and exit codes), docs/features/launcher.md.
 
 use crate::displays::wire::MAX_OUTPUTS_BODY;
 use std::fmt;

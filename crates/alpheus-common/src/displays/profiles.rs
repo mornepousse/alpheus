@@ -3,6 +3,15 @@
 //! another, unlike the connector), with the connector kept as an optional
 //! hint for identical screens. Absent file: no profile, no message;
 //! invalid file: no profile + a warning (like config.toml).
+//!
+//! Never:
+//! - call anything: the daemon reads the screens and applies a configuration, and these only
+//!   compute (`the_daemon_only_reads_from_the_compositor` holds the one place that writes);
+//! - identify a screen by its connector: it is matched by its identity, which survives a replug
+//!   (docs/decisions.md, "A DisplayLink screen is told from the DRM directory, once per screen
+//!   name").
+//!
+//! See: docs/features/displays.md, docs/features/control-center.md (the Displays tab).
 
 use super::geometry::{Align, Placed, Placement, Relation, Screen, deduce, logical_size, resolve};
 use super::{Active, Mode, Output, Plan, Scale, short_from_description, short_names};
