@@ -115,9 +115,8 @@ fn pomodoro_runs_its_rounds_then_ends() {
         let mut now = T0;
         let mut ends = Vec::new();
         for _ in 0..100 {
-            let end = match t {
-                Timer::Pomodoro { run: Run::Running(e), .. } => e,
-                _ => break,
+            let Timer::Pomodoro { run: Run::Running(end), .. } = t else {
+                break;
             };
             now = end;
             let (n, e) = t.due(l, now);
