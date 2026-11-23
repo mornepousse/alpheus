@@ -63,9 +63,24 @@ At most five runs of one event happen at once, then one more every 3 seconds; a 
 token is dropped, not queued. `started` goes through the same bucket as the other events (it has
 its five tokens at start). The program is looked up on `$PATH` at each run, so one installed after
 the daemon started is found (hooks plan 1, decision 12). alpheus never waits for a hook, never reads its output and never kills
-it.
+it. A hook runs in its own systemd scope, so it never dies with the bar and a restart of the bar
+never kills it. When the bucket is dry, a dropped run logs one `throttled` line per episode, and the
+next drops of that episode are silent.
 
 When a hook does not run, the log says why in fixed words (see "How it is built").
+
+Details that trip people up:
+
+- **Finding the program.** The first word is an absolute path or a bare name looked up on the
+  daemon's own `$PATH` (not your shell's); relative paths (`./x`) and `~` are not expanded or found.
+  Quote variables in `sh -c` (`"$ALPHEUS_DEVICE"`): a name may hold spaces.
+- **The data.** An event's data reaches the hook only through the environment, never as an argument;
+  device and profile names are cleaned and cut to 255 bytes. A hook variable the event does not set is
+  removed from the environment, so an inherited one never passes for the event's. A Bluetooth device
+  whose name is only its address gets no `ALPHEUS_DEVICE`; one that is renamed from an address-like
+  alias to its real name fires a disconnect and a connect (rename churn).
+- **Rate limit.** A hook that re-triggers its own event settles at one run per 3 s.
+- **A change takes effect when `alpheus-demon` restarts** (`bar.toml` is read once at start).
 
 ## Configuration
 
@@ -130,7 +145,7 @@ and writes the log line. The other events come in their own way: `hooks_dnd` fro
 
 ## What it costs
 
-Measured in release, back to back with the version before it (the full table is in the README).
+Measured in release, back to back with the version before it (the full table is in [measurements](../measurements.md)).
 
 - **Linked in, no `[hooks]`:** within the harness's spread at start (−967…−188 KB over three
   pairings); the stripped binary grew by 56 KiB. The model is `None`, so nothing is kept.

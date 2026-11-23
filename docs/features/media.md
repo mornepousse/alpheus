@@ -50,7 +50,7 @@ on the active one. A player is named by its `Identity`, else by the first label 
 - Esc closes it. So do a click outside, a restyle that moves the bar, and the last player going
   away (`player gone`). While it is open, the next active player is shown if the active one goes.
 
-The popup is opened with a grab (`Input::Grab`); the README notes what that means for the bar's
+The popup is opened with a grab (`Input::Grab`); [the bar page](bar.md) notes what that means for the bar's
 keyboard on Hyprland.
 
 The module never writes a player's volume, never seeks and never raises or launches a player.
@@ -144,7 +144,7 @@ rule goes off and the tick with it.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in:** within noise of the build before it (−52…+32 KB), binary +92 KiB stripped.

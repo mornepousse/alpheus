@@ -24,6 +24,54 @@ The next section, "How it is built (the whole program)", describes what every ta
 loop, the worker thread, the refresh rule, the keymap, the theme and the drawing. The sections
 after it are one per tab.
 
+## Keys, layout and shapes at a glance
+
+| Key | Action |
+|---|---|
+| `1`…`8`, `Tab` / `Shift+Tab` | switch tabs |
+| `Ctrl+P` | command palette (fuzzy search) |
+| `/`, `Ctrl+F` | search a list |
+| `F1`, `?` | help |
+| `Esc` | go back; `q` quits |
+
+`alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`, `bluetooth`, `power`,
+`displays`, `appearance`, `diagnostics`; `theme` is accepted for `appearance`, `diag` for
+`diagnostics`; see [../cli.md](../cli.md)).
+
+**Rail and hues.** In a terminal of at least 84 columns and 26 rows (an 87×26 window is enough) the
+tabs become a left rail: the brand, then icon, name and number per tab, the active one filled with the
+theme's accent container, and the status line at its foot. Each tab has its own hue (Home the accent,
+Sound blue, Network cyan, BT purple, Power red, Displays green, Theme orange, Diag yellow) for its
+header, headings, gauges and switches; a hue is only ever the ink of a glyph or a heading, never of text
+on a fill (labels on a button, a chip or a tag are `fg`). Below that size the classic top tab bar and
+rows are drawn, as before except for three changes: the keycaps' order, the Displays row dropping its
+scale column at 80 columns, and the Theme tab's caption hiding when the rows need its room.
+
+**Controls.** The rail's tabs draw their controls in the theme: selection bands, knob gauges for volume
+and brightness, switches and glyph buttons.
+
+**Displays.** The Displays tab works under every compositor that implements `zwlr_output_manager_v1`,
+with an automatic rollback after 15 seconds unless the change is kept.
+
+**Shapes.** The theme's `style` (see [Themes and bar styles](themes.md#bar-styles)) shapes the control
+center too: `islands` cuts round caps and rounded frames, `powerline` arrow tips, `underline` drops the
+fills for coloured, underlined text, `floating` draws double frames with drop shadows, and `flat` and
+`translucent` stay square. `islands` and `powerline` use Nerd Font glyphs (U+E0B0, U+E0B4, U+E0B6),
+like the bar: in a terminal without a Nerd Font they show as boxes; `flat` needs none.
+
+![The control center's Home dashboard at 87×26, catppuccin dark, sample data](../images/control-center-home.png)
+
+![The Sound tab with the rail (sample data, catppuccin dark)](../images/control-center-sound.png)
+
+![`islands` (left) and `floating` (right) in the control center (sample data, catppuccin dark)](../images/control-center-shapes.png)
+
+The Home dashboard opens in well under 100 ms and shows only what the control center already reads:
+the same keys and clicks reach the same items as in the classic rows.
+
+The Diag tab's redaction is a safety net: it replaces the user name, home, host name and machine id,
+MAC and IP addresses, UUIDs and anything shaped like an e-mail address; **Wi-Fi network names and USB
+serial numbers are not touched**. Read the report before copying it.
+
 ## How it is built (the whole program)
 
 The pieces, from the process outwards. Everything named here is in `crates/alpheus/src/`.
@@ -189,7 +237,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] mixer` | `["wiremix"]` | the program and arguments the Per-app mixer button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `activate`, `increase`,
-`decrease`, `search`, `refresh`; see the README's list of action names).
+`decrease`, `search`, `refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -236,8 +284,8 @@ most every 15 seconds (a broken tool must not be relaunched every second: a comm
 - `the_sound_tab_at_80_by_24_matches_its_snapshot` (`ui/sound/tests.rs`, its snapshot in
   `ui/sound/snapshots/`): the whole 80 by 24 screen.
 - `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
-  run is on the allowed list, `wpctl` included. That no test runs the real tool is CLAUDE.md's rule
-  ("Never a real call in tests": the tests use the fake executor).
+  run is on the allowed list, `wpctl` included. That no test runs the real tool is the rule "Never a real session tool in a test" in
+  [CONTRIBUTING.md](../../CONTRIBUTING.md#the-rules): the tests use the fake executor.
 
 ### What it costs
 
@@ -309,7 +357,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] network` | `["nmtui"]` | the program and arguments the Choose a network button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `activate`, `search`,
-`refresh`; see the README's list of action names).
+`refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -363,8 +411,8 @@ at most every 15 seconds (a broken tool must not be relaunched every second: a c
 - `exact_commands` (`alpheus-common`, `backends/network.rs`): the exact `nmcli` lines, and no
   other.
 - `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
-  run is on the allowed list, `nmcli` included. That no test runs the real tool is CLAUDE.md's rule
-  ("Never a real call in tests": the tests use the fake executor).
+  run is on the allowed list, `nmcli` included. That no test runs the real tool is the rule "Never a real session tool in a test" in
+  [CONTRIBUTING.md](../../CONTRIBUTING.md#the-rules): the tests use the fake executor.
 
 ### What it costs
 
@@ -427,7 +475,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] bluetooth` | `["bluetui"]` | the program and arguments the Pair a device button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `activate`, `search`,
-`refresh`; see the README's list of action names).
+`refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -532,8 +580,8 @@ not recorded.
 ### Configuration
 
 None: the commands are fixed in the backend and the tab reads no setting of its own. The keys come
-from `[keys]` and `[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see the
-README's list of action names).
+from `[keys]` and `[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see
+[the action list](../configuration.md#configtoml)).
 
 What each button runs (`SessionPower::perform`, through the injectable command executor):
 
@@ -706,7 +754,7 @@ date, greeting and summary stacked.
 
 The first render of the dashboard is checked to take under 100 milliseconds even when the tools are
 slow (`first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, `tests/first_render.rs`;
-README: 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
+[measurements](../measurements.md): 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
 the spec's, § 3).
 
 ## Displays
@@ -781,7 +829,7 @@ listed as `<name> missing, ignored`.
 ### Configuration
 
 Profiles are in `displays.toml` (in the config directory), written by `+ Save current` and applied by
-the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; see the README). A
+the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; see [`[displays]`](../configuration.md#displays)). A
 `displays.toml` that could not be read at startup is never overwritten: saving says
 `invalid displays.toml: fix it before saving`. The keys come from `[keys]` and `[keys.bindings]`.
 
@@ -836,7 +884,7 @@ The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `
 
 One read of the daemon's model, answered from its memory, every 2 seconds while the tab is shown, and
 nothing otherwise (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`). The daemon's own
-costs (the trial's one timer, the hotplug debounce) are in the README's component table.
+costs (the trial's one timer, the hotplug debounce) are in the [component table](../measurements.md#alpheus-component-by-component).
 
 ## Theme
 
@@ -895,7 +943,7 @@ and the `[colors]` overrides, are not part of what the tab writes, and the overr
 preview), and
 reads `colors.toml` for the wallpaper theme. In mode `Auto` the preview follows the mode the daemon
 publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running). The themes, their
-roles and the styles are described in the README and in the themes and shapes specs.
+roles and the styles are described in [the `theme.toml` reference](../configuration.md#themetoml) ([roles](../configuration.md#roles), [`style`](../configuration.md#style)) and in the themes and shapes specs.
 
 ### How it is built
 
@@ -956,7 +1004,8 @@ not yet sent. It is one list in sections:
   fix it as text, and never runs it.
 - **Failed units** of both managers (system and user), the units **restarting in a loop**, the
   **crashes** of the last seven days (`coredumpctl`) and the **boot** time (`systemd-analyze`).
-- The eight **journal presets** and the **Bug report** row.
+- The eight **journal presets** (Errors this boot, USB, Suspend and resume, Out of memory, Thermal and
+  throttling, NetworkManager, Live journal, Logs of a service…) and the **Bug report** row.
 
 Three views open over the list. The **journal view** shows the journal for a preset, a unit or the
 minute around a crash: a header (what is asked, the filters), a row for the state of the read
@@ -1100,4 +1149,4 @@ escape sequence.
 Nothing while the tab is not shown. Shown, three reads every 5 seconds (the failed units of both managers and the health, the spec's
 refresh); the once-per-showing reads run through the executor's `capture` on the
 tab's worker, with the deadlines and caps the diagnostics spec states. The tab's first render is
-209–491 µs (README). The journal view makes no read while it is closed and no child outlives it.
+209–491 µs ([measurements](../measurements.md)). The journal view makes no read while it is closed and no child outlives it.

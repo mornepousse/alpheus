@@ -3,7 +3,7 @@
 //! setting is read once at startup and costs nothing if unused.
 //!
 //! ```toml
-//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; "timer" (the focus timer's chip) sits just before "clock" by default
+//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
 //! height = 22                                               # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
@@ -17,7 +17,7 @@
 //! [workspaces]
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! [actions]                                                 # clicks on the system modules
-//! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth
+//! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth, diagnostics
 //! resources = ["foot", "-e", "btop"]                        # right click on the resources, and the popup's Monitor…
 //! [resources]
 //! interval = 2                                              # seconds between readings, 1 to 60
@@ -90,15 +90,15 @@
 //! enabled = false                                           # true: follow the clipboard (data-control), 50 entries in memory, never on disk
 //! [shield]                                                  # Shield mode for public networks (none set: no Shield anywhere); read at start
 //! flag = "/var/lib/shield/on"                               # absolute; the mode is on while this file exists (not in alpheus's config directory)
-//! on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
-//! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
-//! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
+//! on = ["pkexec", "/usr/local/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
+//! off = ["pkexec", "/usr/local/bin/shield-root", "off"]
+//! allow = ["pkexec", "/usr/local/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
 //! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
 //! # on_text = "Protections for public networks are on."     # the notices' bodies, no control or format character, at most 256 bytes
 //! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
-//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays, failed_units
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
 //! ```
 
 use crate::clock;
@@ -282,7 +282,7 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspacesConfig {
     /// Command run to go to a workspace (click, wheel); `{workspace}` and
-    /// `{output}` are replaced in it. Default: `wm-set` (nixos-config's
+    /// `{output}` are replaced in it. Default: `wm-set` (the author's
     /// script), the only path to the compositor allowed by the
     /// framing document.
     pub command: Vec<String>,
@@ -298,10 +298,12 @@ impl Default for WorkspacesConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ActionsConfig {
     /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
-    /// battery); `{tab}` becomes home, sound, network or bluetooth (the
-    /// TUI's `--tab`). Default: `alpheus-toggle` (nixos-config's script), which
+    /// battery, `failed`); `{tab}` becomes home, sound, network, bluetooth or
+    /// diagnostics (the TUI's
+    /// `--tab`). Default: `alpheus-toggle` (the author's script), which
     /// opens the TUI in a floating terminal, or closes it if already open —
-    /// not a neutral default yet: see the portability step (CLAUDE.md).
+    /// not a neutral default yet (CONTRIBUTING.md, "What is accepted": personal
+    /// setups stay out of the code).
     pub open_tab: Vec<String>,
     /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
     /// popup): a system monitor. Default: btop in

@@ -6,7 +6,7 @@ fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Optio
     move |k| pairs.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
 }
 
-/// Mango and Sway spec § 1: nixos-config's `compositor()` order, with niri last: SWAYSOCK, then
+/// Mango and Sway spec § 1: the usual session-script order, with niri last: SWAYSOCK, then
 /// HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET; an empty
 /// variable counts as unset; the first one set decides, even when its value is unusable.
 #[test]

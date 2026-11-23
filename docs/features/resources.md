@@ -47,7 +47,7 @@ timer, and only while it is open.
 - **Esc**, a click outside, a restyle that moves the bar and the output going away close the popup,
   as for every module popup. Running `Monitor…` closes it too. A theme change repaints it.
 
-The popup is opened with a grab (`Input::Grab`). The README notes what that means for the bar's
+The popup is opened with a grab (`Input::Grab`). [The bar page](bar.md) notes what that means for the bar's
 keyboard on Hyprland.
 
 ## Configuration
@@ -123,7 +123,7 @@ reading. The popup owns no timer: opening it adds no wake-up.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in:** within noise of the build before it (binary +24 KiB stripped).

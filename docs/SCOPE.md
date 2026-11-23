@@ -10,7 +10,7 @@
 # alpheus — overall scope
 
 Date: 2026-10-02 · Author: the project owner · Designed in session with Claude from
-`~/nixos-config`.
+the author's system configuration.
 
 > *Alpheus*: the pistol shrimp, tiny and the fastest in the ocean. The
 > whole brief fits in the name.
@@ -53,14 +53,14 @@ floor); the lightweight alternatives aren't polished enough.
 7. **Nothing resident for comfort** beyond the budget: the TUI launches on
    demand and closes.
 
-## Non-negotiable guardrails (inherited from nixos-config)
+## Non-negotiable guardrails (inherited from the author's system configuration)
 
 - **No sleep or screen-off handling whatsoever.** A `dpms off` on a
   DisplayLink output (evdi) freezes the machine; sleep stays with
-  hypridle + `idle-dpms` (nixos-config). Observed: DMS and Caelestia arm
+  an idle manager and a helper script. Observed: DMS and Caelestia arm
   `dpms off` by default — exactly what alpheus will never do.
 - **Never write to the compositor directly**: everything goes through
-  `wm-set` (nixos-config), which routes to Hyprland (Lua or hyprlang
+  a configurable command (the author's `wm-set`), which routes to Hyprland (Lua or hyprlang
   config) and niri. In Lua config, `hyprctl dispatch`/`keyword` no longer
   have hyprlang syntax. *Amended 2026-10-30 (displays spec § 2): the one
   exception is `zwlr_output_configuration_v1` in the daemon's

@@ -74,7 +74,7 @@
           env.ALPHEUS_POLICES = fontDir pkgs;
           thirdParty = true;
           # The system bus through dbus-rs: libdbus, found with pkg-config.
-          # This nixpkgs' dbus; nixos-config makes the alpheus input follow
+          # This nixpkgs' dbus; a NixOS configuration can make the alpheus input follow
           # the system's nixpkgs (inputs.nixpkgs.follows), so the daemon maps
           # the same libdbus store path as the rest of the session (shared pages).
           # libxkbcommon: the launcher's keyboard (sctk's "xkbcommon" feature), found through the same pkg-config.

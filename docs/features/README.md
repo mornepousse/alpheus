@@ -4,10 +4,11 @@ One page per feature of the daemon (`crates/alpheus-daemon`), plus one for the t
 center (`crates/alpheus`), each saying what it does, how to use
 it, how to configure it, how it is built, which rules the tests enforce on it and what it costs.
 The rules and reasons behind them are in [../decisions.md](../decisions.md); how the pages are
-written is in [../STYLE.md](../STYLE.md).
+written is in [../STYLE.md](../STYLE.md). To add one, follow [../adding-a-module.md](../adding-a-module.md).
 
 ## In the bar
 
+- [The bar](bar.md): every module, what a click does, how it reads the compositor and the system, and the script verbs that drive it.
 - [The system tray](tray.md): the status icons of running applications, and their menus.
 - [The calendar](calendar.md): a month grid that opens under the clock.
 - [The media module](media.md): what is playing, and a popup to control the player.
@@ -19,6 +20,9 @@ written is in [../STYLE.md](../STYLE.md).
 
 ## Panels and overlays
 
+- [The launcher](launcher.md): apps, windows, commands, a calculator, prefixes, a window switcher, command sources and a dmenu mode.
+- [The quick notepad](notes.md): one pad of plain text on a key.
+- [Clipboard history](clipboard.md): a text history through data-control, off unless enabled.
 - [The quick settings panel](quick-settings.md): volume, brightness, microphone, do-not-disturb, Wi-Fi, Bluetooth, VPN, Shield and session buttons without opening the control center.
 - [Notifications](notifications.md): alpheus's own notification server, with bubbles, a bell, a history panel and do-not-disturb.
 - [The on-screen display](osd.md): a pill that shows a volume, microphone or brightness level for a moment.
@@ -26,6 +30,7 @@ written is in [../STYLE.md](../STYLE.md).
 
 ## Behind the scenes
 
+- [Themes and bar styles](themes.md): presets or wallpaper colours, light and dark, module colours and the six bar shapes.
 - [Event hooks](hooks.md): a command of your own, run when something happens in the shell.
 - [Shield mode](shield.md): a public-network security mode, switched and shown by alpheus while your system does the root work.
 - [Displays](displays.md): the daemon's side of screen layouts, profiles and the "keep these settings?" trial.

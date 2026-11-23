@@ -1,7 +1,7 @@
 //! Compositor event sources: READ-ONLY connection, publishing of the
 //! normalized state, backoff with growing delay when the source goes down
 //! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
-//! the bar shows "–". The compositor is detected once at start (`detect`), in nixos-config's
+//! the bar shows "–". The compositor is detected once at start (`detect`), in the usual session-script
 //! order, with niri last.
 
 pub mod dbus;

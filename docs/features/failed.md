@@ -105,7 +105,7 @@ manager's count against a fake outbox), `tests/failed_private_bus.rs` (a private
 
 ## What it costs
 
-Measured in release, back to back with the version before it (the full table is in the README).
+Measured in release, back to back with the version before it (the full table is in [measurements](../measurements.md)).
 
 - **Linked in, `failed` not in `modules`:** within the harness's spread at start (−392…+844 KB
   PSS over three pairings; the default bar's anonymous memory +12…+72 KB); the stripped daemon grew

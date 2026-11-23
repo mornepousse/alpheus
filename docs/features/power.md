@@ -48,7 +48,7 @@ alpheus never handles sleep, so the menu has no suspend or hibernate entry.
   The keyboard is taken without a grab, because a verb has no pointer press to grab with. It is
   also the Tools menu's `Power menu` entry.
 
-The click-opened menu is a popup with a grab (`Input::Grab`). The README notes what that means for
+The click-opened menu is a popup with a grab (`Input::Grab`). [The bar page](bar.md) notes what that means for
 the bar's keyboard on Hyprland.
 
 ## Configuration
@@ -131,7 +131,7 @@ never as its command, which can name the user.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in, no `power` in `modules`:** within noise of the build before it (binary +8 KiB

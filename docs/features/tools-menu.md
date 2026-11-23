@@ -65,11 +65,24 @@ most 128) has:
 | `choices` | Fixed choices, at most 32 |
 | `choices_cmd` | An argv whose output lines are the choices, run at each drill-in |
 
-A command's reads (`state`, `choices_cmd`) are cut at 1 s, 2,000 lines and 256 KiB. Past a bound the first
+A command's reads (`state`, `choices_cmd`) are cut at 1 s, 2,000 lines and 256 KiB; a `state` that hangs is
+killed at 1 s and shows nothing (neither on nor off). Past a bound the first
 ones are kept and one line of counts is logged. Invalid structure makes `launcher.toml` invalid, as for
 every other key. A built-in that opens a tab runs `[actions] open_tab` with `{tab}`, else the launcher's
 terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-category bound is dropped,
 not moved to the root (tools plan 1, decision 12).
+
+**Binding it.** Bind `alpheus-launch --tools` yourself (Mango `bind=SUPER,x,spawn,alpheus-launch --tools`,
+Sway `bindsym $mod+x exec alpheus-launch --tools`). Exit 3 means the daemon is too old or not running, and
+a bind can fall back to a menu of your own on that code. Names, commands and lines are never logged (an
+entry is named by its position in the file).
+
+**The `/` caveat.** A typed path (`/etc/hosts`) in Mod+Space's All mode jumps into the Tools menu;
+`[prefixes] tools = ""` gives the key back. A `tools` prefix the file never sets that clashes with your
+`commands` or `windows` prefix is turned off with a note; one the file sets is refused.
+
+**Moving from a menu script.** `[[sources]]` keeps working beside the Tools menu (an entry in both shows
+twice in Mod+Space's search: drop the source once the menu is yours).
 
 ## How it is built
 
@@ -139,7 +152,7 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 
 ## What it costs
 
-One release run on the branch, with no back-to-back base (the README's memory table has the figures):
+One release run on the branch, with no back-to-back base (the [memory tables](../measurements.md) have the figures):
 
 - **Open, 20 cycles:** the daemon's own anonymous memory +336 KB open over closed, +12 KB closed again,
   +64 KB after 20 more cycles; the shm pools +1,316 KB open and back to 56 KB closed; 6 threads before

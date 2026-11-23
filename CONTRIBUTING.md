@@ -1,101 +1,134 @@
 # Contributing
 
-Thank you for looking. alpheus is a personal project that aims to stay small
-and light, so a change is judged on correctness first, then on what it costs
-in memory, threads and wake-ups. Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-for the shape of the code and its guardrails.
+Thank you for looking. alpheus is a small, light desktop shell, and a change
+is judged on correctness first, then on what it costs in memory, threads and
+wake-ups. This page holds every rule a contributor follows, each stated once.
+For the shape of the code read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
+for the words, [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 
-## Ground rules
+## What is accepted
 
-- **Language.** Code, comments, docs, commit messages and UI strings are in
-  English.
-- **TDD, and prove that tests bite.** Write the test first and see it fail for
-  the right reason, then make it pass. Then break the code on purpose (a
-  mutation: invert a condition, drop a call, change a constant), confirm the
-  test goes red, and restore. A test that stays green under a mutation of the
-  thing it covers is not testing it.
-- **Never a real session tool in a test.** `wpctl`, `nmcli`, `bluetoothctl`,
-  `systemctl`, `loginctl`, `wm-set`, `shell-ctl`, `brightnessctl`… can act on
-  the machine running the tests. Everything goes through the injectable
-  `Executor` (`alpheus-common::exec`); tests use `FakeExecutor` and assert the
-  exact command line. The same goes for sockets and buses: use the private
-  `dbus-daemon`, the fake compositor sockets and the headless sway the existing
-  tests set up, never your session's.
-- **Fixtures are anonymised.** Captures from a real machine (Wi-Fi names, VPN,
-  MAC addresses, hostnames, monitor models and serials, usernames) must be
-  scrubbed before they are committed. Replace descriptions and identifiers by
-  neutral ones (see the existing fixtures).
-- **No writes to the compositor, no sleep or `dpms` handling, nothing resident
-  while unused.** The guardrail tests will tell you if you cross a line; do not
-  weaken one to make a change pass, discuss it first.
-- **Lightness.** No new dependency without a reason. Prefer an existing crate
-  in the tree. A new module must cost nothing when it is not in `modules`.
+- **Lightness first.** A feature that is not enabled costs nothing: no thread,
+  timer, wake-up, allocation or file read. A new module is absent from the
+  process unless it is in `modules`.
+- **No heavy dependency for configuration or convenience.** A new crate needs a
+  reason written in the pull request and a measured cost. Prefer a crate
+  already in the tree. The tree has no async runtime and must not gain one.
+- **Personal setups stay out of the code.** Nothing specific to one machine or
+  one distribution's scripts is hard-coded; every command is configurable and
+  has a neutral default.
+- **Guardrails hold.** alpheus handles no sleep or `dpms`, changes the
+  compositor only through configurable commands, with two exceptions, each in
+  one file (`zwlr_output_configuration_v1` in `outputs/wlr.rs` and the
+  clipboard's own selection in `clipboard/control.rs`), never manages output
+  power, and keeps nothing resident while unused. The guardrail tests are
+  `crates/alpheus-daemon/tests/guardrails.rs`,
+  `crates/alpheus/tests/guardrails.rs` and
+  `crates/alpheus-common/tests/boundaries.rs`. A change leaves them untouched
+  or makes them stricter; it never loosens one to pass. If a guardrail looks
+  wrong, open an issue first.
+- **Settled decisions** are in [`docs/decisions.md`](docs/decisions.md). A
+  change that reverses one says so and says why.
 
-## Building and testing
+## The rules
 
-Everything runs in the flake's dev shell, which provides the toolchain, the
-system libraries (libdbus, libxkbcommon), fonts, sway, `wtype` and `grim`:
+- **English only.** Code, comments, docs, commit messages, logs and UI strings.
+- **Tests first, and tests that bite.** Write the test, run it, and see it fail
+  for the right reason. Make it pass with the least code. Then mutate the code
+  on purpose (invert a condition, drop a call, change a constant), see the test
+  go red, and restore. A test that stays green under a mutation of the thing
+  it covers is not testing it; say so in the pull request and add the smallest
+  test that bites.
+- **Never a real session tool in a test.** These tools act on the machine that
+  runs the tests, so a test never starts one for real: `wpctl`, `nmcli`,
+  `bluetoothctl`, `rfkill`, `systemctl`, `journalctl`, `coredumpctl`,
+  `systemd-analyze`, `loginctl`, `systemd-run`, `brightnessctl`,
+  `powerprofilesctl`, `pw-dump`, `usbguard`, `pkexec`, `wm-set`, `shell-ctl`,
+  `wl-copy` and `xdg-open`, and any command a user configures. Everything goes
+  through the injectable `Executor` (`alpheus-common::exec`); tests use
+  `FakeExecutor`, which answers "not found" to any command it was not
+  programmed for, and assert the exact command line.
+- **Fakes and private buses only.** Tests never touch the real session or
+  system D-Bus, the real compositor, or the real user's files. Use the fake
+  bus, a private `dbus-daemon`, the fake compositor sockets, temporary
+  directories, or the headless harness in `crates/alpheus-daemon/tests/common`
+  (a disposable sway with a cleared environment and its own runtime
+  directory). `wtype`, `grim` and `wl-copy` are used there only against that
+  sway.
+- **Anonymised fixtures.** A capture from a real machine is scrubbed before it
+  is committed: Wi-Fi names, VPN names, MAC and IP addresses, device names and
+  serials, host names, user names, monitor models. Use neutral invented values.
+  A raw capture is never committed.
+- **Budgets.** Total resident memory of everything alpheus runs stays at or
+  below 120 MB; the control center's first render stays under 100 ms; the
+  daemon makes no wake-up at rest apart from planned timers. Anything that
+  becomes resident (a thread, a timer, a connection, a cache) is measured by
+  the release memory suite, which refuses debug builds:
+
+  ```sh
+  nix develop -c cargo test -q --release -p alpheus-daemon --test memory -- --include-ignored --test-threads=1
+  ```
+
+  Build the commit before and after in separate target directories, run the
+  same test back to back (three times is the habit) and compare deltas, never
+  absolute figures: PSS drifts by about half a megabyte between boots. Leak
+  bounds read anonymous memory. Record the result in
+  [`docs/measurements.md`](docs/measurements.md), which also gives the method.
+- **One logical change per commit**, with a subject in the imperative
+  (`fix(quick): …`, `feat(bar): …`, `docs: …`) and a body that says why. A
+  move or rename is its own commit and changes nothing else.
+- **Style.** [`docs/STYLE.md`](docs/STYLE.md) says how code and comments are
+  written: module headers, names, early returns, no `unwrap` outside a
+  documented invariant, a reason on every `unsafe`.
+
+## Commands
+
+Everything runs in the flake's dev shell, which provides the toolchain,
+libdbus, libxkbcommon, fonts, sway, `wtype`, `grim` and `wl-clipboard`:
 
 ```sh
+nix develop -c cargo fmt --all --check
+nix develop -c cargo clippy --workspace --all-targets -- -D warnings
 nix develop -c cargo test --workspace
-nix develop -c cargo fmt --all            # formatting is enforced by `nix flake check`
-nix develop -c cargo clippy --workspace
-nix flake check                           # fmt check
+nix develop -c cargo test -q -p alpheus-daemon --test headless_session -- --include-ignored
+nix flake check
 ```
 
-Without Nix, install `pkg-config`, libdbus and libxkbcommon development files
-(see [docs/install.md](docs/install.md)); the ignored tests also need sway,
-`wtype`, `grim` and a `dbus-daemon`.
+Format only the files you touched. Without Nix, install `pkg-config`, the
+libdbus and libxkbcommon development files ([`docs/install.md`](docs/install.md)),
+and a recent stable Rust.
 
-Some tests are `#[ignore]`d because they need a headless sway or a private bus.
-Run them in the dev shell:
-
-```sh
-nix develop -c cargo test -p alpheus-daemon --test headless_session -- --ignored --test-threads=1
-```
-
-### Budget (memory and wake-up) tests
-
-`crates/alpheus-daemon/tests/memory.rs` measures the real daemon's PSS, thread
-count and wake-ups. Its budgets are tuned for the **release** binary (a debug
-build inflates PSS and the test refuses to run):
-
-```sh
-nice -n 19 nix develop -c cargo test --release -p alpheus-daemon --test memory -- --ignored --test-threads=1
-```
-
-To record what a change costs, build the commit before and after in separate
-target directories, run the same test back to back several times (three is
-the habit) and compare **deltas**, not absolute figures: the absolute PSS
-drifts by roughly half a megabyte between boots because shared libraries are
-counted proportionally. Put the result in the README's memory table.
-
-### Machine load
-
-The release builds and the headless tests are heavy. Run them at low priority
-(`nice -n 19`), limit parallelism (`-j4`), and avoid compiling several things at
-once on a machine that also drives your displays; a long parallel build can make
-USB-docked screens reconnect.
+The headless suite starts a disposable sway, so it needs `sway`, `wtype`,
+`grim`, `wl-copy` and a `dbus-daemon` on `PATH`, and a font folder in
+`ALPHEUS_POLICES` (the dev shell sets it). It never uses your session. The
+memory suite and the headless suite are heavy: run them at low priority
+(`nice -n 19`) and avoid long parallel builds on a machine that drives your
+displays.
 
 ## Documentation
 
-- A user-visible feature updates the README (feature table, memory table when
-  it costs anything) and the relevant page under `docs/`.
-- A design lands as a spec in `docs/specs/` before the code, with a plan in
-  `docs/plans/` for anything multi-step; see [`docs/specs/README.md`](docs/specs/README.md).
-- Each module starts with a `//!` comment saying what it is and what it
-  must never do; keep it true.
-- How code is written and commented is in [`docs/STYLE.md`](docs/STYLE.md);
-  settled decisions, which comments point to, are in
-  [`docs/decisions.md`](docs/decisions.md).
+- A user-visible feature updates [`docs/configuration.md`](docs/configuration.md)
+  for its keys, its page under [`docs/features/`](docs/features/),
+  [`docs/comparison.md`](docs/comparison.md), and
+  [`docs/measurements.md`](docs/measurements.md) when it costs anything.
+- A new module follows [`docs/adding-a-module.md`](docs/adding-a-module.md).
+- A design lands as a spec in `docs/specs/` before the code
+  ([`docs/specs/README.md`](docs/specs/README.md)).
+- Each module's `//!` header says what it is and what it never does; keep it
+  true.
 
-## Commits
+## AI-assisted contributions
 
-One logical change per commit, a subject in the imperative (`fix(quick): …`,
-`feat(bar): …`, `docs: …`), a body that says why.
+Contributions made with an AI tool are welcome on the same terms as any other.
+
+- Say which tool you used, in the pull request.
+- Understand every line, and be able to explain it and its tests.
+- Keep the change narrow and tested, with the checks above run locally.
+- No AI-generated images or other media.
+- Low-effort generated pull requests or issues are closed.
 
 ## Reporting problems
 
-See [SECURITY.md](SECURITY.md) for security issues; for anything else, open an
+For a security issue see [SECURITY.md](SECURITY.md). For anything else, open an
 issue with the compositor and its version, the daemon's log lines (standard
 error, prefixed `alpheus-demon:`) and the relevant config file.

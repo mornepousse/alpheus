@@ -708,7 +708,7 @@ const OLD_DAEMON_ERROR: &str = "malformed request: unknown request \"dmenu\"";
 
 /// A new client in front of a daemon still running the old binary (an upgrade before a re-login):
 /// the menu it asked for cannot be shown with its flags, so the daemon counts as unusable — exit 3,
-/// on which nixos-config falls back to fuzzel with `--index`/`--password` intact. One connection
+/// on which a session script falls back to fuzzel with `--index`/`--password` intact. One connection
 /// only: never retried without the flags (an index printed as text, a password shown in clear).
 #[test]
 fn an_old_daemon_refusing_the_flags_exits_3_without_a_retry() {

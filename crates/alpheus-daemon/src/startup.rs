@@ -447,7 +447,7 @@ fn end_of_session(e: &(dyn std::error::Error + 'static)) -> bool {
 /// requested stop (signal, `state.stop` cleanly raised) or an end of
 /// session (`end_of_session`); 1 for any other failure of the calloop
 /// dispatch loop (protocol error, bug…) — so a supervisor (systemd,
-/// nixos-config) knows it must relaunch the bar, instead of believing it
+/// a session script) knows it must relaunch the bar, instead of believing it
 /// exited on request.
 fn exit_code(dispatch_failure: bool) -> i32 {
     if dispatch_failure { 1 } else { 0 }

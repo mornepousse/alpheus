@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Mae's TUI control center"
+description = "Terminal control center of the alpheus desktop shell"
 
 [dependencies]
 alpheus-common.workspace = true

@@ -135,7 +135,7 @@ reads the backlight once and calls `osd_show` with `Pill::Brightness`.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in:** within noise of the build before it (−28…+172 KB), binary +56 KiB stripped.

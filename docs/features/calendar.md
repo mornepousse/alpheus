@@ -25,7 +25,7 @@ while the calendar is closed: a `Calendar` is built at each open and dropped at 
   same.
 - **Esc**, or a click outside the popup, closes it.
 
-The popup is opened with a grab (`Input::Grab`). The README notes what that means for the bar's
+The popup is opened with a grab (`Input::Grab`). [The bar page](bar.md) notes what that means for the bar's
 keyboard on Hyprland.
 
 ## Configuration
@@ -80,7 +80,7 @@ reaches `calendar_key` and a wheel step `calendar_pointer`; both end in `calenda
 
 ## What it costs
 
-The calendar has no figure of its own in the README: it was measured with the tray's menus.
+The calendar has no figure of its own in [measurements](../measurements.md): it was measured with the tray's menus.
 
 - **Closed:** nothing exists of it. Without a click on the clock nothing is built, and the locale
   is not read at start.

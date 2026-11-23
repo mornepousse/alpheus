@@ -278,8 +278,7 @@ pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
 
 /// Which wlr-layer-shell layer a scrim uses: `Layer::Overlay`, the SAME
 /// layer as the box — not `Layer::Top`, which Hyprland draws BENEATH a
-/// fullscreen window (2026-10-05: she plays fullscreen games on
-/// Hyprland). A scrim on Top would then never see a click at all, silently
+/// fullscreen window (a fullscreen game on Hyprland, for example). A scrim on Top would then never see a click at all, silently
 /// breaking "click outside" the moment a game is focused.
 /// Pulled out as its own function so the choice is a
 /// tested value, not just a literal buried in `make_scrim`.

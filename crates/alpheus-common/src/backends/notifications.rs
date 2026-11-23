@@ -1,4 +1,4 @@
-//! Do not disturb: shell-ctl (nixos-config), which routes to mako or DMS
+//! Do not disturb: an external script (for example shell-ctl), which routes to the notification daemon in use
 //! depending on the desktop stack. alpheus never talks directly to the daemon.
 
 use super::{BResult, run_ok, unparsable};

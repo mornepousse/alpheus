@@ -249,7 +249,7 @@ fn minutes_clock_and_length_texts_read_as_written()
 ```
 
 Test names that other documents cite (memory and headless tests are cited with `--exact`) are
-never renamed in a tidy-up commit. This covers tests cited outside docs/specs/ and docs/plans/.
+never renamed in a tidy-up commit. This covers tests cited outside docs/specs/.
 
 ## 7. Rules the timer already followed
 

@@ -9,7 +9,7 @@ const TOOL: &str = "powerprofilesctl";
 
 /// Flag dropped by tools-menu in $XDG_RUNTIME_DIR while "Keep awake" is
 /// active. Filename kept as-is: it is the contract with the external
-/// tools-menu script (nixos-config), not translated here.
+/// tools-menu script, not translated here.
 pub const KEEP_AWAKE_FLAG: &str = "garder-eveille";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +54,7 @@ impl Energy for PowerProfiles {
 
     fn toggle_keep_awake(&self) -> BResult<()> {
         // Argument kept as-is: the exact subcommand name expected by the
-        // external tools-menu script (nixos-config), not translated here.
+        // external tools-menu script, not translated here.
         run_ok(&*self.exec, "tools-menu", &["Garder éveillé"]).map(|_| ())
     }
 }

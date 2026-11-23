@@ -136,7 +136,7 @@ repainted by each change and closed when nothing is left.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in, `privacy` not in `modules`:** within noise at start (−80 to +116 KB for the capture
   graph, −236 to +100 KB for the camera), binary +76 KiB stripped for the first and +24 KiB for the

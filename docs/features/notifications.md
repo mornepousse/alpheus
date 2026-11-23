@@ -75,10 +75,14 @@ media popup's keys apply. At open the newest entry is selected, else the card, e
 `notifications` modules), a screen capture turns do-not-disturb on and its end turns it off, unless you
 changed it meanwhile: your own choice always wins.
 
+Known limits: `--until` typed from inside an hour that a daylight-saving change skips is not
+handled specially; removing `dnd_while_sharing` by a hot reload in the middle of a capture leaves
+do-not-disturb on; a rule that mutes a flood is bounded only by the history's own trim.
+
 ## Configuration
 
 `[notifications]` in `bar.toml` (the struct is `NotificationsConfig` in `config.rs`); the server takes
-it when it starts, so a change needs the daemon restarted (`shell-ctl reload-bar`). Unknown keys are
+it when it starts, so a change takes effect when `alpheus-demon` restarts (bar.toml is read once at start). Unknown keys are
 refused.
 
 | Key | Default | What it does |
@@ -208,7 +212,7 @@ on or off changed, repaints the quick panel's row and moves the timer. A state r
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in:** +122 to +248 KB at start over the build before the notifications; binary +140 KiB
   stripped (5.34 to 5.47 MiB). The rules, four battery thresholds and `dnd_while_sharing` configured
