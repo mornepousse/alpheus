@@ -215,11 +215,11 @@ impl App {
         match &mut self.diag.view {
             View::Boot(b) => {
                 let (n, page) = (b.lines(), b.page.get());
-                step(&mut b.scroll, by, n, page)
+                step(&mut b.scroll, by, n, page);
             }
             View::Report(r) => {
                 let (n, page) = (r.lines(), r.page.get());
-                step(&mut r.scroll, by, n, page)
+                step(&mut r.scroll, by, n, page);
             }
             _ => return false,
         }

@@ -333,7 +333,7 @@ pub fn health_rows(i: &HealthInputs) -> Vec<HealthRow> {
                     match theirs.iter().find(|(n, _)| n == name) {
                         Some((_, v)) if v == ours => {}
                         Some((_, v)) if plain => {
-                            rows.push(row(false, format!("systemd --user has {name}={v} (this session: {ours})"), fix))
+                            rows.push(row(false, format!("systemd --user has {name}={v} (this session: {ours})"), fix));
                         }
                         None if plain => rows.push(row(false, format!("systemd --user has no {name} (this session: {ours})"), fix)),
                         Some(_) => rows.push(row(false, format!("systemd --user has a different {name}"), fix)),

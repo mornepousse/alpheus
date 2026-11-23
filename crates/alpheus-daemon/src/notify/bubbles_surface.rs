@@ -504,7 +504,7 @@ impl App {
                 let effects = c.expire(now);
                 expired = effects.len();
                 effects
-            })
+            });
         });
         if expired > 0 {
             log(&format!("bubbles: {expired} expired"));

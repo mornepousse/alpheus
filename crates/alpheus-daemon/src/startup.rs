@@ -669,7 +669,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
         channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
         channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {
-            state.tools_choices(generation, token, entry, lines, failed)
+            state.tools_choices(generation, token, entry, lines, failed);
         }
         channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,

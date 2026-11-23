@@ -150,7 +150,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                     }
                     None => QuickVerb::Top,
                 };
-                choose(&mut mode, Invocation::Quick(verb))?
+                choose(&mut mode, Invocation::Quick(verb))?;
             }
             "--for" => {
                 let value = it.next().ok_or_else(|| "--for needs a duration".to_string())?;

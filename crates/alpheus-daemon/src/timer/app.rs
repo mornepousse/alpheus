@@ -505,7 +505,7 @@ impl App {
                 s.act(|c| {
                     c.notify(n, Instant::now(), minute_now());
                     c.take_effects()
-                })
+                });
             });
         } else if !serving && self.bar.config.modules.contains(&ModuleId::Notifications) {
             log("timer: no notification (not serving)");

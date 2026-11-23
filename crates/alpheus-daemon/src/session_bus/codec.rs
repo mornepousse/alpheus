@@ -711,7 +711,7 @@ fn menu_props(it: &mut Iter<'_>) -> Option<MenuProps> {
                     "checkmark" => Some(Toggle::Checkmark),
                     "radio" => Some(Toggle::Radio),
                     _ => None,
-                })
+                });
             }
             "toggle-state" => p.toggle_state = v.get::<i32>(),
             "children-display" => p.submenu = v.get::<&str>().map(|d| d == "submenu"),

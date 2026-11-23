@@ -822,7 +822,7 @@ fn one_link_serves_the_players_the_portal_and_the_notifications() {
             n.act(|c| {
                 c.set_dnd(true);
                 Vec::new()
-            })
+            });
         });
         assert!(l.link.has_ready(), "the change waits for an idle read");
         let out = l.link.on_readable();

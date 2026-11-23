@@ -361,7 +361,7 @@ impl Host {
             // The bus driver answers GetNameOwner("org.freedesktop.DBus") with that very name, not a
             // unique one: never an owner to key an item on, never a destination to Get from.
             (Pending::Owner { name, path }, Ok(Reply::Owner(unique))) if unique.starts_with(':') => {
-                self.add(ItemKey { owner: unique, path }, name, out)
+                self.add(ItemKey { owner: unique, path }, name, out);
             }
             (Pending::Pid(key), result) => {
                 let Some(index) = self.items.iter().position(|i| i.key == key) else { return };

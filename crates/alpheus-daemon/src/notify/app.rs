@@ -206,7 +206,7 @@ impl App {
                 n.act(|c| {
                     c.set_dnd(on);
                     Vec::new()
-                })
+                });
             });
             self.hooks_dnd(on);
         }
@@ -314,7 +314,7 @@ impl App {
             s.act(|c| {
                 c.notify(n, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
         log(&format!("battery: alert at {} %", alert.threshold));
     }
@@ -337,7 +337,7 @@ impl App {
             s.act(|c| {
                 c.notify(incoming, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
         log("failed: notice");
     }
@@ -355,7 +355,7 @@ impl App {
             s.act(|c| {
                 c.notify(n, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
     }
 

@@ -65,8 +65,8 @@ fn notify(image: Option<usize>) -> Message {
                         s.append(8i32);
                         s.append(4i32);
                         s.append(vec![7u8; bytes]);
-                    })
-                })
+                    });
+                });
             });
         }
         d.append_dict_entry(|e| {

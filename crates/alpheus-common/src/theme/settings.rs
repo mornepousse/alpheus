@@ -250,7 +250,7 @@ fn parse_settings_or(text: &str, source: ThemeSource) -> (ThemeSettings, Vec<Str
                             Some(name) => match v.as_str().and_then(parse_hex) {
                                 Some(c) => s.overrides.0.push((*name, c)),
                                 None => {
-                                    w.push(format!("{THEME_FILE}: [colors] {role:?}: invalid colour {v} (expected \"#rrggbb\"), ignored"))
+                                    w.push(format!("{THEME_FILE}: [colors] {role:?}: invalid colour {v} (expected \"#rrggbb\"), ignored"));
                                 }
                             },
                         }

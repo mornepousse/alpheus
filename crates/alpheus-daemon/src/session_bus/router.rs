@@ -499,7 +499,7 @@ impl Tray {
                     Ok(Reply::RequestName(1 | 4)) => self.become_watcher(),
                     // 3: exists (DO_NOT_QUEUE never queues us): host only.
                     Ok(Reply::RequestName(_)) => {
-                        self.call(Call::GetNameOwner { name: WATCHER_NAME.into() }, Own::WatcherOwner { retry: true })
+                        self.call(Call::GetNameOwner { name: WATCHER_NAME.into() }, Own::WatcherOwner { retry: true });
                     }
                     // Refused or unanswered: still follow a watcher if there is one.
                     Err(e) => {
@@ -594,10 +594,10 @@ impl Tray {
             },
             Signal::NameOwnerChanged { .. } | Signal::ItemChanged { .. } | Signal::ItemStatus { .. } => self.host.signal(&s, &mut self.bus),
             Signal::ItemRegistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
-                self.host.register(service, "", &mut self.bus)
+                self.host.register(service, "", &mut self.bus);
             }
             Signal::ItemUnregistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
-                self.host.unregister(service, &mut self.bus)
+                self.host.unregister(service, &mut self.bus);
             }
             Signal::ColorScheme(value) => {
                 if let Some(a) = self.appearance.as_mut() {

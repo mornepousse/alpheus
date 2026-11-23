@@ -597,7 +597,7 @@ pub fn pw_dump_send(runtime: &Path, json: &str) {
         match fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&path) {
             Ok(f) => break f,
             Err(e) if e.raw_os_error() == Some(libc::ENXIO) && t.elapsed() < Duration::from_secs(10) => {
-                thread::sleep(Duration::from_millis(10))
+                thread::sleep(Duration::from_millis(10));
             }
             Err(e) => panic!("{}: {e}", path.display()),
         }

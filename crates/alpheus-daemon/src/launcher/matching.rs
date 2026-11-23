@@ -588,7 +588,7 @@ impl Ranker {
             }
             // The Tools mode lists its level in the level's order: nothing is ranked on an empty query.
             Mode::Tools => {
-                hits.extend((0..q.tools.len()).take(MAX_RESULTS).map(|i| Hit { source: Source::Tool(i), score: 0, frecency: 0 }))
+                hits.extend((0..q.tools.len()).take(MAX_RESULTS).map(|i| Hit { source: Source::Tool(i), score: 0, frecency: 0 }));
             }
             Mode::All | Mode::Apps | Mode::Windows | Mode::Calc | Mode::Clipboard => {}
         }

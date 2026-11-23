@@ -42,12 +42,12 @@ fn tooltip(title: &str, pixmaps: &str, bytes: usize) -> Message {
                         } else {
                             e.append("x".repeat(bytes));
                         }
-                    })
+                    });
                 });
                 s.append(title);
                 s.append("description");
-            })
-        })
+            });
+        });
     })
 }
 
@@ -335,7 +335,7 @@ fn signals_decode_or_are_other() {
     let chromium_double = signal_from(":1.7", DEFAULT_ITEM_PATH, "org.freedesktop.StatusNotifierItem", "NewIcon", |_| {});
     assert_eq!(chromium_double, Signal::Other, "Chromium's copy on the freedesktop interface is not read twice");
     let registered = signal_from(":1.9", "/StatusNotifierWatcher", WATCHER_INTERFACE, "StatusNotifierItemRegistered", |i| {
-        i.append(":1.7/StatusNotifierItem")
+        i.append(":1.7/StatusNotifierItem");
     });
     assert_eq!(registered, Signal::ItemRegistered(":1.7/StatusNotifierItem".into()));
     let gone = signal_from(":1.9", "/StatusNotifierWatcher", WATCHER_INTERFACE, "StatusNotifierItemUnregistered", |i| i.append(":1.7/x"));
@@ -368,13 +368,13 @@ fn signals_decode_or_are_other() {
                         e.append(Variant(vec![0u8; 512]));
                     });
                 });
-            })
+            });
         });
         i.append_array(&signature("(ias)"), |a| {
             a.append_struct(|s| {
                 s.append(4i32);
                 s.append(vec!["enabled", "icon-name"]);
-            })
+            });
         });
     });
     let mute = MenuProps { label: Some("Mute".into()), toggle_state: Some(1), ..MenuProps::default() };
@@ -599,7 +599,7 @@ fn get_all_decodes_a_player() {
                     ]),
                 ),
             ],
-        )
+        );
     });
     let text = |s: &str| Value::Str(s.into());
     let want = vec![
@@ -656,7 +656,7 @@ fn player_strings_lists_and_maps_are_bounded() {
         let mut entries =
             vec![("Metadata".to_string(), map(&[("xesam:title", W::S(huge.clone())), ("xesam:artist", W::As(artists.clone()))]))];
         entries.extend((0..200).map(|n| (format!("X-{n}"), W::B(true))));
-        dict(i, &entries)
+        dict(i, &entries);
     });
     let Ok(Reply::Props(p)) = reply(&get_all(), &m) else { panic!("not decoded") };
     assert_eq!(p.len(), MAX_ENTRIES, "the first 64 entries");
@@ -677,7 +677,7 @@ fn only_metadata_is_read_as_a_map() {
         dict(
             i,
             &[("Metadata".to_string(), map(&[("xesam:title", W::S("Song".into()))])), ("X-Extra".to_string(), map(&[("k", W::B(true))]))],
-        )
+        );
     });
     let Ok(Reply::Props(p)) = reply(&get_all(), &m) else { panic!("not decoded") };
     assert_eq!(p[0], ("Metadata".into(), Value::Map(vec![("xesam:title".into(), Value::Str("Song".into()))])));
@@ -692,7 +692,7 @@ fn the_entry_cap_counts_what_is_read_not_what_is_kept() {
     let m = returned(|i| {
         let mut entries: Vec<(String, W)> = (0..MAX_ENTRIES).map(|n| (format!("{long_key}{n}"), W::B(true))).collect();
         entries.push(("CanPlay".into(), W::B(true)));
-        dict(i, &entries)
+        dict(i, &entries);
     });
     assert_eq!(reply(&get_all(), &m), Ok(Reply::Props(vec![])), "64 entries read, all skipped: the 65th is never reached");
 }
@@ -821,7 +821,7 @@ fn hint(e: &mut IterAppend<'_>, h: &H) {
                 s.append(8i32);
                 s.append(4i32);
                 s.append(vec![7u8; *bytes]);
-            })
+            });
         }),
     }
 }
@@ -1048,7 +1048,7 @@ fn a_call_of_the_wrong_shape_is_refused() {
                     d.append_dict_entry(|e| {
                         e.append("urgency");
                         e.append("2");
-                    })
+                    });
                 });
                 i.append(-1i32);
             }),

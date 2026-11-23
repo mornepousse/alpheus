@@ -34,7 +34,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         Overlay::Panel(p) => displays::panel(buf, area, app, p, hits),
         Overlay::SaveProfile(d) => displays::save(buf, area, app, d, hits),
         Overlay::UnitConfirm { scope, unit, action, yes_focused } => {
-            diagnostics::unit_confirm(buf, area, app, *scope, unit, *action, *yes_focused, hits)
+            diagnostics::unit_confirm(buf, area, app, *scope, unit, *action, *yes_focused, hits);
         }
     }
 }

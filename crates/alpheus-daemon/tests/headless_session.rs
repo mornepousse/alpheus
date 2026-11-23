@@ -6237,7 +6237,7 @@ fn a_timed_dnd_ending_during_a_share_hands_over_to_sharing() {
     let (sway, hypr, d) = {
         let name = "dnd-timed-share";
         let (sway, hypr, d) = privacy_daemon_before(name, SHARING_BAR, SHARING_ON, &[privacy_orange(), privacy_red()], |sway| {
-            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20))
+            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20));
         });
         (sway, hypr, d)
     };

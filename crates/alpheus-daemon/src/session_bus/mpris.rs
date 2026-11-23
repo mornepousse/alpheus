@@ -285,12 +285,12 @@ impl Mpris {
                 }
             }
             (Ask::Position(u), Ok(Reply::Position(us))) => {
-                self.players.set_position(&u, PositionSync { at: Instant::now(), us: u64::try_from(us).unwrap_or(0) })
+                self.players.set_position(&u, PositionSync { at: Instant::now(), us: u64::try_from(us).unwrap_or(0) });
             }
             (Ask::State(u) | Ask::Identity(u) | Ask::Metadata(u) | Ask::Position(u), Err(CallError::Remote(e)))
                 if GONE.contains(&e.as_str()) =>
             {
-                self.leave(&u)
+                self.leave(&u);
             }
             // A timeout, a malformed answer, a missing Identity: the player stays as it is.
             _ => {}

@@ -57,13 +57,13 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
             // `l @ (A | B)` binds the whole line to `l` when it is one of those variants, so the
             // list can draw the line it was given.
             l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password) => {
-                q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
+                q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets));
             }
             l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode) => {
-                q.bt.draw(&mut g, l, &devices, q.confirm.as_ref(), q.bt.is_selected(l, &devices))
+                q.bt.draw(&mut g, l, &devices, q.confirm.as_ref(), q.bt.is_selected(l, &devices));
             }
             l @ (Line::VpnHeader | Line::VpnProfile(_) | Line::VpnMore) => {
-                q.vpn.draw(&mut g, l, &profiles, q.vpn.is_selected(l, &profiles))
+                q.vpn.draw(&mut g, l, &profiles, q.vpn.is_selected(l, &profiles));
             }
             l @ (Line::DndHeader | Line::DndChoice(_)) => q.dnd.draw(&mut g, live, l),
             l @ (Line::ShieldHeader | Line::ShieldDevice(_) | Line::ShieldNote(_)) => {

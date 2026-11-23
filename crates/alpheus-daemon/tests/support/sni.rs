@@ -358,7 +358,7 @@ fn append_value(i: &mut IterAppend<'_>, v: &Value) {
                 });
                 st.append(title.as_str());
                 st.append("");
-            })
+            });
         }),
         Value::IconPixmap(bytes) => i.append_variant(&signature("a(iiay)"), |v| {
             v.append_array(&signature("(iiay)"), |a| {
@@ -367,7 +367,7 @@ fn append_value(i: &mut IterAppend<'_>, v: &Value) {
                     px.append(32i32);
                     px.append(vec![0x5au8; *bytes]);
                 });
-            })
+            });
         }),
     }
 }
@@ -503,11 +503,11 @@ impl Served {
             }
             // KDE first checks the watcher's ProtocolVersion is 0 (else it falls back to XEmbed).
             Registration::Name => {
-                self.call_watcher("Get", |m| m.append2(WATCHER_INTERFACE, "ProtocolVersion"), Waiting::ProtocolVersion(ack))
+                self.call_watcher("Get", |m| m.append2(WATCHER_INTERFACE, "ProtocolVersion"), Waiting::ProtocolVersion(ack));
             }
             // Chromium gives up unless a host is registered.
             _ if self.spec.needs_host => {
-                self.call_watcher("Get", |m| m.append2(WATCHER_INTERFACE, "IsStatusNotifierHostRegistered"), Waiting::HostCheck(ack))
+                self.call_watcher("Get", |m| m.append2(WATCHER_INTERFACE, "IsStatusNotifierHostRegistered"), Waiting::HostCheck(ack));
             }
             _ => self.register_now(ack),
         }
@@ -579,9 +579,9 @@ impl Served {
                             d.append_dict_entry(|e| {
                                 e.append(property.as_str());
                                 append_value(e, &v);
-                            })
+                            });
                         });
-                    })
+                    });
                 });
                 i.append_array(&signature("(ias)"), |_| {});
                 let _ = self.peer.channel.send(m);
@@ -627,7 +627,7 @@ impl Served {
                         d.append_dict_entry(|e| {
                             e.append(k.as_str());
                             append_value(e, v);
-                        })
+                        });
                     }
                 });
                 r
