@@ -60,7 +60,7 @@ fn tabs() {
 fn movement() {
     let mut a = ready_app();
     k(&mut a, KeyCode::Down);
-    c(&mut a, 'h'); // Dvorak: down
+    k(&mut a, KeyCode::Down);
     assert_eq!(a.focus, 2);
     k(&mut a, KeyCode::End);
     assert_eq!(a.focus, 6);
@@ -138,6 +138,7 @@ fn arrow_keys_in_the_confirmation() {
     assert!(focus(&a), "→ from Confirm stays on Confirm");
     k(&mut a, KeyCode::Left);
     assert!(!focus(&a));
+    a.keymap = crate::app::Keymap::defaults(true); // Dvorak navigation is off unless asked for
     c(&mut a, 'n'); // Dvorak: right
     assert!(focus(&a));
     c(&mut a, 'd'); // Dvorak: left

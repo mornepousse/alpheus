@@ -281,6 +281,9 @@ fn charge_word(c: Charge) -> &'static str {
 /// only when the checks before it pass.
 ///
 /// (The `<T: Copy + PartialEq>` after the name says: any type that can be copied and compared.)
+/// It is generic because six events (network, VPN, battery charge, battery level, power profile and
+/// theme mode) keep a seed of six different types and need this one comparison rule, instead of six
+/// copies of it.
 fn changed<T: Copy + PartialEq>(seed: &mut Option<T>, new: T) -> bool {
     match seed.replace(new) {
         Some(old) => old != new,

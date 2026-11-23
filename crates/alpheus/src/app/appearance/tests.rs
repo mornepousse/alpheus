@@ -390,16 +390,16 @@ fn key(a: &mut App, code: ratatui::crossterm::event::KeyCode) {
 fn the_keys_of_the_tab() {
     use ratatui::crossterm::event::KeyCode;
     let (mut a, dir) = open("keys", &[]);
-    key(&mut a, KeyCode::Char('h')); // Dvorak down, like the other tabs
     key(&mut a, KeyCode::Down);
-    key(&mut a, KeyCode::Char('t')); // Dvorak up
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Up);
     assert_eq!(a.appearance.cursor, 2);
     key(&mut a, KeyCode::Enter);
     assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\n");
     key(&mut a, KeyCode::End);
-    key(&mut a, KeyCode::Char('h')); // Dvorak down, past the last theme
+    key(&mut a, KeyCode::Down); // past the last theme
     assert!(a.appearance.focus == Focus::Mode && a.tab == Tab::Appearance);
-    key(&mut a, KeyCode::Char('n')); // Dvorak right
+    key(&mut a, KeyCode::Right);
     assert_eq!(a.appearance.mode, ModeSetting::Dark);
     key(&mut a, KeyCode::Char('+'));
     assert_eq!(a.appearance.mode, ModeSetting::Light);

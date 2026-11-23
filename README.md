@@ -1083,7 +1083,7 @@ The control center, in `config.toml` (defaults shown):
 
 ```toml
 [keys]
-dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow keys
+dvorak_nav = false   # true: d/h/t/n also move left/down/up/right, beside the arrow keys
 
 [keys.bindings]      # optional: action = ["chord", …], replaces that action's keys
 # palette = ["ctrl+k"]
