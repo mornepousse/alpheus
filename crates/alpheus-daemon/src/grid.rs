@@ -1,6 +1,21 @@
-//! Grid of cells: what the bar shows, cell by cell (character, tints,
-//! bold), and the clickable zones. This is the tested object; the pixel
-//! drawing (`painter`) only copies it.
+//! The grid of cells: what one screen shows, and where a click lands.
+//!
+//! A `Grid` is the bar as characters with their tints, written only through `Grid::write`, which is
+//! what keeps a control character out of a cell and a wide character from being cut in half. It
+//! also records each module's clickable zone and, under the block styles, the blocks
+//! (`GroupKind`). This is the tested object: `painter` only copies it into pixels, and `layout`
+//! builds it from the state.
+//!
+//! Never:
+//! - let a text from outside into a cell unchecked: `write` cleans and measures it (`text.rs`
+//!   cleans what an application sends before that);
+//! - name a colour: a cell carries a role of the theme, never a value
+//!   (`the_daemon_paints_with_roles_never_the_legacy_palette`);
+//! - keep a zone for a module that drew nothing: a click must never reach a module that is not
+//!   there (`every_click_on_a_full_bar_stays_on_the_allowlist` clicks every zone of a full bar).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/bar.md, docs/features/themes.md (the
+//! roles, the hues and the blocks).
 
 use crate::config::ModuleId;
 use crate::session_bus::ItemKey;

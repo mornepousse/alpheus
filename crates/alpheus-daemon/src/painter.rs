@@ -1,17 +1,27 @@
-//! Drawing of the grid into an ARGB8888 buffer (wl_shm: bytes B, G, R, A),
-//! cell by cell: each cell's background, then a glyph shaped by cosmic-text
-//! and placed at the left edge of its cell. The grid stays aligned even
-//! when a fallback font (emoji, CJK) has a different advance.
+//! The grid drawn into a shared-memory buffer, cell by cell.
 //!
-//! Bounded memory: the font database only holds the faces actually useful
-//! (cosmic-text otherwise parses every monospace face in its database up
-//! front), and the glyph cache is cleared past `MAX_CACHE` entries.
+//! Each cell's background first, then a glyph shaped by cosmic-text and placed at the left edge of
+//! its cell, so the grid stays aligned even when a fallback face (emoji, CJK) has a different
+//! advance. The buffer is ARGB8888 as `wl_shm` takes it (bytes B, G, R, A), premultiplied. The
+//! per-style background and line passes are in `background.rs`, which this file runs around the
+//! text pass; `plot` draws the resources popup's graphs, whose columns are whole pixels so they
+//! tile exactly at any scale.
 //!
-//! Masking: a character with no glyph anywhere (`family`, nor any
-//! `fallback`) is simply not drawn, rather than drawn as the resolved
-//! face's `.notdef` "missing glyph" box (`shape`'s `gl.glyph_id == 0`
-//! check). Its cell keeps the width `Grid::write` already gave it — only
-//! the paint is skipped.
+//! Bounded memory: the font database holds only the faces that turn out to be useful (cosmic-text
+//! would otherwise parse every monospace face it can find at start), and the glyph cache is
+//! cleared past `MAX_CACHE` entries. A character with no glyph in the family or any fallback is
+//! not drawn at all, rather than drawn as the resolved face's `.notdef` box; its cell keeps the
+//! width `Grid::write` gave it.
+//!
+//! Never:
+//! - paint with anything but the theme's sixteen roles
+//!   (`the_daemon_paints_with_roles_never_the_legacy_palette`);
+//! - grow without bound: the cache and the database are the two that could, and both are capped;
+//! - block or allocate per frame beyond the pool the surface owns (the memory suite's PSS tests
+//!   per popup and per style measure it).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/themes.md (the styles and their passes),
+//! docs/features/resources.md (the graphs), docs/measurements.md (the per-style figures).
 
 pub(crate) mod blocks;
 pub(crate) mod floating;

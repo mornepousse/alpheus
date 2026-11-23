@@ -1,7 +1,20 @@
-//! The bar's shapes (shapes spec § 3), what is not text: the per-style background and line passes
-//! `Fonts::paint_bar` runs around the text pass, the anti-aliased corner masks (cached per radius
-//! and scale), and the opaque region each style claims. Pixels are premultiplied ARGB8888 (bytes
-//! B, G, R, A), as `wl_shm` takes them.
+//! The bar's shapes: everything of a style that is not text.
+//!
+//! The per-style background and line passes that `Fonts::paint_bar` runs around the text pass, the
+//! anti-aliased corner masks (cached per radius and scale, a few hundred bytes each), and the
+//! opaque region each style claims, which is what lets a compositor skip what is behind an opaque
+//! bar. Pixels are premultiplied ARGB8888, as `wl_shm` takes them (bytes B, G, R, A).
+//!
+//! Never:
+//! - ask for blur or any other compositor effect: a layer rule of the user's does that
+//!   (docs/features/themes.md);
+//! - keep a mask that is not used: they are cached per radius and scale, and the memory suite's
+//!   `startup_pss_per_style` and `style_switches_no_growth` measure what they cost;
+//! - paint with anything but the theme's roles
+//!   (`the_daemon_paints_with_roles_never_the_legacy_palette`).
+//!
+//! See: docs/features/themes.md ("Bar styles"), docs/measurements.md (the per-style figures and
+//! the 48 switches).
 
 use crate::grid::{Group, Style};
 use alpheus_common::theme::settings::{BarStyle, ModuleColors};

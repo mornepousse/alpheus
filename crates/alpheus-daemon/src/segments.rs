@@ -1,8 +1,24 @@
-//! Segments of the system modules (spec § 2): volume, network, Bluetooth,
-//! battery, resources, the tray. Each returns None when it has nothing to
-//! show — waiting for its first reading, or nothing to report; a source that
-//! is down shows its icon then "–". The whole segment is one click zone,
-//! except the tray's: one zone per icon.
+//! The cells of each system module: volume, network, Bluetooth, battery, the resources, the tray,
+//! and the small blocks beside them (the bell, the privacy indicators, the Shield glyph, the
+//! failed-units count, the timer chip, the power button).
+//!
+//! One function per module, each answering None when it has nothing to show — waiting for its first
+//! reading, or nothing to report. A source that is down shows its icon and then `–`, so a module
+//! never disappears because a service went away. The whole segment is one click zone, except the
+//! tray's, which has one per icon. The hue a module wears comes from `modules::MODULES`, and how
+//! much of it is worn from `module_colors`; a state (a low battery, a hot sensor, a muted sink)
+//! wins over the hue.
+//!
+//! Never:
+//! - draw a figure the state does not hold: every number comes from `state::Bar`, never from a
+//!   reading made here;
+//! - lose a state to a hue: the `withhold_hue` segments (the Shield's green, the failed count's
+//!   error colour) and the state colours are pinned by the themes tests
+//!   (`every_preset_is_legible_in_both_modes` keeps every one of them legible);
+//! - name a colour: a piece carries a role or a hue of the theme.
+//!
+//! See: docs/features/bar.md (what each module draws), docs/features/themes.md (the hues and what
+//! `module_colors` does), docs/decisions.md ("A source that is down is not a state").
 
 use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};

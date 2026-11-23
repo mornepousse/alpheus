@@ -1,21 +1,30 @@
-//! From state to a screen's grid. Each module produces a segment; segments
-//! are laid out left to right in bar.toml order, separated by a dim "·". The
-//! window module is elastic: it takes the free space. With no active
-//! window, the window module has no segment at all (no empty "· ·"), but
-//! the free space still goes where it sits in the configured order — just
-//! before the segment that follows it — so the right-hand modules stay
-//! right-aligned instead of collapsing left; only with the window module
-//! absent from the configuration entirely does the free space fall back to
-//! preceding the last module. Narrow screen: modules disappear by priority
-//! (resources, the tray, media, title, then Bluetooth, network, volume,
-//! battery, the launcher button, and last the power button); workspaces, the
-//! clock and the notifications bell always stay.
+//! From the state to a screen's grid: the segments, their blocks, and what a narrow bar drops.
 //!
-//! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one
-//! block, never across the free space. `flat` and `underline` keep the "·" separators; the block
-//! styles put one blank pad cell inside each end of a block, one blank cell between blocks
-//! (powerline's arrow cell) and two blank cells between the modules of one block. The grid records the
-//! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
+//! Each module produces a segment; the segments are laid out left to right in the configured order,
+//! separated by a dim `·` under `flat` and `underline`. The window module is elastic: it takes the
+//! free space. With no active window it has no segment at all (no empty `· ·`), but the free space
+//! still goes where the module sits in the order — just before the segment that follows it — so the
+//! right-hand modules stay right-aligned instead of collapsing left; only with the window module
+//! absent from the configuration entirely does the free space fall back to preceding the last
+//! module. On a narrow screen the modules disappear in `REMOVAL`'s order (the resources, the tray,
+//! media, the title, then Bluetooth, the network, the volume, the battery, the launcher button, the
+//! timer chip, the failed-units count, the Shield glyph, the privacy indicators, and last the power
+//! button); the workspaces, the clock and the bell always stay.
+//!
+//! Blocks: consecutive modules of one kind (`ModuleSpec::group`) make one block, never across the
+//! free space. The block styles put one blank pad cell inside each end of a block, one blank cell
+//! between blocks (powerline's arrow cell) and two blank cells between the modules of one block.
+//! The grid records the blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly
+//! what it always was.
+//!
+//! Never:
+//! - drop a module a narrow bar must keep: the workspaces, the clock and the bell are not in
+//!   `REMOVAL`, and each page says where its module sits in it (docs/features/bar.md);
+//! - read the state or the system: the segments come in built, and the style and the width with
+//!   them.
+//!
+//! See: docs/features/bar.md ("On a narrow screen"), docs/features/themes.md (the six styles and
+//! their blocks), docs/ARCHITECTURE.md ("The core").
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;

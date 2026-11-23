@@ -1,12 +1,20 @@
-//! Lists drawn as rows of cells, shared by the launcher's box, a tray menu
-//! and the calendar (spec: "the list rendering and key handling are shared
-//! with the launcher"): a pixel frame, a result or menu row (icon, text,
-//! right-aligned muted text, the selection inverted to the pane's end), the
-//! lines the painter draws between rows (`Boxed`), and the selection
-//! arithmetic (clamped, never wrapping, skipping rows that cannot be
-//! selected). Pure: every row is a `Grid` written only through
-//! `Grid::write`, so controls never reach a cell and wide characters are
-//! never cut.
+//! Lists drawn as rows of cells, shared by every box and menu.
+//!
+//! The launcher's box, a tray menu, the calendar, the panels and the popups all draw through this:
+//! a pixel frame (`Boxed`), a row (an icon, its text, a right-aligned muted text, the selection
+//! inverted to the pane's end), the lines the painter draws between rows, and the selection
+//! arithmetic — clamped, never wrapping, skipping the rows that cannot be selected. Pure: every
+//! row is a `Grid` written only through `Grid::write`, so controls never reach a cell and a wide
+//! character is never cut.
+//!
+//! Never:
+//! - wrap the selection round: every list in alpheus stops at its first and last row, which the
+//!   features' own tests pin (the timer's popup, the quick panel, the power menu);
+//! - select a row that cannot act (a heading, a separator);
+//! - read a clock or touch the outside: the caller hands in everything.
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/launcher.md, docs/features/tray.md
+//! (the menus), docs/features/quick-settings.md (the rows and their details).
 
 use crate::grid::{Grid, Style, Tint, text_width, truncate};
 
