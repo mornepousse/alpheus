@@ -149,7 +149,7 @@ fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold:
     buffer.shape_until_scroll(fs, false);
     let mut shaped = Vec::new();
     for run in buffer.layout_runs() {
-        for gl in run.glyphs.iter() {
+        for gl in run.glyphs {
             if gl.glyph_id == 0 {
                 continue;
             }

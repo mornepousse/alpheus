@@ -4790,7 +4790,7 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
     let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
     let mut spawned = 0;
-    for b in BUILTINS.iter() {
+    for b in &BUILTINS {
         let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
         let expected: Option<Vec<String>> = match b.action {
             BuiltinAction::Lock => Some(quick.lock.clone()),

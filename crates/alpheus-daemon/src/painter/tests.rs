@@ -141,7 +141,7 @@ fn glyph_reshaped_every_time(p: &mut Fonts, ch: char, bold: bool, x0: f32, ink: 
     let Rgb(r, g, b) = ink;
     let base = Color::rgb(r, g, b);
     for run in p.buffer.layout_runs() {
-        for gl in run.glyphs.iter() {
+        for gl in run.glyphs {
             if gl.glyph_id == 0 {
                 continue;
             }

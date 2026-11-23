@@ -169,7 +169,7 @@ mod tests {
 
     fn buf() -> Buffer {
         let mut b = Buffer::empty(Rect::new(0, 0, 20, 4));
-        for c in b.content.iter_mut() {
+        for c in &mut b.content {
             c.set_bg(BEHIND);
         }
         b
