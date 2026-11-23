@@ -26,7 +26,7 @@ impl Compositor {
 /// The four variables, in detection order (Mango and Sway spec § 1).
 pub const VARIABLES: [&str; 4] = ["SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "MANGO_INSTANCE_SIGNATURE", "NIRI_SOCKET"];
 
-/// Same rule as nixos-config's `compositor()` (home/scripts/lib.sh), with niri last: SWAYSOCK,
+/// The usual session-script order, with niri last: SWAYSOCK,
 /// then HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET. An empty
 /// variable counts as unset; the first one set decides, and an unusable value gives no compositor
 /// rather than the next variable's (a nested session inherits several of them).

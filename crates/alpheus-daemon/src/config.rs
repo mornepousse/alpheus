@@ -282,7 +282,7 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspacesConfig {
     /// Command run to go to a workspace (click, wheel); `{workspace}` and
-    /// `{output}` are replaced in it. Default: `wm-set` (nixos-config's
+    /// `{output}` are replaced in it. Default: `wm-set` (the author's
     /// script), the only path to the compositor allowed by the
     /// framing document.
     pub command: Vec<String>,
@@ -299,7 +299,7 @@ impl Default for WorkspacesConfig {
 pub struct ActionsConfig {
     /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
     /// battery); `{tab}` becomes home, sound, network or bluetooth (the
-    /// TUI's `--tab`). Default: `alpheus-toggle` (nixos-config's script), which
+    /// TUI's `--tab`). Default: `alpheus-toggle` (the author's script), which
     /// opens the TUI in a floating terminal, or closes it if already open —
     /// not a neutral default yet: see the portability step (CLAUDE.md).
     pub open_tab: Vec<String>,

@@ -20,7 +20,7 @@
 //! - hard-code a key in a hint: the hints are built from the keymap (`App::keymap`).
 //!
 //! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md (Goals, 1: Home as a dashboard),
-//! docs/plans/2026-11-15-alpheus-ui-refresh-plan-1.md (the 64 by 20 threshold; "The clock is
+//! plan 2026-11-15-alpheus-ui-refresh-plan-1 (tag `archive/design-history-2026-11`) (the 64 by 20 threshold; "The clock is
 //! injected"; "Hints come from the keymap"), docs/features/control-center.md.
 
 use super::digits::big_glyph;

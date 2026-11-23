@@ -9,7 +9,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 /// Do-not-disturb's file under the state directory (notifications spec § 5; small features 1,
-/// decision 6): any file means on to other readers (nixos-config's `shell-ctl dnd-status`); its
+/// decision 6): any file means on to other readers (a session script reading the state); its
 /// text says whether it ends (`until <unix>`) or came from a screen share (`sharing`).
 pub const DND_FILE: &str = "dnd";
 

@@ -57,7 +57,7 @@ anonymised fixtures, budgets, one change per commit, English) are in `CONTRIBUTI
 - **No `pkill`, `killall` or pattern kills.** Kill only a PID you started, by that PID.
 - **Never a real system or session bus in a test.** Fake bus, or a private `dbus-daemon` in an
   `#[ignore]`d isolated test.
-- **Never commit `flake.lock`** (except an input bump the owner approved), nor `.superpowers/`, nor
+- **Never commit `flake.lock`** (except an input bump the owner approved), nor the owner's private notes, nor
   the user's local files (`mpv.conf`, `.tripwire-testcount`, editor or tool state). Stage the files
   of the task by name and read `git diff --cached` before every commit.
 - **Never edit the user's system configuration** (the NixOS configuration repository, a user's

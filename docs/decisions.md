@@ -4,6 +4,8 @@ This file lists decisions that are settled: things alpheus does a certain way on
 the reason. It is not a history of how alpheus was built. Code comments point here when a rule
 would otherwise look arbitrary to someone reading the code.
 
+Plans cited by name ("plan 1, Decisions written down 3") are in the tag `archive/design-history-2026-11`.
+
 Entries are in the order they were written, the newest last. The wording is neutral: "decision",
 not a person's name.
 
@@ -25,7 +27,7 @@ with no `Status` line is settled.
 Each feature's decisions are added when its code is brought to the house standard
 (`docs/STYLE.md`), so the file does not yet cover every feature: the ones it covers have a page in
 `docs/features/` (listed in [features/README.md](features/README.md)), and the older decisions of
-the rest are still in `docs/specs/` and `docs/plans/`.
+the rest are still in `docs/specs/`; the plans they cite are in the tag `archive/design-history-2026-11`.
 
 ---
 
