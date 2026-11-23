@@ -9,3 +9,6 @@ description = "Bridge to alpheus's launcher: toggle, close, dmenu-style menus (t
 # std + alpheus-common only: no Wayland, no fonts (tests/boundaries.rs in alpheus-common).
 [dependencies]
 alpheus-common.workspace = true
+
+[lints]
+workspace = true

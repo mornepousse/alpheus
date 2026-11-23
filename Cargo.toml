@@ -38,3 +38,23 @@ dbus-crossroads = "0.5"
 lto = true
 codegen-units = 1
 strip = true
+
+# Readability lints (open-source plan 5). Warnings here, errors in CI (-D warnings).
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+redundant_closure_for_method_calls = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+unnested_or_patterns = "warn"
+match_same_arms = "warn"
+cast_lossless = "warn"
+needless_pass_by_value = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"
