@@ -36,7 +36,7 @@ Nothing is resident, and nothing runs per keystroke beyond the parse.
 
 ### The prefixes
 
-A query that starts with `?`, `:`, `$` or `"` in the All mode lists only that prefix's rows. They are
+A query that starts with `?`, `:`, `"` or `$` in the All mode lists only that prefix's rows. They are
 never prefixes under `--password`, in the Apps, Windows and Commands modes, or in script and dmenu
 menus, where they are plain text. A prefix alone shows a hint line, not a row.
 
@@ -57,20 +57,20 @@ menus, where they are plain text. A prefix alone shows a hint line, not a row.
 - `$ sleep 5 && notify-send hi` shows `Run in a shell: …`; Enter runs `sh -c -- <text>` detached in a
   scope, `Ctrl+Enter` in `terminal_hold`. The text is never recorded or logged.
 
-`:` and `$` are always claimed as prefixes: a query that starts with one never ranks apps (set
+Of the four, `:` and `$` are always claimed: a query that starts with one never ranks apps (set
 `[prefixes]` to something else if you search names that start with them; a configured mode prefix is
 taken first). The attribution of the emoji names is in `NOTICE`.
 
 ### The window switcher
 
 `alpheus-launch --windows` opens the windows with the previous one selected, so Enter goes back to
-the last window. A second `--windows` while it is open, and `Tab`, step down (`Shift+Tab` up),
-wrapping, so holding the modifier and pressing the key again walks the list; only a `--windows`
-within 250 ms of the switcher's own open is ignored, because some compositors fire a key bind twice
-(Hyprland re-fires a press bind on release). Esc closes. There is no modes row, no thumbnail, no scan
-of apps or `$PATH`, and nothing resident.
+the last window. A second `--windows` while it is open steps down the list, as `Tab` does
+(`Shift+Tab` up), wrapping, so holding the modifier and pressing the key again walks it. A
+`--windows` within 250 ms of the switcher's own open is ignored, because some compositors fire a key
+bind twice (Hyprland re-fires a press bind on release). Esc closes. There is no modes row, no
+thumbnail, no scan of apps or `$PATH`, and nothing resident.
 
-### Command sources
+### The command sources
 
 A menu script's lines can be searched next to the apps. A `[[sources]]` table in `launcher.toml`
 names a `list` command and a `run` command. `list` runs once per open, on the thread that already
@@ -89,15 +89,26 @@ unit with `KillMode=control-group` (the default) cleans them up.
 
 ## Using it
 
-**The keys.** `Tab` and `Shift+Tab` switch modes; typing filters. `Enter` runs the selection — a
-command or typed shell text in a held terminal, which stays open so you can read the output — and
-`Ctrl+Enter` runs it detached. An app starts in its own systemd scope when a user manager exists, so
-it never dies with the bar.
+**The keys.**
+
+| Key or click | What it does |
+| --- | --- |
+| typing | filters the results; the first one is selected |
+| `Tab`, `Shift+Tab` | the next or the previous mode (in the window switcher, the next or the previous window) |
+| `↑` `↓`, `Ctrl+P` `Ctrl+N`, `Page Up` `Page Down`, `Home` `End` | move the selection |
+| `Enter` | runs the selection: a command or typed shell text goes to the held terminal, which stays open so you can read the output |
+| `Ctrl+Enter` | runs it detached instead, or acts on the row (a clipboard entry's pin, an emoji's name) |
+| `Backspace`, `Ctrl+W`, `Ctrl+U` | erase a character, a word, the whole query |
+| `Delete` | forgets the selected entry, where the mode has one to forget |
+| `Esc` | closes the box |
+| a left click on the `launcher` module | opens or closes the box |
+
+An app starts in its own systemd scope when a user manager exists, so it never dies with the bar.
 
 **The verbs.** `alpheus-launch` bridges to the daemon over an owner-only socket: `--toggle` (the
-default) and `--close`, `--calc`, `--windows`, `--clipboard`, `--notes` and `--dmenu`. Every option
-and exit code is in [`docs/cli.md`](../cli.md); exit code 3 (the daemon is not running, or is older
-than the verb) is the one case where a script falls back to another menu.
+default) and `--close`, `--calc`, `--windows`, `--clipboard`, `--notes`, `--tools`, `--power` and
+`--dmenu`. Every option and exit code is in [`docs/cli.md`](../cli.md); exit code 3 (the daemon is
+not running, or is older than the verb) is the one case where a script falls back to another menu.
 
 **Binding it.** alpheus sets no key bind. For the switcher, for example,
 `bind=ALT,Tab,spawn,alpheus-launch --windows` in Mango, or
@@ -107,7 +118,7 @@ than the verb) is the one case where a script falls back to another menu.
 prints the chosen one, with fuzzel's dmenu options that scripts use:
 
 | Option | What it does |
-|---|---|
+| --- | --- |
 | `-p`, `--prompt TEXT` | text shown before the input |
 | `--index` | print the chosen line's 0-based position on standard output instead of its text, empty lines counted as fuzzel does (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
 | `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close; not with `--index` |
@@ -135,13 +146,16 @@ configured in `bar.toml`; the box itself works without it, through the verbs.
 
 ## How it is built
 
-The files are in `crates/alpheus-daemon/src/launcher/`, the pure parts first, the Wayland side last.
-The box is one more pair of layer-shell surfaces of the daemon, built at open and freed at close.
+The files are in `crates/alpheus-daemon/src/launcher/`, the pure parts first, the Wayland side last
+(the Tools menu's own files are in `launcher/tools/`; see [the Tools menu](tools-menu.md)). The box is
+one more layer-shell surface of the daemon, with a transparent scrim per output, built at open and
+freed at close.
 
 - `config.rs`: `launcher.toml`, read at each open.
 - `history.rs`: the frecency history — which entries were launched, how often, how recently. It holds
-  entry ids (`app:<desktop id>`, `cmd:<name>`, `source:<name>:<line>`) and numbers only, never typed
-  text, in `$XDG_STATE_HOME/alpheus/launcher-history`.
+  entry ids (`app:<desktop id>`, `cmd:<name>`, `source:<name>:<line>`, `tool:builtin:<id>`,
+  `tool:user:<category>/<name>`) and numbers only, never typed text, in
+  `$XDG_STATE_HOME/alpheus/launcher-history`.
 - `desktop.rs`: the parts of the XDG Desktop Entry specification the launcher uses (the
   `[Desktop Entry]` group and its actions, the value escapes, the localized keys, `Hidden` and
   `NoDisplay`).
@@ -225,8 +239,9 @@ These are enforced by tests, so a change that breaks one fails the build.
 
 ## What it costs
 
-Measured in release on the headless harness, 300 synthetic apps (the full tables are in
-[measurements](../measurements.md); the tests that measure are named here).
+Measured in release on the headless harness, back to back with the version before it, 300 synthetic
+apps (the full tables are in [measurements](../measurements.md); the tests that measure are named
+here).
 
 - **Linked in, never opened** (no `launcher` module even): +0.3–0.7 MB over the delivery before it,
   the one-time cost of a bigger binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus
@@ -235,9 +250,10 @@ Measured in release on the headless harness, 300 synthetic apps (the full tables
 - **Open** (a typed query, the keyboard bound): ≈ +2.0–2.1 MB over closed, at a median open latency
   of ≈ 0.8–1.3 ms (max 1.7–2.9 ms over 20 opens, from the request accepted to the first frame
   committed).
-- **50 open and close cycles:** ≈ +0.1–0.2 MB over the post-warm-up baseline (measured 148–220 KB
-  across runs, well under the 1 MB budget), and 0 wake-ups in 5 s at rest after use (2 in one of
-  three runs).
+- **50 open and close cycles:** ≈ +0.1–0.2 MB over the post-warm-up baseline, 17 of them closed by a
+  typed Escape and the rest by the verb (`launcher_open_close_cycles_no_growth`, whose bound is
+  1 MB; the delivery that added it read 148–220 KB across runs), and 0 wake-ups in 5 s at rest after
+  use (2 in one of three runs).
 - **The prefixes and the emoji table, linked in:** −91…+106 KB at start, which is the harness's
   spread; the binary grew by 64 KiB stripped, of which the emoji table's text is 43 KiB of read-only
   data, paged in only when `:` is used. Open with `:face` typed, +1.2–1.3 MB over closed, and
@@ -247,9 +263,10 @@ Measured in release on the headless harness, 300 synthetic apps (the full tables
   (`at_rest_no_wakeups_after_a_calc_cycle`).
 - **Command sources:** linked in with none configured, within noise (−4…+92 KB closed, +0.1–0.2 MB
   open). While the box is open each kept line costs about three times its text (the line, its entry
-  and its path): ≈ 6–8 MB at the bounds (8 sources × 256 KiB) plus the ranker, released on close. A
-  300-line source costs ≈ 0.5 MB: the box open on one reads ≈ +2.4–2.5 MB over closed (≈ +1.9–2.4 MB
-  with no source), and its entries appear ≈ 15–17 ms after the request (median of 21 opens), the box
-  itself showing first at ≈ 1.7–2.2 ms against ≈ 1.6–1.9 ms with no source, with 0 wake-ups at rest
-  after (`launcher_sources_pss_latency_and_rest`).
+  and its path), so at the bounds (8 sources × 256 KiB) the lines alone come to about 6–8 MB,
+  computed and not measured, plus the ranker, released on close. The box open on a 300-line source
+  reads ≈ +2.4–2.5 MB over closed, against ≈ +1.9–2.4 MB with no source, so that source's own share
+  is about half a megabyte; its entries appear ≈ 15–17 ms after the request (median of 21 opens), the
+  box itself showing first at ≈ 1.7–2.2 ms against ≈ 1.6–1.9 ms with no source, with 0 wake-ups at
+  rest after (`launcher_sources_pss_latency_and_rest`).
 - **A 100,000-line dmenu:** ≈ +6.6–6.8 MB open, back to +0.5 MB one second after it is cancelled.

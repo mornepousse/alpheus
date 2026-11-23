@@ -19,8 +19,8 @@ answers `shield is not configured in bar.toml`.
 - **The state.** The mode is on while the `flag` file exists. A change made anywhere (a terminal, the
   boot, another session) shows at once, because the flag's directory is watched. When the file cannot
   be tested (any error but "not found") the state is unknown, never off.
-- **The bar.** The `shield` module draws `󰒘` in the green, only while the mode is on. A left click
-  opens the quick panel on the Shield row.
+- **The bar.** The `shield` module draws `󰒘`, always green whatever `module_colors` says, in a block
+  of its own, only while the mode is on. A left click opens the quick panel on the Shield row.
 - **The quick panel.** A Shield row under the VPN row, with a switch. Space runs `off` or `on` and the
   switch reads `…` until the flag follows; a refused or failed command reads `failed` for 4 s. Enter
   or → opens the blocked USB devices; Enter on one runs `allow` with its id.

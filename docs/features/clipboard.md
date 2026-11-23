@@ -1,8 +1,8 @@
 # Clipboard history
 
-A history of what you copied, kept in memory only and reopened in the launcher's box. Off unless you
-turn it on. This page says what it does, how to use it, how to configure it, how it is built, which
-rules the tests enforce on it, and what it costs. It describes the code as it is today.
+A history of what you copied, kept in memory only and shown again in the launcher's box. Off unless
+you turn it on. This page says what it does, how to use it, how to configure it, how it is built,
+which rules the tests enforce on it, and what it costs. It describes the code as it is today.
 
 ## What it does
 
@@ -10,9 +10,8 @@ With `[clipboard] enabled = true` the daemon follows the Wayland clipboard throu
 `ext-data-control-v1`, or `zwlr_data_control_manager_v1` version 1 where that is all the compositor
 has, and keeps the last copies as a list.
 
-- **Text only.** Every copy is read once, at most 4,096 bytes (a longer text is skipped, never cut),
-  valid UTF-8, and not only whitespace. Images are never read, and the primary selection (the mouse
-  selection) is never read.
+- **Text only.** Images are never read, and the primary selection (the mouse selection) is never
+  read. Every copy is read once, and the table below says when one is skipped instead.
 - **In memory only.** The last 50 copies are kept, newest first; copying a text that is already
   there moves it to the top. Nothing is written to disk, so the history goes when the daemon stops.
 - **Pins.** At most 10 entries can be pinned. A pinned entry is kept first and is never evicted, and
@@ -30,8 +29,9 @@ A copy is skipped, and nothing of it is kept, when:
 | offers no text type, or its text is over 4,096 bytes, not UTF-8, or only whitespace | skipped |
 | takes more than 1 second to read | the read is dropped |
 
-**What is never stored, and what is.** KeePassXC, `wl-copy --sensitive` (so `pass`) and, per a user
-report, the Bitwarden desktop app set the hint, so their copies never reach the history. A copy
+**What is never stored, and what is.** KeePassXC and `wl-copy --sensitive` (so `pass`) set the hint,
+so their copies never reach the history; the Bitwarden desktop app sets it too, reported but not
+verified here. A copy
 **without** a hint **is stored**, in memory, with its text: a password manager that sets none puts
 its passwords in the history. Not verified: 1Password for Linux, the Bitwarden browser extension
 (browsers refuse custom types), Firefox's and Chromium's own password-field copies, gopass. A tool
@@ -60,7 +60,7 @@ The question is answered only from 0.4 s after it was asked, so a held Enter nev
 any other key or a click cancels it. `alpheus-launch --clipboard-clear` does the same from a script,
 without touching the current clipboard.
 
-**After Enter** the daemon itself owns the clipboard, so what you pasted empties if the daemon stops,
+**After Enter** the daemon itself owns the clipboard, so the clipboard empties if the daemon stops,
 and no `wl-copy` is left running.
 
 **Exit codes.** Both verbs exit 2 when the history is off and when the compositor offers no
@@ -72,7 +72,7 @@ which a script falls back).
 `[clipboard]` in `bar.toml`, read once at start, so a change takes effect when `alpheus-demon`
 restarts.
 
-| Key | Default | Meaning |
+| Key (under `[clipboard]`) | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | `true`: follow the clipboard and keep the history described above |
 
@@ -81,13 +81,13 @@ restarts.
 enabled = true
 ```
 
-Off, no protocol object is bound and nothing is kept. The launcher's `"` is then plain text, not a
-prefix ([the launcher page](launcher.md) lists the prefixes).
+With the history off, no protocol object is bound and nothing is kept. The launcher's `"` is then
+plain text, not a prefix ([the launcher page](launcher.md) lists the prefixes).
 
 ## How it is built
 
-Four files in `crates/alpheus-daemon/src/clipboard/`, split the way alpheus splits most features:
-the pure parts, then the Wayland side.
+The files in `crates/alpheus-daemon/src/clipboard/`, split the way alpheus splits most features: the
+pure parts, then the Wayland side (`mod.rs` only declares them).
 
 - `history.rs`: the history itself, pure. `Entry`, `push` (what it added or moved), the pins and
   `ClipRow`, the one-line preview a launcher row shows. `Debug` prints ids and flags only, and every

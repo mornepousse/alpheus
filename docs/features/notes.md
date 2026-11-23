@@ -1,8 +1,8 @@
 # The quick notepad
 
-One pad of plain text, on a key. This page says what it does, how to use it, how to configure it,
-how it is built, which rules the tests enforce on it, and what it costs. It describes the code as it
-is today.
+One pad of plain text, opened by a key bind of your own. This page says what it does, how to use it,
+how to configure it, how it is built, which rules the tests enforce on it, and what it costs. It
+describes the code as it is today.
 
 ## What it does
 
@@ -13,7 +13,8 @@ down to 24 by 3 on a small output) on the focused output. It holds one note, in
 - The file is read when the pad opens and written after a pause of two seconds in the typing, at
   every close, and when the daemon stops.
 - Nothing of the pad is resident while it is closed: no surface, no keyboard, no timer, no text. The
-  one exception is the text of a save that failed, kept for the next open (see "A save that fails").
+  one exception is the text of a save that failed, kept for the next open (see the paragraph on a
+  save that fails, below).
 - The title row says `saved` or `not saved`, and the help row reads
   `esc close · ctrl+c copy · ctrl+v paste`, or the last message.
 
@@ -26,13 +27,13 @@ selection and copy work, edits and paste are refused, and the reason is on the h
 | holding tabs, carriage returns or control characters (edited elsewhere) | the text, cleaned |
 | not ours (a symlink, another owner, a directory open to others), or unreadable | nothing |
 
-**A save that fails** at close keeps the text in memory for the next open, which shows it `not
-saved`, as long as the file is still as the pad last read or saved it (device, inode, modification
-time and size). If the file changed meanwhile — written elsewhere, replaced, removed, now refused —
-the file wins: it opens as usual, the kept text is dropped unwritten, and the help row says
-`earlier unsaved text not written: the file changed` (the log says `notes: not saved (<kind>)`). That
-text, up to 64 KiB, is the one thing of the pad resident while it is closed, and only after such a
-failure; a save that fails while the bar stops loses it.
+**A save that fails** at close keeps the text in memory for the next open, which then shows
+`not saved`, as long as the file is still as the pad last read or saved it (device, inode,
+modification time and size). If the file changed meanwhile — written elsewhere, replaced, removed,
+now refused — the file wins: it opens as usual, the kept text is dropped unwritten, and the help
+row says `earlier unsaved text not written: the file changed` (the log says
+`notes: not saved (<kind>)`). That text, up to 64 KiB, is the one thing of the pad resident while
+it is closed, and only after such a failure; a save that fails while the bar stops loses it.
 
 ## Using it
 
@@ -59,24 +60,24 @@ A held key repeats moves and edits, never a copy, a cut, a paste or the close: e
 start another copy program or reopen the clipboard. A click places the caret and the wheel scrolls;
 there is no selection with the mouse.
 
-**Known limits.** One pad (no several notes, no colours, no pinning) and no undo. Copy and cut are
-capped at 4 KiB (one page, which a pipe holds whatever its size), and a cut whose copy program fails
-after it started loses the text, since the program is only known to have started. Paste works with
-every `wl_data_device` version, but a compositor offering only version 1 cannot release the device, so
-one protocol object per open stays on the server until the bar exits (wlroots compositors, Sway and
-Mango among them, offer version 3; verified headless on Sway only). There is no `fsync`, the rename
-being atomic. Something else writing the file while the pad is open is overwritten by the pad's next
-save.
+**Known limits.**
+
+- One pad: no several notes, no colours, no pinning.
+- No undo.
+- Copy and cut are capped at 4 KiB (one page, which a pipe holds whatever its size), and a cut whose
+  copy program fails after it started loses the text, since the program is only known to have
+  started.
+- Paste works with every `wl_data_device` version, but a compositor offering only version 1 cannot
+  release the device, so one protocol object per open stays on the server until the bar exits
+  (wlroots compositors, Sway and Mango among them, offer version 3; verified headless on Sway only).
+- There is no `fsync`, the rename being atomic.
+- Something else writing the file while the pad is open is overwritten by the pad's next save.
 
 ## Configuration
 
-The pad has no key of its own. It uses `copy` from `launcher.toml` (default `["wl-copy"]`) for Ctrl+C
-and Ctrl+X, and the launcher's box, so the theme and the font are the bar's.
-
-```toml
-# launcher.toml
-copy = ["wl-copy"]
-```
+The pad has no configuration key of its own. It uses `copy` from `launcher.toml` (default
+`["wl-copy"]`) for Ctrl+C and Ctrl+X, and the launcher's box, so the theme and the font are the
+bar's.
 
 ## How it is built
 
@@ -163,9 +164,9 @@ These are enforced by tests, so a change that breaks one fails the build.
 Measured in release, back to back with the version before it, 3 runs each (the
 [memory tables](../measurements.md) have the figures and the method).
 
-- **Linked in:** −361…−44 KB at start, which is the harness's spread (every other case read
-  −833…−111 KB too, one base run reading about 0.6–0.8 MB high on all rows), so the linked-in code is
-  not visible; the binary grew from 6.71 to 6.84 MiB stripped (+128 KiB). The
+- **Linked in:** −361…−44 KB at start, which is the harness's spread: one base run read about
+  0.6–0.8 MB high on every row, so every case of that pairing came out negative and the linked-in
+  code is not visible. The binary grew from 6.71 to 6.84 MiB stripped (+128 KiB). The
   `wl_data_device_manager` is bound once at start (one protocol object); the data device itself
   exists only while the pad is open.
 - **Open with 2,000 characters typed:** +794…+985 KB PSS over closed
