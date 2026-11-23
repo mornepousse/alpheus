@@ -6,6 +6,17 @@
 //!   these reads (Q1 of the plan). The only function that writes to this
 //!   socket takes a `Request`, whose four texts are fixed and checked by
 //!   tests/guardrails.rs: no action, no setting.
+//!
+//! Never:
+//! - send anything but a `Request`: its four texts are fixed and pinned by
+//!   `compositor_requests_are_read_only`, so no action and no setting can be sent from here;
+//! - name the compositor's command-line client: its name is a forbidden word in every source of
+//!   the daemon, which is why this line does not write it either;
+//! - panic on what the stream says (`the_mango_and_sway_backends_have_no_panicking_path` covers
+//!   its siblings; this file's own tests feed it malformed lines).
+//!
+//! See: docs/compositors.md ("Hyprland"), docs/features/bar.md, docs/decisions.md (the entries on
+//! a compositor that fires a key bind twice).
 
 use crate::compositor::CompositorState;
 use crate::compositor::hypr::{Effect, Model, Responses, Snapshot, parse_line};

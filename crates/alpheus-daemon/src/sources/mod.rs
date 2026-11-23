@@ -3,6 +3,18 @@
 //! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
 //! the bar shows "–". The compositor is detected once at start (`detect`), in the usual session-script
 //! order, with niri last.
+//!
+//! Never:
+//! - write to a compositor: each backend's requests are a fixed list, checked by
+//!   `compositor_requests_are_read_only`, `mango_writes_only_its_request_lines` and
+//!   `sway_writes_only_its_three_messages`; the one write alpheus makes is the configured
+//!   workspace command, from `actions.rs`;
+//! - open a socket anywhere else (`compositor_sockets_opened_only_in_sources`);
+//! - poll: every backend blocks on its socket, so a quiet session costs no wake-up.
+//!
+//! See: docs/compositors.md (what each compositor gives and what `wm-set` stands for),
+//! docs/features/bar.md ("What the bar reads, and what it writes"), docs/ARCHITECTURE.md
+//! ("Sources: what feeds the loop").
 
 pub mod dbus;
 pub mod hypr;

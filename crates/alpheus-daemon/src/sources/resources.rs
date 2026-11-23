@@ -10,6 +10,16 @@
 //! read leaves its own figure out; the next tick tries again (resources
 //! have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
+//!
+//! Never:
+//! - run a command: everything comes from `/proc` and `/sys`, which is why the resources module
+//!   adds no process (`the_only_stream_is_pw_dump_monitor` pins the one child the daemon keeps);
+//! - read what no item asks for: an item left out of `[resources] show` is never read, and
+//!   `gpu_sensor` exists so that a discrete GPU's sensor is not woken on a hybrid laptop;
+//! - keep more than the ring: the last 60 samples, about 3 KB (`the_history_stays_small`).
+//!
+//! See: docs/features/resources.md (the items, the ring and the graphs), docs/configuration.md
+//! (`[resources]`), docs/measurements.md (what a reading costs on the loop).
 
 use crate::config::{ResourceItem, ResourcesConfig};
 use crate::log::write as log;

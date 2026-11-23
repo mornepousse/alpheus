@@ -3,6 +3,14 @@
 //! on every change, one JSON line each. Nothing else is ever written. The thread blocks in one
 //! `poll` on both connections, never with a timeout: no wake-up at rest. Mango's command-line
 //! client is never run.
+//!
+//! Never:
+//! - write anything but the two request lines (`mango_writes_only_its_request_lines`), and never
+//!   run Mango's command-line client, whose name is a forbidden word in the daemon's sources;
+//! - poll: the thread blocks in one `poll` on both connections, with no timeout;
+//! - panic on a snapshot (`the_mango_and_sway_backends_have_no_panicking_path`).
+//!
+//! See: docs/compositors.md ("Mango"), docs/features/bar.md.
 
 use crate::compositor::CompositorState;
 use crate::compositor::mango::{Model, Watch};

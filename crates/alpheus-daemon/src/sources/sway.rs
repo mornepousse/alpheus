@@ -3,6 +3,15 @@
 //! burst of events. `Message` is the whole list of what is ever sent (checked by
 //! tests/guardrails.rs): no command, no other request. The thread blocks on the event connection
 //! with no timeout; a zero-timeout `poll` only drains a burst.
+//!
+//! Never:
+//! - send anything outside `Message` (`sway_writes_only_its_three_messages`), and never the i3
+//!   command message; Sway's client is a forbidden word in the daemon's sources too;
+//! - poll with a timeout: the event connection blocks, and a zero-timeout `poll` only drains a
+//!   burst that has already arrived;
+//! - panic on a reply (`the_mango_and_sway_backends_have_no_panicking_path`).
+//!
+//! See: docs/compositors.md ("Sway"), docs/features/bar.md.
 
 use crate::compositor::CompositorState;
 use crate::compositor::sway::Model;
