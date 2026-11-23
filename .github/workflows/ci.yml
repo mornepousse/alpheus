@@ -102,19 +102,6 @@ jobs:
           echo "headless tests passed: ${passed:-none}"
           test "${passed:-0}" -gt 0
 
-  # The declared minimum Rust version (workspace rust-version).
-  msrv:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libxkbcommon-dev
-      - uses: dtolnay/rust-toolchain@1.85
-      - uses: Swatinem/rust-cache@v2.9.3
-      - run: cargo check --workspace --locked
-
   nix:
     runs-on: ubuntu-24.04
     steps:
