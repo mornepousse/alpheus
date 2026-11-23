@@ -345,7 +345,7 @@ impl FakePlayer {
         self.set(
             "Metadata",
             Prop::Dict(vec![
-                ("mpris:trackid".into(), Prop::ObjPath(format!("/org/mpris/MediaPlayer2/Track/{}", length_us))),
+                ("mpris:trackid".into(), Prop::ObjPath(format!("/org/mpris/MediaPlayer2/Track/{length_us}"))),
                 ("xesam:title".into(), text(title)),
                 ("xesam:artist".into(), Prop::Strs(vec![artist.into()])),
                 ("mpris:length".into(), Prop::I64(length_us)),
