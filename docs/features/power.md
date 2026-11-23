@@ -131,7 +131,7 @@ never as its command, which can name the user.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in, no `power` in `modules`:** within noise of the build before it (binary +8 KiB

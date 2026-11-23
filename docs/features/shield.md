@@ -173,7 +173,7 @@ alpheus runs and at each panel open, never on a timer.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in, nothing configured:** −4 to +214 KB at start (the `everything` case of
   `startup_pss_per_source`; the harness drifts); binary +48 KiB stripped; no watch descriptor, no segment,

@@ -123,7 +123,7 @@ reading. The popup owns no timer: opening it adds no wake-up.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in:** within noise of the build before it (binary +24 KiB stripped).

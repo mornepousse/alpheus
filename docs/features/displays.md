@@ -128,7 +128,7 @@ screen's identity and a profile file's errors are never logged" in [decisions.md
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in, off:** +4 to +168 KB at start over nine pairings of the `everything` case of
   `startup_pss_per_source`; the binary grew 244 KiB stripped.

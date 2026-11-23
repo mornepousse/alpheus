@@ -130,7 +130,7 @@ and writes the log line. The other events come in their own way: `hooks_dnd` fro
 
 ## What it costs
 
-Measured in release, back to back with the version before it (the full table is in the README).
+Measured in release, back to back with the version before it (the full table is in [measurements](../measurements.md)).
 
 - **Linked in, no `[hooks]`:** within the harness's spread at start (−967…−188 KB over three
   pairings); the stripped binary grew by 56 KiB. The model is `None`, so nothing is kept.

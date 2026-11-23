@@ -208,7 +208,7 @@ on or off changed, repaints the quick panel's row and moves the timer. A state r
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the method):
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in:** +122 to +248 KB at start over the build before the notifications; binary +140 KiB
   stripped (5.34 to 5.47 MiB). The rules, four battery thresholds and `dnd_while_sharing` configured

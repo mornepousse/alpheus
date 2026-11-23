@@ -135,7 +135,7 @@ the match rule of the menu's session.
 
 ## What it costs
 
-Measured in release, 3 runs (the README's memory table has the figures and the method):
+Measured in release, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
 - **Linked in, tray unused:** +0.4 to 0.7 MB over the delivery before it (stripped binary
   4.49 → 5.36 MB: libdbus, dbus-rs, menus, popups, calendar), a one-time cost of the bigger binary.

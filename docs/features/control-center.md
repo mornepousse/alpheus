@@ -837,7 +837,7 @@ The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `
 
 One read of the daemon's model, answered from its memory, every 2 seconds while the tab is shown, and
 nothing otherwise (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`). The daemon's own
-costs (the trial's one timer, the hotplug debounce) are in the README's component table.
+costs (the trial's one timer, the hotplug debounce) are in the [component table](../measurements.md#alpheus-component-by-component).
 
 ## Theme
 

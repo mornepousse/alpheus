@@ -68,7 +68,7 @@ To record what a change costs, build the commit before and after in separate
 target directories, run the same test back to back several times (three is
 the habit) and compare **deltas**, not absolute figures: the absolute PSS
 drifts by roughly half a megabyte between boots because shared libraries are
-counted proportionally. Put the result in the README's memory table.
+counted proportionally. Put the result in [`docs/measurements.md`](docs/measurements.md).
 
 ### Machine load
 
@@ -79,8 +79,9 @@ USB-docked screens reconnect.
 
 ## Documentation
 
-- A user-visible feature updates the README (feature table, memory table when
-  it costs anything) and the relevant page under `docs/`.
+- A user-visible feature updates [`docs/comparison.md`](docs/comparison.md),
+  [`docs/measurements.md`](docs/measurements.md) when it costs anything, and
+  its page under [`docs/features/`](docs/features/).
 - A design lands as a spec in `docs/specs/` before the code, with a plan in
   `docs/plans/` for anything multi-step; see [`docs/specs/README.md`](docs/specs/README.md).
 - Each module starts with a `//!` comment saying what it is and what it

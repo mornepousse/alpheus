@@ -80,7 +80,7 @@ reaches `calendar_key` and a wheel step `calendar_pointer`; both end in `calenda
 
 ## What it costs
 
-The calendar has no figure of its own in the README: it was measured with the tray's menus.
+The calendar has no figure of its own in [measurements](../measurements.md): it was measured with the tray's menus.
 
 - **Closed:** nothing exists of it. Without a click on the clock nothing is built, and the locale
   is not read at start.

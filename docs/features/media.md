@@ -144,7 +144,7 @@ rule goes off and the tick with it.
 
 ## What it costs
 
-Measured in release, back to back, 3 runs (the README's memory table has the figures and the
+Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the
 method):
 
 - **Linked in:** within noise of the build before it (−52…+32 KB), binary +92 KiB stripped.

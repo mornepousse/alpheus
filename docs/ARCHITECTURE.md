@@ -54,7 +54,7 @@ happened*.
     domain's signal after 60 s), never a timer of its own.
   Resources (`/proc`, `/sys`) are a timer on the loop, not a thread. With
   every module on, the daemon measures six threads at rest; they are
-  accounted for in the README's memory table. Short-lived workers come on
+  accounted for in [the memory tables](measurements.md). Short-lived workers come on
   top only while there is work: the launcher's scan thread, and
   `alpheus-shield`, which runs one Shield command or one blocked-device read
   and ends once it has reported (at most one of each at a time).
@@ -194,7 +194,7 @@ The reason the project exists, applied as rules:
 
 - Resident memory is small and measured; a feature's cost is measured against
   the commit before it (back to back, separate target directories, deltas rather
-  than absolutes) and recorded in the README's tables. The overall budget is
+  than absolutes) and recorded in [the measurements](measurements.md). The overall budget is
   ≤ 120 MB; the daemon sits around 8 to 11 MB.
 - **An unused option costs nothing**: a module not in `modules` creates no
   thread, connection or timer; surfaces exist only while shown.

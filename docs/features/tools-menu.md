@@ -139,7 +139,7 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 
 ## What it costs
 
-One release run on the branch, with no back-to-back base (the README's memory table has the figures):
+One release run on the branch, with no back-to-back base (the [memory tables](../measurements.md) have the figures):
 
 - **Open, 20 cycles:** the daemon's own anonymous memory +336 KB open over closed, +12 KB closed again,
   +64 KB after 20 more cycles; the shm pools +1,316 KB open and back to 56 KB closed; 6 threads before
