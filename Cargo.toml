@@ -45,6 +45,9 @@ unsafe_op_in_unsafe_fn = "warn"
 unused_qualifications = "warn"
 
 [workspace.lints.clippy]
+# Left out on purpose: redundant_closure_for_method_calls (its fixes made long
+# paths that read worse) and needless_pass_by_value (36 hits, mostly thread
+# entry points, map_err adapters and temporaries, where references read worse).
 uninlined_format_args = "warn"
 semicolon_if_nothing_returned = "warn"
 manual_let_else = "warn"

@@ -28,7 +28,10 @@ use std::{env, fs, thread};
 /// silent, slow pass. It never affects a correctly non-blocking socket,
 /// which already returns immediately regardless of this setting.
 fn set_rcvtimeo(fd: BorrowedFd<'_>, dur: Duration) {
-    let tv = libc::timeval { tv_sec: dur.as_secs() as libc::time_t, tv_usec: libc::suseconds_t::from(dur.subsec_micros()) };
+    // `suseconds_t` is i64 on 64-bit glibc and i32 on 32-bit: `from` fails to build on the latter,
+    // `try_from` trips clippy on the former. The value is below 1_000_000 either way.
+    #[allow(clippy::cast_lossless)]
+    let tv = libc::timeval { tv_sec: dur.as_secs() as libc::time_t, tv_usec: dur.subsec_micros() as libc::suseconds_t };
     // SAFETY: setsockopt(2) reads exactly `size_of::<timeval>()` bytes from
     // `&tv`, a valid, live `timeval` owned by this frame; `fd` is open for
     // the whole call.
