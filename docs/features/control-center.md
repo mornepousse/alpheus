@@ -284,8 +284,8 @@ most every 15 seconds (a broken tool must not be relaunched every second: a comm
 - `the_sound_tab_at_80_by_24_matches_its_snapshot` (`ui/sound/tests.rs`, its snapshot in
   `ui/sound/snapshots/`): the whole 80 by 24 screen.
 - `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
-  run is on the allowed list, `wpctl` included. That no test runs the real tool is CLAUDE.md's rule
-  ("Never a real call in tests": the tests use the fake executor).
+  run is on the allowed list, `wpctl` included. That no test runs the real tool is the rule "Never a real session tool in a test" in
+  [CONTRIBUTING.md](../../CONTRIBUTING.md#the-rules): the tests use the fake executor.
 
 ### What it costs
 
@@ -411,8 +411,8 @@ at most every 15 seconds (a broken tool must not be relaunched every second: a c
 - `exact_commands` (`alpheus-common`, `backends/network.rs`): the exact `nmcli` lines, and no
   other.
 - `every_launched_command_is_on_the_allowlist` (`tests/guardrails.rs`): every command the backends
-  run is on the allowed list, `nmcli` included. That no test runs the real tool is CLAUDE.md's rule
-  ("Never a real call in tests": the tests use the fake executor).
+  run is on the allowed list, `nmcli` included. That no test runs the real tool is the rule "Never a real session tool in a test" in
+  [CONTRIBUTING.md](../../CONTRIBUTING.md#the-rules): the tests use the fake executor.
 
 ### What it costs
 

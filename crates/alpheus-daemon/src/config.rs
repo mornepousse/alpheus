@@ -298,10 +298,12 @@ impl Default for WorkspacesConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ActionsConfig {
     /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
-    /// battery); `{tab}` becomes home, sound, network or bluetooth (the
-    /// TUI's `--tab`). Default: `alpheus-toggle` (the author's script), which
+    /// battery, `failed`); `{tab}` becomes home, sound, network, bluetooth or
+    /// diagnostics (the TUI's
+    /// `--tab`). Default: `alpheus-toggle` (the author's script), which
     /// opens the TUI in a floating terminal, or closes it if already open —
-    /// not a neutral default yet: see the portability step (CLAUDE.md).
+    /// not a neutral default yet (CONTRIBUTING.md, "What is accepted": personal
+    /// setups stay out of the code).
     pub open_tab: Vec<String>,
     /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
     /// popup): a system monitor. Default: btop in

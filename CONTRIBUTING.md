@@ -17,9 +17,11 @@ for the words, [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 - **Personal setups stay out of the code.** Nothing specific to one machine or
   one distribution's scripts is hard-coded; every command is configurable and
   has a neutral default.
-- **Guardrails hold.** alpheus handles no sleep or `dpms`, writes to the
-  compositor only through the output protocol in `outputs/wlr.rs`, and keeps
-  nothing resident while unused. The guardrail tests are
+- **Guardrails hold.** alpheus handles no sleep or `dpms`, changes the
+  compositor only through configurable commands, with two exceptions, each in
+  one file (`zwlr_output_configuration_v1` in `outputs/wlr.rs` and the
+  clipboard's own selection in `clipboard/control.rs`), never manages output
+  power, and keeps nothing resident while unused. The guardrail tests are
   `crates/alpheus-daemon/tests/guardrails.rs`,
   `crates/alpheus/tests/guardrails.rs` and
   `crates/alpheus-common/tests/boundaries.rs`. A change leaves them untouched

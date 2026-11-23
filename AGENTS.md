@@ -4,8 +4,10 @@ alpheus is a light Wayland desktop shell written in Rust: a layer-shell bar daem
 notifications, an on-screen display and quick settings, and a terminal control center. It is a
 "potato machine with modern features" project: every feature that is not enabled must cost nothing.
 
-Read [`docs/SCOPE.md`](docs/SCOPE.md) (why, budget, guardrails), then
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/GLOSSARY.md`](docs/GLOSSARY.md). The rules
+Read [`docs/SCOPE.md`](docs/SCOPE.md) for the why (historical; the guardrails are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and the rules and invariants of
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)), then the architecture and
+[`docs/GLOSSARY.md`](docs/GLOSSARY.md). The rules
 every contributor follows are in [`CONTRIBUTING.md`](CONTRIBUTING.md); this file adds the ones that
 only an agent needs. Where the two say the same thing, CONTRIBUTING.md is the text.
 
