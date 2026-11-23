@@ -1,0 +1,55 @@
+# Checked by `typos` (the CI `policy` job). Words below are intended; a real
+# misspelling is fixed in the source, never listed here.
+
+[files]
+extend-exclude = [
+    # The design history is kept as written.
+    "docs/specs/",
+    "docs/plans/",
+    # Fixtures and snapshots are captured or hand-made data (French labels,
+    # device names, driver names such as skl_hda_dsp_generic).
+    "**/tests/fixtures/",
+    "**/snapshots/",
+    "flake.lock",
+]
+
+[default.extend-words]
+# MPRIS `Seeked` signal and the `seeked` handlers that follow it.
+seeked = "seeked"
+# English "ratatui", the TUI crate.
+ratatui = "ratatui"
+# Maintainer's surname (LICENSE, README).
+pugin = "pugin"
+# French test data in the displays and launcher tests (serial numbers, an
+# "Apparence" settings page, "projets" directories, "commandes", "complet").
+serie = "serie"
+apparence = "apparence"
+appar = "appar"
+projets = "projets"
+commandes = "commandes"
+complet = "complet"
+# Informal plural used in the notification tests ("two criticals").
+criticals = "criticals"
+# Test function names spelling "the entry's" without the apostrophe.
+entrys = "entrys"
+# The standard spellings are both fine; the code uses this one.
+unparseable = "unparseable"
+# Deliberate misspellings, typed to check an unknown-key or did-you-mean path.
+cpoy = "cpoy"
+enabeld = "enabeld"
+# Truncated words the tests type on purpose: the `h`, `he`, `hel`, `help`
+# prefixes of nmcli's refusal rule, a "gam" query, an `fre`quency closure,
+# Santa "Claus" in the Unicode emoji names, "Caf" cut from "Café", a
+# `lits` tuple of literals, `ue`/`fo`/`ba` short test variables and values.
+hel = "hel"
+gam = "gam"
+fre = "fre"
+claus = "claus"
+caf = "caf"
+lits = "lits"
+ue = "ue"
+fo = "fo"
+ba = "ba"
+mor = "mor"
+inh = "inh"
+hda = "hda"
