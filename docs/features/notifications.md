@@ -75,6 +75,10 @@ media popup's keys apply. At open the newest entry is selected, else the card, e
 `notifications` modules), a screen capture turns do-not-disturb on and its end turns it off, unless you
 changed it meanwhile: your own choice always wins.
 
+Known limits: `--until` typed from inside an hour that a daylight-saving change skips is not
+handled specially; removing `dnd_while_sharing` by a hot reload in the middle of a capture leaves
+do-not-disturb on; a rule that mutes a flood is bounded only by the history's own trim.
+
 ## Configuration
 
 `[notifications]` in `bar.toml` (the struct is `NotificationsConfig` in `config.rs`); the server takes

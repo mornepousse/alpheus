@@ -118,3 +118,11 @@ Clicks in the transparent gaps between `islands` blocks still reach the bar. The
 ## Wallpaper colours (matugen)
 
 `theme = "wallpaper"` reads the colour files matugen writes; the matugen template, its two configurations and the commands are in [`docs/configuration.md`](../configuration.md#wallpaper-colours-matugen).
+
+## Known limits
+
+- An empty `theme.toml` fixes the colour source: if `colors.toml` appears afterwards, it is not
+  picked up until the file is edited or the daemon restarts.
+- In solarized dark, the hues and the secondary text stay under 3:1 on the `raised` fill.
+- In the Theme tab, each Enter that applies a theme shows its own toast, so several stack over the
+  preview.
