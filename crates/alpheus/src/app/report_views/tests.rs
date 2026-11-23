@@ -191,10 +191,9 @@ fn the_report_scrolls_by_the_key_table() {
         View::Report(r) => r.scroll,
         _ => panic!(),
     };
-    // Dvorak navigation is on by default: h goes down, t up.
-    key(&mut a, KeyCode::Char('h'));
+    key(&mut a, KeyCode::Down);
     assert_eq!(scroll(&a), 1);
-    key(&mut a, KeyCode::Char('t'));
+    key(&mut a, KeyCode::Up);
     assert_eq!(scroll(&a), 0);
 }
 

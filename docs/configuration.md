@@ -763,7 +763,7 @@ their values).
 
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `[keys] dvorak_nav` | bool | `true` | | `d`/`h`/`t`/`n` also move left/down/up/right, beside the arrow keys. |
+| `[keys] dvorak_nav` | bool | `false` | | `true`: `d`/`h`/`t`/`n` also move left/down/up/right, beside the arrow keys (their hjkl positions on a Dvorak layout). |
 | `[keys.bindings]` | table, action = list of chords | empty | see below | Replaces that action's keys. |
 | `[commands] mixer` | command | `["wiremix"]` | | Opened in alpheus's own window. |
 | `[commands] network` | command | `["nmtui"]` | | Opened in alpheus's own window. |
@@ -792,7 +792,7 @@ See [the control center](features/control-center.md).
 
 ```toml
 [keys]
-dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow keys
+dvorak_nav = false   # true: d/h/t/n also move left/down/up/right, beside the arrow keys
 
 [keys.bindings]      # optional: action = ["chord", …], replaces that action's keys
 # palette = ["ctrl+k"]

@@ -1457,3 +1457,10 @@ retried (a reconnection asks once more); the name appearing brings the battery i
 `NameOwnerChanged`. `dbusrs_bus::message` refuses any other name, and a guardrail lists the method.
 
 Date: 2026-11-21 · Source: CLAUDE.md, "Bar delivery 3" (fix `fix/battery-upower`); `upower::activate_if_absent`, `start_service_by_name_names_upower_alone`
+
+### Dvorak navigation keys are off by default
+
+The control center moves with the arrow keys alone until a user sets `[keys] dvorak_nav = true` in
+config.toml: a shareable product does not assume one keyboard layout.
+
+Date: 2026-11-23 · Source: CLAUDE.md (Portability); `KeysConfig::default`, `Keymap::default`

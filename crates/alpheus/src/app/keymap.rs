@@ -3,8 +3,8 @@
 //! `Chord` is one key with its modifiers, written and read as text ("ctrl+p", "shift+tab", "f1").
 //! `Keymap` holds, for each `Action`, the chords bound to it: the standard conventions (Ctrl+P,
 //! F1, Esc, the arrows) plus `d`, `h`, `t`, `n` for left, down, up and right (Dvorak navigation,
-//! `[keys] dvorak_nav = false` turns them off). `[keys]` in config.toml overrides any of them by
-//! action name. `input.rs` asks `lookup` what a key press means; the help box and the shortcut
+//! off by default; `[keys] dvorak_nav = true` turns it on). `[keys]` in config.toml overrides any
+//! of them by action name. `input.rs` asks `lookup` what a key press means; the help box and the shortcut
 //! hints (the classic bar and the rail's keycaps, both through `shortcut_pairs`) ask for the labels.
 //!
 //! Never:
@@ -194,7 +194,7 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        Keymap::defaults(true)
+        Keymap::defaults(KeysConfig::default().dvorak_nav)
     }
 }
 
@@ -311,7 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn dvorak_can_be_disabled() {
+    fn dvorak_is_off_by_default_and_can_be_enabled() {
+        assert_eq!(Keymap::default().lookup(&ch('d')), None);
+        assert_eq!(Keymap::default().lookup(&ch('h')), None);
+        assert_eq!(Keymap::from_config(&KeysConfig::default()).unwrap().lookup(&ch('t')), None);
         assert_eq!(Keymap::defaults(true).lookup(&ch('d')), Some(Action::Left));
         assert_eq!(Keymap::defaults(true).lookup(&ch('h')), Some(Action::Down));
         assert_eq!(Keymap::defaults(true).lookup(&ch('t')), Some(Action::Up));
