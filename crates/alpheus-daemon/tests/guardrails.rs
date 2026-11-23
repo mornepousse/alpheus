@@ -1036,6 +1036,25 @@ fn production_code(text: &str) -> String {
     out
 }
 
+/// Whether the `r` at `i` opens a raw string: `r`, then any number of `#`, then a quote, and
+/// nothing before it that would make it the last letter of an identifier — `b` is allowed, since
+/// `br"…"` is the byte form, as long as the `b` itself starts a token.
+fn raw_string_opens(chars: &[char], i: usize) -> bool {
+    let mut j = i + 1;
+    while chars.get(j) == Some(&'#') {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'"') {
+        return false;
+    }
+    let part_of_a_name = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    match i.checked_sub(1) {
+        None => true,
+        Some(p) if chars.get(p) == Some(&'b') => !part_of_a_name(i.checked_sub(2)),
+        Some(p) => !part_of_a_name(Some(p)),
+    }
+}
+
 /// `text` without its comments (`//`, `///`, `//!` to the end of the line, and `/* … */` blocks),
 /// for the guardrails that read code: a comment naming a call must not satisfy them, nor a
 /// comment holding `fn ` or a brace move the function a line belongs to. Newlines stay, so line
@@ -1079,6 +1098,26 @@ fn without_comments(text: &str) -> String {
                             i += 1;
                         }
                     }
+                }
+            }
+            // A raw string (`r"…"`, `r#"…"#`, and the byte forms `br"…"`): copied whole. It has no
+            // escape rule, so a backslash before its closing quote does not escape it, and a `//`
+            // or a `/*` inside one is text, not a comment. It ends at the first quote followed by
+            // as many `#` as opened it.
+            ('r', _) if raw_string_opens(&chars, i) => {
+                let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+                let quote = i + 1 + hashes;
+                out.extend(&chars[i..=quote]);
+                i = quote + 1;
+                while i < chars.len() {
+                    let closes = chars[i] == '"' && chars.len() > i + hashes && chars[i + 1..=i + hashes].iter().all(|&c| c == '#');
+                    if closes {
+                        out.extend(&chars[i..=i + hashes]);
+                        i += hashes + 1;
+                        break;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
                 }
             }
             ('"', _) => {
@@ -1126,17 +1165,27 @@ fn without_comments(text: &str) -> String {
 /// a comment to say it in words instead). A test that does both keeps both views, and `both_bodies`
 /// is the shorthand when the second view is one function's body.
 ///
-/// The order matters: the comments go after the `#[cfg(test)]` items, never before. `without_comments`
-/// does not know raw strings, and every raw string of the daemon's sources is inside a test item, so
-/// `production_code` has already dropped it by the time the comments are stripped.
+/// The comments go first: a `#[cfg(test)]` or a brace written inside one would otherwise fool
+/// `production_code`'s brace counting and strip real production code with the test item
+/// (`a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone`). `production_code` alone,
+/// which the word lists are given, still counts those braces: that is the price of reading the
+/// comments.
 fn production_code_without_comments(text: &str) -> String {
-    without_comments(&production_code(text))
+    production_code(&without_comments(text))
 }
 
 #[test]
 fn without_comments_drops_comments_and_keeps_code_and_lines() {
     let text = "a(); // self.x(\n/// fn doc(\nb(\"//not\"); /* c { */ d('\"'); e('\\'');\n/* one\ntwo */f<'a>();\n";
     assert_eq!(without_comments(text), "a(); \n\nb(\"//not\");  d('\"'); e('\\'');\n\nf<'a>();\n");
+}
+
+#[test]
+fn without_comments_keeps_a_raw_string_whole() {
+    // `r"…"`, `r#"…"#` and `br"…"`: a `//` or a `/*` inside one is text, its own quote does not end
+    // it, and a trailing backslash escapes nothing. An identifier ending in `r` is not one.
+    let text = "a(r\"//not a comment\");\nb(r#\"a \" and /* x */\"#);\nc(br\"\\\\\");\nlet bar = \"x\"; // gone\nd();\n";
+    assert_eq!(without_comments(text), "a(r\"//not a comment\");\nb(r#\"a \" and /* x */\"#);\nc(br\"\\\\\");\nlet bar = \"x\"; \nd();\n");
 }
 
 #[test]
@@ -1219,6 +1268,17 @@ fn production_code_ends_a_brace_less_item_at_its_semicolon() {
         "\nfn real_code() {}\nfn also_real() {}\n",
         "only the `mod fake;` stripped, not the real items after it"
     );
+}
+
+#[test]
+fn a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone() {
+    let text = "fn a() {}\n#[cfg(test)]\nmod tests {\n    // an unmatched { in a comment\n}\nfn b() {}\n";
+    let code = production_code_without_comments(text);
+    assert!(code.contains("fn a()") && code.contains("fn b()"), "both production items stay: {code}");
+    assert!(!code.contains("mod tests"), "the test item goes: {code}");
+    // `production_code` alone counts the comment's brace, so the test item never closes and it
+    // strips to the end of the file: the word lists read less than they should in that one case.
+    assert!(!production_code(text).contains("fn b()"), "the known cost of reading the comments");
 }
 
 /// `Executor::run` blocks (up to 2 s): it must never be reachable from the
@@ -4336,7 +4396,9 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
         if name == THIS_FILE {
             continue;
         }
-        let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        // The comments go, so a name written in one (this file's own doc comments, a note in a test)
+        // is not a call; a raw string keeps its text, so a fixture naming the program still counts.
+        let mut code = without_comments(text);
         if name == HARNESS {
             for helper in ["pub fn wl_copy(", "pub fn wl_paste("] {
                 let body = function_body(&code, helper).to_string();
