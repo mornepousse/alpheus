@@ -159,10 +159,10 @@ pub fn button(buf: &mut Buffer, clip: Rect, x: u16, y: u16, c: &Command, focused
         let gx = x + 2 + u16::from(th.shape == Shape::Round);
         let gh = th.ink(hue, th.raised, 3.0);
         // The glyph's cell is recoloured only when it lies inside the clip and the buffer.
-        if clip.contains((gx, y).into()) {
-            if let Some(cell) = buf.cell_mut((gx, y)) {
-                cell.set_fg(gh);
-            }
+        if clip.contains((gx, y).into())
+            && let Some(cell) = buf.cell_mut((gx, y))
+        {
+            cell.set_fg(gh);
         }
     }
     w

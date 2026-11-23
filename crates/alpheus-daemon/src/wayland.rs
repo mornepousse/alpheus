@@ -1062,12 +1062,12 @@ impl CompositorHandler for App {
         if self.popup_scale(surface, f) {
             return;
         }
-        if let Some(i) = self.index(surface) {
-            if self.surfaces[i].scale != f {
-                self.surfaces[i].scale = f;
-                self.surfaces[i].last = None;
-                self.draw(i);
-            }
+        if let Some(i) = self.index(surface)
+            && self.surfaces[i].scale != f
+        {
+            self.surfaces[i].scale = f;
+            self.surfaces[i].last = None;
+            self.draw(i);
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
@@ -1101,12 +1101,12 @@ impl OutputHandler for App {
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         // Name announced or changed afterwards: the shown workspaces depend on it.
         let name = self.outputs.info(&output).and_then(|i| i.name);
-        if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
-            if let Some(n) = name.filter(|n| *n != self.surfaces[i].name) {
-                self.surfaces[i].name = n;
-                self.surfaces[i].last = None;
-                self.draw(i);
-            }
+        if let Some(i) = self.surfaces.iter().position(|s| s.output == output)
+            && let Some(n) = name.filter(|n| *n != self.surfaces[i].name)
+        {
+            self.surfaces[i].name = n;
+            self.surfaces[i].last = None;
+            self.draw(i);
         }
     }
 
@@ -1400,17 +1400,17 @@ impl PointerHandler for App {
                     if only_closes || popup_only_closes {
                         continue; // the menu's own icon: closed, never reopened (docs/decisions.md)
                     }
-                    if let Some(b) = b {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, launcher_was_open);
-                        }
+                    if let Some(b) = b
+                        && !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b)
+                    {
+                        self.click(qh, i, ev.position.0, b, launcher_was_open);
                     }
                 }
                 PointerEventKind::Axis { horizontal, vertical, .. } => {
-                    if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, false);
-                        }
+                    if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120)
+                        && !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b)
+                    {
+                        self.click(qh, i, ev.position.0, b, false);
                     }
                     // The horizontal axis only scrolls tray icons.
                     let h = self.hwheel.add(horizontal.absolute, horizontal.discrete, horizontal.value120);

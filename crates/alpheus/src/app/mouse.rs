@@ -88,12 +88,11 @@ impl App {
                 }
                 // The profile at position `j`, unless it is the one already active.
                 let mut choice = None;
-                if let Some(p) = self.data.profiles.ready() {
-                    if let Some(name) = p.available.get(j) {
-                        if *name != p.active {
-                            choice = Some(name.clone());
-                        }
-                    }
+                if let Some(p) = self.data.profiles.ready()
+                    && let Some(name) = p.available.get(j)
+                    && *name != p.active
+                {
+                    choice = Some(name.clone());
                 }
                 if let Some(name) = choice {
                     self.run_command(Command::SetProfile(name), now);

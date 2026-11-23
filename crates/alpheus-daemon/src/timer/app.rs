@@ -512,10 +512,10 @@ impl App {
         } else if !serving && self.bar.config.modules.contains(&ModuleId::Notifications) {
             log("timer: no notification (not serving)");
         }
-        if fx.sound {
-            if let Some(line) = spawn_sound(self.exec.as_ref(), &self.bar.config.timer.sound) {
-                log(&line);
-            }
+        if fx.sound
+            && let Some(line) = spawn_sound(self.exec.as_ref(), &self.bar.config.timer.sound)
+        {
+            log(&line);
         }
     }
 
@@ -550,10 +550,10 @@ impl App {
             None => None,
         };
         // Already armed for that instant: leave it, so the loop is not touched for nothing.
-        if let (Some(armed), Some(at)) = (self.timer.deadline.deadline(), at) {
-            if same_deadline(armed, at) {
-                return;
-            }
+        if let (Some(armed), Some(at)) = (self.timer.deadline.deadline(), at)
+            && same_deadline(armed, at)
+        {
+            return;
         }
         self.timer.deadline.sync_opt(self.loop_handle.as_ref(), at, App::timer_tick);
     }

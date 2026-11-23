@@ -40,10 +40,10 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
     for (i, &ch) in c.iter().enumerate() {
         if qi < q.len() && ch == q[qi] {
             score += 1;
-            if let Some(p) = prev {
-                if p + 1 == i {
-                    score += 5; // contiguous
-                }
+            if let Some(p) = prev
+                && p + 1 == i
+            {
+                score += 5; // contiguous
             }
             if i == 0 || !c[i - 1].is_alphanumeric() {
                 score += 8; // start of word

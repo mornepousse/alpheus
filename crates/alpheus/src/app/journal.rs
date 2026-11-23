@@ -300,12 +300,12 @@ impl App {
         match (read, result) {
             (DiagRead::Journal(q), DiagResult::Journal(r)) => self.journal_read_done(q, r, now),
             (DiagRead::ServiceUnits, DiagResult::ServiceUnits(r)) => {
-                if let Some(j) = self.journal_view() {
-                    if let Some(p) = j.picker.as_mut() {
-                        match r {
-                            Ok(units) => p.units = Some(units),
-                            Err(e) => p.error = Some(e.to_string()),
-                        }
+                if let Some(j) = self.journal_view()
+                    && let Some(p) = j.picker.as_mut()
+                {
+                    match r {
+                        Ok(units) => p.units = Some(units),
+                        Err(e) => p.error = Some(e.to_string()),
                     }
                 }
             }

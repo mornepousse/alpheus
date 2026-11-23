@@ -349,10 +349,10 @@ impl Event {
                     BtChange::Disconnected(n) => ("disconnected", Some(n)),
                 };
                 env.push(("ALPHEUS_BLUETOOTH", word.into()));
-                if let Some(name) = device {
-                    if !address_like(name) {
-                        env.push(("ALPHEUS_DEVICE", clean_value(name)));
-                    }
+                if let Some(name) = device
+                    && !address_like(name)
+                {
+                    env.push(("ALPHEUS_DEVICE", clean_value(name)));
                 }
             }
             Event::Privacy(kind, b) => {

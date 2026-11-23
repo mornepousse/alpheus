@@ -433,10 +433,10 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
 fn end_of_session(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(e);
     while let Some(error) = current {
-        if let Some(io) = error.downcast_ref::<io::Error>() {
-            if matches!(io.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
-                return true;
-            }
+        if let Some(io) = error.downcast_ref::<io::Error>()
+            && matches!(io.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+        {
+            return true;
         }
         current = error.source();
     }

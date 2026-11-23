@@ -193,10 +193,11 @@ impl App {
                         Some(shown_at) => now.saturating_duration_since(shown_at) >= COPY_GRACE,
                         None => false,
                     };
-                    if can_copy && read {
-                        if let Some(text) = r.text.clone() {
-                            self.send_op(Op::Copy { argv, text });
-                        }
+                    if can_copy
+                        && read
+                        && let Some(text) = r.text.clone()
+                    {
+                        self.send_op(Op::Copy { argv, text });
                     }
                     return true;
                 }
@@ -234,10 +235,10 @@ impl App {
         if argv.is_empty() {
             return;
         }
-        if let View::Report(r) = &self.diag.view {
-            if let Some(text) = r.text.clone() {
-                self.send_op(Op::Copy { argv, text });
-            }
+        if let View::Report(r) = &self.diag.view
+            && let Some(text) = r.text.clone()
+        {
+            self.send_op(Op::Copy { argv, text });
         }
     }
 }

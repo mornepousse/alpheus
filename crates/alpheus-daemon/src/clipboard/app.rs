@@ -206,10 +206,10 @@ impl App {
         let Some(c) = self.clipboard.as_ref() else { return };
         let quiet = c.quiet.active(Instant::now());
         let types = guard.0.as_ref().map(Offer::mime_types).unwrap_or_default();
-        if let Verdict::Read(mime) = verdict(types.iter().map(String::as_str), quiet) {
-            if let Some(offer) = guard.consume() {
-                control::start_read(self, offer, mime);
-            }
+        if let Verdict::Read(mime) = verdict(types.iter().map(String::as_str), quiet)
+            && let Some(offer) = guard.consume()
+        {
+            control::start_read(self, offer, mime);
         }
         // A skipped offer is destroyed as the guard goes.
         self.clipboard_timer_sync();
@@ -289,11 +289,11 @@ impl App {
         }
         app.clipboard_guarded("deadline", |app| {
             app.clipboard_stop_read();
-            if let Some(c) = app.clipboard.as_mut() {
-                if !c.timed_out_logged {
-                    c.timed_out_logged = true;
-                    log("clipboard: a read timed out");
-                }
+            if let Some(c) = app.clipboard.as_mut()
+                && !c.timed_out_logged
+            {
+                c.timed_out_logged = true;
+                log("clipboard: a read timed out");
             }
             app.clipboard_timer_sync();
         });
@@ -369,10 +369,10 @@ impl App {
 
     /// The compositor replaced our selection: the own source is destroyed and its text wiped.
     pub(crate) fn clipboard_source_cancelled(&mut self, id: &ObjectId) {
-        if let Some(c) = self.clipboard.as_mut() {
-            if c.control.own.as_ref().is_some_and(|o| o.is(id)) {
-                c.control.own = None;
-            }
+        if let Some(c) = self.clipboard.as_mut()
+            && c.control.own.as_ref().is_some_and(|o| o.is(id))
+        {
+            c.control.own = None;
         }
     }
 

@@ -212,11 +212,11 @@ impl App {
                 "close",
                 move || {
                     let mut kept = None;
-                    if wants_save(&open.model) {
-                        if let Err(e) = store::save(&paths::state_dir(), open.model.pad.text()) {
-                            log(&format!("notes: not saved ({:?})", e.kind()));
-                            kept = kept_after_close(&open.model, open.seen);
-                        }
+                    if wants_save(&open.model)
+                        && let Err(e) = store::save(&paths::state_dir(), open.model.pad.text())
+                    {
+                        log(&format!("notes: not saved ({:?})", e.kind()));
+                        kept = kept_after_close(&open.model, open.seen);
                     }
                     drop(open);
                     kept

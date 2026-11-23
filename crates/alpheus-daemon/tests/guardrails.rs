@@ -3290,10 +3290,10 @@ fn panicking_index(line: &str) -> Option<String> {
                 open.push(i);
             }
             b']' => {
-                if let Some(start) = open.pop() {
-                    if line.get(start..i).is_some_and(|inner| inner.contains("..")) {
-                        return Some(format!("range inside brackets in `{}`", line.trim()));
-                    }
+                if let Some(start) = open.pop()
+                    && line.get(start..i).is_some_and(|inner| inner.contains(".."))
+                {
+                    return Some(format!("range inside brackets in `{}`", line.trim()));
                 }
             }
             _ => {}

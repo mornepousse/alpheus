@@ -159,12 +159,12 @@ impl App {
     /// Nothing is routed from inside this call. What the flush drained is kept: by the tray, for the
     /// idle callback that `tray_sync` queues; by the link, for an idle `link_readable`.
     pub(crate) fn mpris_do(&mut self, f: impl FnOnce(&mut Mpris, &mut SessionBus)) {
-        if let Some(tray) = self.tray.as_mut() {
-            if tray.media().is_some() {
-                tray.media_do(f);
-                self.tray_sync();
-                return;
-            }
+        if let Some(tray) = self.tray.as_mut()
+            && tray.media().is_some()
+        {
+            tray.media_do(f);
+            self.tray_sync();
+            return;
         }
         let Some(link) = self.link.session.as_mut() else { return };
         if link.media().is_none() {
@@ -181,14 +181,14 @@ impl App {
     /// an idle callback (the tray's deferred output, or the link's `has_ready`, each queued by its
     /// own sync function), never from inside this call. With no server, nothing happens.
     pub(crate) fn notify_do(&mut self, f: impl FnOnce(&mut Notifications)) {
-        if let Some(tray) = self.tray.as_mut() {
-            if tray.notifications().is_some() {
-                tray.notifications_do(f);
-                // `tray_sync` queues the idle callback that delivers the deferred view and bubbles
-                // now; without it they would wait for the next event on the tray's connection.
-                self.tray_sync();
-                return;
-            }
+        if let Some(tray) = self.tray.as_mut()
+            && tray.notifications().is_some()
+        {
+            tray.notifications_do(f);
+            // `tray_sync` queues the idle callback that delivers the deferred view and bubbles
+            // now; without it they would wait for the next event on the tray's connection.
+            self.tray_sync();
+            return;
         }
         let Some(link) = self.link.session.as_mut() else { return };
         if link.notifications().is_none() {
@@ -204,16 +204,17 @@ impl App {
     /// calls (none pending, no timer); and, when properties are dirty, it asks for one frame
     /// callback on the first bar that can take one, where they are read again once.
     pub(crate) fn tray_sync(&mut self) {
-        if !self.tray_deferred_queued && self.tray.as_ref().is_some_and(Tray::has_deferred) {
-            if let Some(handle) = &self.loop_handle {
-                self.tray_deferred_queued = true;
-                handle.insert_idle(|app| {
-                    app.tray_deferred_queued = false;
-                    let Some(tray) = app.tray.as_mut() else { return };
-                    let out = tray.take_deferred();
-                    app.tray_output(out);
-                });
-            }
+        if !self.tray_deferred_queued
+            && self.tray.as_ref().is_some_and(Tray::has_deferred)
+            && let Some(handle) = &self.loop_handle
+        {
+            self.tray_deferred_queued = true;
+            handle.insert_idle(|app| {
+                app.tray_deferred_queued = false;
+                let Some(tray) = app.tray.as_mut() else { return };
+                let out = tray.take_deferred();
+                app.tray_output(out);
+            });
         }
         // The answers left in `ready` after a burst past the settle rounds: the socket was read
         // already, so no fd event will come for them, and an idle callback reads them instead.
@@ -308,10 +309,10 @@ impl App {
 
 /// The media consumer wherever it lives: on the tray's connection, else on the bar's own link.
 pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Mpris> {
-    if let Some(tray) = tray {
-        if let Some(media) = tray.media() {
-            return Some(media);
-        }
+    if let Some(tray) = tray
+        && let Some(media) = tray.media()
+    {
+        return Some(media);
     }
     match link {
         Some(link) => link.media(),
@@ -322,10 +323,10 @@ pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>
 /// The notification consumer wherever it lives: on the tray's connection, else on the bar's own
 /// link.
 pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Notifications> {
-    if let Some(tray) = tray {
-        if let Some(server) = tray.notifications() {
-            return Some(server);
-        }
+    if let Some(tray) = tray
+        && let Some(server) = tray.notifications()
+    {
+        return Some(server);
     }
     match link {
         Some(link) => link.notifications(),

@@ -232,10 +232,10 @@ impl Players {
         if own == PLAYERCTLD {
             return true;
         }
-        if let Some(rest) = own.strip_prefix(PLAYERCTLD) {
-            if rest.starts_with('.') {
-                return true;
-            }
+        if let Some(rest) = own.strip_prefix(PLAYERCTLD)
+            && rest.starts_with('.')
+        {
+            return true;
         }
         for substring in ignore {
             if !substring.is_empty() && bus_name.contains(substring.as_str()) {
@@ -315,11 +315,11 @@ impl Players {
                 }
                 ("Rate", v) => {
                     // A rate that is not a number, or is the one already known, changes nothing.
-                    if let Some(r) = rate(v) {
-                        if r != p.rate {
-                            p.rate = r;
-                            p.position = None;
-                        }
+                    if let Some(r) = rate(v)
+                        && r != p.rate
+                    {
+                        p.rate = r;
+                        p.position = None;
                     }
                 }
                 ("CanPlay", Value::Bool(b)) => p.caps.play = *b,
@@ -353,10 +353,10 @@ impl Players {
     /// latest status change. None when every player is Stopped. See docs/decisions.md, "The active
     /// media player is the pinned one, else the best status".
     pub fn active(&self) -> Option<&Player> {
-        if let Some(pinned) = self.pinned.as_deref() {
-            if let Some(player) = self.shown().find(|p| p.bus_name == pinned) {
-                return Some(player);
-            }
+        if let Some(pinned) = self.pinned.as_deref()
+            && let Some(player) = self.shown().find(|p| p.bus_name == pinned)
+        {
+            return Some(player);
         }
         // The largest pair wins: the better status first, then the later change.
         self.shown().max_by_key(|p| (p.status.score(), p.changed))
@@ -407,10 +407,10 @@ pub fn display_title(track: &Track, identity: Option<&str>, bus_name: &str) -> S
     if let Some(title) = &track.title {
         return title.clone();
     }
-    if let Some(url) = track.url.as_deref() {
-        if let Some(tail) = url_tail(url) {
-            return tail;
-        }
+    if let Some(url) = track.url.as_deref()
+        && let Some(tail) = url_tail(url)
+    {
+        return tail;
     }
     player_name(identity, bus_name)
 }
@@ -419,10 +419,10 @@ pub fn display_title(track: &Track, identity: Option<&str>, bus_name: &str) -> S
 /// label after the MPRIS prefix ("vlc" for org.mpris.MediaPlayer2.vlc.instance4242). See
 /// docs/decisions.md, "A player is labelled by its identity, else by its name".
 pub fn player_name(identity: Option<&str>, bus_name: &str) -> String {
-    if let Some(name) = identity {
-        if !name.is_empty() {
-            return name.to_string();
-        }
+    if let Some(name) = identity
+        && !name.is_empty()
+    {
+        return name.to_string();
     }
     let own = match bus_name.strip_prefix(MPRIS_PREFIX) {
         Some(rest) => rest,
@@ -488,10 +488,10 @@ fn clusters(chars: &[char]) -> Vec<&[char]> {
         prev = Some(c);
     }
     // The last cluster (none for an empty text).
-    if let Some(cluster) = chars.get(start..) {
-        if !cluster.is_empty() {
-            out.push(cluster);
-        }
+    if let Some(cluster) = chars.get(start..)
+        && !cluster.is_empty()
+    {
+        out.push(cluster);
     }
     out
 }

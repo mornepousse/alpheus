@@ -377,11 +377,11 @@ impl App {
         let open = self.launcher.as_ref().map(|o| opened(&o.model));
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
         // The history off or unbound: said before `decide`, so nothing else open is replaced.
-        if request == Request::Clipboard {
-            if let Err(why) = self.clipboard_availability() {
-                conn.reply(&Reply::Error(why.into()));
-                return;
-            }
+        if request == Request::Clipboard
+            && let Err(why) = self.clipboard_availability()
+        {
+            conn.reply(&Reply::Error(why.into()));
+            return;
         }
         let is_tools = request == Request::Tools;
         match decide(request, open, since_open) {

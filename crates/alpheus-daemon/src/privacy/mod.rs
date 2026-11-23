@@ -71,11 +71,11 @@ impl Indicator {
         };
         // `binary_search_by` gives `Err(at)` when the name is not there yet, with the place where it
         // belongs. A name that would land past `MAX_NAMES` is dropped.
-        if let Err(at) = self.names.binary_search_by(|n| n.as_str().cmp(app)) {
-            if at < MAX_NAMES {
-                self.names.insert(at, app.to_string());
-                self.names.truncate(MAX_NAMES);
-            }
+        if let Err(at) = self.names.binary_search_by(|n| n.as_str().cmp(app))
+            && at < MAX_NAMES
+        {
+            self.names.insert(at, app.to_string());
+            self.names.truncate(MAX_NAMES);
         }
     }
 
@@ -342,10 +342,11 @@ impl Privacy {
         for off in self.off_at.iter().flatten() {
             keep_earliest(&mut earliest, *off);
         }
-        if let Some(release) = self.release_at {
-            if self.shown.screen.active() && !self.pw.screen.active() {
-                keep_earliest(&mut earliest, release + OFF_DELAY);
-            }
+        if let Some(release) = self.release_at
+            && self.shown.screen.active()
+            && !self.pw.screen.active()
+        {
+            keep_earliest(&mut earliest, release + OFF_DELAY);
         }
         earliest
     }

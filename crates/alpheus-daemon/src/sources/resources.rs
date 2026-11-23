@@ -409,11 +409,11 @@ impl Reader {
             };
             self.previous = now;
         }
-        if self.shows(ResourceItem::Memory) {
-            if let Ok(text) = std::fs::read_to_string(self.roots.root.join("proc/meminfo")) {
-                sample.memory = parse_meminfo(&text);
-                sample.memory_total = parse_mem_total(&text);
-            }
+        if self.shows(ResourceItem::Memory)
+            && let Ok(text) = std::fs::read_to_string(self.roots.root.join("proc/meminfo"))
+        {
+            sample.memory = parse_meminfo(&text);
+            sample.memory_total = parse_mem_total(&text);
         }
         if self.shows(ResourceItem::Temperature) {
             sample.temperature = self.cpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));

@@ -354,12 +354,12 @@ impl App {
     /// client of the count, nothing.
     fn failed_do(&mut self, f: impl FnOnce(&mut UserUnits, &mut SessionBus)) {
         // The client lives on the tray's connection if the tray has one.
-        if let Some(tray) = self.tray.as_mut() {
-            if tray.failed().is_some() {
-                tray.failed_do(f);
-                self.tray_sync();
-                return;
-            }
+        if let Some(tray) = self.tray.as_mut()
+            && tray.failed().is_some()
+        {
+            tray.failed_do(f);
+            self.tray_sync();
+            return;
         }
         // Else on the bar's link, if it has one.
         let Some(link) = self.link.session.as_mut() else { return };

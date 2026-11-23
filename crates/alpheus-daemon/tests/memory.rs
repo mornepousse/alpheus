@@ -973,7 +973,7 @@ fn theme_reloads_no_growth() {
     let (sway, _hypr, d) = start("theme-reloads", 3, &bus, None, Some(toml), PwDump::Silent);
     let config = sway.runtime.join("config/alpheus");
     let reload = |n: usize| {
-        let theme = if n % 2 == 0 { "tokyo-night" } else { "gruvbox" };
+        let theme = if n.is_multiple_of(2) { "tokyo-night" } else { "gruvbox" };
         write_atomically(&config, "theme.toml", &format!("theme = \"{theme}\"\nmode = \"dark\"\n"));
         assert!(d.wait_for_count("theme reloaded:", n + 1, DELAY), "reload {n}: {:?}", d.log());
     };

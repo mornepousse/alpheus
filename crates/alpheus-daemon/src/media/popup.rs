@@ -191,10 +191,10 @@ impl MediaPopup {
             // The buttons row if one of its buttons can be used, else the first row that can be
             // selected, else row 0.
             let mut target = None;
-            if let Some(i) = lines.iter().position(|l| *l == Line::Buttons) {
-                if ok(i) {
-                    target = Some(i);
-                }
+            if let Some(i) = lines.iter().position(|l| *l == Line::Buttons)
+                && ok(i)
+            {
+                target = Some(i);
             }
             if target.is_none() {
                 target = list::first_selectable(lines.len(), ok);

@@ -559,11 +559,11 @@ impl Shield {
 
     /// Clears a `failed` whose 4 s ended; true when it did.
     pub fn due(&mut self, now: Instant) -> bool {
-        if let Some(until) = self.failed_until {
-            if now >= until {
-                self.failed_until = None;
-                return true;
-            }
+        if let Some(until) = self.failed_until
+            && now >= until
+        {
+            self.failed_until = None;
+            return true;
         }
         false
     }

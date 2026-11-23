@@ -416,15 +416,15 @@ impl App {
 
     /// Applies one answer from the worker: stores a read, or finishes an action.
     pub fn on_update(&mut self, u: Update, now: Instant) {
-        if let Some(d) = update_domain(&u) {
-            if self.is_pending(d) {
-                // Stale read: an action on this domain is in progress. A displays trial's end
-                // is reported once, so it is still told; only the outputs are dropped.
-                if let Update::Displays(Ok(s)) = u {
-                    self.trial_read(s.trial, now);
-                }
-                return;
+        if let Some(d) = update_domain(&u)
+            && self.is_pending(d)
+        {
+            // Stale read: an action on this domain is in progress. A displays trial's end
+            // is reported once, so it is still told; only the outputs are dropped.
+            if let Update::Displays(Ok(s)) = u {
+                self.trial_read(s.trial, now);
             }
+            return;
         }
         // On the Diag overview a read can add or drop rows above the cursor: a selected unit stays
         // selected (`r` and `c` act on it), never whatever slid into its place. The other rows keep
@@ -458,10 +458,10 @@ impl App {
             }
             Update::Superseded(op) => self.op_answered(&op),
         }
-        if let Some(kept) = keep {
-            if let Some(i) = self.items().iter().position(|i| *i == kept) {
-                self.focus = i;
-            }
+        if let Some(kept) = keep
+            && let Some(i) = self.items().iter().position(|i| *i == kept)
+        {
+            self.focus = i;
         }
         self.clamp_focus();
     }

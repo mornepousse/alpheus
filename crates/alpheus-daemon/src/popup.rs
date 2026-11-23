@@ -656,19 +656,19 @@ impl App {
         let size = box_size(cells.0, cells.1, advance, height * e as u32, e, &fonts.frame(e));
         let p = placement(&open.anchor, size, logical_advance(advance, e), height);
         open.size = (p.width as u32, p.height as u32);
-        if let (true, Some(xdg)) = (reposition, xdg.as_ref()) {
-            if let Ok(positioner) = XdgPositioner::new(xdg) {
-                positioner.set_size(p.width, p.height);
-                positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
-                positioner.set_anchor(Edge::BottomLeft);
-                positioner.set_gravity(Gravity::BottomRight);
-                positioner
-                    .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
-                open.token += 1;
-                open.popup.reposition(&positioner, open.token);
-                open.configured = false; // its configure paints
-                return true;
-            }
+        if let (true, Some(xdg)) = (reposition, xdg.as_ref())
+            && let Ok(positioner) = XdgPositioner::new(xdg)
+        {
+            positioner.set_size(p.width, p.height);
+            positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
+            positioner.set_anchor(Edge::BottomLeft);
+            positioner.set_gravity(Gravity::BottomRight);
+            positioner
+                .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
+            open.token += 1;
+            open.popup.reposition(&positioner, open.token);
+            open.configured = false; // its configure paints
+            return true;
         }
         // xdg_wm_base < 3, or the positioner failed: a buffer of the new size, drawn now.
         false
@@ -718,10 +718,11 @@ impl App {
         // record of what just closed, by whom it was opened, and when, lets that next press still
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
-        if menu && why == PopupClose::Dismissed {
-            if let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by) {
-                self.menu.recently_closed = Some((key, button, Instant::now()));
-            }
+        if menu
+            && why == PopupClose::Dismissed
+            && let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by)
+        {
+            self.menu.recently_closed = Some((key, button, Instant::now()));
         }
         // The same race for a module's popup (the calendar; the media popup): a left press on
         // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).

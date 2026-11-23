@@ -183,10 +183,10 @@ impl App {
         // How long until the next redraw, if one is due: needs a connection, an active player and
         // a position it knows.
         let mut due = None;
-        if let Some(mpris) = mpris_of(self.tray.as_ref(), self.link.session.as_ref()) {
-            if let Some(player) = mpris.players().active() {
-                due = media::popup::player_tick(open, player, now);
-            }
+        if let Some(mpris) = mpris_of(self.tray.as_ref(), self.link.session.as_ref())
+            && let Some(player) = mpris.players().active()
+        {
+            due = media::popup::player_tick(open, player, now);
         }
         let at = media::popup::next_deadline(due, self.media_timer.deadline(), now);
         self.media_timer.sync_opt(self.loop_handle.as_ref(), at, App::media_tick);
