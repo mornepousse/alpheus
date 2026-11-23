@@ -163,6 +163,7 @@ alpheus is written with substantial help from an AI coding assistant (Claude Cod
 - [`docs/measurements.md`](docs/measurements.md) and [`docs/comparison.md`](docs/comparison.md): what it costs, and how it compares.
 - [`docs/decisions.md`](docs/decisions.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md):
   why it is the way it is, how to contribute, what it can do to your session.
+- [`CHANGELOG.md`](CHANGELOG.md): what each delivery brought, newest first.
 - [`docs/SCOPE.md`](docs/SCOPE.md): the original scope (historical).
 - [`docs/specs/`](docs/specs/README.md): the design history, with a status index.
 
