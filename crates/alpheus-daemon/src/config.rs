@@ -1,6 +1,9 @@
-//! ~/.config/alpheus/bar.toml, optional. Absent: defaults, no message.
-//! Invalid: defaults and a warning (daemon log). Never an abort. Each
-//! setting is read once at startup and costs nothing if unused.
+//! `bar.toml`: every setting of the daemon, read once at start.
+//!
+//! The file is optional. Absent, the defaults apply with no message; invalid, the defaults apply
+//! with one warning in the log, and never an abort. A setting costs nothing while the module that
+//! reads it is not in `modules`. The example below is the whole file, with each key's default and
+//! what it does; docs/configuration.md is the same thing as a page, with the bounds.
 //!
 //! ```toml
 //! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
@@ -100,6 +103,17 @@
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
 //! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
 //! ```
+//!
+//! Never:
+//! - abort on a bad file: an unknown key or a value out of bounds makes the whole file fall back to
+//!   the defaults, with one line in the log naming the key; the daemon always starts;
+//! - read the file again: `bar.toml` is read once at start, so a change needs a restart (the theme
+//!   files and `launcher.toml` are the two that reload, each in its own place);
+//! - cost anything for a module that is not in `modules`: no source of its own is started
+//!   (`startup::wanted`), and the memory suite measures each one.
+//!
+//! See: docs/configuration.md (every key, its default and its bounds, written from this file),
+//! docs/features/*.md ("Configuration" of each feature), docs/cli.md (when each file is read).
 
 use crate::clock;
 use crate::grid::text_width;

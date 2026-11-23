@@ -1,7 +1,21 @@
-//! Keys the daemon's keyboard surfaces understand (the launcher, a tray
-//! menu, the calendar), from what xkbcommon already resolved: a keysym
-//! (layout applied, so Dvorak's letters are Dvorak's) and its text. Pure:
-//! no Wayland here, tests feed keysyms directly.
+//! The keys the daemon's keyboard surfaces understand.
+//!
+//! The launcher's box, the notepad, a tray menu, the calendar and every panel read their keys from
+//! here, as xkbcommon already resolved them: a keysym with the layout applied, so Dvorak's letters
+//! are Dvorak's, and the text the key produces. `Key` is the closed set of what any of them can
+//! answer to, which is why a new key is added here once and not in five places. Pure: no Wayland,
+//! and the tests feed keysyms directly.
+//!
+//! Never:
+//! - read a scancode or a raw keycode: the layout the user chose must decide what a key means;
+//! - decide what a key does: that belongs to each box's own model (`launcher::model`,
+//!   `notes::keys`, the popups), which is what lets the same key mean different things;
+//! - repeat a key that must act once: the caller tells a repeat from a press
+//!   (`the_keyboards_own_repeat_is_told_from_a_press`).
+//!
+//! See: docs/features/launcher.md, docs/features/notes.md and docs/features/quick-settings.md (the
+//! keys a reader sees). The control center has its own keymap, with the Dvorak navigation keys of
+//! `config.toml` (docs/configuration.md, `[keys]`).
 
 use xkeysym::{Keysym, key};
 
