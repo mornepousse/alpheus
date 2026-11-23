@@ -6,14 +6,27 @@ where each lives.
 
 ### Block
 
-One module's group of cells in the bar, drawn as a unit by the block styles (`islands`,
-`powerline`, `floating`, ...); in the code a `Group` in `grid.rs`, empty under the `flat` style.
+A run of adjacent modules that share a `GroupKind`, drawn as one unit by the block styles
+(`islands`, `powerline`, `floating`, ...); in the code a `Group` in `grid.rs`, opened by
+`layout::opens_group` when the kind changes, and empty under the `flat` style. Several modules can
+form one block (sound, network, Bluetooth and battery are the `Status` kind); most others are a
+block of their own.
 
 ### Budget test
 
 A test in `crates/alpheus-daemon/tests/memory.rs` that starts the real daemon and asserts a memory
 or wake-up bound; it refuses a debug build, so it is run in release (see
 [`measurements.md`](measurements.md)).
+
+### calloop
+
+The event-loop library the daemon is built on: it waits on file descriptors, channels and timers
+and calls one callback per source; Wayland (through smithay-client-toolkit) is one of them.
+
+### Chip
+
+The small block a module draws in the bar for a state, a glyph and sometimes a text: the timer's
+`TimerChip` (`timer/mod.rs`) is the example.
 
 ### Deadline timer
 
@@ -37,6 +50,11 @@ domain.
 The `Executor` trait in `alpheus-common/src/exec.rs`, the only way alpheus starts an external
 program: `SystemExecutor` in production, `FakeExecutor` in tests, and `NonBlocking` in the daemon,
 which refuses the call that would block the event loop.
+
+### Feed
+
+`Feed<T>` in `state.rs`: what the bar knows of one source, `Waiting` (nothing received yet, drawn as
+nothing), `Down` (the source is gone, drawn as a dimmed dash) or `Ready(T)`.
 
 ### Glue
 
@@ -65,6 +83,12 @@ thread.
 
 A `Msg` in `state.rs`: one thing a source said (the compositor's state, the clock, the sound, a
 battery reading). `App::on_bar_message` applies it to `state::Bar`.
+
+### Module
+
+An entry of `modules` in `bar.toml`, a `ModuleId`: something drawn in the bar. A *feature* is any
+folder with a model and its glue; the notes pad and the clipboard history are features, not
+modules.
 
 ### Needs
 
@@ -100,6 +124,11 @@ maps, read from `/proc/<pid>/smaps_rollup`; the budget tests print it and, for l
 The first 3 seconds after the daemon starts (`QUIET` in `hooks/mod.rs`), during which a change
 only moves a hook's seed and fires nothing.
 
+### Role and hue
+
+The 16 colour *roles* (`bar_bg`, `fg`, `accent`, ...) and 7 *hues* (red to purple) of a theme, in
+`alpheus-common/src/theme/mod.rs`; everything alpheus paints takes its colours from them.
+
 ### Scope and tap
 
 A `Tap` (`sources/dbus/tap.rs`) is how the loop tells the D-Bus thread what to read for an open
@@ -123,6 +152,11 @@ A thread, supervised by `spawn_source` in `sources/mod.rs`, that reads one part 
 compositor, PipeWire, the system bus) and sends the loop messages, with a backoff when it goes
 down. (The launcher's `[[sources]]` are a different thing: commands that list entries.)
 
+### TUI
+
+The terminal user interface; here, the control center (`alpheus`, built with ratatui), called the
+TUI in the code.
+
 ### Verb
 
 One request that `alpheus-launch` sends the daemon over its socket (`--toggle`, `--quick`,
@@ -132,4 +166,5 @@ One request that `alpheus-launch` sends the daemon over its socket (`--toggle`, 
 ### Wake-up
 
 A voluntary context switch of a daemon thread: it blocked, then ran again. The budget tests read it
-from `/proc/<pid>/task/*/status` and assert that it stays at zero at rest.
+from `/proc/<pid>/task/*/status` and assert that it stays at zero, or under a small stated bound,
+at rest.

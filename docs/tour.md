@@ -6,8 +6,7 @@ and the function that does it, so you can open the code and read along. The map 
 in [`ARCHITECTURE.md`](ARCHITECTURE.md); words in the [glossary](GLOSSARY.md) are linked at their
 first use.
 
-Written against commit `2b2c730`. Names are checked by reading the code at that commit; lines are
-not given because they move, so search for the name. All paths are under
+Lines are not given because they move; search for the name. All paths are under
 `crates/alpheus-daemon/src/`.
 
 The path is the common one for every bar module that a source feeds: a source thread reads the
@@ -22,9 +21,11 @@ The daemon has one event loop, and nothing on it may block. D-Bus calls can, so 
 its own thread, named `D-Bus`, started only when a configured module [needs](GLOSSARY.md#needs) one
 of its [domains](GLOSSARY.md#domain). `battery` in `modules` sets `Needs::BATTERY` (the `battery`
 row of `MODULES` in `modules.rs`); with no such module, `sources::dbus::start` returns before
-creating a thread or a connection. The reason UPower is read on this thread and not on the loop is
-the read-only, never-activating connection described in `sources/dbus/mod.rs` and
-[`decisions.md`](decisions.md) ("UPower is the one service the daemon may start").
+creating a thread or a connection. UPower is read on this thread, not on the loop, because a D-Bus
+call can block. The connection reads and calls by unique name, so a read never starts a service.
+The one exception: at a session's start, if UPower has no owner, one `StartServiceByName` is sent
+(`upower::activate_if_absent`; [`decisions.md`](decisions.md), "UPower is the one service the
+daemon may start").
 
 ## 1. The signal arrives on the D-Bus thread
 
@@ -32,9 +33,10 @@ UPower sends `org.freedesktop.DBus.Properties.PropertiesChanged` from the object
 `/org/freedesktop/UPower/devices/DisplayDevice` (the aggregate of the laptop's battery) with the
 property `Percentage`. The daemon receives it only because it asked the bus for it:
 
-- `MATCH_RULES` in `sources/dbus/dbusrs_bus.rs` holds one rule per domain; the `Domain::Battery`
-  rule matches `PropertiesChanged` under `/org/freedesktop/UPower/devices`. A connection adds only
-  the rules of its own domains, so the bus sends nothing else.
+- `MATCH_RULES` in `sources/dbus/dbusrs_bus.rs` holds one or more rules per domain (battery has
+  three); the battery's device rule matches `PropertiesChanged` under
+  `/org/freedesktop/UPower/devices`. A connection adds only the rules of its own domains, so the
+  bus sends nothing else.
 - The thread sleeps in `DbusRsBus::next_signal` (same file): it is blocked in `poll` on the bus's
   socket (and on the quick panel's taps, see [scope and tap](GLOSSARY.md#scope-and-tap)) with no
   timeout. At rest nothing wakes it.
@@ -77,19 +79,21 @@ calls `publish` only when they differ. A signal that leaves the battery as it wa
 few) stops here: the loop is never woken. 54 % to 53 % differs, so it goes on. `publish` is the
 closure `sources::dbus::start` was given by the loop.
 
-## 5. One message per domain, through the channel
+## 5. The whole state, as eight messages, through the channel
 
 That closure is built in `startup.rs`, in `start_sources` (the call to `sources::dbus::start`). It
-calls `sources::dbus::messages` (`sources/dbus/session.rs`), which expands a `SystemState` into
-eight `Msg` values, `Msg::Battery(s.battery)` among them, and sends each as `Mail::Bar(msg)` on the
-calloop channel (`Mail` is defined in `startup.rs`). Sending on that channel is what wakes the
-event loop; this is the only wake-up the whole chain costs.
+calls `sources::dbus::messages` (`sources/dbus/session.rs`), which always expands a `SystemState`
+into all eight `Msg` values (network, Bluetooth, battery, power profile, Wi-Fi, Bluetooth detail,
+VPN, failed units), `Msg::Battery(s.battery)` among them, and sends each as `Mail::Bar(msg)` on the
+calloop channel (`Mail` is defined in `startup.rs`). Each receiver keeps only what differs from its
+last value (`set_if_changed`), so the seven others change nothing here. Sending on that channel is
+what wakes the event loop; this is the only wake-up the whole chain costs.
 
 ## 6. The loop receives the mail
 
 `insert_core_sources` (`startup.rs`) registered the channel as a loop source. Its callback matches
 `Mail::Bar(m)` and calls `App::on_bar_message(m)`. The callback does not draw; it only updates the
-state and raises a `dirty` flag (see step 9), so a burst of messages in one pass redraws once.
+state and raises a `dirty` flag (steps 7 and 8), so a burst of messages in one pass redraws once.
 
 ## 7. `on_bar_message`: who sees the message, in what order
 
@@ -160,7 +164,8 @@ each bar surface (one per output).
 3. `Bar::grid` removes modules from the right when the bar is too narrow (the `REMOVAL` list), then
    `lay_out_styled` places the segments left to right in the configured order and writes the `Grid`:
    a row of cells (a character and a style each), the click zones, and one `Group`
-   ([block](GLOSSARY.md#block)) per module under the block styles.
+   ([block](GLOSSARY.md#block)) per run of adjacent modules sharing a `GroupKind` (the battery
+   joins sound, network and Bluetooth in the `Status` block) under the block styles.
 
 The grid is the tested object: layout tests compare it, and the painter only copies it.
 
@@ -190,7 +195,7 @@ woke, and `0` is the number of wake-ups until the next event.
 | decode | `dbusrs_bus::signal`, `signal.rs`: `Signal::domain`, `relevant` | names only, an allowlist |
 | read | `session.rs`: `read`, `upower.rs`: `read` | `GetNameOwner`, `GetAll` on unique names |
 | dedupe | `session.rs`: `publish_if_changed` | nothing published if equal |
-| to the loop | `session.rs`: `messages`; `startup.rs`: `Mail::Bar` | one `Msg::Battery` per change |
+| to the loop | `session.rs`: `messages`; `startup.rs`: `Mail::Bar` | all eight `Msg`, each kept only if it differs |
 | dispatch | `startup.rs`: `insert_core_sources`, `App::on_bar_message` | hooks, alerts, then the bar |
 | hooks | `hooks/app.rs`: `hooks_msg`; `hooks/mod.rs`: `Hooks::on_msg` | edges only, seeds, quiet window |
 | alerts | `notify/app.rs`: `battery_feed`; `notify/battery_alert.rs`: `BatteryAlerts::feed` | one per threshold |
