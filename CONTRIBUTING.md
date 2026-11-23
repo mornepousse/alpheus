@@ -80,7 +80,8 @@ USB-docked screens reconnect.
 ## Documentation
 
 - A user-visible feature updates [`docs/comparison.md`](docs/comparison.md),
-  [`docs/measurements.md`](docs/measurements.md) when it costs anything, and
+  [`docs/measurements.md`](docs/measurements.md) when it costs anything,
+  [`docs/configuration.md`](docs/configuration.md) for its keys, and
   its page under [`docs/features/`](docs/features/).
 - A design lands as a spec in `docs/specs/` before the code, with a plan in
   `docs/plans/` for anything multi-step; see [`docs/specs/README.md`](docs/specs/README.md).

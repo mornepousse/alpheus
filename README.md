@@ -294,12 +294,7 @@ A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` comm
 
 A line `Captures · Screenshot zone` shows as **Screenshot zone**, then `Captures` dimmed. It is found by typing either part. It is never listed on an empty query, in another mode or behind a prefix. Its use is remembered for the ranking like an app's.
 
-```toml
-[[sources]]
-name = "Tools"                     # 1 to 32 characters, unique, no control character (logs, history)
-list = ["my-menu", "--list"]       # argv, no shell
-run  = ["my-menu", "{line}"]       # "{line}": the chosen line, as one argument
-```
+The keys of a `[[sources]]` table are in [`docs/configuration.md`](docs/configuration.md#sources).
 
 A source that fails, hangs or floods is cut off and logged once. The launcher opens as usual.
 Whatever the list command started is killed with it when the read ends. If the daemon itself is
@@ -355,7 +350,7 @@ Open it with `alpheus-launch --clipboard` (bind it yourself: Mango `bind=SUPER,v
 
 ### Shield mode
 
-A security mode for public networks, with the work split in two. **Your system configuration does the root work** (a firewall chain, stopping sshd and Avahi, USBGuard's policy) behind one privileged command you already have; **alpheus does everything visible**: it shows the state, switches it, lists the USB devices USBGuard blocks, allows one, tells you and fires a hook. Nothing in alpheus is distribution-specific: the state is "a file exists", the actions are argv arrays, and the device list is USBGuard's `list-devices` text, which alpheus parses itself. It never runs anything but the argv you configured (no sudo, no polkit API, no firewall or USBGuard call of its own) and never watches USB plugs in the background. With no `[shield]` table nothing exists: no watch, no glyph, no row, and every verb answers `shield is not configured in bar.toml` (exit 2). **Configured** means `flag`, `on` and `off` are all set; the keys are in the [`bar.toml` reference](#configure). `on_text` and `off_text` are the notices' bodies.
+A security mode for public networks, with the work split in two. **Your system configuration does the root work** (a firewall chain, stopping sshd and Avahi, USBGuard's policy) behind one privileged command you already have; **alpheus does everything visible**: it shows the state, switches it, lists the USB devices USBGuard blocks, allows one, tells you and fires a hook. Nothing in alpheus is distribution-specific: the state is "a file exists", the actions are argv arrays, and the device list is USBGuard's `list-devices` text, which alpheus parses itself. It never runs anything but the argv you configured (no sudo, no polkit API, no firewall or USBGuard call of its own) and never watches USB plugs in the background. With no `[shield]` table nothing exists: no watch, no glyph, no row, and every verb answers `shield is not configured in bar.toml` (exit 2). **Configured** means `flag`, `on` and `off` are all set; the keys are in the [`[shield]` reference](docs/configuration.md#shield). `on_text` and `off_text` are the notices' bodies.
 
 - **State.** `flag` existing is on, absent is off, anything else unreadable (shown `·`, nothing runs). Its directory is watched in the theme watch's inotify instance (no new descriptor, thread or polling; a directory that other programs keep busy, such as `/tmp`, wakes the loop for each change in it, so give the flag a directory of its own); when that is impossible one log line says so and the flag is read at each panel open and after each command alpheus runs. The first reading is a seed: no notice and no hook for it.
 - **The bar and the panel.** The `shield` module is drawn only while on. In the quick panel the Shield row sits under the VPN row: Space runs `off` or `on` (`…` until the flag follows; `failed` for 4 s when the command exits non-zero, is killed or the flag does not follow, with one log line of fixed words, never a device name or a command); Enter or → opens the blocked devices (`Reading…`, `No blocked device`, `Cannot list the devices`, or `Shield is off`), at most 32 rows with the `vid:pid` muted; Enter on one runs `allow` with its USBGuard id, then reads the list again. The configured command (for example `pkexec`) may show polkit's own dialog: a command may take 60 s (typing a password) and it survives the panel closing; its output goes to `/dev/null`, so a privileged helper is never cut half way by a closed pipe.
@@ -379,40 +374,14 @@ replacing the link is not seen until the bar restarts (the bar logs it once at s
 
 ![The bar in Tokyo Night (dark), Catppuccin (light) and Gruvbox (dark), then the light theme's menu and calendar (sample data, zoomed ×2)](docs/images/themes.png)
 
-```toml
-# ~/.config/alpheus/theme.toml — every key optional
-theme = "catppuccin"   # a preset below, or "wallpaper"
-mode  = "auto"         # "auto" (follow the desktop), "dark", "light"
-module_colors = "icons" # "none", "icons" (default), "full", "pills": see Module colours below
-style   = "flat"        # "islands", "powerline", "floating", "underline", "translucent": see Bar styles below
-opacity = 0.8           # translucent only
-
-[colors]               # override any role, whatever the theme and mode
-# accent = "#ff9e64"
-```
+The keys of `theme.toml` are in [`docs/configuration.md`](docs/configuration.md#themetoml).
 
 With no `theme.toml`, or no `theme` key in it, alpheus uses `wallpaper` when
 `~/.config/alpheus/colors.toml` exists (what it did before themes existed),
 and `catppuccin` otherwise. An unknown name falls back to `catppuccin`, with
 one line in the log.
 
-| `theme` | Dark | Light |
-|---|---|---|
-| `catppuccin` | Mocha | Latte |
-| `gruvbox` | dark | light |
-| `tokyo-night` | Night | Day |
-| `rose-pine` | main | Dawn |
-| `everforest` | dark medium | light medium |
-| `kanagawa` | Wave | Lotus |
-| `solarized` | dark | light |
-| `nord` | Nord | dark only |
-| `dracula` | Dracula | dark only |
-| `ember` | Ember | Ember |
-| `glacier` | Glacier | Glacier |
-| `ink` | Ink | Ink |
-| `hicon` | High contrast | High contrast |
-| `sorbet` | Sorbet | Sorbet |
-| `phosphor` | Phosphor | dark only |
+The fifteen presets are listed in [`docs/configuration.md`](docs/configuration.md#presets).
 
 A preset with no light variant stays dark in light mode. Every preset is
 checked for legibility in both modes by a test using WCAG contrast:
@@ -424,21 +393,7 @@ Where an official colour falls short in a light variant, alpheus uses a
 darker shade of it. Nord's bar sits on `nord0` rather than `nord1`, so that
 its red stays readable.
 
-A theme is 16 colours, named by use:
-
-| Role | Used for |
-|---|---|
-| `bar_bg` | the bar's background |
-| `pill_bg` | raised cells of the bar (a visible workspace); the blocks of the block styles |
-| `popup_bg` | menus, calendar, tooltip, launcher |
-| `raised` | reserved for hover; powerline's alternate blocks; a visible workspace inside a block |
-| `selection` | the selected row |
-| `fg`, `fg_dim` | text, secondary text (frames are `fg_dim` at 40 %) |
-| `on_accent` | text on an accent |
-| `accent`, `accent_container` | the clock, the active workspace |
-| `accent2` | checks and radios in menus |
-| `accent2_container` | reserved (no surface uses it yet; delivery 2) |
-| `ok`, `warn`, `error`, `urgent` | states: low battery is `warn`, critical `error`, an urgent workspace `urgent` |
+A theme is 16 colours, named by use; the roles are listed in [`docs/configuration.md`](docs/configuration.md#roles).
 
 #### Module colours
 
@@ -448,12 +403,7 @@ A theme also carries **seven hues**: `red`, `orange`, `yellow`, `green`,
 read, 3:1 on the bar at least). `module_colors` in `theme.toml` decides how
 much of each module wears its hue:
 
-| `module_colors` | Look |
-|---|---|
-| `none` | no hue: the bar looks as before the hues existed |
-| `icons` (default) | each module's icon takes its hue |
-| `full` | the icon and the module's text |
-| `pills` | each block filled with its hue (block styles, see Bar styles below) |
+The values of `module_colors` are in [`docs/configuration.md`](docs/configuration.md#module_colors).
 
 The mapping is fixed:
 
@@ -479,31 +429,15 @@ green at any level (its glyph shows it charges, so it never warns); under `none`
 keeps the accent. The Theme tab of the
 control center has a "Module colours" row (None, Icons, Full, Pills) with a preview.
 
-A colour file may carry the seven hues as optional keys (`red = "#f38ba8"`,
-and so on); a hue that is absent is derived from Catppuccin's (Mocha for dark,
-Latte for light) mixed 30 % toward the accent, so it stays in tune with the
-theme. `[colors]` in `theme.toml` can override a hue like any role.
 
 #### Bar styles
 
 The bar has six shapes. `flat`, the default, is the bar as it always was.
 
-```toml
-# ~/.config/alpheus/theme.toml
-style   = "islands"  # "flat" (default), "islands", "powerline", "floating", "underline", "translucent"
-opacity = 0.8        # translucent only: 0.3 to 1.0 (clamped, with one line in the log)
-```
 
 Only `translucent` uses `opacity`; a value out of range still logs its warning under any other style.
 
-| `style` | Look |
-|---|---|
-| `flat` | one line on the bar colour, modules separated by a dim dot |
-| `islands` | each group of modules in its own rounded block; the bar between them is transparent |
-| `powerline` | full-height blocks joined by arrows, alternating two tones |
-| `floating` | one rounded bar, 6 px from the top and sides of the screen, with a light shadow |
-| `underline` | blocks one step lighter than the bar, a thin line under it, the active workspace in the accent, underlined |
-| `translucent` | the bar at `opacity` over the wallpaper, solid blocks |
+The six values of `style` are described in [`docs/configuration.md`](docs/configuration.md#style).
 
 ![flat](docs/images/style-flat.png)
 ![islands](docs/images/style-islands.png)
@@ -544,79 +478,7 @@ Clicks in the transparent gaps between `islands` blocks still reach the bar. The
 
 #### Wallpaper colours (matugen)
 
-`theme = "wallpaper"` reads `colors.toml` (dark) and `colors-light.toml`
-(light). If only the dark file exists, light mode uses it too. A file gives
-the 16 roles above. The 7 keys of earlier versions (`bg fg accent muted
-surface error ok`) still work, and the other roles are derived from them.
-
-A matugen template for the 16 roles, `~/.config/matugen/templates/alpheus.toml`:
-
-```toml
-bar_bg            = "{{colors.surface_container_lowest.default.hex}}"
-pill_bg           = "{{colors.surface_container_high.default.hex}}"
-popup_bg          = "{{colors.surface_container.default.hex}}"
-raised            = "{{colors.surface_container_highest.default.hex}}"
-selection         = "{{colors.secondary_container.default.hex}}"
-fg                = "{{colors.on_surface.default.hex}}"
-fg_dim            = "{{colors.on_surface_variant.default.hex}}"
-on_accent         = "{{colors.on_primary.default.hex}}"
-accent            = "{{colors.primary.default.hex}}"
-accent_container  = "{{colors.primary_container.default.hex}}"
-accent2           = "{{colors.tertiary.default.hex}}"
-accent2_container = "{{colors.tertiary_container.default.hex}}"
-ok                = "{{colors.tertiary.default.hex}}"
-warn              = "{{colors.amber.default.hex}}"
-error             = "{{colors.error.default.hex}}"
-urgent            = "{{colors.error_container.default.hex}}"
-```
-
-`amber` is a custom colour, tinted toward the wallpaper. The seven hues are
-custom colours too, harmonised with the wallpaper: add these lines to the
-template, in the same way (the keys are optional; without them alpheus
-derives the hues from the accent):
-
-```toml
-red    = "{{colors.red.default.hex}}"
-orange = "{{colors.orange.default.hex}}"
-yellow = "{{colors.yellow.default.hex}}"
-green  = "{{colors.green.default.hex}}"
-cyan   = "{{colors.cyan.default.hex}}"
-blue   = "{{colors.blue.default.hex}}"
-purple = "{{colors.purple.default.hex}}"
-```
-
-One matugen configuration per mode, each writing its own file.
-`~/.config/matugen/alpheus-dark.toml`:
-
-```toml
-[config.custom_colors]
-amber  = { color = "#f9a825", blend = true }
-red    = { color = "#f38ba8", blend = true }
-orange = { color = "#fab387", blend = true }
-yellow = { color = "#f9e2af", blend = true }
-green  = { color = "#a6e3a1", blend = true }
-cyan   = { color = "#94e2d5", blend = true }
-blue   = { color = "#89b4fa", blend = true }
-purple = { color = "#cba6f7", blend = true }
-
-[templates.alpheus]
-input_path = "~/.config/matugen/templates/alpheus.toml"
-output_path = "~/.config/alpheus/colors.toml"
-```
-
-`alpheus-light.toml` is the same with `output_path = "~/.config/alpheus/colors-light.toml"`.
-Then, at each wallpaper change:
-
-```sh
-matugen -c ~/.config/matugen/alpheus-dark.toml  image "$WALLPAPER" -m dark  -t scheme-vibrant
-matugen -c ~/.config/matugen/alpheus-light.toml image "$WALLPAPER" -m light -t scheme-vibrant
-```
-
-`-t scheme-vibrant` gives livelier colours than matugen's default
-(`scheme-tonal-spot`). The bar follows the new files on its own. Run from a
-script with no terminal (a wallpaper hook), matugen cannot ask which of a
-picture's dominant colours to use: add `--source-color-index 0` to pick the
-first.
+`theme = "wallpaper"` reads the colour files matugen writes; the matugen template, its two configurations and the commands are in [`docs/configuration.md`](docs/configuration.md#wallpaper-colours-matugen).
 
 ## Build
 
@@ -636,248 +498,7 @@ otherwise in the system's.
 
 ## Configure
 
-Everything is optional, under `~/.config/alpheus/`. An invalid file falls
-back to default values with a warning, never a crash: `bar.toml`,
-`launcher.toml`, `config.toml` and `displays.toml` reject unknown keys, so a
-single typo (or an unknown module name) discards that whole file. `theme.toml`
-is lenient: an unknown key or a bad value is ignored with a warning and the
-rest applies; unknown keys in `colors*.toml` are ignored. The daemon logs to its standard error.
-
-When the files are read: `bar.toml` **once, when the daemon starts** (restart
-`alpheus-demon` after editing it); the theme files (`theme.toml`,
-`colors.toml`, `colors-light.toml`) are **watched and reloaded live**;
-`launcher.toml` is read **at each open** of the launcher; `config.toml` once, when the control
-center starts (restart it to apply an edit); `displays.toml` when the control center starts, and by the daemon at the end of each hotplug debounce.
-
-- `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
-  per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
-  colours, written by matugen. See [Themes](#themes); the bar follows changes
-  without a restart, the control center reads them when it opens.
-- `config.toml`: the TUI (keys, tools opened for sound, network,
-  Bluetooth).
-- `displays.toml`: screen profiles, written by the Displays tab and applied by the daemon on hotplug (exact match of the connected screens, by `make model serial`, else description).
-- `bar.toml`: the bar.
-- `launcher.toml`: the launcher (terminal command, result rows, history
-  size, mode prefixes, the focus command, command sources); read fresh at each open,
-  nothing kept while it is closed.
-
-```toml
-# bar.toml — default values
-modules = ["launcher", "workspaces", "window", "media", "privacy", "shield", "failed", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "timer", "clock", "power"]
-height = 22
-
-[font]
-family = "JetBrainsMono Nerd Font Mono"
-size = 14.0
-fallback = ["DejaVu Sans Mono"]  # for symbols the font lacks (✳ ◐…); setting the key replaces this default, [] disables it
-
-[clock]
-format = "%H:%M"
-date = "%a %e %b"   # empty = no date
-calendar = true     # a left click on the clock opens the month
-week_numbers = false  # ISO week numbers in the calendar
-
-[tray]
-passive = "dim"     # "dim" | "show" | "hide": items that say they are idle
-tooltips = true     # the item's name after ½ s of hovering
-
-[tray.icons]        # glyph overrides, keyed like the built-in table (id, icon name, title, process)
-# keepassxc = "󰌋"
-
-[media]
-title_max = 30            # cells of the title in the bar (8 to 80)
-ignore = ["kdeconnect"]   # bus-name substrings never queried; playerctld is always ignored
-
-[privacy]
-ignore = []               # app names (whole name, any case) never shown; an indicator left with no name and nothing unnamed goes off
-# dev_dir = "/dev"        # where video devices are listed (watched, never opened)
-# proc_dir = "/proc"      # where processes are listed (the camera scan)
-
-[clipboard]
-enabled = false           # true: follow the clipboard and keep a text history in memory (50 x 4 KiB, never a copy with a password-manager hint); read at start
-
-# [shield]                # Shield mode: none set, no Shield anywhere; read at start (shell-ctl reload-bar after a change)
-# flag = "/var/lib/shield/on"      # absolute: the mode is on while this file exists (not in alpheus's config directory)
-# on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]     # argv, run as given; their program asks for authorisation itself
-# off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
-# allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: devices are listed only
-# blocked = ["usbguard", "list-devices", "--blocked"]   # the default; []: no device list
-# on_text = "Protections for public networks are on."     # the notices' bodies, one line, 256 bytes at most
-# off_text = "Back to the usual settings."
-
-[failed]                                     # the failed-units count (the `failed` module)
-user_units = true    # also count the user manager's failed units (the session bus); false: that bus is never touched
-subscribe = false    # true: call Subscribe() on each manager so a change arrives at once; false (default): read at start, on resume, on a refresh and piggybacked (at most once a minute)
-notify = false       # one notification when the total rises (needs "notifications" in modules); re-armed at 0
-
-[displays]
-auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change
-# drm_dir = "/sys/class/drm"         # where connectors are listed: a card driven by evdi marks a DisplayLink screen (120 Hz cap)
-
-[notifications]
-timeout = 5          # seconds, when the app leaves it to the server
-timeout_min = 2      # an app's own timeout is kept within these
-timeout_max = 20
-max_visible = 4      # bubbles shown at once; more wait
-width = 40           # cells (24 to 80)
-history = 50         # entries kept in memory (0 to 200)
-dnd_while_sharing = false   # true: do not disturb while a screen is shared (needs "privacy" and "notifications" in modules)
-
-# Per app, the first match wins, at most 32. The app name is the whole name, any case.
-# [[notifications.rules]]
-# app = "Chatty"
-# action = "mute"      # "mute": no bubble, kept in the history and counted; "drop": ignored entirely
-# urgency = "low"      # "low" | "normal" | "critical": replaces the app's own (not with "drop")
-
-[osd]
-timeout_ms = 1300    # how long the pill stays after the last change (600 to 5000)
-width = 32           # cells of its row (24 to 60)
-margin = 48          # px above the bottom edge (0 to 400)
-backlight = ""       # a device in backlight_dir; "": the first one, in sorted order
-backlight_dir = "/sys/class/backlight"   # read only: on `alpheus-launch --osd brightness` and when the quick panel opens
-
-[quick]
-step = 5                                   # % per ←/→ or wheel notch on a slider (1 to 25)
-keep_awake = { toggle = [], state = "" }   # toggle: a command, run as given; [] hides the row
-night_light = { toggle = [], state = "" }  # state: "", "file:<path>" (on while it exists) or "process:<name>" (on while it runs)
-lock = ["loginctl", "lock-session"]        # session buttons and the ⏻ menu's entries, run as given; [] hides one
-logout = []
-reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
-poweroff = ["systemctl", "poweroff"]
-wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent: launcher.toml's terminal, then nmtui; [] hides it
-vpn_more = ["foot", "-e", "nmtui-edit"]   # More… in the VPN detail; absent: launcher.toml's terminal, then nmtui-edit; [] hides it
-mixer = ["foot", "-e", "wiremix"]          # Mixer… under the microphone; absent: launcher.toml's terminal, then wiremix; [] hides it
-dnd_until = "08:00"                         # the do-not-disturb detail's "Until" entry, HH:MM (local time, tomorrow if past)
-
-[hooks]            # a command per event, its data in ALPHEUS_* variables (see "Event hooks"); none set: nothing runs
-# started = ["notify-send", "alpheus up"]   # an argv, run as given (no ~ or $VAR expansion); [] or absent: no hook
-# theme_mode = []                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
-[timer]
-countdown = 10       # minutes, the popup's Timer row at start (1 to 180)
-work = 25            # Pomodoro, minutes (1 to 180)
-short_break = 5
-long_break = 15
-rounds = 4           # work sessions before the long break (1 to 12)
-sound = []           # an argv run at each end (not under do-not-disturb), e.g. ["pw-play", "/path/bell.oga"]; [] none
-idle = "glyph"       # "glyph" | "hidden": the chip when nothing runs
-
-[actions]
-open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth, battery or failed: {tab} becomes sound, network, bluetooth, home or diagnostics
-resources = ["foot", "-e", "btop"]       # a right click on the resources module, and the popup's Monitor… row (a left click opens the popup)
-# {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth, "home" for battery and "diagnostics" for failed; no other module runs open_tab.
-# With the quick panel (`quick` in modules) a left click on volume, network or Bluetooth opens the panel instead, and open_tab runs on the right click.
-
-[resources]
-interval = 2         # seconds between two readings of /proc (1 to 60)
-graph = 20           # no effect since the UI refresh; kept so existing files stay valid
-sensor = ""          # an hwmon name or a thermal zone type; "": automatic
-show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem, statvfs on the event loop), "gpu"
-gpu_sensor = ""      # a GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic. A discrete GPU's hwmon can wake it on a hybrid laptop: name the iGPU's driver
-
-[workspaces]
-command = ["wm-set", "workspace", "{workspace}", "{output}"]
-
-[battery]
-peripherals = "always"   # "always" | "low" | "never": peripherals with a real percentage
-coarse = "low"           # "always" | "low" | "never": peripherals with only a coarse level
-warn = [20, 10, 5]       # a notification when the battery, discharging, crosses one (1 to 99); the lowest is critical; []: none
-```
-
-An unknown module name in `modules` is an error that makes the whole
-`bar.toml` fall back to its defaults (one warning in the log), like any other
-invalid key.
-
-The launcher, in `launcher.toml` (defaults shown; `[[sources]]` are described
-under [The launcher](#the-launcher), the Tools menu's under [The Tools menu](#the-tools-menu)):
-
-```toml
-terminal = ["foot", "-e"]                        # Terminal=true apps, plain
-terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text on Enter: the terminal stays open
-rows = 10                                        # result rows (3 to 30)
-history = 200                                    # entries kept (0 to 1000; 0: no history file)
-focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
-copy = ["wl-copy"]                               # the calculator's Enter: the text on its standard input; [] hides the action
-search = "https://duckduckgo.com/?q={query}"    # the ? prefix's URL; {query} is required, percent-encoded; "" turns ? off
-open = ["xdg-open"]                              # opens that URL (appended as the last argument); [] turns ? off
-
-[prefixes]
-commands = ">"       # non-empty, no leading space, neither a prefix of the other
-windows = "w "
-tools = "/"          # jumps into the Tools menu; "" turns it off
-
-[tools]              # the Tools menu (`alpheus-launch --tools`), see The Tools menu
-builtins = true      # false: no built-in entry
-hide = []            # built-in ids never shown ("tab.power", "quick.shield", …); an unknown one is logged and ignored
-root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
-reload = []          # the "Reload the bar" built-in's argv, e.g. ["shell-ctl", "reload-bar"]; [] hides it
-
-[[tools.category]]   # at most 16
-name = "Nix"         # 1 to 48 characters, unique; may be a built-in category's name (it then restyles it)
-icon = "󰏖"           # one character; absent: a generic folder glyph
-order = 50           # 0 to 1000, default 50; root rows sort by order, then name
-
-[[tools.entry]]      # at most 128
-name = "Update"      # 1 to 48 characters, unique within its category
-category = "Nix"     # a [[tools.category]] or a built-in category; absent: at the root
-icon = "󰚰"           # one character; absent: none
-run = ["my-update", "--now"]   # argv, no shell; required
-terminal = false     # true: `terminal` is put in front
-hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
-confirm = false      # true: asks "Update? ⏎", runs on a second Enter 0.4 s to 3 s later
-
-[[tools.entry]]
-name = "Generation"
-category = "Nix"
-run = ["my-switch", "{choice}"]      # with choices, `run` holds "{choice}" as a whole element
-choices = ["boot", "test", "switch"] # at most 32 of 1 to 64 characters; or: choices_cmd = ["my-list"]
-
-[[tools.entry]]
-name = "Gaming mode"
-run = ["my-gaming", "toggle"]
-state = ["my-gaming", "status"]      # exit 0 = on (a switch is shown), else off; not with choices
-```
-
-`terminal`, `terminal_hold` and `focus` are separate argv lists (program then
-arguments, no shell); switching terminal means setting both of the first two.
-
-The control center, in `config.toml` (defaults shown):
-
-```toml
-[keys]
-dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow keys
-
-[keys.bindings]      # optional: action = ["chord", …], replaces that action's keys
-# palette = ["ctrl+k"]
-
-[commands]           # opened in alpheus's own window (program, then arguments)
-mixer = ["wiremix"]
-network = ["nmtui"]
-bluetooth = ["bluetui"]
-
-[diagnostics]        # the Diag tab
-copy = ["wl-copy"]           # the bug report's clipboard program, the text on its standard input; [] disables Copy
-system_actions = true        # restart / reset-failed on system units, in the control center's own window (polkit asks there)
-restart_loop = 3             # NRestarts at or above this is "restarting in a loop" (1 to 1000)
-journal_lines = 500          # entries read when the journal view opens (1 to 5000)
-
-# At most 8 checks of your own, run on showing the tab and on F5; exit 0 is fine, `fix` is shown, never run.
-# [[diagnostics.checks]]
-# name = "One hypridle"
-# run = ["sh", "-c", "[ \"$(pgrep -cx hypridle)\" -le 1 ]"]
-# fix = "pkill -x hypridle && systemctl --user restart hypridle"
-```
-
-Action names for `[keys.bindings]`: `quit`, `back`, `help`, `palette`,
-`search`, `next_tab`, `prev_tab`, `tab_1`…`tab_8`, `unit_restart`, `unit_reset`, `refresh`, `left`, `right`, `up`,
-`down`, `page_up`, `page_down`, `home`, `end`, `toggle`, `activate`,
-`decrease`, `increase`. A chord is optional modifiers joined by `+` (`ctrl`,
-`alt`, `shift`) then a key: a single character (`?`, `-`, `+`, `k`…), or
-`esc`, `enter`, `space`, `tab`, `backspace`, `up`, `down`, `left`, `right`,
-`pageup`, `pagedown`, `home`, `end`, `f1`…; case does not matter (`ctrl+p`,
-`shift+tab`). A key given to one action is taken away from the others; an
-unknown action, modifier or key resets all key bindings to their defaults (one
-warning on the status line); the rest of the file still applies.
+Everything is optional, under `$XDG_CONFIG_HOME/alpheus/` (`~/.config/alpheus/` by default). Every key of every file (`bar.toml`, `launcher.toml`, `theme.toml`, `config.toml`, `displays.toml`), its default and its bounds, and when each file is read, are in [`docs/configuration.md`](docs/configuration.md).
 
 ## Principles
 

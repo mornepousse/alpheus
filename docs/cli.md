@@ -25,8 +25,8 @@ There is no `--help`; the usage appears in the error text.
 | 128 + signal | a stop signal the loop did not honour within 0.3 s (e.g. a closed terminal) |
 | 2 | an unknown option, a missing `--tab` value or an unknown tab name (message on standard error) |
 
-Configuration: `~/.config/alpheus/config.toml`, see the README's
-[Configure](../README.md#configure) section.
+Configuration: `~/.config/alpheus/config.toml`, see the
+[configuration reference](configuration.md).
 
 ## `alpheus-demon` (the bar and everything resident)
 
@@ -53,7 +53,7 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
   warnings and the detected compositor are logged at start.
 - **Configuration** is read once at start for `bar.toml`; restart the daemon
   to apply it. Theme files reload live and `launcher.toml` is read at each
-  open (see the README's [Configure](../README.md#configure) section).
+  open (see the [configuration reference](configuration.md)).
 - **Exit code.** 0 after a clean stop, and also when the compositor ends
   the session (broken pipe or connection reset on the Wayland socket); 1
   when it cannot start (already running, no Wayland session, unusable fonts
@@ -71,6 +71,8 @@ alpheus-launch [--toggle | --close
                | --failed-refresh
                | --osd brightness
                | --quick [sound|wifi|bluetooth]
+               | --tools
+               | --power
                | -h|--help]
 ```
 
@@ -88,6 +90,8 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--failed-refresh` | read the failed-unit counts again now (the system manager's through the D-Bus thread, the user manager's on the loop), whatever `[failed] subscribe` says; the control center sends it itself after a unit action and when the Diag tab shows |
 | `--osd brightness` | show the laptop backlight's level in the OSD (read once, never changed) |
 | `--quick [sound\|wifi\|bluetooth]` | open or close the quick settings panel on the focused output; the word opens it on that detail (`sound`: at the volume) |
+| `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
+| `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
 
 `--dmenu` options:
@@ -109,7 +113,7 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words): restart it after an upgrade. The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words), `--tools` or `--power`: restart it after an upgrade. The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. A `--quick`
 arriving less than 250 ms after the one that opened the panel is ignored, so a
@@ -121,4 +125,5 @@ Examples:
 printf 'one\ntwo\nthree\n' | alpheus-launch --dmenu -p 'Pick' || echo "cancelled or not running"
 alpheus-launch --dnd toggle
 alpheus-launch --quick wifi
+alpheus-launch --tools; [ $? -eq 3 ] && tools-menu   # fall back to a menu script only when the daemon is too old or not running
 ```
