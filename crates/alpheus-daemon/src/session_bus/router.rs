@@ -6,6 +6,16 @@
 //! (spec § 1): try to own `org.kde.StatusNotifierWatcher` without replacing
 //! anyone; if another watcher has it, be a host only and follow its list;
 //! when it leaves, take the name.
+//!
+//! Never:
+//! - route by anything but the serial a call was sent with, so a late answer reaches the asker and
+//!   no one else;
+//! - take the watcher's name from another host: alpheus queues and takes over only when it is
+//!   released (docs/features/tray.md);
+//! - add a thread or a timer of its own (`the_tray_spawns_no_thread`,
+//!   `nothing_resident_while_the_launcher_is_closed`).
+//!
+//! See: docs/features/tray.md, docs/ARCHITECTURE.md ("Sources: what feeds the loop").
 
 use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus, refusal};
 use super::codec::{self, Reply, Signal};

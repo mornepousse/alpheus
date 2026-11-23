@@ -5,6 +5,14 @@
 //! libayatana falls back on an error reply — plus `Introspectable` and
 //! `Peer`. Registrations are answered at once and queued for the host;
 //! nothing is served unless the daemon owns the watcher's name.
+//!
+//! Never:
+//! - serve more than the properties and the two methods real clients read
+//!   (`tray_d_bus_is_confined_and_allowlisted`);
+//! - replace another watcher: the name is requested without queue-jumping, and a second host is
+//!   left alone.
+//!
+//! See: docs/features/tray.md ("How it is built").
 
 use super::bus::refusal;
 use super::codec::MAX_SERVICE;

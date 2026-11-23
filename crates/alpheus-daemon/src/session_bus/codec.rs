@@ -4,6 +4,16 @@
 //! decides the expected body); a body of the wrong type is `BadReply`, never
 //! a panic; icon pixmaps, menu icons and shortcuts are never decoded — the
 //! tooltip's pixmap array is stepped over with `next()`.
+//!
+//! Never:
+//! - trust a peer: every length is bounded while decoding, a body of the wrong type is an error
+//!   rather than a panic (`the_notification_server_has_no_panicking_path` covers this file), and
+//!   an image or sound hint is stepped over, never read (`tests/notify_inbound.rs` proves an 8 MiB
+//!   `image-data` costs the decode less than 4 KiB);
+//! - clean a text here: the cleaners are `notify/mod.rs`'s and `text.rs`'s, called from this file.
+//!
+//! See: docs/features/notifications.md ("What it keeps of a notification"), docs/features/tray.md,
+//! docs/measurements.md.
 
 use super::bus::{Call, CallError, Property};
 use super::{

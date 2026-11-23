@@ -3,6 +3,14 @@
 //! what the item says about itself; an application nobody knows gets the
 //! first letter of its name. Never an image: the item's pixmaps are never
 //! even requested.
+//!
+//! Never:
+//! - ask for an image: an item's pixmaps are never requested, so no application sends the bar a
+//!   picture (`tray_d_bus_is_confined_and_allowlisted`);
+//! - grow per item: the table is read-only data, the overrides come from `bar.toml`, and an unknown
+//!   application costs a letter.
+//!
+//! See: docs/features/tray.md ("Icons"), docs/configuration.md (`[tray.icons]`).
 
 use super::host::Item;
 use super::{ItemKey, Status};

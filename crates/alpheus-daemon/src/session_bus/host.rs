@@ -4,6 +4,17 @@
 //! `GetAll`, never a pixmap), well-known names resolved once, items keyed by
 //! (unique name, path), departures by `NameOwnerChanged` only, signals
 //! coalesced to one re-read per frame, every bound applied.
+//!
+//! Never:
+//! - ask for a whole interface or a pixmap: one `Get` per property, and no image is ever requested
+//!   (`tray_d_bus_is_confined_and_allowlisted`);
+//! - key an item by anything but its unique name and object path, so two applications cannot be
+//!   confused for one;
+//! - touch the bus: this is a pure state machine over `Outbox`, which is what lets the tests drive
+//!   it without a bus at all.
+//!
+//! See: docs/features/tray.md ("How it is built"), docs/decisions.md ("A tray menu is shown only
+//! once its layout has arrived").
 
 use super::bus::{Call, CallError, CallId, Outbox, Property};
 use super::codec::{Reply, Signal};

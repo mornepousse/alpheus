@@ -6,6 +6,17 @@
 //! allowlist (spec § 3), built in ONE place, `message`, with auto-start off:
 //! nothing outside the list can reach an application, and no call can
 //! start a service.
+//!
+//! Never:
+//! - block after the connect: a call is sent, remembered by its serial and given up on at its
+//!   deadline, so one slow application cannot stop the bar;
+//! - keep a timer at rest: the expiry timer is armed only while a call is pending
+//!   (`nothing_resident_while_the_launcher_is_closed`);
+//! - leave an answer waiting: what a settle round drained is routed from one idle read
+//!   (`answers_left_by_the_settle_rounds_are_routed_from_an_idle`), and a closed link is never
+//!   reconnected (docs/decisions.md, "A closed session bus is never reconnected").
+//!
+//! See: docs/features/tray.md ("How it is built"), docs/ARCHITECTURE.md ("Threads").
 
 use super::{
     APPEARANCE_NAMESPACE, CAPABILITIES, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH,

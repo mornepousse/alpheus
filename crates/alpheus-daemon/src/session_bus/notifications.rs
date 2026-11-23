@@ -10,6 +10,17 @@
 //! the builders in bus.rs. The model is `notify::Center`; its effects become the two broadcast
 //! signals, sent by the host after each call or action. This file never names the dbus crate, and
 //! never names a function `method_call`: the guardrails count that substring.
+//!
+//! Never:
+//! - replace another server: the name is asked with flags 0, so alpheus queues behind mako and
+//!   takes over when it lets go (docs/decisions.md, "The notification server queues behind another
+//!   server and never replaces it");
+//! - read an image or a sound hint: they are stepped over while decoding
+//!   (docs/features/notifications.md);
+//! - panic on a call (`the_notification_server_has_no_panicking_path`), or open a connection of its
+//!   own.
+//!
+//! See: docs/features/notifications.md ("The server"), docs/measurements.md.
 
 use super::bus::{self, Call, CallError, CallId, Message, Outbox, refusal};
 use super::codec::{self, Inbound, Reply, Signal};

@@ -3,6 +3,15 @@
 //! dbus-rs connection, to the session bus, driven by the bar's own calloop
 //! loop (no thread). This file is the tray's vocabulary; it knows no D-Bus
 //! library.
+//!
+//! Never:
+//! - add a thread: the tray's connection is driven by the bar's own loop
+//!   (`the_tray_spawns_no_thread`, and `nothing_resident_while_the_launcher_is_closed` counts what
+//!   it does build);
+//! - call anything outside the tray's allowlist (`tray_d_bus_is_confined_and_allowlisted`), and
+//!   never ask an item for a picture.
+//!
+//! See: docs/features/tray.md, docs/ARCHITECTURE.md ("Sources: what feeds the loop", "Threads").
 
 pub mod bus;
 pub mod codec;

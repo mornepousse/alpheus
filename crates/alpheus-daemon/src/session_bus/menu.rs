@@ -5,6 +5,16 @@
 //! docs/decisions.md, "A submenu opens in the same popup"). Pure: it reads the session's `Layout` and answers with a
 //! `MenuAction`; the D-Bus calls and the popup are the wiring's.
 //! Never selects a separator, a disabled or a hidden entry.
+//!
+//! Never:
+//! - run anything itself: choosing an entry sends the application a `clicked` event, and the bar
+//!   runs no command of its own (docs/features/tray.md);
+//! - draw an item's icon, or let a label's mnemonic or a control character into a cell
+//!   (`crate::list` writes every row through `Grid::write`);
+//! - graft a late submenu once the selection has moved (docs/decisions.md, "A late submenu graft is
+//!   refused once the selection has moved").
+//!
+//! See: docs/features/tray.md ("Menus"), docs/decisions.md ("A submenu opens in the same popup").
 
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
