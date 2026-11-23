@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn messages_and_changes() {
+    fn a_message_changes_the_state_and_says_whether_the_bar_must_repaint() {
         let mut b = Bar::new(BarConfig::default());
         assert_eq!(b.compositor, Feed::Waiting);
         assert!(b.apply(Msg::Compositor(Some(example()))));

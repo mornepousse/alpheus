@@ -443,7 +443,7 @@ mod tests {
     // ---- fills ----
 
     #[test]
-    fn premultiplied_pixels() {
+    fn every_pixel_written_is_premultiplied() {
         assert_eq!(premultiplied(Rgb(255, 128, 0), 255), [0, 128, 255, 255]);
         assert_eq!(premultiplied(Rgb(255, 128, 0), 128), [0, 64, 128, 128]);
         assert_eq!(premultiplied(Rgb(255, 255, 255), 0), [0, 0, 0, 0]);

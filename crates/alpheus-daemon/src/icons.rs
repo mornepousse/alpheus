@@ -85,7 +85,7 @@ mod tests {
     use crate::grid::text_width;
 
     #[test]
-    fn glyphs_by_class() {
+    fn a_class_or_app_id_finds_its_glyph() {
         assert_eq!(glyph("firefox"), '\u{f0239}');
         assert_eq!(glyph("com.mitchellh.ghostty"), '\u{f018d}');
         assert_eq!(glyph("Alacritty"), '\u{f018d}');

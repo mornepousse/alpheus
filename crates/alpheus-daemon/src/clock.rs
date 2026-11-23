@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn english_format() {
+    fn the_day_and_month_names_are_english() {
         assert_eq!(format("%a %e %b", &SUN), "Sun 4 Oct");
         assert_eq!(format("%A %d %B %Y", &SUN), "Sunday 04 October 2026");
         assert_eq!(format("%H:%M:%S", &SUN), "14:05:09");
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn format_validation() {
+    fn an_unknown_directive_makes_the_format_invalid() {
         assert_eq!(validate("%H:%M"), Ok(()));
         assert_eq!(validate("%a %e %b"), Ok(()));
         assert_eq!(validate(""), Ok(()));

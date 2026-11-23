@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_is_delegated() {
+    fn capture_is_delegated_to_the_executor() {
         let fake = FakeExecutor::new();
         let c = Captured { stdout: b"a\n".to_vec(), end: CaptureEnd::Exited(Some(0)) };
         fake.capture_ok("fake-list", c.clone());

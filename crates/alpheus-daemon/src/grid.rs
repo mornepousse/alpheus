@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn write_and_styles() {
+    fn write_keeps_the_text_and_its_styles() {
         let mut g = Grid::empty(8);
         let x = g.write(1, 8, "ab", Style::ACTIVE);
         assert_eq!(x, 3);
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_never_orphaned() {
+    fn a_wide_character_is_never_cut_in_half() {
         // Overwriting the first half of a wide character with a narrow one
         // must blank its continuation, or it stays shown alone.
         let mut g = Grid::empty(4);
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_by_ellipsis() {
+    fn a_text_too_long_ends_with_an_ellipsis() {
         assert_eq!(truncate("Bonjour", 5), "Bonj…");
         assert_eq!(truncate("Bonjour", 7), "Bonjour");
         assert_eq!(truncate("日本語", 4), "日…");
@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn decomposed_accents_recomposed() {
+    fn a_decomposed_accent_is_recomposed_before_it_is_drawn() {
         // "e\u{301}lan": a decomposed "e" (e + combining acute accent) must
         // be written recomposed to NFC, like a title from macOS.
         let mut g = Grid::empty(6);
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn already_nfc_unchanged() {
+    fn a_text_already_composed_is_left_as_it_is() {
         // A title already in NFC (accents and CJK) is written as before.
         let mut g = Grid::empty(8);
         g.write(0, 8, "é日本", Style::NORMAL);
@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn clickable_zones() {
+    fn each_module_gets_the_zone_it_drew() {
         let mut g = Grid::empty(10);
         let t = Target::Workspace { reference: "4".into(), output: "HDMI-A-1".into() };
         g.zone(2, 5, t.clone());
