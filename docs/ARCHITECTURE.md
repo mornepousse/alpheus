@@ -6,7 +6,9 @@ is for and what it must never do; it does not repeat the code. Names to search f
 [`decisions.md`](decisions.md) and [`SCOPE.md`](SCOPE.md); each feature has a page in
 [`features/`](features/README.md). Words in the [glossary](GLOSSARY.md) are linked at their first
 use. The `//!` header of each source file is the detailed reference and says which spec and
-decisions it follows.
+decisions it follows. Further reading: [`tour.md`](tour.md) follows one battery change from the
+D-Bus thread to the screen, and [`adding-a-module.md`](adding-a-module.md) is the recipe for a new
+module, walked through the timer.
 
 ## Bird's-eye view
 

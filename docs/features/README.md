@@ -4,7 +4,7 @@ One page per feature of the daemon (`crates/alpheus-daemon`), plus one for the t
 center (`crates/alpheus`), each saying what it does, how to use
 it, how to configure it, how it is built, which rules the tests enforce on it and what it costs.
 The rules and reasons behind them are in [../decisions.md](../decisions.md); how the pages are
-written is in [../STYLE.md](../STYLE.md).
+written is in [../STYLE.md](../STYLE.md). To add one, follow [../adding-a-module.md](../adding-a-module.md).
 
 ## In the bar
 
