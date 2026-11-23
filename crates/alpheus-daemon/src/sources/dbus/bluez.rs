@@ -1,5 +1,14 @@
 //! BlueZ: the adapter (powered or not) and the connected devices with their
 //! battery, in one GetManagedObjects.
+//!
+//! Never:
+//! - read a device's address or object path into anything the bar shows, and never name one in a
+//!   log line (`the_bluetooth_logs_name_no_device`);
+//! - act: the panel's connect, pair and power go through the acting connection (`bt_act.rs`), and
+//!   this reader never changes a property.
+//!
+//! See: docs/features/bar.md (the Bluetooth module), docs/features/quick-settings.md
+//! ("How it talks to BlueZ").
 
 use super::{BLUEZ, Bus};
 use crate::system::{BtDevice, BtState};

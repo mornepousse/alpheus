@@ -6,6 +6,21 @@
 //! with `GetNameOwner`, calls queued meanwhile) with auto-start off: nothing outside the list can
 //! reach BlueZ, and no call can start it. Answers are matched by reply serial; the read connection
 //! (`bt.rs`) stays read only.
+//!
+//! Never:
+//! - send a call outside the pinned list, or build one anywhere but in `build`
+//!   (`the_bluetooth_connection_acts_only_through_act_method`, whose counts pin the one
+//!   `new_method_call`, the one `.send(`, the one `set_auto_start(false)`, the one reply and the one
+//!   error);
+//! - serve anything but its own pairing agent (`the_bluetooth_connection_serves_only_the_agent`);
+//! - outlive the panel's detail or a call in flight, agent unregistered first
+//!   (`the_bluetooth_connection_goes_with_the_panel`);
+//! - name a device, an address or an object path in a log line
+//!   (`the_bluetooth_logs_name_no_device`), or panic (`the_bluetooth_d_bus_files_have_no_panicking_path`).
+//!
+//! See: docs/features/quick-settings.md ("Bluetooth", "How it talks to BlueZ"),
+//! docs/decisions.md ("A pairing is answered by alpheus's own agent, for that device only", "The
+//! Bluetooth acting connection opens with one blocking connect and asks for BlueZ's owner itself").
 
 use super::{BLUEZ, BUS_DRIVER, BUS_DRIVER_PATH, PROPERTIES};
 use crate::pipewire::drawable;

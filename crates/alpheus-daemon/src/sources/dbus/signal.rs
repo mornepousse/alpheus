@@ -1,5 +1,13 @@
 //! Which signals matter: the allowlists of properties per object, and what a `Signal` says
 //! (the domain to re-read, a detail change, a wake, a poke).
+//!
+//! Never:
+//! - widen a match rule to a whole interface: the lists here are what keeps the daemon from waking
+//!   for a property no module draws (`d_bus_is_confined_to_sources_and_read_only` pins the rules);
+//! - carry a value in a signal: a `Signal` says which domain to read again, never what changed.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/features/failed.md (the
+//! piggybacked read), docs/measurements.md (the wake-ups a signal costs).
 
 use super::*;
 

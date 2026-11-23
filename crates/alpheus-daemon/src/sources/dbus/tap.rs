@@ -5,6 +5,16 @@
 //! nothing wakes: a session reads it when it starts and on each `Signal::poke`. The tap also counts
 //! the panel's opens (Closed to any other scope): a close and a reopen the thread reads as one poke
 //! are still a new open, and a state read for an earlier open is told apart from the current one's.
+//!
+//! Never:
+//! - wake the thread when nothing changed: the byte is written on a scope change only, and the
+//!   panel's own tests measure that nothing wakes at rest
+//!   (`at_rest_no_wakeups_after_the_wifi_detail`, `at_rest_no_wakeups_after_the_vpn_detail`);
+//! - outlive the panel: the scope goes back to `Closed` whatever closes it
+//!   (`the_vpn_tap_follows_the_panel`, `the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it`).
+//!
+//! See: docs/features/quick-settings.md ("The reads on the D-Bus thread"), docs/decisions.md ("The
+//! quick panel reads the sink list through a shared tap").
 
 use crate::system::PanelScope;
 use std::io::{self, Read, Write};

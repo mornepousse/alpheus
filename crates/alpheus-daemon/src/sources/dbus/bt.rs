@@ -4,6 +4,17 @@
 //! signals (`Signal::bt_change`). The loop asks through a `BtTap`; the D-Bus thread reads here,
 //! through BlueZ's unique name as every reader does. A device's address is never read; its object
 //! path embeds it, so neither is ever logged.
+//!
+//! Never:
+//! - read while the panel is closed: the scope is what bounds this, and the tap follows the panel
+//!   (`the_bluetooth_connection_goes_with_the_panel`);
+//! - name a device in a log line (`the_bluetooth_logs_name_no_device`), or read its address;
+//! - act: every change goes through `bt_act.rs`
+//!   (`the_bluetooth_connection_acts_only_through_act_method`,
+//!   `only_bt_app_and_bt_act_name_btact`).
+//!
+//! See: docs/features/quick-settings.md ("Bluetooth"), docs/decisions.md ("Nearby Bluetooth
+//! devices are inserted once, by signal strength").
 
 use super::bluez::{ADAPTER, DEVICE};
 use super::props::Props;

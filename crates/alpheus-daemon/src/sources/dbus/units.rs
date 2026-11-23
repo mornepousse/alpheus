@@ -7,6 +7,20 @@
 //! so the session subscribes once after its first successful read (`UnitsLink`), only when
 //! `[failed] subscribe` is on (it is off by default). The triggers that hold whatever the subscription (resume, a poke,
 //! a piggyback on another domain's wake-up) re-read it all the same.
+//!
+//! Never:
+//! - ask for the whole interface: one `Get` of one property, never a `GetAll`
+//!   (`the_user_manager_is_asked_for_one_property_and_subscribed_to`, and docs/decisions.md, "The
+//!   failed-units count is asked for one property, never the whole interface");
+//! - call a method that starts, stops or resets anything of systemd's
+//!   (`no_acting_systemd1_method_in_the_daemon`); `Subscribe` is the one call that asks systemd to
+//!   do something, and it changes nothing on the machine;
+//! - read a unit's name: the daemon counts, and the control center's Diag tab is where the names
+//!   are.
+//!
+//! See: docs/features/failed.md, docs/features/control-center.md (the Diag tab),
+//! docs/decisions.md ("The failed-units count is read on triggers, and `Subscribe` is off by
+//! default").
 
 use super::{Bus, SYSTEMD1};
 use crate::log::write as log;

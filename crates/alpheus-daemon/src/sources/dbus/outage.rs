@@ -1,5 +1,14 @@
 //! Outages: why a session ended (`Outage`, tagged on the `io::Error`), a service gone, and the
 //! per-domain log rate limit.
+//!
+//! Never:
+//! - say more than a fixed word: a log line names the domain and the reason, never a service's
+//!   message, an object path or a profile (each feature's log guardrail checks its own files);
+//! - log a repeated outage: the rate limit is what keeps a service that flaps from filling the
+//!   journal.
+//!
+//! See: docs/decisions.md ("A source that is down is not a state", "Logs carry fixed words and
+//! numbers only"), docs/features/failed.md (a manager that fails to answer).
 
 use super::*;
 

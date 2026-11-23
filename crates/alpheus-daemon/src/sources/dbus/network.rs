@@ -1,5 +1,13 @@
 //! NetworkManager: the kind of the primary connection, how many other VPNs
 //! are active, connectivity. No name is read: the bar shows icons only (Q1).
+//!
+//! Never:
+//! - read a connection's name, uuid or address: the module draws icons and a count, so nothing
+//!   that names a network is kept here (the Wi-Fi detail reads SSIDs, in `wifi.rs`, only while the
+//!   panel is open);
+//! - act: `nmcli` does that, from the quick panel, through the executor.
+//!
+//! See: docs/features/bar.md (the network module), docs/features/quick-settings.md.
 
 use super::{Bus, NM, optional};
 use crate::system::{Link, NetState};

@@ -1,4 +1,12 @@
 //! One session on one connection: the initial reads, the publish, then each signal.
+//!
+//! Never:
+//! - read a domain no module asked for: the session reads what `Needs` says and nothing else;
+//! - leave an answer waiting: what a settle round drained is routed from one idle read
+//!   (`answers_left_by_the_settle_rounds_are_routed_from_an_idle`);
+//! - reconnect by itself: the supervisor (`run.rs`) starts the next session, with a growing delay.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop", "Threads"), docs/features/bar.md.
 
 use super::*;
 use crate::system::PanelScope;

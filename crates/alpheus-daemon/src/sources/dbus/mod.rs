@@ -14,6 +14,19 @@
 //! to the bus driver (never retried; a reconnection asks once more), after the session's first successful publish;
 //! the name appearing then brings the battery in through `NameOwnerChanged`. No other
 //! service is ever activated: `dbusrs_bus::message` refuses any other name.
+//!
+//! Never:
+//! - call a method that changes anything on the machine: `d_bus_is_confined_to_sources_and_read_only`
+//!   allows the `dbus` crate in six files and no acting method in the readers, and
+//!   `no_acting_systemd1_method_in_the_daemon` keeps systemd's own out;
+//! - start a service: every call has auto-start off, with one exception, UPower, asked for once per
+//!   session start when the battery is wanted (docs/decisions.md, "UPower is the one service the
+//!   daemon may start");
+//! - poll: the thread blocks on the bus, so a quiet session costs no wake-up.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop", "Threads"), docs/features/bar.md
+//! ("What the bar reads, and what it writes"), docs/features/failed.md (the one acting call that
+//! changes nothing).
 
 pub mod bluez;
 pub mod bt;

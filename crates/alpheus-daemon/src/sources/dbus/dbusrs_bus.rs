@@ -6,6 +6,18 @@
 //! timeout at all — nothing wakes the thread while the bus is quiet.
 //! Replies are read in place with libdbus's iterators: a type the bar
 //! doesn't read is skipped, never decoded.
+//!
+//! Never:
+//! - let the library out of this file: `d_bus_is_confined_to_sources_and_read_only` names the six
+//!   files that may know it, and this is the only reader among them;
+//! - build a call outside `Method`: every one goes through `message` and `call`, which the counts
+//!   of that guardrail pin (one `send_with_reply_and_block`, one `new_method_call`, one `.send(`,
+//!   one `.error(`);
+//! - request a name, add a match rule outside the pinned list, or serve a method: the daemon is a
+//!   client here, and the one reply it builds is the refusal of a call to the bar.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/features/quick-settings.md
+//! (what the panel reads through this), docs/features/failed.md.
 
 use super::props::{Objects, Prop, Props};
 use super::tap::Wake;

@@ -4,6 +4,17 @@
 //! their signals followed through five match rules added and removed with it (`WifiScope::Detail`).
 //! The loop asks through a `WifiTap`; the D-Bus thread reads here, through NetworkManager's unique
 //! name as every reader does. Secrets are never asked for.
+//!
+//! Never:
+//! - read while the panel is closed, or keep its match rules: both follow the scope, so a closed
+//!   panel costs nothing (`at_rest_no_wakeups_after_the_wifi_detail`);
+//! - name an SSID in a log line, or pass one to `nmcli` that it would misread
+//!   (docs/decisions.md, "An SSID that nmcli would misread is never passed to it");
+//! - panic on what NetworkManager answers (`the_panel_readers_have_no_panicking_path`);
+//! - act: the connect, the rescan and the radio go through `nmcli`, from the panel.
+//!
+//! See: docs/features/quick-settings.md ("Wi-Fi"), docs/decisions.md ("A failed Wi-Fi attempt
+//! deletes its new profile only when sure").
 
 use super::dbusrs_bus::WIFI_RULES;
 use super::props::Props;

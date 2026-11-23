@@ -2,6 +2,16 @@
 //! the workstation (tests/fixtures/dbus-*.json, anonymized). Never a real
 //! bus. Records every call, and refuses — panics on — a call addressed to a
 //! well-known name: on a real bus, that call could start the service.
+//!
+//! Never:
+//! - reach a real bus: every test of a D-Bus domain runs against this, and a call addressed to a
+//!   well-known name panics here, because on a real bus that call could start the service
+//!   (AGENTS.md: never a real system or session bus in a test);
+//! - hold anything that is not anonymised: the recorded replies are fixtures with no SSID, address,
+//!   serial or profile name in them.
+//!
+//! See: CONTRIBUTING.md (fakes and private buses), AGENTS.md ("Rules for agents"),
+//! docs/ARCHITECTURE.md ("Tests").
 
 use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};

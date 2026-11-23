@@ -1,4 +1,12 @@
 //! The supervisor of the D-Bus thread: sessions again with a growing delay.
+//!
+//! Never:
+//! - retry without a delay: the delay grows to its cap, so a bus that is down costs nothing;
+//! - keep a thread while nothing is wanted: the thread exists only while a module needs a domain
+//!   (`nothing_resident_while_the_launcher_is_closed` counts it).
+//!
+//! See: docs/ARCHITECTURE.md ("Threads"), docs/decisions.md ("A source that is down is not a
+//! state").
 
 use super::*;
 
