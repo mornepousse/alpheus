@@ -197,9 +197,11 @@ A module popup is three small additions (then fill in the row's `popup` field):
   the test clicks it. The timer's clicks start no command (`timer_middle` is the daemon's own), so
   it is not there.
 
-Do not write the forbidden tokens in a comment of a file these tests cover: they read comments too
-(STYLE, rule 1). Some guardrails read your file's text for words that must not appear (`dpms`,
-`hyprctl`...) as well.
+Some guardrails read your file's text for words that must not appear (`dpms`, `hyprctl`...), and
+they read the comments too: do not write a forbidden token in a comment of a file they cover, say it
+in words (STYLE, rule 1). The guardrails that read code instead — "this state changes in one
+place", "this call comes first" — are given the file with its comments stripped, so a comment naming
+a call proves nothing to them either way.
 
 ## 10. A headless test
 
