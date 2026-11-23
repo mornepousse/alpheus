@@ -8,7 +8,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 
 | Feature | **alpheus** | DMS | Noctalia | ashell | waybar stack¹ |
 |---|---|---|---|---|---|
-| **Resident memory** | **≈ 14 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 55 MB³ |
+| **Resident memory** | **≈ 14 MB** today (live: bar and sound source; to be re-measured), ≤ 120 MB target | ≈ 537 MB | ≈ 517 MB (4.7) | ≈ 194 MB² | ≈ 55 MB³ |
 | **Bar** | | | | | |
 | Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Clock | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -49,9 +49,9 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Currencies, dates | 🚧 later | ✅ | ➖ | ❌ | ❌ |
 | System actions, sound, Wi-Fi/Bluetooth/VPN, control center tabs (the Tools menu) | ✅ `alpheus-launch --tools` (a bind of your own) or `/` in Mod+Space: categories to browse, a flat search across all of them, built-ins that open alpheus's own features, no configuration needed; nothing resident while closed | ➖ | ➖ | ❌ | ❌ |
 | Your own entries in the Tools menu (a command, a terminal, a confirmation, an on/off state, choices) | ✅ `[[tools.entry]]` in `launcher.toml`: argv with no shell, `confirm` asks `Name? ⏎` (second Enter after 0.4 s), `state` shows the quick panel's switch, fixed `choices` or a `choices_cmd` list; read on a short-lived thread, no plugin runtime | ➖ | ➖ | ❌ | ❌ |
-| SSH | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
+| SSH | 🚧 planned | ➖ | ➖ | ❌ | ❌ |
 | Clipboard history | ✅ off unless `[clipboard] enabled = true`: text only, 50 entries of 4 KiB in memory (nothing on disk), pins, `alpheus-launch --clipboard` (a bind of your own) and the `"` prefix in Mod+Space; a copy with a password-manager hint is never stored (see [Clipboard history](../README.md#clipboard-history)) | ✅ | ➖ | ❌ | ➖ |
-| Files | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
+| Files | 🚧 planned | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness) | ✅ volume and mute, and the microphone's mute (never its level: call apps move it), from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
@@ -74,6 +74,6 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 ¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. ³ waybar + mako +
 swayosd + swaybg, from PSS figures of different days (see the waybar stack note
 in [measurements](measurements.md#memory)). Other shells' features from their documentation or source (October 2026);
-memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
+the other shells' memory and alpheus's live figure were read on the author's laptop (alpheus's per-component rows are tests, see [measurements](measurements.md#method)). ⁴ No Mango backend found in Noctalia
 (October 2026, unverified). — : not found in that shell's documentation (not verified).
 

@@ -252,7 +252,7 @@ theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-schem
   its real name fires a disconnect and a connect (rename churn).
 - **Nothing logged but the event.** `hook: <key>`, `hook: <key> failed (program not found)`,
   `throttled`; never the command, an argument or a value.
-- **A change takes effect after `shell-ctl reload-bar`** (bar.toml is read at start).
+- **A change takes effect when `alpheus-demon` restarts** (bar.toml is read once at start).
 
 ### The launcher
 
@@ -303,7 +303,7 @@ systemd unit with `KillMode=control-group` (the default) cleans them up.
 
 While the launcher is open, each kept line costs about three times its text (the line, its entry
 and its path): ≈ 6–8 MB at the bounds (8 sources × 256 KiB) plus the ranker, released on close. A
-300-line source costs ≈ 0.5 MB (table above).
+300-line source costs ≈ 0.5 MB ([the memory table](docs/measurements.md#alpheus-component-by-component)).
 
 `alpheus-launch --dmenu` takes fuzzel's dmenu options that scripts use:
 
@@ -321,12 +321,12 @@ menu with the same options.
 
 ### The Tools menu
 
-One box for "do something to my session", in the launcher's own box (nothing resident while closed, no thread, no new crate): `alpheus-launch --tools` (bind it yourself: Mango `bind=SUPER,x,spawn,sh -c 'alpheus-launch --tools; [ $? -eq 3 ] && tools-menu'`, Sway `bindsym $mod+x exec …`; exit 3 means the daemon is too old or not running, the one case to fall back on another menu) opens it, and `/` typed as the whole query in Mod+Space jumps into it.
+One box for "do something to my session", in the launcher's own box (nothing resident while closed, no thread, no new crate): `alpheus-launch --tools` (bind it yourself: Mango `bind=SUPER,x,spawn,alpheus-launch --tools`, Sway `bindsym $mod+x exec alpheus-launch --tools`; exit 3 means the daemon is too old or not running, and a bind can fall back to a menu of your own on that code) opens it, and `/` typed as the whole query in Mod+Space jumps into it.
 
 - **Browsing.** With the query empty it lists categories (`Quick settings`, `Control center`, `Utilities`, `Session`, and your own). Enter or → opens one, ← or Esc goes back up, Esc at the root closes. Every action closes the box.
 - **Searching.** Typing searches every entry of every category at once, the category dimmed after the entry, fixed choices as `Entry · Choice`; inside a category or a choices list it filters that level. Entries also rank in Mod+Space's normal search, as `[[sources]]` lines do.
 - **Built-ins** (nothing to declare; each shows only when it can work): Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not disturb, Keep awake and Night light (with the quick panel's switch, from `[quick]`), the control center's tabs (through `[actions] open_tab`, else the launcher's terminal and `alpheus --tab <name>`), Notes, Timer, Clipboard, Emoji, Lock, the Power menu and an optional `Reload the bar`. They replay the daemon's own verbs, so no process starts and each verb's rules apply. `[tools] builtins = false` shows none, `hide = ["tab.power", …]` hides some, `root = ["keep_awake"]` also lists some at the root.
-- **Your entries.** `[[tools.entry]]` in `launcher.toml` (below): an argv with no shell, optionally in the terminal (`terminal`) or the held one (`hold`), `confirm` (the first Enter turns the row into `Name? ⏎`; a second one between 0.4 s and 3 s later runs it, a double Enter never does), `state` (an argv run when the box opens: exit 0 shows the quick panel's `ON` switch, any other exit `off`, a hung one is killed at 1 s and shows nothing), and `choices` or `choices_cmd` (the lines a command prints when the entry is opened, filterable) with `{choice}` standing for the chosen line as one whole argument.
+- **Your entries.** `[[tools.entry]]` in `launcher.toml` (see [its reference](docs/configuration.md#tools-toolscategory-toolsentry)): an argv with no shell, optionally in the terminal (`terminal`) or the held one (`hold`), `confirm` (the first Enter turns the row into `Name? ⏎`; a second one between 0.4 s and 3 s later runs it, a double Enter never does), `state` (an argv run when the box opens: exit 0 shows the quick panel's `ON` switch, any other exit `off`, a hung one is killed at 1 s and shows nothing), and `choices` or `choices_cmd` (the lines a command prints when the entry is opened, filterable) with `{choice}` standing for the chosen line as one whole argument.
 - **Bounds.** 16 categories, 128 entries, 32 fixed choices per entry, 16 states; past a bound the first ones are kept, with one log line of counts. A command's list or state read is cut at 1 s, 2,000 lines and 256 KiB. Names, commands and lines are never logged (an entry is named by its position in the file).
 - **`alpheus-launch --power`** opens the ⏻ menu (lock, log out, reboot, power off) under the bar's right end, with or without the `power` module; exit 2 when no `[quick]` session command is set.
 - **The `/` caveat.** A typed path (`/etc/hosts`) in Mod+Space's All mode jumps into the Tools menu; `[prefixes] tools = ""` gives the key back. A `tools` prefix the file never sets that clashes with your `commands` or `windows` prefix is turned off with a note; one the file sets is refused.
@@ -342,7 +342,7 @@ A file the pad cannot safely take over opens it read only (moves, selection and 
 
 ### Clipboard history
 
-Off by default. `[clipboard] enabled = true` in `bar.toml` (read at start: `shell-ctl reload-bar` or a restart after changing it) makes the daemon follow the Wayland clipboard through `ext-data-control-v1` (or `zwlr_data_control_manager_v1` v1 where that is all the compositor has). **Text only**: every copy is read once, at most 4,096 bytes (a longer text is skipped, never cut), valid UTF-8, not only whitespace; the last 50 are kept in memory, newest first, a repeat moves to the top. **Nothing is written to disk**: the history is lost when the daemon stops. The primary selection (mouse selection) is never read, and images are never read.
+Off by default. `[clipboard] enabled = true` in `bar.toml` (read once at start: a change takes effect when `alpheus-demon` restarts) makes the daemon follow the Wayland clipboard through `ext-data-control-v1` (or `zwlr_data_control_manager_v1` v1 where that is all the compositor has). **Text only**: every copy is read once, at most 4,096 bytes (a longer text is skipped, never cut), valid UTF-8, not only whitespace; the last 50 are kept in memory, newest first, a repeat moves to the top. **Nothing is written to disk**: the history is lost when the daemon stops. The primary selection (mouse selection) is never read, and images are never read.
 
 Open it with `alpheus-launch --clipboard` (bind it yourself: Mango `bind=SUPER,v,spawn,alpheus-launch --clipboard`, Sway `bindsym $mod+v exec alpheus-launch --clipboard`) or type `"` in Mod+Space. Enter copies the entry back and closes; Ctrl+Enter or a right click pins or unpins it (10 pins at most, kept first and never evicted); Delete forgets it; the last row, `Clear history`, asks (`Clear? ⏎`; a second Enter confirms, but only from 0.4 s after the question, and a held Enter never confirms; any other key or a click cancels it) and keeps the pins; `alpheus-launch --clipboard-clear` does the same from a script. Both verbs exit 2 when the history is off and when the compositor offers no data-control protocol (3 when the bar is not running). After Enter the daemon itself owns the clipboard (so it empties if the daemon stops), with no `wl-copy` left running.
 
@@ -357,7 +357,7 @@ A security mode for public networks, with the work split in two. **Your system c
 - **Verbs.** `alpheus-launch --shield on|off|toggle` answer once the command has started (the outcome reaches you through the switch, the notice and the log, never the exit code; already in the asked state: nothing runs); `status` prints `Shield: on|off` then the blocked devices as `<vid:pid>  ·  <name>` (exit 0 either way, `Shield: unknown` exits 2); `allow` opens the blocked devices as a picker in the launcher's box (`<vid:pid>  ·  <name>`, the checked ids first) and runs `allow` for the chosen one (Escape exits 1; nothing blocked gives the `No blocked USB device` notice, exit 0). A daemon older than the verb exits 3, the one code a caller falls back on.
 - **Notices.** `Shield on` / `Shield off` (your `on_text` / `off_text`, at any change, whoever made it), `Shield unchanged` (a failed switch), `USB device allowed` (naming the device), `USB device not allowed`, `No blocked USB device`: through alpheus's own notification server, one log line `shield: no notification (not serving)` when it is not serving.
 - **Hook.** `[hooks] shield` runs on each change with `ALPHEUS_SHIELD=on|off`, under the hooks' rules.
-- **Costs.** Commands and reads run on a short-lived thread (`alpheus-shield`, alive only while one runs: one command and one read at a time, a read bounded to 2 s, 64 KiB and 1,024 lines); one timer, armed only while a switch waits for its flag (5 s after a clean exit, 60 s while the command still runs). Figures in the memory table above.
+- **Costs.** Commands and reads run on a short-lived thread (`alpheus-shield`, alive only while one runs: one command and one read at a time, a read bounded to 2 s, 64 KiB and 1,024 lines); one timer, armed only while a switch waits for its flag (5 s after a clean exit, 60 s while the command still runs). Figures in [the memory table](docs/measurements.md#alpheus-component-by-component).
 
 ### Themes
 
@@ -377,7 +377,7 @@ replacing the link is not seen until the bar restarts (the bar logs it once at s
 The keys of `theme.toml` are in [`docs/configuration.md`](docs/configuration.md#themetoml).
 
 With no `theme.toml`, or no `theme` key in it, alpheus uses `wallpaper` when
-`~/.config/alpheus/colors.toml` exists (what it did before themes existed),
+`~/.config/alpheus/colors.toml` exists,
 and `catppuccin` otherwise. An unknown name falls back to `catppuccin`, with
 one line in the log.
 

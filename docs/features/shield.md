@@ -58,7 +58,7 @@ than the verb (the one code a caller falls back on).
 ## Configuration
 
 `[shield]` in `bar.toml` (the struct is `ShieldConfig` in `config.rs`); read at start, so a change
-takes effect after `shell-ctl reload-bar`.
+takes effect when `alpheus-demon` restarts (bar.toml is read once at start).
 
 | Key | Default | What it does |
 | --- | --- | --- |

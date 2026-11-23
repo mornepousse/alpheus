@@ -90,15 +90,15 @@
 //! enabled = false                                           # true: follow the clipboard (data-control), 50 entries in memory, never on disk
 //! [shield]                                                  # Shield mode for public networks (none set: no Shield anywhere); read at start
 //! flag = "/var/lib/shield/on"                               # absolute; the mode is on while this file exists (not in alpheus's config directory)
-//! on = ["pkexec", "/run/current-system/sw/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
-//! off = ["pkexec", "/run/current-system/sw/bin/shield-root", "off"]
-//! allow = ["pkexec", "/run/current-system/sw/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
+//! on = ["pkexec", "/usr/local/bin/shield-root", "on"]    # argv, run as given; their program asks for authorisation itself
+//! off = ["pkexec", "/usr/local/bin/shield-root", "off"]
+//! allow = ["pkexec", "/usr/local/bin/shield-root", "allow", "{id}"]   # {id}: one whole element, once; absent: the blocked USB devices are listed only
 //! # blocked = ["usbguard", "list-devices", "--blocked"]     # the default; [] turns the device list off
 //! # on_text = "Protections for public networks are on."     # the notices' bodies, no control or format character, at most 256 bytes
 //! # off_text = "Back to the usual settings."
 //! [hooks]                                                   # a command run on an event, its data in ALPHEUS_* variables (none set: nothing runs)
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
-//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, displays, failed_units
+//! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
 //! ```
 
 use crate::clock;

@@ -169,8 +169,8 @@ These are enforced by tests, so a change that breaks one fails the build.
 
 ## What it costs
 
-Measured in release, back to back with the version before it, 3 runs each (the full table is in the
-README; the tests that measure are named here).
+Measured in release, back to back with the version before it, 3 runs each (the full table is in
+[measurements](../measurements.md); the tests that measure are named here).
 
 - **Linked in, chip idle:** −269…+222 KB at start, which is within the harness's spread (nothing
   measurable); the binary grew by 60 KiB stripped. The idle chip itself is +24…+48 KB over the same

@@ -78,7 +78,7 @@ changed it meanwhile: your own choice always wins.
 ## Configuration
 
 `[notifications]` in `bar.toml` (the struct is `NotificationsConfig` in `config.rs`); the server takes
-it when it starts, so a change needs the daemon restarted (`shell-ctl reload-bar`). Unknown keys are
+it when it starts, so a change takes effect when `alpheus-demon` restarts (bar.toml is read once at start). Unknown keys are
 refused.
 
 | Key | Default | What it does |

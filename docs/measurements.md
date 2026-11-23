@@ -12,7 +12,7 @@ compares with other shells. Updated with every delivery that costs anything
   for release or pass one loosened to fit debug (header of
   `crates/alpheus-daemon/tests/memory.rs`).
 - **Back to back against a base commit.** A delivery is measured against the
-  commit just before it, three runs each, each build in its own target
+  commit just before it, usually three runs each (a row says when it was not), each build in its own target
   directory, on the same machine in the same sitting.
 - **Trust the deltas, not the absolutes.** PSS drifts by about ±0.5–1 MB
   between boots (shared libraries are counted proportionally, the page cache
@@ -37,16 +37,24 @@ compares with other shells. Updated with every delivery that costs anything
   outputs, a private D-Bus daemon replaying recorded NetworkManager, UPower
   and BlueZ replies, and a script standing in for `pw-dump`; nothing touches
   a real session.
-- **Where the figures come from.** The tables below are the delivery
-  records kept in the project's `CLAUDE.md` ("Where things stand"), each with
-  the test that produced it; the figures were measured on the author's
-  laptop unless a row says otherwise.
+- **Where the figures come from.** alpheus's own rows are release builds
+  measured by `tests/memory.rs` on a headless Sway, as described above. Only
+  the rows marked live, and the other shells' rows, were read on a real
+  session (one laptop, Hyprland, three outputs). Each row names the test that
+  produced it; most pages under `docs/features/` give the base commit and the
+  run count of their delivery's measurement, and the rest are in the
+  project's history.
 
 ## How to run
 
 ```sh
 cargo test -q --release -p alpheus-daemon --test memory -- --include-ignored --test-threads=1
 ```
+
+`--include-ignored` runs the budget tests, which are marked `#[ignore]` so
+that a plain `cargo test` skips them, together with the few ordinary tests of
+the file; the header of `tests/memory.rs` gives the same command with
+`--ignored`, which runs the budget tests alone.
 
 On the Nix setup, prefix it with `nix develop -c`. The tests need a headless
 Sway, a `dbus-daemon` and the other tools of the dev shell; they never run
@@ -55,14 +63,14 @@ against the live session.
 ## Memory
 
 How much RAM a desktop shell keeps resident, measured as PSS
-(`/proc/<pid>/smaps_rollup`) on the author's laptop (Hyprland, three
-outputs). alpheus figures are release builds. Updated with every delivery.
+(`/proc/<pid>/smaps_rollup`). [Method](#method) says which figures come from
+the tests and which from a real session. Updated with every delivery.
 
 ### Compared with other shells
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | bar ≈ 14 MB (live) + swaybg 1.4 MB (optional) borrowed (rows below); swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live bar figure predates several deliveries and is to be re-measured |
+| **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | alpheus's live total ≈ 14 MB (bar and sound source) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live figure was measured before several deliveries and is to be re-measured |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
@@ -112,9 +120,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | UI refresh, linked in (lighter bar, quick switches, six presets in the daemon; rail, dashboard and shapes in the TUI) | within noise at start (`everything` +4…+32 KB in two pairings, −160 in the third; `plan 1` −64…−68, `+ privacy` −124…−80) vs. the delivery before this one | daemon binary 6,812,592 bytes both sides (6.50 MiB, same size, different bytes; the CPU history and the gauge are gone, the switches and labels are in), TUI binary 1.48 → 1.54 MiB (+60 KiB stripped); measured `d9b8965` vs this delivery, release, back to back, 3 runs each, separate target directories, on `startup_pss_per_source`. One `+ resources` pairing reads +272 KB because that base run read 8,271 KB against 8,607–8,611 in its two others (the same case on this delivery: 8,535–8,543); `+ sound` −156…+32 |
 | UI refresh, quick panel | module at rest 0–104 KB (base 0–100); open 316–338 KB over rest (base 256–274); closed +208…+210 KB over rest (base +126…+148, the first open's one-time warm-up); 20 more cycles −28…−4 KB over closed (base −2…+44) | `quick_pss_idle_open_and_closed`, 3 runs each (the 0–100 KB "module at rest" is not a cost of the module: an anonymous-memory step of ~110 KB that flips on both trees, smaps-attributed by the final review of small features 2): the panel costs +60…+80 KB more open and after its first open than before (most likely the switch and labelled-button drawing's code and glyph pages, not attributed with smaps); within the test's bounds (closed ≤ idle + 512 KB, 20 cycles ≤ closed + 128 KB); 0 loop and 0 whole-daemon wake-ups at rest after (`at_rest_no_wakeups_after_the_quick_panel`) |
 | Control center (TUI), first render of the dashboard | 0.43–0.75 ms | `first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, release, 3 runs (120×36, tools answering after 500 ms); budget 100 ms |
-| Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
+| Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules; measured before the move to dbus-rs, the launcher and the tray, not re-measured since (see the note below) |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
-| **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
+| **alpheus resident total, live** | **≈ 14 MB** | bar + sound source; measured before the move to dbus-rs, the launcher and the tray, not re-measured since (see the note below) |
 | Launcher feature, linked in but never opened (no `launcher` in `modules` even) | +0.3–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus `libxkbcommon.so` itself (≈ 60 KB of it, `/proc/<pid>/smaps`); measured `c256d33` vs the launcher delivery, release, back to back — a real cost, not "noise" |
 | Launcher, closed (socket only, nothing else resident) on top of that | +0 MB | no thread, timer or keyboard exists while closed |
 | Launcher, open (typed query, keyboard bound) | ≈ +2.0–2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs`, with dbus-rs |
@@ -203,10 +211,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > binary grew by +0.35 MiB all the same, and the control center is not resident.
 >
 > **Note:** the "live" row above (≈ 11.3 MB) and the resident total it
-> feeds into (≈ 14 MB) predate the move from zbus to dbus-rs, the launcher
-> merge and the tray: they were measured before any of them. The headless
-> sway rows above are measured with all of them; the live rows will be
-> re-measured at the real-world trial of the tray (tray plan 2, task 21).
+> feeds into (≈ 14 MB) were measured on a real session before the move from
+> zbus to dbus-rs, the launcher and the tray, and have not been measured
+> since. The headless sway rows above are measured with all of them.
 > The hybrid-mode figures in the shells table add that live total to the
 > borrowed tools' rows above: swayosd 7.6 MB (2026-10-09), swaybg 1.4 MB
 > (2026-10-05), and mako 6.7 MB (2026-10-08) for the figure before the

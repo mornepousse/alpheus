@@ -189,7 +189,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] mixer` | `["wiremix"]` | the program and arguments the Per-app mixer button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `activate`, `increase`,
-`decrease`, `search`, `refresh`; see the README's list of action names).
+`decrease`, `search`, `refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -309,7 +309,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] network` | `["nmtui"]` | the program and arguments the Choose a network button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `activate`, `search`,
-`refresh`; see the README's list of action names).
+`refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -427,7 +427,7 @@ The tab has one setting of its own, in `config.toml`, read once when the control
 | `[commands] bluetooth` | `["bluetui"]` | the program and arguments the Pair a device button runs |
 
 The keys come from `[keys]` and `[keys.bindings]` (the names are `toggle`, `activate`, `search`,
-`refresh`; see the README's list of action names).
+`refresh`; see [the action list](../configuration.md#configtoml)).
 
 ### How it is built
 
@@ -532,8 +532,8 @@ not recorded.
 ### Configuration
 
 None: the commands are fixed in the backend and the tab reads no setting of its own. The keys come
-from `[keys]` and `[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see the
-README's list of action names).
+from `[keys]` and `[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see
+[the action list](../configuration.md#configtoml)).
 
 What each button runs (`SessionPower::perform`, through the injectable command executor):
 
@@ -707,7 +707,7 @@ date, greeting and summary stacked.
 
 The first render of the dashboard is checked to take under 100 milliseconds even when the tools are
 slow (`first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, `tests/first_render.rs`;
-README: 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
+[measurements](../measurements.md): 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
 the spec's, § 3).
 
 ## Displays
@@ -782,7 +782,7 @@ listed as `<name> missing, ignored`.
 ### Configuration
 
 Profiles are in `displays.toml` (in the config directory), written by `+ Save current` and applied by
-the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; see the README). A
+the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; see [`[displays]`](../configuration.md#displays)). A
 `displays.toml` that could not be read at startup is never overwritten: saving says
 `invalid displays.toml: fix it before saving`. The keys come from `[keys]` and `[keys.bindings]`.
 
@@ -896,7 +896,7 @@ and the `[colors]` overrides, are not part of what the tab writes, and the overr
 preview), and
 reads `colors.toml` for the wallpaper theme. In mode `Auto` the preview follows the mode the daemon
 publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running). The themes, their
-roles and the styles are described in the README and in the themes and shapes specs.
+roles and the styles are described in [the `theme.toml` reference](../configuration.md#themetoml) ([roles](../configuration.md#roles), [`style`](../configuration.md#style)) and in the themes and shapes specs.
 
 ### How it is built
 
@@ -1101,4 +1101,4 @@ escape sequence.
 Nothing while the tab is not shown. Shown, three reads every 5 seconds (the failed units of both managers and the health, the spec's
 refresh); the once-per-showing reads run through the executor's `capture` on the
 tab's worker, with the deadlines and caps the diagnostics spec states. The tab's first render is
-209–491 µs (README). The journal view makes no read while it is closed and no child outlives it.
+209–491 µs ([measurements](../measurements.md)). The journal view makes no read while it is closed and no child outlives it.

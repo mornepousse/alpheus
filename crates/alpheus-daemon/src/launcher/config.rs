@@ -384,8 +384,8 @@ mod tests {
     /// is valid as written: the test reads docs/configuration.md itself, so the example cannot drift.
     #[test]
     fn the_configuration_references_tools_example_parses() {
-        let readme = include_str!("../../../../docs/configuration.md");
-        let block = readme
+        let reference = include_str!("../../../../docs/configuration.md");
+        let block = reference
             .split("```toml\n")
             .skip(1)
             .map(|b| b.split("```").next().unwrap_or(""))

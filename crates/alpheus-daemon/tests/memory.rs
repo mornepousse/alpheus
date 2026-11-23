@@ -313,7 +313,7 @@ fn entries_ms(line: &str) -> Option<u64> {
 }
 
 /// Sources spec § 7: PSS with no source and with a 300-line source, open latency with it (the box
-/// shows at once, the entries follow), and 0 wake-ups at rest after. Printed for the README; the
+/// shows at once, the entries follow), and 0 wake-ups at rest after. Printed for docs/measurements.md; the
 /// latency keeps the launcher's 20 ms budget, the rest its <= 4 wake-ups.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -417,7 +417,7 @@ fn launcher_threads_back_to_baseline() {
 /// A dmenu of 100,000 short lines, open
 /// PSS and its value 1 s after cancel — printed, no assertion (the budgets
 /// above already cover growth and the 6 MB open margin on a realistic
-/// catalog; this is the worst-case dmenu size, reported for the README).
+/// catalog; this is the worst-case dmenu size, reported for docs/measurements.md).
 /// The request itself goes through `alpheus_launch::exchange` on its own
 /// thread, exactly as the shipped client would send it; a typed Escape
 /// cancels it, as a person would.
@@ -515,7 +515,7 @@ fn startup_pss_per_source() {
     // The system manager at count 0: only the `+ failed` case reads it.
     let _systemd = FakeSystemd::serve(&bus, 0);
     let mut cases = vec![
-        // The case names are what CLAUDE.md and the README cite next to their figures: keep them.
+        // The case names are what docs/measurements.md cites next to its figures: keep them.
         ("plan 1", "\"workspaces\", \"window\", \"clock\"", ""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\"", ""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"", ""),
@@ -937,8 +937,8 @@ fn startup_pss_with_the_tray_under_15_mb() {
     assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report it, never raise: {kb}");
 }
 
-/// The inotify watch adds nothing at rest, even right after a reload. Read in the
-/// README as "0 wake-ups at rest" with the watch in place.
+/// The inotify watch adds nothing at rest, even right after a reload. Read in
+/// docs/measurements.md as "0 wake-ups at rest" with the watch in place.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_a_theme_reload() {
@@ -963,7 +963,7 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
 }
 
 /// Themes delivery 1: 50 reloads (two presets in turn, three bars repainted each time) leave no
-/// growth behind. Printed for the README; budget 768 KB (a leak of 64 KB per reload makes 3.2 MB).
+/// growth behind. Printed for docs/measurements.md; budget 768 KB (a leak of 64 KB per reload makes 3.2 MB).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn theme_reloads_no_growth() {
@@ -2147,7 +2147,7 @@ fn wait_until_read(fake: &FakeMango, d: &Daemon) {
 
 /// Mango and Sway spec § 6: startup PSS, every module, 3 outputs, under each backend — the fake
 /// Hyprland (the reference, as `startup_pss_per_source`), Sway (this headless sway read through
-/// its i3 IPC), Mango (a fake socket serving the real captures). Printed for the README rows.
+/// its i3 IPC), Mango (a fake socket serving the real captures). Printed for the rows of docs/measurements.md.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn startup_pss_per_backend() {
