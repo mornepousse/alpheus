@@ -1,6 +1,7 @@
 # Feature pages
 
-One page per feature of the daemon (`crates/alpheus-daemon`), each saying what it does, how to use
+One page per feature of the daemon (`crates/alpheus-daemon`), plus one for the terminal control
+center (`crates/alpheus`), each saying what it does, how to use
 it, how to configure it, how it is built, which rules the tests enforce on it and what it costs.
 The rules and reasons behind them are in [../decisions.md](../decisions.md); how the pages are
 written is in [../STYLE.md](../STYLE.md).
@@ -28,3 +29,7 @@ written is in [../STYLE.md](../STYLE.md).
 - [Event hooks](hooks.md): a command of your own, run when something happens in the shell.
 - [Shield mode](shield.md): a public-network security mode, switched and shown by alpheus while your system does the root work.
 - [Displays](displays.md): the daemon's side of screen layouts, profiles and the "keep these settings?" trial.
+
+## The control center
+
+- [The control center](control-center.md): the terminal program with eight tabs, from Sound to Diag.
