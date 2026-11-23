@@ -40,9 +40,8 @@ A theme also carries **seven hues**: `red`, `orange`, `yellow`, `green`,
 `cyan`, `blue` and `purple`. Each preset takes them from its own palette
 (darker shades in the light variants where the official one is too pale to
 read, 3:1 on the bar at least). `module_colors` in `theme.toml` decides how
-much of each module wears its hue:
-
-The values of `module_colors` are in [`docs/configuration.md`](../configuration.md#module_colors).
+much of each module wears its hue; its values are in
+[`docs/configuration.md`](../configuration.md#module_colors).
 
 The mapping is fixed:
 

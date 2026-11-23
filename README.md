@@ -40,7 +40,7 @@ component by component.
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
 | **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | alpheus's live total ≈ 14 MB (bar and sound source) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live figure was measured before several deliveries and is to be re-measured |
-| waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
+| waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB ([see the note](docs/measurements.md#alpheus-component-by-component)) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
 | Wayle | Rust, GTK4 | ≈ 168 MB | bar, panels |
 | ashell + swaync | Rust, iced | ≈ 194 MB | bar, notifications |

@@ -47,6 +47,12 @@ on a fill (labels on a button, a chip or a tag are `fg`). Below that size the cl
 rows are drawn, as before except for three changes: the keycaps' order, the Displays row dropping its
 scale column at 80 columns, and the Theme tab's caption hiding when the rows need its room.
 
+**Controls.** The rail's tabs draw their controls in the theme: selection bands, knob gauges for volume
+and brightness, switches and glyph buttons.
+
+**Displays.** The Displays tab works under every compositor that implements `zwlr_output_manager_v1`,
+with an automatic rollback after 15 seconds unless the change is kept.
+
 **Shapes.** The theme's `style` (see [Themes and bar styles](themes.md#bar-styles)) shapes the control
 center too: `islands` cuts round caps and rounded frames, `powerline` arrow tips, `underline` drops the
 fills for coloured, underlined text, `floating` draws double frames with drop shadows, and `flat` and
@@ -998,7 +1004,8 @@ not yet sent. It is one list in sections:
   fix it as text, and never runs it.
 - **Failed units** of both managers (system and user), the units **restarting in a loop**, the
   **crashes** of the last seven days (`coredumpctl`) and the **boot** time (`systemd-analyze`).
-- The eight **journal presets** and the **Bug report** row.
+- The eight **journal presets** (Errors this boot, USB, Suspend and resume, Out of memory, Thermal and
+  throttling, NetworkManager, Live journal, Logs of a service…) and the **Bug report** row.
 
 Three views open over the list. The **journal view** shows the journal for a preset, a unit or the
 minute around a crash: a header (what is asked, the filters), a row for the state of the read

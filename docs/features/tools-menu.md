@@ -65,7 +65,8 @@ most 128) has:
 | `choices` | Fixed choices, at most 32 |
 | `choices_cmd` | An argv whose output lines are the choices, run at each drill-in |
 
-A command's reads (`state`, `choices_cmd`) are cut at 1 s, 2,000 lines and 256 KiB. Past a bound the first
+A command's reads (`state`, `choices_cmd`) are cut at 1 s, 2,000 lines and 256 KiB; a `state` that hangs is
+killed at 1 s and shows nothing (neither on nor off). Past a bound the first
 ones are kept and one line of counts is logged. Invalid structure makes `launcher.toml` invalid, as for
 every other key. A built-in that opens a tab runs `[actions] open_tab` with `{tab}`, else the launcher's
 terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-category bound is dropped,
