@@ -39,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DELAY: Duration = Duration::from_secs(10);
 /// Startup PSS budget: firm (2026-10-04, Q13). Never raised: a figure
-/// above it is reported to her with `startup_pss_per_source`'s breakdown.
+/// above it is reported to the maintainer with `startup_pss_per_source`'s breakdown.
 const STARTUP_MAX_KB: u64 = 15 * 1024;
 
 /// Refuses to measure PSS on a debug build (module doc: roughly 2x

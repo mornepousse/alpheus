@@ -82,7 +82,7 @@ pub trait Diagnostics: Send + Sync {
     fn copy(&self, argv: &[String], text: &str) -> BResult<()>;
     fn check(&self, check: &Check) -> CheckResult;
     /// Whether this user can open the system journal's files (a member of `systemd-journal`,
-    /// `adm` or `wheel`); false means `journalctl` shows only her own messages.
+    /// `adm` or `wheel`); false means `journalctl` shows only that user's own messages.
     fn journal_readable(&self) -> bool;
     /// The bug report, built and redacted: what shows is what is copied.
     fn report(&self, compositor: &str, restart_loop: u32) -> String;

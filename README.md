@@ -14,7 +14,7 @@ swayidle…): alpheus never touches them. On some outputs (DisplayLink in
 particular), a misplaced power-off can freeze the machine.
 
 > **Status**: ongoing personal project, used daily by its author on NixOS.
-> It still depends on a few scripts from her configuration (`wm-set`,
+> It still depends on a few scripts from its author's configuration (`wm-set`,
 > `shell-ctl`…); making them optional, with a neutral fallback, is the next
 > step before use elsewhere.
 
