@@ -8,6 +8,9 @@ written is in [../STYLE.md](../STYLE.md). To add one, follow [../adding-a-module
 
 ## In the bar
 
+The modules with no page of their own — the launcher button, the workspaces, the window title, the
+volume, the network, Bluetooth, the battery and the clock — are described on the bar's own page.
+
 - [The bar](bar.md): every module, what a click does, how it reads the compositor and the system, and the script verbs that drive it.
 - [The system tray](tray.md): the status icons of running applications, and their menus.
 - [The calendar](calendar.md): a month grid that opens under the clock.
