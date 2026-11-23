@@ -239,11 +239,11 @@ fn tag_end(at: &str) -> TagEnd {
     for (i, c) in at.char_indices().skip(1) {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
             (None, '>') => return TagEnd::At(i + 1),
             (None, '<') => return TagEnd::Broken,
             (None, '"' | '\'') => quote = Some(c),
-            (None, _) => {}
+            // Inside a quote, or any other character: the tag goes on.
+            _ => {}
         }
     }
     TagEnd::Unclosed

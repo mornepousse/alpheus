@@ -209,6 +209,8 @@ impl Bar {
     }
 
     /// Applies a message; true if the display may have changed.
+    // one row per message: the ones that change nothing stay spelled out, each with its reason.
+    #[allow(clippy::match_same_arms)]
     pub fn apply(&mut self, m: Msg) -> bool {
         match m {
             Msg::Compositor(e) => {
@@ -241,9 +243,7 @@ impl Bar {
                 false
             }
             // The open quick panel's (`quick/app.rs` takes it first): never kept, no bar redraw.
-            Msg::Wifi { .. } => false,
-            Msg::Bt { .. } => false,
-            Msg::Vpn { .. } => false,
+            Msg::Wifi { .. } | Msg::Bt { .. } | Msg::Vpn { .. } => false,
             // A count going unknown keeps the last known one (spec § 6): a transient outage neither
             // hides the module nor re-arms the notice.
             Msg::Units(n) => n.is_some() && set_if_changed(&mut self.failed.system, n),

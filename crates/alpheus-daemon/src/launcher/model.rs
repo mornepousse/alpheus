@@ -620,6 +620,8 @@ impl Launcher {
 
     /// The keys that mean something else in the Tools mode (spec § 2); the rest (editing, moving)
     /// is the common handling.
+    // Left in a typed query is spelled out, so it never falls to a later arm.
+    #[allow(clippy::match_same_arms)]
     fn apply_tools(&mut self, k: Key) -> Option<Outcome> {
         Some(match k {
             Key::Backspace if self.query.is_empty() => {

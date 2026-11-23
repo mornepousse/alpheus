@@ -281,12 +281,15 @@ fn detach() -> std::io::Result<()> {
         -1 => Err(std::io::Error::last_os_error()),
         0 => {
             // Grandchild: its own session, then proceed to exec `prog`.
+            // SAFETY: setsid(2) takes no argument; the grandchild is not a group leader.
             if unsafe { libc::setsid() } == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         }
-        _ => unsafe { libc::_exit(0) }, // intermediate: nothing left to do.
+        // intermediate: nothing left to do.
+        // SAFETY: _exit(2) ends the process at once, running no destructor or handler.
+        _ => unsafe { libc::_exit(0) },
     }
 }
 

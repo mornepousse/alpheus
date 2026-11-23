@@ -368,12 +368,12 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
                 ));
                 pieces.push(piece(format!("{percent}%"), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
             }
-            Some(_) => {}
             None if shown(config.coarse, p.low) => {
                 let style = if p.low { Style::WARN } else { icon_style(mc, Hue::Green, Style::NORMAL) };
                 pieces.push(piece(format!("{space}{}", peripheral_icon(p.kind)), style));
             }
-            None => {}
+            // Hidden by its setting (a percentage not shown, a coarse level not shown).
+            Some(_) | None => {}
         }
     }
     if pieces.is_empty() {

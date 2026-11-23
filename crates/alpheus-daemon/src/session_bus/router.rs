@@ -553,6 +553,8 @@ impl Tray {
         self.role = Role::HostOnly { watcher };
     }
 
+    // one row per role: the state machine keeps its idle states spelled out.
+    #[allow(clippy::match_same_arms)]
     fn signal(&mut self, m: &Message) -> TrayOutput {
         let s = codec::signal(m);
         let sender = m.sender().map(|s| s.to_string()).unwrap_or_default();

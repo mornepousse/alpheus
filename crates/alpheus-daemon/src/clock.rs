@@ -138,14 +138,13 @@ pub fn format(fmt: &str, h: &LocalTime) -> String {
             Some('H') => s.push_str(&format!("{:02}", h.hour)),
             Some('M') => s.push_str(&format!("{:02}", h.minute)),
             Some('S') => s.push_str(&format!("{:02}", h.second)),
-            Some('%') => s.push('%'),
+            Some('%') | None => s.push('%'),
             // Validated at load time: an unknown directive should not reach
             // here; it is copied as-is instead of panicking.
             Some(d) => {
                 s.push('%');
                 s.push(d);
             }
-            None => s.push('%'),
         }
     }
     s
@@ -252,6 +251,7 @@ mod tests {
         match before {
             // SAFETY: same.
             Some(v) => unsafe { std::env::set_var("TZ", v) },
+            // SAFETY: same.
             None => unsafe { std::env::remove_var("TZ") },
         }
     }

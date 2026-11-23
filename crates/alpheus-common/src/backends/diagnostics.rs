@@ -656,7 +656,9 @@ mod tests {
         let denied = !tools(&dir).journal_readable();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         // (root opens anything: the assertion only holds for an ordinary user)
-        assert!(denied || unsafe { libc::geteuid() } == 0, "a file the user cannot open is not readable");
+        // SAFETY: geteuid(2) takes no argument and cannot fail.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert!(denied || root, "a file the user cannot open is not readable");
         assert!(!tools(&dir.join("missing")).journal_readable(), "no such directory");
     }
 

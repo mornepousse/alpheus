@@ -130,6 +130,8 @@ fn total_of(t: &Model) -> Option<u64> {
 /// The log line a change makes (the words are fixed: see docs/decisions.md, "Logs carry fixed
 /// words and numbers only"). None when the change was not worth a line: `Seen`, or a change with
 /// nothing to act on.
+// a Toggle is logged as the pause or resume it stands for.
+#[allow(clippy::match_same_arms)]
 pub(crate) fn change_line(before: &Model, after: &Model, c: Change, _l: &Lengths) -> Option<String> {
     if before == after {
         return None;

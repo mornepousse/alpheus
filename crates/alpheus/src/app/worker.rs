@@ -193,10 +193,9 @@ impl Op {
             Op::SetDnd(_) => &[Domain::Dnd],
             Op::ToggleKeepAwake { .. } => &[Domain::KeepAwake],
             Op::SetProfile(_) => &[Domain::Profiles],
-            Op::Power(_) => &[],
             Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => &[Domain::Displays],
             Op::UnitUser(..) => &[Domain::Failed],
-            Op::FailedRefresh | Op::Copy { .. } => &[],
+            Op::Power(_) | Op::FailedRefresh | Op::Copy { .. } => &[],
         }
     }
 }

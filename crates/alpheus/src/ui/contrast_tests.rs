@@ -77,8 +77,7 @@ fn need(th: &Theme, fg: Color, bg: Color, text: bool) -> f32 {
     match (role(th, fg), role(th, bg)) {
         ("fg", "raised" | "pill" | "selection") => 3.5,
         ("on_accent", "accent_container") => 4.5,
-        ("on_accent", _) => 3.0,
-        ("muted", _) => 3.0,
+        ("on_accent" | "muted", _) => 3.0,
         _ => 4.5,
     }
 }

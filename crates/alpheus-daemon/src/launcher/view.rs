@@ -494,6 +494,8 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 /// The box's rows (ring dropped, the preview divider as a line). Selected row SELECTED; generic name/kind MUTED right-aligned
 /// ("Web browser", "window · 2", "command"); empty results → "no match" (or "scanning…" while the
 /// catalog is None and nothing matched); message on the help line in Style::ERROR.
+// the empty-state texts: one row per mode, so a mode keeps its own line.
+#[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut rows = vec![blank(b)];
     let end = b.pane_end();

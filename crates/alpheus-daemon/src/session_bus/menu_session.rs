@@ -193,8 +193,8 @@ impl MenuSession {
                     l.patch(updated, removed);
                     MenuUpdate::Changed
                 }
-                Some(_) => MenuUpdate::Nothing,
-                None => MenuUpdate::Nothing,
+                // No layout read yet, or none of these entries is in it.
+                _ => MenuUpdate::Nothing,
             },
             _ => MenuUpdate::Nothing,
         }

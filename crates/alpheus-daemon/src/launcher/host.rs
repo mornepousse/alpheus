@@ -134,6 +134,8 @@ pub fn opened(model: &Launcher) -> Opened {
 /// on this connection: Toggle/Close/Calc → Done (Toggle and Calc close an open script launcher: its own client gets
 /// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
 /// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
+// one row per (request, state): the toggles repeat their bodies on purpose, each row kept beside its comment.
+#[allow(clippy::match_same_arms)]
 pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (Action, Option<Reply>) {
     match (request, open) {
         (Request::Toggle, None) => (Action::OpenApps, Some(Reply::Done)),

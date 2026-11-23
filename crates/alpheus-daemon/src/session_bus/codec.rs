@@ -324,6 +324,8 @@ pub enum Signal {
 }
 
 /// `m` decoded; `NameOwnerChanged` is believed from the bus driver only.
+// the unicast guards stay explicit before the broadcast rows, though they answer as the fallback does.
+#[allow(clippy::match_same_arms)]
 pub fn signal(m: &Message) -> Signal {
     let text = |s: Option<String>| s.unwrap_or_default();
     let sender = text(m.sender().map(|s| s.to_string()));

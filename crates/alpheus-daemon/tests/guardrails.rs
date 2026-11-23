@@ -2787,6 +2787,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "fake-mixer",
     ];
     for c in &calls {
+        // one row per allowed command.
+        #[allow(clippy::match_same_arms)]
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,

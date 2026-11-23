@@ -552,7 +552,8 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             Some(position) => print(&position.to_string()),
             None => fail(stderr, &format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
         },
-        (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
+        // The picker's Escape (Shield's) is dmenu's.
+        (Request::Dmenu { .. } | Request::Shield(ShieldVerb::Allow), Reply::Cancelled) => EXIT_CANCELLED,
         (
             Request::Toggle
             | Request::Close
@@ -576,8 +577,6 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Shield(_),
             Reply::Done,
         ) => EXIT_OK,
-        // The picker's Escape, as dmenu's.
-        (Request::Shield(ShieldVerb::Allow), Reply::Cancelled) => EXIT_CANCELLED,
         // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
         (Request::Shield(ShieldVerb::Status), Reply::Shield(text)) => {
             let code = print(&text);

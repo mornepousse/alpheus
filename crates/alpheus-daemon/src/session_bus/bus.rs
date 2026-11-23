@@ -249,6 +249,8 @@ pub enum Call {
 }
 
 impl Call {
+    // one row per call: the table of the allowlist.
+    #[allow(clippy::match_same_arms)]
     pub fn method(&self) -> Method {
         match self {
             Call::Get { .. } => Method::Get,
@@ -380,7 +382,6 @@ pub fn message(call: &Call) -> Message {
         Call::RequestName => m.append2(WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE),
         Call::RequestNotifications => m.append2(NOTIFICATIONS_NAME, NOTIFICATIONS_NAME_FLAGS),
         Call::GetNameOwner { name } | Call::GetConnectionUnixProcessID { name } => m.append1(name.as_str()),
-        Call::ListNames => m,
         Call::AddMatch { rule } | Call::RemoveMatch { rule } => m.append1(rule.as_str()),
         Call::RegisterStatusNotifierHost { host, .. } => m.append1(host.as_str()),
         Call::ReadOne => m.append2(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY),
@@ -388,7 +389,7 @@ pub fn message(call: &Call) -> Message {
         Call::PlayerIdentity { .. } => m.append2(MPRIS_INTERFACE, "Identity"),
         Call::PlayerMetadata { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Metadata"),
         Call::PlayerPosition { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Position"),
-        Call::PlayerControl { .. } | Call::SubscribeUnits { .. } => m,
+        Call::ListNames | Call::PlayerControl { .. } | Call::SubscribeUnits { .. } => m,
     };
     m.set_auto_start(false);
     if method == Method::Event {

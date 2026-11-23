@@ -151,8 +151,7 @@ impl Panel {
         let first_entry = items.iter().position(|i| matches!(i, Item::Entry(_)));
         let card = items.iter().position(|i| *i == Item::Card);
         let selected = match (first_entry, card) {
-            (Some(i), _) => i,
-            (None, Some(i)) => i,
+            (Some(i), _) | (None, Some(i)) => i,
             (None, None) => 0,
         };
         // Without a player the card's own selection points at no row (`usize::MAX`).

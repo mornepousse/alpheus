@@ -219,6 +219,8 @@ fn countdown_tick(end: u64, now: u64, step: u64) -> u64 {
 impl Timer {
     /// The timer after change `c`, at `now`. A change that has nothing to act on (a pause when
     /// idle, a skip outside a Pomodoro, an add outside a countdown) returns the timer unchanged.
+    // a Toggle is the pause or resume it stands for.
+    #[allow(clippy::match_same_arms)]
     pub fn apply(self, c: Change, l: &Lengths, now: u64) -> Self {
         match c {
             // Starting a timer replaces whatever ran, and asks nothing first.

@@ -834,10 +834,9 @@ fn ttc_collection_one_face_per_chosen_weight() {
     let mut index: Vec<u32> = Vec::new();
     for f in p.fs.db().faces() {
         let source = match &f.source {
-            fontdb::Source::File(c) => c,
             // `fontdb` memory-maps files (the "memmap" feature): the
             // path stays reachable, right next to the mapped bytes.
-            fontdb::Source::SharedFile(c, _) => c,
+            fontdb::Source::File(c) | fontdb::Source::SharedFile(c, _) => c,
             other => panic!("unexpected source (not a file): {other:?}"),
         };
         assert_eq!(source, &path, "unexpected source (not the built collection): {}", source.display());

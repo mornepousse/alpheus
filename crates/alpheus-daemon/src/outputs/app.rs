@@ -607,7 +607,9 @@ placement = { x = 0, y = 0 }
         assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a directory");
         std::fs::remove_dir(&path).unwrap();
         let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // SAFETY: `c` is a NUL-terminated path that outlives the call.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0);
         assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a FIFO, without blocking");
     }
 

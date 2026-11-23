@@ -311,10 +311,9 @@ impl Request {
     /// How long a client waits for the reply: None for dmenu, which waits for the person.
     pub fn reply_timeout(&self) -> Option<Duration> {
         match self {
-            Request::Dmenu { .. } => None,
+            // The Shield picker waits for the person, as dmenu does.
+            Request::Dmenu { .. } | Request::Shield(ShieldVerb::Allow) => None,
             Request::OutputsTry(_) => Some(OUTPUTS_TRY_TIMEOUT),
-            // The picker waits for the person, as dmenu does.
-            Request::Shield(ShieldVerb::Allow) => None,
             Request::Shield(ShieldVerb::Status) => Some(STATUS_TIMEOUT),
             _ => Some(REPLY_TIMEOUT),
         }

@@ -504,7 +504,9 @@ impl App {
     fn success_message(&self, op: &Op) -> Option<String> {
         let onoff = |id: ToggleId, b: bool| format!("{}: {}", toggle_label(id), if b { "on" } else { "off" });
         Some(match op {
-            Op::SetVolume(..) | Op::SetBrightness(_) => return None,
+            Op::SetVolume(..) | Op::SetBrightness(_) | Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays | Op::FailedRefresh => {
+                return None;
+            }
             Op::SetDefault(id) => {
                 let a = self.data.audio.ready()?;
                 match a.sinks.iter().find(|n| n.id == *id) {
@@ -518,10 +520,8 @@ impl App {
             Op::ToggleKeepAwake { now_on } => onoff(ToggleId::KeepAwake, *now_on),
             Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
-            Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => return None,
             Op::UnitUser(UnitAction::Restart, unit) => format!("Restart queued: {unit}"),
             Op::UnitUser(UnitAction::ResetFailed, unit) => format!("Cleared: {unit}"),
-            Op::FailedRefresh => return None,
             Op::Copy { .. } => "Copied to the clipboard".to_string(),
         })
     }

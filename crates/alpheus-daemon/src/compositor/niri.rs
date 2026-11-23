@@ -70,6 +70,8 @@ fn read<T: serde::de::DeserializeOwned>(name: &str, v: Option<&Value>) -> Result
 }
 
 impl Model {
+    // a malformed event and an unknown one both change nothing, each said where it is.
+    #[allow(clippy::match_same_arms)]
     pub fn apply_line(&mut self, line: &str) -> Result<bool, String> {
         let v: Value = serde_json::from_str(line).map_err(|e| format!("unreadable niri line: {e}"))?;
         let Some((name, body)) = v.as_object().and_then(|o| o.iter().next()) else { return Ok(false) };

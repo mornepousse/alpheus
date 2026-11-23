@@ -229,10 +229,10 @@ impl Drop for Sway {
     fn drop(&mut self) {
         // The whole group (see `process_group(0)` above), not just this
         // PID: `dbus-run-session`, `dbus-daemon` and the compositor it
-        // started share this pgid, never the test session's. SAFETY:
-        // kill(2) towards a group WE created at this launch
-        // (process_group(0)), never -1 nor 0.
+        // started share this pgid, never the test session's.
         let pgid = self.child.id() as i32;
+        // SAFETY: kill(2) towards a group WE created at this launch
+        // (process_group(0)), never -1 nor 0.
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.runtime);
