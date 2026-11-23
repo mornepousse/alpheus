@@ -1,8 +1,32 @@
-//! Wayland: one layer-shell surface (Top layer, anchored at the top,
-//! exclusive zone) per screen, tracked live; a pointer for clicks and the
-//! wheel. Nothing else is asked of the compositor. Redraw only when a
-//! screen's grid changes. The tray's session-bus callbacks (`tray_output`) live in
-//! `tray/bridge.rs`.
+//! The Wayland side of the bar: one layer-shell surface per screen, and the pointer.
+//!
+//! A surface on the `Top` layer, anchored at the top with an exclusive zone, is created for each
+//! output the compositor announces and dropped when it goes, so screens plugged and unplugged are
+//! tracked live. Nothing else is asked of the compositor. A screen is repainted only when its grid
+//! changes; the pointer's presses and the wheel become a click on a module's zone, which
+//! `actions` turns into a command or a popup. The tray's own session-bus callbacks live in
+//! `tray/bridge.rs`, and the popups in `popup.rs`.
+//!
+//! Never:
+//! - write to the compositor: the only writes in the daemon are the workspace command, an output
+//!   configuration and the clipboard's own selection (`the_daemon_only_reads_from_the_compositor`);
+//!   a screen is never turned off from here, and the words for that are forbidden in every source,
+//!   by a guardrail whose own name cannot be written here either;
+//! - run anything but an allowed command on a click
+//!   (`every_click_on_a_full_bar_stays_on_the_allowlist`,
+//!   `every_click_only_runs_the_workspace_command`);
+//! - reach the launcher or a popup outside its guard: every seat and keyboard entry point goes
+//!   through it (`seat_and_keyboard_handlers_guard_their_launcher_calls`,
+//!   `keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call`,
+//!   `a_bar_press_swallows_only_a_launcher_it_closed`);
+//! - find a surface by an output's name: a hover and a popup find their bar by the surface's
+//!   identity (`hover_fire_finds_its_bar_by_surface_identity_never_by_name`);
+//! - bind a protocol a configuration did not ask for (`the_manager_is_bound_only_when_enabled`
+//!   for the clipboard's data control), or keep a timer or a keyboard at rest
+//!   (`nothing_resident_while_the_launcher_is_closed`).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (a click from the pointer to the command),
+//! docs/features/bar.md, docs/compositors.md (what each compositor gives).
 
 use crate::actions::{self, Button, Wheel};
 use crate::config::ModuleId;

@@ -1,5 +1,22 @@
-//! The bar's pure state: what the sources have said, nothing else.
-//! Messages change it; `layout` derives the grid for each screen from it.
+//! The bar's pure state: what the sources have said, and nothing else.
+//!
+//! `Msg` is everything a source can say (a compositor's workspaces, a sound reading, a D-Bus
+//! domain's state, a timer's chip, the notifications' view) and `Bar::apply` is the one place a
+//! message changes the state. It answers whether anything the bar draws changed, so the loop
+//! repaints only then; `layout` derives each screen's grid from this state, and `segments` the
+//! cells of one module. Nothing here reads a clock, a file or the system: the wiring hands in what
+//! it has read.
+//!
+//! Never:
+//! - keep what no module draws: a list the quick panel reads lives in the panel while it is open
+//!   (`the_bar_never_keeps_a_sink_list`, in this file's own tests), so the bar at rest stays small;
+//! - report a change that is not one: `set_if_changed` is how a message that says the same thing
+//!   again costs no repaint (`set_if_changed_stores_and_reports_only_a_change`);
+//! - read a source that is down as a state of its own: the module keeps its last reading and shows
+//!   its icon with `–` (docs/decisions.md, "A source that is down is not a state").
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (one message from the source to the
+//! pixels), docs/features/bar.md ("How it is built").
 
 use crate::clock::LocalTime;
 use crate::compositor::CompositorState;

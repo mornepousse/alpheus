@@ -1,7 +1,39 @@
-//! Assembling the daemon: signals, lock, settings, fonts, Wayland, the event
-//! loop (calloop), the sources the modules need (compositor, sound, D-Bus,
-//! resources timer). Covered by tests/headless_session.rs (headless sway)
-//! and the real-world trial; its pure decisions have their own tests.
+//! Assembling the daemon, and taking it down again.
+//!
+//! In order: the panic hook, the signals, the instance lock, the configuration, the fonts, the
+//! Wayland connection, the event loop (calloop), then only the sources the configured modules need
+//! (`wanted`: the compositor, the sound child, the D-Bus domains, the resources timer, the
+//! watches). `main_loop` dispatches, and `on_bar_message` is where a source's message reaches the
+//! bar, the hooks and the features that listen before it. `shut_down` is the mirror image: it
+//! saves the notepad, restores a displays trial, stops the commands it still owns, and lets the
+//! lock go.
+//!
+//! Never:
+//! - start a source a module did not ask for: a module that is not in `modules` costs nothing, and
+//!   the memory suite's `startup_pss_per_source` measures each one;
+//! - install the panic hook late: `the_panic_hook_is_installed_before_anything_else` pins it as the
+//!   first call of `run`, before any thread exists;
+//! - feed the listeners out of order: `on_bar_message_feeds_the_battery_alerts`,
+//!   `hooks_read_a_message_before_the_privacy_feed` and
+//!   `a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading` pin who reads a
+//!   message before the bar keeps it;
+//! - arm the displays timer before the loop exists, or drop the app before a trial is restored
+//!   (`the_displays_timer_is_synced_once_the_loop_exists`,
+//!   `the_displays_are_restored_before_the_app_is_dropped`);
+//! - resolve the theme before the watch and the portal are up
+//!   (`the_startup_theme_is_resolved_again_after_the_watch_and_the_portal`), or start the hooks
+//!   before the launcher's socket is watched (`hooks_start_after_the_launcher_socket_watch`);
+//! - lose what was typed, or leave a command running, at shutdown
+//!   (`shutting_down_closes_and_saves_the_pad`,
+//!   `a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands`);
+//! - drop a released keyboard inside the dispatch
+//!   (`a_released_keyboard_is_retired_then_dropped_after_the_dispatch`, and `retired.rs` for why).
+//!
+//! The headless suite (`tests/headless_session.rs`) runs this file against a disposable Sway; its
+//! pure decisions (`wanted`, the tick's arithmetic) have tests of their own.
+//!
+//! See: docs/ARCHITECTURE.md ("Entry points", "Threads"), docs/tour.md, docs/cli.md (the exit
+//! codes and the lock), docs/measurements.md (the per-source figures).
 
 use crate::clock;
 use crate::clock::LocalTime;

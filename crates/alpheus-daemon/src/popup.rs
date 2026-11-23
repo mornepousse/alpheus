@@ -1,19 +1,41 @@
-//! The bar's popups (spec § 1 Menus and Calendar, § 2): an `xdg_popup`
-//! attached to the bar's own layer surface on one output
-//! (`zwlr_layer_surface_v1.get_popup`, issued before the popup's first
-//! commit), placed by an `xdg_positioner` under the cells it hangs from,
-//! drawn as rows of cells into a pool of its own. One at a time; everything
-//! lives in `OpenPopup` and is dropped whole on close (nothing kept). What a
-//! popup shows (`PopupBody`) and how it reacts is filled by the tooltip, the
-//! menu and the calendar; this module is the Wayland side.
+//! The bar's popups: an `xdg_popup` on the bar's own layer surface, drawn as rows of cells.
 //!
-//! The keyboard is shared with the launcher: bound while the launcher or a
-//! grabbing popup needs it, released once neither does. Headless sway 1.12
-//! gives no keyboard focus to a grabbing popup whose parent
-//! layer surface has `KeyboardInteractivity::None`: the bar's layer surface
-//! on that output is made `Exclusive` (committed before the popup is
-//! created) while a grabbing popup is open, and keys arrive on the bar's
-//! surface — so they are routed by "which popup is open", never by surface.
+//! One popup at a time, attached to the bar's layer surface on one output
+//! (`zwlr_layer_surface_v1.get_popup`, issued before the popup's first commit), placed by an
+//! `xdg_positioner` under the cells it hangs from, painted into a pool of its own. Everything
+//! lives in `OpenPopup` and is dropped whole on close, so nothing of a popup stays. What a popup
+//! shows (`PopupBody`) and how it answers a key or a press is each feature's (the tooltip, the
+//! menus, the calendar, the panels, the chips); the table `POPUPS` is how this file reaches them.
+//! This half is the Wayland side.
+//!
+//! The keyboard is shared with the launcher: bound while the launcher or a grabbing popup needs
+//! it, released once neither does. Headless sway 1.12 gives no keyboard focus to a grabbing popup
+//! whose parent layer surface has `KeyboardInteractivity::None`, so the bar's surface on that
+//! output is made `Exclusive` (committed before the popup is created) while a grabbing popup is
+//! open, and the keys arrive on the bar's surface — which is why they are routed by "which popup is
+//! open", never by surface. On Hyprland it is the other way round, and the bar stays `None`
+//! (`bar_exclusive_during_grab`).
+//!
+//! Never:
+//! - find a parent by an output's name: `popup_close` and `popup_output_gone` use the surface's
+//!   identity (`popup_close_and_output_gone_find_their_parent_by_identity_never_by_name`);
+//! - let a key in by another door: every entry point goes through `key_event`, and none of them
+//!   binds a launcher call of its own
+//!   (`keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call`,
+//!   `seat_and_keyboard_handlers_guard_their_launcher_calls`);
+//! - take a repeat for a press: `the_keyboards_own_repeat_is_told_from_a_press` pins the one place
+//!   that tells them apart, so a held key repeats only what may repeat;
+//! - drop a released keyboard inside the dispatch: it is retired instead (`retired.rs`,
+//!   `a_released_keyboard_is_retired_then_dropped_after_the_dispatch`);
+//! - leave a tooltip's item behind after its popup closed
+//!   (`popup_close_resets_tooltip_item_for_a_closed_tooltip`);
+//! - keep a timer, a keyboard or a surface at rest: every one is in the table of
+//!   `nothing_resident_while_the_launcher_is_closed`.
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/bar.md (the clicks and the Hyprland
+//! limit), docs/features/tray.md and docs/features/calendar.md (two popups in use),
+//! docs/decisions.md ("A tray menu is shown only once its layout has arrived", "A submenu opens in
+//! the same popup").
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
