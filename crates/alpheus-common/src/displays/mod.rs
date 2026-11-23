@@ -81,7 +81,7 @@ impl Scale {
         let s = self.0;
         let next = if dir > 0 {
             (s / Self::STEP + 1) * Self::STEP
-        } else if s % Self::STEP == 0 {
+        } else if s.is_multiple_of(Self::STEP) {
             s.saturating_sub(Self::STEP)
         } else {
             s / Self::STEP * Self::STEP
