@@ -1,9 +1,26 @@
-//! The OSD's Wayland side (OSD spec § 3), kept thin. One `Overlay` layer surface on the focused
-//! output (the compositor's choice when it is unknown), anchored at the bottom only: centred,
-//! `margin` px above the edge, exclusive zone 0. No keyboard, and an EMPTY input region: it never
-//! takes a click. Created on show, dropped on hide with its own small pool, so nothing of it stays
-//! resident. One `DeadlineTimer` (`OsdSurface::timer`) hides it `timeout_ms` after the last change.
-//! Overlay, because Hyprland draws Top under a fullscreen window.
+//! The OSD's Wayland side: the pill's surface, its hide timer and the two ways a pill is shown.
+//!
+//! The pill is one `Overlay` layer surface on the focused output (the compositor's choice when that
+//! is unknown), anchored at the bottom only so that it is centred, `margin` px above the edge,
+//! with an exclusive zone of 0 (no window moves for it). It takes no keyboard and its input region
+//! is EMPTY, so it never takes a click. It is created when a pill is shown and dropped when the
+//! pill goes, with its own small pool of shared memory, so nothing of it stays resident. One
+//! `DeadlineTimer` (`OsdSurface::timer`) hides it `timeout_ms` after the last change. `osd_sound`
+//! (every sound message) and `osd_verb` (`alpheus-launch --osd brightness`) both end in
+//! `osd_show`; `osd_sync` is the one place that creates or updates the surface, `osd_drop` the one
+//! place that drops it. The rules that decide what shows are `mod.rs`'s; this file is kept thin.
+//!
+//! Never:
+//! - take a click: the input region is empty, and if it cannot be made nothing is shown;
+//! - write brightness, or read the backlight outside the verb (`backlight.rs` reads it once, on
+//!   request; the quick panel reads it too, for its own brightness row, in `quick/app.rs`);
+//! - run a command or write to the compositor (guardrails check the OSD's files);
+//! - write a log line per change: one when the surface appears and one when it goes.
+//!
+//! See: docs/specs/2026-10-09-alpheus-osd-design.md (§ 2, § 3), docs/features/osd.md, and
+//! docs/decisions.md ("The OSD pill is an Overlay surface with an empty input region, made on
+//! show", "The pill follows the focused output only when its content changes", "The OSD logs once
+//! when its surface appears and once when it goes").
 
 use crate::backlight;
 use crate::config::ModuleId;
@@ -25,12 +42,13 @@ use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, La
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use std::time::Instant;
 
+/// The layer surface's namespace: what the compositor's rules (blur, for example) can match.
 const NAMESPACE: &str = "alpheus-osd";
 
 /// The OSD's state, one field of `App`: the trigger memory, the surface while the pill shows and its
 /// hide timer.
 pub(crate) struct OsdSurface {
-    /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
+    /// The OSD's trigger memory and the pill shown with its deadline (`mod.rs`): a few words at rest.
     pub(crate) model: Osd,
     /// The OSD's surface while the pill shows; None at rest.
     pub(crate) open: Option<OpenOsd>,
@@ -67,6 +85,7 @@ pub struct OpenOsd {
 }
 
 impl App {
+    /// Whether `osd` is in the bar's `modules`.
     fn osd_enabled(&self) -> bool {
         self.bar.config.modules.contains(&ModuleId::Osd)
     }
@@ -94,8 +113,9 @@ impl App {
         self.osd_sync(&what);
     }
 
-    /// `alpheus-launch --osd brightness` (spec § 2, § 4): the backlight read once, then the pill.
-    /// Always Done: with the module off or no backlight, nothing shows (exit 0).
+    /// `alpheus-launch --osd brightness` (OSD spec § 2, § 4): the backlight read once, then the pill.
+    /// Always Done: with the module off or no backlight, nothing shows (exit 0). Brightness is
+    /// shown on request only; see docs/decisions.md, "Brightness is shown on request, read once".
     pub(crate) fn osd_verb(&mut self, request: &Request) -> Reply {
         if !matches!(request, Request::Osd(OsdVerb::Brightness)) {
             return Reply::Done;
@@ -115,27 +135,35 @@ impl App {
     /// The surface follows the model: none when nothing shows; created on the focused output, or
     /// updated in place (moved only when its content changed and the focus moved); then the timer.
     fn osd_sync(&mut self, what: &str) {
-        match self.osd.model.shown().map(|p| osd::rows(p, self.bar.config.osd.width)) {
-            None => self.osd_drop("hidden"),
-            Some(boxed) => {
-                let changed = self.osd.open.as_ref().is_some_and(|o| o.boxed != boxed);
-                let on = self.osd.open.as_ref().and_then(|o| o.output_name.clone());
-                let (_, focused) = self.bubbles_target();
-                if self.osd.open.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
-                    self.osd_drop("focus moved");
-                }
-                if self.osd.open.is_some() {
-                    self.osd_update(boxed);
-                } else {
-                    self.osd_create(boxed, what);
-                }
+        let boxed = match self.osd.model.shown() {
+            Some(pill) => osd::rows(pill, self.bar.config.osd.width),
+            None => {
+                self.osd_drop("hidden");
+                self.osd_timer_sync();
+                return;
             }
+        };
+        // Whether the row differs from the one on the surface, and the name of the output the
+        // surface is on (None: the compositor's choice).
+        let (changed, on) = match self.osd.open.as_ref() {
+            Some(open) => (open.boxed != boxed, open.output_name.clone()),
+            None => (false, None),
+        };
+        let (_, focused) = self.bubbles_target();
+        if self.osd.open.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
+            self.osd_drop("focus moved");
+        }
+        if self.osd.open.is_some() {
+            self.osd_update(boxed);
+        } else {
+            self.osd_create(boxed, what);
         }
         self.osd_timer_sync();
     }
 
     /// The pill's logical size at `scale`: its cells plus the frame's room (`popup::box_size`).
     fn osd_size(&mut self, boxed: &Boxed, scale: i32) -> (u32, u32) {
+        // A scale below 1 is read as 1. `e as u32` is safe after that: `e` is positive.
         let e = scale.max(1);
         let (columns, rows) = boxed.cells();
         let row_height = self.bar.config.height * e as u32;
@@ -145,6 +173,8 @@ impl App {
         (w.max(1), h.max(1))
     }
 
+    /// Makes the surface for `boxed` and logs `what` it shows; nothing is made when the input region
+    /// or the pool cannot be.
     fn osd_create(&mut self, boxed: Boxed, what: &str) {
         // Made first: without an (empty) input region the pill would take every click, so it is
         // not shown at all.
@@ -158,6 +188,7 @@ impl App {
         let (output, output_name) = self.bubbles_target();
         let scale = bubbles::start_scale(output.as_ref().and_then(|o| self.outputs.info(o)).map(|i| i.scale_factor));
         let size = self.osd_size(&boxed, scale);
+        // Two buffers' worth of 4-byte pixels at the buffer's scale, and never under 4096 bytes.
         let k = scale as usize;
         let bytes = (size.0 as usize * k) * (size.1 as usize * k) * 4;
         let pool = match SlotPool::new((2 * bytes).max(4096), &self.shm) {
@@ -171,11 +202,14 @@ impl App {
         let layer = self.layers.create_layer_surface(&self.qh, surface, Layer::Overlay, Some(NAMESPACE), output.as_ref());
         // Bottom only: no left or right anchor centres it. Zone 0: windows do not move for it.
         layer.set_anchor(Anchor::BOTTOM);
+        // `[osd] margin` is at most 400 (checked when the config is read), so it always fits an
+        // `i32`; 0 stands for the impossible case.
         layer.set_margin(0, 0, i32::try_from(self.bar.config.osd.margin).unwrap_or(0), 0);
         layer.set_exclusive_zone(0);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(size.0, size.1);
         // Empty: copied by the request, so the region may be dropped right after.
+        // (An empty region means no point of the surface takes a pointer event.)
         layer.set_input_region(Some(region.wl_region()));
         layer.commit();
         let place = output_name.as_deref().unwrap_or("the compositor's choice of output");
@@ -230,20 +264,29 @@ impl App {
     /// no-op at rest (no pill).
     pub(crate) fn osd_draw(&mut self) {
         let height = self.bar.config.height;
+        // Taking the fields out of `self` at once lets the borrow checker see that the OSD's state
+        // (changed) and the fonts and roles (only read) are different things.
         let App { osd, fonts, roles, .. } = self;
         let Some(open) = osd.open.as_mut() else { return };
+        // Nothing is drawn before the compositor's first configure, nor for the row already shown.
         if !open.configured || open.last.as_ref() == Some(&open.boxed) {
             return;
         }
         let e = open.scale.max(1);
         let ue = e as u32;
+        // The buffer's size in pixels: the logical size times the scale.
         let (w, h) = (open.size.0 * ue, open.size.1 * ue);
+        // The same trick for the parts of the open pill: the buffers, the pool and the layer are
+        // used together below while `boxed` is only read.
         let OpenOsd { buffers, pool, layer, boxed, .. } = open;
+        // `pick_buffer` gives the index of the buffer to paint into, allocating from the pool when
+        // it has to; None when the allocation fails (it logs that).
         let Some(used) = pick_buffer(buffers, pool, w, h) else { return };
         let Some(px) = buffers[used].0.canvas(pool) else {
             log(&format!("osd buffer {w}×{h}: unexpectedly busy"));
             return;
         };
+        // All transparent first: the frame and the text are drawn over nothing.
         px.fill(0);
         fonts.paint_boxed(boxed, roles, px, w, h, height * ue, e, FrameInk::Border);
         let surface = layer.wl_surface();
@@ -256,9 +299,11 @@ impl App {
         open.last = Some(open.boxed.clone());
     }
 
+    /// Drops the surface, if there is one, and logs `why` and how many changes it showed.
     fn osd_drop(&mut self, why: &str) {
         let Some(open) = self.osd.open.take() else { return };
         let shown = open.shown;
+        // Dropping the pill destroys its layer surface, its buffers and its pool together.
         drop(open);
         log(&format!("osd surface dropped ({why}, {shown} shown)"));
         // The pool and its buffers: give the pages back.
@@ -267,12 +312,17 @@ impl App {
 
     /// Whether `surface` is the pill's (checked by identity, before the bar's own handling).
     pub(crate) fn osd_owns(&self, surface: &wl_surface::WlSurface) -> bool {
-        self.osd.open.as_ref().is_some_and(|o| o.layer.wl_surface() == surface)
+        match self.osd.open.as_ref() {
+            Some(open) => open.layer.wl_surface() == surface,
+            None => false,
+        }
     }
 
     /// The pill's configure (the caller checked `osd_owns`): an imposed size is obeyed, then drawn.
     pub(crate) fn osd_configured(&mut self, size: (u32, u32)) {
         let Some(open) = self.osd.open.as_mut() else { return };
+        // `plan_configure` gives the size the configure imposes when it is not the one asked (a 0
+        // dimension means the client's choice).
         if let Some(imposed) = plan_configure(open.size, size) {
             open.size = imposed;
         }
@@ -291,7 +341,11 @@ impl App {
 
     /// An output went away: the pill on it is hidden and dropped (it is transient: never moved).
     pub(crate) fn osd_output_gone(&mut self, output: &wl_output::WlOutput) {
-        if !self.osd.open.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
+        let on_that_output = match self.osd.open.as_ref() {
+            Some(open) => bubbles::holds(open.output.as_ref(), output),
+            None => false,
+        };
+        if !on_that_output {
             return;
         }
         self.osd.model.hide();
@@ -304,7 +358,11 @@ impl App {
         if !self.osd_owns(surface) {
             return false;
         }
-        let Some((boxed, scale)) = self.osd.open.as_ref().map(|o| (o.boxed.clone(), o.scale)) else { return true };
+        // `true` below says the surface is the pill's even when there is nothing to do.
+        let Some(open) = self.osd.open.as_ref() else { return true };
+        let (boxed, scale) = (open.boxed.clone(), open.scale);
+        // The same factor leaves the surface as it is. Without this the output would be the same
+        // (same size, same row), at the cost of one more resize and frame.
         if scale == factor {
             return true;
         }
@@ -317,7 +375,7 @@ impl App {
         true
     }
 
-    /// A restyle or a theme change (spec § 3): the shown pill painted again with the current roles.
+    /// A restyle or a theme change (OSD spec § 3): the shown pill painted again with the current roles.
     pub(crate) fn osd_repaint(&mut self) {
         if let Some(open) = self.osd.open.as_mut() {
             open.last = None;
@@ -325,7 +383,7 @@ impl App {
         self.osd_draw();
     }
 
-    /// The hide timer follows the pill's deadline: armed only while it shows (spec § 3).
+    /// The hide timer follows the pill's deadline: armed only while it shows (OSD spec § 3).
     pub(crate) fn osd_timer_sync(&mut self) {
         let deadline = self.osd.model.deadline();
         self.osd.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);

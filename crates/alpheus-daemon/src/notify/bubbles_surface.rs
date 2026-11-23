@@ -1,9 +1,25 @@
-//! The notification bubbles' Wayland side (notifications spec § 3), kept thin. One `Overlay` layer
-//! surface on the focused output (the compositor's choice when it is unknown), anchored at the top
-//! only: centred, under the bar's exclusive zone (zone 0), sized to the stack. No keyboard; an input
-//! region per bubble; a pool of its own. Everything lives in `OpenBubbles`, created with the first
-//! bubble and dropped whole with the last: nothing of it stays resident. Overlay, because Hyprland
-//! draws Top under a fullscreen window.
+//! The notification bubbles' Wayland side: the layer surface, its buffers, the pointer and the expiry
+//! timer.
+//!
+//! This is the wiring half of the bubbles. There is one `Overlay` layer surface on the focused
+//! output (the compositor's choice when that is unknown), anchored at the top only: centred, under
+//! the bar's exclusive zone (zone 0), sized to the stack. It takes no keyboard, has an input region
+//! per bubble and a pool of its own. Everything lives in `OpenBubbles`, created with the first
+//! bubble and dropped whole with the last, so nothing of it stays resident. The pure half,
+//! `bubbles.rs`, lays the stack out; this file paints it and acts on a click.
+//!
+//! Never:
+//! - keep a surface or a pool while no bubble shows, or the timer armed except while a live bubble
+//!   has a finite expiry;
+//! - take the keyboard (the surface asks for none);
+//! - start a thread or run a command (a guardrail, `the_tray_spawns_no_thread`, covers this file): a
+//!   click goes through `notify_act`, which tells the notification server;
+//! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
+//!
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 3, docs/features/notifications.md, and
+//! docs/decisions.md ("The bubbles are an Overlay surface, opened again once per stack",
+//! "The bubbles move to the focused output only when the stack changes", "A bubble's timeout starts
+//! when it first shows").
 
 use crate::actions::{self, Button};
 use crate::deadline::DeadlineTimer;
@@ -68,16 +84,18 @@ impl BubbleSurface {
     }
 }
 
-/// The stack's (id, revision) pairs: what a compositor `closed` is remembered by.
+/// The stack's (id, revision) pairs: what a compositor `closed` is remembered by. A replaced
+/// notification has a new revision, so it counts as another stack.
 fn keys(stack: &[BubbleBox]) -> Vec<(u32, u32)> {
     stack.iter().map(|b| (b.id, b.revision)).collect()
 }
 
-/// What the compositor closing the bubbles' surface leaves behind: it is opened again once per
-/// stack; closed again for that same stack, it stays closed until the stack changes. Never a
-/// create/close loop.
-/// A close followed, in the same dispatch batch, by an output going is that output's loss (an
-/// unplug), not the compositor's choice: it reopens without spending the stack's one reopen.
+/// What the compositor closing the bubbles' surface leaves behind.
+///
+/// The surface is opened again once per stack; closed again for that same stack, it stays closed
+/// until the stack changes. Never a create/close loop. A close followed, in the same dispatch batch,
+/// by an output going is that output's loss (an unplug), not the compositor's choice: it reopens
+/// without spending the stack's one reopen.
 #[derive(Debug, Default)]
 pub(crate) struct Closes {
     reopened: Option<Vec<(u32, u32)>>,
@@ -169,7 +187,7 @@ impl App {
     }
 
     /// The focused output, by name among the bar's outputs, and that name; (None, None): unknown, the
-    /// compositor chooses (as the launcher's box does). Also the OSD's (osd_surface.rs): the
+    /// compositor chooses (as the launcher's box does). Also the OSD's (`osd/surface.rs`): the
     /// focused-output rule, one place.
     pub(crate) fn bubbles_target(&self) -> (Option<wl_output::WlOutput>, Option<String>) {
         let wanted = match &self.bar.compositor {
@@ -179,6 +197,8 @@ impl App {
         let named = wanted
             .as_deref()
             .and_then(|n| self.outputs.outputs().find(|o| self.outputs.info(o).and_then(|i| i.name).as_deref() == Some(n)));
+        // `and` gives `wanted` only when `named` is Some: a name that matches no output of the bar
+        // is no name.
         let name = named.as_ref().and(wanted);
         (named, name)
     }

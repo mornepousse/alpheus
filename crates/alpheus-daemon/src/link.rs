@@ -500,7 +500,7 @@ impl App {
     /// The timer follows the link's pending calls: none pending, no timer. Answers waiting in the
     /// link's `ready` — drained by a `media_do`'s flush, or left by the settle rounds after a burst —
     /// are routed from one idle `link_readable`: no fd event will announce them.
-    /// `pub(crate)`: `App::mpris_do` (tray_bridge.rs) calls it after a `media_do`.
+    /// `pub(crate)`: `App::mpris_do` (tray/bridge.rs) calls it after a `media_do`.
     pub(crate) fn link_sync(&mut self) {
         if !self.link.ready_queued
             && self.link.session.as_ref().is_some_and(SessionLink::has_ready)

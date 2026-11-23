@@ -1,10 +1,24 @@
-//! The on-screen display's model (OSD spec), pure. It decides when a sound change shows the pill:
-//! the baseline after pw-dump (re)starts, a 1 s grace after startup or a default device appearing,
-//! a level that must move, the microphone on a mute flip only, a default sink switched (its card
-//! kept up to date while it shows). It also builds the pill's one row of cells, reads the backlight's level from its two
-//! sysfs texts, and keeps the pill's deadline. The surface is `osd_surface.rs`'s; the backlight
-//! files are `backlight.rs`'s. Nothing here talks to Wayland, reads a file, starts a thread or runs
-//! a command.
+//! The on-screen display's model: when a sound change shows the pill, and what the pill says.
+//!
+//! The pill is the small bar that shows a volume, microphone or brightness level for a moment. This
+//! file is its pure half. `Watch` decides when a sound change shows it: the baseline after pw-dump
+//! (re)starts, a 1 s grace after startup or after a default device appears, a level that must
+//! move, the microphone on a mute flip only, a default sink that was switched (its name card kept
+//! up to date while it shows). `Osd` keeps the pill that is shown and its deadline. `rows` builds
+//! the pill's one row of cells, and `brightness_percent` turns the backlight's two sysfs texts into
+//! a level. The Wayland surface is `surface.rs`'s; the files of the backlight are read by
+//! `backlight.rs`.
+//!
+//! Never:
+//! - talk to Wayland, read a file, start a thread or run a command: texts and times are handed in,
+//!   so a test can pass any of them;
+//! - read the clock: every method takes `now`;
+//! - panic (a guardrail checks).
+//!
+//! See: docs/specs/2026-10-09-alpheus-osd-design.md, docs/features/osd.md, and docs/decisions.md
+//! ("The microphone pill shows only when its mute flips", "A sound change within a second of a
+//! start or a new default device shows nothing", "The OSD counts a volume change in whole
+//! percent", "Brightness is shown on request, read once").
 
 use crate::config::OsdConfig;
 use crate::grid::{Grid, Style, Tint};
@@ -14,19 +28,21 @@ use crate::segments::{VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
 use crate::system::{DeviceName, SoundState, Volume};
 use std::time::{Duration, Instant};
 
-/// After startup, a pw-dump restart, or a default device appearing or switching: no pill (spec § 2).
+/// After startup, a pw-dump restart, or a default device appearing or switching: no pill (OSD
+/// spec § 2). See docs/decisions.md, "A sound change within a second of a start or a new default
+/// device shows nothing".
 pub const GRACE: Duration = Duration::from_secs(1);
 /// Cells the percentage takes: "100%", " 64%", "255%".
 pub const PERCENT_CELLS: u16 = 4;
 /// The longest sysfs number read (a u32 has 10 digits).
 pub const LEVEL_DIGITS: usize = 10;
 // Material Design glyphs of the Nerd Font, checked by name in the post table of
-// JetBrainsMonoNerdFontMono-Regular.ttf (3.4.0).
+// JetBrainsMonoNerdFontMono-Regular.ttf (3.4.0). `\u{f036c}` is the character with that code.
 pub const MIC_ON: char = '\u{f036c}'; // md-microphone
 pub const MIC_OFF: char = '\u{f036d}'; // md-microphone_off
 pub const BRIGHTNESS: char = '\u{f00e0}'; // md-brightness_7 (a sun)
 
-/// What the pill says (spec § 1). One at a time: a newer one replaces it.
+/// What the pill says (OSD spec § 1). One at a time: a newer one replaces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pill {
     /// The default sink's level.
@@ -39,7 +55,7 @@ pub enum Pill {
     Brightness(u8),
 }
 
-/// What a sound message means for the OSD.
+/// What a sound message means for the OSD: nothing to show, the baseline, or a pill to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Heard {
     /// The first state after pw-dump (re)started: kept, never shown.
@@ -58,7 +74,7 @@ pub struct Watch {
     card_pending: Option<String>,
 }
 
-/// One stream's change.
+/// One stream's change (a stream is the default sink or the default source).
 enum Change {
     Nothing,
     Level(Volume),
@@ -67,13 +83,14 @@ enum Change {
 }
 
 /// A change worth a sink pill: the mute flipped, or the level moved. Percents are integers (as
-/// wpctl and the bar show them), so a level that moved less than half a point never gets here.
+/// wpctl and the bar show them), so a level that moved less than half a point never gets here. See
+/// docs/decisions.md, "The OSD counts a volume change in whole percent".
 pub fn moved(a: Volume, b: Volume) -> bool {
     a.muted != b.muted || a.percent != b.percent
 }
 
-/// A change worth a microphone pill: its mute flipped (Mae, 2026-10-09). Never its level: WebRTC
-/// apps move the capture gain during a call.
+/// A change worth a microphone pill: its mute flipped. Never its level: WebRTC apps move the capture
+/// gain during a call. See docs/decisions.md, "The microphone pill shows only when its mute flips".
 pub fn flipped(a: Volume, b: Volume) -> bool {
     a.muted != b.muted
 }
@@ -81,6 +98,7 @@ pub fn flipped(a: Volume, b: Volume) -> bool {
 /// One stream (the sink or the source), from (`name`, `volume`) before to after. `worth`: what
 /// counts as a change; `card`: a name card is on screen (a change inside the grace updates it);
 /// `pending`: the node whose card waits for its volume (None for the source: it has no card).
+/// `grace` is the stream's grace end: it is set here when a default appears, goes or switches.
 fn side(
     old: (Option<&DeviceName>, Option<Volume>),
     new: (Option<&DeviceName>, Option<Volume>),
@@ -90,9 +108,16 @@ fn side(
     mut pending: Option<&mut Option<String>>,
     now: Instant,
 ) -> Change {
-    let inside = grace.is_some_and(|g| now < g);
+    // Inside the grace: before its end (at exactly its end it is over).
+    let inside = match *grace {
+        Some(end) => now < end,
+        None => false,
+    };
+    // A grace keeps quiet unless the name card is on screen (then a change updates the card).
     let quiet = inside && !card;
     match (old.0, new.0) {
+        // The default is another device now. (`pending` is an `Option` holding a reference that
+        // can change the value; `as_deref_mut` borrows it again, so it can still be used below.)
         (Some(a), Some(b)) if a.node != b.node => {
             *grace = Some(now + GRACE);
             if let Some(p) = pending.as_deref_mut() {
@@ -110,14 +135,23 @@ fn side(
                 _ => Change::Nothing,
             }
         }
+        // The same default as before. `waited` is the node name taken out of `pending` if this very
+        // node was the one whose card waited for its volume.
         (Some(_), Some(b)) => {
-            let waited = pending.as_deref_mut().and_then(|p| p.take_if(|n| *n == b.node));
+            let mut waited = None;
+            if let Some(p) = pending.as_deref_mut() {
+                if p.as_deref() == Some(b.node.as_str()) {
+                    waited = p.take();
+                }
+            }
             match (old.1, new.1) {
                 (None, Some(v)) if waited.is_some() && inside => Change::Card(v),
                 (None, None) => {
-                    // Still waiting for it.
-                    if let (Some(p), Some(n)) = (pending, waited) {
-                        *p = Some(n);
+                    // Still waiting for it: put the name back.
+                    if let Some(p) = pending {
+                        if let Some(n) = waited {
+                            *p = Some(n);
+                        }
                     }
                     Change::Nothing
                 }
@@ -149,6 +183,8 @@ impl Watch {
             self.card_pending = None;
             return Heard::Quiet;
         };
+        // `replace` stores the new state and gives back the one that was there: None for the first
+        // state after a start or a restart, which becomes the baseline.
         let Some(old) = self.last.replace(new.clone()) else {
             self.sink_grace = Some(now + GRACE);
             self.source_grace = Some(now + GRACE);
@@ -173,13 +209,19 @@ impl Watch {
             None,
             now,
         );
+        // The sink comes first: a message that changes both the sink and the microphone shows the
+        // sink (OSD spec § 2, amendment).
         match (sink, source) {
             (Change::Level(v), _) => Heard::Show(Pill::Volume(v)),
             (Change::Card(v), _) => {
-                Heard::Show(Pill::Sink { label: new.sink_name.as_ref().map(|n| n.label.clone()).unwrap_or_default(), volume: v })
+                let label = match new.sink_name.as_ref() {
+                    Some(name) => name.label.clone(),
+                    None => String::new(),
+                };
+                Heard::Show(Pill::Sink { label, volume: v })
             }
             (Change::Nothing, Change::Level(v)) => Heard::Show(Pill::Mic(v)),
-            // The source has no name card (spec § 1): its switch shows nothing.
+            // The source has no name card (OSD spec § 1): its switch shows nothing.
             (Change::Nothing, Change::Card(_) | Change::Nothing) => Heard::Quiet,
         }
     }
@@ -196,6 +238,7 @@ impl Osd {
     /// A sound message through the trigger rules, which need to know whether the sink's name card
     /// is on screen (a change inside its grace then updates it).
     pub fn sound(&mut self, s: Option<&SoundState>, now: Instant) -> Heard {
+        // The card is on screen while the shown pill is a sink card whose deadline is not reached.
         let card = matches!(&self.shown, Some((Pill::Sink { .. }, until)) if now < *until);
         self.watch.sound(s, now, card)
     }
@@ -205,24 +248,29 @@ impl Osd {
         self.shown = Some((pill, now + timeout));
     }
 
+    /// The pill that is shown now, if any.
     pub fn shown(&self) -> Option<&Pill> {
-        self.shown.as_ref().map(|(p, _)| p)
+        // The pattern `|(pill, _)|` takes the pill out of the pair (pill, deadline).
+        self.shown.as_ref().map(|(pill, _)| pill)
     }
 
+    /// When the pill that is shown must go; None at rest.
     pub fn deadline(&self) -> Option<Instant> {
-        self.shown.as_ref().map(|(_, t)| *t)
+        self.shown.as_ref().map(|(_, until)| *until)
     }
 
     /// Hides the pill when its deadline is reached; true when it did.
     pub fn expire(&mut self, now: Instant) -> bool {
-        if self.deadline().is_some_and(|t| t <= now) {
-            self.shown = None;
-            true
-        } else {
-            false
+        match self.deadline() {
+            Some(until) if until <= now => {
+                self.shown = None;
+                true
+            }
+            _ => false,
         }
     }
 
+    /// Hides the pill whatever its deadline (its surface went away).
     pub fn hide(&mut self) {
         self.shown = None;
     }
@@ -233,7 +281,8 @@ pub fn timeout(cfg: &OsdConfig) -> Duration {
     Duration::from_millis(u64::from(cfg.timeout_ms))
 }
 
-/// The volume's glyph, as the bar's sound module picks it.
+/// The volume's glyph, as the bar's sound module picks it: muted, then low below 34 %, medium
+/// below 67 %, high from there.
 pub fn volume_glyph(v: Volume) -> char {
     if v.muted {
         VOLUME_OFF
@@ -246,6 +295,7 @@ pub fn volume_glyph(v: Volume) -> char {
     }
 }
 
+/// The glyph's style: accent, or dim when muted.
 fn glyph_style(v: Volume) -> Style {
     if v.muted { Style::MUTED } else { Style::ACCENT }
 }
@@ -271,13 +321,16 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
     let x = g.write(at, end, &glyph.to_string(), pick(glyph_style(v)));
     let x = g.write(x, end, " ", pick(Style::NORMAL));
     let over = v.percent > 100;
-    // percent ≤ 100 here, so filled ≤ bar.
+    // Above 100 % the whole bar is filled (OSD spec § 1) and the real number is still shown.
+    // Otherwise percent ≤ 100, so filled ≤ bar.
     let filled = if over { bar } else { (u32::from(v.percent) * u32::from(bar) / 100) as u16 };
     let (on, off) = match (v.muted, over) {
         (true, _) => (Style::MUTED, Style::MUTED),
         (false, true) => (Style::WARN, Style::WARN),
         (false, false) => (Style::ACCENT, Style::MUTED),
     };
+    // On the selection band each cell keeps its own colour for the text and takes the band's
+    // background.
     let band = |s: Style| if selected { Style { bg: Tint::Selection, ..s } } else { s };
     let (on, off) = (band(on), band(off));
     let x = g.write(x, end, &"━".repeat(usize::from(filled)), on);
@@ -288,7 +341,8 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
 /// The pill's one row: `width` cells of content, padded like the popups' (`list::padded`).
 pub fn rows(pill: &Pill, width: u16) -> Boxed {
     let mut g = Grid::empty(width);
-    // Glyph, two spaces, the percentage.
+    // The cells left for the bar or for the sink's name: the glyph and its space, one blank cell
+    // before the percentage (3 in all), then the percentage.
     let bar = width.saturating_sub(3 + PERCENT_CELLS);
     match pill {
         Pill::Volume(v) => level(&mut g, 0, width, volume_glyph(*v), *v, false),
@@ -315,7 +369,8 @@ pub fn describe(pill: &Pill) -> String {
     }
 }
 
-/// A sysfs number: trimmed, 1 to `LEVEL_DIGITS` ASCII digits, no sign.
+/// A sysfs number: trimmed, 1 to `LEVEL_DIGITS` ASCII digits, no sign. (Ten digits can still be
+/// larger than a `u32`; that gives None too.)
 pub fn parse_level(text: &str) -> Option<u32> {
     let t = text.trim();
     if t.is_empty() || t.len() > LEVEL_DIGITS || !t.bytes().all(|b| b.is_ascii_digit()) {
@@ -327,14 +382,18 @@ pub fn parse_level(text: &str) -> Option<u32> {
 /// The backlight's level in percent from its `brightness` and `max_brightness` texts; None when
 /// either is not a small number, or the maximum is 0.
 pub fn brightness_percent(brightness: &str, max: &str) -> Option<u8> {
+    // `?` after a call that gives None ends the function with None: a text that is not a number.
     let (b, m) = (parse_level(brightness)?, parse_level(max)?);
     if m == 0 {
         return None;
     }
+    // A level above the maximum counts as the maximum. Adding half of `m` before dividing rounds
+    // to the nearest percent instead of down. The result is at most 100, so it always fits a `u8`.
     let p = (u64::from(b.min(m)) * 100 + u64::from(m) / 2) / u64::from(m);
     u8::try_from(p).ok()
 }
 
+/// The pill's Wayland surface and its timer.
 pub mod surface;
 
 #[cfg(test)]

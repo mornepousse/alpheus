@@ -1,8 +1,10 @@
+//! Tests of the tray's bridge (`bridge.rs`): the remembered icon press that a menu answer uses up.
+
 use super::*;
 use crate::popup::Anchor as PopupAnchor;
 
-/// The press remembered for an Activate answer is spent by the first answer
-/// that uses it; a second (late) answer, or one for another icon, finds nothing.
+/// The press remembered for an Activate answer is used up by the first answer that uses it. A
+/// second, late answer, or one for another icon, finds nothing.
 #[test]
 fn the_remembered_press_is_consumed_by_the_menu_it_opens() {
     let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };

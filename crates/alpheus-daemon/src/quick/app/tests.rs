@@ -1,3 +1,9 @@
+//! Tests of the quick panel's wiring (`app.rs`): the Wi-Fi follower that outlives the panel, which
+//! state belongs to the open panel, the sink list and the headset a message carries, the Bluetooth
+//! view and scope, the VPN state and attempt, the password's hand-over, the verb's debounce and the
+//! do-not-disturb request. No window, no real command: the
+//! executor is the fake one.
+
 use super::*;
 use crate::config::{BarConfig, QuickConfig};
 use crate::keys::Key;
@@ -6,7 +12,7 @@ use crate::quick::{Row, shown};
 use crate::system::Volume;
 use alpheus_common::exec::fake::FakeExecutor;
 
-/// Mae's ruling P1: closing the panel lets the D-Bus thread go back to reading nothing, unless
+/// Closing the panel lets the D-Bus thread go back to reading nothing, unless
 /// an attempt on a new network is still followed: then the detail's reading stays, so a failed
 /// new profile is still seen (and deleted) after the panel went.
 #[test]
@@ -39,7 +45,7 @@ fn a_wifi_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
     assert_eq!(taken_wifi(&mut Msg::Profile(None)), None, "only a Wi-Fi message");
 }
 
-/// Mae's ruling P1: a follower waits while the attempt does; once it ends it is dropped (the tap
+/// A follower waits while the attempt does; once it ends it is dropped (the tap
 /// then goes Closed, the timer disarms), a failure logged once and its new profile deleted
 /// through the executor; a success or NetworkManager gone deletes nothing.
 #[test]
@@ -81,7 +87,7 @@ fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
     let t = Instant::now();
     let bar = Bar::new(BarConfig::default());
     let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
-    let mut first = panel_on("Cafe-Libre");
+    let mut first = panel_with_the_wifi_detail_on("Cafe-Libre");
     let QuickAction::Run { .. } = first.wifi.key(&QuickConfig::default(), Key::Enter, t) else { panic!("an open network") };
     let follow = WifiFollow::leaving(&mut first.wifi).expect("a new network: followed");
     let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
@@ -90,7 +96,7 @@ fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
     assert!(q.wifi.open && q.selected == Row::Wifi && q.wifi.attempt.is_some(), "taken back, the detail open");
     assert!(!q.wifi.focus_pending, "spent");
     let mut top = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
-    let mut again = panel_on("Cafe-Libre");
+    let mut again = panel_with_the_wifi_detail_on("Cafe-Libre");
     again.wifi.key(&QuickConfig::default(), Key::Enter, t);
     let follow = WifiFollow::leaving(&mut again.wifi).expect("followed");
     assert_eq!(resumed(&mut top, follow), QuickAction::Redraw, "opened on the top: no detail");
@@ -130,23 +136,25 @@ fn only_a_state_read_for_this_open_reaches_the_panel() {
 #[test]
 fn an_attempt_that_cannot_clean_up_is_not_followed() {
     let t = Instant::now();
-    let mut q = panel_on("Cafe-Libre");
+    let mut q = panel_with_the_wifi_detail_on("Cafe-Libre");
     if let Some(d) = q.wifi.state.as_mut().and_then(|s| s.device.as_mut()) {
         d.saved = None;
     }
     let QuickAction::Run { .. } = q.wifi.key(&QuickConfig::default(), Key::Enter, t) else { panic!("an open network") };
     assert!(q.wifi.attempt.as_ref().is_some_and(|a| a.creates && a.known.is_none()), "{:?}", q.wifi.attempt);
     assert!(WifiFollow::leaving(&mut q.wifi).is_none(), "nothing it could delete: not followed");
-    let mut q = panel_on("Cafe-Libre");
+    let mut q = panel_with_the_wifi_detail_on("Cafe-Libre");
     q.wifi.key(&QuickConfig::default(), Key::Enter, t);
     assert!(WifiFollow::leaving(&mut q.wifi).is_some(), "the saved list known: followed");
 }
 
-fn sink(id: u32, label: &str, default: bool) -> Sink {
+/// A sink with this node id and label.
+fn a_sink(id: u32, label: &str, default: bool) -> Sink {
     Sink { id, label: label.into(), default }
 }
 
-fn vol(percent: u8, muted: bool) -> Option<Volume> {
+/// A volume of this level, as the sound state carries it.
+fn a_volume(percent: u8, muted: bool) -> Option<Volume> {
     Some(Volume { percent, muted })
 }
 
@@ -158,18 +166,18 @@ fn the_state_read_at_open_shows_a_microphone_the_bar_never_heard_of() {
     let mut config = BarConfig::default();
     config.modules.retain(|m| *m != ModuleId::Osd);
     let mut bar = Bar::new(config);
-    bar.apply(Msg::Sound(Some(SoundState { sink: vol(84, false), ..SoundState::default() })));
+    bar.apply(Msg::Sound(Some(SoundState { sink: a_volume(84, false), ..SoundState::default() })));
     let opened = SoundState {
-        sink: vol(84, false),
-        source: vol(60, true),
-        sinks: Some(vec![sink(99, "Speaker", false), sink(122, "AG06", true)]),
+        sink: a_volume(84, false),
+        source: a_volume(60, true),
+        sinks: Some(vec![a_sink(99, "Speaker", false), a_sink(122, "AG06", true)]),
         ..SoundState::default()
     };
     let (sinks, _, redraw) = opened_sound(&mut bar, opened);
     assert_eq!(sinks.len(), 2, "the list goes to the panel");
     assert!(!redraw, "the bar draws the sink alone: unchanged");
     let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
-    assert_eq!(live.sound.and_then(|s| s.source), vol(60, true), "the microphone, muted");
+    assert_eq!(live.sound.and_then(|s| s.source), a_volume(60, true), "the microphone, muted");
     assert_eq!(live.sound.and_then(|s| s.sinks.as_ref()), None, "the bar never keeps a list");
     let q = Quick::new(Focus::Sound, &live, sinks, None, [None, None], 20);
     assert!(shown(&live, &q).contains(&Row::Mic), "{:?}", shown(&live, &q));
@@ -180,8 +188,8 @@ fn the_state_read_at_open_shows_a_microphone_the_bar_never_heard_of() {
 #[test]
 fn a_pw_dump_outage_closes_the_outputs_detail() {
     let mut bar = Bar::new(BarConfig::default());
-    bar.apply(Msg::Sound(Some(SoundState { sink: vol(64, false), ..SoundState::default() })));
-    let sinks = vec![sink(99, "Speaker", false), sink(122, "AG06", true)];
+    bar.apply(Msg::Sound(Some(SoundState { sink: a_volume(64, false), ..SoundState::default() })));
+    let sinks = vec![a_sink(99, "Speaker", false), a_sink(122, "AG06", true)];
     let mut q = Quick::new(Focus::Sound, &quick::live(&bar, &crate::notify::dnd::Dnd::default()), sinks, None, [None, None], 20);
     let now = Instant::now();
     assert_eq!(q.key(&quick::live(&bar, &crate::notify::dnd::Dnd::default()), crate::keys::Key::Enter, false, now), QuickAction::Redraw);
@@ -250,7 +258,7 @@ fn wifi_around() -> WifiState {
 }
 
 /// A panel with the Wi-Fi detail open on `wifi_around`, `ssid` picked.
-fn panel_on(ssid: &str) -> Quick {
+fn panel_with_the_wifi_detail_on(ssid: &str) -> Quick {
     let bar = Bar::new(BarConfig::default());
     let mut q = Quick::new(Focus::Top, &quick::live(&bar, &crate::notify::dnd::Dnd::default()), vec![], None, [None, None], 20);
     q.wifi = Wifi { state: Some(wifi_around()), ..Wifi::default() };
@@ -262,7 +270,7 @@ fn panel_on(ssid: &str) -> Quick {
 const ASK: &str = "nmcli --ask device wifi connect Bureau-Test";
 
 /// `q` with the field open on Bureau-Test, `fake-pass` typed, Enter pressed: the RunSecret.
-fn password_typed(q: &mut Quick, t: Instant) -> (Vec<String>, String) {
+fn type_the_password_and_press_enter(q: &mut Quick, t: Instant) -> (Vec<String>, String) {
     let c = QuickConfig::default();
     q.wifi.key(&c, Key::Enter, t);
     for ch in "fake-pass".chars() {
@@ -281,8 +289,8 @@ fn the_password_is_handed_on_stdin_and_the_field_closes() {
     let t = Instant::now();
     let fake = FakeExecutor::new();
     fake.ok(ASK, "");
-    let mut q = panel_on("Bureau-Test");
-    let (argv, what) = password_typed(&mut q, t);
+    let mut q = panel_with_the_wifi_detail_on("Bureau-Test");
+    let (argv, what) = type_the_password_and_press_enter(&mut q, t);
     assert_eq!(quick_spawn_secret(&fake, &mut q, &argv, &what), Some("quick: wifi connect (password)".into()));
     assert_eq!(fake.inputs(), [(ASK.to_string(), b"fake-pass\n".to_vec())]);
     assert_eq!(fake.calls(), [ASK]);
@@ -290,8 +298,8 @@ fn the_password_is_handed_on_stdin_and_the_field_closes() {
     assert!(q.wifi.attempt.is_some(), "followed");
     let fake = FakeExecutor::new();
     fake.respond(ASK, Err(ExecError::Io("Broken pipe".into())));
-    let mut q = panel_on("Bureau-Test");
-    let (argv, what) = password_typed(&mut q, t);
+    let mut q = panel_with_the_wifi_detail_on("Bureau-Test");
+    let (argv, what) = type_the_password_and_press_enter(&mut q, t);
     let line = quick_spawn_secret(&fake, &mut q, &argv, &what).unwrap_or_default();
     assert!(!line.contains("fake-pass"), "{line}");
     assert!(q.wifi.field.is_none() && q.wifi.attempt.is_some(), "maybe started: the attempt stays, never retried");
@@ -303,8 +311,8 @@ fn the_password_is_handed_on_stdin_and_the_field_closes() {
 fn an_nmcli_never_started_ends_the_attempt_at_once() {
     let (t, c) = (Instant::now(), QuickConfig::default());
     let fake = FakeExecutor::new();
-    let mut q = panel_on("Bureau-Test");
-    let (argv, what) = password_typed(&mut q, t);
+    let mut q = panel_with_the_wifi_detail_on("Bureau-Test");
+    let (argv, what) = type_the_password_and_press_enter(&mut q, t);
     assert!(quick_spawn_secret(&fake, &mut q, &argv, &what).is_some_and(|l| l.contains("could not start")));
     assert!(q.wifi.attempt.is_none() && q.wifi.deadline().is_none(), "no attempt, no timer");
     assert!(WifiFollow::leaving(&mut q.wifi).is_none(), "nothing to follow");
@@ -318,13 +326,14 @@ fn an_nmcli_never_started_ends_the_attempt_at_once() {
     assert!(matches!(q.wifi.key(&c, Key::Enter, t), QuickAction::Run { .. }), "and the next one acts");
     let fake = FakeExecutor::new();
     fake.respond("nmcli device wifi connect Labo-Test", Err(ExecError::Io("busy".into())));
-    let mut q = panel_on("Labo-Test");
+    let mut q = panel_with_the_wifi_detail_on("Labo-Test");
     let QuickAction::Run { argv, what } = q.wifi.key(&c, Key::Enter, t) else { panic!("an open network") };
     spawn_logged(&fake, Some(&mut q), &argv, &what);
     assert!(q.wifi.attempt.is_some(), "Io: maybe started, kept");
 }
 
-fn casque() -> Option<crate::system::Headset> {
+/// A Bluetooth headset on its Hi-Fi profile.
+fn a_bluetooth_headset() -> Option<crate::system::Headset> {
     Some(crate::system::Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
 }
 
@@ -332,22 +341,23 @@ fn casque() -> Option<crate::system::Headset> {
 #[test]
 fn the_headset_goes_to_the_panel_never_the_bar() {
     let mut bar = Bar::new(BarConfig::default());
-    let (_, headset, _) = opened_sound(&mut bar, SoundState { sink: vol(40, false), headset: casque(), ..SoundState::default() });
-    assert_eq!(headset, casque());
+    let (_, headset, _) =
+        opened_sound(&mut bar, SoundState { sink: a_volume(40, false), headset: a_bluetooth_headset(), ..SoundState::default() });
+    assert_eq!(headset, a_bluetooth_headset());
     assert_eq!(quick::live(&bar, &crate::notify::dnd::Dnd::default()).sound.and_then(|s| s.headset.clone()), None, "the bar keeps none");
-    let mut m = Msg::Sound(Some(SoundState { headset: casque(), sinks: Some(vec![]), ..SoundState::default() }));
-    assert_eq!(taken_headset(&mut m), Some(casque()));
+    let mut m = Msg::Sound(Some(SoundState { headset: a_bluetooth_headset(), sinks: Some(vec![]), ..SoundState::default() }));
+    assert_eq!(taken_headset(&mut m), Some(a_bluetooth_headset()));
     assert!(matches!(&m, Msg::Sound(Some(s)) if s.headset.is_none()), "taken out of the message");
-    let mut base = Msg::Sound(Some(SoundState { headset: casque(), ..SoundState::default() }));
+    let mut base = Msg::Sound(Some(SoundState { headset: a_bluetooth_headset(), ..SoundState::default() }));
     assert_eq!(taken_headset(&mut base), None, "a base-scope message says nothing of the headset");
     assert!(matches!(&base, Msg::Sound(Some(s)) if s.headset.is_none()), "and still never keeps one");
     let l = quick::live(&bar, &crate::notify::dnd::Dnd::default());
     let mut q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 20);
-    q.set_headset(casque());
+    q.set_headset(a_bluetooth_headset());
     if let Some(h) = taken_headset(&mut base) {
         q.set_headset(h);
     }
-    assert_eq!(q.headset, casque(), "a stale base-scope message never wipes the panel's row");
+    assert_eq!(q.headset, a_bluetooth_headset(), "a stale base-scope message never wipes the panel's row");
     assert_eq!(taken_headset(&mut Msg::Sound(None)), Some(None), "pw-dump gone: the row goes");
     assert_eq!(taken_headset(&mut Msg::Profile(None)), None, "only a sound message carries one");
 }
@@ -383,7 +393,7 @@ fn only_a_view_read_for_this_open_reaches_the_panel() {
 }
 
 #[test]
-fn bt_scope_follows_the_panel() {
+fn the_bluetooth_scope_follows_the_panel() {
     let bar = bar_bt_on();
     let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
     assert_eq!(bt_scope_for(None, true), BtScope::Closed);
@@ -427,7 +437,7 @@ fn a_view_without_an_adapter_of_this_open_lets_the_connection_go() {
 }
 
 #[test]
-fn dnd_request_is_the_cli_request() {
+fn a_do_not_disturb_choice_becomes_the_request_the_command_line_sends() {
     use crate::quick::dnd::DndChoice;
     use alpheus_common::launcher_ipc::{DndEnd, DndVerb};
     let now = 1_800_000_000;

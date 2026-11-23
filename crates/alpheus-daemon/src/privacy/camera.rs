@@ -1,7 +1,23 @@
-//! A camera opened outside PipeWire (privacy delivery 2, spec §§ 1-2): the pure parts. `scan` finds
-//! who holds a `video*` node by reading `<proc_dir>/<pid>/fd` links (never by opening anything under
-//! `dev_dir`), and `classify` turns one inotify record into what the glue should do with it. Events
-//! are triggers, never counts: the state shown comes from a scan alone.
+//! A camera opened outside PipeWire: who holds a `video*` device, and what a device event means.
+//!
+//! This file is the part of privacy delivery 2 that touches the file system. `scan` finds who holds
+//! a `video*` node by reading the links of `<proc_dir>/<pid>/fd` (never by opening anything under
+//! `dev_dir`). `classify` turns one inotify record into what the glue should do with it. `CameraWatch`
+//! is the inotify instance on `dev_dir` and on each node in it. The other half, `camera_app.rs`,
+//! puts the watch on the event loop and runs the scan after the debounce.
+//!
+//! Never:
+//! - open anything under `dev_dir`: it is only watched, and `/proc` is only read;
+//! - write, create, remove or change the permissions of a file (a guardrail reads this file's text
+//!   for the words that do);
+//! - count events: an event only means "look again", and what is shown comes from a scan alone;
+//! - start a thread, a process or a command.
+//!
+//! See: docs/specs/2026-10-20-alpheus-privacy-camera-design.md, docs/features/privacy.md, and
+//! docs/decisions.md ("The camera is read from `/proc` after a trigger, never counted", "A burst of
+//! camera triggers is scanned at most one second after its first", "PipeWire's own hold on a
+//! camera adds no name", "A video node udev has not opened to the user yet is watched again when its
+//! attributes change").
 
 use crate::inotify::{Event, Events, Inotify};
 use crate::log::write as log;
@@ -15,19 +31,22 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// A trigger is followed by one scan this long after the last one (an open and its close, a burst).
+/// A trigger is followed by one scan this long after it, so that an open and its close, or a burst,
+/// are scanned once (camera spec § 1, "The debounce").
 pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(300);
 /// A burst of triggers is scanned at the latest this long after its first one, however often a
-/// process keeps opening and closing a node.
+/// process keeps opening and closing a node. See docs/decisions.md, "A burst of camera triggers is
+/// scanned at most one second after its first".
 pub const SCAN_MAX_WAIT: Duration = Duration::from_secs(1);
-/// Video nodes watched at most.
+/// Video nodes watched at most (camera spec § 1).
 pub const MAX_DEVICE_WATCHES: usize = 64;
-/// Processes and open files per process a scan looks at, at most.
+/// Processes, and open files per process, that one scan looks at, at most (camera spec § 2).
 pub const MAX_PIDS: usize = 4096;
 pub const MAX_FDS: usize = 4096;
 
 /// Holders that are not an app's own use: PipeWire and its session manager hold the node for the
-/// streams delivery 1 already names.
+/// clients that delivery 1's graph already names. See docs/decisions.md, "PipeWire's own hold on a
+/// camera adds no name".
 const DROPPED: [&str; 2] = ["pipewire", "wireplumber"];
 
 /// What one scan found.
@@ -39,13 +58,13 @@ pub struct Scan {
     pub bounded: bool,
 }
 
-/// A node name the watch cares about.
 /// When the scan runs for a trigger at `now`, the burst having begun at `first`: the debounce
 /// after this trigger, never later than `SCAN_MAX_WAIT` after the burst's first one.
 pub fn scan_deadline(first: Instant, now: Instant) -> Instant {
     (now + SCAN_DEBOUNCE).min(first + SCAN_MAX_WAIT)
 }
 
+/// Whether a node name is one the watch cares about: it starts with `video`.
 pub fn is_video(name: &[u8]) -> bool {
     name.starts_with(b"video")
 }
@@ -56,7 +75,9 @@ pub fn scan(proc_dir: &Path, dev_dir: &Path, uid: u32, self_pid: u32) -> Scan {
 }
 
 /// The holders of a `video*` node in `dev_dir`, among the processes of `uid` (never `self_pid`,
-/// PipeWire or WirePlumber). Every error (a process gone, a directory unreadable) skips its entry.
+/// PipeWire or WirePlumber). Every error (a process gone, a directory unreadable) skips its entry,
+/// and no error is logged. At most `max_pids` processes and `max_fds` descriptors each are looked
+/// at; `bounded` says a bound cut the scan short.
 pub fn scan_bounded(proc_dir: &Path, dev_dir: &Path, uid: u32, self_pid: u32, max_pids: usize, max_fds: usize) -> Scan {
     let mut out = Scan::default();
     let Ok(entries) = fs::read_dir(proc_dir) else {
@@ -64,8 +85,12 @@ pub fn scan_bounded(proc_dir: &Path, dev_dir: &Path, uid: u32, self_pid: u32, ma
     };
     let mut seen = 0;
     for entry in entries.flatten() {
+        // Only the entries of `proc_dir` named by a number are processes.
         let file_name = entry.file_name();
-        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
             continue;
         };
         if seen == max_pids {
@@ -76,18 +101,27 @@ pub fn scan_bounded(proc_dir: &Path, dev_dir: &Path, uid: u32, self_pid: u32, ma
         if pid == self_pid {
             continue;
         }
+        // Other users' `fd` directories are unreadable anyway (camera spec § 2): only the processes
+        // of `uid` are looked at.
         let dir = entry.path();
-        if fs::symlink_metadata(&dir).ok().map(|m| m.uid()) != Some(uid) {
-            continue;
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.uid() == uid => {}
+            _ => continue,
         }
         let (holds, cut) = holds_video(&dir.join("fd"), dev_dir, max_fds);
         out.bounded |= cut;
         if !holds {
             continue;
         }
-        match fs::read_to_string(dir.join("comm")).map(|c| drawable(&c)) {
-            Ok(name) if DROPPED.contains(&name.as_str()) => {}
-            Ok(name) if !name.is_empty() => out.camera.hold(Some(&name)),
+        // The holder's name is its `comm`, cleaned. A process that is dropped adds nothing; one
+        // whose `comm` cannot be read, or cleans to nothing, is a holder with no name.
+        let name = match fs::read_to_string(dir.join("comm")) {
+            Ok(comm) => Some(drawable(&comm)),
+            Err(_) => None,
+        };
+        match name {
+            Some(name) if DROPPED.contains(&name.as_str()) => {}
+            Some(name) if !name.is_empty() => out.camera.hold(Some(&name)),
             _ => out.camera.hold(None),
         }
     }
@@ -107,8 +141,10 @@ fn holds_video(fd_dir: &Path, dev_dir: &Path, max_fds: usize) -> (bool, bool) {
         let Ok(target) = fs::read_link(fd.path()) else {
             continue;
         };
-        let video = target.file_name().is_some_and(|f| is_video(std::os::unix::ffi::OsStrExt::as_bytes(f)));
-        if video && target.parent() == Some(dev_dir) {
+        let Some(file) = target.file_name() else {
+            continue;
+        };
+        if is_video(std::os::unix::ffi::OsStrExt::as_bytes(file)) && target.parent() == Some(dev_dir) {
             return (true, false);
         }
     }
@@ -130,10 +166,12 @@ pub enum Record {
 /// An open or a close on a watched node.
 const NODE_MASK: u32 = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
 
-/// On `dev_dir`: names appearing, going, or changing their attributes (udev giving a node its group).
+/// On `dev_dir`: names appearing, going, or changing their attributes (udev giving a node its group,
+/// camera spec § 1).
 const DIR_MASK: u32 = libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB | libc::IN_ONLYDIR;
 
-/// The meaning of one record, `dev_wd` being the watch on `dev_dir` itself.
+/// The meaning of one record, `dev_wd` being the watch on `dev_dir` itself. A queue overflow is a
+/// trigger like any other (camera spec § 1).
 pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
     if ev.mask & libc::IN_Q_OVERFLOW != 0 {
         return Record::Trigger;
@@ -144,18 +182,18 @@ pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
     if !is_video(ev.name) {
         return Record::Ignored;
     }
-    let name = || String::from_utf8_lossy(ev.name).into_owned();
     if ev.mask & (libc::IN_CREATE | libc::IN_ATTRIB) != 0 {
-        Record::Appeared(name())
+        Record::Appeared(String::from_utf8_lossy(ev.name).into_owned())
     } else if ev.mask & libc::IN_DELETE != 0 {
-        Record::Gone(name())
+        Record::Gone(String::from_utf8_lossy(ev.name).into_owned())
     } else {
         Record::Ignored
     }
 }
 
 /// The inotify instance on `dev_dir` and on each of its `video*` nodes: an open or a close of a node
-/// is a trigger, never a count. Nothing under `dev_dir` is ever opened, only watched.
+/// is a trigger, never a count. Nothing under `dev_dir` is ever opened, only watched. It is a second
+/// instance, apart from the theme watch's, so that the two keep their own lifetimes (camera spec § 4).
 pub struct CameraWatch {
     fd: Inotify,
     dev_dir: PathBuf,
@@ -177,8 +215,11 @@ impl CameraWatch {
             CameraWatch { fd, dev_dir: dev_dir.to_path_buf(), dev_wd, nodes: HashMap::new(), pending: HashSet::new(), limit_logged: false };
         let entries = fs::read_dir(dev_dir).map_err(|e| format!("cannot list {} ({e})", dev_dir.display()))?;
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            if let Some(name) = name.to_str().filter(|n| is_video(n.as_bytes())) {
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if is_video(name.as_bytes()) {
                 w.watch_node(name);
             }
         }
@@ -198,6 +239,8 @@ impl CameraWatch {
     /// Reads every queued record (until EAGAIN); true when any asks for a scan.
     pub fn drain(&mut self) -> bool {
         let mut trigger = false;
+        // The records are classified while the inotify instance is borrowed; they are acted on
+        // afterwards, when `self` is free to change.
         let (fd, dev_wd) = (&self.fd, self.dev_wd);
         let mut records = Vec::new();
         fd.drain(|chunk| records.extend(Events(chunk).map(|ev| classify(&ev, dev_wd))));
@@ -255,6 +298,9 @@ impl CameraWatch {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the camera files' pure parts (`camera.rs`): the scan over fake `/proc` and `/dev`
+    //! trees, the record filter, and the inotify watch on a temporary directory of plain files.
+
     use super::*;
     use alpheus_common::temp_path::TempPath;
     use std::fs;
@@ -281,12 +327,13 @@ mod tests {
         assert_eq!(scanned, Some(first + SCAN_MAX_WAIT));
     }
 
+    /// The user the fake processes belong to: the test's own.
     fn euid() -> u32 {
         // SAFETY: geteuid has no preconditions and cannot fail.
         unsafe { libc::geteuid() }
     }
 
-    /// A fake tree: `<root>/proc`, `<root>/dev/video0`.
+    /// A fake tree: an empty `<root>/proc`, and `<root>/dev/video0`.
     fn tree(name: &str) -> TempPath {
         let t = TempPath::dir(&format!("cam-{name}"));
         fs::create_dir_all(t.join("proc")).unwrap();
@@ -305,6 +352,7 @@ mod tests {
         symlink(target, d.join("fd/3")).unwrap();
     }
 
+    /// The scan of a fake tree, as the daemon would run it (the production bounds).
     fn scan_of(t: &Path) -> Scan {
         scan(&t.join("proc"), &t.join("dev"), euid(), SELF_PID)
     }
@@ -319,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn two_pids_one_name() {
+    fn two_processes_with_one_name_give_one_name() {
         let t = tree("two");
         proc_with(&t, 10, Some("fakecam\n"), &t.join("dev/video0"));
         proc_with(&t, 11, Some("fakecam\n"), &t.join("dev/video0"));
@@ -327,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn pipewire_wireplumber_and_self_are_dropped() {
+    fn pipewire_wireplumber_and_the_daemon_itself_are_not_holders() {
         let t = tree("drop");
         proc_with(&t, 20, Some("pipewire\n"), &t.join("dev/video0"));
         proc_with(&t, 21, Some("wireplumber\n"), &t.join("dev/video0"));
@@ -336,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn non_video_and_other_dirs_are_ignored() {
+    fn a_link_that_is_not_a_video_node_directly_in_dev_dir_is_ignored() {
         let t = tree("other");
         let d = t.join("proc/30");
         fs::create_dir_all(d.join("fd")).unwrap();
@@ -349,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn another_uid_is_skipped() {
+    fn a_process_of_another_user_is_skipped() {
         let t = tree("uid");
         proc_with(&t, 40, Some("fakecam\n"), &t.join("dev/video0"));
         let s = scan(&t.join("proc"), &t.join("dev"), euid() + 1, SELF_PID);
@@ -358,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn vanished_or_unreadable_entries_are_skipped() {
+    fn entries_that_are_gone_or_unreadable_are_skipped_and_a_nameless_holder_is_unnamed() {
         let t = tree("vanish");
         fs::create_dir_all(t.join("proc/50")).unwrap(); // no fd dir
         fs::create_dir_all(t.join("proc/self")).unwrap(); // not a pid
@@ -372,8 +420,36 @@ mod tests {
         assert!(!none.camera.active() && !none.bounded);
     }
 
+    /// A link whose target has no file name (the root, say) is skipped, and the descriptors after it
+    /// are still looked at. The order in which `read_dir` lists the descriptors is not guaranteed and
+    /// the scan does not sort it, so with twelve such links and one video link the video one is
+    /// likely, not certainly, read after some of them.
     #[test]
-    fn the_pid_bound_sets_bounded() {
+    fn a_link_with_no_file_name_does_not_stop_the_listing() {
+        let t = tree("nofile");
+        let d = t.join("proc/80");
+        fs::create_dir_all(d.join("fd")).unwrap();
+        fs::write(d.join("comm"), "fakecam\n").unwrap();
+        for n in 0..12 {
+            symlink("/", d.join(format!("fd/{n}"))).unwrap();
+        }
+        symlink(t.join("dev/video0"), d.join("fd/12")).unwrap();
+        assert_eq!(scan_of(&t).camera.names, vec!["fakecam".to_string()]);
+    }
+
+    /// A directory of `proc_dir` that is not a number is not a process, even if it holds a video node.
+    #[test]
+    fn a_directory_that_is_not_a_number_is_not_a_process() {
+        let t = tree("notpid");
+        let d = t.join("proc/not-a-pid");
+        fs::create_dir_all(d.join("fd")).unwrap();
+        fs::write(d.join("comm"), "fakecam\n").unwrap();
+        symlink(t.join("dev/video0"), d.join("fd/3")).unwrap();
+        assert!(!scan_of(&t).camera.active());
+    }
+
+    #[test]
+    fn the_process_bound_marks_the_scan_as_cut() {
         let t = tree("pids");
         for pid in [60, 61, 62] {
             proc_with(&t, pid, Some("fakecam\n"), &t.join("dev/video0"));
@@ -383,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fd_bound_sets_bounded() {
+    fn the_descriptor_bound_marks_the_scan_as_cut() {
         let t = tree("fds");
         let d = t.join("proc/70");
         fs::create_dir_all(d.join("fd")).unwrap();
@@ -396,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_table() {
+    fn each_inotify_record_is_classified_by_its_watch_and_mask() {
         const DEV: i32 = 1;
         const NODE: i32 = 2;
         let ev = |wd, mask, name: &'static [u8]| Event { wd, mask, name };
@@ -419,6 +495,7 @@ mod tests {
 
     // ---- CameraWatch ----
 
+    /// A temporary directory standing for `/dev`, holding these plain files.
     fn dev(name: &str, nodes: &[&str]) -> TempPath {
         let t = TempPath::dir(&format!("cw-{name}"));
         for n in nodes {
@@ -428,13 +505,21 @@ mod tests {
     }
 
     #[test]
-    fn an_open_and_a_close_trigger() {
+    fn an_open_and_a_close_of_a_node_are_triggers() {
         let t = dev("open", &["video0"]);
         let mut w = CameraWatch::start(&t).unwrap();
         assert_eq!(w.watched(), 1);
         drop(fs::File::open(t.join("video0")).unwrap());
         assert!(w.drain());
         assert!(!w.drain());
+    }
+
+    /// Of the names present at start, only the `video*` ones are watched.
+    #[test]
+    fn only_video_nodes_present_at_start_are_watched() {
+        let t = dev("start", &["snd0", "video0"]);
+        let w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), 1);
     }
 
     #[test]
@@ -489,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn other_names_never_trigger() {
+    fn a_name_that_is_not_video_never_triggers() {
         let t = dev("other", &["video0"]);
         let mut w = CameraWatch::start(&t).unwrap();
         fs::write(t.join("snd0"), "").unwrap();
@@ -497,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_limit_holds() {
+    fn no_more_than_the_watch_limit_of_nodes_are_watched() {
         let names: Vec<String> = (0..65).map(|i| format!("video{i}")).collect();
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let t = dev("limit", &refs);
@@ -512,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_dev_dir_is_an_error() {
+    fn a_dev_dir_that_does_not_exist_cannot_be_watched() {
         let t = dev("missing", &[]);
         let err = CameraWatch::start(&t.join("nope")).err().unwrap();
         assert!(err.contains("nope"), "{err}");

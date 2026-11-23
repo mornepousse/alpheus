@@ -181,8 +181,7 @@ pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
 /// also refreshes the clock: coming out of sleep, the timer (a monotonic
 /// clock, stopped during sleep) can lag by a minute; the first focus change
 /// puts the clock right again — and so does the next resources reading,
-/// which needs no user interaction with the compositor at all (B-m4,
-/// The clock could otherwise stay stale for up to a minute after
+/// which needs no user interaction with the compositor at all (the clock could otherwise stay stale for up to a minute after
 /// resume if nothing compositor-related happens meanwhile). Cheapest
 /// correct option: resources already ticks on its own already-scheduled
 /// timer whenever the module is shown, so this reuses an existing wakeup
@@ -348,7 +347,7 @@ impl App {
         self.privacy_feed(&m);
         self.battery_feed(&m);
         note_compositor_message(self, &m);
-        // The system count was read: the user manager's again (its own link, `failed_app`).
+        // The system count was read: the user manager's again (its own link, `failed/app.rs`).
         if matches!(m, Msg::UnitsRead) {
             self.failed_units_read();
         }
@@ -666,7 +665,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
-        // The Tools menu's reader (tools_app.rs): one entry's state, the end of a states read, a choices read.
+        // The Tools menu's reader (launcher/tools/app.rs): one entry's state, the end of a states read, a choices read.
         channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
         channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
         channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {

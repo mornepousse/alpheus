@@ -184,15 +184,15 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         needs: Needs::NOTIFICATIONS,
         ..row(ModuleId::Notifications, "notifications", GroupKind::Status)
     },
-    // The OSD draws its own surface (osd_surface.rs), never in the bar.
+    // The OSD draws its own surface (osd/surface.rs), never in the bar.
     ModuleSpec { needs: Needs::SOUND.or(Needs::OSD_SCOPE), ..row(ModuleId::Osd, "osd", GroupKind::Status) },
-    // The quick panel is a popup (quick.rs), never a segment. It reads the sink list, NetworkManager
+    // The quick panel is a popup (quick/mod.rs), never a segment. It reads the sink list, NetworkManager
     // (the Wi-Fi row), BlueZ (the Bluetooth row) and the power profile.
     ModuleSpec {
         needs: Needs::SOUND.or(Needs::NETWORK).or(Needs::BLUETOOTH).or(Needs::POWER_PROFILE),
         ..row(ModuleId::Quick, "quick", GroupKind::Status)
     },
-    // The screens are read and changed through the output protocol (outputs_app.rs), never drawn.
+    // The screens are read and changed through the output protocol (outputs/app.rs), never drawn.
     row(ModuleId::Displays, "displays", GroupKind::Status),
     // The focus timer's chip (see timer/mod.rs); its popup is timer/popup.rs.
     ModuleSpec {

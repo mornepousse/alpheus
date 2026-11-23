@@ -13,7 +13,7 @@ pub const REBOOT: char = '\u{f0709}';
 pub const POWER: char = '\u{23fb}';
 /// How long "Reboot? ⏎" waits for its second activation (quick spec § 2).
 pub const CONFIRM: Duration = Duration::from_secs(3);
-/// The second activation counts only this long after the question showed (Mae, 2026-10-11): a
+/// The second activation counts only this long after the question showed (2026-10-11): a
 /// double click or a double Enter never confirms.
 pub const CONFIRM_AFTER: Duration = Duration::from_millis(400);
 
@@ -195,7 +195,8 @@ mod tests {
         assert_eq!(q, None, "never a question of their own");
     }
 
-    /// Mae's ruling (2026-10-11): the second activation counts from 0.4 s after the question, until 3 s.
+    /// The rule of "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s" (docs/decisions.md): the second
+    /// activation counts from 0.4 s after the question, until 3 s.
     #[test]
     fn reboot_and_power_off_ask_then_confirm_from_0_4_s_until_3_s() {
         for s in [Session::Reboot, Session::Poweroff] {

@@ -1,3 +1,8 @@
+//! Tests of the Wi-Fi list (`wifi.rs`): the row, the detail's networks, keys and rows, the password
+//! field, and the connection attempt with its cleanup and its follower. A fake `WifiState` stands for
+//! what NetworkManager reports (fictional networks and made-up uuids); no D-Bus and no command:
+//! each test passes the times it wants.
+
 use super::*;
 use crate::quick::app::WifiFollow;
 use crate::quick::secret::CAPACITY;
@@ -62,7 +67,7 @@ fn pick(w: &mut Wifi, label: &str) {
 }
 
 #[test]
-fn four_steps_of_signal() {
+fn signal_strength_is_drawn_as_one_to_four_steps() {
     let cases = [
         (0, 1, "▂___"),
         (24, 1, "▂___"),
@@ -79,7 +84,7 @@ fn four_steps_of_signal() {
 }
 
 #[test]
-fn the_detail_orders_dedups_caps_and_hides() {
+fn the_detail_orders_one_row_per_ssid_leaves_out_hidden_ones_and_stops_at_32() {
     assert_eq!(labels(&open(state())), ["Maison-Test", "Labo-Test", "Bureau-Test", "Cafe-Libre"], "connected, then by signal");
     let mut s = state();
     device(&mut s).saved.as_mut().expect("saved").push(SavedWifi { uuid: CAFE.into(), ssid: b"Cafe-Libre".to_vec() });
@@ -96,7 +101,7 @@ fn the_detail_orders_dedups_caps_and_hides() {
 }
 
 #[test]
-fn the_marks_and_the_rows() {
+fn a_network_row_shows_its_mark_signal_lock_and_tag() {
     let w = open(state());
     let nets = w.networks();
     let row = |line: Line, selected: bool| {
@@ -116,7 +121,7 @@ fn the_marks_and_the_rows() {
 }
 
 #[test]
-fn enter_on_each_kind_of_network() {
+fn enter_runs_the_command_of_each_kind_of_network() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     pick(&mut w, "Maison-Test");
@@ -142,7 +147,7 @@ fn enter_on_each_kind_of_network() {
 /// An SSID that cannot be one nmcli argument as is (a leading '-', a NUL, not
 /// UTF-8) is shown cleaned and never passed: More… unsaved, by uuid saved.
 #[test]
-fn refused_ssids_go_to_more_unless_saved() {
+fn an_ssid_nmcli_cannot_take_goes_to_more_unless_saved() {
     let latin1 = vec![0x43, 0x61, 0x66, 0xE9];
     assert!(refused(b"-x") && refused(b"a\0b") && refused(&latin1) && refused(b""));
     assert!(!refused(b"Cafe-Libre") && !refused("Café".as_bytes()) && !refused(b"a-b"));
@@ -161,7 +166,7 @@ fn refused_ssids_go_to_more_unless_saved() {
 }
 
 #[test]
-fn arrows_move_over_the_networks_and_more_never_wrapping() {
+fn the_arrows_walk_the_networks_and_more_without_wrapping() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     assert_eq!(w.pick, Pick::Network(b"Maison-Test".to_vec()), "the first network");
@@ -181,7 +186,7 @@ fn arrows_move_over_the_networks_and_more_never_wrapping() {
 }
 
 #[test]
-fn the_detail_lines_and_its_notes() {
+fn the_detail_lines_hold_a_note_when_there_is_no_list() {
     let c = config();
     assert_eq!(
         open(state()).lines(&c),
@@ -211,7 +216,7 @@ fn the_detail_lines_and_its_notes() {
 }
 
 #[test]
-fn networkmanager_going_away_closes_the_detail() {
+fn the_detail_closes_when_networkmanager_or_its_device_goes_away() {
     let t = Instant::now();
     let mut w = open(state());
     w.set_state(None, t);
@@ -224,7 +229,7 @@ fn networkmanager_going_away_closes_the_detail() {
 }
 
 #[test]
-fn a_press_acts_on_its_line() {
+fn a_left_press_acts_on_the_line_it_lands_on() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     assert_eq!(
@@ -313,7 +318,7 @@ fn a_new_secured_network_asks_for_its_password_in_a_field() {
 }
 
 #[test]
-fn the_field_s_keys() {
+fn the_password_field_takes_characters_backspace_ctrl_u_and_escape() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     pick(&mut w, "Bureau-Test");
@@ -386,7 +391,7 @@ fn the_password_field_counts_characters_and_refuses_an_overflow() {
 }
 
 #[test]
-fn connecting_then_connected() {
+fn a_connecting_network_is_tagged_until_it_is_connected() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     pick(&mut w, "Cafe-Libre");
@@ -400,9 +405,9 @@ fn connecting_then_connected() {
     assert!(row_of(&w, "Cafe-Libre").text().starts_with(" ● Cafe-Libre"), "● once NetworkManager says so");
 }
 
-/// Spec § 2's mockup: the bars and the lock sit in one column whatever the tag; the tag's
-/// room is the widest tag's, `failed` (6 cells; Mae's short tags, 2026-10-12: `…` while
-/// connecting), so an SSID keeps 16 cells.
+/// The bars and the lock sit in one column whatever the tag; the tag's room is the widest tag's,
+/// `failed` (6 cells), so an SSID keeps 16 cells. See docs/decisions.md, "A row under connection
+/// reads `…`".
 #[test]
 fn the_bars_and_the_lock_sit_in_one_column() {
     let (c, t) = (config(), Instant::now());
@@ -449,7 +454,7 @@ fn a_failed_new_network_shows_failed_and_its_new_profile_is_deleted() {
 }
 
 #[test]
-fn state_120_fails_at_once_and_twenty_seconds_without_an_answer_too() {
+fn a_failed_device_state_a_20_s_silence_and_networkmanager_gone_each_end_the_attempt() {
     let (c, t) = (config(), Instant::now());
     let mut w = open(state());
     pick(&mut w, "Cafe-Libre");
@@ -530,7 +535,8 @@ fn the_detail_s_reading_outlives_the_detail_while_connecting() {
     assert_eq!(w.scope(), WifiScope::Row);
 }
 
-/// The panel closing on `w` with its attempt under way: the follower it leaves (Mae's ruling P1).
+/// The panel closing on `w` with its attempt under way: the follower it leaves. See docs/decisions.md,
+/// "A Wi-Fi attempt on a new network outlives the quick panel".
 fn closed_during(w: &mut Wifi) -> Option<WifiFollow> {
     WifiFollow::leaving(w)
 }
@@ -547,8 +553,8 @@ fn followed(base: &WifiState, state: u32, active: Option<&str>, saved: &[(&str, 
     s
 }
 
-/// Mae's ruling P1: closing the panel during an attempt on a new network leaves a follower that
-/// still deletes the profile a failure leaves behind, by NetworkManager's word or the timeout.
+/// Closing the panel during an attempt on a new network leaves a follower that still deletes the
+/// profile a failure leaves behind, by NetworkManager's word or the timeout.
 #[test]
 fn closing_during_a_failing_new_network_attempt_still_deletes_its_profile() {
     let (c, t) = (config(), Instant::now());
@@ -576,8 +582,8 @@ fn closing_during_a_failing_new_network_attempt_still_deletes_its_profile() {
     assert_eq!(f.due(t + CONNECT_TIMEOUT), Outcome::Failed { why: "no answer in 20 s", cleanup: Some(delete(NEW)) });
 }
 
-/// Mae's ruling P1: a follower whose attempt succeeds deletes nothing; a saved network's
-/// attempt is dropped with the panel; a panel opened again takes the attempt back.
+/// A follower whose attempt succeeds deletes nothing; a saved network's attempt is dropped with the
+/// panel; a panel opened again takes the attempt back.
 #[test]
 fn a_follower_deletes_nothing_on_success_and_a_saved_network_is_not_followed() {
     let (c, t) = (config(), Instant::now());
@@ -608,8 +614,8 @@ fn a_follower_deletes_nothing_on_success_and_a_saved_network_is_not_followed() {
     assert_eq!(again.key(&c, Key::Enter, t), QuickAction::Nothing, "no second attempt");
 }
 
-/// F4: the state the D-Bus thread resends through another domain's outage (BlueZ, UPower, the
-/// power profile) was read before it, and nothing new comes for the backoff: an attempt that
+/// The state the D-Bus thread resends through another domain's outage (BlueZ, UPower, the power
+/// profile) was read before it, and nothing new comes for the backoff: an attempt that
 /// expires on it never deletes (NetworkManager may have connected meanwhile); a state read
 /// after the outage, still disconnected, deletes as before. The display stays as it was.
 #[test]
@@ -893,4 +899,59 @@ fn a_slow_activation_keeps_its_profile() {
     assert_eq!(f.due(t + CONNECT_TIMEOUT), Outcome::Waiting);
     assert_eq!(f.deadline(), t + ACTIVATION_BOUND, "the follower's timer moves too");
     assert_eq!(f.due(t + ACTIVATION_BOUND), Outcome::Failed { why: "still activating after 60 s", cleanup: None });
+}
+
+/// A new profile's attempt on `Cafe-Libre` that `w` follows, the profile `NEW` already listed.
+fn attempt_with_a_new_profile(t: Instant) -> Wifi {
+    let mut w = open(state());
+    pick(&mut w, "Cafe-Libre");
+    w.key(&config(), Key::Enter, t);
+    saved_added(&mut w, NEW, "Cafe-Libre", t);
+    w
+}
+
+#[test]
+fn a_timeout_with_the_device_activated_on_another_network_deletes_the_new_profile() {
+    let t = Instant::now();
+    let mut w = attempt_with_a_new_profile(t);
+    let mut s = w.state.clone().expect("a state");
+    let d = device(&mut s);
+    (d.state, d.active, d.active_uuid) = (ACTIVATED, Some(ap("Bureau-Test", 60, Security::Psk)), None);
+    w.set_state(Some(s), t);
+    assert_eq!(w.due(t + CONNECT_TIMEOUT).0, vec![delete(NEW)], "its uuid unread, its access point another network's");
+}
+
+#[test]
+fn a_timeout_with_the_device_not_activated_deletes_the_new_profile_whatever_uuid_it_names() {
+    let t = Instant::now();
+    let mut w = attempt_with_a_new_profile(t);
+    let mut s = w.state.clone().expect("a state");
+    let d = device(&mut s);
+    (d.state, d.active, d.active_uuid) = (30, None, Some(NEW.into()));
+    w.set_state(Some(s), t);
+    assert_eq!(w.due(t + CONNECT_TIMEOUT).0, vec![delete(NEW)], "disconnected: not on its profile");
+}
+
+#[test]
+fn a_stale_state_does_not_change_the_reason_of_an_attempt_that_made_no_profile() {
+    let (c, t) = (config(), Instant::now());
+    let mut disconnected = state();
+    let d = device(&mut disconnected);
+    (d.state, d.active, d.active_uuid) = (30, None, None);
+    let mut w = open(disconnected.clone());
+    pick(&mut w, "Maison-Test");
+    assert_eq!(w.key(&c, Key::Enter, t), run(&["nmcli", "connection", "up", "uuid", HOME], "wifi connect (saved)"));
+    w.set_state(Some(WifiState { stale: true, ..disconnected }), t);
+    assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![], Some("no answer in 20 s"), true), "a `connection up` has no profile to keep");
+}
+
+#[test]
+fn a_field_whose_network_stays_listed_is_not_closed_by_the_clock() {
+    let (c, t) = (config(), Instant::now());
+    let mut w = open(state());
+    pick(&mut w, "Bureau-Test");
+    w.key(&c, Key::Enter, t);
+    typed(&mut w, "fake-pass", t);
+    assert_eq!(w.due(t + Duration::from_secs(3600)), (vec![], None, false));
+    assert!(w.field.is_some(), "listed all along: kept");
 }

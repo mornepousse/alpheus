@@ -634,7 +634,7 @@ fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
 
     // Empty query: `everything()`'s precomputed `apps_empty_order` (also built from
     // `name_ranks`/`fold_cow`) must match a reference order too — apps by frecency then
-    // name first (Mae, 2026-10-05), then windows as given (`everything()` never sorts them).
+    // name first (2026-10-05), then windows as given (`everything()` never sorts them).
     let q3 = Query {
         text: "",
         mode: Mode::All,

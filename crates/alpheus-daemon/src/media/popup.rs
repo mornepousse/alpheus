@@ -1,8 +1,20 @@
-//! The media popup (spec § 2), pure: its rows as cells (title, artist, elapsed time with a progress
-//! bar and the length, the ⏮ ⏯ ⏭ buttons, then the players with ● on the active one when there are
-//! two or more), its keys and its mouse hit map, and the rule for its 1 s redraw tick. The popup
-//! itself (`PopupBody::Media`) and the D-Bus calls are the wiring's: nothing here talks to a bus,
-//! starts a thread or runs a command.
+//! The media popup's content: its rows, its keys, its mouse map and the rule for its redraw tick.
+//!
+//! The popup opens under the media module of the bar. This file is its pure half: the rows as cells
+//! (title, artist, elapsed time with a progress bar, the ⏮ ⏯ ⏭ buttons, then the players with ●
+//! on the active one when there are two or more), what a key or a left press asks (`MediaAction`),
+//! and when the open popup must next redraw (`tick_due`). The popup itself (`PopupBody::Media`),
+//! its timer and the D-Bus calls are `app.rs`'s. The notification panel's media card uses the same
+//! rows, keys and press map (`notify/panel.rs`).
+//!
+//! Never:
+//! - talk to a bus, start a thread or run a command: the actions are returned and `app.rs` carries
+//!   them out;
+//! - read the clock: the caller passes `now`.
+//!
+//! See: docs/specs/2026-10-08-alpheus-media-design.md (§ 2), docs/features/media.md, and
+//! docs/decisions.md ("The media popup computes the position, and reads it only while open", "The
+//! active media player is the pinned one, else the best status").
 
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
@@ -11,14 +23,15 @@ use crate::media::{self, Control, Player, Players, Status};
 use crate::segments::{PAUSE, PLAY, SKIP_NEXT, SKIP_PREVIOUS};
 use std::time::{Duration, Instant};
 
-/// Content width in cells (the spec's mockup); `list::padded` adds one blank cell each side.
+/// Content width in cells (the width of the spec's mockup, media spec § 2); `list::padded` adds one
+/// blank cell each side.
 pub const WIDTH: u16 = 30;
 /// Added to every tick so it lands just past the second it waits for, never a hair before it (a
 /// tick that early would redraw the same rows and ask for another tick a microsecond later).
 pub const SLACK: Duration = Duration::from_millis(1);
 /// The buttons, left to right.
 const CONTROLS: [Control; 3] = [Control::Previous, Control::PlayPause, Control::Next];
-/// A button takes this many cells either side of its glyph for a click.
+/// A click up to this many cells either side of a button's glyph counts as a click on the button.
 const REACH: u16 = 2;
 
 /// One row of the popup, top to bottom.
@@ -34,7 +47,8 @@ pub enum Line {
     Player(usize),
 }
 
-/// What is selected: a row of `lines()`, and the button when that row is the buttons'.
+/// What is selected: a row of `lines()`, and the button when that row is the buttons'. The keys and
+/// a left press change it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaPopup {
     pub selected: usize,
@@ -45,7 +59,8 @@ pub struct MediaPopup {
     pub chosen: Option<Chosen>,
 }
 
-/// The selected row by what it shows, not by its number.
+/// The selected row by what it shows, not by its number: rows and players come and go, so a number
+/// would soon point at another row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Chosen {
     Buttons,
@@ -54,44 +69,59 @@ pub enum Chosen {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// What a key or a press asks `app.rs` to do.
 pub enum MediaAction {
     Nothing,
     Redraw,
     Close,
     /// To the active player (`Mpris::control`, which checks the capability again).
     Control(Control),
-    /// This player becomes the active one (spec § 3, the pin), by bus name.
+    /// This player becomes the active one (media spec § 3, the pin), by bus name.
     Pin(String),
 }
 
-/// The active player if it is shown (never a stopped one).
+/// The active player if it is shown (never a stopped one). `Players::active` already leaves out
+/// stopped players; the check says it again here.
 fn shown_active(players: &Players) -> Option<&Player> {
-    players.active().filter(|p| p.status != Status::Stopped)
+    match players.active() {
+        Some(p) if p.status != Status::Stopped => Some(p),
+        _ => None,
+    }
 }
 
 /// The length when it is known: missing, 0 or a stream (no length) all hide the time row.
 fn length(p: &Player) -> Option<u64> {
-    p.track.length_us.filter(|&l| l > 0)
+    match p.track.length_us {
+        Some(l) if l > 0 => Some(l),
+        _ => None,
+    }
 }
 
 /// Whether button `b` can do anything for `p`: `Player::can` on its control (⏯ asks CanPause while
-/// playing, CanPlay otherwise).
+/// playing, CanPlay otherwise). A button number past the three buttons can do nothing.
 fn capable(p: &Player, b: usize) -> bool {
-    CONTROLS.get(b).is_some_and(|c| p.can(*c))
+    match CONTROLS.get(b) {
+        Some(control) => p.can(*control),
+        None => false,
+    }
 }
 
 /// The glyph columns of the three buttons in a row `width` cells wide: centred, five cells apart.
+/// (`saturating_sub` and `saturating_add` stop at 0 and at the largest `u16` instead of wrapping.)
 fn button_columns(width: u16) -> [u16; 3] {
     let c = width / 2;
     [c.saturating_sub(5), c, c.saturating_add(5)]
 }
 
-/// The button whose cells hold content column `x`.
+/// The button whose cells hold content column `x` (`abs_diff` is the distance between two numbers,
+/// whichever is larger).
 fn button_at(x: u16, width: u16) -> Option<usize> {
     button_columns(width).iter().position(|&c| x.abs_diff(c) <= REACH)
 }
 
-/// The popup's rows for the active player; empty when no player is shown.
+/// The popup's rows for the active player; empty when no player is shown. The artist row is there
+/// only with an artist, the time row only with a known length (media spec § 2), the player list
+/// only from two players up.
 pub fn lines(players: &Players) -> Vec<Line> {
     let Some(p) = shown_active(players) else { return Vec::new() };
     let mut out = vec![Line::Title];
@@ -128,6 +158,7 @@ pub fn label(p: &Player) -> String {
 impl MediaPopup {
     /// At open: the buttons row on play/pause (or the nearest capable button), else the first player.
     pub fn new(players: &Players) -> MediaPopup {
+        // `usize::MAX` is no row at all, so `fit` always has to choose one.
         let mut popup = MediaPopup { selected: usize::MAX, button: 1, chosen: None };
         popup.fit(players);
         popup
@@ -143,21 +174,46 @@ impl MediaPopup {
         if let Some(chosen) = &self.chosen {
             let line = match chosen {
                 Chosen::Buttons => Some(Line::Buttons),
+                // `map` makes a `Line::Player` of the number inside a Some, and leaves a None as it is.
                 Chosen::Player(name) => players.shown().position(|q| q.bus_name == *name).map(Line::Player),
             };
-            self.selected = line.and_then(|l| lines.iter().position(|x| *x == l)).unwrap_or(usize::MAX);
+            // The row where the chosen thing is now; `usize::MAX` (no row) when it is gone.
+            self.selected = match line {
+                Some(l) => match lines.iter().position(|x| *x == l) {
+                    Some(i) => i,
+                    None => usize::MAX,
+                },
+                None => usize::MAX,
+            };
         }
         let ok = |i: usize| selectable(&lines, p, i);
         if !ok(self.selected) {
-            let buttons = lines.iter().position(|l| *l == Line::Buttons).filter(|&i| ok(i));
-            self.selected = buttons.or_else(|| list::first_selectable(lines.len(), ok)).unwrap_or(0);
+            // The buttons row if one of its buttons can be used, else the first row that can be
+            // selected, else row 0.
+            let mut target = None;
+            if let Some(i) = lines.iter().position(|l| *l == Line::Buttons) {
+                if ok(i) {
+                    target = Some(i);
+                }
+            }
+            if target.is_none() {
+                target = list::first_selectable(lines.len(), ok);
+            }
+            self.selected = target.unwrap_or(0);
             // Moved: remembered anew (a fit that found its row again allocates nothing).
             self.remember(players, &lines);
         } else if self.chosen.is_none() {
             self.remember(players, &lines);
         }
         if !capable(p, self.button) {
-            self.button = [1, 2, 0].into_iter().find(|&b| capable(p, b)).unwrap_or(1);
+            // Play/pause first, then next, then previous; button 1 when none can be used.
+            self.button = 1;
+            for b in [1, 2, 0] {
+                if capable(p, b) {
+                    self.button = b;
+                    break;
+                }
+            }
         }
     }
 
@@ -165,6 +221,7 @@ impl MediaPopup {
     fn remember(&mut self, players: &Players, lines: &[Line]) {
         self.chosen = match lines.get(self.selected) {
             Some(Line::Buttons) => Some(Chosen::Buttons),
+            // `nth` gives the i-th shown player (None past the last).
             Some(Line::Player(i)) => players.shown().nth(*i).map(|q| Chosen::Player(q.bus_name.clone())),
             _ => None,
         };
@@ -176,7 +233,11 @@ pub fn rows(players: &Players, popup: &MediaPopup, now: Instant, width: u16) -> 
     let Some(p) = shown_active(players) else { return Boxed::default() };
     let lines = lines(players);
     let listed: Vec<&Player> = players.shown().collect();
-    let selected = lines.get(popup.selected).copied().filter(|_| selectable(&lines, p, popup.selected));
+    // The selected row, only if it can really be selected.
+    let selected = match lines.get(popup.selected) {
+        Some(line) if selectable(&lines, p, popup.selected) => Some(*line),
+        _ => None,
+    };
     let content: Vec<Grid> = lines
         .iter()
         .map(|line| {
@@ -190,7 +251,10 @@ pub fn rows(players: &Players, popup: &MediaPopup, now: Instant, width: u16) -> 
                     g.write(0, width, &media::truncate_title(&p.track.artist_line(), width), Style::NORMAL);
                 }
                 Line::Time => time_row(&mut g, p, now, width),
-                Line::Buttons => buttons_row(&mut g, p, (selected == Some(Line::Buttons)).then_some(popup.button), width),
+                Line::Buttons => {
+                    let selected_button = if selected == Some(Line::Buttons) { Some(popup.button) } else { None };
+                    buttons_row(&mut g, p, selected_button, width);
+                }
                 Line::Separator => {}
                 Line::Player(i) => {
                     if let Some(q) = listed.get(i) {
@@ -202,14 +266,23 @@ pub fn rows(players: &Players, popup: &MediaPopup, now: Instant, width: u16) -> 
         })
         .collect();
     let mut boxed = list::padded(&content);
-    boxed.separators = lines.iter().position(|l| *l == Line::Separator).into_iter().collect();
+    // At most one separator: between the buttons and the players.
+    boxed.separators = match lines.iter().position(|l| *l == Line::Separator) {
+        Some(i) => vec![i],
+        None => Vec::new(),
+    };
     boxed
 }
 
 /// "1:42 ━━━━━━━━──────────── 4:05": elapsed and length muted, the elapsed part of the bar in the accent.
+/// The bar takes the cells left once both times and the two spaces are written.
 fn time_row(g: &mut Grid, p: &Player, now: Instant, width: u16) {
     let Some(len) = length(p) else { return };
-    let pos = media::position_now(p, now).unwrap_or(0).min(len);
+    // An unknown position reads as 0:00 (the popup waits for the read).
+    let pos = match media::position_now(p, now) {
+        Some(position) => position.min(len),
+        None => 0,
+    };
     let (left, right) = (media::clock(pos), media::clock(len));
     let bar = width.saturating_sub(text_width(&left).saturating_add(text_width(&right)).saturating_add(2));
     // pos ≤ len, so filled ≤ bar; u128: no overflow whatever a player reports.
@@ -252,6 +325,7 @@ fn player_row(g: &mut Grid, q: &Player, active: bool, selected: bool, width: u16
 /// What the popup shows on top, as drawn in `b` (cut to its width): "Title — Artist", or the title
 /// alone without an artist row; empty when nothing is shown. For the log line "media popup shown".
 pub fn heading(players: &Players, b: &Boxed) -> String {
+    // The text drawn in row `i`, trimmed; empty when there is no such row.
     let drawn = |i: usize| b.rows.get(i).map(|g| g.text().trim().to_string()).unwrap_or_default();
     match lines(players).get(1) {
         Some(Line::Artist) => format!("{} — {}", drawn(0), drawn(1)),
@@ -262,10 +336,14 @@ pub fn heading(players: &Players, b: &Boxed) -> String {
 /// What Enter (or a press) does on the selected row.
 fn activate(popup: &MediaPopup, players: &Players, lines: &[Line], p: &Player) -> MediaAction {
     match lines.get(popup.selected) {
-        Some(Line::Buttons) if capable(p, popup.button) => {
-            CONTROLS.get(popup.button).map_or(MediaAction::Nothing, |c| MediaAction::Control(*c))
-        }
-        Some(Line::Player(i)) => players.shown().nth(*i).map_or(MediaAction::Nothing, |q| MediaAction::Pin(q.bus_name.clone())),
+        Some(Line::Buttons) if capable(p, popup.button) => match CONTROLS.get(popup.button) {
+            Some(control) => MediaAction::Control(*control),
+            None => MediaAction::Nothing,
+        },
+        Some(Line::Player(i)) => match players.shown().nth(*i) {
+            Some(q) => MediaAction::Pin(q.bus_name.clone()),
+            None => MediaAction::Nothing,
+        },
         _ => MediaAction::Nothing,
     }
 }
@@ -307,7 +385,9 @@ pub fn press(popup: &mut MediaPopup, players: &Players, cell: (u16, u16), width:
     let row = usize::from(cell.1);
     match lines.get(row) {
         Some(Line::Buttons) => {
-            let Some(b) = cell.0.checked_sub(1).and_then(|x| button_at(x, width)) else { return MediaAction::Nothing };
+            // Column 0 of the cells is the pad, so the content starts at column 1.
+            let Some(x) = cell.0.checked_sub(1) else { return MediaAction::Nothing };
+            let Some(b) = button_at(x, width) else { return MediaAction::Nothing };
             if !capable(p, b) {
                 return MediaAction::Nothing;
             }
@@ -331,15 +411,22 @@ pub fn press(popup: &mut MediaPopup, players: &Players, cell: (u16, u16), width:
 /// closed, not playing, at a standstill, with no known length, or at the end: then no timer exists
 /// at all.
 pub fn tick_due(open: bool, playing: bool, rate: f64, position_us: u64, length_us: Option<u64>) -> Option<Duration> {
-    let length = length_us.filter(|&l| l > 0)?;
+    let length = match length_us {
+        Some(l) if l > 0 => l,
+        _ => return None,
+    };
     if !open || !playing || !rate.is_finite() || rate <= 0.0 || position_us >= length {
         return None;
     }
+    // Microseconds of track to the next whole second of the track.
     let to_second = 1_000_000 - position_us % 1_000_000;
     // In track µs: the 1 − 1/rate real seconds of the floor (0 up to 1×). Saturating casts.
     let floor = ((rate - 1.0).max(0.0) * 1e6) as u64;
+    // Whole seconds of track to skip so that the wait is at least the floor.
     let skipped = floor.saturating_sub(to_second).div_ceil(1_000_000);
+    // The wait in track time, never past the end of the track (`position_us < length` was checked).
     let media_us = to_second.saturating_add(skipped.saturating_mul(1_000_000)).min(length - position_us);
+    // Track time to real time: at rate 2 a track second lasts half a real second.
     let real_us = (media_us as f64 / rate).ceil() as u64;
     Some(Duration::from_micros(real_us) + SLACK)
 }
@@ -347,6 +434,7 @@ pub fn tick_due(open: bool, playing: bool, rate: f64, position_us: u64, length_u
 /// The open popup's next tick for `p` at `now` (`tick_due`); none while its position is unknown:
 /// the time row stands at 0:00 until the read answers, nothing to redraw.
 pub fn player_tick(open: bool, p: &Player, now: Instant) -> Option<Duration> {
+    // `?` after a call that gives None ends the function with None: no known position, no tick.
     let position = media::position_now(p, now)?;
     tick_due(open, p.status == Status::Playing, p.rate, position, p.track.length_us)
 }

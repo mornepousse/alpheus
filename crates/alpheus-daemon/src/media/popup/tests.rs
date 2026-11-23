@@ -1,3 +1,6 @@
+//! Tests of the media popup's content (`popup.rs`): its rows, its selection, its keys and presses,
+//! and its tick. No bus, no clock: each test passes the instant it wants.
+
 use super::*;
 use crate::grid::text_width;
 use crate::media::{PositionSync, Value};
@@ -7,7 +10,7 @@ const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const LEN: i64 = 245_000_000; // 4:05
 
 /// What GetAll returns for a fictional track (fixtures are fictional: no real artist or title).
-fn props(status: &str, title: &str, artists: &[&str], length_us: Option<i64>) -> Vec<(String, Value)> {
+fn player_properties(status: &str, title: &str, artists: &[&str], length_us: Option<i64>) -> Vec<(String, Value)> {
     let mut meta = vec![
         ("mpris:trackid".to_string(), Value::Str(format!("/fake/track/{}", title.len()))),
         ("xesam:title".to_string(), Value::Str(title.to_string())),
@@ -29,14 +32,14 @@ fn props(status: &str, title: &str, artists: &[&str], length_us: Option<i64>) ->
 }
 
 /// `p` with `key` set to `v` (the last entry of a key wins, so the old one is dropped first).
-fn set(mut p: Vec<(String, Value)>, key: &str, v: bool) -> Vec<(String, Value)> {
+fn with_ability(mut p: Vec<(String, Value)>, key: &str, v: bool) -> Vec<(String, Value)> {
     p.retain(|(k, _)| k != key);
     p.push((key.to_string(), Value::Bool(v)));
     p
 }
 
 /// One more player, `:1.n` owning `org.mpris.MediaPlayer2.name`, filled as GetAll would.
-fn with(players: &mut Players, name: &str, n: u32, p: Vec<(String, Value)>) -> String {
+fn add_player(players: &mut Players, name: &str, n: u32, p: Vec<(String, Value)>) -> String {
     let unique = format!(":1.{n}");
     assert!(players.add(format!("{PREFIX}{name}"), unique.clone()));
     let _ = players.apply(&unique, &p, &[]);
@@ -44,27 +47,28 @@ fn with(players: &mut Players, name: &str, n: u32, p: Vec<(String, Value)>) -> S
 }
 
 /// One player playing "Paper Lanterns" by "The Quiet Hours", 4:05 long, at 1:42 at `t0`.
-fn one(t0: Instant) -> Players {
+fn one_playing_player(t0: Instant) -> Players {
     let mut players = Players::default();
-    let u = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)));
+    let u = add_player(&mut players, "lumen", 7, player_properties("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)));
     players.set_identity(&u, "Lumen Player");
     players.set_position(&u, PositionSync { at: t0, us: 102_000_000 });
     players
 }
 
-fn texts(b: &Boxed) -> Vec<String> {
+/// The text of each row, without trailing spaces.
+fn row_texts(b: &Boxed) -> Vec<String> {
     b.rows.iter().map(|g| g.text().trim_end().to_string()).collect()
 }
 
 #[test]
 fn one_player_title_artist_time_and_buttons() {
     let t0 = Instant::now();
-    let players = one(t0);
+    let players = one_playing_player(t0);
     let popup = MediaPopup::new(&players);
     let b = rows(&players, &popup, t0, WIDTH);
     assert_eq!(b.cells(), (WIDTH + 2, 4), "padded: one blank cell each side; no separator nor players with one player");
     assert!(b.separators.is_empty());
-    let t = texts(&b);
+    let t = row_texts(&b);
     assert_eq!(t[0], " Paper Lanterns");
     assert_eq!(t[1], " The Quiet Hours");
     // 20 cells of bar between "1:42 " and " 4:05": 102 / 245 of them filled, rounded down.
@@ -82,9 +86,9 @@ fn one_player_title_artist_time_and_buttons() {
 fn the_selection_follows_its_player_when_rows_or_players_change() {
     let t0 = Instant::now();
     let mut players = Players::default();
-    let lumen = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &[], Some(LEN)));
-    let beta = with(&mut players, "beta", 8, props("Paused", "Quiet Song", &["Nobody"], Some(LEN)));
-    with(&mut players, "gamma", 9, props("Paused", "Other Song", &[], None));
+    let lumen = add_player(&mut players, "lumen", 7, player_properties("Playing", "Paper Lanterns", &[], Some(LEN)));
+    let beta = add_player(&mut players, "beta", 8, player_properties("Paused", "Quiet Song", &["Nobody"], Some(LEN)));
+    add_player(&mut players, "gamma", 9, player_properties("Paused", "Other Song", &[], None));
     let mut popup = MediaPopup::new(&players);
     // Title, time, buttons, separator, lumen, beta, gamma: down to gamma.
     for _ in 0..4 {
@@ -97,7 +101,7 @@ fn the_selection_follows_its_player_when_rows_or_players_change() {
     };
     assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"));
     // An artist row appears above: still gamma.
-    let _ = players.apply(&lumen, &props("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)), &[]);
+    let _ = players.apply(&lumen, &player_properties("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)), &[]);
     assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"), "a row added above");
     // beta, listed before gamma, leaves: still gamma.
     assert!(players.remove_unique(&beta));
@@ -105,7 +109,7 @@ fn the_selection_follows_its_player_when_rows_or_players_change() {
     // The buttons follow their row too.
     key(&mut popup, &players, Key::Up);
     key(&mut popup, &players, Key::Up);
-    let _ = players.apply(&lumen, &props("Playing", "Paper Lanterns", &[], Some(LEN)), &[]);
+    let _ = players.apply(&lumen, &player_properties("Playing", "Paper Lanterns", &[], Some(LEN)), &[]);
     popup.fit(&players);
     assert_eq!(lines(&players).get(popup.selected), Some(&Line::Buttons), "the artist row gone: still the buttons");
     // gamma itself gone: back to the buttons, never its neighbour.
@@ -120,14 +124,14 @@ fn the_selection_follows_its_player_when_rows_or_players_change() {
 #[test]
 fn three_players_add_a_separator_and_the_list_with_the_active_marked() {
     let t0 = Instant::now();
-    let mut players = one(t0);
-    with(&mut players, "beta", 8, props("Paused", "Quiet Song", &["Nobody"], Some(LEN)));
-    with(&mut players, "gamma", 9, props("Paused", "Other Song", &[], None));
+    let mut players = one_playing_player(t0);
+    add_player(&mut players, "beta", 8, player_properties("Paused", "Quiet Song", &["Nobody"], Some(LEN)));
+    add_player(&mut players, "gamma", 9, player_properties("Paused", "Other Song", &[], None));
     let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
     assert_eq!(b.cells().1, 8, "title, artist, time, buttons, separator, three players");
     assert_eq!(b.separators, vec![4]);
     assert_eq!(b.rows[4].text().trim(), "", "the separator row stays blank: the painter draws its line");
-    let t = texts(&b);
+    let t = row_texts(&b);
     let mut listed: Vec<&str> = t[5..].iter().map(|r| r.trim_start_matches(' ').trim_start_matches('●').trim()).collect();
     listed.sort_unstable();
     assert_eq!(listed, ["Lumen Player", "beta", "gamma"], "Identity, else the bus name suffix");
@@ -140,14 +144,14 @@ fn an_unknown_length_hides_the_time_row() {
     let t0 = Instant::now();
     for length in [None, Some(0)] {
         let mut players = Players::default();
-        with(&mut players, "radio", 3, props("Playing", "Live Stream", &["Somewhere FM"], length));
+        add_player(&mut players, "radio", 3, player_properties("Playing", "Live Stream", &["Somewhere FM"], length));
         assert_eq!(lines(&players), [Line::Title, Line::Artist, Line::Buttons], "length {length:?}");
         let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
         assert_eq!(b.cells().1, 3);
         assert_eq!(tick_due(true, true, 1.0, 0, length.map(|l| l as u64)), None, "nothing to redraw: no tick");
     }
     let mut players = Players::default();
-    with(&mut players, "radio", 3, props("Playing", "Live Stream", &[], None));
+    add_player(&mut players, "radio", 3, player_properties("Playing", "Live Stream", &[], None));
     assert_eq!(lines(&players), [Line::Title, Line::Buttons], "no artist: no artist row");
 }
 
@@ -155,7 +159,12 @@ fn an_unknown_length_hides_the_time_row() {
 fn an_incapable_button_is_dim_skipped_and_ignored() {
     let t0 = Instant::now();
     let mut players = Players::default();
-    let u = with(&mut players, "lumen", 7, set(props("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)), "CanGoNext", false));
+    let u = add_player(
+        &mut players,
+        "lumen",
+        7,
+        with_ability(player_properties("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)), "CanGoNext", false),
+    );
     players.set_position(&u, PositionSync { at: t0, us: 0 });
     let mut popup = MediaPopup::new(&players);
     let b = rows(&players, &popup, t0, WIDTH);
@@ -167,11 +176,11 @@ fn an_incapable_button_is_dim_skipped_and_ignored() {
     assert_eq!(key(&mut popup, &players, Key::Enter), MediaAction::Control(Control::PlayPause));
     // Nothing capable at all: the button row cannot be selected, and with one player nothing can.
     let mut players = Players::default();
-    let mut p = props("Playing", "Paper Lanterns", &[], Some(LEN));
+    let mut p = player_properties("Playing", "Paper Lanterns", &[], Some(LEN));
     for k in ["CanPlay", "CanPause", "CanGoNext", "CanGoPrevious"] {
-        p = set(p, k, false);
+        p = with_ability(p, k, false);
     }
-    with(&mut players, "lumen", 7, p);
+    add_player(&mut players, "lumen", 7, p);
     let mut popup = MediaPopup::new(&players);
     let b = rows(&players, &popup, t0, WIDTH);
     assert!(!b.rows.iter().any(|g| g.styles().contains('S')), "no selection band anywhere");
@@ -182,12 +191,56 @@ fn an_incapable_button_is_dim_skipped_and_ignored() {
     }
 }
 
+/// A player whose four abilities are `can_play`, `can_pause`, `can_next`, `can_previous`, playing a
+/// 4:05 track.
+fn playing_with_abilities(can_play: bool, can_pause: bool, can_next: bool, can_previous: bool) -> Vec<(String, Value)> {
+    let mut p = player_properties("Playing", "Paper Lanterns", &[], Some(LEN));
+    for (name, can) in [("CanPlay", can_play), ("CanPause", can_pause), ("CanGoNext", can_next), ("CanGoPrevious", can_previous)] {
+        p = with_ability(p, name, can);
+    }
+    p
+}
+
+/// When the button asked for cannot be used, the popup moves to the first one that can: play/pause,
+/// then next, then previous; with none, it stays on play/pause.
+#[test]
+fn the_selected_button_falls_back_in_the_order_play_pause_next_previous() {
+    let button_for = |abilities: Vec<(String, Value)>| {
+        let mut players = Players::default();
+        add_player(&mut players, "lumen", 7, abilities);
+        MediaPopup::new(&players).button
+    };
+    assert_eq!(button_for(playing_with_abilities(true, true, true, true)), 1, "play/pause when it can be used");
+    assert_eq!(button_for(playing_with_abilities(true, false, true, true)), 2, "next before previous");
+    assert_eq!(button_for(playing_with_abilities(true, false, false, true)), 0, "previous last");
+    assert_eq!(button_for(playing_with_abilities(false, false, false, false)), 1, "none can: play/pause");
+}
+
+/// With no button that can be used, the selection starts on the first player, never on the buttons.
+#[test]
+fn with_no_usable_button_the_selection_starts_on_the_first_player() {
+    let mut players = Players::default();
+    add_player(&mut players, "lumen", 7, playing_with_abilities(false, false, false, false));
+    add_player(&mut players, "beta", 8, player_properties("Paused", "Quiet Song", &[], Some(LEN)));
+    let popup = MediaPopup::new(&players);
+    assert_eq!(lines(&players).get(popup.selected), Some(&Line::Player(0)));
+}
+
+/// Until the position has been read, the time row stands at 0:00 with an empty bar.
+#[test]
+fn the_time_row_stands_at_zero_until_the_position_is_read() {
+    let mut players = Players::default();
+    add_player(&mut players, "lumen", 7, player_properties("Playing", "Paper Lanterns", &[], Some(LEN)));
+    let b = rows(&players, &MediaPopup::new(&players), Instant::now(), WIDTH);
+    assert_eq!(row_texts(&b)[1], format!(" 0:00 {} 4:05", "─".repeat(20)));
+}
+
 #[test]
 fn long_and_wide_titles_are_cut_to_the_popup_width() {
     let t0 = Instant::now();
     for title in ["a".repeat(40), "日本語のとても長い曲のタイトルです日本語".to_string()] {
         let mut players = Players::default();
-        with(&mut players, "lumen", 7, props("Playing", &title, &["The Quiet Hours"], Some(LEN)));
+        add_player(&mut players, "lumen", 7, player_properties("Playing", &title, &["The Quiet Hours"], Some(LEN)));
         let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
         assert_eq!(b.rows[0].width(), WIDTH + 2, "{title}");
         let shown = b.rows[0].text();
@@ -201,9 +254,9 @@ fn long_and_wide_titles_are_cut_to_the_popup_width() {
 #[test]
 fn keys_move_between_the_buttons_and_the_players() {
     let t0 = Instant::now();
-    let mut players = one(t0);
-    with(&mut players, "beta", 8, props("Paused", "Quiet Song", &[], Some(LEN)));
-    with(&mut players, "gamma", 9, props("Paused", "Other Song", &[], Some(LEN)));
+    let mut players = one_playing_player(t0);
+    add_player(&mut players, "beta", 8, player_properties("Paused", "Quiet Song", &[], Some(LEN)));
+    add_player(&mut players, "gamma", 9, player_properties("Paused", "Other Song", &[], Some(LEN)));
     let mut p = MediaPopup::new(&players);
     assert_eq!((p.selected, p.button), (3, 1), "the buttons row, play/pause");
     assert_eq!(key(&mut p, &players, Key::Up), MediaAction::Nothing, "nothing selectable above the buttons");
@@ -229,8 +282,8 @@ fn keys_move_between_the_buttons_and_the_players() {
 #[test]
 fn a_press_maps_cells_to_buttons_and_players() {
     let t0 = Instant::now();
-    let mut players = one(t0);
-    with(&mut players, "beta", 8, props("Paused", "Quiet Song", &[], Some(LEN)));
+    let mut players = one_playing_player(t0);
+    add_player(&mut players, "beta", 8, player_properties("Paused", "Quiet Song", &[], Some(LEN)));
     let mut p = MediaPopup::new(&players);
     // Boxed columns: the pad is column 0, so content column c is cell c + 1. Buttons at content
     // 10, 15, 20, each taking the 2 cells either side of it.
@@ -295,10 +348,10 @@ fn the_tick_runs_only_while_open_playing_and_before_the_end() {
 fn a_position_beyond_the_length_is_clamped_and_stops_the_tick() {
     let t0 = Instant::now();
     let mut players = Players::default();
-    let u = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)));
+    let u = add_player(&mut players, "lumen", 7, player_properties("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)));
     players.set_position(&u, PositionSync { at: t0, us: 400_000_000 });
     let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
-    assert_eq!(texts(&b)[2], format!(" 4:05 {} 4:05", "━".repeat(20)), "full, never past the bar");
+    assert_eq!(row_texts(&b)[2], format!(" 4:05 {} 4:05", "━".repeat(20)), "full, never past the bar");
     let p = players.get(&u).unwrap();
     let pos = media::position_now(p, t0).unwrap_or(0);
     assert_eq!(tick_due(true, true, p.rate, pos, p.track.length_us), None, "the end is reached: no tick");
@@ -310,15 +363,15 @@ fn a_position_beyond_the_length_is_clamped_and_stops_the_tick() {
 #[test]
 fn a_track_change_while_open_updates_the_rows_and_the_tick() {
     let t0 = Instant::now();
-    let mut players = one(t0);
+    let mut players = one_playing_player(t0);
     let mut popup = MediaPopup::new(&players);
     let before = rows(&players, &popup, t0, WIDTH);
-    let _ = players.apply(":1.7", &props("Playing", "Second Song", &["Other Band"], Some(200_000_000)), &[]);
+    let _ = players.apply(":1.7", &player_properties("Playing", "Second Song", &["Other Band"], Some(200_000_000)), &[]);
     players.set_position(":1.7", PositionSync { at: t0, us: 0 });
     popup.fit(&players);
     let after = rows(&players, &popup, t0, WIDTH);
     assert_ne!(before, after);
-    let t = texts(&after);
+    let t = row_texts(&after);
     assert_eq!((t[0].as_str(), t[1].as_str()), (" Second Song", " Other Band"));
     assert_eq!(t[2], format!(" 0:00 {} 3:20", "─".repeat(20)));
     let p = players.get(":1.7").unwrap();
@@ -332,7 +385,7 @@ fn a_track_change_while_open_updates_the_rows_and_the_tick() {
 #[test]
 fn a_pause_while_open_stops_the_tick_and_shows_play() {
     let t0 = Instant::now();
-    let mut players = one(t0);
+    let mut players = one_playing_player(t0);
     let _ = players.apply(":1.7", &[("PlaybackStatus".to_string(), Value::Str("Paused".into()))], &[]);
     let p = players.get(":1.7").unwrap();
     assert_eq!(tick_due(true, p.status == Status::Playing, p.rate, 102_000_000, p.track.length_us), None);
@@ -346,7 +399,7 @@ fn a_pause_while_open_stops_the_tick_and_shows_play() {
 fn an_unknown_position_never_ticks() {
     let t0 = Instant::now();
     let mut players = Players::default();
-    let u = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &[], Some(LEN)));
+    let u = add_player(&mut players, "lumen", 7, player_properties("Playing", "Paper Lanterns", &[], Some(LEN)));
     let p = players.get(&u).unwrap();
     assert_eq!(player_tick(true, p, t0), None, "position unknown");
     players.set_position(&u, PositionSync { at: t0, us: 102_250_000 });
@@ -371,11 +424,11 @@ fn a_refresh_keeps_the_armed_tick() {
 #[test]
 fn the_heading_is_the_drawn_title_and_artist() {
     let t0 = Instant::now();
-    let players = one(t0);
+    let players = one_playing_player(t0);
     let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
     assert_eq!(heading(&players, &b), "Paper Lanterns — The Quiet Hours");
     let mut players = Players::default();
-    with(&mut players, "radio", 3, props("Playing", &"a".repeat(40), &[], None));
+    add_player(&mut players, "radio", 3, player_properties("Playing", &"a".repeat(40), &[], None));
     let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
     assert_eq!(heading(&players, &b), format!("{}…", "a".repeat(29)), "no artist row: the title alone, as drawn");
     assert_eq!(heading(&Players::default(), &Boxed::default()), "", "nothing shown");
@@ -386,7 +439,7 @@ fn the_heading_is_the_drawn_title_and_artist() {
 #[test]
 fn two_instants_in_the_same_second_render_the_same_rows() {
     let t0 = Instant::now();
-    let players = one(t0);
+    let players = one_playing_player(t0);
     let popup = MediaPopup::new(&players);
     assert_eq!(rows(&players, &popup, t0, WIDTH), rows(&players, &popup, t0 + Duration::from_millis(400), WIDTH));
     assert_ne!(rows(&players, &popup, t0, WIDTH), rows(&players, &popup, t0 + Duration::from_millis(1_000), WIDTH));

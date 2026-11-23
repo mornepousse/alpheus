@@ -125,7 +125,7 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
     }
 }
 
-/// The box's layout, decided once per open (Mae, 2026-10-05): the preview
+/// The box's layout, decided once per open (2026-10-05): the preview
 /// panel is reserved for the app launcher from the first frame — blank while
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
@@ -278,7 +278,7 @@ pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
 
 /// Which wlr-layer-shell layer a scrim uses: `Layer::Overlay`, the SAME
 /// layer as the box — not `Layer::Top`, which Hyprland draws BENEATH a
-/// fullscreen window (Mae, 2026-10-05: she plays fullscreen games on
+/// fullscreen window (2026-10-05: she plays fullscreen games on
 /// Hyprland). A scrim on Top would then never see a click at all, silently
 /// breaking "click outside" the moment a game is focused.
 /// Pulled out as its own function so the choice is a
@@ -464,11 +464,11 @@ impl App {
                 return;
             }
         };
-        // Scrims created BEFORE the box (Mae, 2026-10-05):
+        // Scrims created BEFORE the box (2026-10-05):
         // both now live on `scrim_layer()`, the SAME
         // layer as the box, instead of the scrims' former `Layer::Top` —
         // Hyprland draws the Top layer BENEATH a fullscreen window, so a
-        // scrim there would never catch a click while Mae is in a
+        // scrim there would never catch a click while the user is in a
         // fullscreen game, and "click outside" would silently stop working.
         // Within one layer, wlr-layer-shell stacks surfaces by creation
         // order: created last, the box ends up on top of its own scrims, so
@@ -580,7 +580,7 @@ impl App {
     }
 
     /// Re-renders after a model change (key, click, catalog, windows). Never
-    /// resizes: the box's size is decided at open (Mae, 2026-10-05 — the
+    /// resizes: the box's size is decided at open (2026-10-05 — the
     /// preview never makes it jump); only `launcher_scale` and an imposed
     /// configure size change it.
     pub fn launcher_redraw(&mut self) {
@@ -690,7 +690,7 @@ impl App {
             Outcome::Nothing => {}
             Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
             // The `/` jump into the Tools mode: the daemon's own states are read now (never at a
-            // plain Mod+Space open), the reader starts the entries' (tools_app.rs).
+            // plain Mod+Space open), the reader starts the entries' (launcher/tools/app.rs).
             Outcome::EnterTools(job) => {
                 self.tools_adopt_builtin_states();
                 if let Some(job) = job {
@@ -981,7 +981,7 @@ mod tests {
         Launcher::for_script(LauncherConfig::default(), None, vec!["a".into(), "b".into()])
     }
 
-    /// Mae, 2026-10-05: the box's width is decided at open and never jumps.
+    /// 2026-10-05: the box's width is decided at open and never jumps.
     /// Nothing is selected yet here (no catalog): the panel is reserved anyway.
     #[test]
     fn the_layout_is_decided_at_open_whatever_the_selection() {
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(pool_size(1024, 0), 2048, "no scrim at all: just the two box buffers");
         assert_eq!(pool_size(1024, 3), 2048 + 192, "one 64-byte share per output's scrim");
         // SlotPool rounds every slot up to 64 bytes: a frame that is not a multiple of 64 must be
-        // counted rounded, or the second buffer does not fit and the pool doubles (final review).
+        // counted rounded, or the second buffer does not fit and the pool doubles.
         assert_eq!(pool_size(1000, 1), 2 * 1024 + 64);
     }
 

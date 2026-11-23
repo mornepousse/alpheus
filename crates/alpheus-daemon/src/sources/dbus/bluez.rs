@@ -10,7 +10,7 @@ pub const DEVICE: &str = "org.bluez.Device1";
 pub const BATTERY: &str = "org.bluez.Battery1";
 
 pub fn read(bus: &mut dyn Bus) -> io::Result<BtState> {
-    // To bluetoothd's unique name: if Mae stopped it meanwhile, the call
+    // To bluetoothd's unique name: if the user stopped it meanwhile, the call
     // fails instead of starting it again.
     let Some(bz) = bus.owner(BLUEZ)? else { return Ok(BtState::Absent) };
     let objects = bus.managed_objects(&bz)?;

@@ -1,3 +1,8 @@
+//! Tests of the quick panel's Bluetooth model (`bt.rs`): the row, the detail's devices, the keys and
+//! clicks, the actions and their deadlines, the pairing codes and the forget question. No clock and
+//! no D-Bus: each test takes one `Instant` as its start, adds the delays it wants and answers the
+//! calls itself.
+
 use super::*;
 use crate::quick::{WIDTH, argv};
 use crate::session::{self, CONFIRM, CONFIRM_AFTER};
@@ -70,7 +75,7 @@ fn key(b: &mut Bt, k: Key) -> QuickAction {
 }
 
 #[test]
-fn row_value_in_every_state() {
+fn the_row_reads_its_value_in_every_state() {
     assert!(!Bt::shows(None), "the bar's state not read yet");
     assert!(!Bt::shows(Some(&BtState::Absent)));
     assert!(Bt::shows(Some(&BtState::Off)));
@@ -94,7 +99,7 @@ fn row_value_in_every_state() {
 }
 
 #[test]
-fn space_powers_or_unblocks() {
+fn space_powers_the_adapter_or_unblocks_a_blocked_radio_first() {
     let mut on = Bt { view: Some(view(true, vec![], vec![])), ..Bt::default() };
     assert_eq!(on.power(&BtState::On { devices: vec![] }), call(ActCall::Powered { adapter: ADAPTER.into(), on: false }));
     let mut b = Bt { view: Some(blocked()), ..Bt::default() };
@@ -116,7 +121,7 @@ fn space_powers_or_unblocks() {
 }
 
 #[test]
-fn detail_order_paired_then_nearby() {
+fn the_detail_lists_the_paired_devices_then_the_nearby_ones() {
     let b = opened();
     assert_eq!(
         b.lines(),
@@ -162,7 +167,7 @@ fn an_empty_or_long_label_fits_its_row() {
 }
 
 #[test]
-fn cap_32_rows() {
+fn the_detail_lists_at_most_32_rows() {
     let many = |n: std::ops::Range<u8>, paired: bool| -> Vec<BtEntry> {
         n.map(|n| entry(n, &format!("Device-{n}"), BtKind::Other, paired, false)).collect()
     };
@@ -180,7 +185,7 @@ fn cap_32_rows() {
 }
 
 #[test]
-fn glyph_per_kind() {
+fn each_kind_of_device_has_its_own_glyph() {
     for (kind, glyph) in [
         (BtKind::Headset, HEADSET),
         (BtKind::Keyboard, KEYBOARD),
@@ -219,7 +224,7 @@ fn discovery_starts_once_per_open_and_stops_on_leave() {
 }
 
 #[test]
-fn selection_kept_by_path_when_a_row_inserts_above() {
+fn the_selection_is_kept_by_path_when_a_row_is_inserted_above() {
     let t = Instant::now();
     let mut b = opened();
     assert_eq!(b.selected, Some(path(1)), "the first device at open");
@@ -262,7 +267,7 @@ fn selection_kept_by_path_when_a_row_inserts_above() {
 }
 
 #[test]
-fn off_reads_bluetooth_is_off() {
+fn an_adapter_that_is_off_shows_the_note_bluetooth_is_off() {
     let mut b = Bt { view: Some(view(false, paired(), vec![])), ..Bt::default() };
     b.open_detail();
     assert_eq!(b.lines(), [Line::BtHeader, Line::Separator, Line::BtNote(OFF_NOTE)]);
@@ -302,7 +307,7 @@ fn step(b: &Bt) -> Option<Step> {
 }
 
 #[test]
-fn enter_builds_the_call_per_device_kind() {
+fn enter_asks_for_the_call_that_fits_the_devices_state() {
     let t = Instant::now();
     for (n, c, s) in [
         (1, ActCall::Disconnect { device: path(1) }, Step::Disconnect),
@@ -320,7 +325,7 @@ fn enter_builds_the_call_per_device_kind() {
 }
 
 #[test]
-fn pair_then_trust_then_connect() {
+fn a_pairing_is_a_pair_then_a_trust_then_a_connect() {
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
     assert_eq!(b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t), (call(ActCall::Trusted { device: path(3) }), None));
@@ -364,7 +369,7 @@ fn a_pin_shown_is_cleaned_like_a_label() {
 }
 
 #[test]
-fn pair_on_le_already_connected_skips_connect() {
+fn a_pairing_that_already_connected_the_device_skips_the_connect() {
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
     b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t);
@@ -377,7 +382,7 @@ fn pair_on_le_already_connected_skips_connect() {
 }
 
 #[test]
-fn already_connected_is_success() {
+fn an_already_connected_answer_to_a_connect_is_a_success() {
     let t = Instant::now();
     let (mut b, _) = acting(2, t);
     assert_eq!(
@@ -388,7 +393,7 @@ fn already_connected_is_success() {
 }
 
 #[test]
-fn one_action_at_a_time() {
+fn only_one_action_runs_at_a_time() {
     let t = Instant::now();
     let (mut b, a) = acting(2, t);
     assert_eq!(a, call(ActCall::Connect { device: path(2) }));
@@ -406,7 +411,7 @@ fn one_action_at_a_time() {
 }
 
 #[test]
-fn failure_shows_failed_4s_and_logs_the_error_name() {
+fn a_failure_shows_failed_for_4_seconds_and_logs_the_error_name() {
     let t = Instant::now();
     let (mut b, _) = acting(2, t);
     assert_eq!(texts(&b, None)[4], format!("   {KEYBOARD} ClavierBT{}…", " ".repeat(18)));
@@ -425,7 +430,7 @@ fn failure_shows_failed_4s_and_logs_the_error_name() {
 }
 
 #[test]
-fn deadline_30s_per_call_and_suspended_while_a_code_shows() {
+fn each_call_has_a_30_second_deadline_suspended_while_a_code_shows() {
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
     assert_eq!(b.deadline(), Some(t + 30 * SEC));
@@ -455,7 +460,7 @@ fn deadline_30s_per_call_and_suspended_while_a_code_shows() {
 }
 
 #[test]
-fn silent_ends() {
+fn a_gone_connection_object_device_or_adapter_ends_the_action_silently() {
     let t = Instant::now();
     for gone in [Err(ActError::Gone), remote("org.freedesktop.DBus.Error.UnknownObject")] {
         let (mut b, _) = acting(2, t);
@@ -525,7 +530,7 @@ fn a_power_toggle_is_an_action_until_its_answer() {
 }
 
 #[test]
-fn forget_timing_and_cancels() {
+fn the_forget_question_waits_expires_and_is_cancelled_by_other_input() {
     let t = Instant::now();
     let mut b = opened();
     let mut confirm = None;
@@ -566,7 +571,7 @@ fn forget_timing_and_cancels() {
 }
 
 #[test]
-fn each_agent_request_state_and_reply() {
+fn each_agent_request_gets_its_state_and_its_reply() {
     use AgentRequest::*;
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
@@ -625,7 +630,7 @@ fn each_agent_request_state_and_reply() {
 
 /// A DisplayPasskey repeats as keys are typed on the keyboard: the same line, updated.
 #[test]
-fn display_passkey_repeats_on_one_line() {
+fn a_repeated_passkey_shows_on_one_line() {
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
     for (i, id) in (1..=3).map(AgentId).enumerate() {
@@ -639,7 +644,7 @@ fn display_passkey_repeats_on_one_line() {
 }
 
 #[test]
-fn another_device_is_rejected() {
+fn an_agent_request_for_another_device_is_rejected() {
     let t = Instant::now();
     let (mut b, _) = acting(3, t);
     let reject = bt(vec![BtOrder::Reply(AgentId(1), AgentReply::Rejected)]);
@@ -683,7 +688,7 @@ fn leaving_rejects_then_cancels_pairing_then_stops_discovery() {
 }
 
 #[test]
-fn no_log_names_a_device() {
+fn no_log_line_names_a_device() {
     let t = Instant::now();
     let d = path(1);
     let calls = [
@@ -739,4 +744,87 @@ fn the_header_draws_no_value_before_a_view() {
     let mut b = Bt::default();
     b.open_detail();
     assert_eq!(texts(&b, None)[0], " ‹ Bluetooth");
+}
+
+/// A forget question the panel's timer has not cleared yet, but whose 3 s are over, no longer
+/// counts: Enter acts on the device as it always does.
+#[test]
+fn an_expired_forget_question_still_held_leaves_enter_to_act_on_the_device() {
+    let t = Instant::now();
+    let mut b = opened();
+    let mut confirm = None;
+    b.selected = Some(path(5));
+    b.key(Key::Delete, &mut confirm, t);
+    assert!(confirm.is_some());
+    assert_eq!(b.key(Key::Enter, &mut confirm, t + CONFIRM + SEC), call(ActCall::Connect { device: path(5) }));
+    assert_eq!(confirm, None);
+}
+
+#[test]
+fn a_forget_question_about_another_device_is_not_confirmed_by_enter() {
+    let t = Instant::now();
+    let mut b = opened();
+    b.selected = Some(path(5));
+    let mut confirm = Some((Question::Forget(path(2)), t + CONFIRM));
+    assert_eq!(b.key(Key::Enter, &mut confirm, t + CONFIRM_AFTER), call(ActCall::Connect { device: path(5) }));
+    assert_eq!(confirm, None);
+}
+
+#[test]
+fn an_answer_to_another_call_leaves_the_running_action_alone() {
+    let t = Instant::now();
+    let (mut b, _) = acting(2, t);
+    let discovery = ActCall::StartDiscovery { adapter: ADAPTER.into() };
+    assert_eq!(
+        b.answered(&discovery, remote("org.bluez.Error.Failed"), t),
+        (QuickAction::Nothing, Some("quick: bluetooth discovery failed (org.bluez.Error.Failed)".into()))
+    );
+    assert_eq!(step(&b), Some(Step::Connect), "the connect is still waiting for its own answer");
+}
+
+#[test]
+fn the_next_deadline_is_the_earliest_of_the_action_and_the_failed_tag() {
+    let t = Instant::now();
+    let (mut b, _) = acting(2, t);
+    b.failed = Some((path(3), t + 4 * SEC));
+    assert_eq!(b.deadline(), Some(t + 4 * SEC), "the failed tag ends first");
+    b.failed = Some((path(3), t + 60 * SEC));
+    assert_eq!(b.deadline(), Some(t + 30 * SEC), "the action's deadline comes first");
+}
+
+#[test]
+fn an_action_on_a_listed_device_ends_silently_when_the_adapter_goes_off() {
+    let t = Instant::now();
+    let (mut b, _) = acting(2, t);
+    assert_eq!(b.set_view(Some(view(false, paired(), vec![])), t), bt(vec![BtOrder::Forget(ActCall::Connect { device: path(2) })]));
+    assert_eq!((b.action.clone(), b.failed.clone()), (None, None));
+}
+
+#[test]
+fn a_view_that_lists_the_pairing_device_only_as_nearby_keeps_the_action() {
+    let t = Instant::now();
+    let (mut b, _) = acting(3, t);
+    assert_eq!(b.set_view(Some(workstation()), t), QuickAction::Redraw);
+    assert_eq!(step(&b), Some(Step::Pair));
+}
+
+#[test]
+fn a_right_press_on_another_device_moves_the_forget_question_to_it() {
+    let t = Instant::now();
+    let mut b = opened();
+    let mut confirm = None;
+    b.selected = Some(path(2));
+    b.key(Key::Delete, &mut confirm, t);
+    assert_eq!(b.press(Line::BtDevice(1), Button::Right, &mut confirm, t), QuickAction::Redraw);
+    assert_eq!(confirm, Some((Question::Forget(path(5)), t + CONFIRM)), "asked about the device pressed, not the first one");
+    assert_eq!(b.selected, Some(path(5)));
+}
+
+#[test]
+fn arming_leaves_the_deadline_off_while_a_pairing_code_shows() {
+    let t = Instant::now();
+    let (mut b, _) = acting(3, t);
+    b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(3), passkey: 482_913 }, t);
+    b.arm(t + SEC);
+    assert_eq!(b.deadline(), None);
 }

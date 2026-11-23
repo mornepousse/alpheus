@@ -1,9 +1,14 @@
+//! Tests of the hooks' wiring (`app.rs`): how a hook is started (in a scope, detached, bare), what
+//! the start-up lines say, how a `$PATH` is split. They use `FakeExecutor`, never a real program.
+
 use super::*;
 use crate::launcher::testing::TempDir;
 use alpheus_common::exec::fake::FakeExecutor;
 
+/// The command line `systemd-run` is given before the hook's own, as the fake executor sees it.
 const SCOPE: &str = "systemd-run --user --scope --quiet --collect --";
 
+/// A temporary directory with one executable program, `hook-x`.
 fn bin(name: &str) -> TempDir {
     use std::os::unix::fs::PermissionsExt;
     let d = TempDir::new(&format!("hooks-{name}"));
@@ -12,6 +17,7 @@ fn bin(name: &str) -> TempDir {
     d
 }
 
+/// A hook that fires: `hook-x --flag` for a do-not-disturb change.
 fn fire() -> Fire {
     Fire {
         id: HookId::Dnd,
@@ -21,16 +27,18 @@ fn fire() -> Fire {
     }
 }
 
+/// The directories to look the program up in: just `d`.
 fn dirs(d: &TempDir) -> Vec<PathBuf> {
     vec![d.to_path_buf()]
 }
 
+/// The variables `fire()` gives, as the fake executor records them.
 fn vars() -> Vec<(String, String)> {
     vec![("ALPHEUS_EVENT".into(), "dnd".into()), ("ALPHEUS_DND".into(), "on".into())]
 }
 
 #[test]
-fn hook_spawn_in_a_scope() {
+fn a_hook_runs_in_a_systemd_scope() {
     let d = bin("scope");
     let f = FakeExecutor::new();
     f.ok(&format!("{SCOPE} hook-x --flag"), "");
@@ -40,7 +48,7 @@ fn hook_spawn_in_a_scope() {
 }
 
 #[test]
-fn hook_spawn_detached() {
+fn a_hook_runs_detached_when_asked_to() {
     let d = bin("detached");
     let f = FakeExecutor::new();
     f.ok("hook-x --flag", "");
@@ -50,7 +58,7 @@ fn hook_spawn_detached() {
 }
 
 #[test]
-fn hook_spawn_falls_back_without_systemd_run() {
+fn a_hook_runs_detached_when_systemd_run_is_missing() {
     let d = bin("fallback");
     let f = FakeExecutor::new();
     f.ok("hook-x --flag", "");
@@ -59,7 +67,7 @@ fn hook_spawn_falls_back_without_systemd_run() {
 }
 
 #[test]
-fn hook_spawn_names_a_systemd_run_failure() {
+fn a_systemd_run_failure_is_named_and_the_hook_is_not_run_bare() {
     let d = bin("sdfail");
     let f = FakeExecutor::new();
     f.respond(&format!("{SCOPE} hook-x --flag"), Err(ExecError::Io("boom".into())));
@@ -69,7 +77,7 @@ fn hook_spawn_names_a_systemd_run_failure() {
 }
 
 #[test]
-fn hook_spawn_never_starts_a_missing_program() {
+fn a_missing_program_is_never_started() {
     let d = bin("missing");
     let f = FakeExecutor::new();
     let absent = Fire { argv: vec!["hook-absent".into()], ..fire() };
@@ -85,7 +93,7 @@ fn hook_spawn_never_starts_a_missing_program() {
 }
 
 #[test]
-fn the_argv_is_the_configured_one() {
+fn the_argv_never_holds_event_data() {
     let d = bin("argv");
     let f = FakeExecutor::new();
     f.ok(&format!("{SCOPE} hook-x --flag"), "");
@@ -96,7 +104,7 @@ fn the_argv_is_the_configured_one() {
 }
 
 #[test]
-fn start_lines_name_what_never_fires() {
+fn the_start_lines_name_each_hook_that_never_fires() {
     let cfg = crate::config::BarConfig::from_text("[hooks]\npower_profile = [\"a\"]\ndnd = [\"b\"]\n").unwrap();
     let model = Hooks::new(&cfg.hooks, Instant::now()).unwrap();
     assert_eq!(
@@ -107,7 +115,7 @@ fn start_lines_name_what_never_fires() {
 }
 
 #[test]
-fn start_lines_name_the_shield_hook_without_a_shield() {
+fn the_start_lines_name_the_shield_hook_when_no_shield_is_configured() {
     let cfg = crate::config::BarConfig::from_text("[hooks]\nshield = [\"a\"]\n").unwrap();
     let model = Hooks::new(&cfg.hooks, Instant::now()).unwrap();
     let modules = crate::config::BarConfig::default().modules;
@@ -116,7 +124,7 @@ fn start_lines_name_the_shield_hook_without_a_shield() {
 }
 
 #[test]
-fn path_dirs_split_path() {
+fn path_dirs_split_a_path_and_drop_empty_entries() {
     assert_eq!(path_dirs(Some(OsStr::new("/a::/b"))), [PathBuf::from("/a"), PathBuf::from("/b")]);
     assert!(path_dirs(None).is_empty());
 }

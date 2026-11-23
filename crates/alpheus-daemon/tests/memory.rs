@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DELAY: Duration = Duration::from_secs(10);
-/// Startup PSS budget: firm (Mae, 2026-10-04, Q13). Never raised: a figure
+/// Startup PSS budget: firm (2026-10-04, Q13). Never raised: a figure
 /// above it is reported to her with `startup_pss_per_source`'s breakdown.
 const STARTUP_MAX_KB: u64 = 15 * 1024;
 
@@ -165,7 +165,7 @@ fn populate(d: &Daemon, session: &PrivateBus) -> Vec<FakeItem> {
 const TRAY_SETTLE: Duration = Duration::from_secs(3);
 
 /// ≈ 300 synthetic applications, each with an action: the size of a real
-/// desktop's catalog (Mae's has about that many). Synthetic only (no capture).
+/// desktop's catalog (a large desktop has about that many). Synthetic only (no capture).
 fn many_apps() -> Vec<(String, String)> {
     (0..300)
         .map(|i| {
@@ -243,7 +243,7 @@ fn launcher_open_latency_under_20ms() {
     us.sort_unstable();
     let (median, max) = (us[us.len() / 2], us[us.len() - 1]);
     eprintln!("launcher open latency, 20 opens (request accepted → first frame committed): median {median} µs, max {max} µs; {us:?}");
-    assert!(median < 20_000, "median {median} µs >= 20 ms: report to Mae with these figures");
+    assert!(median < 20_000, "median {median} µs >= 20 ms: report it with these figures");
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn launcher_open_close_cycles_no_growth() {
         "launcher PSS: closed {closed} KB, open {open} KB (+{} KB), after one cycle {baseline} KB, after 50 more {end} KB",
         open.saturating_sub(closed)
     );
-    assert!(open <= closed + 6 * 1024, "open costs {} KB > 6 MB: report to Mae, never absorb", open - closed);
+    assert!(open <= closed + 6 * 1024, "open costs {} KB > 6 MB: report it, never absorb", open - closed);
     assert!(end <= baseline + 1024, "50 open/close cycles grew PSS: {baseline} -> {end} KB");
 }
 
@@ -363,7 +363,7 @@ fn launcher_sources_pss_latency_and_rest() {
             ms.get(ms.len() / 2),
             ms.last()
         );
-        assert!(us[us.len() / 2] < 20_000, "median open latency {} us >= 20 ms: report to Mae", us[us.len() / 2]);
+        assert!(us[us.len() / 2] < 20_000, "median open latency {} us >= 20 ms: report it", us[us.len() / 2]);
         assert!(wakeups <= 4, "{wakeups} wake-ups in 5 s at rest after source runs");
     }
 }
@@ -464,7 +464,7 @@ fn pss_under_30mb_and_stable() {
     // Fonts: regular + bold ≈ 2 MB (the whole font database: ≈ 47 MB);
     // the first three modules measured ≈ 12 MB here; the D-Bus source and the sound source
     // must fit in what is left.
-    assert!(initial < STARTUP_MAX_KB, "startup: PSS {initial} KB >= 15 MB: run startup_pss_per_source and report to Mae, never raise");
+    assert!(initial < STARTUP_MAX_KB, "startup: PSS {initial} KB >= 15 MB: run startup_pss_per_source and report it, never raise");
     let mut n = 0;
     pump(&hypr, Duration::from_secs(10), &mut n); // warm-up
     // A first unplug/replug cycle before `baseline` (the first three modules):
@@ -540,7 +540,7 @@ fn startup_pss_per_source() {
     }
     eprintln!("startup PSS per source (KB): {report:?}");
     for (what, kb) in &report {
-        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
+        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report it with these figures, never raise: {report:?}");
     }
     // Privacy spec § 8: with nothing captured, the module keeps a small graph and draws nothing.
     let kb = |w: &str| report.iter().find(|(what, _)| *what == w).map(|(_, kb)| *kb).unwrap();
@@ -934,7 +934,7 @@ fn startup_pss_with_the_tray_under_15_mb() {
     std::thread::sleep(TRAY_SETTLE);
     let kb = d.pss_kb();
     eprintln!("startup PSS, every module, 10 tray items, 3 outputs: {kb} KB");
-    assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report to Mae, never raise: {kb}");
+    assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report it, never raise: {kb}");
 }
 
 /// The inotify watch adds nothing at rest, even right after a reload. Read in the
@@ -1065,7 +1065,7 @@ fn startup_pss_per_style() {
     eprintln!("startup PSS per style (KB, all modules, 3 outputs): {report:?}");
     let flat = report[0].1;
     for (style, kb) in &report {
-        assert!(*kb < STARTUP_MAX_KB, "{style}: {kb} KB >= 15 MB — report to Mae, never raise: {report:?}");
+        assert!(*kb < STARTUP_MAX_KB, "{style}: {kb} KB >= 15 MB — report it, never raise: {report:?}");
         assert!(*kb <= flat + 512, "{style}: {kb} KB vs flat {flat} KB: {report:?}");
     }
 }
@@ -1164,7 +1164,7 @@ fn media_module_pss_without_and_with_players() {
          (module cost {module_cost}), {three} with 3 fake players (players cost {players_cost}); mode dark (no link otherwise): \
          {dark_base} without, {dark_empty} with it and no player (module and its own connection {own_link})"
     );
-    assert!(three < STARTUP_MAX_KB, "{three} KB >= 15 MB — report to Mae, never raise");
+    assert!(three < STARTUP_MAX_KB, "{three} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 1024, "the module on the portal's connection costs {module_cost} KB (its rules and Mpris: ≤ 1 MB)");
     assert!(own_link <= 1024, "the module with its own connection costs {own_link} KB (≤ 1 MB)");
     assert!(players_cost <= 512, "3 players cost {players_cost} KB (bounded strings: ≤ 512 KB)");
@@ -1333,7 +1333,7 @@ fn notifications_pss_idle_history_and_bubbles() {
         "notifications PSS (KB): {base} without the module, {idle} serving with nothing (module cost {module_cost}), \
          {history} with 50 entries (history cost {history_cost}), {shown} with 4 bubbles (bubbles cost {bubbles_cost}), {closed} once closed"
     );
-    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 1024, "the server and the bell cost {module_cost} KB (≤ 1 MB)");
     assert!(history_cost <= 512, "50 entries cost {history_cost} KB (capped strings: ≤ 512 KB; spec § 7 computes ≈ 125 KB at worst)");
     assert!(bubbles_cost <= 2048, "4 bubbles cost {bubbles_cost} KB (their own pool, two buffers: ≤ 2 MB)");
@@ -1406,7 +1406,7 @@ fn osd_pss_idle_shown_and_gone() {
         "osd PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
          {shown} with the pill shown (pill cost {pill_cost}), {gone} once gone"
     );
-    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 256, "the OSD at rest costs {module_cost} KB (a sound state and three instants: ≤ 256 KB)");
     assert!(pill_cost <= 1024, "one pill costs {pill_cost} KB (its own pool, two buffers of one row: ≤ 1 MB)");
     assert!(gone <= idle + 256, "gone: {gone} KB vs {idle} KB before it — the surface and its pool must go");
@@ -1503,7 +1503,7 @@ fn quick_pss_idle_open_and_closed() {
         "quick PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
          {open} open (panel cost {panel_cost}), {closed} closed, {cycled} after 20 more cycles"
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 256, "the module at rest costs {module_cost} KB (a profile state and a tap: ≤ 256 KB)");
     assert!(
         panel_cost <= 1024,
@@ -1575,7 +1575,7 @@ fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
 }
 
 /// The leak bounds of the Wi-Fi and VPN details on anonymous memory, in KB (`anon_kb`). Three
-/// release runs (2026-11-15, the final fix wave): closed over rest, Wi-Fi +84…+100 and VPN
+/// release runs (2026-11-15): closed over rest, Wi-Fi +84…+100 and VPN
 /// +60…+68 (the main heap: most likely the painter's glyph caches, bounded by MAX_CACHE); 10
 /// more cycles over closed, Wi-Fi +0…+40 and VPN +4…+72. A leak of 300 KB per open fails both
 /// tests at the close, one of 30 KB per open fails the cycles.
@@ -1636,7 +1636,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
         closed_own.saturating_sub(closed_anon),
         cycled_own.saturating_sub(cycled_anon)
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     assert!(
         detail_cost <= 1536,
         "the detail open costs {detail_cost} KB (the panel ≤ 1 MB, 40 access points read on the D-Bus thread, 32 rows): report, never raise"
@@ -1784,7 +1784,7 @@ fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
         closed_own.saturating_sub(closed_anon),
         cycled_own.saturating_sub(cycled_anon)
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     // The leak bounds are on anonymous memory only (`anon_kb`: heap, thread arenas, stacks, the
     // binary's written data; the shm pools apart): the first open also brings in the binary's code
     // pages and the font file's (file-backed, clean, one-time), and how many depends on page-cache
@@ -1939,7 +1939,7 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
          anonymous: {idle_anon} at rest, {open_anon} open, {closed_anon} closed, {cycled_anon} cycled",
         open - open_shm
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     // Open, the cost splits in two (release, 2026-10-23, 8 runs: +1078…+1788 KB in all). The daemon's
     // own memory +436…+540 KB (4 runs): the D-Bus thread's 20 devices, the panel's model and the first
     // open's code, font and glyph-cache pages (most of which stay, below). The shm pools +774…+1240 KB
@@ -2063,7 +2063,7 @@ fn bluetooth_headset_row_cost() {
     eprintln!(
         "quick Bluetooth headset row (KB): {wired} rows on a wired sink, {headset} with the headset row ({delta:+}); {wired_closed} closed on the headset"
     );
-    assert!(headset < STARTUP_MAX_KB, "{headset} KB >= 15 MB — report to Mae, never raise");
+    assert!(headset < STARTUP_MAX_KB, "{headset} KB >= 15 MB — report it, never raise");
     // Measured +12…+20 KB (release, 5 runs): the bluez5 device and its profiles (a few hundred
     // bytes), one row more in the panel's buffers. Report, never raise.
     assert!(delta <= 128, "the headset row costs {delta} KB: report, never raise");
@@ -2175,7 +2175,7 @@ fn startup_pss_per_backend() {
     eprintln!("startup PSS (KB) and threads per backend: {report:?}");
     let (_, hyprland_kb, hyprland_threads) = report[0];
     for (what, kb, threads) in &report {
-        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
+        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report it with these figures, never raise: {report:?}");
         // Measured back to back: a backend costs at most 512 KB over the fake Hyprland's source.
         assert!(*kb <= hyprland_kb + 512, "{what}: {kb} KB > {hyprland_kb} + 512 KB (the fake Hyprland): {report:?}");
         // No new thread: the backend runs on the existing `compositor` thread.
@@ -2378,7 +2378,7 @@ fn power_menu_pss_idle_open_and_closed() {
         "power PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
          {open} open (menu cost {menu_cost}), {closed} closed, {cycled} after 20 more cycles"
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 384, "the button at rest costs {module_cost} KB: a one-cell segment, nothing resident (192–196 KB measured)");
     assert!(menu_cost <= 1024, "the open menu costs {menu_cost} KB (its pool, two buffers, the first open's warm-up: ≤ 1 MB)");
     assert!(closed <= idle + 512, "closed {closed} KB vs {idle} KB: more than the first open's code and font pages");
@@ -2474,7 +2474,7 @@ fn resources_popup_pss_idle_open_and_closed() {
          own memory {idle_own} at rest, {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, \
          {closed_shm} closed, {cycled_shm} cycled; Pss_Anon {idle_anon} at rest, {closed_anon} closed, {cycled_anon} cycled"
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB: report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB: report it, never raise");
     assert!(open_cost <= 1024, "the open popup costs {open_cost} KB (its pool, two buffers, the first open's warm-up: <= 1 MB)");
     assert!(closed_anon <= idle_anon + 256, "closed {closed_anon} KB vs {idle_anon} KB at rest (Pss_Anon): the open popup kept memory");
     assert!(cycled_anon <= closed_anon + 128, "cycled {cycled_anon} KB vs {closed_anon} KB closed (Pss_Anon): 20 cycles must keep nothing");
@@ -2601,7 +2601,7 @@ fn privacy_pss_with_a_capture_and_after() {
     let cycled = d.pss_kb();
     eprintln!("privacy PSS (KB): {idle} idle, {shown} with a capture shown, {ended} once ended, {cycled} after 20 more cycles");
     eprintln!("privacy smaps after the cycles (KB): {}", smaps_breakdown(&d));
-    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     assert!(shown <= idle + 512, "shown {shown} KB vs idle {idle} KB: one glyph, a node and a link");
     assert!(ended <= shown + 64, "ended {ended} KB vs shown {shown} KB: the capture must leave nothing");
     assert!(cycled <= ended + 128, "cycled {cycled} KB vs ended {ended} KB: 20 captures must keep nothing");
@@ -2704,7 +2704,7 @@ fn privacy_camera_pss_and_rest() {
     std::thread::sleep(TRAY_SETTLE);
     let cycled = d.pss_kb();
     eprintln!("camera PSS (KB): {idle} idle, {shown} with a holder shown, {ended} once gone, {cycled} after 20 more cycles");
-    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     assert!(shown <= idle + 512, "shown {shown} KB vs idle {idle} KB: one glyph and a scan");
     assert!(ended <= shown + 64, "ended {ended} KB vs shown {shown} KB: the holder must leave nothing");
     assert!(cycled <= ended + 128, "cycled {cycled} KB vs ended {ended} KB: 20 holders must keep nothing");
@@ -2828,7 +2828,7 @@ fn displays_pss_at_start() {
     }
     eprintln!("displays PSS at start (outputs, off KB, on KB): {report:?}");
     for (outputs, off, on) in report {
-        assert!(on < STARTUP_MAX_KB, "{on} KB >= 15 MB — report to Mae, never raise");
+        assert!(on < STARTUP_MAX_KB, "{on} KB >= 15 MB — report it, never raise");
         assert!(on <= off + 512, "{outputs} output(s): on {on} KB vs off {off} KB: more than 512 KB — report, never raise");
     }
 }
@@ -2902,7 +2902,7 @@ fn displays_pss_after_trials() {
          without the shm pools: {first_own} once kept, {cycled_own} cycled; the pools: {first_shm} once kept, {cycled_shm} cycled"
     );
     eprintln!("displays smaps once kept (KB): {first_smaps}; after the trials: {}", smaps_breakdown(&d));
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     assert!(first <= idle + 512, "kept {first} KB vs idle {idle} KB: more than 512 KB — report, never raise");
     // The shm pools are printed only (`displays_pss_after_hotplug_cycles` says why): a moved screen
     // has its bar drawn again, its pool holding one buffer or two (110 or 220 KB) as it happens.
@@ -3254,7 +3254,7 @@ fn notes_pss_open_and_closed() {
 /// (SCTK's key-repeat timer fires once about 0.6 s after a key press, so each rest window starts
 /// past it; the first still opens within 1.3 s of the close, so a stray save timer always shows).
 /// The open window is closed by the verb after it, never by a key: a typed Escape scheduled ahead
-/// landed inside the window whenever the minute check slept (final review), and the wtype process
+/// landed inside the window whenever the minute check slept, and the wtype process
 /// stays alive through it (its keyboard leaving would close the pad as `focus lost`).
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -3344,7 +3344,7 @@ fn launcher_prefixes_pss_open_and_closed() {
 
 /// Launcher 2: the window switcher with three windows, opened by `--windows` and stepped (a
 /// repeated `--windows` while it is open), then closed by a typed Escape: nothing kept, and the
-/// loop sleeps after. Final review: each step draws at once, and with both buffers still held by
+/// loop sleeps after. Each step draws at once, and with both buffers still held by
 /// the compositor the launcher used to allocate a third and the box's SlotPool doubled (20
 /// unpaced steps: pools' PSS 56 → 2,654 KB). Now a draw with no free buffer waits for a release:
 /// the pools stay at the box's two frames (`pool_size`, from the box's size in the "launcher
@@ -3636,7 +3636,7 @@ fn timer_pss_idle_running_and_popup() {
          anonymous: {idle_anon} idle, {running_anon} running, {closed_anon} closed, {cycled_anon} cycled",
         idle.saturating_sub(without)
     );
-    assert!(cycled < STARTUP_MAX_KB, "{cycled} KB >= 15 MB — report to Mae, never raise");
+    assert!(cycled < STARTUP_MAX_KB, "{cycled} KB >= 15 MB — report it, never raise");
     assert!(idle <= without + 256, "the idle chip costs {} KB: a glyph and a cell, nothing resident", idle.saturating_sub(without));
     // Anonymous memory only: the heap and stacks the daemon keeps. PSS also counts file pages (the
     // first open's code and font warm-up) and the shm pools, which move with the compositor.
@@ -3857,7 +3857,7 @@ fn default_bar_at_start() {
     let r = failed_rig("default-start", "", 0, 0, true, false);
     let (pss, anon, threads, sockets) = start_figures(&r);
     eprintln!("the default bar at start: PSS {pss} KB, Pss_Anon {anon} KB, {threads} threads, {sockets} sockets");
-    assert!(pss < STARTUP_MAX_KB, "the default bar: {pss} KB >= 15 MB — report to Mae, never raise");
+    assert!(pss < STARTUP_MAX_KB, "the default bar: {pss} KB >= 15 MB — report it, never raise");
     drop(r);
     // The same with no session bus at all: which links are the session bus's.
     let r = failed_rig("default-start-nosession", "", 0, 0, false, false);
@@ -4355,7 +4355,7 @@ fn tools_choices_2000_lines() {
     // The plan's bound was 256 KB; a read of 2,000 capped lines leaves the allocator's high-water
     // behind once (measured +152…+272 KB over 3 runs, flat after), so the bounds are 384 KB for the
     // first close and 128 KB over five more cycles (a leak per open grows with them). The
-    // controller accepted the 384 KB (final fix wave): the first read grows the heap to hold the
+    // 384 KB is accepted: the first read grows the heap to hold the
     // lines (+1.9–2.0 MB anonymous open, freed at close). Most likely (attributed by elimination, not
     // by smaps): glibc cannot return the heap's top, pinned by chunks that outlive the read, and
     // keeps the rest on its free lists, so the first close sits above the pre-open heap; a second
@@ -4437,7 +4437,7 @@ fn at_rest_no_wakeups_after_tools() {
 }
 
 /// Mod+Space's open latency with a `process:` keep-awake configured: a plain open reads no state
-/// (review fix I1), and the catalog it builds costs next to nothing. The same body runs on the
+///, and the catalog it builds costs next to nothing. The same body runs on the
 /// base commit (no Tools menu there), so the figures compare.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -4456,7 +4456,7 @@ fn launcher_open_latency_with_a_process_state_toggle() {
     us.sort_unstable();
     let (median, max) = (us[us.len() / 2], us[us.len() - 1]);
     eprintln!("launcher open latency with a process: keep-awake, 20 opens: median {median} µs, max {max} µs; {us:?}");
-    assert!(median < 20_000, "median {median} µs >= 20 ms: report to Mae with these figures");
+    assert!(median < 20_000, "median {median} µs >= 20 ms: report it with these figures");
 }
 
 // ---- Shield mode (shield spec § 12): the module, the row, the blocked-USB detail ----
@@ -4602,7 +4602,7 @@ fn shield_pss_detail_open_and_closed() {
          anonymous: {idle_anon} at rest, {open_anon} open, {closed_anon} closed, {cycled_anon} cycled",
         open.saturating_sub(idle)
     );
-    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
     assert!(
         closed_anon <= idle_anon + ANON_CLOSED,
         "closed {closed_anon} KB anonymous vs {idle_anon} KB at rest: more than the first open's heap (glyph caches)"

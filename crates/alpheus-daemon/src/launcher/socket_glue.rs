@@ -195,12 +195,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 // The ⏻ menu's verb: answered here (it closes an open launcher itself, guarded).
                 Route::Power => reply_guarded(conn, &state.power_verb(&q, &request)),
                 // The displays verbs: answered from the output controller, a try once the
-                // compositor answered (its connection kept until then, `outputs_app.rs`).
+                // compositor answered (its connection kept until then, `outputs/app.rs`).
                 // The clipboard history's clear: answered here, never the launcher's.
                 Route::Clipboard => reply_guarded(conn, &state.clipboard_verb(&request)),
                 Route::Displays => state.displays_verb(&request, conn),
                 // Shield mode's verbs: answered here; `status` and `allow` keep the connection while
-                // the blocked devices are read (`shield_app.rs`).
+                // the blocked devices are read (`shield/app.rs`).
                 Route::Shield => state.shield_verb(&request, conn),
                 // The failed-units count's verb: answered here, nothing of the launcher's.
                 Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),

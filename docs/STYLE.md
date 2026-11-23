@@ -52,12 +52,12 @@ After:
 Every fact of the old header is still there; the new one adds what an unfamiliar word means
 (`Unix milliseconds`) and which file does the rest.
 
-A word of warning: some guardrail tests read a file's text, comments included, for forbidden
+A word of warning: most guardrail tests read a file's text, comments included, for forbidden
 words (`thread::`, `spawn(`, `.unwrap()`). Do not write those exact strings in a comment of a file
-they cover; say it in words ("starts a thread"). Another one reads comments too:
-`the_timer_is_wired_through_one_path` finds the function that owns a line by looking for `fn ` in
-the text, comments included, so a comment containing `fn ` inside `timer_do` would make it name
-the wrong owner.
+they cover; say it in words ("starts a thread"). The ones that read code to find what calls what
+or which function owns a line (`the_timer_is_wired_through_one_path`,
+`the_timer_popup_closing_drops_its_tick_and_sees_the_end`, `every_dnd_change_goes_through_dnd_apply`)
+strip comments first (`without_comments` in `tests/guardrails.rs`), so a comment there is harmless.
 
 ## 2. Every non-obvious line says why, in a full sentence
 

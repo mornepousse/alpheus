@@ -200,14 +200,29 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
+/// The media model parses what a player publishes over D-Bus (titles, positions, lengths): no
+/// path in `media/mod.rs`, `media/popup.rs` or `media/app.rs` may panic. Production code only.
+#[test]
+fn the_media_files_have_no_panicking_path() {
+    for file in ["media/mod.rs", "media/popup.rs", "media/app.rs"] {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file)).unwrap();
+        let prod = production_code(&text);
+        for never in [".unwrap()", ".expect(", "panic!(", "unreachable!(", "[0]", "[1]", "[..n]"] {
+            assert!(!prod.contains(never), "{never} in {file}");
+        }
+        // `[i]` indexes unless it is `vec![i]`, the one-element vector popup.rs builds.
+        assert!(!prod.replace("vec![i]", "").contains("[i]"), "[i] in {file}");
+    }
+}
+
 /// Small features 1, notification rules: the rules never name an app or a text in a log, and
-/// notify.rs, the pure model, logs nothing.
+/// notify/mod.rs, the pure model, logs nothing.
 #[test]
 fn the_notification_rules_log_nothing() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/mod.rs")).unwrap();
     let prod = production_code(&text);
     for log in ["log(", "log::write", "crate::log"] {
-        assert!(!prod.contains(log), "notify.rs logs nothing ({log})");
+        assert!(!prod.contains(log), "notify/mod.rs logs nothing ({log})");
     }
 }
 
@@ -341,7 +356,7 @@ fn the_displays_timer_is_synced_once_the_loop_exists() {
     assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
 }
 
-/// Final review A-I2: the daemon stopping sends a trial's state from before while the app (its
+/// The daemon stopping sends a trial's state from before while the app (its
 /// output manager) still exists, before the connection's last flush carries it.
 #[test]
 fn the_displays_are_restored_before_the_app_is_dropped() {
@@ -482,7 +497,7 @@ fn compositor_sockets_opened_only_in_sources() {
     }
 }
 
-/// Mae, 2026-10-05: the launcher's click-outside scrims must keep working
+/// 2026-10-05: the launcher's click-outside scrims must keep working
 /// even over a fullscreen game (Hyprland draws its Top layer BENEATH a
 /// fullscreen window — a scrim there would never see the click). Both the
 /// scrims and the box now share the Overlay layer (`surface::scrim_layer`);
@@ -614,7 +629,7 @@ fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
 /// `popup_close`/`popup_output_gone` (popup.rs) must reset their
 /// parent bar's `Exclusive` keyboard interactivity by its stored SURFACE IDENTITY (`OpenPopup`'s
 /// own `parent` field), never by a bar's `name` — changed after the fact by `update_output`, or
-/// briefly shared by two bars — or the wrong bar (or none) gets reset, left stuck holding Mae's
+/// briefly shared by two bars — or the wrong bar (or none) gets reset, left stuck holding the user's
 /// keyboard. No fake Wayland surface exists to build two same-named bars in a unit test (the
 /// identity-vs-name LOGIC itself is unit-tested generically, `position_by_goes_by_the_projected_
 /// identity_never_a_shared_name` in `wayland.rs`), so this checks the one thing that would
@@ -677,7 +692,7 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
     assert_eq!(body.matches("self.keyboard_release()").count(), 1, "one release, on both paths: {body}");
 }
 
-/// Mae's crash (2026-10-06, 2026-10-09): a released `wl_keyboard`'s last reference, dropped inside
+/// The crash of 2026-10-06 and 2026-10-09: a released `wl_keyboard`'s last reference, dropped inside
 /// calloop's dispatch, made SCTK's repeat data re-enter the loop. Every release goes through
 /// `keyboard_retire`, which holds the keyboard in `keyboard.retired`, and the loop drains that
 /// list right after each `dispatch` returns. The ordering needs a compositor's `delete_id`, so the
@@ -1007,6 +1022,88 @@ fn production_code(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// `text` without its comments (`//`, `///`, `//!` to the end of the line, and `/* … */` blocks),
+/// for the guardrails that read code: a comment naming a call must not satisfy them, nor a
+/// comment holding `fn ` or a brace move the function a line belongs to. Newlines stay, so line
+/// numbers keep their meaning. String and char literals are skipped over, so a `//` inside a URL
+/// string is not a comment; raw strings are not recognised (none in the files read this way).
+fn without_comments(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (c, next) {
+            ('/', Some('/')) => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match (chars[i], chars.get(i + 1).copied()) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        (n, _) => {
+                            if n == '\n' {
+                                out.push('\n');
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            ('"', _) => {
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    out.push(chars[i]);
+                    i += 1;
+                    if chars[i - 1] == '\\' && i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    } else if chars[i - 1] == '"' {
+                        break;
+                    }
+                }
+            }
+            // A char literal (`'"'`, `'\\n'`, `'x'`) is copied whole; a lifetime has no closing quote.
+            ('\'', _) => {
+                let len = match (next, chars.get(i + 2).copied()) {
+                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some(_), Some('\'')) => Some(3),
+                    _ => None,
+                };
+                let len = len.unwrap_or(1);
+                out.extend(&chars[i..i + len]);
+                i += len;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn without_comments_drops_comments_and_keeps_code_and_lines() {
+    let text = "a(); // self.x(\n/// fn doc(\nb(\"//not\"); /* c { */ d('\"'); e('\\'');\n/* one\ntwo */f<'a>();\n";
+    assert_eq!(without_comments(text), "a(); \n\nb(\"//not\");  d('\"'); e('\\'');\n\nf<'a>();\n");
 }
 
 /// The brace-matched body of the first function in `text` whose signature
@@ -1572,6 +1669,7 @@ fn the_user_manager_is_asked_for_one_property_and_subscribed_to() {
 /// entry would otherwise skip its file without a word (`unmatched_entries`).
 const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "session_bus/",
+    "tray/",
     "media/mod.rs",
     "notify/mod.rs",
     "osd/mod.rs",
@@ -1597,6 +1695,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "placement.rs",
     "text.rs",
     "quick/mod.rs",
+    "quick/draw.rs",
     "quick/state.rs",
     "quick/wifi.rs",
     "quick/secret.rs",
@@ -1853,10 +1952,10 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     }
     let path_dirs = [bin.clone()];
     let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window"];
-    // Ctrl+Enter on a command: detached, bare — never through `sh`, and (Mae, 2026-10-05) never
+    // Ctrl+Enter on a command: detached, bare — never through `sh`, and (2026-10-05) never
     // reachable outside the Commands mode, since a command is only ever a result there.
     let detached_commands = ["htop", "nvim"];
-    // Enter on a command: held open in the terminal (`terminal_hold`, Mae 2026-10-05).
+    // Enter on a command: held open in the terminal (`terminal_hold`, 2026-10-05).
     let terminal_hold_commands = ["foot --hold -e htop", "foot --hold -e nvim"];
     let focus = ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"];
     let scope = format!("{} ", SYSTEMD_RUN.join(" "));
@@ -2268,16 +2367,16 @@ fn the_clock_rechecks_a_timed_dnd() {
 fn every_dnd_change_goes_through_dnd_apply() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        let prod = production_code(&t);
+        let prod = without_comments(&production_code(&t));
         assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
-        // notify.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
+        // notify/mod.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
         if name == "notify/app.rs" || name == "notify/mod.rs" {
             continue;
         }
         assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
     }
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap();
-    let prod = production_code(&text);
+    let prod = without_comments(&production_code(&text));
     let mut owner = String::new();
     let mut allowed = true;
     for line in prod.lines() {
@@ -2289,12 +2388,13 @@ fn every_dnd_change_goes_through_dnd_apply() {
         }
     }
     assert!(prod.contains("self.dnd ="), "dnd_apply sets it");
-    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify_app.rs");
+    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify/app.rs");
 }
 
 /// No panic in the notification server's production code: its model,
-/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
-/// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
+/// consumer, bubbles, panel (and its wiring) and state files, and the signal builders in bus.rs, hold no `.expect(`,
+/// `.unwrap()` nor `panic!(` in their production code (`production_code`: everything but the items
+/// that follow `#[cfg(test)]`).
 #[test]
 fn the_notification_server_has_no_panicking_path() {
     let panics = |text: &str| [".expect(", ".unwrap()", "panic!("].iter().any(|p| text.contains(p));
@@ -2309,12 +2409,12 @@ fn the_notification_server_has_no_panicking_path() {
         "notify/bubbles.rs",
         "notify/bubbles_surface.rs",
         "notify/panel.rs",
+        "notify/panel_app.rs",
         "state_file.rs",
         "session_bus/codec.rs",
     ] {
         let t = text(name);
-        let production = t.split("#[cfg(").next().unwrap_or_default();
-        assert!(!panics(production), "a panicking call in {name}'s production code");
+        assert!(!panics(&production_code(&t)), "a panicking call in {name}'s production code");
     }
     let bus = text("session_bus/bus.rs");
     let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
@@ -2378,14 +2478,17 @@ fn the_osd_has_no_panicking_path() {
     }
 }
 
-/// Resources popup: no panic in the model's production code.
+/// Resources popup: no panic in the model's production code, nor in the wiring's (it runs on every
+/// resources tick while the popup is open).
 #[test]
 fn the_resources_popup_has_no_panicking_path() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources/mod.rs").expect("resources/mod.rs").1;
-    let production = production_code(t);
-    for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in resources/mod.rs's production code");
+    for name in ["resources/mod.rs", "resources/app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
     }
 }
 
@@ -2394,8 +2497,16 @@ fn the_resources_popup_has_no_panicking_path() {
 /// command run. Production code only.
 #[test]
 fn the_quick_model_and_its_state_reader_only_read() {
-    const QUICK_MODEL_FILES: &[&str] =
-        &["quick/mod.rs", "quick/state.rs", "quick/wifi.rs", "quick/bt.rs", "quick/vpn.rs", "quick/dnd.rs", "quick/shield.rs"];
+    const QUICK_MODEL_FILES: &[&str] = &[
+        "quick/mod.rs",
+        "quick/draw.rs",
+        "quick/state.rs",
+        "quick/wifi.rs",
+        "quick/bt.rs",
+        "quick/vpn.rs",
+        "quick/dnd.rs",
+        "quick/shield.rs",
+    ];
     let names: Vec<String> = source_files().iter().map(|(p, _)| relative_path(p)).collect();
     let unmatched = unmatched_entries(QUICK_MODEL_FILES, &names);
     assert!(unmatched.is_empty(), "QUICK_MODEL_FILES names no existing file: {unmatched:?}");
@@ -2461,7 +2572,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         q
     };
     let t = Instant::now();
-    // Mae: a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
+    // A second activation counts only from CONFIRM_AFTER on; past COALESCE too.
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
     let mut calls: Vec<String> = Vec::new();
     let mut record = |a: QuickAction| {
@@ -2627,7 +2738,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         Some(BtView { adapter: Some(BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }), ..BtView::default() });
     q.selected = quick::Row::Bluetooth;
     record(q.key(&bt_off, Key::Char(' '), false, t));
-    // Fix S1's paced paths: a second slider key inside the window waits; the
+    // The paced paths: a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
     let line = |a: &QuickAction| match a {
         QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } => Some(argv.join(" ")),
@@ -2657,7 +2768,7 @@ fn every_quick_command_stays_on_the_allowlist() {
     }
     calls.extend(by_due);
     calls.extend(by_flush);
-    // Fix S1: absolute levels only, 0 to 100 (`min` up); never a relative step.
+    // Absolute levels only, 0 to 100 (`min` up); never a relative step.
     let percent = |n: &str, min: u8| {
         n.strip_suffix('%')
             .filter(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit()))
@@ -2681,7 +2792,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
             ["wpctl", "set-profile", id, idx] => *id == "61" && ["1", "3"].contains(idx),
-            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae: never below 1 %
+            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // never below 1 % (docs/decisions.md)
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
             ["nmcli", "device", "wifi", "rescan"] => true,
@@ -2740,6 +2851,7 @@ fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
     for name in [
         "quick/mod.rs",
+        "quick/draw.rs",
         "quick/state.rs",
         "quick/app.rs",
         "quick/wifi.rs",
@@ -2870,7 +2982,7 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
     assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
     assert!(!body.contains(".spawn("), "never an argument: {body}");
-    for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "popup.rs"] {
+    for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "quick/draw.rs", "popup.rs"] {
         let prod = src(name);
         for leak in
             ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
@@ -2918,7 +3030,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick/app.rs"), src("notify/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
-    // Fix S1: a slider level still waiting for its window is sent before the panel's body goes:
+    // A slider level still waiting for its window is sent before the panel's body goes:
     // the row's `flush` runs before the take, its `closed` once the body is dropped.
     let (flush, take) = (close.find("(p.ops().flush)(self)"), close.find("self.popup.take()"));
     assert!(matches!((flush, take), (Some(f), Some(t)) if f < t), "popup_close flushes the sliders first: {close}");
@@ -2937,7 +3049,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
-    // Mae's ruling P1: the timer goes with the panel, unless an attempt on a new network is still
+    // Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the timer goes with the panel, unless an attempt on a new network is still
     // followed (then it stays on that attempt's deadline only).
     assert!(
         closed.contains(".close()")
@@ -2945,7 +3057,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
             && closed.contains("self.quick.wifi_follow.as_ref().map(WifiFollow::deadline)"),
         "{closed}"
     );
-    // Quick Wi-Fi spec § 5 and Mae's ruling P1: the D-Bus thread stops reading the Wi-Fi, unless an
+    // Quick Wi-Fi spec § 5 and the decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the D-Bus thread stops reading the Wi-Fi, unless an
     // attempt on a new network is still followed.
     assert!(closed.contains("wifi_closed(") && closed.contains("self.quick.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
     let wifi_closed = function_body(&quick_app, "pub(crate) fn wifi_closed(");
@@ -2961,7 +3073,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let panel = function_body(&quick_app, "pub(crate) fn panel_wifi(");
     assert!(panel.contains("open_current(") && panel.contains("follow_wifi("), "{panel}");
     assert!(take.contains("open_current(") && take.contains("snapshot()"), "{take}");
-    // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
+    // Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): with no panel, the state and the clock go to the follower, which ends with
     // its attempt (the tap and the timer let go then).
     assert!(take.contains("quick.wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
     assert!(tick.contains("self.quick.wifi_follow") || tick.contains("app.quick.wifi_follow"), "the follower's timeout: {tick}");
@@ -3066,7 +3178,7 @@ fn the_power_menu_has_no_panicking_path() {
 /// `timer_do`, `timer_check_clock` and `timer_load` only.
 #[test]
 fn the_timer_is_wired_through_one_path() {
-    let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap();
+    let src = |f: &str| without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap());
     let app = src("timer/app.rs");
     let tick = function_body(&app, "fn timer_tick(");
     let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
@@ -3083,7 +3195,7 @@ fn the_timer_is_wired_through_one_path() {
     // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
     for (path, text) in source_files() {
         let name = relative_path(&path);
-        let prod = production_code(&text);
+        let prod = without_comments(&production_code(&text));
         let mut owner = String::new();
         for line in prod.lines() {
             if let Some(i) = line.find("fn ") {
@@ -3226,7 +3338,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 
 /// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
-/// range. Production code only; Task 3 appends `nav.rs`.
+/// range. Production code only.
 const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs"];
 
 #[test]
@@ -3248,7 +3360,7 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
 }
 
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
-/// `tools_join.rs` alone (tools spec § 8): no other production file of the menu names their items.
+/// `launcher/tools/join.rs` alone (tools spec § 8): no other production file of the menu names their items.
 /// A plain word search for the shield would hit the emoji table and the VPN model, so the
 /// searched words are the hook points' own names; `"diagnostics"` quoted is the tab's slug (the
 /// table's `tab.diagnostics` id is another literal).
@@ -3529,7 +3641,9 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 #[test]
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        without_comments(&production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1))
+    };
     let app = src("timer/app.rs");
     let row = popup_ops_row(&app);
     assert!(row.contains("closed: App::timer_closed,"), "popup_close must run the timer's closed hook: {row}");
@@ -3722,9 +3836,9 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
     let files = source_files();
     let quick_bt = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt.rs").expect("quick/bt.rs").1);
     for copy in ["\\u{f00af}", "\\u{f00b1}", "\u{f00af}", "\u{f00b1}"] {
-        assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
+        assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick/bt.rs: {copy}");
     }
-    assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick_bt.rs takes the module's glyphs");
+    assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick/bt.rs takes the module's glyphs");
 }
 
 /// Small features 1, task 9: the alerts' production code cannot panic, and `on_bar_message` feeds
@@ -3773,7 +3887,7 @@ fn spawn_with_env_only_runs_hooks() {
     assert_eq!(seen[0].1, 1, "hooks/app.rs starts a hook in one place");
 }
 
-/// Hooks final review I1: the hooks see a sound or compositor message before the privacy indicators
+/// The hooks see a sound or compositor message before the privacy indicators
 /// it clears reach `hooks_capture`, so a source going down fires nothing.
 #[test]
 fn hooks_read_a_message_before_the_privacy_feed() {
@@ -4001,7 +4115,7 @@ fn the_notes_glue_has_no_panicking_path() {
     }
 }
 
-/// Quick notes (controller's ruling, fix round 1): a press on the bar while the pad is open closes
+/// Quick notes: a press on the bar while the pad is open closes
 /// it, and the launcher button then opens the launcher — opening one closes the other. Only the
 /// launcher's own close swallows its button (`click`'s `launcher_was_open`).
 #[test]
@@ -4081,7 +4195,7 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
 }
 
 /// An offer taken in `clipboard_selection_inner` sits in a `DestroyOnDrop` before anything can
-/// panic: a panic between taking it and reading it still destroys it (Task 3 review).
+/// panic: a panic between taking it and reading it still destroys it.
 #[test]
 fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
     let files = source_files();
@@ -4422,7 +4536,7 @@ fn the_clipboard_shutdown_wipes_pins_too() {
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }
 
-/// Tools spec § 9, plan Task 4: every command a Tools row starts is one the user configured
+/// Tools spec § 9: every command a Tools row starts is one the user configured
 /// (`[[tools.entry]]`: its `run`, `terminal` or `terminal_hold` in front), the chosen line one
 /// whole element — from the Tools box and from Mod+Space's search alike, in a scope or detached —
 /// never through a shell alpheus builds; and each shape is reached.
@@ -4542,7 +4656,7 @@ builtins = false
     }
 }
 
-// ---- The Tools menu's glue (tools plan, Task 7). ----
+// ---- The Tools menu's glue. ----
 
 /// The placeholders a Tools log line may interpolate: positions, counts, a built-in's static id and
 /// a `Why`'s fixed words. Never a name, a command, a choice, a line or the query.
@@ -4856,7 +4970,7 @@ fn the_shield_files_have_no_panicking_path() {
     }
 }
 
-/// Shield spec § 7 (final fix wave I1): an action (on, off, allow) never goes through a pipe it could
+/// Shield spec § 7: an action (on, off, allow) never goes through a pipe it could
 /// be cut by (`capture` drops its read end at a deadline: a privileged helper we cannot kill would die
 /// of SIGPIPE half way through its work); only the listing does. And the daemon's shutdown stops what
 /// it can still reach.
@@ -4869,7 +4983,7 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
     assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
     assert_eq!(body.matches("exec.capture(").count(), 1);
-    // Final fix wave M1: a failed switch and a deadline are judged after one look at the flag.
+    // A failed switch and a deadline are judged after one look at the flag.
     let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
     let mail = function_body(&app, "fn shield_mail(");
     assert!(
@@ -4886,7 +5000,7 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     assert!(function_body(startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
 }
 
-/// Shield spec § 5 (I1 of the Task 4-5 review): the panel's timer follows its view from the open, so a
+/// Shield spec § 5: the panel's timer follows its view from the open, so a
 /// `failed` shown at open (a switch that failed a moment before the panel was reopened) clears at its
 /// 4 s: `quick_toggle` syncs it itself, whatever refresh happens to follow.
 #[test]

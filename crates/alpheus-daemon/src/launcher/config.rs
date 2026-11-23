@@ -381,7 +381,7 @@ mod tests {
     use crate::launcher::testing::TempDir;
 
     /// The README's `launcher.toml` block (the one holding the Tools menu's keys) is valid as
-    /// written: the test reads the README itself, so the example cannot drift (plan Task 10).
+    /// written: the test reads the README itself, so the example cannot drift.
     #[test]
     fn the_readmes_tools_example_parses() {
         let readme = include_str!("../../../../README.md");

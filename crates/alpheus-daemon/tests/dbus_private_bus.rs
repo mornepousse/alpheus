@@ -204,7 +204,7 @@ fn a_call_to_the_bar_is_refused_never_queued() {
     assert_eq!(e.name(), Some("org.freedesktop.DBus.Error.UnknownMethod"), "{e:?}");
 }
 
-/// Mae's ruling, 2026-11-21: the start call is well-formed on the wire (the daemon answers
+/// "UPower is the one service the daemon may start" (docs/decisions.md): the start call is well-formed on the wire (the daemon answers
 /// ServiceUnknown, not InvalidArgs: nothing is activatable on this bus), and UPower appearing
 /// afterwards brings the battery in through NameOwnerChanged.
 #[test]

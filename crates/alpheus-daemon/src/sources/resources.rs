@@ -51,7 +51,7 @@ pub fn cpu_percent(a: CpuTimes, b: CpuTimes) -> Option<u8> {
 const GIB_KB: u64 = 1024 * 1024;
 
 /// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like htop
-/// (Mae, 2026-10-06: RAM only, caches left out): MemTotal − MemFree −
+/// (2026-10-06: RAM only, caches left out): MemTotal − MemFree −
 /// Buffers − (Cached + SReclaimable − Shmem). Shmem (tmpfs, shared buffers)
 /// sits inside Cached but cannot be reclaimed, so it stays counted as used;
 /// SReclaimable or Shmem absent (old kernels) count as 0. Without Buffers or
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn memory_in_use_like_htop_without_cache() {
-        // Mae (2026-10-06): RAM only, like htop: MemTotal − MemFree − Buffers
+        // 2026-10-06: RAM only, like htop: MemTotal − MemFree − Buffers
         // − (Cached + SReclaimable − Shmem) = 10574668 kB on the workstation
         // fixture, 10.1 GiB (MemTotal − MemAvailable would say 10.5).
         assert_eq!(parse_meminfo(MEMINFO), Some(101), "10.1 GiB in use, caches left out, shared memory kept");

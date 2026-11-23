@@ -1,8 +1,8 @@
 //! A tray item's menu as the bar draws it (spec § 1 Menus, § 2): rows of
 //! cells inside a pixel frame (the painter's), the launcher's list rendering and keys
 //! (`crate::list`, `crate::keys`), one level at a time — a submenu replaces
-//! the list in the same popup, its first row `◂ <parent>` (drill-down, Mae
-//! 2026-10-05). Pure: it reads the session's `Layout` and answers with a
+//! the list in the same popup, its first row `◂ <parent>` (drill-down; see
+//! docs/decisions.md, "A submenu opens in the same popup"). Pure: it reads the session's `Layout` and answers with a
 //! `MenuAction`; the D-Bus calls and the popup are the wiring's.
 //! Never selects a separator, a disabled or a hidden entry.
 
@@ -189,8 +189,8 @@ impl Menu {
         }
     }
 
-    /// Goes back one level, like `←` (Mae, 2026-10-06: also what a press on the `◂ parent` header
-    /// row does). `Nothing` at the root: there is no level left to pop.
+    /// Goes back one level, like `←`; a press on the `◂ parent` header row does the same
+    /// (reason not recorded). `Nothing` at the root: there is no level left to pop.
     fn back(&mut self) -> MenuAction {
         if self.levels.len() > 1 {
             self.levels.pop();
@@ -223,8 +223,7 @@ impl Menu {
         }
     }
 
-    /// Left press on content row `row`: Click, Submenu, back a level (the header row, Mae
-    /// 2026-10-06 — there is none at the root, so row 0 there is the first entry), or Nothing
+    /// Left press on content row `row`: Click, Submenu, back a level (the header row; there is none at the root, so row 0 there is the first entry), or Nothing
     /// (separator, disabled).
     pub fn press(&mut self, row: u16, layout: &Layout) -> MenuAction {
         if row == 0 && self.header() == 1 {

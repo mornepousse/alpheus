@@ -1,6 +1,19 @@
 //! Low-battery alerts: the laptop's percentage against `[battery] warn`, one notification per
-//! threshold crossed while discharging, re-armed by any charge. Pure: `battery_feed`
-//! (notify_app.rs) hands the result to the notification server.
+//! threshold crossed while discharging, re-armed by any charge.
+//!
+//! This is the pure half of the alerts. `BatteryAlerts` is fed each reading of the laptop's battery
+//! and answers with the alert to give, if any; `incoming` turns an alert into the notification the
+//! server takes in. The other half, `app.rs` (`battery_feed` and `battery_deliver`), gives the
+//! readings and hands the notification to the notification server.
+//!
+//! Never:
+//! - read a clock or a setting, or start anything: the readings and the thresholds are passed in;
+//! - count an alert as given while nobody can show it: `feed` takes `serving`, and an alert held
+//!   back stays armed;
+//! - panic (a guardrail, `on_bar_message_feeds_the_battery_alerts`, covers this file and `battery_feed`).
+//!
+//! See: docs/specs/2026-11-15-alpheus-small-features-design.md, docs/features/notifications.md, and
+//! docs/decisions.md ("A battery alert is given only while the server serves").
 
 use crate::config::ModuleId;
 use crate::notify::{Incoming, Urgency};
@@ -14,8 +27,9 @@ pub struct Alert {
     pub critical: bool,
 }
 
+/// The thresholds and what has been alerted since the last charge.
 pub struct BatteryAlerts {
-    /// Descending.
+    /// Descending, so the last one is the lowest.
     thresholds: Vec<u8>,
     /// The lowest threshold alerted since the last charge.
     fired: Option<u8>,
@@ -25,6 +39,7 @@ pub struct BatteryAlerts {
 }
 
 impl BatteryAlerts {
+    /// `warn` is `[battery] warn`, in any order and with repeats.
     pub fn new(warn: &[u8]) -> BatteryAlerts {
         let mut thresholds = warn.to_vec();
         thresholds.sort_unstable_by(|a, b| b.cmp(a));
@@ -52,7 +67,10 @@ impl BatteryAlerts {
             }
             Charge::Unknown => None,
             Charge::Discharging => {
+                // Only a threshold below the last one alerted can alert: a reading that wobbles
+                // around one never repeats it.
                 let below = self.fired.unwrap_or(u8::MAX);
+                // `?` ends the function with None when no threshold is crossed.
                 let t = self.thresholds.iter().copied().filter(|&t| b.percent <= t && t < below).min()?;
                 if !serving {
                     return None;
@@ -64,7 +82,8 @@ impl BatteryAlerts {
     }
 }
 
-/// The notification an alert becomes: `device.warning`; only the critical alert is sticky (no expiry), the others take the server's default timeout.
+/// The notification an alert becomes: category `device.warning`; only the critical alert is
+/// sticky (urgency critical, so no expiry), the others take the server's default timeout.
 pub fn incoming(a: Alert) -> Incoming {
     Incoming {
         app_name: "alpheus".into(),
@@ -89,6 +108,8 @@ pub fn alerts_wanted(modules: &[ModuleId], warn: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    //! Tests of the battery alerts: each threshold once, the re-arming, the held-back alert and the
+    //! notification's texts. No clock and no server: each test feeds the readings it wants.
     use super::*;
 
     fn at(p: u8, charge: Charge) -> Option<Battery> {
@@ -175,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn the_alert_texts() {
+    fn an_alert_becomes_a_device_warning_notification_with_its_texts() {
         let n = incoming(Alert { threshold: 20, percent: 19, critical: false });
         assert_eq!(
             (n.app_name.as_str(), n.summary.as_str(), n.body.as_str(), n.urgency),

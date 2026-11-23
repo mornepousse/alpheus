@@ -14,7 +14,7 @@ fn workstation_network() -> NetState {
 
 fn workstation_battery() -> PowerState {
     // The recorded mouse is the real G602 case: BatteryLevel 8 (Full),
-    // its Percentage not trusted — hidden (Mae, 2026-10-05).
+    // its Percentage not trusted — hidden (2026-10-05).
     PowerState {
         laptop: Some(Battery { percent: 92, charge: Charge::Charging }),
         peripherals: vec![Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low: false }],
@@ -289,7 +289,7 @@ fn poke_the_units(b: &mut FakeBus) {
     b.units_tap.poke();
 }
 
-/// Final review: a poke is each tap's own word. The failed-units count asked for again reads the
+/// A poke is each tap's own word. The failed-units count asked for again reads the
 /// count, and nothing of the open Wi-Fi row.
 #[test]
 fn a_units_poke_rereads_no_panel() {
@@ -399,7 +399,7 @@ fn a_close_and_reopen_read_as_one_poke_is_a_new_open() {
     assert_eq!(bus.rules.len(), dbusrs_bus::WIFI_RULES.len(), "the rules removed then added again, never doubled");
 }
 
-/// Mae's ruling P1: a follower keeps the tap at Detail through the panel's close and reopen, so
+/// Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): a follower keeps the tap at Detail through the panel's close and reopen, so
 /// the open never changes and the reader keeps its lists (a reset would read a profile skipped
 /// before as new).
 #[test]
@@ -792,7 +792,7 @@ fn noise_and_unread_interfaces_point_nowhere() {
         "a device seen by a scan, not connected"
     );
     assert_eq!(objects("InterfacesAdded", &["org.bluez.Battery1"]), Some(Domain::Bluetooth), "a connected device's battery");
-    // Symmetric with InterfacesAdded (I1): a connected device
+    // Symmetric with InterfacesAdded: a connected device
     // always sends Connected=false before being removed, so Device1's
     // own removal re-reads nothing — only Adapter1 or Battery1 does.
     assert_eq!(
@@ -808,7 +808,7 @@ fn noise_and_unread_interfaces_point_nowhere() {
 fn a_scan_storm_of_unconnected_devices_causes_zero_re_reads() {
     // A scan sees a device, then loses it again: Name, RSSI, UUIDs,
     // then InterfacesRemoved — none of it connects anything, none of it
-    // is relevant (I1).
+    // is relevant.
     const SCANNED: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_99";
     let changed = |names: &[&str]| with_names(signal(SCANNED, PROPERTIES, "PropertiesChanged", Some("org.bluez.Device1")), names).domain();
     assert_eq!(changed(&["Name"]), None);
@@ -1435,7 +1435,7 @@ fn starts(bus: &FakeBus) -> Vec<&String> {
     bus.calls.iter().filter(|c| c.starts_with("StartServiceByName")).collect()
 }
 
-/// Mae's ruling, 2026-11-21: UPower absent and the battery wanted, one activation of UPower and
+/// "UPower is the one service the daemon may start" (docs/decisions.md): UPower absent and the battery wanted, one activation of UPower and
 /// nothing else, then the owner appearing brings the battery in.
 #[test]
 fn upower_absent_and_the_battery_wanted_is_asked_for_once_and_its_appearance_is_followed() {
@@ -1683,7 +1683,7 @@ fn another_domains_signal_piggybacks_once_per_interval() {
     assert_eq!(bus.units_gets(), 3, "at start, past 10 s, past 10 s again: {:?}", bus.calls);
 }
 
-/// Final review: a subscribed count is pushed by systemd, so another domain's wake-up never
+/// A subscribed count is pushed by systemd, so another domain's wake-up never
 /// reads it (the piggyback is the unsubscribed way).
 #[test]
 fn a_subscribed_count_is_not_piggybacked() {

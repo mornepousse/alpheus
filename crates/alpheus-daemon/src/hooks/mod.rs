@@ -1,7 +1,25 @@
-//! The event hooks' pure core (hooks spec §§ 2 and 4): which events exist, the edges worked out from
-//! what the sources already publish (the first value of each is a seed, never an edge), the quiet
-//! window after start and the per-event token bucket. Nothing here reads a file, starts a thread or
-//! runs a command: `hooks_app` hands a `Fire` to the spawner.
+//! The event hooks' pure half: which events exist, when each one fires, and what it hands to the hook.
+//!
+//! A hook is a command the user wrote in `[hooks]`, run when something happens in the shell. This
+//! file works out the events from what the sources already publish: `Hooks::on_msg` and its
+//! siblings turn a message into edges (the changes), where each event's first value is a seed and
+//! never an edge; `Hooks::fire` says whether an event runs now, after the quiet window that follows
+//! the start and through the event's token bucket; `Event::env` gives the variables the hook is
+//! handed. The other half, `app.rs`, feeds this file and starts the command: it reads the clock,
+//! the `$PATH`, and finds out whether a systemd user manager runs, and hands this file every instant
+//! it needs.
+//!
+//! Never:
+//! - read a clock: the caller passes `now`, so a test can pick any instant;
+//! - read a file, or start anything (a thread, a process, a timer);
+//! - hand a hook anything but the variables of `Event::env`: event data is never an argument, and
+//!   a device or profile name is cleaned and cut first (`clean_value`);
+//! - panic: no unwrap, expect or panic macro in its production code (a guardrail checks).
+//!
+//! See: docs/specs/2026-11-15-alpheus-hooks-design.md (§§ 2, 4, 5), docs/features/hooks.md, and
+//! docs/decisions.md ("A hook fires on a change, never for the state at start", "A hook's data
+//! reaches it through the environment, never the arguments", "Each hook has a token bucket",
+//! "A source that is down is not a state").
 
 use crate::config::{HooksConfig, ModuleId};
 use crate::modules::Needs;
@@ -12,16 +30,21 @@ use crate::text;
 use alpheus_common::theme::Mode;
 use std::time::{Duration, Instant};
 
+/// How many events there are: the length of `HookId::ALL`.
 pub const COUNT: usize = 13;
-/// After start, an edge only moves its seed: the portal's first answer, the first graph, a profile
-/// applied at start. `Started` alone ignores it.
+/// After start, a change only moves its seed, so that the state at start never fires a hook: the
+/// portal's first answer, the first graph, a profile applied at start. `HookId::Started` alone
+/// ignores it. See docs/decisions.md, "A hook fires on a change, never for the state at start".
 pub const QUIET: Duration = Duration::from_secs(3);
-/// A hook may run this many times in a burst, then once per `REFILL`.
+/// A hook may run this many times in a burst, then once per `REFILL`. See docs/decisions.md, "Each
+/// hook has a token bucket".
 pub const BURST: u32 = 5;
+/// The time it takes the bucket of one event to give back one run.
 pub const REFILL: Duration = Duration::from_secs(3);
 /// The most bytes of a value handed to a hook (a device or profile name).
 pub const VALUE_MAX: usize = 255;
 
+/// The events a hook can be set on. Each one is a key of `[hooks]` (`HookId::key`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookId {
     Started,
@@ -40,6 +63,7 @@ pub enum HookId {
 }
 
 impl HookId {
+    /// Every event, in the order of `HooksConfig::commands` (a test checks it).
     pub const ALL: [HookId; COUNT] = [
         HookId::Started,
         HookId::ThemeMode,
@@ -75,8 +99,11 @@ impl HookId {
         }
     }
 
-    /// Whether the configured `modules` (or `[shield]`) read what this event comes from.
+    /// Whether the configured `modules` (or `[shield]`) read what this event comes from. A hook
+    /// never adds a source: an event nothing reads never fires. See docs/decisions.md, "A hook
+    /// never adds a source".
     pub fn reads(self, modules: &[ModuleId], shield_configured: bool) -> bool {
+        // A closure that captures `modules`: `Needs::of` works out what the modules read.
         let needs = || Needs::of(modules);
         match self {
             HookId::Started | HookId::ThemeMode => true,
@@ -111,11 +138,13 @@ impl HookId {
         }
     }
 
+    /// The event's place in `ALL`, which is also its place in the arrays of `Hooks`.
     fn index(self) -> usize {
         self as usize
     }
 }
 
+/// The three things the privacy indicators watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureKind {
     Microphone,
@@ -123,14 +152,18 @@ pub enum CaptureKind {
     Screen,
 }
 
+/// What changed about Bluetooth: the adapter, or one device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BtChange {
     On,
     Off,
+    /// A device connected: its name.
     Connected(String),
+    /// A device disconnected: its name.
     Disconnected(String),
 }
 
+/// One change that may fire a hook, with the data its variables are made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Started,
@@ -181,38 +214,56 @@ pub const VARS: [&str; 18] = [
 
 /// The names of `VARS` that `env` does not set.
 pub fn unset_for(env: &[(&'static str, String)]) -> Vec<&'static str> {
-    VARS.into_iter().filter(|v| env.iter().all(|(k, _)| k != v)).collect()
+    let mut unset = Vec::new();
+    for var in VARS {
+        let is_set = env.iter().any(|(name, _)| *name == var);
+        if !is_set {
+            unset.push(var);
+        }
+    }
+    unset
 }
 
-/// Six hex pairs joined by `:` or by `-`: a Bluetooth address, which is never handed to a hook
-/// (spec § 5: a device with no name of its own is shown by its address).
+/// Whether `s` is six hex pairs joined by `sep`.
+fn six_hex_pairs(s: &str, sep: char) -> bool {
+    let mut pairs = 0;
+    for part in s.split(sep) {
+        pairs += 1;
+        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+    pairs == 6
+}
+
+/// Whether `s` is a Bluetooth address (six hex pairs joined by `:` or by `-`). An address is never
+/// handed to a hook: the spec's list of what a hook gets (§ 5) holds no address, and a device with
+/// no name of its own is shown by its address.
 fn address_like(s: &str) -> bool {
-    [':', '-'].into_iter().any(|sep| {
-        let mut n = 0;
-        s.split(sep).all(|p| {
-            n += 1;
-            p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit())
-        }) && n == 6
-    })
+    six_hex_pairs(s, ':') || six_hex_pairs(s, '-')
 }
 
 /// `text::clean`, then at most `VALUE_MAX` bytes cut on a character boundary.
 pub fn clean_value(s: &str) -> String {
-    let mut v = text::clean(s);
-    if v.len() > VALUE_MAX {
+    let mut value = text::clean(s);
+    if value.len() > VALUE_MAX {
+        // A cut in the middle of a character would not be valid text: step back to the start of
+        // that character. Index 0 is always a boundary, so this ends.
         let mut end = VALUE_MAX;
-        while !v.is_char_boundary(end) {
+        while !value.is_char_boundary(end) {
             end -= 1;
         }
-        v.truncate(end);
+        value.truncate(end);
     }
-    v
+    value
 }
 
-fn on_off(b: bool) -> String {
-    if b { "on" } else { "off" }.to_string()
+/// The word a hook reads for a switch.
+fn on_off(on: bool) -> String {
+    if on { "on".to_string() } else { "off".to_string() }
 }
 
+/// The word a hook reads for a charge state.
 fn charge_word(c: Charge) -> &'static str {
     match c {
         Charge::Charging => "charging",
@@ -223,7 +274,22 @@ fn charge_word(c: Charge) -> &'static str {
     }
 }
 
+/// Keeps `new` as the event's seed, and says whether it is a change: true only when a seed was
+/// already there and differs from `new`. The first value (no seed yet) is never a change.
+///
+/// It stores the seed whatever it answers, so callers put it last in an `&&`: the seed then moves
+/// only when the checks before it pass.
+///
+/// (The `<T: Copy + PartialEq>` after the name says: any type that can be copied and compared.)
+fn changed<T: Copy + PartialEq>(seed: &mut Option<T>, new: T) -> bool {
+    match seed.replace(new) {
+        Some(old) => old != new,
+        None => false,
+    }
+}
+
 impl Event {
+    /// Which hook this event runs.
     pub fn id(&self) -> HookId {
         match self {
             Event::Started => HookId::Started,
@@ -242,12 +308,16 @@ impl Event {
         }
     }
 
-    /// `ALPHEUS_EVENT` first, then the event's variables (spec § 2's order).
+    /// The variables the hook is given: `ALPHEUS_EVENT` first, then the event's own (the order of
+    /// the spec's § 2 table).
     pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![("ALPHEUS_EVENT", self.id().key().to_string())];
         match self {
             Event::Started => {}
-            Event::ThemeMode(m) => env.push(("ALPHEUS_MODE", if *m == Mode::Dark { "dark" } else { "light" }.into())),
+            Event::ThemeMode(m) => {
+                let word = if *m == Mode::Dark { "dark" } else { "light" };
+                env.push(("ALPHEUS_MODE", word.into()));
+            }
             Event::Dnd(b) => env.push(("ALPHEUS_DND", on_off(*b))),
             Event::BatteryCharge(b) | Event::BatteryLevel(b) => {
                 env.push(("ALPHEUS_CHARGE", charge_word(b.charge).into()));
@@ -255,7 +325,8 @@ impl Event {
             }
             Event::PowerProfile(p) => env.push(("ALPHEUS_POWER_PROFILE", p.name().into())),
             Event::Network(link) => {
-                env.push(("ALPHEUS_NETWORK", if link.is_some() { "online" } else { "offline" }.into()));
+                let online = if link.is_some() { "online" } else { "offline" };
+                env.push(("ALPHEUS_NETWORK", online.into()));
                 let word = match link {
                     Some(Link::Wifi) => "wifi",
                     Some(Link::Ethernet) => "ethernet",
@@ -267,6 +338,7 @@ impl Event {
             }
             Event::Vpn(b) => env.push(("ALPHEUS_VPN", on_off(*b))),
             Event::Bluetooth(change) => {
+                // The device's name goes with a connection or a disconnection only.
                 let (word, device) = match change {
                     BtChange::On => ("on", None),
                     BtChange::Off => ("off", None),
@@ -274,8 +346,10 @@ impl Event {
                     BtChange::Disconnected(n) => ("disconnected", Some(n)),
                 };
                 env.push(("ALPHEUS_BLUETOOTH", word.into()));
-                if let Some(n) = device.filter(|n| !address_like(n)) {
-                    env.push(("ALPHEUS_DEVICE", clean_value(n)));
+                if let Some(name) = device {
+                    if !address_like(name) {
+                        env.push(("ALPHEUS_DEVICE", clean_value(name)));
+                    }
                 }
             }
             Event::Privacy(kind, b) => {
@@ -291,8 +365,13 @@ impl Event {
             Event::Shield(b) => env.push(("ALPHEUS_SHIELD", on_off(*b))),
             Event::FailedUnits { total, system, user } => {
                 env.push(("ALPHEUS_FAILED", total.to_string()));
-                env.extend(system.map(|n| ("ALPHEUS_FAILED_SYSTEM", n.to_string())));
-                env.extend(user.map(|n| ("ALPHEUS_FAILED_USER", n.to_string())));
+                // A manager's count is given only once that manager has answered.
+                if let Some(n) = system {
+                    env.push(("ALPHEUS_FAILED_SYSTEM", n.to_string()));
+                }
+                if let Some(n) = user {
+                    env.push(("ALPHEUS_FAILED_USER", n.to_string()));
+                }
             }
         }
         env
@@ -309,25 +388,35 @@ pub struct Fire {
     pub unset: Vec<&'static str>,
 }
 
+/// What `Hooks::fire` decides about one event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Run(Fire),
     /// The bucket ran dry: said once per episode, for one log line.
     Throttled(HookId),
+    /// Nothing to do: no hook set, inside the quiet window, or already said to be throttled.
     Dropped,
 }
 
+/// The token bucket of one event.
 #[derive(Debug, Clone, Copy)]
 struct Bucket {
+    /// Runs left: at most `BURST`.
     tokens: u32,
+    /// The instant the tokens were last counted; a token comes back each `REFILL` after it.
     at: Instant,
+    /// The drop of this episode was already said (until the next run).
     throttled: bool,
 }
 
+/// The hooks' state: the commands, the seeds of every event, the quiet window and the buckets.
 pub struct Hooks {
+    /// The configured argv of each event, in the order of `HookId::ALL`; empty: no hook.
     commands: [Vec<String>; COUNT],
     quiet_until: Instant,
     buckets: [Bucket; COUNT],
+    // The seeds of the `Option` fields below: the last value seen of each event. None until the
+    // first one arrives, which is then a seed and never a change.
     network: Option<Option<Link>>,
     vpn: Option<bool>,
     /// Powered, the connected devices' names sorted.
@@ -336,10 +425,12 @@ pub struct Hooks {
     percent: Option<u8>,
     profile: Option<Profile>,
     mode: Option<Mode>,
+    /// The indicators last seen, in the order microphone, camera, screen.
     capture: [bool; 3],
     /// The sound source and the compositor are down: their part of the capture is no state.
     sound_down: bool,
     compositor_down: bool,
+    /// `quiet_over` already said so.
     quiet_said: bool,
     /// The last count of each manager that was known, and the total last seen.
     failed: Failed,
@@ -352,9 +443,13 @@ impl Hooks {
         if cfg.is_empty() {
             return None;
         }
-        let all = cfg.commands();
+        // `cfg.commands()` lists the commands in the order of `HookId::ALL`.
+        let mut commands: [Vec<String>; COUNT] = Default::default();
+        for (slot, (_, command)) in commands.iter_mut().zip(cfg.commands()) {
+            *slot = command.to_vec();
+        }
         Some(Hooks {
-            commands: std::array::from_fn(|i| all.get(i).map(|(_, c)| c.to_vec()).unwrap_or_default()),
+            commands,
             quiet_until: now + QUIET,
             buckets: [Bucket { tokens: BURST, at: now, throttled: false }; COUNT],
             network: None,
@@ -373,8 +468,12 @@ impl Hooks {
         })
     }
 
+    /// Whether a hook is set for `id`.
     pub fn wants(&self, id: HookId) -> bool {
-        self.commands.get(id.index()).is_some_and(|c| !c.is_empty())
+        match self.commands.get(id.index()) {
+            Some(command) => !command.is_empty(),
+            None => false,
+        }
     }
 
     /// How many hooks are configured.
@@ -390,19 +489,21 @@ impl Hooks {
             Msg::Sound(s) => self.sound_down = s.is_none(),
             Msg::Compositor(c) => self.compositor_down = c.is_none(),
             Msg::Network(Some(state)) => {
+                // The kind of the primary connection (None: offline), and whether a VPN is on.
                 let (link, vpn) = match state {
                     NetState::Absent => return out,
                     NetState::Offline => (None, false),
                     NetState::Online { link, vpns, .. } => (Some(*link), *vpns > 0),
                 };
-                if self.wants(HookId::Network) && self.network.replace(link).is_some_and(|old| old != link) {
+                if self.wants(HookId::Network) && changed(&mut self.network, link) {
                     out.push(Event::Network(link));
                 }
-                if self.wants(HookId::Vpn) && self.vpn.replace(vpn).is_some_and(|old| old != vpn) {
+                if self.wants(HookId::Vpn) && changed(&mut self.vpn, vpn) {
                     out.push(Event::Vpn(vpn));
                 }
             }
             Msg::Bluetooth(Some(state)) if self.wants(HookId::Bluetooth) => {
+                // Whether the adapter is powered, and the connected devices' names, sorted.
                 let now = match state {
                     BtState::Absent => return out,
                     BtState::Off => (false, Vec::new()),
@@ -414,10 +515,13 @@ impl Hooks {
                 };
                 if let Some((was_on, was)) = self.bluetooth.replace(now.clone()) {
                     let (is_on, names) = now;
+                    // The adapter powering on comes before its devices connecting.
                     if is_on && !was_on {
                         out.push(Event::Bluetooth(BtChange::On));
                     }
-                    // A multiset difference: two devices named alike count twice.
+                    // A multiset difference: two devices named alike count twice. A device that was
+                    // connected and no longer is has disconnected; what is left of `added`
+                    // after every old device was looked for is the devices that connected.
                     let mut added = names;
                     for old in was {
                         match added.iter().position(|n| *n == old) {
@@ -428,19 +532,19 @@ impl Hooks {
                         }
                     }
                     out.extend(added.into_iter().map(|n| Event::Bluetooth(BtChange::Connected(n))));
+                    // The adapter powering off comes after its devices disconnecting.
                     if !is_on && was_on {
                         out.push(Event::Bluetooth(BtChange::Off));
                     }
                 }
             }
             Msg::Battery(Some(PowerState { laptop: Some(b), .. })) => {
-                if self.wants(HookId::BatteryCharge)
-                    && b.charge != Charge::Unknown
-                    && self.charge.replace(b.charge).is_some_and(|old| old != b.charge)
-                {
+                // An unknown charge is no state: it neither fires nor moves the seed.
+                if self.wants(HookId::BatteryCharge) && b.charge != Charge::Unknown && changed(&mut self.charge, b.charge) {
                     out.push(Event::BatteryCharge(*b));
                 }
-                if self.wants(HookId::BatteryLevel) && self.percent.replace(b.percent).is_some_and(|old| old != b.percent) {
+                // The charge comes before the level when one reading changes both.
+                if self.wants(HookId::BatteryLevel) && changed(&mut self.percent, b.percent) {
                     out.push(Event::BatteryLevel(*b));
                 }
             }
@@ -453,8 +557,9 @@ impl Hooks {
                 let first = self.failed.user.replace(*n).is_none();
                 out.extend(self.failed_edge(first));
             }
+            // The condition after `if` (a guard) also stores the seed, but only when the hook is set.
             Msg::Profile(Some(ProfileState { active: Some(p), .. }))
-                if self.wants(HookId::PowerProfile) && self.profile.replace(*p).is_some_and(|old| old != *p) =>
+                if self.wants(HookId::PowerProfile) && changed(&mut self.profile, *p) =>
             {
                 out.push(Event::PowerProfile(*p));
             }
@@ -466,12 +571,16 @@ impl Hooks {
     /// The total of the known counts against the last one seen. A manager's first answer (`seed`),
     /// whenever it arrives, only moves the seed: it is no change, just one more count known.
     fn failed_edge(&mut self, seed: bool) -> Option<Event> {
+        // `?` after a value that may be None ends the function with None: no count known yet.
         let total = crate::failed::total(&self.failed)?;
         let old = self.failed_total.replace(total);
         if seed {
             return None;
         }
-        old.filter(|old| *old != total).map(|_| Event::FailedUnits { total, system: self.failed.system, user: self.failed.user })
+        match old {
+            Some(old) if old != total => Some(Event::FailedUnits { total, system: self.failed.system, user: self.failed.user }),
+            _ => None,
+        }
     }
 
     /// The mode in effect: a seed, then an edge on each change. `settled`: the mode is the user's
@@ -480,7 +589,7 @@ impl Hooks {
         if !settled || !self.wants(HookId::ThemeMode) {
             return None;
         }
-        self.mode.replace(mode).filter(|old| *old != mode).map(|_| Event::ThemeMode(mode))
+        if changed(&mut self.mode, mode) { Some(Event::ThemeMode(mode)) } else { None }
     }
 
     /// The indicators against the last ones (all off at start), microphone, camera, screen. While
@@ -494,6 +603,7 @@ impl Hooks {
         let now = [c.mic.active(), c.camera.active(), c.screen.active()];
         let kinds = [CaptureKind::Microphone, CaptureKind::Camera, CaptureKind::Screen];
         let mut out = Vec::new();
+        // Which indicators keep their last value because their source is down.
         let kept = [self.sound_down, self.sound_down, self.sound_down || self.compositor_down];
         let mut next = self.capture;
         for (i, kind) in kinds.into_iter().enumerate() {
@@ -512,7 +622,11 @@ impl Hooks {
     /// True once, at the first call from `QUIET` after start on: the log's marker that the changes
     /// after it count (the headless tests tell a change inside the window from one past it).
     pub fn quiet_over(&mut self, now: Instant) -> bool {
-        now >= self.quiet_until && !std::mem::replace(&mut self.quiet_said, true)
+        if now < self.quiet_until || self.quiet_said {
+            return false;
+        }
+        self.quiet_said = true;
+        true
     }
 
     /// Whether `e` runs now: its hook set, past the quiet window (`Started` apart), a token left.
@@ -522,16 +636,24 @@ impl Hooks {
             return Verdict::Dropped;
         }
         let Some(bucket) = self.buckets.get_mut(id.index()) else { return Verdict::Dropped };
+        // Give back the tokens earned since `bucket.at`: one per whole `REFILL`, never past `BURST`
+        // (the `min` also keeps the count small enough to convert to `u32`).
         if bucket.tokens < BURST {
             let whole = (now.saturating_duration_since(bucket.at).as_nanos() / REFILL.as_nanos()).min(u128::from(BURST)) as u32;
             bucket.tokens = (bucket.tokens + whole).min(BURST);
             bucket.at += REFILL * whole;
         }
+        // A full bucket counts from now.
         if bucket.tokens == BURST {
             bucket.at = now;
         }
         if bucket.tokens == 0 {
-            return if std::mem::replace(&mut bucket.throttled, true) { Verdict::Dropped } else { Verdict::Throttled(id) };
+            // The first drop of an episode is said once; the next ones are dropped in silence.
+            if bucket.throttled {
+                return Verdict::Dropped;
+            }
+            bucket.throttled = true;
+            return Verdict::Throttled(id);
         }
         bucket.tokens -= 1;
         bucket.throttled = false;

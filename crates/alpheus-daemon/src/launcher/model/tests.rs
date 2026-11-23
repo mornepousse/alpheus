@@ -73,7 +73,7 @@ fn opens_on_windows_before_the_catalog_arrives() {
     assert!(!l.is_script());
 }
 
-/// The bug Mae hit (2026-10-05): the catalog arrives after the first window has been
+/// The bug of 2026-10-05: the catalog arrives after the first window has been
 /// auto-selected; without this fix, identity-preserving reselection kept that window
 /// selected even though apps now rank above it, so a hasty Enter focused a window instead
 /// of launching the most-used app.
@@ -98,7 +98,7 @@ fn once_the_user_has_moved_a_catalog_update_keeps_the_chosen_item() {
     assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "moved already: kept by identity, as before");
 }
 
-/// A click is navigation too, like the keys `move_by` covers (Mae, 2026-10-05's rule):
+/// A click is navigation too, like the keys `move_by` covers (2026-10-05's rule):
 /// only `query_changed` (typing, a mode switch) resets to the top, never a click.
 #[test]
 fn clicking_counts_as_moved_a_catalog_update_keeps_the_chosen_item() {
@@ -110,7 +110,7 @@ fn clicking_counts_as_moved_a_catalog_update_keeps_the_chosen_item() {
     assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "clicked already: kept by identity");
 }
 
-/// Typing never counts as moved, even when it reshuffles the results (Mae, 2026-10-05):
+/// Typing never counts as moved, even when it reshuffles the results (2026-10-05):
 /// only navigation does. Discriminates from "kept by identity" by giving the selected
 /// window a new, non-zero position after the update: a third window sorts before it once
 /// it arrives, so "kept by identity" and "back to the top" name different windows.
@@ -157,7 +157,7 @@ fn up_on_an_empty_list_does_not_set_moved() {
 
 /// A clamped move (already at the top or bottom result: `to == self.selected`) is a no-op
 /// and must not set `moved` either, or a later catalog/window update would wrongly treat a
-/// boundary bump as a deliberate choice and stop landing on top (Mae, 2026-10-05).
+/// boundary bump as a deliberate choice and stop landing on top (2026-10-05).
 #[test]
 fn a_clamped_move_at_an_edge_does_not_set_moved() {
     let mut l = launcher(); // 3 apps + 3 windows, selection starts on top
@@ -281,7 +281,7 @@ fn tab_cycles_modes_but_not_in_script_mode() {
     assert!(s.is_script());
 }
 
-/// The preview panel always shows the selected result now (view.rs, Mae 2026-10-05): the
+/// The preview panel always shows the selected result now (view.rs, 2026-10-05): the
 /// `Left`/`Right` keys that used to toggle it are ignored — recognised by `keys.rs`, but
 /// a no-op here, not even clearing a message (plain `Outcome::Nothing`, nothing to redraw).
 #[test]
@@ -298,7 +298,7 @@ fn enter_activates_the_selection_escape_closes() {
     let mut l = launcher();
     // Default selection: the top result once the catalog arrives — the window
     // `for_apps` started on is not kept, since the user hasn't moved yet
-    // (Mae, 2026-10-05, "until the user moves, the selection stays on top").
+    // (2026-10-05, "until the user moves, the selection stays on top").
     assert_eq!(l.key(Key::Enter), activate(Activation::App { index: 1, action: None }), "Files, the top app");
     l.key(Key::Tab);
     l.key(Key::Down);

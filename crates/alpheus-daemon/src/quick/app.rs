@@ -1,11 +1,33 @@
-//! The quick settings panel's wiring (quick spec § 1, § 5): opened from the volume, network and
-//! Bluetooth modules or `alpheus-launch --quick`, filled from the bar's state, the sound thread's
-//! sink list (`pipewire::SoundTap`), the backlight and the configured `state`s, and acting through
-//! the daemon's executor: every command spawned, never waited for. One `DeadlineTimer`
-//! (`QuickApp::timer`) is armed only for a pending re-read, the reboot question or a Wi-Fi attempt.
-//! Nothing of it stays once the panel closes (`quick_closed`), but for one thing (Mae's ruling P1):
-//! an attempt on a new network outlives the panel (`WifiFollow`), the Wi-Fi still read and the
-//! timer armed for it alone until it ends, so a failed new profile is still deleted.
+//! The quick settings panel's wiring: opens the panel, feeds it what the daemon knows, and carries
+//! out what it asks.
+//!
+//! This is the half of the panel that touches the outside; the model it drives is `mod.rs`. The
+//! panel opens from a click on the volume, network or Bluetooth module, or from
+//! `alpheus-launch --quick`. It is filled from the bar's state, from the sound thread's sink list
+//! (`pipewire::SoundTap`), from the backlight and from the configured toggles' states. Each key
+//! and click goes to the model, and the `QuickAction` that comes back is carried out here: a
+//! command is spawned through the daemon's executor and never waited for, the panel is closed or
+//! repainted. The wiring of the other lists is in `bt_app.rs` (Bluetooth) and `shield/app.rs`
+//! (Shield).
+//!
+//! One `DeadlineTimer` (`QuickApp::timer`) is armed only while something is pending: a slider's
+//! 150 ms window, a re-read, the reboot or forget question, a Wi-Fi, VPN or Bluetooth deadline, or a
+//! failed tag's end. Nothing of the panel stays once it closes (`quick_closed`),
+//! except for one thing: an attempt on a new network outlives the panel (`WifiFollow`). The Wi-Fi
+//! stays read and the timer stays armed for that attempt alone until it ends, so that a new profile
+//! that failed is still deleted.
+//!
+//! Never:
+//! - put the Wi-Fi password in a command's arguments (it goes on the command's standard input) or
+//!   format it with `Debug` (guardrail `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`);
+//! - put a VPN profile's name, label, uuid or path in a log line (guardrail
+//!   `the_vpn_logs_name_no_profile`, which reads this file's VPN lines);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
+//!
+//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/features/quick-settings.md,
+//! and docs/decisions.md ("A verb-opened quick panel takes the keyboard without a grab",
+//! "A Wi-Fi attempt on a new network outlives the quick panel", "The quick panel reads the sink
+//! list through a shared tap").
 
 use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
@@ -17,7 +39,6 @@ use crate::log::write as log;
 use crate::notify::app::unix_now;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::quick::dnd::DndChoice;
-use crate::quick::state;
 use crate::quick::wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
 use crate::sources::dbus::wifi::WifiTap;
@@ -34,12 +55,15 @@ use std::time::Instant;
 
 /// The quick panel's state beyond the model, one field of `App`: what the glue shares with the
 /// source threads, the connection it acts on and the attempt it still follows.
+///
+/// `pub(crate)` means visible inside the daemon only; the fields below are written that way for the
+/// other files of the daemon that reach them (`bt_app.rs`, `shield/app.rs`).
 pub(crate) struct QuickApp {
     /// The quick panel's timer: armed only while the panel is open and a re-read
     /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
     /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
-    /// question (quick delivery 3); closed, only for an attempt still followed (`QuickApp::wifi_follow`, Mae's
-    /// ruling P1).
+    /// question; closed, only for an attempt still followed
+    /// (`QuickApp::wifi_follow`).
     pub(crate) timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
@@ -58,8 +82,8 @@ pub(crate) struct QuickApp {
     pub(crate) bt_act: Option<crate::sources::dbus::bt_act::BtAct>,
     /// Its fd's source on the loop, while it lives.
     pub(crate) bt_source: Option<smithay_client_toolkit::reexports::calloop::RegistrationToken>,
-    /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
-    /// Wi-Fi stays read for it until it ends. None at rest.
+    /// An attempt on a new network still followed once the panel closed: the Wi-Fi stays read for
+    /// it until it ends. None at rest.
     pub(crate) wifi_follow: Option<WifiFollow>,
     /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
     /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again.
@@ -119,7 +143,7 @@ pub(crate) fn taken_headset(m: &mut Msg) -> Option<Option<Headset>> {
     match m {
         Msg::Sound(Some(s)) => {
             let h = s.headset.take();
-            s.sinks.is_some().then_some(h)
+            if s.sinks.is_some() { Some(h) } else { None }
         }
         Msg::Sound(None) => Some(None),
         _ => None,
@@ -165,7 +189,10 @@ pub(crate) fn panel_wifi(
     current: Option<u64>,
     now: Instant,
 ) -> Option<WifiNews> {
-    open_current(open, current).then(|| q.follow_wifi(live, state, now))
+    if !open_current(open, current) {
+        return None;
+    }
+    Some(q.follow_wifi(live, state, now))
 }
 
 /// The open panel's part of a VPN message: `Quick::follow_vpn` on a state of this open
@@ -178,7 +205,10 @@ pub(crate) fn panel_vpn(
     current: Option<u64>,
     now: Instant,
 ) -> Option<WifiNews> {
-    open_current(open, current).then(|| q.follow_vpn(live, state, now))
+    if !open_current(open, current) {
+        return None;
+    }
+    Some(q.follow_vpn(live, state, now))
 }
 
 /// The Bluetooth view a bar message carries for the open panel (quick Bluetooth spec § 5), taken out
@@ -200,31 +230,47 @@ pub(crate) fn panel_bt(
     current: Option<u64>,
     now: Instant,
 ) -> Option<QuickAction> {
-    open_current(open, current).then(|| q.follow_bt(live, view, now))
+    if !open_current(open, current) {
+        return None;
+    }
+    Some(q.follow_bt(live, view, now))
 }
 
 /// A view of this open says BlueZ is no longer there to be reached: none (the bus
 /// down, the Bluetooth domain out), or one with no adapter (BlueZ gone: the D-Bus thread reads
 /// `BtState::Absent` between two owners). The acting connection is then let go.
 pub(crate) fn bluez_left(open: Option<u64>, view: Option<&BtView>, current: Option<u64>) -> bool {
-    open_current(open, current) && view.is_none_or(|v| v.adapter.is_none())
+    if !open_current(open, current) {
+        return false;
+    }
+    match view {
+        Some(v) => v.adapter.is_none(),
+        None => true,
+    }
 }
 
 /// What the D-Bus thread reads of Bluetooth: nothing without a panel, else what its row and
 /// detail show (`row_shown`: `Bt::shows` on the bar's state).
 pub(crate) fn bt_scope_for(panel: Option<&Quick>, row_shown: bool) -> BtScope {
-    panel.map_or(BtScope::Closed, |q| q.bt.scope(row_shown))
+    match panel {
+        Some(q) => q.bt.scope(row_shown),
+        None => BtScope::Closed,
+    }
 }
 
 /// Whether a verb arriving at `now` is the key press that opened the panel again (Hyprland
 /// re-fires a press bind; `launcher::host::TOGGLE_DEBOUNCE`, as Mod+Space): ignored rather than
 /// closing it. Only a verb-opened panel (`opened`) is guarded.
 pub(crate) fn verb_debounced(opened: Option<Instant>, now: Instant) -> bool {
-    opened.is_some_and(|at| toggle_is_debounced(now.saturating_duration_since(at)))
+    match opened {
+        Some(at) => toggle_is_debounced(now.saturating_duration_since(at)),
+        None => false,
+    }
 }
 
-/// An attempt on a not-saved network that outlives the panel (Mae's ruling P1): followed until it
-/// ends, so a failed new profile is still deleted after the panel closed. It holds the attempt and
+/// An attempt on a not-saved network that outlives the panel: followed until it ends, so a failed
+/// new profile is still deleted after the panel closed (docs/decisions.md, "A Wi-Fi attempt on a new
+/// network outlives the quick panel"). It holds the attempt and
 /// the last Wi-Fi state it saw, nothing else (never a password: the field closed when it was sent);
 /// None at rest. The hand-over (`quick_flush`, then `quick_closed`) keeps the D-Bus thread's reader
 /// as it is (scope Detail, never Closed in between): a reset would read a profile it skipped before
@@ -281,7 +327,11 @@ impl WifiFollow {
 
 /// The Wi-Fi the D-Bus thread follows: the wider of the open panel's (`panel`) and a follower's.
 pub(crate) fn wifi_scope(panel: WifiScope, follow: Option<&WifiFollow>) -> WifiScope {
-    panel.max(follow.map_or(WifiScope::Closed, WifiFollow::scope))
+    let followed = match follow {
+        Some(f) => f.scope(),
+        None => WifiScope::Closed,
+    };
+    panel.max(followed)
 }
 
 /// The panel is gone: nothing of the Wi-Fi read or followed any more and the D-Bus thread's copy
@@ -290,7 +340,7 @@ pub(crate) fn wifi_closed(tap: &WifiTap, follow: Option<&WifiFollow>) {
     tap.set(wifi_scope(WifiScope::Closed, follow));
 }
 
-/// The follower after a state or the clock (Mae's ruling P1): `Waiting` keeps it; any end drops it,
+/// The follower after a state or the clock: `Waiting` keeps it; any end drops it,
 /// a failure (or NetworkManager gone) logged once, its new profile deleted through `exec` while
 /// still saved. The log lines, never an SSID.
 pub(crate) fn followed(exec: &dyn Executor, follow: &mut Option<WifiFollow>, outcome: Outcome) -> Vec<String> {
@@ -310,10 +360,10 @@ pub(crate) fn followed(exec: &dyn Executor, follow: &mut Option<WifiFollow>, out
     lines
 }
 
-/// The panel `q` just opened takes back the followed attempt `f` (Mae's ruling P1): no second
-/// attempt. Opened on the Wi-Fi (the network module, `--quick wifi`), the detail opens at once from
-/// the state the follower carried, since no word of the D-Bus thread is coming (its scope did not
-/// change). The action to take: the detail's rescan, else a repaint.
+/// The panel `q` just opened takes back the followed attempt `f`: no second attempt. Opened on the
+/// Wi-Fi (the network module, `--quick wifi`), the detail opens at once from the state the follower
+/// carried, since no word of the D-Bus thread is coming (its scope did not change). The action to
+/// take: the detail's rescan, else a repaint.
 pub(crate) fn resumed(q: &mut Quick, f: WifiFollow) -> QuickAction {
     f.resume(&mut q.wifi);
     q.resumed_wifi_focus().unwrap_or(QuickAction::Redraw)
@@ -384,10 +434,12 @@ pub(crate) const OPS: PopupOps = PopupOps {
 };
 
 impl App {
+    /// Whether `quick` is in `modules`.
     pub(crate) fn quick_enabled(&self) -> bool {
         self.bar.config.modules.contains(&ModuleId::Quick)
     }
 
+    /// Whether the open popup is the quick panel.
     pub(crate) fn quick_shown(&self) -> bool {
         matches!(self.popup_body(), Some(PopupBody::Quick(_)))
     }
@@ -404,22 +456,26 @@ impl App {
         if c.toggle.is_empty() {
             return None;
         }
-        state::read(&c.state, Path::new("/proc"), &|k| std::env::var_os(k))
+        quick::state::read(&c.state, Path::new("/proc"), &|k| std::env::var_os(k))
     }
 
     /// The bar a verb opens under: the focused output's, else the first configured one.
     pub(crate) fn verb_bar(&self) -> Option<&crate::wayland::Surface> {
         let (_, focused) = self.bubbles_target();
-        focused
-            .as_deref()
-            .and_then(|n| self.surfaces.iter().find(|s| s.name == n && s.configured))
-            .or_else(|| self.surfaces.iter().find(|s| s.configured))
+        if let Some(name) = focused.as_deref()
+            && let Some(bar) = self.surfaces.iter().find(|s| s.name == name && s.configured)
+        {
+            return Some(bar);
+        }
+        self.surfaces.iter().find(|s| s.configured)
     }
 
     /// The verb's anchor: the last cell of the bar on the focused output (the positioner slides the
     /// panel left into the output), else of the first configured bar.
     pub(crate) fn quick_anchor(&self) -> Option<PopupAnchor> {
         let s = self.verb_bar()?;
+        // The width of the last painted grid, or 1 for a bar not painted yet; never 0, so that
+        // `columns - 1` below cannot go below zero.
         let columns = s.last.as_ref().map_or(1, |g| g.width()).max(1);
         Some(PopupAnchor { output: s.name.clone(), start: columns - 1, end: columns })
     }
@@ -469,6 +525,8 @@ impl App {
                 }
             },
         };
+        // `let ... else` takes the value out of the `Some`, or runs the block, which must leave the
+        // function: no bar of that name, so no panel.
         let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else { return };
         let room = self.popup_room(i).1.saturating_sub(1);
         // From here the sound thread publishes the list (Scope::Panel): every way out below, and
@@ -491,11 +549,13 @@ impl App {
             let live = quick::live(&self.bar, &self.dnd_timed.model);
             let mut q = Quick::new(focus, &live, sinks, backlight, toggles, room);
             q.set_headset(headset);
-            (!q.is_empty(&live)).then(|| {
+            if q.is_empty(&live) {
+                None
+            } else {
                 let rows = quick::rows(&live, &q);
                 let what = quick::describe(&live, &q);
-                (q, rows, what)
-            })
+                Some((q, rows, what))
+            }
         };
         let Some((q, rows, what)) = built else {
             self.quick_closed();
@@ -504,7 +564,7 @@ impl App {
         };
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Quick(Box::new(q)), columns, height, input) {
-            self.quick.verb_opened = (input == Input::Keys).then(Instant::now);
+            self.quick.verb_opened = if input == Input::Keys { Some(Instant::now()) } else { None };
             self.popup_paint(rows);
             log(&format!("quick shown ({what})"));
             self.quick_resume();
@@ -559,6 +619,8 @@ impl App {
 
     /// `f` on the open panel and what it reads; Nothing when the panel is not open.
     pub(crate) fn quick_with(&mut self, f: impl FnOnce(&mut Quick, &Live) -> QuickAction) -> QuickAction {
+        // Taking these fields out of `self` at once lets the borrow checker see that the popup (changed
+        // by `f`) and the bar and do-not-disturb state (only read to build `live`) are different things.
         let App { popup, bar, dnd_timed, .. } = self;
         let live = quick::live(bar, &dnd_timed.model);
         match popup.as_mut().map(|p| &mut p.body) {
@@ -567,6 +629,8 @@ impl App {
         }
     }
 
+    /// Carries out what the model asked for: a command spawned, a repaint, the panel closed, or the
+    /// hand-off to the Bluetooth, do-not-disturb and Shield wiring. The one place an action is done.
     pub(crate) fn quick_action(&mut self, action: QuickAction) {
         match action {
             QuickAction::Nothing => {}
@@ -589,13 +653,13 @@ impl App {
                 self.bt_run(orders);
                 self.quick_refresh();
             }
-            // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
+            // The one path (`notify/app.rs`): persisted, given to the server; it repaints this panel.
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
                 self.set_dnd(on);
                 log(&format!("quick: do not disturb {}", if on { "on" } else { "off" }));
             }
-            // Shield mode (shield_app.rs): a switch or an allow. A switch changes the view, and its
+            // Shield mode (shield/app.rs): a switch or an allow. A switch changes the view, and its
             // publish repaints the panel (the row says `…`); an allow or a refusal changes only the
             // panel's own state, repainted here: one paint either way.
             QuickAction::Shield(ask) => {
@@ -605,7 +669,7 @@ impl App {
                     self.quick_refresh();
                 }
             }
-            // The detail's choice, as the CLI would send it (notify_app.rs).
+            // The detail's choice, as the CLI would send it (`notify/app.rs`).
             QuickAction::Dnd(c) => {
                 let until = self.bar.config.quick.dnd_until_hm();
                 match dnd_request(c, until, unix_now() as i64) {
@@ -655,7 +719,7 @@ impl App {
             match popup.as_mut().map(|p| &mut p.body) {
                 Some(PopupBody::Quick(q)) => {
                     q.fit(&live);
-                    (!q.is_empty(&live)).then(|| quick::rows(&live, q))
+                    if q.is_empty(&live) { None } else { Some(quick::rows(&live, q)) }
                 }
                 _ => None,
             }
@@ -672,7 +736,7 @@ impl App {
     }
 
     /// The timer follows the panel's earliest pending re-read, question or Wi-Fi deadline; with the
-    /// panel closed, only a followed attempt's (Mae's ruling P1); none when nothing is pending.
+    /// panel closed, only a followed attempt's; none when nothing is pending.
     pub(crate) fn quick_timer_sync(&mut self) {
         let at = match self.popup_body() {
             Some(PopupBody::Quick(q)) => q.deadline(),
@@ -683,7 +747,7 @@ impl App {
 
     /// The D-Bus thread follows what the open panel shows of the Wi-Fi (quick Wi-Fi spec § 5): its row,
     /// or its detail (and while a connection is under way); with no panel, only a followed attempt's
-    /// detail (Mae's ruling P1); else nothing. A change wakes the thread once; the same scope again,
+    /// detail; else nothing. A change wakes the thread once; the same scope again,
     /// nothing.
     pub(crate) fn quick_wifi_sync(&self) {
         let Some(tap) = &self.quick.wifi_tap else { return };
@@ -705,7 +769,7 @@ impl App {
         });
     }
 
-    /// The follower's `outcome` (Mae's ruling P1, `followed`), logged; the tap and the timer then
+    /// The follower's `outcome` (`followed`), logged; the tap and the timer then
     /// follow it: re-armed on its deadline while it waits (it may move to ACTIVATION_BOUND), both
     /// let go once it ended.
     fn quick_follow(&mut self, outcome: Outcome) {
@@ -724,7 +788,7 @@ impl App {
         let (mut due, device) = match app.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => {
-                // No panel: a followed attempt's timeout (Mae's ruling P1).
+                // No panel: a followed attempt's timeout.
                 if let Some(outcome) = app.quick.wifi_follow.as_mut().map(|f| f.due(now)) {
                     app.quick_follow(outcome);
                 }
@@ -749,7 +813,10 @@ impl App {
         }
         // The device shown, re-read: one failed read keeps the row.
         let dir = &app.bar.config.osd.backlight_dir;
+        // `then` gives Some(..) only for a re-read that is due; `map_or` reads the device when there
+        // is one and says it is `Gone` when there is none.
         let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
+        // One entry per toggle: Some(its state, read now) when its re-read is due, else None.
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
         if due.shield_failed {
             app.shield_failed_due(now);
@@ -768,8 +835,8 @@ impl App {
     }
 
     /// The panel is closing (`popup_close`, before its body goes): the slider levels still waiting
-    /// for their window are sent now, never lost; an attempt on a new network handed to the follower
-    /// (Mae's ruling P1), the D-Bus thread's reading left as it is (never Closed in between).
+    /// for their window are sent now, never lost; an attempt on a new network handed to the follower,
+    /// the D-Bus thread's reading left as it is (never Closed in between).
     pub(crate) fn quick_flush(&mut self) {
         let (leaving, waiting, follow) = match self.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.bt_leaving(), q.flush(), WifiFollow::leaving(&mut q.wifi)),
@@ -817,7 +884,7 @@ impl App {
     /// A bar message before anyone else reads it: a sound message's sink list and a Wi-Fi state go to
     /// the open panel, or are dropped (the bar never keeps either); a Wi-Fi state may open the detail
     /// (with its rescan), end an attempt or ask for a cleanup, done here. With no panel, a Wi-Fi state
-    /// goes to a followed attempt (Mae's ruling P1). True when the open panel shows what it carries:
+    /// goes to a followed attempt. True when the open panel shows what it carries:
     /// the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
         // Both taken always, so the bar never keeps either; the headset first: it

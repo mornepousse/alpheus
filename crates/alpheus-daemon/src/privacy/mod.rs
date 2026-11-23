@@ -1,6 +1,27 @@
-//! The privacy indicators' pure core (privacy spec §§ 2 and 4): the PipeWire graph the sound model
-//! keeps for them, and the rules that turn it into "which apps hold the microphone, the camera,
-//! the screen". Nothing here reads a file, starts a thread or runs a command.
+//! The privacy indicators' model: which apps hold the microphone, the camera or the screen, and what
+//! the bar and the popup show of it.
+//!
+//! This is the pure half of the privacy module. It holds the PipeWire graph the sound model keeps
+//! for it (`GraphNode`, `GraphLink`), the rules that turn that graph into who holds what
+//! (`capture`), and `Privacy`, which merges what PipeWire, the video devices (`camera.rs`) and the
+//! compositor say. `Privacy` also keeps the ignore list, the 0.5 s off-delay, the compositor's
+//! release hold and the default source's mute, and it draws the popup (`render`). The other half,
+//! `app.rs`, does the talking to the outside: it feeds `Privacy` the messages and the time and runs
+//! the popup and the timer. `camera.rs` and `camera_app.rs` are the camera opened outside PipeWire.
+//!
+//! Never:
+//! - read a clock, a file or a socket, start a thread or a process, or run a command: the caller
+//!   always passes `now`, so a test can pick any time it likes;
+//! - panic: no `unwrap`, `expect` or `panic!` in the production code of this file or of `app.rs`
+//!   (the guardrail `the_privacy_module_has_no_panicking_path` checks both).
+//!
+//! See: docs/specs/2026-10-16-alpheus-privacy-design.md, docs/features/privacy.md, and
+//! docs/decisions.md ("The microphone lights for a recording stream, never a meter or a filter",
+//! "A muted app stream still lights the microphone", "A running camera with no link lights it
+//! unnamed", "An indicator going off stays shown for half a second", "A compositor's screencast
+//! release counts after a one-second hold", "A screen lit by the compositor alone reads
+//! `(unnamed)`", "The privacy popup lists apps and selects nothing", "The camera is read from
+//! `/proc` after a trigger, never counted").
 
 use crate::grid::{Grid, Hue, Style, text_width};
 use crate::list::{self, Boxed};
@@ -8,20 +29,25 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-// Material Design glyphs of the Nerd Font (md-microphone, md-camera, md-monitor_screenshot).
+// The glyphs are Material Design icons of the Nerd Font: microphone, camera and monitor_screenshot.
 pub const MIC: char = '\u{f036c}';
 pub const CAMERA: char = '\u{f0100}';
 pub const SCREEN: char = '\u{f0379}';
-/// An indicator going off stays shown this long, so a renegotiating stream never blinks (spec § 4).
+/// An indicator going off stays shown this long, so that a stream that renegotiates never blinks
+/// (privacy spec § 4). See docs/decisions.md, "An indicator going off stays shown for half a
+/// second".
 pub const OFF_DELAY: Duration = Duration::from_millis(500);
-/// A compositor's screencast release counts only after this hold (Hyprland's blip, spec § 3).
+/// A compositor's screencast release counts only after this hold: Hyprland sends a short blip for a
+/// screenshot (privacy spec § 3). See docs/decisions.md, "A compositor's screencast release counts
+/// after a one-second hold".
 pub const CAST_HOLD: Duration = Duration::from_secs(1);
-/// App names kept per indicator.
+/// App names kept per indicator, at most (privacy spec § 2).
 pub const MAX_NAMES: usize = 8;
-/// Graph bounds (spec § 8): the model keeps no more.
+/// The model keeps no more nodes and links than this (privacy spec § 8).
 pub const MAX_NODES: usize = 1024;
 pub const MAX_LINKS: usize = 4096;
-/// The popup's width in cells at most (privacy spec § 5); a longer name is cut.
+/// The popup is at most this many cells wide, a longer name being cut (privacy plan 1, "Decisions
+/// written down", item 6).
 pub const POPUP_WIDTH: u16 = 32;
 
 /// One indicator: the apps holding the device, and whether a holder has no name.
@@ -37,12 +63,14 @@ impl Indicator {
         !self.names.is_empty() || self.unnamed
     }
 
-    /// Adds one holder: its name in sorted place (once), or the unnamed flag.
+    /// Adds one holder: its name in its sorted place (once), or the unnamed flag.
     pub(crate) fn hold(&mut self, app: Option<&str>) {
         let Some(app) = app else {
             self.unnamed = true;
             return;
         };
+        // `binary_search_by` gives `Err(at)` when the name is not there yet, with the place where it
+        // belongs. A name that would land past `MAX_NAMES` is dropped.
         if let Err(at) = self.names.binary_search_by(|n| n.as_str().cmp(app)) {
             if at < MAX_NAMES {
                 self.names.insert(at, app.to_string());
@@ -51,10 +79,10 @@ impl Indicator {
         }
     }
 
-    /// The union of both: names through `hold` (sorted, once, capped), `unnamed` OR'ed.
+    /// The union of both: the names through `hold` (sorted, once, capped), `unnamed` combined with
+    /// "or".
     pub fn merged(&self, other: &Indicator) -> Indicator {
         let mut m = self.clone();
-
         m.unnamed |= other.unnamed;
         for n in &other.names {
             m.hold(Some(n));
@@ -62,17 +90,23 @@ impl Indicator {
         m
     }
 
-    /// The same without the ignored names, compared case-insensitively.
+    /// The same indicator without the ignored names, which are compared whole and without regard to
+    /// case. `unnamed` is kept.
     fn without(&self, ignore: &[String]) -> Indicator {
-        let names = self
-            .names
-            .iter()
-            .filter(|n| {
-                let n = n.to_lowercase();
-                !ignore.iter().any(|g| g.to_lowercase() == n)
-            })
-            .cloned()
-            .collect();
+        let mut names = Vec::new();
+        for name in &self.names {
+            let lowered = name.to_lowercase();
+            let mut ignored = false;
+            for pattern in ignore {
+                if pattern.to_lowercase() == lowered {
+                    ignored = true;
+                    break;
+                }
+            }
+            if !ignored {
+                names.push(name.clone());
+            }
+        }
         Indicator { names, unnamed: self.unnamed }
     }
 }
@@ -90,14 +124,15 @@ impl Capture {
         !self.mic.active() && !self.camera.active() && !self.screen.active()
     }
 
-    /// The same capture without the ignored app names, compared case-insensitively (spec § 7).
+    /// The same capture without the ignored app names, compared whole and without regard to case
+    /// (privacy spec § 7).
     pub fn without(&self, ignore: &[String]) -> Capture {
         Capture { mic: self.mic.without(ignore), camera: self.camera.without(ignore), screen: self.screen.without(ignore) }
     }
 }
 
 /// A node as the privacy rules need it. `class` is the raw `media.class`; the parser has already
-/// resolved `camera_device` (a v4l2 or libcamera device, or the Camera role) and the app name.
+/// worked out `camera_device` (a v4l2 or libcamera device, or the Camera role) and the app name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GraphNode {
     pub class: String,
@@ -121,7 +156,7 @@ pub struct GraphLink {
     pub active: bool,
 }
 
-/// The classes the model keeps for privacy (spec § 2).
+/// Whether the model keeps a node of this class for privacy (privacy spec § 2).
 pub fn kept(class: &str) -> bool {
     audio_source(class) || matches!(class, "Stream/Input/Audio" | "Stream/Input/Video" | "Stream/Output/Video") || video_source(class)
 }
@@ -134,13 +169,16 @@ fn video_source(class: &str) -> bool {
     class == "Video/Source" || class.starts_with("Video/Source/")
 }
 
-/// Which indicator a running producer node can light, if any.
+/// Which indicator a running producer node can light.
 enum Kind {
     Mic,
     Camera,
     Screen,
 }
 
+/// The indicator a producer node can light, or None when the node is no producer. A video source
+/// is the camera when it is a camera device, and the screen otherwise; a `Stream/Output/Video` (a
+/// portal's or niri's screen cast) is the screen.
 fn producer(n: &GraphNode) -> Option<Kind> {
     if audio_source(&n.class) {
         Some(Kind::Mic)
@@ -153,20 +191,32 @@ fn producer(n: &GraphNode) -> Option<Kind> {
     }
 }
 
-/// Spec § 2: walks the links once, then adds the running producers no link was seen for.
+/// Who holds the microphone, the camera and the screen (privacy spec § 2). It walks the links once,
+/// then adds the running producers that no link was seen for.
 pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>) -> Capture {
     let mut out = Capture::default();
-    // Running device sources and screen producers, until a link from them is seen.
-    let mut alone: Vec<u32> =
-        nodes.iter().filter(|(_, n)| n.running && matches!(producer(n), Some(Kind::Camera | Kind::Screen))).map(|(id, _)| *id).collect();
+    // The running camera and screen producers, until a link from them is seen: one that never gets
+    // a link lights its indicator with no app name.
+    let mut alone: Vec<u32> = Vec::new();
+    for (id, node) in nodes {
+        if node.running && matches!(producer(node), Some(Kind::Camera | Kind::Screen)) {
+            alone.push(*id);
+        }
+    }
     for link in links.values() {
+        // A link to or from a node the model does not keep is skipped.
         let (Some(from), Some(to)) = (nodes.get(&link.output), nodes.get(&link.input)) else {
             continue;
         };
+        // `retain` keeps the ids for which the closure is true: this drops the producer.
         alone.retain(|id| *id != link.output);
+        // A link counts when it is active or its consumer runs.
         let live = link.active || to.running;
         match producer(from) {
             Some(Kind::Mic) => {
+                // Only a recording stream counts. Meters, visualisers, filters and passive streams
+                // do not. See docs/decisions.md, "The microphone lights for a recording stream,
+                // never a meter or a filter".
                 let recorder = to.class == "Stream/Input/Audio" && !(to.monitor || to.capture_sink || to.link_group || to.passive);
                 if live && recorder {
                     out.mic.hold(to.app.as_deref());
@@ -177,13 +227,22 @@ pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>)
                     out.camera.hold(to.app.as_deref());
                 }
             }
+            // A screen producer counts when its link is active or the producer itself runs: a
+            // portal's producer names no app, so the consumer's name is used (privacy spec § 2).
             Some(Kind::Screen) if link.active || from.running => out.screen.hold(to.app.as_deref()),
             _ => {}
         }
     }
     for id in alone {
-        match nodes.get(&id).and_then(producer) {
+        let kind = match nodes.get(&id) {
+            Some(node) => producer(node),
+            None => None,
+        };
+        match kind {
+            // A running camera with no link lights it with no name. See docs/decisions.md, "A
+            // running camera with no link lights it unnamed".
             Some(Kind::Camera) => out.camera.unnamed = true,
+            // The same for a screen producer, but only while no screen holder was found by a link.
             Some(Kind::Screen) if !out.screen.active() => out.screen.unnamed = true,
             _ => {}
         }
@@ -191,9 +250,9 @@ pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>)
     out
 }
 
-/// The bar's merge of what PipeWire and the compositor say (spec §§ 3 and 4): the ignore list,
-/// the compositor's release hold, the off-delay, and the default source's mute. Time is passed in,
-/// never read.
+/// The bar's merge of what PipeWire, the video devices and the compositor say (privacy spec §§ 3
+/// and 4): the ignore list, the compositor's release hold, the off-delay and the default source's
+/// mute. Time is passed in, never read.
 #[derive(Debug, Clone)]
 pub struct Privacy {
     ignore: Vec<String>,
@@ -207,7 +266,7 @@ pub struct Privacy {
     /// After a release: the instant it counts, when the hold ends.
     release_at: Option<Instant>,
     shown: Capture,
-    /// Per indicator (mic, camera, screen): when it goes off, once it is no longer live.
+    /// Per indicator (microphone, camera, screen): when it goes off, once it is no longer live.
     off_at: [Option<Instant>; 3],
 }
 
@@ -240,6 +299,7 @@ impl Privacy {
         }
         self.pw = pw;
         self.mic_muted = mic_muted;
+        // `settle` is the left operand, so it always runs; a mute flip alone counts as a change.
         self.settle(now) || muted_flipped
     }
 
@@ -247,7 +307,6 @@ impl Privacy {
     pub fn set_devices(&mut self, camera: Indicator, now: Instant) -> bool {
         self.expire_cast(now);
         let devices = camera.without(&self.ignore);
-
         if devices == self.devices {
             return false;
         }
@@ -275,10 +334,20 @@ impl Privacy {
         changed
     }
 
-    /// The earliest instant `due` has something to apply.
+    /// The earliest instant at which `due` has something to apply: a pending off, or the end of
+    /// the off-delay that follows a compositor release (shown only while PipeWire does not hold the
+    /// screen).
     pub fn deadline(&self) -> Option<Instant> {
-        let release = self.release_at.filter(|_| self.shown.screen.active() && !self.pw.screen.active()).map(|r| r + OFF_DELAY);
-        self.off_at.iter().flatten().copied().chain(release).min()
+        let mut earliest = None;
+        for off in self.off_at.iter().flatten() {
+            keep_earliest(&mut earliest, *off);
+        }
+        if let Some(release) = self.release_at {
+            if self.shown.screen.active() && !self.pw.screen.active() {
+                keep_earliest(&mut earliest, release + OFF_DELAY);
+            }
+        }
+        earliest
     }
 
     /// Applies the offs that are due at `now`. True when what is shown changed.
@@ -286,7 +355,9 @@ impl Privacy {
         self.expire_cast(now);
         let mut changed = false;
         for i in 0..3 {
-            if self.off_at[i].is_some_and(|t| t <= now) {
+            if let Some(t) = self.off_at[i]
+                && t <= now
+            {
                 self.off_at[i] = None;
                 let live = self.live(i).into_owned();
                 if *self.slot(i) != live {
@@ -306,11 +377,12 @@ impl Privacy {
         self.mic_muted
     }
 
-    /// The popup (privacy spec § 5), drawn inside `list::boxed`'s ring as the power menu is: one
-    /// heading per shown indicator in the module's order, its glyph in its hue (the microphone dim
-    /// while the default source is muted, as in the bar), then each app indented 4 cells, or
-    /// `(unnamed)`. As wide as the longest row and a blank cell on each side, at most
-    /// `POPUP_WIDTH`. Nothing on it is selectable.
+    /// The popup (privacy spec § 5), drawn inside `list::boxed`'s ring as the power menu is. It has
+    /// one heading per shown indicator in the module's order, with its glyph in its hue (the
+    /// microphone dim while the default source is muted, as in the bar), then each app indented
+    /// 4 cells, or `(unnamed)`. It is as wide as its longest row plus a blank cell on each side, at
+    /// most `POPUP_WIDTH`. Nothing on it can be selected (see docs/decisions.md, "The privacy popup
+    /// lists apps and selects nothing").
     pub fn render(&self) -> Boxed {
         let mic = if self.mic_muted { Style::MUTED } else { Style::hue(Hue::Orange) };
         let mut lines: Vec<(Option<(char, Style)>, String)> = Vec::new();
@@ -331,8 +403,11 @@ impl Privacy {
                 lines.push((None, "    (unnamed)".into()));
             }
         }
-        let width = |(g, t): &(Option<(char, Style)>, String)| text_width(t) + g.map_or(0, |(c, _)| text_width(&c.to_string()));
-        let longest = lines.iter().map(width).max().unwrap_or(0);
+        let mut longest = 0;
+        for line in &lines {
+            longest = longest.max(row_width(line));
+        }
+        // The rows are built inside a ring of one blank cell, which `list::boxed` removes.
         let columns = longest.saturating_add(2).min(POPUP_WIDTH) + 2;
         let mut out = vec![Grid::empty(columns)];
         for (glyph, text) in &lines {
@@ -348,18 +423,23 @@ impl Privacy {
         list::boxed(&out, &[], None)
     }
 
-    /// A compositor release whose hold has ended stops counting: the screen, if PipeWire does not
-    /// hold it, goes off one delay after the release itself (only a pending off is set).
+    /// A compositor release whose hold has ended stops counting. The screen, if PipeWire does not
+    /// hold it, then goes off one delay after the release itself (only a pending off is set).
     fn expire_cast(&mut self, now: Instant) {
-        if let Some(r) = self.release_at.filter(|r| *r <= now) {
+        if let Some(r) = self.release_at
+            && r <= now
+        {
             self.release_at = None;
             if !self.pw.screen.active() && self.shown.screen.active() {
+                // `get_or_insert` keeps an off already pending rather than push it back.
                 self.off_at[2].get_or_insert(r + OFF_DELAY);
             }
         }
     }
 
-    /// What indicator `i` is right now, before the delay.
+    /// What indicator `i` (0 microphone, 1 camera, 2 screen) is right now, before the off-delay. The
+    /// screen is lit, with no name, while the compositor casts (or its release is still on hold)
+    /// and PipeWire names nobody. The camera is PipeWire's and the video devices' holders together.
     fn live(&self, i: usize) -> Cow<'_, Indicator> {
         let pw = match i {
             0 => &self.pw.mic,
@@ -391,14 +471,16 @@ impl Privacy {
         }
     }
 
-    /// An indicator live is shown at once; one shown and no longer live goes off one delay from
-    /// now, unless a pending off already counts.
+    /// An indicator that is live is shown at once; one that is shown and no longer live goes off one
+    /// delay from now, unless a pending off already counts. True when what is shown changed.
     fn settle(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for i in 0..3 {
             let live = self.live(i);
             let (active, differs) = (live.active(), *self.slot(i) != *live);
-            let update = (active && differs).then(|| live.into_owned());
+            // The live value is copied out only when it will be stored: it borrows `self`, which
+            // `slot_mut` needs to change.
+            let update = if active && differs { Some(live.into_owned()) } else { None };
             if active {
                 self.off_at[i] = None;
                 if let Some(live) = update {
@@ -410,6 +492,23 @@ impl Privacy {
             }
         }
         changed
+    }
+}
+
+/// `best` becomes `t` when `t` is earlier, or when `best` is still empty.
+fn keep_earliest(best: &mut Option<Instant>, t: Instant) {
+    match *best {
+        Some(b) if b <= t => {}
+        _ => *best = Some(t),
+    }
+}
+
+/// The width in cells of one popup row: its text, and its glyph if it has one.
+fn row_width(line: &(Option<(char, Style)>, String)) -> u16 {
+    let (glyph, text) = line;
+    match glyph {
+        Some((c, _)) => text_width(text) + text_width(&c.to_string()),
+        None => text_width(text),
     }
 }
 

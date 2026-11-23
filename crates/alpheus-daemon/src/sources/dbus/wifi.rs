@@ -210,7 +210,7 @@ impl WifiReader {
     }
 
     /// One item of a list (an access point, a saved connection) that could not be read: None for
-    /// it, the rest of the detail kept (ruling P4); the bus going away is still an error.
+    /// it, the rest of the detail kept; the bus going away is still an error.
     fn soft_item<T>(&mut self, r: io::Result<Option<T>>) -> io::Result<Option<T>> {
         match r {
             Ok(v) => Ok(v),
@@ -282,7 +282,7 @@ impl WifiReader {
             // attempt begins as the ones never to delete, so a partial one (not listed yet, a failed
             // listing, a profile that could not be read, more than MAX_SAVED) is None, and then
             // nothing is ever deleted. The reader must keep its lists when the panel hands an
-            // attempt to its follower (quick_app::WifiFollow): a reset would read a profile skipped
+            // attempt to its follower (`WifiFollow` in `quick/app.rs`): a reset would read a profile skipped
             // before as new.
             let whole = !self.saved_stale && self.saved_whole;
             (Some(self.listed()), whole.then(|| self.saved.values().flatten().cloned().collect()))

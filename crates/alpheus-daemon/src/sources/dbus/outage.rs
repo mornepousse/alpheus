@@ -35,7 +35,7 @@ pub fn optional(r: io::Result<Props>) -> io::Result<Option<Props>> {
     }
 }
 
-/// Why a session ended (I2): a single domain's read failing, its
+/// Why a session ended: a single domain's read failing, its
 /// own "–" already published while the others keep their last published
 /// value — versus the bus itself going away (the connection lost, or never
 /// made), which blanks all three: nothing can be trusted then. Carried by

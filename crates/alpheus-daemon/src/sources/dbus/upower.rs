@@ -38,7 +38,7 @@ fn percent(p: &Props) -> u8 {
 // Low, Critical, Normal, High or Full. None means Percentage is a real
 // reading (every laptop battery and most peripherals report it, explicitly
 // or by leaving the property at its default); the others mean Percentage
-// "should be ignored" (confirmed on Mae's workstation, 2026-10-05: a
+// "should be ignored" (confirmed on a real workstation, 2026-10-05: a
 // Logitech G602 reports Percentage 100 and BatteryLevel 8/Full).
 const LEVEL_NONE: i64 = 1;
 const LEVEL_LOW: i64 = 3;
@@ -50,8 +50,8 @@ const LEVEL_ACTION: i64 = 5;
 /// property absent reads as `None`, same as an explicit `LEVEL_NONE` (e.g.
 /// the fake bus's other fixtures, and UPower's own default for a device
 /// that doesn't support it): `Percentage` is trusted. Any other level is
-/// too coarse for a number — kept only when Low or Critical (Mae,
-/// 2026-10-05): the bar then shows the icon alone, in the error tint.
+/// too coarse for a number — kept only when Low or Critical
+/// (2026-10-05): the bar then shows the icon alone, in the error tint.
 fn peripheral_charge(p: &Props) -> (Option<u8>, bool) {
     match p.int("BatteryLevel") {
         None | Some(LEVEL_NONE) => (Some(percent(p)), false),
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn the_workstation_battery_charging_and_its_mouse() {
-        // The recorded mouse is the real G602 case (Mae, 2026-10-05):
+        // The recorded mouse is the real G602 case (2026-10-05):
         // Percentage 100 but BatteryLevel 8 (Full) — a coarse reading,
         // hidden (no `low`).
         let mut bus = FakeBus::workstation();

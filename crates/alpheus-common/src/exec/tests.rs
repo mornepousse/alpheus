@@ -438,7 +438,7 @@ fn capture_keeps_what_came_before_the_deadline_and_kills_the_group() {
     wait_for_death(pid);
 }
 
-/// Review Focus 2: a command that leaves a child holding its standard output behind ends the
+/// A command that leaves a child holding its standard output behind ends the
 /// read when IT ends, not at the deadline; the child goes with the group.
 #[test]
 fn capture_ends_with_the_command_even_if_a_child_keeps_the_pipe() {
@@ -454,7 +454,7 @@ fn capture_ends_with_the_command_even_if_a_child_keeps_the_pipe() {
     wait_for_death(pid);
 }
 
-/// Final review A1: a command that leaves a chatty child behind (it writes on and on) ends the
+/// A command that leaves a chatty child behind (it writes on and on) ends the
 /// read when IT ends: its exit is checked while data flows too, then the group is killed. What
 /// the child wrote before that exit is indistinguishable from the command's own lines.
 #[test]
@@ -498,7 +498,7 @@ fn a_command_seen_gone_takes_its_group_with_it() {
     child.wait().unwrap();
 }
 
-/// Final review A5: a lock poisoned by a panic elsewhere never makes `capture` panic (only the
+/// A lock poisoned by a panic elsewhere never makes `capture` panic (only the
 /// launcher's scan thread calls it, and a panic after the spawn would leave a zombie behind).
 #[test]
 fn capture_survives_a_poisoned_lock() {
@@ -541,7 +541,7 @@ fn cut_at_follows_both_caps() {
     assert_eq!(cut_at(b"a\nb\nc", &l(0, 100)), Some(0));
 }
 
-/// Final review A2: the cut is found incrementally (each byte scanned once across chunks), and
+/// The cut is found incrementally (each byte scanned once across chunks), and
 /// it lands where a scan of the whole buffer would, a line or a byte per write alike.
 #[test]
 fn the_cut_found_chunk_by_chunk_is_the_whole_buffer_s() {
@@ -600,7 +600,7 @@ fn spawn_with_env_inherits_the_environment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Hooks final review M5: a name in `unset` never reaches the program, `env` still wins.
+/// A name in `unset` never reaches the program, `env` still wins.
 #[test]
 fn spawn_with_env_removes_the_unset_names() {
     let dir = std::env::temp_dir().join(format!("alpheus-env-unset-{}", std::process::id()));
@@ -647,7 +647,7 @@ fn env_ok_refuses_what_command_envs_cannot_carry() {
     assert!(!env_ok(&[("A", "v"), ("B=", "v")]), "one bad pair among good ones");
 }
 
-/// Shield final fix wave I1: a command that writes a lot, late, on its standard output and error still
+/// A command that writes a lot, late, on its standard output and error still
 /// completes (they are `/dev/null`, never a pipe that closes under it) and its code is returned.
 #[test]
 fn run_silent_waits_and_a_late_writer_never_meets_a_closed_pipe() {

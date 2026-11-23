@@ -1,10 +1,34 @@
-//! The quick panel's acting Bluetooth connection on the loop (quick Bluetooth spec § 5): opened
-//! when the detail opens or a call goes out with an adapter seen, one level-triggered fd source
-//! while it lives, closed (the agent unregistered first) once the panel no longer wants it: the
-//! detail left with no call in flight, or the panel gone. When BlueZ goes or its owner changes, the
-//! connection is let go without a word (`bt_drop`): nothing is ever sent to an old unique name, the
-//! panel's action ends silently, and the next need opens a new one on the owner then there. Logs
-//! name an action and a D-Bus error name, never a device: BlueZ paths embed the address.
+//! The quick panel's acting Bluetooth connection, on the event loop: its whole life.
+//!
+//! This is the wiring half of the Bluetooth list; the model is `bt.rs`. The acting connection
+//! (`sources/dbus/bt_act.rs`) is opened when the detail opens or a call goes out with an adapter
+//! seen, as one level-triggered fd source while it lives, and closed (its agent unregistered first)
+//! once the panel no longer wants it: the detail left with no call in flight, or the panel gone.
+//! When BlueZ goes or its owner changes, the connection is let go without a word (`bt_drop`):
+//! nothing is ever sent to an old unique name, the panel's action ends silently, and the next need
+//! opens a new one on the owner then there.
+//!
+//! Never:
+//! - reach BlueZ except through that connection: it is named only here, in `quick/app.rs` (for its
+//!   field) and in `bt_act.rs` (guardrail `only_bt_app_and_bt_act_name_btact`), and what it can call
+//!   is a pinned list (guardrail `the_bluetooth_connection_acts_only_through_act_method`);
+//! - keep the connection beyond the panel's need, or unregister the agent from a BlueZ that went
+//!   (guardrail `the_bluetooth_connection_goes_with_the_panel`: it reads `bt_close`, `bt_drop`,
+//!   `bt_let_go`, `bt_readable` and `bt_run` here, and the panel's open, flush, tick and close paths
+//!   in `quick/app.rs`; `bt_let_go` removes the source without closing);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`, where this file's one entry is the
+//!   connection's fd source): the panel's one timer covers the deadlines;
+//! - put a device in a log line (guardrail `the_bluetooth_logs_name_no_device`): a line names an
+//!   action and a D-Bus error name, because BlueZ's object paths embed the device's address, and
+//!   the only thing formatted for a log with `Debug` is an `io::ErrorKind`;
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
+//!
+//! See: docs/specs/2026-10-20-alpheus-quick-settings-bluetooth-design.md,
+//! docs/features/quick-settings.md, and docs/decisions.md ("The Bluetooth acting connection opens
+//! with one blocking connect and asks for BlueZ's owner itself", "Bluetooth deadlines live in the
+//! panel, and a late answer is forgotten").
 
 use crate::log::write as log;
 use crate::popup::PopupBody;
@@ -17,24 +41,26 @@ use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, Mode as Trigger, PostAction};
 use std::time::Instant;
 
-/// What a call gets when no acting connection could be opened: the action shows `failed`.
+/// The error a call is answered with when no acting connection could be opened: the action shows
+/// `failed` (spec § 6).
 pub(crate) const NO_SERVER: &str = "org.freedesktop.DBus.Error.NoServer";
 
-/// The acting connection is wanted (spec § 5): a panel, and its detail open, an action or a code
-/// running, or a call still in flight (kept for its reply). Never without a panel: closing it sent
-/// its leaving orders first.
+/// Whether the acting connection is wanted (spec § 5): a panel, and its detail open, an action or a
+/// code running, or a call still in flight (kept for its reply). Never without a panel: closing it
+/// sent its leaving orders first.
 pub(crate) fn connection_wanted(q: Option<&Quick>, in_flight: usize) -> bool {
     q.is_some_and(|q| q.bt.wants_connection() || in_flight > 0)
 }
 
-/// The panel's view holds an adapter: BlueZ is there to be reached.
+/// Whether the panel's view holds an adapter: BlueZ is there to be reached.
 pub(crate) fn adapter_seen(q: &Quick) -> bool {
     q.bt.view.as_ref().is_some_and(|v| v.adapter.is_some())
 }
 
-/// These orders open a connection: a call among them, with an adapter seen. A reply or a forget
-/// never does: it belongs to the connection it came from; nor does a leaving call (`StopDiscovery`,
-/// `CancelPairing`): it undoes what a connection did, and with none there is nothing to undo.
+/// Whether these orders open a connection: a call among them, with an adapter seen. A reply or a
+/// forget never does: it belongs to the connection it came from; nor does a leaving call
+/// (`StopDiscovery`, `CancelPairing`): it undoes what a connection did, and with none there is
+/// nothing to undo.
 pub(crate) fn opens_for(orders: &[BtOrder], adapter_seen: bool) -> bool {
     let opening = |o: &BtOrder| match o {
         BtOrder::Call(ActCall::StopDiscovery { .. } | ActCall::CancelPairing { .. }) => false,
@@ -44,21 +70,29 @@ pub(crate) fn opens_for(orders: &[BtOrder], adapter_seen: bool) -> bool {
     adapter_seen && orders.iter().any(opening)
 }
 
-/// A call answered `Gone` on a connection still open: BlueZ left or was replaced without the
-/// connection seeing it close (a hand-over with no gap, a `NoReply` recheck finding another owner).
-/// The connection is let go, so the next need opens one on the owner there then.
+/// Whether an answer says the connection's owner is stale: `Gone` on a connection still open means
+/// BlueZ left or was replaced without the connection seeing it close (a hand-over with no gap, a
+/// `NoReply` recheck finding another owner). The connection is then let go, so the next need opens
+/// one on the owner there then.
 pub(crate) fn stale_owner(result: &Result<(), ActError>) -> bool {
     matches!(result, Err(ActError::Gone))
 }
 
-/// An agent request nobody can answer: with no panel, rejected at once (BlueZ's `Cancel` and
-/// `Release` were already acknowledged by the connection); None: the panel answers it.
+/// The reply to an agent request nobody can answer: with no panel, rejected at once (BlueZ's
+/// `Cancel` and `Release` were already acknowledged by the connection, so they get none); None: the
+/// panel answers it.
 pub(crate) fn unanswered(panel_shown: bool, request: &AgentRequest) -> Option<AgentReply> {
-    (!panel_shown && !matches!(request, AgentRequest::Cancel | AgentRequest::Release)).then_some(AgentReply::Rejected)
+    if panel_shown {
+        return None;
+    }
+    match request {
+        AgentRequest::Cancel | AgentRequest::Release => None,
+        _ => Some(AgentReply::Rejected),
+    }
 }
 
 /// The panel's own record (`Quick::note_failure`) that no acting connection could be opened this
-/// open: logged once, and the panel's syncs stop retrying (an action still tries, and shows
+/// open: it is logged once, and the panel's syncs stop retrying (an action still tries, and shows
 /// `failed`).
 const REFUSED: &str = "bluetooth connection";
 
@@ -74,8 +108,8 @@ pub(crate) fn note_lost(q: &mut Quick) {
     }
 }
 
-/// The panel's sync opens the connection: wanted, an adapter seen, and not already refused this
-/// open (a sync runs on every bar message: a refusing bus is not asked again each time).
+/// Whether the panel's sync opens the connection: wanted, an adapter seen, and not already refused
+/// this open (a sync runs on every bar message: a refusing bus is not asked again each time).
 pub(crate) fn opens_on_sync(q: Option<&Quick>, in_flight: usize) -> bool {
     connection_wanted(q, in_flight) && q.is_some_and(|q| adapter_seen(q) && !q.failed.iter().any(|p| p == REFUSED))
 }
@@ -92,7 +126,8 @@ pub(crate) enum SyncStep {
 
 /// The sync's step: with a connection (`connected`), dropped once the row hides (BlueZ gone, the
 /// domain out: whichever of the bar's state and the panel's view says it first), closed once no
-/// longer wanted; without one, opened by `opens_on_sync` while the row shows.
+/// longer wanted; without one, opened by `opens_on_sync` while the row shows. The `match` below
+/// reads the first arm that fits, top to bottom.
 pub(crate) fn sync_step(q: Option<&Quick>, row_shown: bool, connected: bool, in_flight: usize) -> SyncStep {
     match connected {
         true if !row_shown => SyncStep::Drop,
@@ -111,7 +146,7 @@ fn panel(app: &App) -> Option<&Quick> {
 }
 
 impl App {
-    /// Opens the acting connection and its fd source; on any failure one line, and false.
+    /// Opens the acting connection and its fd source; on any failure one log line, and false.
     fn bt_open(&mut self) -> bool {
         let opened = BtAct::system().and_then(|mut act| act.watch_fd().map(|fd| (act, fd)));
         let (act, fd) = match opened {
@@ -122,7 +157,8 @@ impl App {
             }
         };
         // Level-triggered: `read` drains libdbus to its last message, so it never wakes the loop at
-        // rest.
+        // rest. `inserted` is None without an event loop handle, and Some of the insertion's result
+        // otherwise.
         let inserted = self.loop_handle.as_ref().map(|h| {
             h.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
                 app.bt_readable();
@@ -209,12 +245,14 @@ impl App {
     }
 
     /// The connection's fd is readable (or a flush read for it): every event of a batch handled in
-    /// order, the actions they produce taken only after the batch (an action may run
-    /// orders, which read again; nested, newer events would be handled before older ones), until a
-    /// read brings nothing more; then the tap and the connection follow the panel. Once the
-    /// connection goes mid-batch, the rest of the batch was its own: dropped.
+    /// order, the actions they produce taken only after the batch (an action may run orders, which
+    /// read again; nested, newer events would be handled before older ones), until a read brings
+    /// nothing more; then the tap and the connection follow the panel. Once the connection goes
+    /// mid-batch, the rest of the batch was its own: dropped.
     pub(crate) fn bt_readable(&mut self) {
         let now = Instant::now();
+        // `map` reads from the connection if there is one, `filter` keeps a batch that is not empty:
+        // the loop ends when the connection is gone or a read brings nothing.
         while let Some(events) = self.quick.bt_act.as_mut().map(BtAct::read).filter(|e| !e.is_empty()) {
             let mut later = Vec::new();
             // A lost connection answers its calls `Gone`, then `Closed`: that one is let go there.
@@ -338,7 +376,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn connection_wanted_table() {
+    fn the_connection_is_wanted_while_the_detail_is_open_an_action_runs_or_a_call_is_in_flight() {
         let (t, bar) = (Instant::now(), bar_bt_on());
         let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
@@ -409,7 +447,7 @@ pub(crate) mod tests {
     /// The bar's row hiding (BlueZ gone) drops the connection without a word, even
     /// when the panel's view has not said so yet; otherwise it closes once no longer wanted.
     #[test]
-    fn a_sync_drops_closes_or_opens() {
+    fn a_sync_drops_closes_opens_or_keeps_the_connection() {
         let (t, bar) = (Instant::now(), bar_bt_on());
         let live = quick::live(&bar, &crate::notify::dnd::Dnd::default());
         let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);

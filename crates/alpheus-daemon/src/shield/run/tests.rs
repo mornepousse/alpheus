@@ -1,3 +1,6 @@
+//! Tests of the Shield runner (`run.rs`): the exit code a command reports, a listing parsed on the
+//! worker, and the worker delivering exactly once. A fake executor stands in for every program.
+
 use super::*;
 use alpheus_common::exec::fake::FakeExecutor;
 use alpheus_common::exec::{Captured, Output};
@@ -23,7 +26,7 @@ fn a_switch_reports_the_exit_code_and_keeps_no_output() {
     let m = run_job(&fake, Job::Switch(true), 4, &argv(&["fake-shield", "on"]));
     assert_eq!(m, ShieldMail::Done { job: Job::Switch(true), generation: 4, outcome: RunOutcome::Exited(Some(126)), listed: None });
     assert_eq!(fake.calls(), ["fake-shield on"], "run once");
-    assert!(fake.capture_limits().is_empty(), "an action is never a capture (final fix wave I1): its output is dropped, not piped");
+    assert!(fake.capture_limits().is_empty(), "an action is never a capture: its output is dropped, not piped");
     // A signal.
     fake.capture_ok("fake-shield off", Captured { stdout: vec![], end: CaptureEnd::Exited(None) });
     assert_eq!(outcome(&run_job(&fake, Job::Switch(false), 5, &argv(&["fake-shield", "off"]))), RunOutcome::Exited(None));

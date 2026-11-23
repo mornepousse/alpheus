@@ -76,7 +76,7 @@ fn locale_first_day_reads_lc_time() {
     };
     // The host's archive decides what is there: a locale it lacks is skipped.
     for (lc_all, expected, why) in [
-        ("fr_FR.UTF-8", MONDAY, "Mae's LC_TIME"),
+        ("fr_FR.UTF-8", MONDAY, "the author's LC_TIME"),
         ("en_US.UTF-8", SUNDAY, "en_US"),
         ("C.UTF-8", MONDAY, "C.UTF-8 says Sunday by saying nothing"),
     ] {

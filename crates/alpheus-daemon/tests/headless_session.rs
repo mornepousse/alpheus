@@ -260,7 +260,7 @@ fn toggle_opens_and_closes_the_launcher() {
     // close is idempotent: answered, nothing to close.
     assert_eq!(launcher(&sway, &Request::Close), Reply::Done);
     assert_eq!(launcher(&sway, &Request::Close), Reply::Done);
-    // Mod+Space twice quickly (the Hyprland press-bind refire, Mae
+    // Mod+Space twice quickly (the Hyprland press-bind refire,
     // 2026-10-06): the box opens, and the second Toggle — arriving within
     // TOGGLE_DEBOUNCE — is still answered Done (alpheus-launch exits 0) but
     // must NOT close the box back down. This replaces the previous
@@ -1491,7 +1491,7 @@ fn steam_left_click_opens_the_menu() {
     assert!(item.calls().iter().any(|c| c.contains("Activate")), "Activate tried first: {:?}", item.calls());
 }
 
-/// Mae (2026-10-06): a click on the icon whose menu is shown, with the button that opened it,
+/// 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click on the icon whose menu is shown, with the button that opened it,
 /// only closes it. Steam's menu opens from a failed left-click Activate; the SAME left click again
 /// must only close it — no new Activate, no flicker.
 #[test]
@@ -1739,7 +1739,7 @@ fn the_launcher_and_a_menu_are_never_open_together() {
     assert!(closed < shown, "never both: {:?}", d.log());
 }
 
-/// Mae (2026-10-05): a second right click on the icon closes its menu; it does not reopen it.
+/// 2026-10-05 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a second right click on the icon closes its menu; it does not reopen it.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_second_right_click_closes_the_menu() {
@@ -1772,7 +1772,7 @@ fn a_quick_right_click_after_closing_reopens_the_menu() {
     assert!(d.wait_for_count("menu shown", 2, DELAY), "the quick right click reopens it: {:?}", d.log());
 }
 
-/// Mae's "at most 2 s" from the click: every call answered within its own 2 s, but the layout lands
+/// The "at most 2 s" from the click: every call answered within its own 2 s, but the layout lands
 /// 3 s after the request — the menu is not shown.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1793,7 +1793,7 @@ fn a_menu_answering_after_2_s_is_not_shown() {
 }
 
 /// The session bus dying while a menu is shown must close that popup (never
-/// leave the bar stuck `Exclusive`, holding Mae's keyboard for good).
+/// leave the bar stuck `Exclusive`, holding the keyboard for good).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_dead_session_bus_closes_an_open_menu() {
@@ -1945,7 +1945,7 @@ fn survives(d: &mut Daemon, after: &str) {
     assert!(!d.log().iter().any(|l| l.contains("panicked")), "the bar panicked after {after}: {:?}", d.log());
 }
 
-/// Mae's crash (2026-10-06, 2026-10-09: "RefCell already borrowed" in calloop, then an abort):
+/// The crash of 2026-10-06 and 2026-10-09: "RefCell already borrowed" in calloop, then an abort):
 /// a key that repeats (any letter, Right…) arms SCTK's repeat timer; once its delay has passed,
 /// the timer is gone but its token stays in the keyboard's data. The keyboard released after that,
 /// with no key arming a new timer (an outside click, a Toggle), had its last reference dropped
@@ -1958,7 +1958,7 @@ fn a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive() {
     let (sway, _hypr, mut d) = clock_bar("keyboard-drop", "");
     ready(&d);
     // The calendar, then Right (a repeating key), then past sway's 600 ms repeat delay an outside
-    // click: "popup closed (outside click)", as in Mae's journal.
+    // click: "popup closed (outside click)", as in the crash's journal.
     sway.click(40, 10, "button1");
     assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
     let held = wtype_spawn(&sway, &["-s", "300", "-k", "Right", "-s", "2500"]);
@@ -1983,7 +1983,7 @@ fn a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive() {
     }
 }
 
-/// The closes of Mae's daily use, many times in a row: Enter (a script menu answered) and Escape
+/// The closes of daily use, many times in a row: Enter (a script menu answered) and Escape
 /// on the launcher, then an outside click on the calendar after Right's repeat delay. The bar must
 /// outlive all of them. (A close by a repeating key arms a fresh repeat timer that keeps the
 /// keyboard's data alive past the `delete_id`, so those 60 closes alone never crashed; the last
@@ -3842,7 +3842,7 @@ fn a_notification_arriving_while_the_panel_is_open_shows_in_it_read() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// Mae's keyboard crash (see `a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive`),
+/// The keyboard crash (see `a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive`),
 /// through the panel, whose Down then a click outside is its likeliest trigger: (a) the panel
 /// closed by an outside click past Down's repeat delay, wtype still alive; (b) reopened, Down,
 /// wtype gone (`keyboard_lost`), then the outside click.
@@ -3903,7 +3903,7 @@ fn without_a_card_opening_and_arrivals_mark_read_at_once() {
     no_card_marks_read("panel-no-card", BELL_BAR);
 }
 
-/// The same with the tray, as Mae runs it: the server then lives on the tray's connection, and the
+/// The same with the tray, as a daily setup runs it: the server then lives on the tray's connection, and the
 /// tray's output (not the link's) is what refreshes the open panel.
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
@@ -4178,7 +4178,8 @@ fn osd_the_pill_never_takes_a_click() {
 fn osd_the_microphone_and_a_default_sink_switch_show_their_pills() {
     // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
     let (sway, _hypr, d) = osd_daemon("osd-mic", 1, "timeout_ms = 5000\n", |_| ());
-    // Mae (2026-10-09): a call's gain control moving the microphone's level shows nothing.
+    // A call's gain control moving the microphone's level shows nothing (decisions.md, "The
+    // microphone pill shows only when its mute flips").
     for level in [80, 65, 90] {
         pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, level, false));
     }
@@ -4385,6 +4386,70 @@ fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
     assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
 }
 
+/// The pill is made on the focused output and follows the focus only when its content changes
+/// (decisions.md, "The pill follows the focused output only when its content changes"): the same
+/// brightness asked again after the focus moved stays where it is; another content goes to the
+/// focused output.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_pill_stays_put_when_the_focus_moves_until_its_content_changes() {
+    let (sway, hypr, d) = osd_daemon("osd-focus", 2, "timeout_ms = 5000\n", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("osd surface on HEADLESS-2: brightness 50%", DELAY), "the fixture's focused output: {:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(osd_brightness(&sway), EXIT_OK, "the same row again");
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("osd surface on"), 1, "the focus alone moves nothing: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_some()), "still there: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-1: volume 90%", DELAY), "other content: to the focused output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()));
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_none()), "and only there");
+}
+
+/// Another output's unplugging leaves the pill where it is.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_another_output_going_away_leaves_the_pill() {
+    let (sway, _hypr, mut d) = osd_daemon("osd-unplug", 2, "timeout_ms = 5000\n", |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-2: volume 90%", DELAY), "the fixture's focused output: {:?}", d.log());
+    sway.command("output HEADLESS-1 disable");
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("osd surface dropped"), 0, "the pill was on the other output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_some()), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {:?}", d.log());
+}
+
+/// The output the pill is on going away drops it. Sway may send the layer surface's `closed`
+/// before the daemon sees the output removed, so either reason is accepted.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_pills_own_output_going_away_drops_it() {
+    let (sway, _hypr, mut d) = osd_daemon("osd-unplug-own", 2, "timeout_ms = 5000\n", |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-2: volume 90%", DELAY), "the fixture's focused output: {:?}", d.log());
+    sway.command("output HEADLESS-2 disable");
+    assert!(d.wait_for("osd surface dropped (", DELAY), "the pill's own output went: {:?}", d.log());
+    let log = d.log().join("\n");
+    assert!(
+        log.contains("osd surface dropped (output gone") || log.contains("osd surface dropped (closed by the compositor"),
+        "either the output's removal or the compositor's close: {log}"
+    );
+    assert_eq!(d.count("osd surface dropped"), 1, "dropped once: {log}");
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {log}");
+}
+
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";
 /// A press on the volume module: the first one, from cell 1.
 const VOLUME_AT: (u32, u32) = (16, 10);
@@ -4398,8 +4463,13 @@ fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Dae
 
 /// `quick_daemon` with its own `modules` line.
 fn quick_daemon_on(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    quick_daemon_on_outputs(name, 1, modules, extra)
+}
+
+/// `quick_daemon_on` on `outputs` screens (the fake Hyprland's focused output is HEADLESS-2).
+fn quick_daemon_on_outputs(name: &str, outputs: u32, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     let bus = PrivateBus::start(name);
-    let sway = Sway::start(name, 1);
+    let sway = Sway::start(name, outputs);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
@@ -4413,6 +4483,9 @@ fn quick_daemon_on(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway,
         DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
     let d = start_daemon_with(&sway, &options);
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    for output in 2..=outputs {
+        assert!(d.wait_for(&format!("bar placed on HEADLESS-{output}"), DELAY), "{:?}", d.log());
+    }
     thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read, the bar drawn
     (bus, sway, hypr, d)
 }
@@ -4446,7 +4519,7 @@ fn quick_volume_bar(s: &Ppm) -> Vec<[u8; 3]> {
 }
 
 /// Quick spec § 1, § 3, § 7: a left click on the volume opens the panel at the volume row; → sets
-/// the volume through wpctl (84 % + 5, fix S1: an absolute level), then ↓ → the brightness through
+/// the volume through wpctl (84 % + 5, an absolute level), then ↓ → the brightness through
 /// brightnessctl (50 % + 5), on the configured device.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -4462,7 +4535,7 @@ fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_br
         recorded(&sway, "wpctl"),
         d.log()
     );
-    // Fix S1: two → 40 ms apart, inside one window (the fake wpctl moves nothing: from 84 % again
+    // Two → 40 ms apart, inside one window (the fake wpctl moves nothing: from 84 % again
     // once the last window ended): the first goes at once, the second waits, and the timer sends it,
     // 94 %. (wtype's first key needs the lead-in `keys` gives it too.)
     thread::sleep(Duration::from_millis(400));
@@ -4589,7 +4662,7 @@ fn wakeups_over_a_batch(sway: &Sway, d: &Daemon, batch: &str) -> u64 {
     d.main_thread_wakeups().saturating_sub(before)
 }
 
-/// Fix I1: closing the panel takes the sound thread back to its own scope. Open, a sink unplugged
+/// Closing the panel takes the sound thread back to its own scope. Open, a sink unplugged
 /// that is not the default changes the list, published and drawn (a wake-up); closed, the same
 /// change is no news to the bar (no `osd`: `Scope::Bar`) and wakes nothing.
 #[test]
@@ -4657,6 +4730,39 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     drop(typist);
     thread::sleep(Duration::from_secs(1)); // the virtual keyboard's capability going settles
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
+}
+
+/// Quick spec § 1: the verb opens the panel under the bar of the focused output, whichever it is:
+/// HEADLESS-2 (the fake Hyprland's own), then HEADLESS-1 once the focus moved. Before the verb,
+/// neither screen shows a panel.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon (nix develop)"]
+fn quick_the_verb_opens_under_the_bar_of_the_focused_output() {
+    let (_bus, sway, hypr, d) = quick_daemon_on_outputs("quick-focused", 2, QUICK_BAR, "");
+    for output in ["HEADLESS-1", "HEADLESS-2"] {
+        let screen = sway.screenshot(output).expect("grim");
+        assert!(!quick_drawn_on_the_right(&screen), "{output}: the check bites only if no panel is there yet");
+    }
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("quick shown (rows: volume", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", quick_drawn_on_the_right), "the focused output: {:?}", d.log());
+    let other = sway.screenshot("HEADLESS-1").expect("grim");
+    assert!(!quick_drawn_on_the_right(&other), "nothing on the other output");
+    // The verb again closes it (past the debounce); the focus moves; the verb opens it on the other.
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| !quick_drawn_on_the_right(s)), "closed: {:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    // A fixed wait: the daemon logs nothing when its focused output changes and nothing on screen
+    // shows it has read the event, so there is no condition to wait on.
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", quick_drawn_on_the_right), "the focus moved: {:?}", d.log());
+    let first = sway.screenshot("HEADLESS-2").expect("grim");
+    assert!(!quick_drawn_on_the_right(&first), "nothing on the output that lost the focus");
 }
 
 /// Twice the daemon's TOGGLE_DEBOUNCE (250 ms, crate-private): a verb that really toggles.
@@ -4894,7 +5000,7 @@ fn close_the_panel(sway: &Sway, d: &Daemon) {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// Mae's ruling P1: the panel closed during an attempt on a new network does not abandon it. The
+/// Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the panel closed during an attempt on a new network does not abandon it. The
 /// fake NetworkManager makes its profile (seen while the panel was open), then says nothing more:
 /// at the 20 s timeout (the panel's one timer, still armed for that attempt alone) the failure is
 /// logged once and the profile deleted. Then nothing is read, nothing wakes.
@@ -4917,7 +5023,7 @@ fn quick_wifi_closed_during_a_failing_new_network_attempt_still_deletes_its_prof
     assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
 }
 
-/// Mae's ruling: the panel reopened from the network module while an attempt
+/// Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the panel reopened from the network module while an attempt
 /// is followed takes it back and opens the detail at once (its rescan), with no second attempt and
 /// no word to the D-Bus thread (the tap stays on the detail: nothing removed, nothing re-read).
 /// The attempt then times out in the reopened panel: one failure line, one delete.
@@ -4957,7 +5063,7 @@ fn quick_wifi_a_panel_reopened_during_a_followed_attempt_takes_it_back_on_the_de
     assert!(no_ssid_logged(&d), "{:?}", d.log());
 }
 
-/// Mae's ruling P1: the panel closed during an attempt on a new network that succeeds: the follower
+/// Decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the panel closed during an attempt on a new network that succeeds: the follower
 /// hears NetworkManager's word after the close (the profile made, then activated) and ends there,
 /// so nothing is deleted and no failure is logged, even past the 20 s timeout; then nothing is
 /// read, nothing wakes.
@@ -5329,7 +5435,7 @@ fn a_hung_source_is_killed_and_nothing_stays_awake() {
     assert_eq!(rest_over_5_s(&d), 0, "the loop woke at rest after an open that ran sources");
 }
 
-/// Mango and Sway spec § 6: the Sway fixtures come from THIS isolated headless sway, never Mae's
+/// Mango and Sway spec § 6: the Sway fixtures come from THIS isolated headless sway, never the user's
 /// session. Two outputs; on workspace 1, two windows (a then b, a focused last); on the named
 /// workspace "music", a floating c (urgent) and d moved to the scratchpad. With
 /// ALPHEUS_CAPTURE_SWAY=<directory>, writes the three replies there (once, to make them); always checks
@@ -5429,7 +5535,7 @@ fn under_sway_the_launcher_lists_and_focuses_a_window() {
 /// Launcher 2, `--windows`: the switcher opens on the previous window (Enter focuses it), a second
 /// `--windows` while it is open steps to the next one, and none of it scans. Three windows opened
 /// in order a, b, c: Sway's order is b, a, c (the fake `wm-set` focuses nothing, so it stays). A
-/// `--windows` right after the open is the press-bind refire and is ignored (final review); past
+/// `--windows` right after the open is the press-bind refire and is ignored; past
 /// the debounce two quick ones step twice.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -5472,7 +5578,7 @@ fn windows_focuses_the_previous_window_then_steps() {
     assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
 }
 
-/// Final review: with both of the box's buffers still held by the compositor, a draw waits for a
+/// With both of the box's buffers still held by the compositor, a draw waits for a
 /// release instead of allocating, and is done then. Three `--windows` sent back to back go round
 /// the three windows to where two paced ones led: the screen must show that last selection, not a
 /// frame left behind by the burst.
@@ -5621,7 +5727,7 @@ fn power_off_asks_then_a_second_enter_after_half_a_second_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Power spec § 2, § 5 (Mae's ruling): two Enters 0.1 s apart never confirm. Nothing runs, the menu
+/// Power spec § 2, § 5 (docs/decisions.md, "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s"): two Enters 0.1 s apart never confirm. Nothing runs, the menu
 /// stays open with its question; a third Enter, past 0.4 s and inside 3 s, runs it.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5821,6 +5927,23 @@ fn resources_down_enter_runs_the_monitor() {
     assert!(!d.log().iter().any(|l| l.contains("fake-monitor")), "the command never reaches the log: {:?}", d.log());
 }
 
+/// A left press on the `Monitor…` row runs the command through the fake and closes the popup, and
+/// a press on the row above it (a blank one) does nothing: the pointer's cell row is the popup's
+/// own row, counted from its header. The box's rows are 22 px each under the 22 px bar and the
+/// frame's ≈ 7 px, so row 11 (`Monitor…`) is at y 271 to 293.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn resources_a_left_press_on_the_monitor_row_runs_it() {
+    let (sway, _hypr, d) = resources_daemon("resources-press");
+    resources_open(&sway, &d, 1);
+    sway.click(60, 260, "button1");
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-monitor").is_empty(), "the blank row above Monitor… ran nothing: {:?}", d.log());
+    sway.click(60, 282, "button1");
+    assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+}
+
 /// Resources popup spec § 1: Escape closes the popup; a right click on the module then runs the
 /// monitor once and opens no popup.
 #[test]
@@ -5832,6 +5955,7 @@ fn resources_escape_closes_and_right_click_runs_the_monitor() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
     assert!(recorded(&sway, "fake-monitor").is_empty(), "the left click ran nothing");
+    assert_eq!(d.count("resources: monitor"), 0, "nor logged the monitor entry: {:?}", d.log());
     sway.click(POWER_AT.0, POWER_AT.1, "button3");
     assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
     thread::sleep(Duration::from_millis(500));
@@ -6105,7 +6229,7 @@ fn dnd_while_sharing_follows_a_hyprland_screencast() {
     assert!(!file.exists(), "the file is gone");
 }
 
-/// Decision 7 (controller's ruling): a timed do-not-disturb that ends while a screen is shared
+/// Small features 1, decision 7: a timed do-not-disturb that ends while a screen is shared
 /// hands over to sharing, so it stays on, and the cast's end turns it off.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -6872,7 +6996,7 @@ fn timer_popup_verb_opens_and_closes_it() {
     assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
 }
 
-/// Ruling (final review M3): an end seen in the open popup is seen. The popup is open when a
+/// An end seen in the open popup is seen. The popup is open when a
 /// countdown ends and is closed afterwards; the next verb then finds nothing to dismiss (without
 /// the `Seen` at close, `skip` would have dismissed `done` and logged nothing).
 #[test]
@@ -7115,7 +7239,7 @@ fn a_refused_notes_file_opens_read_only() {
     assert_eq!(std::fs::read(&file).unwrap(), before, "never rewritten");
 }
 
-/// Final review (I2): a close whose save fails keeps the text in memory; the next open shows it
+/// A close whose save fails keeps the text in memory; the next open shows it
 /// instead of the file, and its close (no key typed) writes it once the directory accepts it.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -7234,7 +7358,7 @@ fn notes_a_kept_text_after_an_own_save_is_still_kept() {
     assert_eq!(d.count("kept edit dropped"), 0, "{:?}", d.log());
 }
 
-/// Final review: a SIGTERM before the autosave (an edit younger than 2 s) still writes the pad: the
+/// A SIGTERM before the autosave (an edit younger than 2 s) still writes the pad: the
 /// daemon's shutdown closes it, and every close saves.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -7793,7 +7917,7 @@ fn clipboard_clear_keeps_pins() {
     clip_no_leak(&d);
 }
 
-/// Mod+Space's `"` prefix (an opening ruling): the history's rows through the all-modes launcher,
+/// Mod+Space's `"` prefix: the history's rows through the all-modes launcher,
 /// Enter copies back with no new entry.
 #[test]
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
@@ -8161,7 +8285,7 @@ fn shield_status_and_allow_verbs() {
     assert!(w.record().len() > before, "the two reads happened: {:?}", w.record());
 }
 
-/// The picker stayed open while the mode went off (final fix wave B3): the chosen device is not
+/// The picker stayed open while the mode went off: the chosen device is not
 /// allowed, the client hears why (exit 2) and nothing runs.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]

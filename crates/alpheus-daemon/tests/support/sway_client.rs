@@ -1,4 +1,4 @@
-//! Test-only tools for THIS test's isolated headless sway (its own runtime directory, never Mae's
+//! Test-only tools for THIS test's isolated headless sway (its own runtime directory, never the user's
 //! session): `Sway::ipc_raw` sends one raw i3-ipc message on this sway's own IPC socket and
 //! returns the reply's payload (the Sway fixtures are captured with it); `TestWindow` maps a plain
 //! xdg toplevel (the headless sway has no client of its own, and the dev shell no terminal).

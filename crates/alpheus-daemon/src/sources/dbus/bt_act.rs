@@ -1,10 +1,11 @@
 //! Bluetooth's acting connection (quick settings delivery 3, spec § 5): the only place alpheus
-//! changes anything on BlueZ. Its own private connection to the system bus, never blocking after
-//! the connect, opened only while the panel's Bluetooth detail is open or a call is in flight. Every
-//! call is a typed `ActCall`, built in ONE place (`build`) from the pinned `ActMethod` list, sent to
-//! `org.bluez`'s unique name (read first with `GetNameOwner`, calls queued meanwhile) with
-//! auto-start off: nothing outside the list can reach BlueZ, and no call can start it. Answers are
-//! matched by reply serial; the read connection (`bt.rs`) stays read only.
+//! changes anything on BlueZ. Its own private connection to the system bus: reads never block, the
+//! connect and the writes do, as the tray's session connection does; opened only while the panel's
+//! Bluetooth detail is open or a call is in flight. Every call is a typed `ActCall`, built in ONE
+//! place (`build`) from the pinned `ActMethod` list, sent to `org.bluez`'s unique name (read first
+//! with `GetNameOwner`, calls queued meanwhile) with auto-start off: nothing outside the list can
+//! reach BlueZ, and no call can start it. Answers are matched by reply serial; the read connection
+//! (`bt.rs`) stays read only.
 
 use super::{BLUEZ, BUS_DRIVER, BUS_DRIVER_PATH, PROPERTIES};
 use crate::pipewire::drawable;

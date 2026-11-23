@@ -1,12 +1,24 @@
-//! USBGuard's `list-devices` text (shield spec § 6), read by alpheus itself: the blocked devices a
-//! `[shield] blocked` command prints. Pure: bytes in, devices out. A device's name comes from a
-//! hostile source (a USB descriptor), so it is read at token level, cleaned, cut and never logged.
+//! USBGuard's `list-devices` text, read by alpheus itself: the blocked devices a `[shield] blocked`
+//! command prints.
+//!
+//! Bytes go in and devices come out, so nothing here starts anything or reads a file. A device's
+//! name comes from a USB descriptor, so it is hostile text: it is read at token level (shield spec
+//! § 6), cleaned, cut to a length and never logged.
+//!
+//! Never:
+//! - start a thread or a command, or read a file (`run.rs` runs the command and hands the bytes);
+//! - write a log line, or panic: guardrail tests (`the_shield_logs_name_nothing`,
+//!   `the_shield_files_have_no_panicking_path`) read this file's code.
+//!
+//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§ 6), docs/features/shield.md, and
+//! docs/decisions.md ("The picker line starts with the checked vendor and product ids").
 
 /// At most this many devices are kept.
 pub const DEVICES_MAX: usize = 64;
 /// A device name is cut to this many characters.
 pub const NAME_CHARS: usize = 64;
 
+/// One blocked device: USBGuard's id for it, its `vid:pid` and its cleaned name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsbDevice {
     pub id: u32,
@@ -14,6 +26,7 @@ pub struct UsbDevice {
     pub name: String,
 }
 
+/// The devices of one listing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Parsed {
     pub devices: Vec<UsbDevice>,
@@ -21,7 +34,8 @@ pub struct Parsed {
     pub more: bool,
 }
 
-/// The blocked devices in `out`: lossy UTF-8 per line, only `<id>: block id <vid:pid> …` lines.
+/// The blocked devices in `out`: lossy UTF-8 per line (invalid bytes become U+FFFD rather than an
+/// error), only `<id>: block id <vid:pid> …` lines.
 pub fn parse_blocked(out: &[u8]) -> Parsed {
     let mut parsed = Parsed::default();
     for raw in out.split(|b| *b == b'\n') {
@@ -82,48 +96,74 @@ fn tokens(s: &str) -> Vec<Token> {
     out
 }
 
-fn is_vid_pid(s: &str) -> bool {
-    let hex4 = |h: &str| h.len() == 4 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    s.split_once(':').is_some_and(|(v, p)| hex4(v) && hex4(p))
+/// Whether `text` is a vendor and product id: two groups of four lower-case hex digits around `:`.
+fn is_vid_pid(text: &str) -> bool {
+    let four_hex_digits = |group: &str| group.len() == 4 && group.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    match text.split_once(':') {
+        Some((vendor, product)) => four_hex_digits(vendor) && four_hex_digits(product),
+        None => false,
+    }
 }
 
+/// Whether the token at `index` is the bare (unquoted) word `word`. A quoted string never counts,
+/// so a device name cannot pose as the word block, id or name.
+fn is_bare_word(tokens: &[Token], index: usize, word: &str) -> bool {
+    match tokens.get(index) {
+        Some(token) => !token.quoted && token.text == word,
+        None => false,
+    }
+}
+
+/// The value of the `name` attribute: the quoted token right after a bare `name` token, else "".
+/// Text inside another attribute's quoted value is one token of its own, so it is never found here.
+fn name_value(tokens: &[Token]) -> &str {
+    for pair in tokens.windows(2) {
+        if let [key, value] = pair {
+            if !key.quoted && key.text == "name" && value.quoted {
+                return value.text.as_str();
+            }
+        }
+    }
+    ""
+}
+
+/// One line of the listing as a device, or None when it is not a `<id>: block id <vid:pid> …` line.
 fn parse_line(line: &str) -> Option<UsbDevice> {
     let (id, rest) = line.trim_start().split_once(": ")?;
+    // The id is 1 to 10 digits that fit a `u32` (shield spec § 6).
     if id.is_empty() || id.len() > 10 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let id: u32 = id.parse().ok()?;
-    let toks = tokens(rest);
-    let bare = |i: usize, w: &str| toks.get(i).is_some_and(|t| !t.quoted && t.text == w);
-    if !bare(0, "block") || !bare(1, "id") {
+    let tokens = tokens(rest);
+    if !is_bare_word(&tokens, 0, "block") || !is_bare_word(&tokens, 1, "id") {
         return None;
     }
-    let vid_pid = toks.get(2).filter(|t| !t.quoted && is_vid_pid(&t.text))?.text.clone();
-    let name = toks
-        .windows(2)
-        .find_map(|w| match w {
-            [key, value] if !key.quoted && key.text == "name" && value.quoted => Some(value.text.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
-    let name: String = crate::text::clean(name).trim().chars().take(NAME_CHARS).collect();
+    let vid_pid = match tokens.get(2) {
+        Some(token) if !token.quoted && is_vid_pid(&token.text) => token.text.clone(),
+        _ => return None,
+    };
+    let name: String = crate::text::clean(name_value(&tokens)).trim().chars().take(NAME_CHARS).collect();
     let name = if name.trim().is_empty() { "?".to_string() } else { name };
     Some(UsbDevice { id, vid_pid, name })
 }
 
-/// `allow` with its `{id}` element replaced by the decimal id; None when `allow` is empty.
+/// `allow` with its `{id}` element replaced by the decimal id; None when `allow` is empty. Only a
+/// whole element equal to `{id}` is replaced: the id comes from a parsed line and goes into one
+/// argument, never into a larger one (shield spec § 2: `{id}` is one whole element).
 pub fn allow_argv(allow: &[String], id: u32) -> Option<Vec<String>> {
     if allow.is_empty() {
         return None;
     }
-    Some(allow.iter().map(|a| if a == "{id}" { id.to_string() } else { a.clone() }).collect())
+    Some(allow.iter().map(|element| if element == "{id}" { id.to_string() } else { element.clone() }).collect())
 }
 
 /// The picker's row: `<vid:pid>  ·  <name>`, no id. The checked `vid:pid` comes first, in a fixed
 /// width: a name (hostile text, cut at 64 characters) can never pose as one by ending in
-/// `(1234:5678)`, because the real one is always what the row starts with.
-pub fn picker_line(d: &UsbDevice) -> String {
-    format!("{}  ·  {}", d.vid_pid, d.name)
+/// `(1234:5678)`, because the real one is always what the row starts with. See docs/decisions.md,
+/// "The picker line starts with the checked vendor and product ids".
+pub fn picker_line(device: &UsbDevice) -> String {
+    format!("{}  ·  {}", device.vid_pid, device.name)
 }
 
 #[cfg(test)]

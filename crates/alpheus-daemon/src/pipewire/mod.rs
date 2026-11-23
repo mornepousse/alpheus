@@ -37,7 +37,7 @@ pub enum Scope {
     /// The bar alone (no `osd` module): the default sink's volume.
     Bar,
     /// The OSD too: also the default sink's node and label, the default source's node and mute
-    /// (never its level: the microphone pill shows on a mute flip only, Mae 2026-10-09).
+    /// (never its level: the microphone pill shows on a mute flip only, 2026-10-09).
     Osd,
     /// The quick panel is open: the OSD's, and the sink list.
     Panel,

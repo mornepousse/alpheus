@@ -1,8 +1,36 @@
-//! The quick panel's VPN (quick VPN spec), pure: the row's value, the profiles listed (active
-//! first, then by name, at most PROFILES_MAX), the exact `nmcli` commands to run and the connection
-//! attempt they start, followed to its end (`Attempt`). The state comes from the D-Bus thread
-//! (`sources/dbus/vpn.rs`) only while the panel is open. The detail's lines, keys, clicks and rows
-//! are here too; the row on the panel and the window over the lines are `quick.rs`'s.
+//! The quick panel's VPN: the row, the list of profiles behind it and the connection attempt.
+//!
+//! This is the pure half of the VPN list; the wiring is in `app.rs`. It holds the row's value, the
+//! profiles the detail lists (active first, then by name, at most `PROFILES_MAX`), the keys and
+//! clicks of the detail, the exact `nmcli` commands they ask for (as `QuickAction`s) and the
+//! connection attempt (`Attempt`), which NetworkManager's states and the clock follow to its end.
+//! The states come from the D-Bus thread (`sources/dbus/vpn.rs`) only while the panel is open. The
+//! row's place on the panel and the window over the lines belong to `mod.rs`, which hands this file
+//! its turn.
+//!
+//! Never:
+//! - write or create a file, or make a raw system call (guardrail
+//!   `the_quick_model_and_its_state_reader_only_read`);
+//! - run a command or start a thread (guardrail `the_tray_spawns_no_thread`, through its
+//!   `NO_THREAD_NOR_COMMAND` list), or arm a timer (the table of timer and thread tokens in
+//!   `nothing_resident_while_the_launcher_is_closed`): a command is handed back as a
+//!   `QuickAction`, and the wiring arms the panel's one timer from `Quick::deadline`, which includes
+//!   `Vpn::deadline`;
+//! - build a command other than `nmcli connection up|down uuid <uuid>` and the configured
+//!   `vpn_more` (guardrail `every_quick_command_stays_on_the_allowlist`, which checks every command
+//!   the panel builds against one allowlist; its VPN shapes are `connection up|down uuid`): no
+//!   `--ask`, no secret;
+//! - write a log line here: an attempt's `why` is a fixed phrase that the wiring logs, and a profile's
+//!   name, label or uuid is never in one (guardrail `the_vpn_logs_name_no_profile`, which reads the
+//!   VPN log lines of `sources/dbus/vpn.rs` and `quick/app.rs`, and this file);
+//! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
+//! - read a clock: the caller passes `now` (no guardrail checks it).
+//!
+//! See: docs/specs/2026-11-15-alpheus-quick-vpn-design.md, docs/features/quick-settings.md, and
+//! docs/decisions.md ("alpheus never handles a VPN secret", "Space on the VPN row takes the active
+//! profile down, else brings the last used one up", "A VPN attempt lives in the panel only, and
+//! taking a profile down is no attempt", "Several active connections for one VPN profile count by
+//! the most advanced state", "A row under connection reads `…`").
 
 use crate::actions::Button;
 use crate::config::QuickConfig;
@@ -13,21 +41,22 @@ use crate::quick::wifi::NM_GONE;
 pub use crate::quick::wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
 use crate::quick::{FAILED_TAG, Line, QuickAction, RUNNING_TAG, moved, nav, run, run_and_close, text_row};
 use crate::session;
-use crate::system::{VpnKind, VpnScope, VpnState};
+use crate::system::{VpnKind, VpnProfile, VpnScope, VpnState};
 use std::time::Instant;
 
 /// The most profiles the detail lists.
 pub const PROFILES_MAX: usize = 16;
 /// The row's value: at most this many cells of the active profile's name.
 pub const VALUE_CELLS: u16 = 16;
-/// md-shield-lock: a WireGuard profile's detail prefix.
+/// `md-shield-lock` (Nerd Font's Material Design set): a WireGuard profile's glyph in the detail.
 pub const WIREGUARD: char = '\u{f099d}';
-/// NMActiveConnectionState: activating, activated, deactivating.
+/// NMActiveConnectionState 1, 2, 3 and 4: activating, activated, deactivating, deactivated.
 pub const ACTIVATING: u32 = 1;
 pub const ACTIVATED: u32 = 2;
 pub const DEACTIVATING: u32 = 3;
+pub const DEACTIVATED: u32 = 4;
 
-/// Why an attempt failed, for the log (never a name or a uuid).
+/// Why an attempt failed, as the one log line says it: fixed phrases, never a name or a uuid.
 const ACTIVATION_FAILED: &str = "the activation failed";
 const NEEDS_SECRET: &str = "the connection may need a secret";
 const NO_ANSWER: &str = "no answer in 20 s";
@@ -43,7 +72,9 @@ pub struct Listed {
     pub state: Option<u32>,
 }
 
-/// A connection under way (`nmcli connection up`), followed by the panel until it ends.
+/// A connection under way (`nmcli connection up`), followed by the panel until it ends. See
+/// docs/decisions.md, "A VPN attempt lives in the panel only, and taking a profile down is no
+/// attempt".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub uuid: String,
@@ -69,33 +100,42 @@ pub enum Outcome {
     Failed(&'static str),
 }
 
-/// The state of `uuid`'s active connection, if it has one. Several (a down then an up: the old one
-/// may still be listed, deactivated, beside the new): the most advanced, activated before
-/// activating before deactivating before deactivated, so a stale entry never fails a fresh attempt.
-fn active_state(state: &VpnState, uuid: &str) -> Option<u32> {
-    let rank = |s: u32| match s {
+/// How far along an active connection's state is: the lower, the more advanced. Activated comes
+/// before activating, then deactivating, then deactivated, then anything else.
+fn advance_rank(state: u32) -> u8 {
+    match state {
         ACTIVATED => 0,
         ACTIVATING => 1,
         DEACTIVATING => 2,
-        4 => 3,
+        DEACTIVATED => 3,
         _ => 4,
-    };
-    state.active.iter().filter(|a| a.uuid == uuid).map(|a| a.state).min_by_key(|s| rank(*s))
+    }
 }
 
-/// 1, 2 or 3: an active connection of any kind (it sorts first in the detail).
+/// The state of `uuid`'s active connection, if it has one. Several (a down then an up: the old one
+/// may still be listed, deactivated, beside the new): the most advanced, so a stale entry no longer
+/// fails a fresh attempt once the new entry is listed. Known limit: a snapshot holding only the stale
+/// deactivated entry still fails the attempt at once. See docs/decisions.md, "Several active connections for one VPN profile
+/// count by the most advanced state".
+fn active_state(state: &VpnState, uuid: &str) -> Option<u32> {
+    state.active.iter().filter(|a| a.uuid == uuid).map(|a| a.state).min_by_key(|s| advance_rank(*s))
+}
+
+/// 1, 2 or 3: a connection that is activating, activated or deactivating (it sorts first in the
+/// detail).
 fn is_active(state: Option<u32>) -> bool {
     matches!(state, Some(ACTIVATING..=DEACTIVATING))
 }
 
 impl Attempt {
+    /// A failure, with the reason that says a secret may be missing when the profile asks for one.
     fn failure(&self) -> Outcome {
         Outcome::Failed(if self.asks { NEEDS_SECRET } else { ACTIVATION_FAILED })
     }
 
     /// NetworkManager's word: no state, or no profile, ends it; activated is done; activating is
-    /// noted; deactivating or deactivated (4), or, once it was activating, no active connection at
-    /// all, is a failure.
+    /// noted; deactivating or deactivated, or, once it was activating, no active connection at all,
+    /// is a failure.
     pub fn observe(&mut self, state: Option<&VpnState>) -> Outcome {
         let Some(state) = state else { return Outcome::Gone(NM_GONE) };
         if !state.profiles.iter().any(|p| p.uuid == self.uuid) {
@@ -107,7 +147,7 @@ impl Attempt {
                 self.activating = true;
                 Outcome::Waiting
             }
-            Some(DEACTIVATING | 4) => self.failure(),
+            Some(DEACTIVATING | DEACTIVATED) => self.failure(),
             None if self.activating => self.failure(),
             _ => Outcome::Waiting,
         }
@@ -119,7 +159,7 @@ impl Attempt {
         if self.until > now {
             return Outcome::Waiting;
         }
-        if state.and_then(|s| active_state(s, &self.uuid)) == Some(ACTIVATING) {
+        if self.still_activating(state) {
             let bound = self.started + ACTIVATION_BOUND;
             if now < bound {
                 self.until = bound;
@@ -129,9 +169,17 @@ impl Attempt {
         }
         Outcome::Failed(NO_ANSWER)
     }
+
+    /// The profile's active connection is activating in `state`.
+    fn still_activating(&self, state: Option<&VpnState>) -> bool {
+        match state {
+            Some(state) => active_state(state, &self.uuid) == Some(ACTIVATING),
+            None => false,
+        }
+    }
 }
 
-/// What the cursor is on in the detail.
+/// The detail's selection, kept by identity (the profile's uuid), not by position.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Pick {
     #[default]
@@ -140,28 +188,32 @@ pub enum Pick {
     More,
 }
 
+/// The panel's VPN, one field of `Quick`: dropped whole with the panel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Vpn {
     /// The D-Bus thread's last reading; None: not read, or NetworkManager gone.
     pub state: Option<VpnState>,
-    /// The detail is open.
+    /// The detail shows in place of the rows.
     pub open: bool,
     pub pick: Pick,
+    /// Opened with `--quick vpn`: the first state opens the detail.
     pub focus_pending: bool,
+    /// The connection under way.
     pub attempt: Option<Attempt>,
     /// The profile whose attempt failed, shown `failed` until that instant.
     pub failed: Option<(String, Instant)>,
 }
 
 impl Vpn {
-    /// The row shows with at least one profile.
+    /// The row shows: NetworkManager has at least one VPN or WireGuard profile.
     pub fn shows(&self) -> bool {
         self.state.as_ref().is_some_and(|s| !s.profiles.is_empty())
     }
 
-    /// The row's value: `failed` while an attempt's failure is shown (FAILED_SHOWN: one started by
-    /// Space on the row shows there), else the first activated profile's name (16 cells), `…` while
-    /// one is under way (activating, or deactivating: ruling 6), else `off`.
+    /// The row's value: `failed` for `FAILED_SHOWN` after any failed attempt, including one started
+    /// by Space on the row, else the first activated profile's name (16 cells), `…` while
+    /// one is under way (activating or deactivating, from the state itself: see docs/decisions.md,
+    /// "A VPN attempt lives in the panel only, and taking a profile down is no attempt"), else `off`.
     pub fn value(&self) -> String {
         if self.failed.is_some() {
             return FAILED_TAG.into();
@@ -186,28 +238,51 @@ impl Vpn {
         l
     }
 
-    /// The profiles the detail lists: `sorted`, cut to PROFILES_MAX.
+    /// The profiles the detail lists: `sorted`, cut to `PROFILES_MAX`.
     pub fn listed(&self) -> Vec<Listed> {
         let mut l = self.sorted();
         l.truncate(PROFILES_MAX);
         l
     }
 
-    /// Space on the row (rulings 2 and 3): the first activating or activated profile goes down,
-    /// else the last used one (the highest `last_used` over every profile read, even past the
-    /// 16 listed; ties and none: the first in the detail's order) comes up. Nothing while an
-    /// attempt runs.
+    /// The profile `uuid` in the last state read, if there is one.
+    fn profile(&self, uuid: &str) -> Option<&VpnProfile> {
+        let state = self.state.as_ref()?;
+        state.profiles.iter().find(|p| p.uuid == uuid)
+    }
+
+    /// When the profile `uuid` was last activated (NetworkManager's `connection.timestamp`); 0 when
+    /// it is not known.
+    fn last_used(&self, uuid: &str) -> u64 {
+        match self.profile(uuid) {
+            Some(p) => p.last_used,
+            None => 0,
+        }
+    }
+
+    /// Space on the row: the first activating or activated profile goes down, else the last used one
+    /// comes up. Nothing while an attempt runs. See docs/decisions.md, "Space on the VPN row takes
+    /// the active profile down, else brings the last used one up".
     pub fn toggle(&mut self, now: Instant) -> QuickAction {
         if self.attempt.is_some() {
             return QuickAction::Nothing;
         }
+        // Every profile read, not only the 16 the detail lists.
         let all = self.sorted();
-        let target = all.iter().find(|p| matches!(p.state, Some(ACTIVATING | ACTIVATED))).or_else(|| {
-            let used = |uuid: &str| self.state.as_ref().and_then(|s| s.profiles.iter().find(|p| p.uuid == uuid)).map_or(0, |p| p.last_used);
-            // The first maximum: `max_by_key` keeps the last one.
-            all.iter()
-                .fold(None, |best: Option<&Listed>, p| if best.is_none_or(|b| used(&p.uuid) > used(&b.uuid)) { Some(p) } else { best })
-        });
+        let mut target = all.iter().find(|p| matches!(p.state, Some(ACTIVATING | ACTIVATED)));
+        if target.is_none() {
+            // The first of the most recently used: a later profile takes over only when strictly
+            // more recent, so a tie keeps the first in the detail's order.
+            for p in &all {
+                let more_recent = match target {
+                    Some(best) => self.last_used(&p.uuid) > self.last_used(&best.uuid),
+                    None => true,
+                };
+                if more_recent {
+                    target = Some(p);
+                }
+            }
+        }
         match target {
             Some(p) => self.act(&p.uuid.clone(), p.state, now),
             None => QuickAction::Nothing,
@@ -230,7 +305,10 @@ impl Vpn {
             Some(ACTIVATING | ACTIVATED) => run(&["nmcli", "connection", "down", "uuid", uuid], "vpn down"),
             Some(DEACTIVATING) => QuickAction::Nothing,
             _ => {
-                let asks = self.state.as_ref().and_then(|s| s.profiles.iter().find(|q| q.uuid == uuid)).is_some_and(|q| q.asks);
+                let asks = match self.profile(uuid) {
+                    Some(p) => p.asks,
+                    None => false,
+                };
                 self.attempt =
                     Some(Attempt { uuid: uuid.to_string(), started: now, until: now + CONNECT_TIMEOUT, activating: false, asks });
                 self.failed = None;
@@ -242,7 +320,10 @@ impl Vpn {
     /// Enter, →, a click on the row: the detail, on the first profile listed.
     pub fn open_detail(&mut self) -> QuickAction {
         self.open = true;
-        self.pick = self.listed().into_iter().next().map_or(Pick::None, |p| Pick::Profile(p.uuid));
+        self.pick = match self.listed().into_iter().next() {
+            Some(p) => Pick::Profile(p.uuid),
+            None => Pick::None,
+        };
         QuickAction::Redraw
     }
 
@@ -261,9 +342,13 @@ impl Vpn {
     /// The D-Bus thread's state: kept, and the attempt followed. Returns why when the attempt
     /// failed or went (for the log).
     pub fn set_state(&mut self, state: Option<VpnState>, now: Instant) -> Option<&'static str> {
+        // The uuids listed before the change, in order, so the pick can move to a neighbour when its
+        // own profile goes.
         let before: Vec<String> = if self.open { self.listed().into_iter().map(|p| p.uuid).collect() } else { Vec::new() };
         self.state = state;
         self.pick_neighbour(&before);
+        // `?` after an `Option` ends the function with `None` when there is nothing: no attempt,
+        // nothing to follow.
         let outcome = self.attempt.as_mut()?.observe(self.state.as_ref());
         self.end(outcome, now)
     }
@@ -277,6 +362,7 @@ impl Vpn {
             return;
         }
         let Some(at) = before.iter().position(|u| u == picked) else { return };
+        // The profiles that followed it, then those before it nearest first.
         let neighbour = before[at + 1..].iter().chain(before[..at].iter().rev()).find(|u| now.contains(u));
         if let Some(u) = neighbour {
             self.pick = Pick::Profile(u.clone());
@@ -286,7 +372,11 @@ impl Vpn {
     /// At `now`: the attempt's deadline and the `failed` mark's end. Returns why the attempt failed
     /// and whether anything changed to redraw.
     pub fn due(&mut self, now: Instant) -> (Option<&'static str>, bool) {
-        let why = self.attempt.as_mut().map(|a| a.expired(self.state.as_ref(), now)).and_then(|o| self.end(o, now));
+        let mut why = None;
+        if let Some(attempt) = self.attempt.as_mut() {
+            let outcome = attempt.expired(self.state.as_ref(), now);
+            why = self.end(outcome, now);
+        }
         let redraw = session::expire(&mut self.failed, now);
         (why, redraw || why.is_some())
     }
@@ -316,6 +406,8 @@ impl Vpn {
 
     /// The attempt's deadline or the `failed` mark's end, whichever first.
     pub fn deadline(&self) -> Option<Instant> {
+        // The two candidates as `Option`s: `flatten` drops the empty one, `min` takes the first due
+        // (and is `None` when there is none).
         [self.attempt.as_ref().map(|a| a.until), self.failed.as_ref().map(|(_, at)| *at)].into_iter().flatten().min()
     }
 
@@ -326,7 +418,8 @@ impl Vpn {
     }
 }
 
-/// `[quick] vpn_more`, resolved at startup; unresolved (a test's default) or empty: no `More…`.
+/// `[quick] vpn_more`, resolved at startup; unresolved (what a test's default config gives) or
+/// empty: there is no `More…`.
 pub fn more(config: &QuickConfig) -> &[String] {
     config.vpn_more.as_deref().unwrap_or(&[])
 }
@@ -374,6 +467,7 @@ impl Vpn {
         v
     }
 
+    /// Whether `line` is the selected one (`listed` is `listed()`, which the caller already has).
     pub fn is_selected(&self, line: Line, listed: &[Listed]) -> bool {
         match (line, &self.pick) {
             (Line::VpnProfile(i), Pick::Profile(u)) => listed.get(i).is_some_and(|p| p.uuid == *u),
@@ -402,7 +496,10 @@ impl Vpn {
             _ => {}
         }
         let Some(to) = nav(k, at, picks.len()) else { return QuickAction::Nothing };
-        picks.into_iter().nth(to).map_or(QuickAction::Nothing, |p| moved(&mut self.pick, p))
+        match picks.into_iter().nth(to) {
+            Some(pick) => moved(&mut self.pick, pick),
+            None => QuickAction::Nothing,
+        }
     }
 
     /// A press on a detail line (the left button only): a profile is chosen and entered; `More…`
@@ -431,8 +528,8 @@ impl Vpn {
         }
     }
 
-    /// The tag after a profile's name: "…" during its attempt or while NetworkManager activates or
-    /// deactivates it (muted), "failed" (warn) for FAILED_SHOWN after, else nothing.
+    /// The tag after a profile's name: `…` (muted) during its attempt or while NetworkManager
+    /// activates or deactivates it, `failed` (warn) for `FAILED_SHOWN` after, else nothing.
     fn tag(&self, p: &Listed) -> (&'static str, Style) {
         if self.attempt.as_ref().is_some_and(|a| a.uuid == p.uuid) || matches!(p.state, Some(ACTIVATING | DEACTIVATING)) {
             (RUNNING_TAG, Style::MUTED)

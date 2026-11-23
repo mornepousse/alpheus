@@ -179,7 +179,7 @@ pub enum PeripheralKind {
 /// Some peripherals (Logitech's HID++ receivers among them) only report a
 /// coarse `BatteryLevel` — their `Percentage` is not to be trusted ("should
 /// be ignored", UPower's own words) — so the charge is one or the other,
-/// never both (Mae, 2026-10-05).
+/// never both (2026-10-05).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peripheral {
     pub kind: PeripheralKind,

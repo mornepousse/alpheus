@@ -869,7 +869,7 @@ mod tests {
         );
     }
 
-    /// Final fix wave M3: a directory created between the failed `add` and the parent's arm is found by
+    /// A directory created between the failed `add` and the parent's arm is found by
     /// the retry (its creation would otherwise never be reported by anyone).
     #[test]
     fn a_directory_created_while_the_parent_is_armed_is_found() {

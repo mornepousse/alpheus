@@ -7,7 +7,7 @@
 //! `delete_id`, which the Wayland source reads in calloop's `before_handle_events`, while calloop
 //! borrows its sources: if the map held the last reference then, the Drop re-borrows them and
 //! panics ("RefCell already borrowed"), which then poisons wayland-backend and aborts the bar
-//! (Mae's crash, 2026-10-06 and 2026-10-09, after a launcher or popup close).
+//! (the crash of 2026-10-06 and 2026-10-09, after a launcher or popup close).
 //!
 //! So a released keyboard is never just dropped: `Retired` holds a clone, and once no one else
 //! does (the map let go, the repeat timer's closure is gone), drops it after `dispatch` returns.

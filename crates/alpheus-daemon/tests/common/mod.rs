@@ -1,6 +1,6 @@
 //! Tools for the daemon's integration tests: a headless sway (a disposable
 //! Wayland compositor with virtual outputs), a fake Hyprland, the daemon
-//! launched with its log. Nothing touches Mae's session: a temporary run
+//! launched with its log. Nothing touches the user's session: a temporary run
 //! directory, a cleared environment, neither WAYLAND_DISPLAY nor the
 //! session's signature.
 //!
@@ -12,7 +12,7 @@
 //! all come from the same `coreutils` package, one `/nix/store/…/bin`), not
 //! guaranteed on a distribution that splits these tools across separate
 //! packages or directories (e.g. a minimal busybox `/bin`). This harness
-//! has only ever run on Mae's NixOS workstation; a non-NixOS contributor
+//! has only ever run on a NixOS workstation; a non-NixOS contributor
 //! hitting `coreutils_dir`'s assertions should read them as "this harness
 //! doesn't know your distribution's layout yet", not as a daemon bug.
 #![allow(dead_code)]

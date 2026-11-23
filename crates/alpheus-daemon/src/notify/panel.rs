@@ -1,24 +1,33 @@
-//! The notifications panel (spec § 4), pure. It shows:
+//! The notification panel: what it shows, how its selection moves, and what a key or a press on it
+//! asks for.
+//!
+//! This is the pure half of the panel. It shows:
 //! - the media card when a player is shown: the media popup's own rows, keys and press map;
 //! - the history, newest first, two lines an entry;
 //! - "Do not disturb ○/●" and "Clear all".
 //!
 //! It also holds the window over a history taller than the room, its keys and its mouse hit map.
-//! The popup (`PopupBody::Panel`), the D-Bus side and the bubbles are the wiring's: nothing here
-//! talks to a bus, starts a thread or runs a command.
+//! The other half, `panel_app.rs`, opens the popup (`PopupBody::Panel`), reads the server and the
+//! players, and carries out the action this file answers with.
+//!
+//! Never:
+//! - talk to a bus, start a thread or run a command;
+//! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
+//!
+//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4 and docs/features/notifications.md.
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Row};
-use crate::media::Players;
-use crate::media::popup::{self as media_popup, MediaAction, MediaPopup};
+use crate::media::popup::{MediaAction, MediaPopup};
+use crate::media::{self, Players};
 use crate::notify::bubbles::{DEFAULT_ACTION, clock};
 use crate::notify::{Center, Entry};
 use std::time::Instant;
 
-/// Content width in cells: the media card's, since `media_popup::press` hit-tests its buttons at it.
-pub const WIDTH: u16 = media_popup::WIDTH;
+/// Content width in cells: the media card's, since `media::popup::press` hit-tests its buttons at it.
+pub const WIDTH: u16 = media::popup::WIDTH;
 /// Rows outside the history and the card: a separator, "Do not disturb", "Clear all".
 const FOOTER: usize = 3;
 
@@ -33,7 +42,7 @@ pub enum Item {
 }
 
 /// What is selected, by what it is rather than by its row: arrivals and removals above it move
-/// its row, never the selection off it (as `media_popup::Chosen`).
+/// its row, never the selection off it (as `media::popup::Chosen`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chosen {
     Card,
@@ -89,7 +98,10 @@ pub enum PanelAction {
 
 /// The card's rows: the media popup's lines, none without a shown player.
 fn card_rows(players: Option<&Players>) -> usize {
-    players.map_or(0, |p| media_popup::lines(p).len())
+    match players {
+        Some(p) => media::popup::lines(p).len(),
+        None => 0,
+    }
 }
 
 /// What can be selected, top to bottom: the card when it shows, every entry, then the footer's two.
@@ -109,6 +121,8 @@ fn visible(card: usize, room: u16) -> usize {
     (usize::from(room).saturating_sub(fixed) / 2).max(1)
 }
 
+/// The panel's rows top to bottom as `Line`s: the card, its separator, the window over the history
+/// (two lines an entry, or `Empty`), then the footer.
 fn layout(center: &Center, players: Option<&Players>, p: &Panel) -> Vec<Line> {
     let card = card_rows(players);
     let mut v: Vec<Line> = (0..card).map(Line::Card).collect();
@@ -134,9 +148,18 @@ impl Panel {
     /// At open: the newest entry selected, else the card, else "Do not disturb".
     pub fn new(center: &Center, players: Option<&Players>, room: u16) -> Panel {
         let items = items(center, players);
-        let selected =
-            items.iter().position(|i| matches!(i, Item::Entry(_))).or_else(|| items.iter().position(|i| *i == Item::Card)).unwrap_or(0);
-        let media = players.map_or(MediaPopup { selected: usize::MAX, button: 1, chosen: None }, MediaPopup::new);
+        let first_entry = items.iter().position(|i| matches!(i, Item::Entry(_)));
+        let card = items.iter().position(|i| *i == Item::Card);
+        let selected = match (first_entry, card) {
+            (Some(i), _) => i,
+            (None, Some(i)) => i,
+            (None, None) => 0,
+        };
+        // Without a player the card's own selection points at no row (`usize::MAX`).
+        let media = match players {
+            Some(pl) => MediaPopup::new(pl),
+            None => MediaPopup { selected: usize::MAX, button: 1, chosen: None },
+        };
         let mut p = Panel { selected, chosen: None, top: 0, media, room, entries: center.history().count() };
         p.remember(center, &items);
         p
@@ -156,12 +179,16 @@ impl Panel {
     /// The selection on `chosen`'s row where it now is; gone, on the row it had (clamped), and
     /// that row remembered anew.
     fn fit(&mut self, center: &Center, items: &[Item]) {
-        let found = self.chosen.and_then(|c| match c {
-            Chosen::Card => items.iter().position(|i| *i == Item::Card),
-            Chosen::Entry(id) => center.history().position(|e| e.id == id).and_then(|n| items.iter().position(|i| *i == Item::Entry(n))),
-            Chosen::Dnd => items.iter().position(|i| *i == Item::Dnd),
-            Chosen::Clear => items.iter().position(|i| *i == Item::Clear),
-        });
+        let found = match self.chosen {
+            Some(Chosen::Card) => items.iter().position(|i| *i == Item::Card),
+            Some(Chosen::Entry(id)) => match center.history().position(|e| e.id == id) {
+                Some(n) => items.iter().position(|i| *i == Item::Entry(n)),
+                None => None,
+            },
+            Some(Chosen::Dnd) => items.iter().position(|i| *i == Item::Dnd),
+            Some(Chosen::Clear) => items.iter().position(|i| *i == Item::Clear),
+            None => None,
+        };
         match found {
             Some(i) => self.selected = i,
             None => {
@@ -212,9 +239,10 @@ pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant,
     let history: Vec<&Entry> = center.history().collect();
     let card = match players {
         Some(pl) if card_rows(players) > 0 => {
-            // The card's band only while the card holds the selection.
+            // The card's band only while the card holds the selection: otherwise its own selection
+            // is moved off every row (`usize::MAX`), and the rest of `p.media` is kept.
             let focus = if selected == Some(Item::Card) { p.media.clone() } else { MediaPopup { selected: usize::MAX, ..p.media.clone() } };
-            media_popup::rows(pl, &focus, now, WIDTH)
+            media::popup::rows(pl, &focus, now, WIDTH)
         }
         _ => Boxed::default(),
     };
@@ -305,6 +333,7 @@ pub fn scroll(p: &mut Panel, center: &Center, players: Option<&Players>, steps: 
     let k = if steps < 0 { Key::Up } else { Key::Down };
     let mut moved = false;
     for _ in 0..steps.unsigned_abs().min(10) {
+        // `|=` sets `moved` once any notch moved the selection, and keeps it set.
         moved |= key(p, center, players, k) != PanelAction::Nothing;
     }
     if moved { PanelAction::Redraw } else { PanelAction::Nothing }
@@ -316,7 +345,7 @@ fn key_on(p: &mut Panel, center: &Center, players: Option<&Players>, items: &[It
     if let (Some(Item::Card), Some(pl)) = (items.get(p.selected), players)
         && matches!(k, Key::Up | Key::Down | Key::CtrlP | Key::CtrlN | Key::Left | Key::Right | Key::Enter)
     {
-        let a = media_popup::key(&mut p.media, pl, k);
+        let a = media::popup::key(&mut p.media, pl, k);
         if a != MediaAction::Nothing {
             return PanelAction::Media(a);
         }
@@ -344,45 +373,48 @@ fn key_on(p: &mut Panel, center: &Center, players: Option<&Players>, items: &[It
     if p.selected == before { PanelAction::Nothing } else { PanelAction::Redraw }
 }
 
+/// Puts the selection on `item` and remembers it; false when `item` is not among `items`, or when
+/// the selection was already there.
+fn select(p: &mut Panel, center: &Center, items: &[Item], item: Item) -> bool {
+    let Some(i) = items.iter().position(|x| *x == item) else { return false };
+    let moved = p.selected != i;
+    p.selected = i;
+    p.remember(center, items);
+    moved
+}
+
 /// A press at `cell` (Boxed coordinates: column 0 is the pad). On the card a left press is the media
 /// popup's; on an entry a left press selects it and acts like Enter, a right press removes it; on the
 /// footer a left press acts like Enter. The press selects what it ran.
 pub fn press(p: &mut Panel, center: &Center, players: Option<&Players>, cell: (u16, u16), button: Button) -> PanelAction {
     let items = items(center, players);
     p.fit(center, &items);
-    let select = |p: &mut Panel, item: Item| -> bool {
-        let Some(i) = items.iter().position(|x| *x == item) else { return false };
-        let moved = p.selected != i;
-        p.selected = i;
-        p.remember(center, &items);
-        moved
-    };
     let line = layout(center, players, p).get(usize::from(cell.1)).copied();
     match (line, button) {
         (Some(Line::Card(_)), Button::Left) => {
             let Some(pl) = players else { return PanelAction::Nothing };
-            match media_popup::press(&mut p.media, pl, cell, WIDTH) {
+            match media::popup::press(&mut p.media, pl, cell, WIDTH) {
                 MediaAction::Nothing => PanelAction::Nothing,
                 a => {
-                    select(p, Item::Card);
+                    select(p, center, &items, Item::Card);
                     PanelAction::Media(a)
                 }
             }
         }
         (Some(Line::Entry(i, _)), Button::Right) => center.history().nth(i).map_or(PanelAction::Nothing, |e| PanelAction::Remove(e.id)),
         (Some(Line::Entry(i, _)), Button::Left) => {
-            let moved = select(p, Item::Entry(i));
+            let moved = select(p, center, &items, Item::Entry(i));
             match activate(Item::Entry(i), center) {
                 PanelAction::Nothing if moved => PanelAction::Redraw,
                 a => a,
             }
         }
         (Some(Line::Dnd), Button::Left) => {
-            select(p, Item::Dnd);
+            select(p, center, &items, Item::Dnd);
             PanelAction::ToggleDnd
         }
         (Some(Line::Clear), Button::Left) => {
-            select(p, Item::Clear);
+            select(p, center, &items, Item::Clear);
             PanelAction::Clear
         }
         _ => PanelAction::Nothing,

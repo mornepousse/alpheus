@@ -261,7 +261,7 @@ fn on_pill_bg(roles: &Roles, t: Tint) -> Rgb {
     if t == Tint::Pill { roles.raised } else { color(roles, roles.pill_bg, t) }
 }
 
-/// A cell's style under `underline` (Mae, 2026-10-08): the active workspace has no fill, its text
+/// A cell's style under `underline` (2026-10-08): the active workspace has no fill, its text
 /// is `accent`; the 2 px accent underline marks it. Every other style is the cell's own.
 fn underlined(s: Style) -> Style {
     if s == Style::ACTIVE { Style { fg: Tint::Accent, bg: Tint::Bg, bold: s.bold } } else { s }

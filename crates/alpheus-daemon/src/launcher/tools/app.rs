@@ -1,8 +1,37 @@
-//! The Tools menu's glue (tools spec §§ 1, 5, 6): what the catalog's `Context` is made of, the
-//! built-ins replayed after the box closed, the reader's one-job-at-a-time schedule and its mail,
-//! and the confirmation question's one `DeadlineTimer` (armed only while a question is pending,
-//! disarmed by `launcher_close` and `launcher_fail`). The pure parts (`context`, `tab_argv`,
-//! `builtin_argv`, `Scheduler`) take plain values so they are tested with no `App`.
+//! The Tools menu's wiring on the daemon's state: what the catalog's `Context` is made of, the
+//! built-ins replayed after the box closed, the reader's one-job-at-a-time schedule and its mail, and
+//! the confirmation question's timer.
+//!
+//! The catalog, the navigation and the configuration are pure and live in the files beside this one.
+//! This file is the part that touches the rest of the daemon. When the menu opens, it builds the
+//! catalog from the configuration it is given and the app's own state; it starts states and choices
+//! reads on the reader's short-lived thread (`read.rs`), one at a time, and adopts their mail into the
+//! open launcher; after the box has closed it runs the built-in that was chosen, either by replaying
+//! the daemon's own verb or by spawning the configured command; and it keeps one `DeadlineTimer`,
+//! armed only while a confirmation question is pending and disarmed by `launcher_close` and
+//! `launcher_fail`. The functions that decide something (`context`, `tab_argv`, `builtin_argv`,
+//! `Scheduler`) take plain values, so they are tested without an `App`.
+//!
+//! The path of a built-in: Enter on its row first reaches `tools_prepare`, which checks the program
+//! while the box is still open (a missing one is said in the box, which stays open). Otherwise the
+//! launcher closes, then `run_builtin` replays the daemon's verb, or `tools_spawn` hands the argv to
+//! the launcher's own start function, in its own scope.
+//!
+//! Never:
+//! - start a process itself, through a shell or otherwise: a built-in that spawns goes through the
+//!   launcher's start function, exactly once (a guardrail, `the_tools_glue_spawns_only_through_launch`);
+//! - write a name, a command, a choice or a line into a log line: only fixed words, a built-in's id,
+//!   its position and counts (a guardrail, `the_tools_logs_are_fixed_words`);
+//! - call the clipboard's, the shield's or the diagnostics tab's own functions or types: `join.rs` is
+//!   the one file that does (a guardrail, `the_parallel_branches_are_named_only_in_tools_join`, looks
+//!   in this folder's other files for the names of those functions and types);
+//! - keep a thread, a timer or a catalog while the menu is closed.
+//!
+//! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§§ 1, 5, 6, 8, 9),
+//! docs/features/tools-menu.md, and docs/decisions.md ("A built-in replays the daemon's own verb
+//! after the box has closed", "A tab opens through `[actions] open_tab`, else in the terminal",
+//! "Everything a built-in spawns runs in its own scope", "The Tools menu reads states and choices one
+//! job at a time on a short-lived thread").
 
 use crate::actions::substitute;
 use crate::config::{BarConfig, ModuleId, QuickConfig};
@@ -12,7 +41,7 @@ use crate::launcher::model::Launcher;
 use crate::launcher::run::{self, RunContext};
 use crate::launcher::scan::{ScanEnv, has_program};
 use crate::launcher::tools;
-use crate::launcher::tools::catalog::{BUILTINS, Builtin, BuiltinAction, Catalog, Context, EntryKind};
+use crate::launcher::tools::catalog::{BUILTINS, Builtin, BuiltinAction, Catalog, Context, Entry, EntryKind};
 use crate::launcher::tools::nav::{Counts, Job, StateJob};
 use crate::launcher::tools::read::{self, JobEvent};
 use crate::log::write as log;
@@ -27,7 +56,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-/// The three answers of `tools_join` (the clipboard, the shield, the diagnostics tab).
+/// The three answers of `join.rs` (the clipboard, the shield, the diagnostics tab).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Join {
     pub shield: bool,
@@ -35,12 +64,11 @@ pub struct Join {
     pub diagnostics: bool,
 }
 
-/// What decides which built-ins show (spec § 3), from the configs and what the app knows.
+/// What decides which built-ins show (tools spec § 3), from the configs and what the app knows.
 pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Join) -> Context {
-    let has = |m| bar.modules.contains(&m);
     Context {
-        quick: has(ModuleId::Quick),
-        notifications: has(ModuleId::Notifications),
+        quick: bar.modules.contains(&ModuleId::Quick),
+        notifications: bar.modules.contains(&ModuleId::Notifications),
         timer,
         keep_awake: !Toggle::KeepAwake.config(&bar.quick).toggle.is_empty(),
         night_light: !Toggle::NightLight.config(&bar.quick).toggle.is_empty(),
@@ -53,15 +81,26 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
     }
 }
 
-/// The argv that opens the control center tab `slug` (plan decision 9): `[actions] open_tab` with
-/// `{tab}` substituted when its program is on the open's `$PATH`, else the launcher's terminal
-/// running `alpheus --tab <slug>`; None when neither program is there.
+/// Whether the program of `argv` (its first element) is on `path_dirs`; false for an empty argv.
+fn program_is_present(argv: &[String], path_dirs: &[PathBuf]) -> bool {
+    match argv.first() {
+        Some(program) => has_program(path_dirs, program),
+        None => false,
+    }
+}
+
+/// The argv that opens the control center tab `slug`: `[actions] open_tab` with `{tab}` substituted
+/// when its program is on the open's `$PATH`, else the launcher's terminal running
+/// `alpheus --tab <slug>`; None when neither program is there. See docs/decisions.md, "A tab opens
+/// through `[actions] open_tab`, else in the terminal".
 pub fn tab_argv(open_tab: &[String], slug: &str, terminal: &[String], path_dirs: &[PathBuf]) -> Option<Vec<String>> {
-    if open_tab.first().is_some_and(|p| has_program(path_dirs, p)) {
+    if program_is_present(open_tab, path_dirs) {
         return Some(open_tab.iter().map(|a| substitute(a, &[("{tab}", slug)])).collect());
     }
-    if terminal.first().is_some_and(|p| has_program(path_dirs, p)) {
-        return Some(terminal.iter().cloned().chain(["alpheus".into(), "--tab".into(), slug.into()]).collect());
+    if program_is_present(terminal, path_dirs) {
+        let mut argv = terminal.to_vec();
+        argv.extend(["alpheus".to_string(), "--tab".to_string(), slug.to_string()]);
+        return Some(argv);
     }
     None
 }
@@ -69,6 +108,28 @@ pub fn tab_argv(open_tab: &[String], slug: &str, terminal: &[String], path_dirs:
 /// A replayed verb's answer that says it did nothing.
 pub fn is_refusal(reply: &Reply) -> bool {
     matches!(reply, Reply::Error(_) | Reply::Busy)
+}
+
+/// The state of the built-in entries among `entries` whose state the daemon knows itself, as
+/// (position in `entries`, on): Do not disturb is `dnd`, and a `[quick]` toggle is what `toggle_state`
+/// says (None: unknown, so no entry for it). The positions come from the catalog, which builds each
+/// `Builtin` index from `BUILTINS`, so the lookup finds its entry.
+pub fn known_builtin_states(entries: &[Entry], dnd: bool, toggle_state: &dyn Fn(Toggle) -> Option<bool>) -> Vec<(usize, bool)> {
+    let mut known = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let EntryKind::Builtin(builtin_index) = entry.kind else { continue };
+        let Some(builtin) = BUILTINS.get(builtin_index) else { continue };
+        match builtin.action {
+            BuiltinAction::Dnd => known.push((index, dnd)),
+            BuiltinAction::Toggle(toggle) => {
+                if let Some(on) = toggle_state(toggle) {
+                    known.push((index, on));
+                }
+            }
+            _ => {}
+        }
+    }
+    known
 }
 
 /// What a built-in that spawns runs.
@@ -96,7 +157,15 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
             let slug = b.tab_slug().unwrap_or_default();
             return match tab_argv(c.open_tab, slug, c.terminal, c.path_dirs) {
                 Some(argv) => Ok(Some(argv)),
-                None => Err(run::failure(c.open_tab.first().or(c.terminal.first()).map_or("terminal", String::as_str), not_found())),
+                None => {
+                    // The program named in the message is the one the user configured: `open_tab`'s,
+                    // else the terminal's, else the word "terminal".
+                    let program = match c.open_tab.first().or(c.terminal.first()) {
+                        Some(program) => program.as_str(),
+                        None => "terminal",
+                    };
+                    Err(run::failure(program, not_found()))
+                }
             };
         }
         BuiltinAction::Quick(_)
@@ -108,7 +177,7 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Power
         | BuiltinAction::Shield => return Ok(None),
     };
-    let program = argv.first().ok_or_else(|| "nothing to run".to_string())?;
+    let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
         return Err(run::failure(program, not_found()));
     }
@@ -119,8 +188,9 @@ fn not_found() -> alpheus_common::exec::ExecError {
     alpheus_common::exec::ExecError::NotFound
 }
 
-/// Starts `argv` for a built-in in its own scope when `runtime_dir` has systemd's private socket
-/// (decision 10), bare otherwise; the program is looked up on `path_dirs` first.
+/// Starts `argv` for a built-in in its own scope when `runtime_dir` has systemd's private socket,
+/// bare otherwise; the program is looked up on `path_dirs` first. See docs/decisions.md, "Everything
+/// a built-in spawns runs in its own scope".
 pub fn spawn_builtin(
     exec: &dyn alpheus_common::exec::Executor,
     runtime_dir: &std::path::Path,
@@ -187,8 +257,7 @@ impl Scheduler {
             return None;
         }
         // What belongs to another open is dropped here, not kept for a later one.
-        let mine = |j: Option<(u64, Job)>| j.filter(|(g, _)| Some(*g) == current);
-        let (choices, states) = (mine(self.choices.take()), mine(self.states.take()));
+        let (choices, states) = (of_open(self.choices.take(), current), of_open(self.states.take(), current));
         let (job, rest) = match choices {
             Some(c) => (Some(c), states),
             None => (states, None),
@@ -199,6 +268,14 @@ impl Scheduler {
             self.running = true;
         }
         job
+    }
+}
+
+/// `job` if it belongs to the open `current`, else None.
+fn of_open(job: Option<(u64, Job)>, current: Option<u64>) -> Option<(u64, Job)> {
+    match job {
+        Some((generation, job)) if Some(generation) == current => Some((generation, job)),
+        _ => None,
     }
 }
 
@@ -240,6 +317,8 @@ impl App {
     /// The catalog of this open (rebuilt at each open, dropped at close); its notes are logged
     /// only when `notes` (a Tools open: a Mod+Space open says nothing about it).
     pub(crate) fn tools_catalog(&self, config: &LauncherConfig, notes: bool) -> Catalog {
+        // A boxed closure, because the two branches are different closures of one type: a note
+        // sink that writes to the log, or one that drops it.
         let mut note: Box<dyn FnMut(&str)> = if notes { Box::new(log) } else { Box::new(|_| {}) };
         Catalog::build(&config.tools, &self.tools_context(config), &mut *note)
     }
@@ -252,24 +331,8 @@ impl App {
     /// The states the daemon knows itself (do-not-disturb, the `[quick]` toggles), of the entries
     /// of `model`'s catalog (may scan `/proc`: read only when the Tools mode is entered).
     pub(crate) fn tools_known_states(&self, model: &Launcher) -> Vec<(usize, bool)> {
-        model
-            .tools()
-            .map(|t| {
-                t.catalog
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| {
-                        let EntryKind::Builtin(b) = e.kind else { return None };
-                        match BUILTINS.get(b)?.action {
-                            BuiltinAction::Dnd => Some((i, self.dnd)),
-                            BuiltinAction::Toggle(t) => self.quick_toggle_state(t).map(|on| (i, on)),
-                            _ => None,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(tools) = model.tools() else { return Vec::new() };
+        known_builtin_states(&tools.catalog.entries, self.dnd, &|toggle| self.quick_toggle_state(toggle))
     }
 
     /// Those states, set on a model that has a Tools state (a `--tools` open).
@@ -307,7 +370,8 @@ impl App {
 
     /// The generation of the open launcher, when one is open.
     fn tools_current(&self) -> Option<u64> {
-        self.launcher.as_ref().map(|o| o.generation)
+        // `map` because clippy rejects the plain `match` here: None when no launcher is open.
+        self.launcher.as_ref().map(|open| open.generation)
     }
 
     /// Hands `job` (for the open launcher) to the reader: started now, or waiting its turn.
@@ -321,8 +385,8 @@ impl App {
     /// Starts `next` on the reader thread; a start that fails frees the slot and tries the next.
     fn tools_start(&mut self, mut next: Option<(u64, Job)>) {
         while let Some((generation, job)) = next.take() {
-            let failed = match (self.mail.clone(), generation) {
-                (Some(tx), generation) => {
+            let failed = match self.mail.clone() {
+                Some(tx) => {
                     let exec = self.exec.clone();
                     let preempt = self.tools.scheduler.preempt.clone();
                     let (entry, token) = match &job {
@@ -342,7 +406,7 @@ impl App {
                         Err(_) => Some((entry, token)),
                     }
                 }
-                (None, _) => Some((None, 0)),
+                None => Some((None, 0)),
             };
             let Some((entry, token)) = failed else { return };
             log("tools read failed");
@@ -389,6 +453,7 @@ impl App {
 
     /// The timer follows the pending question's end; none without one.
     pub(crate) fn tools_timer_sync(&mut self) {
+        // None when no launcher is open, or the open one has no question pending.
         let at = self.launcher.as_ref().and_then(|o| o.model.tools_deadline());
         self.tools.timer.sync_opt(self.loop_handle.as_ref(), at, App::tools_tick);
     }
@@ -397,7 +462,10 @@ impl App {
     pub(crate) fn tools_tick(app: &mut App, now: Instant) {
         app.tools.timer.fired();
         app.launcher_guarded("tools timer", move |app| {
-            let expired = app.launcher.as_mut().is_some_and(|o| o.model.tools_expire(now));
+            let expired = match app.launcher.as_mut() {
+                Some(open) => open.model.tools_expire(now),
+                None => false,
+            };
             if expired {
                 app.launcher_redraw();
             }
@@ -455,7 +523,7 @@ impl App {
         }
     }
 
-    /// `argv` in its own scope (decision 10), looked up on the daemon's own `$PATH`.
+    /// `argv` in its own scope, looked up on the daemon's own `$PATH`.
     fn tools_spawn(&mut self, id: &str, argv: Vec<String>) {
         let path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
         if spawn_builtin(self.exec.as_ref(), &paths::runtime_dir(), &path_dirs, argv).is_err() {

@@ -517,7 +517,7 @@ fn active_background_and_glyphs() {
     assert!((x3..w).all(|x| (0..h).all(|y| read(x, y) == (pal.bar_bg, 0xff))), "empty cell: background, opaque");
 }
 
-/// Mae's bug report: Claude Code's terminal title starts with "✳ "
+/// A bug report: Claude Code's terminal title starts with "✳ "
 /// (U+2733) — a glyph JetBrainsMono Nerd Font Mono does not have
 /// (checked via its cmap table) but DejaVu Sans Mono does, hence the
 /// default `fallback`. Bites on dropping that default
@@ -582,7 +582,7 @@ fn uncovered_character_is_masked_with_a_consistent_width() {
     assert!(ink_b, "the character right after the masked one is still drawn, at its own column (consistent width)");
 }
 
-/// The OSD's own glyphs (osd.rs) are in the bar's font: shaped, never masked.
+/// The OSD's own glyphs (osd/mod.rs) are in the bar's font: shaped, never masked.
 #[test]
 fn the_osd_glyphs_are_in_the_font() {
     let mut p = fonts();
@@ -1029,7 +1029,7 @@ fn underline_paints_blocks_a_bottom_line_and_the_active_underline() {
     assert_eq!(p.corner_masks(), 0, "underline is square: no corner mask");
 }
 
-/// Mae, 2026-10-08: under underline the active workspace has no accent fill; its text is
+/// 2026-10-08: under underline the active workspace has no accent fill; its text is
 /// `accent` and the 2 px accent underline marks it, visible against the pixels just above it.
 /// An urgent workspace keeps its colour.
 #[test]

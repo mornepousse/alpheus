@@ -414,7 +414,7 @@ fn has_modes_is_false_in_tools_and_is_bare_unchanged() {
     assert!(l.has_modes(), "the layout is decided once per open");
 }
 
-// -- Mod+Space's search, the `/` prefix (Task 4) --
+// -- Mod+Space's search, the `/` prefix --
 
 fn catalog_entry(l: &Launcher, name: &str) -> usize {
     l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()

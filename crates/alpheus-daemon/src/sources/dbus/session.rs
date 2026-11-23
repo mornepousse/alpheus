@@ -6,7 +6,7 @@ use tap::UnitsTap;
 use units::{UnitsLink, UnitsOptions};
 
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
-/// domain is now None, tagged `Outage::Domain(d)` (I2) so a caller
+/// domain is now None, tagged `Outage::Domain(d)` so a caller
 /// can blank just that domain rather than the whole state — unless the
 /// failure is the bus itself going away mid-call (`UnexpectedEof`), tagged
 /// `Outage::Bus` instead: nothing can be

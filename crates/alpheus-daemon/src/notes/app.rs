@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use super::surface::OpenNotes;
 
 /// The pad's state on the App: the pad while open (None at rest: nothing of it resident), its save
-/// timer, and the text a close could not write (I2), kept for the next open; lost if the daemon
+/// timer, and the text a close could not write, kept for the next open; lost if the daemon
 /// stops before then.
 pub struct NotesApp {
     pub(crate) open: Option<OpenNotes>,
@@ -240,7 +240,7 @@ impl App {
             return;
         }
         // Before anything is dropped: every close saves; what it could not write waits for the next
-        // open (I2).
+        // open.
         self.notes_save();
         let open = self.notes.open.take();
         self.notes.unsaved = open.as_ref().and_then(|o| kept_after_close(&o.model, o.seen));
@@ -402,7 +402,7 @@ mod tests {
         n
     }
 
-    /// I2: a close whose save failed keeps the text; the next open shows it (`not saved`, still
+    /// A close whose save failed keeps the text; the next open shows it (`not saved`, still
     /// edited so the next close or edit writes it) while the file is as the pad last saw it, without
     /// reading the file; a close that saved keeps nothing.
     #[test]

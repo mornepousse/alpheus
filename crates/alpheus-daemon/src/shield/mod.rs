@@ -1,6 +1,27 @@
-//! Shield mode's model (shield spec §§ 3 and 7): the state read from the flag file, its edges, and
-//! what the bar and the quick panel read of it. Pure apart from `read_flag`: the commands, the
-//! watch and the notices live in `shield_app.rs`, `shield_run.rs` and `watch.rs`.
+//! Shield mode's model: the state read from the flag file, its edges, and what the bar and the quick
+//! panel read of it.
+//!
+//! Shield mode is a security mode for public networks whose root work is done by commands the user
+//! configures (`[shield]` in `bar.toml`); alpheus shows the state, switches it, lists the blocked USB
+//! devices and allows one. This file is the pure half of that: the state (`Shield`) with its edges
+//! and the attempt of a switch waiting for its flag, the jobs and what becomes of them (`Job`,
+//! `RunOutcome`, `ShieldMail`, `Finish`, `Reason`), the notices, the text `--shield status` prints,
+//! and what each verb of `alpheus-launch --shield` asks for (`plan_verb`). The other half does the
+//! talking to the outside: `app.rs` is the wiring on the daemon's state (the flag's re-reads, the
+//! verbs, the timer, the notices), `run.rs` runs one command on a short-lived thread, `usb.rs`
+//! reads USBGuard's text, and the flag's watch is in `watch.rs`.
+//!
+//! Never:
+//! - read a clock: the caller always passes `now`;
+//! - start a thread or run a command, or write a log line;
+//! - panic: a guardrail test (`the_shield_files_have_no_panicking_path`) reads this file's code.
+//!
+//! The one thing read here is the flag itself, by `read_flag`, which tests whether the file exists.
+//!
+//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§§ 3, 7, 8, 9), docs/features/shield.md, and
+//! docs/decisions.md ("An unknown Shield state is never read as off", "A Shield switch succeeds
+//! when the flag reaches its target", "A running Shield command is never killed at its deadline",
+//! "A Shield verb for the state already held runs nothing").
 
 use crate::config::ShieldConfig;
 use crate::quick::FAILED_SHOWN;
@@ -9,12 +30,15 @@ use alpheus_common::launcher_ipc::{MAX_SHIELD_BODY, Reply, ShieldVerb};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// A command (and its attempt) may take this long: long enough to type a password.
+/// A switch may wait this long for its flag, counted from the command's start: long enough to type
+/// a password. It judges the switch only; the command itself is never killed at this deadline (see
+/// docs/decisions.md, "A running Shield command is never killed at its deadline").
 pub const ACTION_DEADLINE: Duration = Duration::from_secs(60);
-/// After an exit 0, the flag has this long to reach its target.
+/// After an exit 0, the flag has this long to reach its target. The 60 s bound never cuts it short
+/// (a command that ended at 58 s still gets all of it).
 pub const FLAG_GRACE: Duration = Duration::from_secs(5);
 
-/// What a worker thread runs.
+/// What a worker thread runs: one command or one read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
     /// `on` (true) or `off` (false).
@@ -111,18 +135,22 @@ pub enum NoticeKind {
 /// A notice's summary and body.
 pub fn notice(kind: &NoticeKind, config: &ShieldConfig) -> (String, String) {
     const FAILED: &str = "The command failed or was cancelled.";
-    let (s, b) = match kind {
+    let (summary, body) = match kind {
         NoticeKind::On => ("Shield on", config.on_body()),
         NoticeKind::Off => ("Shield off", config.off_body()),
         NoticeKind::SwitchFailed => ("Shield unchanged", FAILED),
+        // The one notice whose body is not a fixed text: the device's cleaned name.
         NoticeKind::Allowed(name) => return ("USB device allowed".into(), name.clone()),
         NoticeKind::AllowFailed => ("USB device not allowed", FAILED),
         NoticeKind::NothingBlocked => ("No blocked USB device", ""),
     };
-    (s.into(), b.into())
+    (summary.into(), body.into())
 }
 
 /// What `alpheus-launch --shield status` prints (shield spec § 9).
+///
+/// The devices are listed only while the mode is on (shield spec § 9: `status` reads the list only
+/// while on, and when `blocked` is set).
 pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>) -> String {
     let head = match state {
         Some(true) => "Shield: on",
@@ -135,17 +163,17 @@ pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>
     }
     match listing {
         None => {}
-        Some(Err(r)) => out.push_str(&format!("\nBlocked USB devices: cannot list ({})", r.text())),
-        Some(Ok(p)) if p.devices.is_empty() => out.push_str("\nBlocked USB devices: none"),
-        Some(Ok(p)) => {
+        Some(Err(why)) => out.push_str(&format!("\nBlocked USB devices: cannot list ({})", why.text())),
+        Some(Ok(parsed)) if parsed.devices.is_empty() => out.push_str("\nBlocked USB devices: none"),
+        Some(Ok(parsed)) => {
             out.push_str("\nBlocked USB devices:");
             // The reply has a cap (`MAX_SHIELD_BODY`, the client refuses more): lines that would pass
             // it, keeping room for the cut's own line, are left out and counted.
             const MORE_ROOM: usize = 32;
-            for (i, d) in p.devices.iter().enumerate() {
-                let line = format!("\n  {}", crate::shield::usb::picker_line(d));
+            for (i, device) in parsed.devices.iter().enumerate() {
+                let line = format!("\n  {}", crate::shield::usb::picker_line(device));
                 if out.len() + line.len() + MORE_ROOM > MAX_SHIELD_BODY {
-                    out.push_str(&format!("\n  \u{2026} {} more", p.devices.len() - i));
+                    out.push_str(&format!("\n  \u{2026} {} more", parsed.devices.len() - i));
                     break;
                 }
                 out.push_str(&line);
@@ -167,7 +195,7 @@ pub struct VerbCtx {
     pub can_allow: bool,
 }
 
-/// What the daemon does for a verb (spec § 9), decided without side effects.
+/// What the daemon does for a verb (shield spec § 9), decided without side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerbPlan {
     /// Answer at once.
@@ -180,7 +208,7 @@ pub enum VerbPlan {
     AllowRead,
 }
 
-/// The picker's prompt (spec § 9).
+/// The picker's prompt (shield spec § 9).
 pub const PICKER_PROMPT: &str = "Allow a blocked USB device";
 /// The words of a refusal (`shield: not started (<why>)` in the log, the client's error line): one
 /// wording per condition, whoever asked (a verb, the panel, the picker).
@@ -193,31 +221,42 @@ pub const ERR_NOT_CONFIGURED: &str = "shield is not configured in bar.toml";
 /// Every word a refusal may carry (the log's closed list).
 pub const ERR_ALL: [&str; 6] = [ERR_BUSY, ERR_UNKNOWN, ERR_SAME, ERR_NO_ALLOW, ERR_OFF, ERR_NOT_CONFIGURED];
 
-pub fn plan_verb(verb: ShieldVerb, c: &VerbCtx) -> VerbPlan {
-    let error = |t: &str| VerbPlan::Answer(Reply::Error(t.into()));
-    let switch = |target: bool| match c.state {
-        None => error(ERR_UNKNOWN),
-        // The asked state already holds: nothing runs (spec decision 9).
+/// A refusal: the client hears `why` as an error.
+fn refusal(why: &str) -> VerbPlan {
+    VerbPlan::Answer(Reply::Error(why.into()))
+}
+
+/// The plan for `on` or `off`: nothing runs when the state asked for is already held (see
+/// docs/decisions.md, "A Shield verb for the state already held runs nothing").
+fn plan_switch(target: bool, context: &VerbCtx) -> VerbPlan {
+    match context.state {
+        None => refusal(ERR_UNKNOWN),
         Some(on) if on == target => VerbPlan::Answer(Reply::Done),
-        Some(_) if c.action_busy => error(ERR_BUSY),
+        Some(_) if context.action_busy => refusal(ERR_BUSY),
         Some(_) => VerbPlan::Switch(target),
-    };
+    }
+}
+
+/// What the daemon does for `verb`, from what the model knows (`context`).
+pub fn plan_verb(verb: ShieldVerb, context: &VerbCtx) -> VerbPlan {
     match verb {
-        ShieldVerb::On => switch(true),
-        ShieldVerb::Off => switch(false),
-        ShieldVerb::Toggle => match c.state {
-            None => error(ERR_UNKNOWN),
-            Some(_) if c.action_busy => error(ERR_BUSY),
+        ShieldVerb::On => plan_switch(true, context),
+        ShieldVerb::Off => plan_switch(false, context),
+        ShieldVerb::Toggle => match context.state {
+            None => refusal(ERR_UNKNOWN),
+            Some(_) if context.action_busy => refusal(ERR_BUSY),
             Some(on) => VerbPlan::Switch(!on),
         },
-        ShieldVerb::Status => match (c.state, c.can_list) {
+        // The devices are read only while the mode is on and `blocked` is set; otherwise the state
+        // alone is printed.
+        ShieldVerb::Status => match (context.state, context.can_list) {
             (Some(true), true) => VerbPlan::StatusRead,
             (state, _) => VerbPlan::Answer(Reply::Shield(status_text(state, None))),
         },
-        ShieldVerb::Allow => match c.state {
-            None => error(ERR_UNKNOWN),
-            Some(false) => error(ERR_OFF),
-            Some(true) if !(c.can_allow && c.can_list) => error(ERR_NO_ALLOW),
+        ShieldVerb::Allow => match context.state {
+            None => refusal(ERR_UNKNOWN),
+            Some(false) => refusal(ERR_OFF),
+            Some(true) if !(context.can_allow && context.can_list) => refusal(ERR_NO_ALLOW),
             Some(true) => VerbPlan::AllowRead,
         },
     }
@@ -232,8 +271,13 @@ pub fn picker(devices: &[UsbDevice]) -> (Vec<String>, Vec<(u32, String)>) {
 /// The name the notice gives a device the panel allows (the listing it was picked from); `?` when
 /// that listing no longer has it.
 pub fn device_name(listing: Option<&Result<Parsed, Reason>>, id: u32) -> String {
-    let found = listing.and_then(|l| l.as_ref().ok()).and_then(|p| p.devices.iter().find(|d| d.id == id));
-    found.map_or_else(|| "?".to_string(), |d| d.name.clone())
+    let Some(Ok(parsed)) = listing else { return "?".to_string() };
+    for device in &parsed.devices {
+        if device.id == id {
+            return device.name.clone();
+        }
+    }
+    "?".to_string()
 }
 
 /// The id and name a picker's answer stands for: a chosen position only. Typed text (`Index(None)`), a
@@ -245,10 +289,12 @@ pub fn picked(ids: &[(u32, String)], reply: Reply) -> Option<(u32, String)> {
     }
 }
 
-/// A switch waiting for its flag.
+/// A switch or an allow in progress. A switch ends on the flag (or its deadline), an allow on its
+/// command's exit.
 #[derive(Debug, Clone, Copy)]
 struct Attempt {
     kind: AttemptKind,
+    /// Its number, given by `take_generation`; the worker's report carries it back.
     generation: u64,
     started: Instant,
     /// The command exited 0: the flag has until then.
@@ -257,6 +303,7 @@ struct Attempt {
     capped: bool,
 }
 
+/// What an attempt is for: switching to a state, or allowing a device by id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptKind {
     Switch(bool),
@@ -269,8 +316,14 @@ pub fn read_flag(flag: &Path) -> Option<bool> {
     // `metadata` follows a link: a regular file (or a link to one) is on; nothing there, or a dangling
     // link, is off; a directory or anything else there, or an error, is unknown (never "on" by a guess).
     match std::fs::metadata(flag) {
-        Ok(m) => m.is_file().then_some(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Ok(metadata) => {
+            if metadata.is_file() {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
         Err(_) => None,
     }
 }
@@ -282,7 +335,9 @@ pub enum Edge {
     Off,
 }
 
-/// What the bar and the panel read: a `Copy` view kept up to date by `ShieldApp`.
+/// What the bar and the panel read: a `Copy` view kept up to date by `ShieldApp`. It is `Copy`
+/// because the quick panel's `Live`, which derives `Copy`, holds it (shield plan 1, "Decisions
+/// written down", item 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShieldView {
     pub state: Option<bool>,
@@ -296,13 +351,18 @@ pub struct ShieldView {
     pub can_allow: bool,
 }
 
+/// The Shield state and its bookkeeping: what the flag last said, the one action slot and the one
+/// read slot, and the switch or allow waiting for its end.
 #[derive(Debug, Default)]
 pub struct Shield {
     state: Option<bool>,
+    /// The last state that was not unknown: an edge is a change from this one.
     last_known: Option<bool>,
     /// The action slot: held from a command's start until its worker's `Done`, whatever its attempt's state.
     action_held: bool,
+    /// The read slot: held from a listing's start until its worker's `Done`.
     read_held: bool,
+    /// The last number given to an attempt (see `Attempt::generation`).
     next_generation: u64,
     attempt: Option<Attempt>,
     /// The name of the device the live allow targets, taken when it began (the listing may be gone by its end).
@@ -325,7 +385,13 @@ impl Shield {
         let now = now?;
         self.unknown_noted = false;
         let edge = match self.last_known {
-            Some(before) if before != now => Some(if now { Edge::On } else { Edge::Off }),
+            Some(before) if before != now => {
+                if now {
+                    Some(Edge::On)
+                } else {
+                    Some(Edge::Off)
+                }
+            }
             _ => None,
         };
         self.last_known = Some(now);
@@ -343,7 +409,8 @@ impl Shield {
 
     /// A reading of the flag with its consequences: the edge, and the attempt it ends (a switch
     /// succeeds when the flag reaches its target, before or after the command's exit). Any edge
-    /// clears a shown `failed`: a late change is announced as any change.
+    /// clears a shown `failed`: a late change is announced as any change. `_now` is unused (reason
+    /// not recorded).
     pub fn flag(&mut self, state: Option<bool>, _now: Instant) -> (Option<Edge>, Option<Finish>) {
         let edge = self.observe(state);
         if edge.is_some() {
@@ -361,7 +428,9 @@ impl Shield {
 
     /// Starts a switch toward the other state; None when the state is unknown or a command holds the slot.
     pub fn begin_switch(&mut self, now: Instant) -> Option<(bool, u64)> {
-        let target = !self.state?;
+        // `?` ends the function with None when the state is unknown.
+        let on = self.state?;
+        let target = !on;
         if self.action_held {
             return None;
         }
@@ -372,6 +441,7 @@ impl Shield {
         Some((target, generation))
     }
 
+    /// Starts an allow of device `id`, named `name` in the notice: None when a command holds the slot.
     pub fn begin_allow(&mut self, id: u32, name: String, now: Instant) -> Option<u64> {
         if self.action_held {
             return None;
@@ -385,9 +455,15 @@ impl Shield {
 
     /// False: a read already runs (the asker joins it).
     pub fn begin_list(&mut self) -> bool {
-        !std::mem::replace(&mut self.read_held, true)
+        if self.read_held {
+            return false;
+        }
+        self.read_held = true;
+        true
     }
 
+    /// The next attempt's number: a report carries it back, so one for an attempt that already ended
+    /// is told from the live one.
     fn take_generation(&mut self) -> u64 {
         self.next_generation += 1;
         self.next_generation
@@ -415,7 +491,11 @@ impl Shield {
             });
         }
         self.action_held = false;
-        let attempt = self.attempt.filter(|a| a.generation == generation)?;
+        // A report for an attempt that is no longer the live one only freed the slot, above.
+        let attempt = self.attempt?;
+        if attempt.generation != generation {
+            return None;
+        }
         match attempt.kind {
             AttemptKind::Allow(id) => {
                 self.attempt = None;
@@ -449,23 +529,27 @@ impl Shield {
     /// When a waiting switch must be judged: the grace's end once the command exited 0 (the bound
     /// does not cut it short: a command that ended at 58 s still gets its 5 s), else the 60 s bound.
     pub fn deadline(&self) -> Option<Instant> {
-        let a = self.attempt.filter(|a| matches!(a.kind, AttemptKind::Switch(_)))?;
-        match a.grace_end {
-            Some(g) => Some(g),
-            None => a.started.checked_add(ACTION_DEADLINE),
+        let attempt = self.attempt?;
+        if !matches!(attempt.kind, AttemptKind::Switch(_)) {
+            return None;
+        }
+        match attempt.grace_end {
+            Some(grace_end) => Some(grace_end),
+            None => attempt.started.checked_add(ACTION_DEADLINE),
         }
     }
 
     /// The deadline passed: the switch fails (the slot stays held until its worker reports).
     pub fn expired(&mut self, now: Instant) -> Option<Finish> {
-        let a = self.attempt?;
-        let AttemptKind::Switch(target) = a.kind else { return None };
-        if now < self.deadline()? {
+        let attempt = self.attempt?;
+        let AttemptKind::Switch(target) = attempt.kind else { return None };
+        let deadline = self.deadline()?;
+        if now < deadline {
             return None;
         }
-        let reason = if a.grace_end.is_some() {
+        let reason = if attempt.grace_end.is_some() {
             Reason::NoChangeAfter
-        } else if a.capped {
+        } else if attempt.capped {
             Reason::OutputTooLong
         } else {
             Reason::NoChangeIn60
@@ -475,18 +559,25 @@ impl Shield {
 
     /// Clears a `failed` whose 4 s ended; true when it did.
     pub fn due(&mut self, now: Instant) -> bool {
-        if self.failed_until.is_some_and(|t| now >= t) {
-            self.failed_until = None;
-            return true;
+        if let Some(until) = self.failed_until {
+            if now >= until {
+                self.failed_until = None;
+                return true;
+            }
         }
         false
     }
 
+    /// What the bar and the panel read at `now`; a `failed` whose time has passed is not shown.
     pub fn view(&self, config: &ShieldConfig, now: Instant) -> ShieldView {
+        let failed_until = match self.failed_until {
+            Some(until) if until > now => Some(until),
+            _ => None,
+        };
         ShieldView {
             state: self.state,
             switching: self.switching(),
-            failed_until: self.failed_until.filter(|t| *t > now),
+            failed_until,
             can_list: !config.blocked_argv().is_empty(),
             can_allow: !config.allow.is_empty(),
         }

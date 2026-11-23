@@ -59,7 +59,7 @@ fn a_launcher_button_click_toggles_unless_this_press_just_closed_it() {
     assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
 }
 
-/// Mae (2026-10-06): a click with the button that opened the menu, or a right click whatever
+/// 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click with the button that opened the menu, or a right click whatever
 /// opened it, on the icon whose menu is shown closes that menu and does nothing else.
 #[test]
 fn closes_only_with_the_opening_button_or_a_right_click() {
@@ -302,7 +302,7 @@ fn plan_buffer_grows_when_both_of_two_are_busy() {
     assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), true)], (100, 22)), BufferPlan::Grow);
 }
 
-/// Launcher 2 final review: the launcher's draws wait instead of growing past two buffers (the
+/// The launcher's draws wait instead of growing past two buffers (the
 /// box's pool doubled on back-to-back redraws); the first growth, from one buffer to two, stays.
 #[test]
 fn waiting_for_a_release_only_when_two_are_already_busy() {

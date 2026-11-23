@@ -2,7 +2,7 @@
 //! exclusive zone) per screen, tracked live; a pointer for clicks and the
 //! wheel. Nothing else is asked of the compositor. Redraw only when a
 //! screen's grid changes. The tray's session-bus callbacks (`tray_output`) live in
-//! `tray_bridge.rs`.
+//! `tray/bridge.rs`.
 
 use crate::actions::{self, Button, Wheel};
 use crate::config::ModuleId;
@@ -432,7 +432,7 @@ pub struct App {
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
-    /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
+    /// The screens through the output management protocol (outputs/app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
     /// The clipboard history (clipboard spec); None with `[clipboard] enabled` off (nothing bound) or
@@ -456,7 +456,7 @@ pub struct App {
     /// Do-not-disturb: loaded at startup, changed only by `dnd_apply`.
     /// Mirrors `dnd_timed.model.on`; `dnd_apply` and `dnd_load` set both together.
     pub(crate) dnd: bool,
-    /// Its timed model and the timer of its end (notify_app.rs).
+    /// Its timed model and the timer of its end (`notify/app.rs`).
     pub(crate) dnd_timed: crate::notify::app::DndTimed,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
@@ -495,22 +495,22 @@ pub struct App {
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
-    /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
+    /// The notification bubbles' surface, expiry timer and close memory (notify/bubbles_surface.rs).
     pub(crate) bubbles: crate::notify::bubbles_surface::BubbleSurface,
-    /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
+    /// Low-battery alerts (notify/battery_alert.rs): only with the battery and notifications modules and
     /// a threshold in `[battery] warn`.
     pub(crate) battery_alerts: Option<crate::notify::battery_alert::BatteryAlerts>,
-    /// The failed-units notice (failed.rs): only with `[failed] notify` and the failed and
+    /// The failed-units notice (failed/mod.rs): only with `[failed] notify` and the failed and
     /// notifications modules.
     pub(crate) failed_notice: Option<crate::failed::Notice>,
-    /// The event hooks (hooks_app.rs): None when `[hooks]` sets none.
+    /// The event hooks (hooks/app.rs): None when `[hooks]` sets none.
     pub(crate) hooks: Option<crate::hooks::app::HooksApp>,
-    /// Shield mode (shield_app.rs): None unless `[shield]` is configured.
+    /// Shield mode (shield/app.rs): None unless `[shield]` is configured.
     pub(crate) shield: Option<crate::shield::app::ShieldApp>,
-    /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
+    /// The OSD's trigger memory, surface and hide timer (osd/surface.rs).
     pub(crate) osd: crate::osd::surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
-    /// (quick_app.rs).
+    /// (`quick/app.rs`).
     pub(crate) quick: crate::quick::app::QuickApp,
     /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
     /// `Units` domain.
@@ -518,7 +518,7 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
-    /// The Tools menu's question timer and reader schedule (tools_app.rs); nothing armed or
+    /// The Tools menu's question timer and reader schedule (launcher/tools/app.rs); nothing armed or
     /// running while the menu is closed.
     pub(crate) tools: crate::launcher::tools::app::ToolsApp,
     /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
@@ -529,9 +529,9 @@ pub struct App {
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
-    /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
+    /// The camera devices' watch and scan state (privacy delivery 2, privacy/camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
-    /// The tray menus' and tooltip's state (menu_app.rs).
+    /// The tray menus' and tooltip's state (tray/menu_app.rs).
     pub(crate) menu: crate::tray::menu_app::TrayMenu,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
@@ -1004,7 +1004,7 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
     }
 }
 
-/// Mae (2026-10-05), generalised 2026-10-06: a click on the icon whose menu is shown, with the
+/// 2026-10-05, generalised 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click on the icon whose menu is shown, with the
 /// button that opened it, only closes that menu and does nothing else; a right click always
 /// closes it, whatever opened it — the press that closed it never reopens it (like `decide_click`
 /// for the launcher). Steam's menu, opened by a left click (a failed Activate, no `Menu` of its
@@ -1398,7 +1398,7 @@ impl PointerHandler for App {
                     self.menu.recently_closed = None;
                     let popup_only_closes = closed_by_done(&mut self.recently_closed_popup, pressed_popup, Instant::now());
                     if only_closes || popup_only_closes {
-                        continue; // the menu's own icon: closed, never reopened (Mae)
+                        continue; // the menu's own icon: closed, never reopened (docs/decisions.md)
                     }
                     if let Some(b) = b {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {

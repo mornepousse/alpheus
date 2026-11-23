@@ -208,7 +208,7 @@ pub struct Launcher {
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
     /// (`move_by`), or a switcher's Tab/Shift+Tab (`step`). Set back to false by every
     /// `refilter()` — a typed character, Backspace,
-    /// Ctrl+U, Ctrl+W, Tab/BackTab (outside the switcher, where they step), a prefix jump (Mae, 2026-10-05): the selection is on top
+    /// Ctrl+U, Ctrl+W, Tab/BackTab (outside the switcher, where they step), a prefix jump (2026-10-05): the selection is on top
     /// unless the user navigated since the last query or mode change. Until then, a catalog
     /// or window update puts the selection back on top instead of carrying it along by
     /// identity: the catalog arrives after the first window has been auto-selected, and a
@@ -937,7 +937,7 @@ impl Launcher {
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
     /// Ctrl+W, Tab/BackTab and a prefix jump all go through here: each one resets `moved`
-    /// (Mae, 2026-10-05) — the selection is on top unless the user navigated since the last
+    /// (2026-10-05) — the selection is on top unless the user navigated since the last
     /// query or mode change.
     fn refilter(&mut self) {
         self.rank();
@@ -949,7 +949,7 @@ impl Launcher {
     /// Re-ranks. Before the user has moved the selection (`self.moved`), a catalog or window
     /// update always lands back on top (index 0): the default selection is a placeholder, not
     /// a choice, and must not survive apps outranking the window it happened to start on
-    /// (Mae, 2026-10-05). Once the user has moved, puts the selection back on `kept` (captured
+    /// (2026-10-05). Once the user has moved, puts the selection back on `kept` (captured
     /// by the caller *before* replacing the list it identifies into — see
     /// `set_catalog`/`set_windows`) if it is still among the results, else 0.
     fn refilter_keeping(&mut self, kept: Option<Identity>) {
@@ -967,7 +967,7 @@ impl Launcher {
     }
 
     /// Arrow keys, PageUp/PageDown, Home/End and the wheel (`scroll`) all land here: the only
-    /// keys that set `moved` (Mae, 2026-10-05), and only when the selection actually changes —
+    /// keys that set `moved` (2026-10-05), and only when the selection actually changes —
     /// an empty list, or a clamped move at an edge (already the top or bottom result), leaves
     /// `moved` untouched. Every result can be selected: `list::step` is a plain clamp here (no
     /// wrap).
@@ -1017,7 +1017,7 @@ impl Launcher {
     }
 
     /// Enter: opens an app, focuses a window, picks a dmenu line — and, for a command or typed
-    /// shell text, runs it held open in the configured terminal (`terminal_hold`, Mae
+    /// shell text, runs it held open in the configured terminal (`terminal_hold`,
     /// 2026-10-05: the command's output stays on screen after it exits).
     fn primary(&mut self) -> Outcome {
         let hit = self.selected_hit();
@@ -1156,7 +1156,7 @@ impl Launcher {
 
     /// Ctrl+Enter: an app's first `.desktop` action (or its main Exec without one), a window as
     /// Enter — and, for a command or typed shell text, runs it detached with no terminal at all
-    /// (Mae 2026-10-05).
+    /// (2026-10-05).
     fn secondary(&mut self) -> Outcome {
         let hit = self.selected_hit().map(|h| h.source);
         match (self.mode, hit) {
@@ -1181,7 +1181,7 @@ impl Launcher {
     }
 
     /// Click on result `index` (absolute index into `results`): select then activate. Counts
-    /// as navigation like `move_by` (Mae, 2026-10-05): a later catalog/window update pins the
+    /// as navigation like `move_by` (2026-10-05): a later catalog/window update pins the
     /// clicked item by identity instead of landing back on top. Like `key`, turns a `Nothing`
     /// into a `Redraw` when it clears a message — otherwise the error line would linger after
     /// a click that already invalidated it.

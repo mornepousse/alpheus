@@ -15,7 +15,7 @@ const BUILTIN_ORDERS: [u16; 4] = [10, 20, 30, 90];
 /// Their glyphs (Nerd Font Material Design), in the same order.
 const BUILTIN_GLYPHS: [char; 4] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}'];
 
-/// What a built-in does when chosen (spec § 3). Run by `tools_app`, after the box closed.
+/// What a built-in does when chosen (spec § 3). Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinAction {
     /// The quick panel at that row or detail (`--quick <word>`).
@@ -48,7 +48,7 @@ pub struct Builtin {
 impl Builtin {
     /// The control center tab a `Tab` built-in opens: its id after `tab.` (`tab.network` is
     /// `network`). Derived, not written twice, so the diagnostics tab's name lives in
-    /// `tools_join` alone (the branches' hook points are named only there).
+    /// `join.rs` alone (the branches' hook points are named only there).
     pub fn tab_slug(&self) -> Option<&'static str> {
         match self.action {
             BuiltinAction::Tab => self.id.strip_prefix("tab."),
@@ -97,7 +97,7 @@ pub const BUILTINS: [Builtin; 23] = [
 
 /// What decides which built-ins show (spec § 3's "Shown when" column): plain booleans, so the
 /// rule is testable with no `App`. The glue fills it from `bar.toml`, `[tools] reload` and the
-/// three answers of `tools_join`.
+/// three answers of `join.rs`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Context {
     /// `quick` in `modules`.

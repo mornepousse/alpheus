@@ -1,3 +1,7 @@
+//! Tests of the notification server's model (`mod.rs`): the cleaners, ids, tags and merging, the
+//! timeouts, the spam guards, the bubbles' queue, the history, do-not-disturb and the rules. No
+//! clock, no bus and no daemon: each test passes the `Instant` it wants.
+
 use super::*;
 
 fn secs(n: u64) -> Duration {
@@ -194,10 +198,10 @@ fn an_action_needs_a_sane_key_and_its_label_is_capped() {
     assert_eq!(action("x", "<b>Reply</b>\n").map(|a| a.label), Some("<b>Reply</b>".into()), "a label is plain text");
 }
 
-// ---- timeouts (spec § 2, Mae's ruling) ----
+// ---- timeouts (spec § 2, Timeout; docs/decisions.md, "A bubble's timeout follows its urgency") ----
 
 #[test]
-fn the_timeouts_table() {
+fn a_bubbles_timeout_follows_its_urgency_and_the_apps_own_choice() {
     use Urgency::{Critical, Low, Normal};
     let t = Timeouts::of(&NotificationsConfig::default());
     assert_eq!(timeout(Normal, -1, &t), Some(secs(5)), "-1: the default");
@@ -773,6 +777,21 @@ fn the_glyph_comes_from_the_table_then_the_category_then_the_first_letter() {
     }
 }
 
+/// A reverse-DNS identity whose last label has no one-cell letter ("微") falls back to the first letter
+/// of the whole identity.
+#[test]
+fn a_reverse_dns_whose_last_label_has_no_letter_takes_the_identitys_first_letter() {
+    assert_eq!(glyph_for("org.example.微", None), 'O');
+}
+
+/// An empty desktop entry is no desktop entry: the identity and the display name are the app's.
+#[test]
+fn an_empty_desktop_entry_leaves_the_app_name_as_the_identity() {
+    let mut c = center();
+    let id = c.notify(Incoming { desktop_entry: Some(String::new()), ..note("Fictional", "x") }, Instant::now(), 0);
+    assert_eq!(c.entry(id).map(|e| (e.identity.as_str(), e.app.as_str())), Some(("Fictional", "Fictional")));
+}
+
 fn ruled(rules: &[(&str, Option<RuleAction>, Option<RuleUrgency>)]) -> Center {
     let rules = rules.iter().map(|(app, action, urgency)| NotifyRule { app: (*app).into(), action: *action, urgency: *urgency }).collect();
     Center::new(&NotificationsConfig { rules, ..NotificationsConfig::default() }, false)
@@ -780,6 +799,15 @@ fn ruled(rules: &[(&str, Option<RuleAction>, Option<RuleUrgency>)]) -> Center {
 
 const MUTE: Option<RuleAction> = Some(RuleAction::Mute);
 const DROP: Option<RuleAction> = Some(RuleAction::Drop);
+
+/// A rule with an empty app (the config refuses one; `Center::new` takes it as is) must not match a
+/// notification whose desktop entry is empty: an empty entry names nothing.
+#[test]
+fn an_empty_desktop_entry_matches_no_rule() {
+    let mut c = ruled(&[("", MUTE, None)]);
+    c.notify(Incoming { desktop_entry: Some(String::new()), ..note("Fictional", "x") }, Instant::now(), 0);
+    assert_eq!(shown(&c).len(), 1, "not muted: the empty entry is not a name");
+}
 
 #[test]
 fn a_muted_app_gets_no_bubble_but_is_kept_and_unread() {

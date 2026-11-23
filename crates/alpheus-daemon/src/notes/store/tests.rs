@@ -42,7 +42,7 @@ fn a_file_with_tabs_or_controls_opens_read_only_cleaned() {
     assert_eq!(load(&dir), Loaded::Refused(Refusal::NotClean, " ".repeat(CAP)));
 }
 
-/// I1: a file too large or not UTF-8 shows its first CAP bytes read only (lossy, cleaned, a scalar
+/// A file too large or not UTF-8 shows its first CAP bytes read only (lossy, cleaned, a scalar
 /// cut by the cap dropped whole).
 #[test]
 fn load_refuses_too_large_and_not_utf8_showing_their_start() {

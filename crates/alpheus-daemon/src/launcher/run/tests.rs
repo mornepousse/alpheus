@@ -251,7 +251,7 @@ fn commands_and_the_shell() {
     let mut l = launcher();
     let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
     // terminal: true held the running command open on screen (Enter); false: detached, no
-    // terminal at all (Ctrl+Enter) — Mae, 2026-10-05.
+    // terminal at all (Ctrl+Enter) — 2026-10-05.
     assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: false }, &c), Ok(Done::Close));
     assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: true }, &c), Ok(Done::Close));
     assert_eq!(perform(&mut l, Activation::Shell { text: "htop -d 5".into(), terminal: false }, &c), Ok(Done::Close));

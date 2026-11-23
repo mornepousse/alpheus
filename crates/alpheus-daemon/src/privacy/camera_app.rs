@@ -1,8 +1,22 @@
-//! The camera devices' wiring (privacy delivery 2, spec §§ 3-4): one inotify fd in the loop, level
-//! triggered and drained to EAGAIN, so it never wakes the loop at rest. An event is only a trigger:
-//! it moves the 300 ms debounce (`camera.timer`) back (at most 1 s after the burst's first trigger), and when that fires one scan of `/proc`
-//! decides what is shown. The start scan runs once the watches are set, so a camera held across a
-//! daemon restart lights with no event. Logs never name a process or a pid.
+//! The camera devices' wiring on the bar: the watch on the event loop, the debounce and the scan.
+//!
+//! This is the glue half of privacy delivery 2; the file-system half is `camera.rs`. `start` puts
+//! one inotify fd on the event loop, level-triggered and drained to the end (EAGAIN), so it never
+//! wakes the loop at rest. An event is only a trigger: it moves the 300 ms debounce (`camera.timer`)
+//! back, at most 1 s after the first trigger of the burst, and when that timer fires one scan of
+//! `/proc` decides what is shown. The scan at start runs once the watches are set, so a camera held
+//! across a restart of the daemon lights with no event.
+//!
+//! Never:
+//! - name a process or a pid in a log line;
+//! - be started without `privacy` in `modules` (`startup.rs` calls `start` only with it): with no
+//!   watch there is no fd, no timer and no scan;
+//! - start a thread, a process or a command: the scan runs on the event loop.
+//!
+//! See: docs/specs/2026-10-20-alpheus-privacy-camera-design.md, docs/features/privacy.md, and
+//! docs/decisions.md ("The camera is read from `/proc` after a trigger, never counted", "A burst of
+//! camera triggers is scanned at most one second after its first", "The camera scan runs on the
+//! event loop", "The camera watch is a second inotify instance").
 
 use crate::deadline::DeadlineTimer;
 use crate::log::write as log;
@@ -13,23 +27,26 @@ use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as T
 use std::path::Path;
 use std::time::Instant;
 
-/// The camera feature's state, one field of `App` (privacy delivery 2).
+/// The camera feature's state, one field of `App`.
 pub(crate) struct Camera {
-    /// The camera devices' inotify watch; None without `privacy` or when `dev_dir` cannot be watched.
+    /// The camera devices' inotify watch. None without `privacy`, or when `dev_dir` cannot be watched.
     pub(crate) watch: Option<CameraWatch>,
     /// The (`dev_dir`, `proc_dir`) the camera scan reads; set with the watch.
     pub(crate) roots: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    /// The camera scan's debounce: armed only for `SCAN_DEBOUNCE` after a device event.
+    /// The camera scan's debounce: armed only after a device event, for `SCAN_DEBOUNCE` (or less,
+    /// when the burst's cap comes first).
     pub(crate) timer: DeadlineTimer,
-    /// The first trigger of the burst waiting for its scan (the debounce's cap); cleared by the scan.
+    /// The first trigger of the burst waiting for its scan, from which the debounce's cap counts;
+    /// cleared by the scan.
     pub(crate) burst: Option<Instant>,
-    /// The process-scan bound was logged (once per daemon).
+    /// Whether the line saying a scan bound was reached has been logged (it is logged once per
+    /// daemon).
     pub(crate) bound_logged: bool,
 }
 
 impl Camera {
-    /// Nothing watched, nothing pending. Written out (not derived) so the guardrail that lists
-    /// every timer still counts this one.
+    /// Nothing watched, nothing pending. It is written out rather than derived so that the guardrail
+    /// that lists every timer the daemon builds still counts this one.
     pub(crate) fn new() -> Camera {
         Camera { watch: None, roots: None, timer: DeadlineTimer::new(), burst: None, bound_logged: false }
     }
@@ -40,7 +57,8 @@ impl Camera {
 pub(crate) enum AfterScan {
     /// What is shown changed: the bar, the popup and the off-delay's timer follow.
     Changed,
-    /// Nothing shown changed, but a pending off may have appeared: only the off-delay's timer.
+    /// Nothing shown changed, but a pending off may have appeared, and that arms the off-delay's
+    /// timer (privacy delivery 1's): so only that timer is synced.
     SyncOffDelay,
 }
 
@@ -53,8 +71,8 @@ fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// Watches the video devices and scans once. Without a watch (inotify unavailable, `dev_dir`
-/// unwatchable): one line, delivery 1 alone.
+/// Watches the video devices and scans once. Without a watch (inotify unavailable, or `dev_dir`
+/// cannot be watched) one line is logged and delivery 1 works alone.
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>, dev_dir: &Path, proc_dir: &Path) {
     let watch = match CameraWatch::start(dev_dir) {
         Ok(w) => w,
@@ -71,7 +89,7 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>, dev_dir:
             return;
         }
     };
-    // Level-triggered: `drain` reads to EAGAIN, so the fd is never left readable at rest.
+    // Level-triggered: `drain` reads everything queued, so the fd is never left readable at rest.
     let inserted = handle.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
         app.camera_readable();
         Ok(PostAction::Continue)
@@ -86,7 +104,8 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>, dev_dir:
 }
 
 impl App {
-    /// The inotify fd is readable: drained; a record that asks for a scan moves the debounce back.
+    /// The inotify fd is readable: it is drained, and if a record asks for a scan the debounce moves
+    /// back (never past the burst's cap).
     pub(crate) fn camera_readable(&mut self) {
         let Some(watch) = self.camera.watch.as_mut() else { return };
         if !watch.drain() {
@@ -94,20 +113,23 @@ impl App {
         }
         if let Some(handle) = self.loop_handle.clone() {
             let now = Instant::now();
+            // `get_or_insert` keeps the burst's first trigger if there is one, and records `now` if
+            // this is the first.
             let first = *self.camera.burst.get_or_insert(now);
             self.camera.timer.sync(&handle, Some(scan_deadline(first, now)), App::camera_tick);
         }
     }
 
-    /// The debounce fired (its source is dropped): one scan.
+    /// The debounce fired (the loop dropped its source): one scan.
     pub(crate) fn camera_tick(app: &mut App, now: Instant) {
         app.camera.timer.fired();
         app.camera.burst = None;
         app.camera_scan(now);
     }
 
-    /// One scan of the processes, given to the model: what changed redraws, anything else only
-    /// follows the off-delay (a pending off arms delivery 1's timer).
+    /// One scan of the processes, given to the model: a change redraws, and a scan that changed
+    /// nothing shown still syncs the off-delay's timer, since a pending off arms it. A scan that
+    /// found nobody holding a camera, just after an open whose holder has exited, lights nothing.
     fn camera_scan(&mut self, now: Instant) {
         let Some((dev_dir, proc_dir)) = self.camera.roots.clone() else { return };
         let found = scan(&proc_dir, &dev_dir, euid(), std::process::id());
@@ -127,8 +149,8 @@ impl App {
 mod tests {
     use super::*;
 
-    /// A scan that changed nothing shown must still sync the off-delay (a pending
-    /// off arms delivery 1's timer); one that changed something redraws.
+    /// A scan that changed nothing shown must still sync the off-delay (a pending off arms delivery
+    /// 1's timer); one that changed something redraws.
     #[test]
     fn an_unchanged_scan_still_syncs_the_off_delay() {
         assert_eq!(after_scan(true), AfterScan::Changed);

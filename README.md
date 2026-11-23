@@ -292,8 +292,8 @@ screens is applied on hotplug), **Theme** (choose a
 theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`) and **Diag**
 (session health, failed units, the journal, a boot report, a bug report: see below; `--tab diagnostics`).
 
-**The rail.** In a terminal of at least 84 columns and 26 rows (Mae's
-Super+A window is 87×26) the tabs become a left rail: the brand, then icon,
+**The rail.** In a terminal of at least 84 columns and 26 rows (an 87×26
+window is enough) the tabs become a left rail: the brand, then icon,
 name and number per tab, the active one filled with the theme's accent
 container, and the status line at its foot. Each tab has its own hue (Home the
 accent, Sound blue, Network cyan, BT purple, Power red, Displays green, Theme

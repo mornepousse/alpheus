@@ -7,7 +7,7 @@
 //! tests/guardrails.rs), and a service is only ever called through the
 //! unique name of the process that owns it: never through its well-known
 //! name, which D-Bus activation would use to start it. One narrow exception
-//! (Mae's ruling, 2026-11-21): UPower is D-Bus-activated only on some systems
+//! (docs/decisions.md, "UPower is the one service the daemon may start"): UPower is D-Bus-activated only on some systems
 //! (NixOS), so nothing may have started it when the daemon comes up, and the battery
 //! would stay missing. When the battery is wanted and UPower has no owner at a
 //! session's start, the session sends one `StartServiceByName("org.freedesktop.UPower", 0)`
@@ -213,7 +213,7 @@ fn wanted(domains: &[Domain]) -> bool {
 /// the shown modules: one connection to the system bus per session, made
 /// again with a growing delay if lost or if a domain's read fails. A
 /// domain's own outage shows "–" for it alone, the others keep their last
-/// value during the delay (I2); the bus itself going away blanks
+/// value during the delay; the bus itself going away blanks
 /// all three. `wifi`, `bt`, `vpn`: the quick panel's taps (quick Wi-Fi spec § 5), polled beside the
 /// bus; None: a tap nothing ever sets. `units`: the loop's word to read the failed-units count
 /// now, `opts` how that count is followed, `units_read` called after each successful read of it.
