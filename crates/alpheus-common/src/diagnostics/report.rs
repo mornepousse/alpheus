@@ -277,12 +277,13 @@ fn replace_shapes(text: &str) -> String {
             }
         }
         // `0xaabbccddeeff`: a bare 12-hex right after a hex prefix.
-        if c.is_ascii_hexdigit() && after_hex_prefix(&chars, i) {
-            if let Some(n) = bare_mac(&chars[i..]) {
-                out.push_str("<mac>");
-                i += n;
-                continue;
-            }
+        if c.is_ascii_hexdigit()
+            && after_hex_prefix(&chars, i)
+            && let Some(n) = bare_mac(&chars[i..])
+        {
+            out.push_str("<mac>");
+            i += n;
+            continue;
         }
         out.push(c);
         i += 1;
