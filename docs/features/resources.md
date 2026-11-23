@@ -47,7 +47,7 @@ timer, and only while it is open.
 - **Esc**, a click outside, a restyle that moves the bar and the output going away close the popup,
   as for every module popup. Running `Monitor…` closes it too. A theme change repaints it.
 
-The popup is opened with a grab (`Input::Grab`). The README notes what that means for the bar's
+The popup is opened with a grab (`Input::Grab`). [The bar page](bar.md) notes what that means for the bar's
 keyboard on Hyprland.
 
 ## Configuration

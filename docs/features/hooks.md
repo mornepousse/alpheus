@@ -67,6 +67,19 @@ it.
 
 When a hook does not run, the log says why in fixed words (see "How it is built").
 
+Details that trip people up:
+
+- **Finding the program.** The first word is an absolute path or a bare name looked up on the
+  daemon's own `$PATH` (not your shell's); relative paths (`./x`) and `~` are not expanded or found.
+  Quote variables in `sh -c` (`"$ALPHEUS_DEVICE"`): a name may hold spaces.
+- **The data.** An event's data reaches the hook only through the environment, never as an argument;
+  device and profile names are cleaned and cut to 255 bytes. A hook variable the event does not set is
+  removed from the environment, so an inherited one never passes for the event's. A Bluetooth device
+  whose name is only its address gets no `ALPHEUS_DEVICE`; one that is renamed from an address-like
+  alias to its real name fires a disconnect and a connect (rename churn).
+- **Rate limit.** A hook that re-triggers its own event settles at one run per 3 s.
+- **A change takes effect when `alpheus-demon` restarts** (`bar.toml` is read once at start).
+
 ## Configuration
 
 `[hooks]` in `bar.toml`, read at start (there is no hot reload of `bar.toml`). Each key is an argv

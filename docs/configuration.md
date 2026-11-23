@@ -266,8 +266,8 @@ See [displays](features/displays.md) and [`displays.toml`](#displaystoml).
 |---|---|---|---|---|
 | `enabled` | bool | `false` | | `true`: follow the Wayland clipboard (data-control) and keep a text history in memory, 50 entries of at most 4,096 bytes, never on disk, never a copy with a password-manager hint. Read at start. |
 
-The history is opened with `alpheus-launch --clipboard` or the `"` prefix; the README's
-[Clipboard history section](../README.md#clipboard-history) says more.
+The history is opened with `alpheus-launch --clipboard` or the `"` prefix; [Clipboard history](features/clipboard.md)
+says more.
 
 ### `[shield]`
 
@@ -463,7 +463,7 @@ setting both of the first two.
 | `open` | command | `["xdg-open"]` | non-blank program when set | Opens that URL (appended as the last argument); `[]` turns `?` off. |
 
 The `?`, `:`, `$` and `"` prefixes of Mod+Space's All mode are fixed (`:` and `$` are always
-claimed); the README's [launcher section](../README.md#the-launcher) says what each does.
+claimed); [the launcher page](features/launcher.md) says what each does.
 
 ### `[prefixes]`
 
@@ -487,7 +487,7 @@ Menu scripts whose lines the launcher searches next to the apps. **At most 8.**
 | `list` | command | required | non-empty, non-blank program | Run once per open on the scan thread, after the apps: 1 s at most, 2,000 lines, 256 KiB. |
 | `run` | command | required | non-blank program without `{line}`; `{line}` exactly once, as a whole element | Run when an entry is chosen; `{line}` becomes the cleaned line, as one argument, never through a shell. |
 
-A line longer than 512 bytes once cleaned is skipped. The README's [launcher section](../README.md#the-launcher) describes command sources in use.
+A line longer than 512 bytes once cleaned is skipped. [The launcher page](features/launcher.md) describes command sources in use.
 
 ```toml
 [[sources]]

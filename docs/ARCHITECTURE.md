@@ -231,7 +231,7 @@ Each has a page in [`features/`](features/README.md) unless noted.
   **Architecture invariant:** `every_quick_command_stays_on_the_allowlist`,
   `the_quick_model_and_its_state_reader_only_read`,
   `the_wifi_password_goes_to_stdin_only_and_is_wiped_after`.
-- **`launcher/`** (keys in [`configuration.md`](configuration.md), verbs in [`cli.md`](cli.md)).
+- **`launcher/`** ([launcher](features/launcher.md), keys in [`configuration.md`](configuration.md), verbs in [`cli.md`](cli.md)).
   The application launcher: a centred Overlay box created at open and freed at close. `host.rs`
   decides the socket's requests; `surface.rs` is the Wayland side; `socket.rs` and `socket_glue.rs`
   the socket; `scan.rs` the catalog built on a short-lived thread at each open; `tools/` (the
@@ -296,12 +296,12 @@ Each has a page in [`features/`](features/README.md) unless noted.
   `output_power_management_never_appears`, `the_displays_are_restored_before_the_app_is_dropped`.
 - **`calendar/`** ([calendar](features/calendar.md)). A month grid under the clock, dates worked out
   in the file (no date crate). It is on the `NO_THREAD_NOR_COMMAND` list.
-- **`notes/`** (the pad of `alpheus-launch --notes`; no feature page, see its `//!` header). A
+- **`notes/`** (the pad of `alpheus-launch --notes`, [notes](features/notes.md)). A
   plain-text pad in the launcher's box; its file is written only through `state_file`, and its save
   timer and paste pipe live only while it is open.
   **Architecture invariant:** `notes_files_are_written_only_through_state_file`,
   `the_notes_timer_and_pipe_live_only_while_open`.
-- **`clipboard/`** (the history, off unless enabled; no feature page, see its `//!` header).
+- **`clipboard/`** (the history, off unless enabled, [clipboard](features/clipboard.md)).
   `control.rs` is the one file that names the data-control protocols and the only `set_selection`;
   text only, bounded, memory only.
   **Architecture invariant:** `data_control_only_in_control_rs`,

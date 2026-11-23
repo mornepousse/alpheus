@@ -66,11 +66,15 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
 ```
 alpheus-launch [--toggle | --close
                | --dmenu [-p|--prompt TEXT] [--index] [--password] [--visible N]
-               | --dnd on|off|toggle
+               | --dnd on|off|toggle [--for DURATION | --until HH:MM]
                | --clear-notifications
                | --failed-refresh
                | --osd brightness
-               | --quick [sound|wifi|bluetooth]
+               | --quick [sound|wifi|bluetooth|vpn]
+               | --calc | --windows | --notes
+               | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+               | --shield on|off|toggle|status|allow
+               | --clipboard | --clipboard-clear
                | --tools
                | --power
                | -h|--help]
@@ -85,11 +89,18 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--toggle` (default) | open the launcher, or close it if it is open |
 | `--close` | close the launcher |
 | `--dmenu` | read lines on standard input, show them in the launcher, print the chosen one on standard output (a `fuzzel --dmenu` replacement) |
-| `--dnd on\|off\|toggle` | set the notifications module's do-not-disturb |
+| `--dnd on\|off\|toggle` | set the notifications module's do-not-disturb, kept across restarts in `$XDG_STATE_HOME/alpheus/dnd`; `--dnd on --for 30m` (`2h`, `1h30m`; 1 minute to 24 hours) or `--dnd on --until 22:30` (local time, tomorrow if already past) ends it by itself: one timer, armed only while it runs, and a restarted daemon keeps the end or turns it off if it passed; `off` and `toggle` cancel it; an older daemon exits 3. An alpheus older than this feature reads any state file as plain on, so a rollback keeps do-not-disturb on (untimed) until you toggle it |
 | `--clear-notifications` | empty the notification history |
 | `--failed-refresh` | read the failed-unit counts again now (the system manager's through the D-Bus thread, the user manager's on the loop), whatever `[failed] subscribe` says; the control center sends it itself after a unit action and when the Diag tab shows |
 | `--osd brightness` | show the laptop backlight's level in the OSD (read once, never changed) |
-| `--quick [sound\|wifi\|bluetooth]` | open or close the quick settings panel on the focused output; the word opens it on that detail (`sound`: at the volume) |
+| `--quick [sound\|wifi\|bluetooth\|vpn]` | open or close the quick settings panel on the focused output; the word opens it on that detail (`sound`: at the volume; exit 0 also without the `quick` module); a `--quick` less than 250 ms after the one that opened the panel is ignored |
+| `--calc` | open the launcher in calculator mode: closed, it opens; open, in whatever mode (apps box or script menu), it closes, as `--toggle` does; a `--calc` less than 250 ms after the one that opened it is ignored |
+| `--windows` | open the window switcher with the previous window selected; a second `--windows` while it is open steps to the next window; it replaces any other open launcher and cancels a waiting `--dmenu` (a password prompt included); only a `--windows` within 250 ms of the switcher's own open is ignored |
+| `--notes` | open or close the quick notepad ([notes](features/notes.md)); a `--notes` less than 250 ms after the one that opened it is ignored |
+| `--timer start <duration>\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup` | drive the focus timer: a duration is `90s`, `25m`, `1h30m` or a bare number of minutes, 1 second to 24 hours; `pause`... `skip` act on whatever runs (nothing to act on is no error); `popup` opens or closes the popup under the chip, the keyboard taken without a grab (a second within 250 ms of its own open is ignored); exit 2 without the `timer` module |
+| `--shield on\|off\|toggle\|status\|allow` | drive [Shield mode](features/shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run |
+| `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
+| `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
 | `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
@@ -99,9 +110,9 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | Option | Effect |
 |---|---|
 | `-p`, `--prompt TEXT` | text shown before the input (also `--prompt=TEXT`) |
-| `--index` | print the chosen line's position (from 0, counting empty lines) instead of its text; `-1` for typed text matching no line. Not with `--password` |
-| `--password` | show the typed text as dots, no list (standard input is ignored); the text is printed as typed and never logged. Not with `--index` or `--visible` |
-| `--visible N` | list only the first N non-empty lines until something is typed; typing searches every line |
+| `--index` | print the chosen line's position (from 0, counting empty lines as fuzzel does) instead of its text; `-1`, exit 0, for typed text matching no line, as fuzzel. Not with `--password` |
+| `--password` | draw one `•` per typed character, show no list (standard input is read and ignored); the text is printed as typed, never logged nor kept in the history, and wiped from memory on close. Not with `--index` or `--visible` |
+| `--visible N` | with an empty query, list only the first N non-empty lines; typing searches every line (a script's home menu: its categories first, every entry by typing). Not with `--password` |
 | `--placeholder TEXT`, `--width N`, `--lines N` | accepted for fuzzel's sake (also as `--name=value`), checked, then ignored |
 
 `--dmenu` waits for the person with no timeout of its own; every other verb
@@ -110,14 +121,15 @@ and bytes; over the cap is an error before any connection).
 
 | Exit code | Meaning |
 |---|---|
-| 0 | done, or a line was chosen (`--osd`: also when there is nothing to show; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
+| 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than `--index`, `--password`, `--visible`, `--failed-refresh` or `--quick` (and its `wifi`/`bluetooth` words), `--tools` or `--power`: restart it after an upgrade. The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--clipboard`, `--clipboard-clear`, `--tools`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
-Messages go to standard error, prefixed `alpheus-launch:`. A `--quick`
-arriving less than 250 ms after the one that opened the panel is ignored, so a
-compositor that re-fires a press bind does not close it at once.
+Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
+`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard` and
+`--tools` exists so that a compositor that re-fires a press bind does not close
+what it just opened.
 
 Examples:
 

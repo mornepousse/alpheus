@@ -47,6 +47,11 @@ row reads `…` while `allow` runs, then the list is read again; a failure reads
 the chosen line runs `allow` and the client hears exit 0, Escape exits 1, nothing blocked gives the
 `No blocked USB device` notice and exits 0, the mode off exits 2.
 
+The detail shows at most 32 rows, with the `vid:pid` muted, and says `Reading…`, `No blocked device`,
+`Cannot list the devices` or `Shield is off` when it has no list. The flag's directory is watched in the
+theme watch's inotify instance: give the flag a directory of its own, since one that other programs keep
+busy (such as `/tmp`) wakes the loop for each change in it.
+
 **Notices.** `Shield on` and `Shield off` (with your `on_text` and `off_text`) at any change, whoever
 made it; `Shield unchanged` for a failed switch; `USB device allowed` with the device's name;
 `USB device not allowed`; `No blocked USB device`.

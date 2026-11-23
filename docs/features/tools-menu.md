@@ -71,6 +71,18 @@ every other key. A built-in that opens a tab runs `[actions] open_tab` with `{ta
 terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-category bound is dropped,
 not moved to the root (tools plan 1, decision 12).
 
+**Binding it.** Bind `alpheus-launch --tools` yourself (Mango `bind=SUPER,x,spawn,alpheus-launch --tools`,
+Sway `bindsym $mod+x exec alpheus-launch --tools`). Exit 3 means the daemon is too old or not running, and
+a bind can fall back to a menu of your own on that code. Names, commands and lines are never logged (an
+entry is named by its position in the file).
+
+**The `/` caveat.** A typed path (`/etc/hosts`) in Mod+Space's All mode jumps into the Tools menu;
+`[prefixes] tools = ""` gives the key back. A `tools` prefix the file never sets that clashes with your
+`commands` or `windows` prefix is turned off with a note; one the file sets is refused.
+
+**Moving from a menu script.** `[[sources]]` keeps working beside the Tools menu (an entry in both shows
+twice in Mod+Space's search: drop the source once the menu is yours).
+
 ## How it is built
 
 In `crates/alpheus-daemon/src/launcher/tools/`:

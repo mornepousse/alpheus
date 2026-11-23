@@ -25,7 +25,7 @@ while the calendar is closed: a `Calendar` is built at each open and dropped at 
   same.
 - **Esc**, or a click outside the popup, closes it.
 
-The popup is opened with a grab (`Input::Grab`). The README notes what that means for the bar's
+The popup is opened with a grab (`Input::Grab`). [The bar page](bar.md) notes what that means for the bar's
 keyboard on Hyprland.
 
 ## Configuration

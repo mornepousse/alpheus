@@ -50,7 +50,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | System actions, sound, Wi-Fi/Bluetooth/VPN, control center tabs (the Tools menu) | ✅ `alpheus-launch --tools` (a bind of your own) or `/` in Mod+Space: categories to browse, a flat search across all of them, built-ins that open alpheus's own features, no configuration needed; nothing resident while closed | ➖ | ➖ | ❌ | ❌ |
 | Your own entries in the Tools menu (a command, a terminal, a confirmation, an on/off state, choices) | ✅ `[[tools.entry]]` in `launcher.toml`: argv with no shell, `confirm` asks `Name? ⏎` (second Enter after 0.4 s), `state` shows the quick panel's switch, fixed `choices` or a `choices_cmd` list; read on a short-lived thread, no plugin runtime | ➖ | ➖ | ❌ | ❌ |
 | SSH | 🚧 planned | ➖ | ➖ | ❌ | ❌ |
-| Clipboard history | ✅ off unless `[clipboard] enabled = true`: text only, 50 entries of 4 KiB in memory (nothing on disk), pins, `alpheus-launch --clipboard` (a bind of your own) and the `"` prefix in Mod+Space; a copy with a password-manager hint is never stored (see [Clipboard history](../README.md#clipboard-history)) | ✅ | ➖ | ❌ | ➖ |
+| Clipboard history | ✅ off unless `[clipboard] enabled = true`: text only, 50 entries of 4 KiB in memory (nothing on disk), pins, `alpheus-launch --clipboard` (a bind of your own) and the `"` prefix in Mod+Space; a copy with a password-manager hint is never stored (see [Clipboard history](features/clipboard.md)) | ✅ | ➖ | ❌ | ➖ |
 | Files | 🚧 planned | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |

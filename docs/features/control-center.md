@@ -24,6 +24,48 @@ The next section, "How it is built (the whole program)", describes what every ta
 loop, the worker thread, the refresh rule, the keymap, the theme and the drawing. The sections
 after it are one per tab.
 
+## Keys, layout and shapes at a glance
+
+| Key | Action |
+|---|---|
+| `1`…`8`, `Tab` / `Shift+Tab` | switch tabs |
+| `Ctrl+P` | command palette (fuzzy search) |
+| `/`, `Ctrl+F` | search a list |
+| `F1`, `?` | help |
+| `Esc` | go back; `q` quits |
+
+`alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`, `bluetooth`, `power`,
+`displays`, `appearance`, `diagnostics`; `theme` is accepted for `appearance`, `diag` for
+`diagnostics`; see [../cli.md](../cli.md)).
+
+**Rail and hues.** In a terminal of at least 84 columns and 26 rows (an 87×26 window is enough) the
+tabs become a left rail: the brand, then icon, name and number per tab, the active one filled with the
+theme's accent container, and the status line at its foot. Each tab has its own hue (Home the accent,
+Sound blue, Network cyan, BT purple, Power red, Displays green, Theme orange, Diag yellow) for its
+header, headings, gauges and switches; a hue is only ever the ink of a glyph or a heading, never of text
+on a fill (labels on a button, a chip or a tag are `fg`). Below that size the classic top tab bar and
+rows are drawn, as before except for three changes: the keycaps' order, the Displays row dropping its
+scale column at 80 columns, and the Theme tab's caption hiding when the rows need its room.
+
+**Shapes.** The theme's `style` (see [Themes and bar styles](themes.md#bar-styles)) shapes the control
+center too: `islands` cuts round caps and rounded frames, `powerline` arrow tips, `underline` drops the
+fills for coloured, underlined text, `floating` draws double frames with drop shadows, and `flat` and
+`translucent` stay square. `islands` and `powerline` use Nerd Font glyphs (U+E0B0, U+E0B4, U+E0B6),
+like the bar: in a terminal without a Nerd Font they show as boxes; `flat` needs none.
+
+![The control center's Home dashboard at 87×26, catppuccin dark, sample data](../images/control-center-home.png)
+
+![The Sound tab with the rail (sample data, catppuccin dark)](../images/control-center-sound.png)
+
+![`islands` (left) and `floating` (right) in the control center (sample data, catppuccin dark)](../images/control-center-shapes.png)
+
+The Home dashboard opens in well under 100 ms and shows only what the control center already reads:
+the same keys and clicks reach the same items as in the classic rows.
+
+The Diag tab's redaction is a safety net: it replaces the user name, home, host name and machine id,
+MAC and IP addresses, UUIDs and anything shaped like an e-mail address; **Wi-Fi network names and USB
+serial numbers are not touched**. Read the report before copying it.
+
 ## How it is built (the whole program)
 
 The pieces, from the process outwards. Everything named here is in `crates/alpheus/src/`.
