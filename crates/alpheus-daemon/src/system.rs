@@ -1,6 +1,21 @@
-//! What the system sources say, normalized for the bar: sound, network,
-//! Bluetooth, power, resources. Pure data: the sources fill it, `state`
-//! keeps it, `segments` draws it.
+//! What the system sources say, normalised for the bar: the sound, the network, Bluetooth, the
+//! power and the resources.
+//!
+//! Pure data. A source fills one of these (`sources/`), `state::Bar` keeps it, `segments` draws it.
+//! `Feed` is how a module tells "no reading yet" from "the service is down", so a module that has
+//! lost its service keeps its last figure rather than disappearing. `Resources` also holds the
+//! `History` of the last 60 samples, a fixed ring written in place, which is what the resources
+//! popup's graphs read.
+//!
+//! Never:
+//! - read anything: no file, no socket, no clock — the sources do that and hand the result in;
+//! - grow with time: the history is a fixed ring of about 3 KB (`the_history_stays_small`), and
+//!   nothing else here keeps a list that a session can lengthen;
+//! - read a source that is down as a state (docs/decisions.md, "A source that is down is not a
+//!   state").
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/features/bar.md (what each
+//! module shows), docs/features/resources.md (the ring and the graphs).
 
 pub use alpheus_common::backends::Volume;
 

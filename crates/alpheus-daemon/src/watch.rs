@@ -5,6 +5,23 @@
 //! only when the roles changed. While the directory does not exist, its parent is watched until it
 //! appears; when it goes, the watch falls back to the parent. inotify unavailable: one line, and the
 //! theme files are read at startup only. Read-only: nothing here writes to the directory.
+//!
+//! It carries the Shield's flag too: a second watch descriptor in the same instance, so the mode
+//! shows at once when something outside alpheus writes the flag, at no cost in threads or timers.
+//!
+//! Never:
+//! - write, create or remove anything: the watch only watches
+//!   (`the_theme_and_camera_watches_only_read`);
+//! - make a second inotify instance for the Shield (`the_shield_watch_is_the_theme_watchs_instance`);
+//! - name a path in a log line: the Shield's lines here are fixed words
+//!   (`the_shield_logs_name_nothing`);
+//! - keep a timer or wake the loop at rest: the descriptor is level-triggered and drained
+//!   (`nothing_resident_while_the_launcher_is_closed`, and the themes' and Shield's
+//!   `at_rest_no_wakeups_*` tests).
+//!
+//! See: docs/features/themes.md ("A change applies at once", and the symlinked configuration
+//! directory), docs/features/shield.md ("Without a watch"), docs/decisions.md ("The Shield flag is
+//! watched in the theme watch's inotify instance").
 
 use crate::inotify::{Events, Inotify};
 use crate::log::write as log;

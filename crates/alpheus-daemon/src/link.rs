@@ -11,6 +11,19 @@
 //! Calls and decoding are the tray's typed allowlist (`session_bus::bus`, `session_bus::codec`), so this file never
 //! names the dbus crate. Never name a function `method_call` here: the guardrails count that
 //! substring.
+//!
+//! Never:
+//! - open a second connection: whoever needs the bus first opens this one and the others join;
+//! - reconnect after it closes: a session bus that goes away stays away until the daemon restarts,
+//!   and each module keeps its last state (docs/decisions.md, "A closed session bus is never
+//!   reconnected");
+//! - add a thread: it is driven by the bar's loop, and the answers a settle round left waiting are
+//!   routed from one idle read (`answers_left_by_the_settle_rounds_are_routed_from_an_idle`,
+//!   `nothing_resident_while_the_launcher_is_closed`).
+//!
+//! See: docs/features/media.md (the players on this link), docs/features/notifications.md (the
+//! server), docs/features/themes.md (the portal's follower), docs/features/failed.md (the user
+//! manager's count), docs/ARCHITECTURE.md ("Threads").
 
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, ModuleId, NotificationsConfig};

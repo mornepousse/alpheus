@@ -3,6 +3,16 @@
 //! `<backlight_dir>/<device>/brightness` and `max_brightness`, each a small number. Read only and
 //! capped (`read_capped`); never watched, never written. The brightness keys change it outside
 //! alpheus, then call the verb.
+//!
+//! Never:
+//! - write a level or watch the device: the OSD shows what it is asked to show, and a watcher would
+//!   pop the pill up every time an idle daemon dimmed the screen (`the_osd_only_reads`,
+//!   docs/decisions.md, "Brightness is shown on request, read once");
+//! - panic on what sysfs says (`the_osd_has_no_panicking_path`), or start a thread or a command
+//!   (`the_tray_spawns_no_thread` has this file on its list).
+//!
+//! See: docs/features/osd.md ("Brightness"), docs/features/quick-settings.md (the brightness row),
+//! docs/configuration.md (`[osd] backlight`, `backlight_dir`).
 
 use crate::osd;
 use alpheus_common::theme::settings::read_capped;

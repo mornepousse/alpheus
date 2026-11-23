@@ -9,6 +9,17 @@
 //! Calls and decoding reuse the tray's typed allowlist (`Call::ReadOne`, `codec`): one pending
 //! table, one deadline rule, and this file never names the dbus crate. Never name a function
 //! `method_call` here: the guardrails count that substring.
+//!
+//! Never:
+//! - call anything else: `the_portal_is_read_through_exactly_two_members` pins the one call and the
+//!   one signal, read-only, with auto-start off, so reading the preference never starts a portal;
+//! - open a connection of its own: it rides the tray's or the bar's link, and never a second one;
+//! - fire a hook for the state at start: only a change runs `[hooks] theme_mode`
+//!   (`the_hooks_are_fed_where_state_changes`, and docs/decisions.md, "A hook fires on a change,
+//!   never for the state at start").
+//!
+//! See: docs/features/themes.md (the mode and how it is followed), docs/features/hooks.md,
+//! docs/decisions.md ("A closed session bus is never reconnected").
 
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
