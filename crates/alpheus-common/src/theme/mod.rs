@@ -128,14 +128,14 @@ const HUE_MIX: u16 = 30;
 /// `c` mixed `HUE_MIX` % toward `toward`: per 8-bit channel, linear in the
 /// sRGB values (not in linear light), rounded to nearest.
 fn mix_toward(c: Rgb, toward: Rgb) -> Rgb {
-    let m = |a: u8, b: u8| ((a as u16 * (100 - HUE_MIX) + b as u16 * HUE_MIX + 50) / 100) as u8;
+    let m = |a: u8, b: u8| ((u16::from(a) * (100 - HUE_MIX) + u16::from(b) * HUE_MIX + 50) / 100) as u8;
     Rgb(m(c.0, toward.0), m(c.1, toward.1), m(c.2, toward.2))
 }
 
 impl Roles {
     /// fg_dim at 40 % over `bg`, rounded: frames and borders (spec § 1).
     pub fn border_over(&self, bg: Rgb) -> Rgb {
-        let mix = |f: u8, b: u8| ((f as u16 * BORDER_ALPHA + b as u16 * (255 - BORDER_ALPHA) + 127) / 255) as u8;
+        let mix = |f: u8, b: u8| ((u16::from(f) * BORDER_ALPHA + u16::from(b) * (255 - BORDER_ALPHA) + 127) / 255) as u8;
         Rgb(mix(self.fg_dim.0, bg.0), mix(self.fg_dim.1, bg.1), mix(self.fg_dim.2, bg.2))
     }
 

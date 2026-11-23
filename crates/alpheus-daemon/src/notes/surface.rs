@@ -51,7 +51,7 @@ pub(crate) fn notes_layout_within(size: (u32, u32), advance: f32, row_height: u3
     let e = scale.max(1) as u32;
     let (extra_w, extra_h) = frame.extra();
     let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance);
-    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     view::layout(columns.saturating_add(4), rows.saturating_add(2))
 }
 

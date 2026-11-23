@@ -1581,7 +1581,7 @@ impl App {
         let columns = s.last.as_ref().map_or(0, Grid::width);
         let height = self.bar.config.height.max(1);
         let output_height = self.outputs.info(&s.output).and_then(|o| o.logical_size).map_or(720, |(_, h)| h.max(1) as u32);
-        let rows = (output_height / height).saturating_sub(1).min(u16::MAX as u32) as u16;
+        let rows = (output_height / height).saturating_sub(1).min(u32::from(u16::MAX)) as u16;
         (columns, rows)
     }
 }

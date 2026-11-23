@@ -220,7 +220,7 @@ pub fn columns(width_phys: u32, advance: f32) -> u16 {
     if advance <= 0.0 {
         return 0;
     }
-    ((width_phys as f32 / advance).floor() as u32).min(u16::MAX as u32) as u16
+    ((width_phys as f32 / advance).floor() as u32).min(u32::from(u16::MAX)) as u16
 }
 
 /// Cell under a point (x in logical px, like the Wayland pointer).
@@ -228,7 +228,7 @@ pub fn column_under(x_logical: f64, scale: i32, advance: f32) -> u16 {
     if advance <= 0.0 || x_logical <= 0.0 {
         return 0;
     }
-    ((x_logical * scale.max(1) as f64) / advance as f64).floor().min(u16::MAX as f64) as u16
+    ((x_logical * f64::from(scale.max(1))) / f64::from(advance)).floor().min(f64::from(u16::MAX)) as u16
 }
 
 fn attrs(family: &str, bold: bool) -> Attrs<'_> {
@@ -354,8 +354,9 @@ fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb) {
     rect(px, width, height, (0, s), (r, height.saturating_sub(r)), ink);
     rect(px, width, height, (width.saturating_sub(s), width), (r, height.saturating_sub(r)), ink);
     let (rf, sf) = (r as f32, s as f32);
-    let mix =
-        |stroke: u8, back: u8, ring: f32, inside: f32| ((stroke as f32 * ring + back as f32 * inside).round()).clamp(0.0, 255.0) as u8;
+    let mix = |stroke: u8, back: u8, ring: f32, inside: f32| {
+        ((f32::from(stroke) * ring + f32::from(back) * inside).round()).clamp(0.0, 255.0) as u8
+    };
     for cy in 0..r {
         for cx in 0..r {
             // Distance of the pixel's centre to the corner circle's centre, in the corner's own
@@ -380,7 +381,7 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
         return;
     }
-    let a = c.a() as u32;
+    let a = u32::from(c.a());
     if a == 0 {
         return;
     }
@@ -388,11 +389,11 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     let o = (y as usize * width as usize + x as usize) * 4;
     let src = [c.b(), c.g(), c.r()];
     for k in 0..3 {
-        px[o + k] = ((src[k] as u32 * a + px[o + k] as u32 * (255 - a)) / 255) as u8;
+        px[o + k] = ((u32::from(src[k]) * a + u32::from(px[o + k]) * (255 - a)) / 255) as u8;
     }
     // Premultiplied "over": an opaque destination stays exactly 255 (flat, popups: unchanged);
     // a transparent or translucent one (islands, translucent) keeps a valid premultiplied pixel.
-    px[o + 3] = ((255 * a + px[o + 3] as u32 * (255 - a)) / 255) as u8;
+    px[o + 3] = ((255 * a + u32::from(px[o + 3]) * (255 - a)) / 255) as u8;
 }
 
 fn has_family(f: &fontdb::FaceInfo, family: &str) -> bool {
@@ -436,7 +437,7 @@ fn find_replacement<'a>(faces: impl Iterator<Item = &'a fontdb::FaceInfo>) -> Op
 /// other face in its file.
 fn useful_faces(inventory: &fontdb::Database, family: &str) -> Vec<fontdb::FaceInfo> {
     let faces: Vec<&fontdb::FaceInfo> = inventory.faces().filter(|f| has_family(f, family) && f.style == fontdb::Style::Normal).collect();
-    let closest = |target: i32| faces.iter().min_by_key(|f| (f.weight.0 as i32 - target).abs()).map(|f| f.id);
+    let closest = |target: i32| faces.iter().min_by_key(|f| (i32::from(f.weight.0) - target).abs()).map(|f| f.id);
     let mut ids = Vec::new();
     for id in [closest(400), closest(700)].into_iter().flatten() {
         if !ids.contains(&id) {

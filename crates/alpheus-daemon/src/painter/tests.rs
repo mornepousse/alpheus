@@ -213,7 +213,7 @@ fn glyph_shaping_memo_speeds_up_paint() {
     let cols = text.chars().count() as u16;
     let mut g = Grid::empty(cols);
     g.write(0, cols, text, Style::NORMAL);
-    let (w, h) = ((av * cols as f32).ceil() as u32, DEFAULT_HEIGHT);
+    let (w, h) = ((av * f32::from(cols)).ceil() as u32, DEFAULT_HEIGHT);
     let mut px = vec![0u8; (w * h * 4) as usize];
     const ITERATIONS: u32 = 300;
     let t0 = std::time::Instant::now();
@@ -354,7 +354,7 @@ impl Surface {
         let (advance, frame) = (p.advance(scale), p.frame(scale));
         let (cols, rows) = b.cells();
         let rh = DEFAULT_HEIGHT * scale as u32;
-        let (w, h) = ((cols as f32 * advance).ceil() as u32 + frame.extra().0, rows as u32 * rh + frame.extra().1);
+        let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
         let mut px = vec![0x11u8; (w * h * 4) as usize];
         p.paint_boxed(b, &pal, &mut px, w, h, rh, scale, FrameInk::Border);
         Surface { px, w, h, rh, frame, advance }

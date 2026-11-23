@@ -52,21 +52,21 @@ const REPOSITION_VERSION: u32 = 3;
 pub fn box_size(columns: u16, rows: u16, advance_phys: f32, row_height: u32, scale: i32, frame: &Frame) -> (u32, u32) {
     let e = scale.max(1) as u32;
     let (extra_w, extra_h) = frame.extra();
-    let width_phys = (columns as f32 * advance_phys).ceil() as u32 + extra_w;
-    (width_phys.div_ceil(e), (rows as u32 * row_height + extra_h).div_ceil(e))
+    let width_phys = (f32::from(columns) * advance_phys).ceil() as u32 + extra_w;
+    (width_phys.div_ceil(e), (u32::from(rows) * row_height + extra_h).div_ceil(e))
 }
 
 /// Pointer position (logical px) → the (column, row) of the `cells` box's cells under it; None in
 /// the frame's margin (and past the last cell), where no cell is.
 pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32, frame: &Frame, cells: (u16, u16)) -> Option<(u16, u16)> {
-    let e = scale.max(1) as f64;
-    let (px, py) = (x * e - frame.side as f64, y * e - frame.top as f64);
+    let e = f64::from(scale.max(1));
+    let (px, py) = (x * e - f64::from(frame.side), y * e - f64::from(frame.top));
     if px < 0.0 || py < 0.0 || advance_phys <= 0.0 || row_height == 0 {
         return None;
     }
-    let column = (px / advance_phys as f64).floor();
-    let row = (py / row_height as f64).floor();
-    (column < cells.0 as f64 && row < cells.1 as f64).then_some((column as u16, row as u16))
+    let column = (px / f64::from(advance_phys)).floor();
+    let row = (py / f64::from(row_height)).floor();
+    (column < f64::from(cells.0) && row < f64::from(cells.1)).then_some((column as u16, row as u16))
 }
 
 /// `cell_under` on the frame as it is PAINTED: `paint_boxed` refits `frame` inside the surface
@@ -114,8 +114,8 @@ pub struct Placement {
 /// anchor rect's height. The anchor rect stays the icon's cells even near an edge: sliding the popup
 /// is the compositor's.
 pub fn placement(anchor: &Anchor, size: (u32, u32), advance_logical: f32, bar_height: u32) -> Placement {
-    let left = (anchor.start as f32 * advance_logical).floor() as i32;
-    let right = (anchor.end.max(anchor.start + 1) as f32 * advance_logical).ceil() as i32;
+    let left = (f32::from(anchor.start) * advance_logical).floor() as i32;
+    let right = (f32::from(anchor.end.max(anchor.start + 1)) * advance_logical).ceil() as i32;
     Placement {
         anchor_x: left,
         anchor_width: (right - left).max(1),
@@ -1348,11 +1348,11 @@ mod tests {
         let painted = f.fitted(cells, advance, row, (size.0 * 3, size.1 * 3));
         assert!(painted.side > f.side && painted.top > f.top, "the surface leaves room over: {painted:?}");
         // Half a physical pixel into the painted first cell: cell (0, 0).
-        let (x, y) = ((painted.side as f64 + 0.5) / 3.0, (painted.top as f64 + 0.5) / 3.0);
+        let (x, y) = ((f64::from(painted.side) + 0.5) / 3.0, (f64::from(painted.top) + 0.5) / 3.0);
         assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), Some((0, 0)));
         // Half a pixel into the RAW frame's first cell: the painted margin, so no cell; the raw
         // `cell_under` would answer (0, 0), which is the drift this guards.
-        let (x, y) = ((f.side as f64 + 0.5) / 3.0, (f.top as f64 + 0.5) / 3.0);
+        let (x, y) = ((f64::from(f.side) + 0.5) / 3.0, (f64::from(f.top) + 0.5) / 3.0);
         assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), None, "still in the painted margin");
         assert_eq!(cell_under(x, y, 3, advance, row, &f, cells), Some((0, 0)), "the raw frame disagrees");
     }

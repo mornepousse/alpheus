@@ -78,7 +78,7 @@ impl CloseReason {
 pub fn output_cells(width: u32, height: u32, advance_phys: f32, row_height: u32, scale: i32) -> (u16, u16) {
     let e = scale.max(1) as u32;
     let columns = painter::columns(width * e, advance_phys);
-    let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     (columns, rows)
 }
 
@@ -183,7 +183,7 @@ pub(crate) fn layout_within(
     let e = scale.max(1) as u32;
     let (extra_w, extra_h) = frame.extra();
     let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance_phys);
-    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     open_layout(columns.saturating_add(4), rows.saturating_add(2), model)
 }
 
