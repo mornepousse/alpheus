@@ -380,17 +380,17 @@ mod tests {
     use super::*;
     use crate::launcher::testing::TempDir;
 
-    /// The README's `launcher.toml` block (the one holding the Tools menu's keys) is valid as
-    /// written: the test reads the README itself, so the example cannot drift.
+    /// The configuration reference's `launcher.toml` block (the one holding the Tools menu's keys)
+    /// is valid as written: the test reads docs/configuration.md itself, so the example cannot drift.
     #[test]
-    fn the_readmes_tools_example_parses() {
-        let readme = include_str!("../../../../README.md");
+    fn the_configuration_references_tools_example_parses() {
+        let readme = include_str!("../../../../docs/configuration.md");
         let block = readme
             .split("```toml\n")
             .skip(1)
             .map(|b| b.split("```").next().unwrap_or(""))
             .find(|b| b.contains("[[tools.entry]]"))
-            .expect("a toml block with [[tools.entry]] in the README");
+            .expect("a toml block with [[tools.entry]] in docs/configuration.md");
         let c = LauncherConfig::from_text(block).unwrap();
         assert_eq!(c.prefixes.tools, "/");
         assert_eq!((c.tools.categories.len(), c.tools.entries.len()), (1, 3));

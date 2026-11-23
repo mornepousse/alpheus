@@ -3,7 +3,7 @@
 //! setting is read once at startup and costs nothing if unused.
 //!
 //! ```toml
-//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; "timer" (the focus timer's chip) sits just before "clock" by default
+//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
 //! height = 22                                               # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
@@ -17,7 +17,7 @@
 //! [workspaces]
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! [actions]                                                 # clicks on the system modules
-//! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth
+//! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth, diagnostics
 //! resources = ["foot", "-e", "btop"]                        # right click on the resources, and the popup's Monitor…
 //! [resources]
 //! interval = 2                                              # seconds between readings, 1 to 60
