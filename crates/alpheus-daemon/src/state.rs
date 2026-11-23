@@ -343,7 +343,7 @@ mod tests {
         assert!(b.privacy_at(&Msg::Compositor(Some(e.clone())), now), "the screen lights");
         assert!(b.privacy.shown().screen.active());
         e.casting = false;
-        e.cast_hold = std::time::Duration::ZERO;
+        e.cast_hold = Duration::ZERO;
         b.privacy_at(&Msg::Compositor(Some(e)), now);
         assert!(b.privacy.shown().screen.active(), "the off-delay still applies");
         b.privacy_at(&Msg::Compositor(None), now);

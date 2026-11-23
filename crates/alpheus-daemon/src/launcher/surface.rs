@@ -973,7 +973,7 @@ mod tests {
     }
 
     fn apps() -> Launcher {
-        Launcher::for_apps(LauncherConfig::default(), Vec::new(), crate::launcher::history::History::empty(200), 0)
+        Launcher::for_apps(LauncherConfig::default(), Vec::new(), history::History::empty(200), 0)
     }
 
     fn script() -> Launcher {
@@ -1160,7 +1160,7 @@ mod tests {
     fn the_history_path_is_none_when_the_history_is_off() {
         let state = Path::new("/state/alpheus");
         let on = LauncherConfig::default();
-        assert_eq!(history_path_for(&on, state), Some(crate::launcher::history::history_path(state)));
+        assert_eq!(history_path_for(&on, state), Some(history::history_path(state)));
         let off = LauncherConfig { history: 0, ..LauncherConfig::default() };
         assert_eq!(history_path_for(&off, state), None, "history = 0: never read, never written");
     }

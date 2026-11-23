@@ -12,8 +12,8 @@ const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
 /// which step broke.
 #[test]
 fn watch_fd_failing_says_which_step_broke_not_no_session_bus() {
-    let connect = no_session_bus(std::io::Error::other("boom"));
-    let watch = watch_fd_failed(std::io::Error::other("boom"));
+    let connect = no_session_bus(io::Error::other("boom"));
+    let watch = watch_fd_failed(io::Error::other("boom"));
     assert_ne!(connect, watch, "two different steps must not share one line");
     assert!(connect.contains("no session bus"), "{connect:?}");
     assert!(!watch.contains("no session bus"), "the bus did connect: {watch:?}");

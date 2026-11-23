@@ -669,7 +669,7 @@ fn rank_emoji_finds_by_name_and_caps() {
     assert!(hits.len() <= 10 && hits.iter().all(|h| matches!(h.source, Source::Emoji(_)) && h.frecency == 0));
     assert!(hits.windows(2).all(|w| w[0].score >= w[1].score), "by score");
     let Source::Emoji(best) = r.rank_emoji("red heart", 5)[0].source else { panic!() };
-    assert_eq!(crate::launcher::emoji::at(best).map(|(_, name)| name), Some("red heart"), "best score first, not first in the table");
+    assert_eq!(emoji::at(best).map(|(_, name)| name), Some("red heart"), "best score first, not first in the table");
     assert_eq!(r.rank_emoji("face", 3).len(), 3);
     assert!(r.rank_emoji("zzqx", 10).is_empty());
     assert!(r.rank_emoji("face", 0).is_empty());
@@ -690,7 +690,7 @@ fn rank_emoji_matches_non_ascii_names() {
         let hits = Ranker::new().rank_emoji(text, 50);
         hits.iter()
             .filter_map(|h| match h.source {
-                Source::Emoji(offset) => crate::launcher::emoji::at(offset).map(|(_, name)| name),
+                Source::Emoji(offset) => emoji::at(offset).map(|(_, name)| name),
                 _ => None,
             })
             .collect()

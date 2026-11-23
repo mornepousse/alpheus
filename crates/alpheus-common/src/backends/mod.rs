@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn system_wires_each_domain_to_its_tool() {
-        let f = std::sync::Arc::new(FakeExecutor::new());
+        let f = Arc::new(FakeExecutor::new());
         let dir = crate::temp_path::TempPath::new("backends-system");
         let b = Backends::system(f.clone(), dir.to_path_buf());
         let _ = b.sound.volume();

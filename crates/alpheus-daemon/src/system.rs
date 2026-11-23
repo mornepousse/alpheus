@@ -518,6 +518,6 @@ mod tests {
 
     #[test]
     fn the_history_stays_small() {
-        assert!(std::mem::size_of::<History>() <= 3 * 1024, "{}", std::mem::size_of::<History>());
+        assert!(size_of::<History>() <= 3 * 1024, "{}", size_of::<History>());
     }
 }

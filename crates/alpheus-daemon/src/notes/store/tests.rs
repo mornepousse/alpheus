@@ -13,7 +13,7 @@ fn mode(p: &Path) -> u32 {
 /// A state directory (0700, as `write_private` makes it) holding `bytes` as the notes file.
 fn state_with(t: &TempPath, bytes: &[u8]) -> PathBuf {
     let dir = t.join("alpheus");
-    crate::state_file::write_private(&dir, FILE, bytes).unwrap();
+    write_private(&dir, FILE, bytes).unwrap();
     dir
 }
 

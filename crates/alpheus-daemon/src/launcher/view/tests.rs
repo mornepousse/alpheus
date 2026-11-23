@@ -984,7 +984,7 @@ fn a_switch_row_cuts_a_long_name_before_the_switch() {
     l.adopt_state(0, Some(true));
     let (_, rows) = draw(&mut l, 40);
     let line = tool_text(&rows).into_iter().find(|t| t.contains("A very")).unwrap_or_default();
-    let (switch, _) = crate::quick::switch(Some(true));
+    let (switch, _) = quick::switch(Some(true));
     assert!(line.contains(&format!("…  {switch}")) || line.contains(&format!("… {switch}")), "{line:?}");
     assert!(!line.contains("all"), "the name is cut, not drawn over the switch: {line:?}");
 }

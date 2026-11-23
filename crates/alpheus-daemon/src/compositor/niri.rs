@@ -249,7 +249,7 @@ impl Model {
             let most_recent = toplevels.remove(0);
             toplevels.push(most_recent);
         }
-        CompositorState { workspaces, window, toplevels, casting: self.casting(), cast_hold: std::time::Duration::ZERO }
+        CompositorState { workspaces, window, toplevels, casting: self.casting(), cast_hold: Duration::ZERO }
     }
 }
 

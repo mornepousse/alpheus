@@ -114,14 +114,8 @@ fn a_press_on_a_module_right_after_its_popup_was_done_does_not_reopen_it() {
     assert!(!closed_by_done(&mut None, Some(Calendar), t0), "no record: opens");
     let mut rec = Some((Calendar, t0));
     assert!(!closed_by_done(&mut rec, Some(Calendar), t0 + RECENT_CLOSE_WINDOW), "the window's very end: elapsed, reopens");
-    assert!(
-        !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Media), t0),
-        "a calendar record does not swallow a media press"
-    );
-    assert!(
-        !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Panel), t0),
-        "a calendar record does not swallow a bell press"
-    );
+    assert!(!closed_by_done(&mut Some((Calendar, t0)), Some(ModulePopup::Media), t0), "a calendar record does not swallow a media press");
+    assert!(!closed_by_done(&mut Some((Calendar, t0)), Some(ModulePopup::Panel), t0), "a calendar record does not swallow a bell press");
 }
 
 #[test]

@@ -2669,7 +2669,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         // The password field, then a failure with the profile nmcli made: `--ask`, then the cleanup.
         const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
         let mut q = opened.clone();
-        q.wifi.pick = alpheus_daemon::quick::wifi::Pick::Network(b"Bureau-Test".to_vec());
+        q.wifi.pick = quick::wifi::Pick::Network(b"Bureau-Test".to_vec());
         record(q.key(&live, Key::Enter, false, t));
         for ch in "fake-pass".chars() {
             record(q.key(&live, Key::Char(ch), false, t));
@@ -2685,7 +2685,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             d.state = 30;
         }
         record(q.set_wifi(Some(failing), t).action);
-        record(q.due(t + alpheus_daemon::quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
+        record(q.due(t + quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
     // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
     // key on every pick (twice), every press of every cell with every button (twice).

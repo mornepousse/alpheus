@@ -459,7 +459,7 @@ fn outputs_verbs_round_trip() {
         assert_eq!(d.feed(&[*b]), Ok(None));
     }
     assert_eq!(d.feed(&wire[wire.len() - 1..]), Ok(Some(Request::OutputsTry("step\tA\toff\n".into()))));
-    let too_big = format!("{MAGIC} outputs-try {}\n", crate::displays::wire::MAX_OUTPUTS_BODY + 1);
+    let too_big = format!("{MAGIC} outputs-try {}\n", MAX_OUTPUTS_BODY + 1);
     assert_eq!(decode(too_big.as_bytes()), Err(IpcError::TooLarge("outputs body")));
     assert!(decode(format!("{MAGIC} outputs-try\n").as_bytes()).is_err());
     assert!(decode(format!("{MAGIC} outputs-try x\n").as_bytes()).is_err());
@@ -484,7 +484,7 @@ fn outputs_reply_carries_its_body() {
     assert!(matches!(decode_reply(b"outputs 1\nab"), Err(IpcError::Malformed(_))));
     assert!(matches!(decode_reply(b"outputs x\n"), Err(IpcError::Malformed(_))));
     assert!(matches!(decode_reply(b"outputs 1\n\xff"), Err(IpcError::Malformed(_))));
-    let too_big = format!("outputs {}\n", crate::displays::wire::MAX_OUTPUTS_BODY + 1);
+    let too_big = format!("outputs {}\n", MAX_OUTPUTS_BODY + 1);
     assert_eq!(decode_reply(too_big.as_bytes()), Err(IpcError::TooLarge("outputs body")));
 }
 
@@ -516,7 +516,7 @@ fn a_trial_waits_longer_than_the_other_verbs_and_dmenu_waits_for_the_person() {
 fn exchange_tells_a_missing_socket_from_other_failures() {
     let path = std::env::temp_dir().join(format!("alpheus-ipc-{}-absent", std::process::id()));
     let e = exchange(&path, &Request::Toggle, REPLY_TIMEOUT).unwrap_err();
-    assert_eq!(e.kind(), io::ErrorKind::NotFound);
+    assert_eq!(e.kind(), ErrorKind::NotFound);
     assert!(e.to_string().contains("not running"), "{e}");
 }
 

@@ -296,7 +296,7 @@ fn the_popup_lists_each_indicator_and_its_apps() {
     let want = [format!("{MIC} Microphone"), "    firefox".into(), format!("{SCREEN} Screen"), "    (unnamed)".into()];
     let texts: Vec<String> = b.rows.iter().map(|g| g.text().trim_end().to_string()).collect();
     assert_eq!(texts, want.iter().map(|r| format!(" {r}")).collect::<Vec<_>>());
-    let longest = want.iter().map(|r| crate::grid::text_width(r)).max().unwrap_or(0);
+    let longest = want.iter().map(|r| text_width(r)).max().unwrap_or(0);
     assert_eq!(b.cells(), (longest + 2, 4));
     let (mic, screen) = (b.rows[0].styles(), b.rows[2].styles());
     assert!(mic.starts_with(".o.") && screen.starts_with(".r."), "glyphs in their hues: {mic} {screen}");

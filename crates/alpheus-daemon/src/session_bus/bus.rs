@@ -699,7 +699,7 @@ pub mod testing {
     /// A plain `Notify("Fictional", 0, "", summary, "", [], {}, -1)` as the bus delivers it, for the
     /// consumer's tests (notifications.rs names no dbus type).
     pub fn notify_call(summary: &str) -> Message {
-        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+        let mut m = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "Notify")
             .unwrap()
             .append3("Fictional", 0u32, "")
             .append3(summary, "", Vec::<String>::new())
@@ -712,7 +712,7 @@ pub mod testing {
     /// The same Notify, critical (`urgency` 2).
     pub fn critical_notify_call(summary: &str) -> Message {
         let hints: BTreeMap<String, Variant<u8>> = [("urgency".to_string(), Variant(2u8))].into();
-        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+        let mut m = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "Notify")
             .unwrap()
             .append3("Fictional", 0u32, "")
             .append3(summary, "", Vec::<String>::new())

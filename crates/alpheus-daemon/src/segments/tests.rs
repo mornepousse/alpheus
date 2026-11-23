@@ -174,19 +174,19 @@ fn song(playing: bool, title: &str) -> MediaView {
 
 #[test]
 fn media_shows_its_mark_and_title() {
-    let s = super::media(Some(&song(true, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
+    let s = media(Some(&song(true, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
     assert_eq!(draw(&s), ("\u{f040a} Bohemian Rhapsody".into(), ".".repeat(19)));
     assert_eq!((s.module, &s.target), (ModuleId::Media, &Some(Target::Module(ModuleId::Media))), "one click zone");
-    let paused = super::media(Some(&song(false, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
+    let paused = media(Some(&song(false, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
     assert_eq!(draw(&paused), ("\u{f03e4} Bohemian Rhapsody".into(), "m".repeat(19)), "paused: the pause mark, dimmed");
-    let bare = super::media(Some(&song(true, "")), ModuleColors::None).unwrap();
+    let bare = media(Some(&song(true, "")), ModuleColors::None).unwrap();
     assert_eq!((draw(&bare).0.as_str(), bare.width()), ("\u{f040a}", 1), "no title: the mark alone, no trailing space");
 }
 
 #[test]
 fn media_is_hidden_without_a_player() {
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
-        assert!(super::media(None, mc).is_none(), "{mc:?}");
+        assert!(media(None, mc).is_none(), "{mc:?}");
     }
     let mut b = Bar::new(BarConfig::default());
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Media, ModuleId::Clock];
@@ -202,14 +202,14 @@ fn media_is_hidden_without_a_player() {
 
 #[test]
 fn media_takes_the_purple_by_module_colours_and_paused_stays_dim() {
-    let at = |playing, mc| draw(&super::media(Some(&song(playing, "Song")), mc).unwrap()).1;
+    let at = |playing, mc| draw(&media(Some(&song(playing, "Song")), mc).unwrap()).1;
     assert_eq!(at(true, ModuleColors::None), "......");
     assert_eq!(at(true, ICONS), "pp....", "the purple mark (and its space)");
     assert_eq!(at(true, FULL), "pppppp", "and the title");
     assert_eq!(at(true, ModuleColors::Pills), "pppppp", "pills lays out as full");
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
         assert_eq!(at(false, mc), "mmmmmm", "paused stays dim under {mc:?}");
-        let flags = |playing| super::media(Some(&song(playing, "Song")), mc).unwrap().withhold_hue;
+        let flags = |playing| media(Some(&song(playing, "Song")), mc).unwrap().withhold_hue;
         assert_eq!((flags(true), flags(false)), (false, true), "only a paused block withholds its hue ({mc:?})");
     }
 }
@@ -238,13 +238,13 @@ fn the_privacy_segment_shows_each_active_glyph_in_its_hue() {
         let mut b = full_bar();
         b.privacy = shown(true, true, true);
         assert_eq!(bar_styles(&mut b, mc, "\u{f036c}\u{f0100}\u{f0379}"), "ogr", "in the bar under {mc:?}");
-        let s = super::privacy(&shown(true, true, true)).unwrap();
+        let s = privacy(&shown(true, true, true)).unwrap();
         assert_eq!(draw(&s), ("\u{f036c} \u{f0100} \u{f0379}".into(), "oggrr".into()), "{mc:?}");
         assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Privacy, &Some(Target::Module(ModuleId::Privacy)), true));
     }
-    assert_eq!(draw(&super::privacy(&shown(false, true, false)).unwrap()), ("\u{f0100}".into(), "g".into()), "the camera alone, no join");
-    assert_eq!(draw(&super::privacy(&shown(false, false, true)).unwrap()), ("\u{f0379}".into(), "r".into()));
-    assert_eq!(draw(&super::privacy(&shown(true, false, true)).unwrap()), ("\u{f036c} \u{f0379}".into(), "orr".into()));
+    assert_eq!(draw(&privacy(&shown(false, true, false)).unwrap()), ("\u{f0100}".into(), "g".into()), "the camera alone, no join");
+    assert_eq!(draw(&privacy(&shown(false, false, true)).unwrap()), ("\u{f0379}".into(), "r".into()));
+    assert_eq!(draw(&privacy(&shown(true, false, true)).unwrap()), ("\u{f036c} \u{f0379}".into(), "orr".into()));
 }
 
 #[test]
@@ -260,13 +260,13 @@ fn the_muted_microphone_is_dim_and_only_it() {
         std::time::Instant::now(),
     );
     assert!(p.mic_muted());
-    assert_eq!(draw(&super::privacy(&p).unwrap()), ("\u{f036c} \u{f0100}".into(), "mgg".into()));
+    assert_eq!(draw(&privacy(&p).unwrap()), ("\u{f036c} \u{f0100}".into(), "mgg".into()));
 }
 
 #[test]
 fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
-    assert!(super::privacy(&Privacy::new(Vec::new())).is_none());
-    assert!(super::privacy(&shown(false, false, false)).is_none());
+    assert!(privacy(&Privacy::new(Vec::new())).is_none());
+    assert!(privacy(&shown(false, false, false)).is_none());
 }
 
 /// Diagnostics spec § 6: `󰀦 N` in the error role whatever `module_colors` says; nothing at 0 or
@@ -274,10 +274,10 @@ fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
 #[test]
 fn failed_two() {
     let two = Failed { system: Some(1), user: Some(1) };
-    let s = super::failed(&two).unwrap();
+    let s = failed(&two).unwrap();
     assert_eq!(draw(&s), ("\u{f0026} 2".into(), "eee".into()));
     assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Failed, &Some(Target::Module(ModuleId::Failed)), false));
-    assert_eq!(draw(&super::failed(&Failed { system: Some(12), user: None }).unwrap()), ("\u{f0026} 12".into(), "eeee".into()));
+    assert_eq!(draw(&failed(&Failed { system: Some(12), user: None }).unwrap()), ("\u{f0026} 12".into(), "eeee".into()));
 }
 
 /// Under every `module_colors`, `pills` included, the block has no hue: the glyph stays in the error role.
@@ -296,9 +296,9 @@ fn failed_two_pills() {
 
 #[test]
 fn failed_is_hidden_at_zero_and_unknown() {
-    assert!(super::failed(&Failed { system: Some(0), user: Some(0) }).is_none());
-    assert!(super::failed(&Failed { system: Some(0), user: None }).is_none());
-    assert!(super::failed(&Failed::default()).is_none(), "neither known: nothing");
+    assert!(failed(&Failed { system: Some(0), user: Some(0) }).is_none());
+    assert!(failed(&Failed { system: Some(0), user: None }).is_none());
+    assert!(failed(&Failed::default()).is_none(), "neither known: nothing");
 }
 
 #[test]
@@ -315,24 +315,24 @@ fn bell(unread: u16, dnd: bool, serving: bool) -> NotifyView {
 
 #[test]
 fn the_bell_counts_the_unread_in_the_accent() {
-    let s = super::notifications(Some(&bell(0, false, true))).unwrap();
+    let s = notifications(Some(&bell(0, false, true))).unwrap();
     assert_eq!(draw(&s), ("\u{f009a}".into(), ".".into()));
     assert_eq!((s.module, &s.target), (ModuleId::Notifications, &Some(Target::Module(ModuleId::Notifications))), "one click zone");
-    assert_eq!(draw(&super::notifications(Some(&bell(3, false, true))).unwrap()), ("\u{f009a} 3".into(), ".aa".into()));
-    assert_eq!(draw(&super::notifications(Some(&bell(42, false, true))).unwrap()).0, "\u{f009a} 42");
-    assert_eq!(draw(&super::notifications(Some(&bell(99, false, true))).unwrap()).0, "\u{f009a} 99");
-    assert_eq!(draw(&super::notifications(Some(&bell(150, false, true))).unwrap()).0, "\u{f009a} 99+", "never wider than 99+");
+    assert_eq!(draw(&notifications(Some(&bell(3, false, true))).unwrap()), ("\u{f009a} 3".into(), ".aa".into()));
+    assert_eq!(draw(&notifications(Some(&bell(42, false, true))).unwrap()).0, "\u{f009a} 42");
+    assert_eq!(draw(&notifications(Some(&bell(99, false, true))).unwrap()).0, "\u{f009a} 99");
+    assert_eq!(draw(&notifications(Some(&bell(150, false, true))).unwrap()).0, "\u{f009a} 99+", "never wider than 99+");
 }
 
 #[test]
 fn do_not_disturb_crosses_the_bell_and_not_serving_dims_it() {
-    let d = |v: NotifyView| draw(&super::notifications(Some(&v)).unwrap());
+    let d = |v: NotifyView| draw(&notifications(Some(&v)).unwrap());
     assert_eq!(d(bell(0, true, true)), ("\u{f009b}".into(), "m".into()));
     assert_eq!(d(bell(2, true, true)), ("\u{f009b} 2".into(), "mmm".into()), "the count stays, dimmed");
     assert_eq!(d(bell(0, false, false)), ("\u{f009a}".into(), "m".into()), "another server holds the name: a dim bell");
     assert_eq!(d(bell(5, false, false)), ("\u{f009a} 5".into(), "mmm".into()), "with the history it already has");
     assert_eq!(d(bell(1, true, false)), ("\u{f009b} 1".into(), "mmm".into()));
-    assert!(super::notifications(None).is_none(), "nothing heard yet: no segment");
+    assert!(notifications(None).is_none(), "nothing heard yet: no segment");
 }
 
 #[test]
@@ -985,8 +985,8 @@ fn net_icons_are_tinted_under_icons_and_the_figures_plain() {
     assert_eq!(st, "c......c....");
 }
 
-fn chip(glyph: char, text: Option<&str>, look: crate::timer::ChipLook) -> crate::timer::TimerChip {
-    crate::timer::TimerChip { glyph, text: text.map(str::to_string), look }
+fn chip(glyph: char, text: Option<&str>, look: ChipLook) -> TimerChip {
+    TimerChip { glyph, text: text.map(str::to_string), look }
 }
 
 /// Timer spec § 2: a running chip in the yellow (icon, then text under `full`), a paused one dim,
@@ -994,13 +994,13 @@ fn chip(glyph: char, text: Option<&str>, look: crate::timer::ChipLook) -> crate:
 #[test]
 fn the_timer_chip_by_look() {
     use crate::timer::{ChipLook, DONE, TIMER};
-    let at = |c: &crate::timer::TimerChip, mc| draw(&super::timer(Some(c), mc).unwrap());
+    let at = |c: &TimerChip, mc| draw(&timer(Some(c), mc).unwrap());
     let running = chip(TIMER, Some("25m"), ChipLook::Running);
     assert_eq!(at(&running, FULL), ("\u{f051b} 25m".into(), "yyyyy".into()));
     assert_eq!(at(&running, ICONS), ("\u{f051b} 25m".into(), "yy...".into()), "only the glyph (and its space) under icons");
     assert_eq!(at(&running, ModuleColors::None), ("\u{f051b} 25m".into(), ".....".into()));
     assert_eq!(at(&running, ModuleColors::Pills).1, "yyyyy", "pills lays out as full");
-    let paused = chip(crate::segments::PAUSE, Some("24m"), ChipLook::Paused);
+    let paused = chip(PAUSE, Some("24m"), ChipLook::Paused);
     for mc in [ModuleColors::None, ICONS, FULL] {
         assert_eq!(at(&paused, mc), ("\u{f03e4} 24m".into(), "mmmmm".into()), "{mc:?}");
     }
@@ -1012,11 +1012,11 @@ fn the_timer_chip_by_look() {
     for mc in [ModuleColors::None, ICONS, FULL] {
         assert_eq!(at(&idle, mc), ("\u{f051b}".into(), "m".into()), "{mc:?}");
     }
-    let s = super::timer(Some(&running), FULL).unwrap();
+    let s = timer(Some(&running), FULL).unwrap();
     assert_eq!((s.module, &s.target), (ModuleId::Timer, &Some(Target::Module(ModuleId::Timer))), "one click zone");
-    assert!(super::timer(None, FULL).is_none());
+    assert!(timer(None, FULL).is_none());
     for (c, withheld) in [(&running, false), (&paused, true), (&done, false), (&idle, true)] {
-        assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
+        assert_eq!(timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
     }
 }
 
@@ -1028,10 +1028,10 @@ fn the_shield_glyph_shows_only_while_on() {
         b.shield =
             Some(crate::shield::ShieldView { state: Some(true), switching: false, failed_until: None, can_list: true, can_allow: true });
         assert_eq!(bar_styles(&mut b, mc, "\u{f0498}"), "g", "in the bar under {mc:?}");
-        let s = super::shield(Some(true)).unwrap_or_else(|| panic!("{mc:?}"));
+        let s = shield(Some(true)).unwrap_or_else(|| panic!("{mc:?}"));
         assert_eq!(draw(&s), ("\u{f0498}".into(), "g".into()), "{mc:?}");
         assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Shield, &Some(Target::Module(ModuleId::Shield)), true));
     }
-    assert!(super::shield(Some(false)).is_none(), "off: nothing");
-    assert!(super::shield(None).is_none(), "unknown: nothing");
+    assert!(shield(Some(false)).is_none(), "off: nothing");
+    assert!(shield(None).is_none(), "unknown: nothing");
 }

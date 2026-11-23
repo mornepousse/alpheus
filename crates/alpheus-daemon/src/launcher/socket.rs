@@ -42,7 +42,7 @@ pub fn peer_allowed(peer_uid: u32, our_uid: u32) -> bool {
 
 fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let mut len = size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: getsockopt(2) writes at most `len` bytes into `cred`, a valid
     // `ucred` owned by this frame; the fd is open for the whole call.
     let r = unsafe {

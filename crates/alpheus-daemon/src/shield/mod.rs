@@ -171,7 +171,7 @@ pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>
             // it, keeping room for the cut's own line, are left out and counted.
             const MORE_ROOM: usize = 32;
             for (i, device) in parsed.devices.iter().enumerate() {
-                let line = format!("\n  {}", crate::shield::usb::picker_line(device));
+                let line = format!("\n  {}", usb::picker_line(device));
                 if out.len() + line.len() + MORE_ROOM > MAX_SHIELD_BODY {
                     out.push_str(&format!("\n  \u{2026} {} more", parsed.devices.len() - i));
                     break;
@@ -265,7 +265,7 @@ pub fn plan_verb(verb: ShieldVerb, context: &VerbCtx) -> VerbPlan {
 /// The picker's lines and, in the same order, the device ids they stand for (the ids never reach
 /// the box: a chosen position maps back to one).
 pub fn picker(devices: &[UsbDevice]) -> (Vec<String>, Vec<(u32, String)>) {
-    (devices.iter().map(crate::shield::usb::picker_line).collect(), devices.iter().map(|d| (d.id, d.name.clone())).collect())
+    (devices.iter().map(usb::picker_line).collect(), devices.iter().map(|d| (d.id, d.name.clone())).collect())
 }
 
 /// The name the notice gives a device the panel allows (the listing it was picked from); `?` when

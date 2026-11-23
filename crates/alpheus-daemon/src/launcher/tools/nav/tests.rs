@@ -267,7 +267,7 @@ fn confirm_asks_waits_runs_and_expires() {
     assert_eq!(l.tools().unwrap().next_deadline(), None, "no question, no deadline");
     assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked);
     assert!(l.tools().unwrap().asking(RowId::Entry(collect)));
-    assert_eq!(l.tools().unwrap().next_deadline(), Some(t0 + crate::session::CONFIRM));
+    assert_eq!(l.tools().unwrap().next_deadline(), Some(t0 + session::CONFIRM));
     assert_eq!(key_at(&mut l, Key::Enter, t0 + 300 * MS), Outcome::Nothing, "a double Enter never confirms");
     assert_eq!(
         key_at(&mut l, Key::Enter, t0 + 500 * MS),
@@ -550,7 +550,7 @@ fn enter_on_a_confirm_tool_in_all_asks_in_the_tools_mode() {
     assert_eq!(breadcrumb(&l), "Tools › Nix");
     assert_eq!(selected_text(&l), "Collect");
     assert!(l.tools().unwrap().asking(RowId::Entry(collect)));
-    assert_eq!(l.tools_deadline(), Some(t0 + crate::session::CONFIRM));
+    assert_eq!(l.tools_deadline(), Some(t0 + session::CONFIRM));
     assert_eq!(key_at(&mut l, Key::Enter, t0 + 100 * MS), Outcome::Nothing, "a double Enter never confirms");
     assert_eq!(
         key_at(&mut l, Key::Enter, t0 + 500 * MS),

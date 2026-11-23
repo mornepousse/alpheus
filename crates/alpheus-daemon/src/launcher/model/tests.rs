@@ -795,7 +795,7 @@ fn a_colon_lists_emoji_and_copies() {
     assert!(!l.results.is_empty() && l.results.len() <= 5, "{:?}", sources(&l));
     assert!(l.results.iter().all(|h| matches!(h.source, Source::Emoji(_))), "{:?}", sources(&l));
     let Source::Emoji(offset) = l.results[0].source else { unreachable!() };
-    assert_eq!(crate::launcher::emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
+    assert_eq!(emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
     assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{2764}\u{fe0f}".into() }));
     assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Copy { text: "red heart".into() }));
 }

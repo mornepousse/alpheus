@@ -587,7 +587,7 @@ fn bt_added(path: &str) -> Signal {
     with_names(signal("/", OBJECT_MANAGER, "InterfacesAdded", Some(path)), &["org.freedesktop.DBus.Introspectable", "org.bluez.Device1"])
 }
 
-fn bt_labels(v: &[crate::system::BtEntry]) -> Vec<&str> {
+fn bt_labels(v: &[BtEntry]) -> Vec<&str> {
     v.iter().map(|e| e.label.as_str()).collect()
 }
 
@@ -916,7 +916,7 @@ fn a_domains_failure_logs_once_until_it_recovers() {
 
 #[test]
 fn optional_turns_an_absence_into_nothing_and_keeps_outages() {
-    assert_eq!(optional(Ok(props::Props::default())).unwrap(), Some(props::Props::default()));
+    assert_eq!(optional(Ok(Props::default())).unwrap(), Some(Props::default()));
     assert_eq!(optional(Err(io::Error::new(io::ErrorKind::NotFound, "UnknownObject"))).unwrap(), None);
     assert_eq!(optional(Err(io::Error::other("timeout"))).unwrap_err().kind(), io::ErrorKind::Other);
 }
@@ -956,8 +956,8 @@ fn the_fake_bus_answers_unique_names() {
 
 /// Simulated clock: advances by `step` on each read (same helper as
 /// `sources::supervise`'s own tests).
-fn clock(step: std::time::Duration) -> impl FnMut() -> std::time::Instant {
-    let mut t = std::time::Instant::now();
+fn clock(step: std::time::Duration) -> impl FnMut() -> Instant {
+    let mut t = Instant::now();
     move || {
         t += step;
         t
@@ -1055,12 +1055,7 @@ fn a_domain_outage_resends_no_wifi() {
 /// closes); another domain's outage keeps it.
 #[test]
 fn a_network_outage_resends_no_vpn() {
-    let shown = SystemState {
-        network: Some(NetState::Offline),
-        vpn: Some(crate::system::VpnState::default()),
-        vpn_open: 2,
-        ..SystemState::default()
-    };
+    let shown = SystemState { network: Some(NetState::Offline), vpn: Some(VpnState::default()), vpn_open: 2, ..SystemState::default() };
     let down = |domain: Domain| {
         let sends = RefCell::new(Vec::new());
         run_supervised(
@@ -1237,7 +1232,7 @@ fn wanted_is_false_only_when_no_domain_is_shown() {
 /// it and return before publishing anything, cheaply and without a bus.
 #[test]
 fn start_with_no_domains_connects_nothing() {
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = calls.clone();
     start(
         vec![],
@@ -1264,16 +1259,16 @@ fn a_panel_reading_failing_is_its_own_domains_outage() {
 
     let mut s = full();
     let e = wifi_into(Err(io::Error::other("rule")), &mut s).unwrap_err();
-    assert_eq!(outage::outage_of(&e), Outage::Domain(Domain::Network));
+    assert_eq!(outage_of(&e), Outage::Domain(Domain::Network));
     assert_eq!((s.wifi, s.bt.is_some()), (None, true), "only its own reading");
     let mut s = full();
     let e = bt_into(Err(io::Error::other("read")), &mut s).unwrap_err();
-    assert_eq!(outage::outage_of(&e), Outage::Domain(Domain::Bluetooth));
+    assert_eq!(outage_of(&e), Outage::Domain(Domain::Bluetooth));
     assert_eq!((s.bt, s.wifi.is_some()), (None, true), "only its own reading");
 
     let mut s = full();
-    assert_eq!(outage::outage_of(&wifi_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
-    assert_eq!(outage::outage_of(&bt_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
+    assert_eq!(outage_of(&wifi_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
+    assert_eq!(outage_of(&bt_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
 }
 
 fn vpn_row(b: &mut FakeBus) {

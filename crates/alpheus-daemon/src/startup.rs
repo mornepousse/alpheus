@@ -137,9 +137,9 @@ pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &P
 
 /// `path` with its `.` and `..` components resolved lexically (no file system access; a `..` at
 /// the root stays at the root).
-fn normalise(path: &Path) -> std::path::PathBuf {
+fn normalise(path: &Path) -> PathBuf {
     use std::path::Component;
-    let mut out = std::path::PathBuf::new();
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
             Component::CurDir => {}
@@ -776,21 +776,21 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
         // The quick panel's Wi-Fi (quick Wi-Fi spec § 5): the loop asks the D-Bus thread through this
         // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
-            match crate::sources::dbus::wifi::WifiTap::new() {
+            match sources::dbus::wifi::WifiTap::new() {
                 Ok(t) => state.quick.wifi_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
         // The Bluetooth row and detail, the same way (quick settings delivery 3).
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
-            match crate::sources::dbus::bt::BtTap::new() {
+            match sources::dbus::bt::BtTap::new() {
                 Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
             }
         }
         // The VPN row and detail (quick VPN spec § 5): read on the network domain, with the Wi-Fi's.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
-            match crate::sources::dbus::vpn::VpnTap::new() {
+            match sources::dbus::vpn::VpnTap::new() {
                 Ok(t) => state.quick.vpn_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no VPN tap ({e})")),
             }

@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(r.resolved.roles, catppuccin.light.unwrap(), "light");
         let r = reload_settings(&dir, &auto, || Some(Mode::Dark));
         assert_eq!(r.resolved.roles, catppuccin.dark, "dark");
-        let dark = ThemeSettings { mode: alpheus_common::theme::settings::ModeSetting::Dark, ..auto };
+        let dark = ThemeSettings { mode: ModeSetting::Dark, ..auto };
         let r = reload_settings(&dir, &dark, || panic!("a fixed mode never asks"));
         assert_eq!(r.resolved.roles, catppuccin.dark);
         let _ = std::fs::remove_dir_all(&dir);
@@ -736,7 +736,7 @@ mod tests {
         r
     }
 
-    fn temp(name: &str) -> std::path::PathBuf {
+    fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("alpheus-watch-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
@@ -893,7 +893,7 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let events = |fd: &Inotify| {
             let mut n = Vec::new();
-            fd.drain(|c| n.extend(crate::inotify::Events(c).map(|e| e.wd)));
+            fd.drain(|c| n.extend(Events(c).map(|e| e.wd)));
             n
         };
         let fd = Inotify::new().unwrap();

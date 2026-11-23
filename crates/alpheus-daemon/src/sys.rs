@@ -106,7 +106,7 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let mut fds = [watching(&a)];
         assert_eq!(poll(&mut fds, 0).unwrap(), 0, "nothing to read yet");
-        std::io::Write::write_all(&mut &b, b"x").unwrap();
+        io::Write::write_all(&mut &b, b"x").unwrap();
         assert_eq!(poll(&mut fds, 0).unwrap(), 1);
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "the events are left in the slice");
     }
@@ -132,7 +132,7 @@ mod tests {
                 // SAFETY: the waiting thread is alive until it has read the word written below.
                 unsafe { libc::pthread_kill(me, libc::SIGUSR1) };
             }
-            std::io::Write::write_all(&mut &b, b"x").unwrap();
+            io::Write::write_all(&mut &b, b"x").unwrap();
         });
         let mut fds = [watching(&a)];
         assert_eq!(poll(&mut fds, 5000).unwrap(), 1, "the signal did not end the wait");

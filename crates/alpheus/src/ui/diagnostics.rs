@@ -331,8 +331,8 @@ fn tone_color(app: &App, tone: Tone, over: Color) -> Color {
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     match &app.diag.view {
         View::Overview => overview(buf, body, app, hits, chrome),
-        View::Journal(_) => super::journal::render(buf, body, app, hits, chrome, now),
-        View::Boot(_) | View::Report(_) => super::report_views::render(buf, body, app, hits, chrome),
+        View::Journal(_) => journal::render(buf, body, app, hits, chrome, now),
+        View::Boot(_) | View::Report(_) => report_views::render(buf, body, app, hits, chrome),
     }
 }
 

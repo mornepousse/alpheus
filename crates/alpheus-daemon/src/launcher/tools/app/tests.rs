@@ -168,7 +168,7 @@ fn the_states_the_daemon_knows_are_dnd_and_the_toggles_that_answer() {
     bar.quick.keep_awake.toggle = strings(&["ka"]);
     bar.quick.night_light.toggle = strings(&["nl"]);
     let mut launcher = LauncherConfig::default();
-    launcher.tools.entries.push(crate::launcher::tools::config::EntryConfig {
+    launcher.tools.entries.push(tools::config::EntryConfig {
         name: "Mine".into(),
         run: strings(&["mine"]),
         position: 1,

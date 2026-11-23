@@ -858,7 +858,7 @@ fn fake_face(family: &str, path: &str, style: fontdb::Style) -> fontdb::FaceInfo
         families: vec![(family.to_string(), fontdb::Language::English_UnitedStates)],
         post_script_name: String::new(),
         style,
-        weight: fontdb::Weight::NORMAL,
+        weight: Weight::NORMAL,
         stretch: fontdb::Stretch::Normal,
         monospaced: true,
     }
@@ -889,7 +889,7 @@ fn deterministic_replacement_by_name_then_path() {
         families: vec![(family.to_string(), fontdb::Language::English_UnitedStates)],
         post_script_name: String::new(),
         style: fontdb::Style::Normal,
-        weight: fontdb::Weight::NORMAL,
+        weight: Weight::NORMAL,
         stretch: fontdb::Stretch::Normal,
         monospaced: true,
     };
@@ -976,7 +976,7 @@ fn opaque(c: Rgb) -> [u8; 4] {
 
 /// A 20-cell grid: an active workspace on cells 1..4, blanks elsewhere; one status block on
 /// cells 6..12 (hue blue) and one clock block on 14..19 (no hue).
-fn underline_fixture() -> (Grid, Vec<crate::grid::Group>) {
+fn underline_fixture() -> (Grid, Vec<Group>) {
     use crate::grid::{Group, GroupKind};
     let mut g = Grid::empty(20);
     g.write(1, 20, "   ", Style::ACTIVE);

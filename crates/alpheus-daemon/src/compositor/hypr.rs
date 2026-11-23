@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(m.apply(&Event::Screencast(true)), Effect::Changed);
         let s = m.state();
         assert!(s.casting);
-        assert_eq!(s.cast_hold, crate::privacy::CAST_HOLD);
+        assert_eq!(s.cast_hold, CAST_HOLD);
         assert_eq!(m.apply(&Event::Screencast(true)), Effect::Nothing, "v1 then v2: one flip");
         assert_eq!(m.apply(&Event::Screencast(false)), Effect::Changed);
         assert!(!m.state().casting);

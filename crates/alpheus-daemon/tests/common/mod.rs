@@ -478,7 +478,7 @@ pub struct TempDir(pub PathBuf);
 impl TempDir {
     /// `$TMPDIR/<name>-<pid>`, emptied first.
     pub fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
@@ -843,7 +843,7 @@ pub fn wl_paste(sway: &Sway) -> Option<String> {
     let mut out = child.stdout.take().expect("piped");
     let reader = thread::spawn(move || {
         let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        let _ = Read::read_to_string(&mut out, &mut text);
         text
     });
     let start = Instant::now();

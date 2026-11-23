@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(Op::ToggleKeepAwake { now_on: true }.domains(), &[Domain::KeepAwake]);
         assert!(Op::SetVolume(NodeRef::DefaultSink, 5).domains().contains(&Domain::Audio));
         assert!(Op::SetDefault(64).domains().contains(&Domain::Volume));
-        assert!(Op::Power(crate::backends::PowerAction::Lock).domains().is_empty());
+        assert!(Op::Power(PowerAction::Lock).domains().is_empty());
         for op in [Op::TryDisplays(Plan::default()), Op::KeepDisplays, Op::RevertDisplays] {
             assert_eq!(op.domains(), &[Domain::Displays]);
         }

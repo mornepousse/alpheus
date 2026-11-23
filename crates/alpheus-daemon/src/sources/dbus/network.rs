@@ -111,13 +111,9 @@ mod tests {
     fn an_outage_is_an_error() {
         let mut bus = FakeBus::workstation();
         bus.failing.insert(PATH.into());
-        assert_eq!(read(&mut bus).unwrap_err().kind(), std::io::ErrorKind::Other, "the root object");
+        assert_eq!(read(&mut bus).unwrap_err().kind(), io::ErrorKind::Other, "the root object");
         let mut bus = FakeBus::workstation();
         bus.failing.insert(format!("{AC}/2"));
-        assert_eq!(
-            read(&mut bus).unwrap_err().kind(),
-            std::io::ErrorKind::Other,
-            "an active connection: a timeout is not a connection gone"
-        );
+        assert_eq!(read(&mut bus).unwrap_err().kind(), io::ErrorKind::Other, "an active connection: a timeout is not a connection gone");
     }
 }

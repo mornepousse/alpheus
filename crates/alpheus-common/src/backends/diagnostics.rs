@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn a_failed_read_is_unknown_in_the_report_not_none() {
         let (_f, t) = tools();
-        let t = t.with_facts(crate::diagnostics::report::HostFacts::default());
+        let t = t.with_facts(HostFacts::default());
         let text = t.report("Mango", 3);
         assert!(text.contains("Failed units: unknown") && text.contains("Errors this boot: unknown"), "{text}");
     }

@@ -769,7 +769,7 @@ mod tests {
         let (i, p, v) = trusted.read3::<&str, &str, Variant<bool>>().unwrap();
         assert_eq!((i, p, v.0), ("org.bluez.Device1", "Trusted", true));
         let removed = message(&ActCall::RemoveDevice { adapter: HCI.into(), device: DEV.into() }, OWNER).unwrap();
-        assert_eq!(&*removed.read1::<dbus::Path>().unwrap(), DEV);
+        assert_eq!(&*removed.read1::<Path>().unwrap(), DEV);
         assert!(message(&ActCall::Connect { device: "not a path".into() }, OWNER).is_none(), "refused, no panic");
     }
 
@@ -862,8 +862,8 @@ mod tests {
         m
     }
 
-    fn dev() -> dbus::Path<'static> {
-        dbus::Path::from(DEV)
+    fn dev() -> Path<'static> {
+        Path::from(DEV)
     }
 
     #[test]

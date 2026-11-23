@@ -38,7 +38,7 @@ fn set_rcvtimeo(fd: BorrowedFd<'_>, dur: Duration) {
             libc::SOL_SOCKET,
             libc::SO_RCVTIMEO,
             (&raw const tv).cast(),
-            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            size_of::<libc::timeval>() as libc::socklen_t,
         )
     };
     assert_eq!(r, 0, "setsockopt(SO_RCVTIMEO): {}", io::Error::last_os_error());

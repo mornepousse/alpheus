@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn zone_at_finds_the_icon_cells() {
-        let key = |n: u32| crate::session_bus::ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
         let mut g = Grid::empty(10);
         g.zone(1, 2, Target::TrayItem(key(1)));
         g.zone(3, 5, Target::TrayItem(key(2))); // a two-cell glyph
@@ -592,8 +592,8 @@ mod tests {
     fn accent_style_and_module_target() {
         assert_eq!(Style::ACCENT.code(), 'a');
         let mut g = Grid::empty(4);
-        g.zone(1, 3, Target::Module(crate::config::ModuleId::Volume));
-        assert_eq!(g.target_at(2), Some(&Target::Module(crate::config::ModuleId::Volume)));
+        g.zone(1, 3, Target::Module(ModuleId::Volume));
+        assert_eq!(g.target_at(2), Some(&Target::Module(ModuleId::Volume)));
     }
 
     #[test]

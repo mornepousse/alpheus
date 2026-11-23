@@ -183,7 +183,7 @@ fn scrolling_keeps_the_focus_visible() {
 
 use crate::app::SaveDialog;
 
-fn displays_tab() -> crate::app::App {
+fn displays_tab() -> App {
     let mut a = ready_app();
     a.go_tab(Tab::Displays, Instant::now());
     a.take_requests();
@@ -503,7 +503,7 @@ fn apply_greyed_out_if_refused() {
     a.go_tab(Tab::Displays, Instant::now());
     a.open_panel("HDMI-A-1", Instant::now());
     // Text color of "[ Apply ]" after rendering.
-    let fg = |a: &crate::app::App| {
+    let fg = |a: &App| {
         let r = draw(a, 80, 24).1.find(Target::PanelApply).unwrap();
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         t.draw(|f| {
@@ -534,7 +534,7 @@ fn overlays_never_panic_in_a_small_window() {
 
 // ── The rail's controls ──────────────────────────────────────────
 
-fn buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+fn buffer(a: &App, w: u16, h: u16) -> Buffer {
     let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
     t.draw(|f| {
         render(f, a);
@@ -544,24 +544,24 @@ fn buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
 }
 
 /// The tab's body alone, drawn with the rail chrome on a w×h area (a body below 64×20 keeps Home's rows).
-fn rail_draw(a: &crate::app::App, w: u16, h: u16) -> (ratatui::buffer::Buffer, HitMap) {
-    let area = ratatui::layout::Rect::new(0, 0, w, h);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
+fn rail_draw(a: &App, w: u16, h: u16) -> (Buffer, HitMap) {
+    let area = Rect::new(0, 0, w, h);
+    let mut buf = Buffer::empty(area);
     let mut hits = HitMap::default();
-    tabs::render(&mut buf, area, a, &mut hits, Chrome::Rail, Some(super::testing::T));
+    tabs::render(&mut buf, area, a, &mut hits, Chrome::Rail, Some(testing::T));
     (buf, hits)
 }
 
-fn rail_buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+fn rail_buffer(a: &App, w: u16, h: u16) -> Buffer {
     rail_draw(a, w, h).0
 }
 
-fn rail_rows(a: &crate::app::App, w: u16, h: u16) -> (Vec<String>, HitMap) {
+fn rail_rows(a: &App, w: u16, h: u16) -> (Vec<String>, HitMap) {
     let (buf, hits) = rail_draw(a, w, h);
     ((0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect()).collect(), hits)
 }
 
-fn tab_app(t: Tab) -> crate::app::App {
+fn tab_app(t: Tab) -> App {
     let mut a = if t == Tab::Displays { displays_tab() } else { ready_app() };
     a.go_tab(t, Instant::now());
     a.take_requests();
@@ -774,7 +774,7 @@ fn bands_under_round_and_line_at_the_tab_level() {
     assert_ne!(b[(r.x + 3, r.y)].bg, a.theme.selection, "no fill under the line style");
     let label = (r.x..r.right()).find(|&x| b[(x, r.y)].symbol() == "D").unwrap();
     let m = b[(label, r.y)].modifier;
-    assert!(m.contains(ratatui::style::Modifier::BOLD) && m.contains(ratatui::style::Modifier::UNDERLINED));
+    assert!(m.contains(Modifier::BOLD) && m.contains(Modifier::UNDERLINED));
 }
 
 /// Review Fix 2: the keys that act on the focused item come first, so a narrow window drops the
@@ -787,7 +787,7 @@ fn keycaps_keep_the_focused_items_keys_at_87x26() {
     assert!(rows[25].contains("Adjust"), "{:?}", rows[25]);
     assert!(rows[25].contains("Toggle"), "{:?}", rows[25]);
     // A narrower bar drops Back, then Palette, then Help, before any of the item's keys.
-    let names: Vec<&str> = crate::ui::shortcut_pairs(&a).iter().map(|p| p.1).collect();
+    let names: Vec<&str> = shortcut_pairs(&a).iter().map(|p| p.1).collect();
     let at = |n: &str| names.iter().position(|x| *x == n).unwrap();
     assert!(at("Adjust") < at("Help") && at("Toggle") < at("Help"), "{names:?}");
     assert!(at("Help") < at("Palette") && at("Palette") < at("Back"), "{names:?}");

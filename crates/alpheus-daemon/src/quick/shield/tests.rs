@@ -158,9 +158,9 @@ fn failed_shows_four_seconds_on_its_row_then_goes() {
     let rows = drawn(&p, &v);
     assert!(rows[2].ends_with("   failed"), "{:?}", rows[2]);
     assert!(rows[3].ends_with("1234:5678"), "only that row: {:?}", rows[3]);
-    assert_eq!(p.deadline(), Some(t + crate::quick::FAILED_SHOWN));
+    assert_eq!(p.deadline(), Some(t + FAILED_SHOWN));
     assert!(!p.due(t + Duration::from_secs(3)));
-    assert!(p.due(t + crate::quick::FAILED_SHOWN), "the tag goes with a redraw");
+    assert!(p.due(t + FAILED_SHOWN), "the tag goes with a redraw");
     assert_eq!(p.deadline(), None);
     assert!(drawn(&p, &v)[2].ends_with("1234:5678"));
     // A success only clears the action.

@@ -985,8 +985,8 @@ mod tests {
 
     #[test]
     fn a_preset_is_a_few_hundred_bytes() {
-        assert_eq!(std::mem::size_of::<Roles>(), 69);
-        assert!(std::mem::size_of::<Preset>() <= 160, "{}", std::mem::size_of::<Preset>());
+        assert_eq!(size_of::<Roles>(), 69);
+        assert!(size_of::<Preset>() <= 160, "{}", size_of::<Preset>());
     }
 
     /// Spec § 7 plus the state-colour amendment: every shipped theme is
