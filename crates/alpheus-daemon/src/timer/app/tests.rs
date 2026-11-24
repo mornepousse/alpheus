@@ -168,7 +168,9 @@ fn closing_the_popup_dismisses_a_done_chip_only() {
 
 /// What a shutdown at `end` does at `now`: after one clock check (warned or not before).
 fn check(end: u64, warned: Option<u64>, now: u64) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
-    shutdown_step(Shutdown { end, set: T0 }, warned, now)
+    // No sleep: the monotonic clock ran as long as the wall clock since the warning.
+    let mono = Duration::from_millis(warned.map_or(0, |w| now.saturating_sub(w)));
+    shutdown_step(Shutdown { end, set: T0 }, warned, mono, now)
 }
 
 #[test]
@@ -303,4 +305,41 @@ fn a_warning_waits_for_the_server_but_never_for_long() {
     assert!(!warning_waits(true, false, SERVER_GRACE), "the grace is spent: warn anyway");
     assert!(!warning_waits(true, true, s(0)), "serving: warn now");
     assert!(!warning_waits(false, false, s(0)), "no notifications module: nothing to wait for");
+}
+
+#[test]
+fn a_short_suspend_in_the_warning_minute_warns_again() {
+    let end = T0 + 10 * MINUTE_MS;
+    let warned = end - 60_000;
+    let s = Shutdown { end, set: T0 };
+    let ms = Duration::from_millis;
+    // Slept 12 s at end - 0.1 s: the deadline planned for the end fires 0.1 s later on the
+    // monotonic clock, the wall clock says end + 11.9 s. The monotonic time since the warning is
+    // the minute; the wall time is 12 s more.
+    let now = end + 11_900;
+    let (_, w, due) = shutdown_step(s, Some(warned), ms(60_000), now);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: now }), "never a power off right after the resume");
+    assert_eq!(w, Some(now));
+    // A 3 s sleep lands inside `end + 5 s`, where the wall clock alone would power off at once.
+    let now = end + 3_000;
+    assert!(matches!(shutdown_step(s, Some(warned), ms(60_000), now).2, Some(ShutdownStep::Warn { .. })));
+    // The same wake-up with no sleep (the deadline merely late): the two clocks agree.
+    assert_eq!(shutdown_step(s, Some(warned), ms(63_000), now).2, Some(ShutdownStep::PowerOff));
+    // A second of drift between the clocks still counts as the same warning.
+    assert_eq!(shutdown_step(s, Some(warned), ms(62_000), now).2, Some(ShutdownStep::PowerOff));
+    assert!(matches!(shutdown_step(s, Some(warned), ms(61_999), now).2, Some(ShutdownStep::Warn { .. })));
+}
+
+#[test]
+fn a_stepped_back_clock_leaves_no_wait_behind() {
+    // A warning waits for the server (deferred), then the clock steps back: nothing is due, so the
+    // wait is gone and no past grace deadline can be armed.
+    let end = T0 + 10 * MINUTE_MS;
+    let since = Some(Instant::now());
+    let (_, _, due) = check(end, Some(end - 30_000), end - 600_000);
+    assert!(!matches!(due, Some(ShutdownStep::Warn { .. })), "the clock is far from the end again");
+    assert_eq!(deferral_after(since, matches!(due, Some(ShutdownStep::Warn { .. }))), None);
+    // A warning still due keeps its wait.
+    assert_eq!(deferral_after(since, true), since);
+    assert_eq!(deferral_after(None, true), None);
 }

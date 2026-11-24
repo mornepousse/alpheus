@@ -17,6 +17,7 @@
 
 use super::{MINUTE_MS, SAVED_AHEAD_MS, countdown_tick, minutes_text, num};
 use crate::notify::{Incoming, Urgency, action};
+use std::time::Duration;
 
 /// The warning comes this long before the end, and the power off is never sooner than this after
 /// a warning.
@@ -38,15 +39,30 @@ pub struct Shutdown {
     pub set: u64,
 }
 
-/// A warning given this long ago and an end passed by more than this means the machine slept
-/// through the warning's minute (or the deadline was very late): the warning starts over.
+/// The slack the warning's bookkeeping allows: a deadline that fires this late, or a wall clock
+/// that moved this much against the monotonic one, is still the same warning.
 pub const STALE_MS: u64 = 5_000;
 
-/// Whether the warning given at `warned` still counts at `now`: not when the clock went back before
-/// it, nor when `end` passed by more than `STALE_MS` (a suspend in the last minute). A warning that
-/// no longer counts is given again, and the power off waits a fresh minute.
-pub fn warning_holds(s: &Shutdown, warned: Option<u64>, now: u64) -> bool {
-    warned.is_some_and(|w| now >= w && now <= s.end.saturating_add(STALE_MS))
+/// How far the wall clock may run ahead of the monotonic one since a warning before it counts as a
+/// sleep: a second. A sleep of 3 s just before the end must not power the machine off the moment it
+/// wakes, so this is tighter than `STALE_MS`; a timer's jitter and a clock's slewing are far below it.
+pub const SLEEP_MS: u64 = 1_000;
+
+/// Whether the warning given at wall-clock time `warned` still counts at `now`.
+///
+/// `mono_elapsed` is the time since the warning on the monotonic clock, which does not run while
+/// the machine sleeps; the wall clock does. So a sleep shows as more wall time than monotonic time,
+/// and a warning the machine slept through, however briefly (a 3 s sleep at the end of its
+/// minute, or 12 s), no longer counts: the minute was not seen. Nor does it when the clock went back before
+/// the warning, or `end` passed by more than `STALE_MS`. A warning that no longer counts is given
+/// again, and the power off waits a fresh minute.
+pub fn warning_holds(s: &Shutdown, warned: Option<u64>, mono_elapsed: Duration, now: u64) -> bool {
+    let Some(w) = warned else { return false };
+    if now < w || now > s.end.saturating_add(STALE_MS) {
+        return false;
+    }
+    let mono_ms = u64::try_from(mono_elapsed.as_millis()).unwrap_or(u64::MAX);
+    now - w <= mono_ms.saturating_add(SLEEP_MS)
 }
 
 /// What is due: the warning (given at `at`), or the power off.

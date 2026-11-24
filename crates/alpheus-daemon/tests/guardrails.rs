@@ -3708,6 +3708,11 @@ fn the_shutdown_is_wired_through_one_path() {
     let load = function_body(&app, "pub(crate) fn timer_load(");
     assert!(load.contains("boot_time_secs()"), "the boot time is read at load: {load}");
     assert!(check.contains("shutdown_refusal("), "no poweroff command: dropped before a warning: {check}");
+    // The warning is set apart from the user's rules (a drop or a mute must never hide it), and a
+    // sleep is told from a watched minute by the monotonic clock beside the wall one.
+    assert!(app.contains("c.notify_exempt(shutdown::warning()"), "the warning ignores the rules");
+    assert!(check.contains("self.warned_elapsed()"), "the check weighs the wall clock against the monotonic one: {check}");
+    assert!(check.contains("deferral_after("), "a wait for the server never outlives its warning: {check}");
     let verb = function_body(&app, "pub(crate) fn timer_verb(");
     assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
 }

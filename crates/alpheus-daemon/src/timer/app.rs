@@ -75,6 +75,9 @@ pub(crate) struct TimerApp {
     /// warns again. A warning the machine slept through, or that the clock went back before, no
     /// longer counts (`shutdown::warning_holds`).
     pub(crate) warned: Option<u64>,
+    /// The monotonic moment of that warning: with the wall-clock one it tells a sleep (the wall
+    /// clock runs through it, this one does not) from a warning really watched to its end.
+    pub(crate) warned_mono: Option<Instant>,
     /// When a due warning first waited for the notification server to own its name. It waits at
     /// most `SERVER_GRACE`: a warning nobody can see must not start the minute.
     pub(crate) deferred_since: Option<Instant>,
@@ -95,6 +98,7 @@ impl TimerApp {
             verb_opened: None,
             shutdown: None,
             warned: None,
+            warned_mono: None,
             deferred_since: None,
             warn_id: None,
             shutdown_deadline: DeadlineTimer::new(),
@@ -311,6 +315,13 @@ pub(crate) fn warning_waits(module_on: bool, serving: bool, waited: Duration) ->
     module_on && !serving && waited < SERVER_GRACE
 }
 
+/// The wait of a due warning for the server, after a check: kept while a warning is due, gone
+/// otherwise. The grace deadline is armed from it, so one left behind would re-arm a past instant
+/// forever.
+pub(crate) fn deferral_after(since: Option<Instant>, warn_due: bool) -> Option<Instant> {
+    since.filter(|_| warn_due)
+}
+
 /// Reads the state file's text (None when there is no file) into the timer to start with.
 pub(crate) fn load(text: Option<&str>, l: &Lengths, now: u64, ctx: &LoadCtx) -> Loaded {
     // No file, or a file we cannot read: start idle.
@@ -335,10 +346,15 @@ pub(crate) fn load(text: Option<&str>, l: &Lengths, now: u64, ctx: &LoadCtx) -> 
 /// (None once it powers off), whether it is warned, and the step due. A warning moves the end to a
 /// minute from now when it is nearer, so the power off is never sooner than a minute after the
 /// warning, and never before it.
-pub(crate) fn shutdown_step(s: Shutdown, warned: Option<u64>, now: u64) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
-    // A warning the machine slept through (the end passed by more than a few seconds) or that the
-    // clock went back before is as good as none: it is given again, and its minute starts over.
-    let holds = warning_holds(&s, warned, now);
+pub(crate) fn shutdown_step(
+    s: Shutdown,
+    warned: Option<u64>,
+    mono_elapsed: Duration,
+    now: u64,
+) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
+    // A warning the machine slept through, even briefly, or that the clock went back before is as
+    // good as none: it is given again, and its minute starts over.
+    let holds = warning_holds(&s, warned, mono_elapsed, now);
     match shutdown::next(&s, now, holds).1 {
         Some(step @ ShutdownStep::Warn { .. }) => (Some(s.warned_at(now)), Some(now), Some(step)),
         Some(ShutdownStep::PowerOff) => (None, None, Some(ShutdownStep::PowerOff)),
@@ -790,6 +806,11 @@ impl App {
         app.shutdown_check_clock();
     }
 
+    /// The monotonic time since the warning was given; zero when none was (it then holds nothing).
+    fn warned_elapsed(&self) -> Duration {
+        self.timer.warned_mono.map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
     /// Takes the one step due, if any: the warning, or the power off. Called by the deadline, the
     /// clock's minute tick (a suspended laptop's deadline is late) and at load. The warning always
     /// comes first and a minute before the power off, even when the end is long past.
@@ -807,8 +828,12 @@ impl App {
             self.shutdown_sync();
             return;
         }
-        let (after, warned, due) = shutdown_step(s, self.timer.warned, unix_ms());
-        if matches!(due, Some(ShutdownStep::Warn { .. })) {
+        let (after, warned, due) = shutdown_step(s, self.timer.warned, self.warned_elapsed(), unix_ms());
+        let warn_due = matches!(due, Some(ShutdownStep::Warn { .. }));
+        // Only a warning that is due waits for the server: anything else leaves no wait behind (a
+        // clock that stepped back must not keep a past grace deadline armed).
+        self.timer.deferred_since = deferral_after(self.timer.deferred_since, warn_due);
+        if warn_due {
             // The notice must be seen before its minute starts: while the server has not yet taken
             // its name (the check runs at load, before it can), the warning waits for it, at most
             // `SERVER_GRACE`. The server's arrival re-runs this check.
@@ -827,6 +852,7 @@ impl App {
         match due {
             Some(ShutdownStep::Warn { .. }) => {
                 self.timer.deferred_since = None;
+                self.timer.warned_mono = Some(Instant::now());
                 self.timer_save();
                 log("timer: shutdown warning");
                 // A warning given again replaces the old notice.
@@ -856,7 +882,7 @@ impl App {
         let mut id = 0;
         self.notify_act(|s| {
             s.act(|c| {
-                id = c.notify(shutdown::warning(), Instant::now(), minute_now());
+                id = c.notify_exempt(shutdown::warning(), Instant::now(), minute_now());
                 c.take_effects()
             });
         });
@@ -886,7 +912,7 @@ impl App {
         let now = unix_ms();
         let at = match self.timer.shutdown {
             Some(s) => {
-                let holds = warning_holds(&s, self.timer.warned, now);
+                let holds = warning_holds(&s, self.timer.warned, self.warned_elapsed(), now);
                 shutdown::wake(&s, now, holds).and_then(|t| Instant::now().checked_add(wait_for(t, now)))
             }
             None => None,

@@ -116,3 +116,25 @@ fn the_warning_is_a_sticky_critical_notice_with_a_cancel_action() {
     assert_eq!((n.actions[0].key.as_str(), n.actions[0].label.as_str()), ("default", "Cancel"));
     assert!(!n.transient);
 }
+
+#[test]
+fn a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one() {
+    let s = Shutdown { end: T0 + 600_000, set: T0 };
+    let warned = Some(s.end - 60_000);
+    let ms = Duration::from_millis;
+    // No sleep: equal elapsed times.
+    assert!(warning_holds(&s, warned, ms(60_000), s.end));
+    // Not warned: nothing holds.
+    assert!(!warning_holds(&s, None, ms(60_000), s.end));
+    // 12 s of sleep: the wall clock ran 12 s more than the monotonic one.
+    assert!(!warning_holds(&s, warned, ms(60_000), s.end + 12_000));
+    assert!(!warning_holds(&s, warned, ms(48_000), s.end));
+    // The slack: a second of difference is drift, not a sleep.
+    assert!(warning_holds(&s, warned, ms(59_000), s.end));
+    assert!(!warning_holds(&s, warned, ms(58_999), s.end));
+    assert!(!warning_holds(&s, warned, ms(60_000), s.end + 3_000), "a 3 s sleep");
+    // The clock went back before the warning.
+    assert!(!warning_holds(&s, warned, ms(10), s.end - 61_000));
+    // The end passed by more than the slack, however the clocks agree.
+    assert!(!warning_holds(&s, warned, ms(66_000), s.end + 6_000));
+}
