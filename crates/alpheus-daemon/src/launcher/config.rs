@@ -169,7 +169,7 @@ impl LauncherConfig {
     pub fn load(path: &Path) -> (LauncherConfig, Option<String>) {
         match std::fs::read_to_string(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (LauncherConfig::default(), None),
-            Err(e) => (LauncherConfig::default(), Some(format!("launcher.toml unreadable: {e}"))),
+            Err(e) => (LauncherConfig::default(), Some(format!("launcher.toml unreadable: {}", crate::log::kind_word(e.kind())))),
             Ok(s) => match Self::from_text(&s) {
                 Ok(c) => (c, None),
                 Err(m) => (LauncherConfig::default(), Some(format!("launcher.toml invalid: {m}"))),

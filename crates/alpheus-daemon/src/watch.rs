@@ -204,7 +204,7 @@ impl Watches {
         let theme = match arm(&fd, theme_dir, DIR_MASK, None) {
             Ok(on) => Some(Target { dir: theme_dir.to_path_buf(), on }),
             Err(e) => {
-                log(&format!("theme: {e}; theme files read at startup only"));
+                log(&format!("theme: {}; theme files read at startup only", e.reason));
                 None
             }
         };
@@ -311,7 +311,7 @@ impl Watches {
         t.on = match arm(&self.fd, &t.dir, DIR_MASK, keep) {
             Ok(on) => on,
             Err(e) => {
-                log(&format!("theme: {e}; theme files no longer watched"));
+                log(&format!("theme: {}; theme files no longer watched", e.reason));
                 On::Nothing
             }
         };
@@ -340,21 +340,14 @@ fn is_symlink(path: &Path) -> bool {
 /// inotify follows a symlinked config directory to its target (the Nix store, with home-manager),
 /// so replacing the link is never seen: one line at start says so.
 fn symlink_line(dir: &Path) -> Option<String> {
-    is_symlink(dir).then(|| format!("theme: {} is a symlink; replacing it is not seen until restart", dir.display()))
+    is_symlink(dir).then(|| "theme: the config directory is a symlink; replacing it is not seen until restart".to_string())
 }
 
-/// Why a target could not be armed: `text` names the path (the theme's lines keep it), `reason`
-/// is the OS reason alone (the Shield's line never carries a path: the flag's can name the user).
+/// Why a target could not be armed: a fixed word for the OS reason (`log::kind_word`), never a path
+/// (the theme's and the Shield's lines alike: the config directory and the flag's can name the user).
 #[derive(Debug)]
 struct ArmError {
-    text: String,
     reason: String,
-}
-
-impl std::fmt::Display for ArmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.text)
-    }
 }
 
 /// The Shield's log line for a flag that cannot be watched: the reason, never a path.
@@ -374,15 +367,10 @@ fn arm_with(fd: &Inotify, dir: &Path, mask: u32, keep: Option<i32>, between: imp
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let Some(parent) = dir.parent() else {
-                return Err(ArmError {
-                    text: format!("{} has no parent to wait in", dir.display()),
-                    reason: "no parent directory to wait in".into(),
-                });
+                return Err(ArmError { reason: "no parent directory to wait in".into() });
             };
             between();
-            let parent_wd = fd
-                .add(parent, PARENT_MASK)
-                .map_err(|e| ArmError { text: format!("cannot watch {} ({e})", parent.display()), reason: e.kind().to_string() })?;
+            let parent_wd = fd.add(parent, PARENT_MASK).map_err(|e| ArmError { reason: crate::log::kind_word(e.kind()).into() })?;
             // The directory may have appeared between the two calls, before the parent could tell:
             // looked for once more now that the parent is watched, so its creation is never missed. Once
             // found (or refused), the parent's watch is dropped, unless its descriptor is the other
@@ -401,11 +389,11 @@ fn arm_with(fd: &Inotify, dir: &Path, mask: u32, keep: Option<i32>, between: imp
                 // Anything else cannot be waited out: an error, never a silent wait in the parent.
                 Err(e) => {
                     drop_parent();
-                    Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() })
+                    Err(ArmError { reason: crate::log::kind_word(e.kind()).into() })
                 }
             }
         }
-        Err(e) => Err(ArmError { text: format!("cannot watch {} ({e})", dir.display()), reason: e.kind().to_string() }),
+        Err(e) => Err(ArmError { reason: crate::log::kind_word(e.kind()).into() }),
     }
 }
 
@@ -447,7 +435,7 @@ fn attach(handle: &LoopHandle<'static, App>, w: Watches) -> Option<Watches> {
     let fd = match w.watch_fd() {
         Ok(fd) => fd,
         Err(e) => {
-            log(&format!("theme: could not watch the inotify fd ({e}); theme files read at startup only"));
+            log(&format!("theme: could not watch the inotify fd ({}); theme files read at startup only", crate::log::kind_word(e.kind())));
             return None;
         }
     };
@@ -879,10 +867,8 @@ mod tests {
         assert!(!w.theme_armed(), "neither the directory nor its parent exists: no theme target, no panic");
         assert!(!w.shield_armed());
         assert!(
-            arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK, None)
-                .unwrap_err()
-                .text
-                .starts_with("cannot watch /nonexistent-alpheus-parent")
+            arm(&Inotify::new().unwrap(), Path::new("/nonexistent-alpheus-parent/alpheus"), DIR_MASK, None).unwrap_err().reason
+                == "not found"
         );
     }
 
@@ -956,8 +942,8 @@ mod tests {
         assert!(line.starts_with("shield: flag not watched ("), "{line}");
         assert!(!line.contains("nonexistent-alpheus-parent") && !line.contains('/'), "{line}");
         assert!(line.contains("not found"), "{line}");
-        // The theme's own line keeps its path.
-        assert!(e.text.contains("nonexistent-alpheus-parent"));
+        // Nor does the theme's own line.
+        assert_eq!(e.reason, "not found");
     }
 
     #[test]
@@ -997,7 +983,8 @@ mod tests {
         let link = temp("link-link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let line = symlink_line(&link).expect("a symlink");
-        assert!(line.contains("is a symlink; replacing it is not seen until restart") && line.contains("link-link"), "{line}");
+        assert!(line.contains("is a symlink; replacing it is not seen until restart"), "{line}");
+        assert!(!line.contains("link-link") && !line.contains('/'), "never the directory's path: {line}");
         assert_eq!(symlink_line(&real), None, "a plain directory: silent");
         assert_eq!(symlink_line(&temp("link-absent")), None, "an absent one: silent");
         let _ = std::fs::remove_file(&link);

@@ -338,6 +338,18 @@ pub enum CallError {
     BadReply(String),
 }
 
+impl CallError {
+    /// A fixed word for a log line: a remote error's name and a codec's text come from outside.
+    pub fn word(&self) -> &'static str {
+        match self {
+            CallError::Timeout => "no answer within 2 s",
+            CallError::Disconnected => "the session bus closed",
+            CallError::Remote(_) => "refused",
+            CallError::BadReply(_) => "unexpected reply",
+        }
+    }
+}
+
 /// What the connection delivers, in arrival order.
 #[derive(Debug)]
 pub enum Incoming {
@@ -448,7 +460,7 @@ pub fn invoked_signal(id: u32, key: &str) -> Option<Message> {
 /// accepts; were one ever refused, the signal is dropped (and logged), never a panic.
 fn notifications_signal(member: &str) -> Option<Message> {
     Message::new_signal(NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, member)
-        .inspect_err(|e| crate::log::write(&format!("notifications: {member} not built: {e}")))
+        .inspect_err(|_| crate::log::write(&format!("notifications: {member} not built")))
         .ok()
 }
 

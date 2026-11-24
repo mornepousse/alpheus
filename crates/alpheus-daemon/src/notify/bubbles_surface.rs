@@ -257,7 +257,7 @@ impl App {
         let pool = match SlotPool::new((2 * bytes).max(4096), &self.shm) {
             Ok(p) => p,
             Err(e) => {
-                log(&format!("bubbles: no shared buffer ({e}), not shown"));
+                log(&format!("bubbles: no shared buffer ({word}), not shown", word = crate::log::error_word(&e)));
                 return;
             }
         };
@@ -299,7 +299,7 @@ impl App {
                 // Copied by the request: the region may be destroyed (dropped) right after.
                 layer.set_input_region(Some(region.wl_region()));
             }
-            Err(e) => log(&format!("bubbles: input region: {e}")),
+            Err(e) => log(&format!("bubbles: input region: {word}", word = crate::log::error_word(&e))),
         }
     }
 

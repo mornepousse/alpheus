@@ -236,7 +236,7 @@ impl WifiReader {
 
     fn note(&mut self, e: &io::Error) {
         if !std::mem::replace(&mut self.logged, true) {
-            log(&format!("D-Bus Wi-Fi: {e}"));
+            log(&format!("D-Bus Wi-Fi: {}", crate::log::kind_word(e.kind())));
         }
     }
 

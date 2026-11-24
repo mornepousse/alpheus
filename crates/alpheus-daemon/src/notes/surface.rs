@@ -212,7 +212,7 @@ impl App {
         let pool = match SlotPool::new(notes_pool_bytes(size, scale, outputs).max(4096), &self.shm) {
             Ok(p) => p,
             Err(e) => {
-                log(&format!("notes: no shared buffer ({e}), not opened"));
+                log(&format!("notes: no shared buffer ({word}), not opened", word = crate::log::error_word(&e)));
                 crate::memory::release_memory();
                 return;
             }

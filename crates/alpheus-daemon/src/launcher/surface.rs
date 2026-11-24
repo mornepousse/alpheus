@@ -305,7 +305,7 @@ impl Scrim {
                     self.buffer = Some(buffer);
                 }
                 Err(e) => {
-                    log(&format!("scrim buffer: {e}"));
+                    log(&format!("scrim buffer: {word}", word = crate::log::error_word(&e)));
                     return;
                 }
             }
@@ -449,7 +449,7 @@ impl App {
         let pool = match SlotPool::new(pool_size(bytes, outputs).max(4096), &self.shm) {
             Ok(p) => p,
             Err(e) => {
-                log(&format!("launcher: no shared buffer ({e}), not opened"));
+                log(&format!("launcher: no shared buffer ({word}), not opened", word = crate::log::error_word(&e)));
                 let message = format!("the launcher could not open: {e}");
                 pool_failure_order(
                     || {

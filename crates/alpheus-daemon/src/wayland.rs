@@ -309,7 +309,7 @@ fn apply_placement(compositor: &CompositorState, layer: &LayerSurface, p: &Place
                 // Copied by the request: the region may be destroyed (dropped) right after.
                 layer.set_input_region(Some(region.wl_region()));
             }
-            Err(e) => log(&format!("input region: {e}")),
+            Err(e) => log(&format!("input region: {word}", word = crate::log::error_word(&e))),
         },
     }
 }
@@ -317,10 +317,10 @@ fn apply_placement(compositor: &CompositorState, layer: &LayerSurface, p: &Place
 /// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
 /// `pool` (same format and stride computation everywhere a buffer is
 /// created, whether on first draw, resize, or growing to a second buffer).
-fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, String> {
+fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, &'static str> {
     pool.create_buffer(width as i32, height as i32, width as i32 * 4, wl_shm::Format::Argb8888)
         .map(|(buffer, _)| buffer)
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::log::error_word(&e))
 }
 
 /// Position of the first of `items` whose `key` projection equals `target` — generic over any
@@ -344,8 +344,8 @@ pub(crate) fn pick_buffer(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut Slot
             buffers.clear();
             match new_buffer(pool, w, h) {
                 Ok(buffer) => buffers.push((buffer, w, h)),
-                Err(err) => {
-                    log(&format!("buffer {w}×{h}: {err}"));
+                Err(why) => {
+                    log(&format!("buffer {w}×{h}: {why}"));
                     return None;
                 }
             }
@@ -354,8 +354,8 @@ pub(crate) fn pick_buffer(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut Slot
         BufferPlan::Grow => {
             match new_buffer(pool, w, h) {
                 Ok(buffer) => buffers.push((buffer, w, h)),
-                Err(err) => {
-                    log(&format!("buffer {w}×{h}: {err}"));
+                Err(why) => {
+                    log(&format!("buffer {w}×{h}: {why}"));
                     return None;
                 }
             }
@@ -635,10 +635,10 @@ impl App {
         fonts: Fonts,
         exec: Arc<dyn Executor>,
     ) -> Result<App, String> {
-        let compositor = CompositorState::bind(globals, qh).map_err(|e| format!("wl_compositor: {e}"))?;
-        let layers = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell unavailable: {e}"))?;
-        let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm: {e}"))?;
-        let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
+        let compositor = CompositorState::bind(globals, qh).map_err(|e| format!("wl_compositor: {}", crate::log::error_word(&e)))?;
+        let layers = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell unavailable: {}", crate::log::error_word(&e)))?;
+        let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm: {}", crate::log::error_word(&e)))?;
+        let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {}", crate::log::error_word(&e)))?;
         // Optional: without it, the launcher has no click-outside scrim (logged at open).
         let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
         // Only with the module: otherwise the global is not bound at all.
@@ -657,7 +657,8 @@ impl App {
         let hooks = crate::hooks::app::HooksApp::new(&bar.config.hooks);
         let shield = crate::shield::app::ShieldApp::new(&bar.config.shield);
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
-        let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
+        let xdg =
+            XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {word}", word = crate::log::error_word(&e)))).ok();
         Ok(App {
             registry: RegistryState::new(globals),
             outputs: OutputState::new(globals, qh),
@@ -812,7 +813,7 @@ impl App {
                         s.buffers.clear();
                     }
                 }
-                Err(e) => log(&format!("pool {size}: {e}")),
+                Err(e) => log(&format!("pool {size}: {word}", word = crate::log::error_word(&e))),
             }
         }
     }
@@ -935,7 +936,7 @@ impl App {
         if first_failure(&mut s.opaque_failing, sent.is_err())
             && let Err(e) = sent
         {
-            log(&format!("opaque region: {e}"));
+            log(&format!("opaque region: {word}", word = crate::log::error_word(&e)));
         }
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -1281,7 +1282,7 @@ impl SeatHandler for App {
             let surface = self.compositor.create_surface(qh);
             match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
                 Ok(p) => self.pointer = Some(p),
-                Err(e) => log(&format!("pointer unavailable: {e}")),
+                Err(e) => log(&format!("pointer unavailable: {word}", word = crate::log::error_word(&e))),
             }
         }
         // A keyboard appearing while the launcher or a grabbing popup is open

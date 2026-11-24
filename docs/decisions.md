@@ -178,16 +178,29 @@ Status: awaiting confirmation at the trial (timer plan 1, "Decisions written dow
 
 The timer's log lines are fixed words (`timer: paused`, `timer: countdown ended`) and numbers. They
 never hold the sound's command, a path, or an error's own text, since any of these can name the
-user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`). The power
-menu and the resources popup's `Monitor…` row follow the first half of the rule: they log the
-entry's word (`power: power off`, `resources: monitor`), never the command. They differ on a failed
-start: they add the executor's error (`could not start (NotFound)`; for an I/O error, the system's
-own message), where the timer logs the kind word alone. The quick panel names the program in its
-own start failures, and the right click on the resources module goes through `actions::run`,
-which logs the whole argv of a failed start; neither follows this rule, and both are known
-follow-ups.
+user. A failed start of the sound logs a kind word only (`not found`, `timeout`, `io`). The rule is
+the daemon's, not the timer's: the power menu (`power: power off could not start (not found)`), the
+resources popup's `Monitor…` row, the quick panel (`quick: <what> could not start (<kind word>)`,
+the `what` word of the action, never the program) and the right click on a module (`action: could
+not start (<kind word>)`) all log the entry's word and the executor error's kind word, never the
+command, the program, the arguments or the error's own text. Every other line that used to print a
+system error (`{e}`, `{e:?}`) logs `log::error_word` or `log::kind_word` instead: an OS message can
+quote a path, and so can a library's. A source thread that panics logs `source down: panic` and
+nothing the panic carried; the daemon-wide hook already logged its thread and place. The guardrail
+`no_log_line_names_a_program_an_error_text_or_a_panic_payload` reads every production line and keeps
+a short list of lines that format an error for a reader that is not the log (the launcher's box, a
+client's reply, the errors that cross a thread and become a word before a `log(` sees them, and the
+panic messages the hook never prints). The media lines follow it: `media popup shown` and the
+"players already followed" line name neither the track, the artist nor the player; the headless
+tests read the popup from the grid.
 
-Date: 2026-11-15 · Source: timer spec "Constraints"; timer plan 1, decision 18; power spec § 3 and plan 1, decision 10; resources popup spec "Constraints"
+Four exceptions are kept, approved by the maintainer on 2026-11-24, because each is the user's own
+or is not private: the output's connector name in `bar placed on` and `bar removed from` (a
+connector such as `DP-1`, never a monitor's make or model); the config parser's message for
+`bar.toml` and `launcher.toml` (the user's own file, which can quote a value of it); the user's own
+labels for launcher sources and sensor patterns; and UPower's validated D-Bus error name.
+
+Date: 2026-11-15 (extended 2026-11-24: the whole daemon) · Source: timer spec "Constraints"; timer plan 1, decision 18; power spec § 3 and plan 1, decision 10; resources popup spec "Constraints"
 
 Status: awaiting confirmation at the trial (timer plan 1, "Decisions written down": the timer part; every one is to be confirmed at the trial)
 

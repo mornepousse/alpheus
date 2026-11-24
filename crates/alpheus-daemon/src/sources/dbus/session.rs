@@ -43,7 +43,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
     // (worth_logging), and a short-circuiting `&&` means it never touches
     // `log_state` either — an absence doesn't arm or disarm the limiter.
     if worth_logging(e.kind()) && log_state.note_failure(d) {
-        log(&format!("D-Bus {d:?}: {e}"));
+        log(&format!("D-Bus {d:?}: {word}", word = crate::log::error_word(&e)));
     }
     if e.kind() == io::ErrorKind::NotFound {
         return Ok(());

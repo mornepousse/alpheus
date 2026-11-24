@@ -181,7 +181,7 @@ impl App {
         let region = match Region::new(&self.compositor) {
             Ok(r) => r,
             Err(e) => {
-                log(&format!("osd: input region: {e}, not shown"));
+                log(&format!("osd: input region: {word}, not shown", word = crate::log::error_word(&e)));
                 return;
             }
         };
@@ -194,7 +194,7 @@ impl App {
         let pool = match SlotPool::new((2 * bytes).max(4096), &self.shm) {
             Ok(p) => p,
             Err(e) => {
-                log(&format!("osd: no shared buffer ({e}), not shown"));
+                log(&format!("osd: no shared buffer ({word}), not shown", word = crate::log::error_word(&e)));
                 return;
             }
         };

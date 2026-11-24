@@ -207,13 +207,16 @@ pub struct CameraWatch {
 }
 
 impl CameraWatch {
-    /// Watches `dev_dir`, then every `video*` node in it. Err: why `dev_dir` cannot be watched.
+    /// Watches `dev_dir`, then every `video*` node in it. Err: why `dev_dir` cannot be watched, as a log
+    /// line's words (never its path nor the OS message).
     pub fn start(dev_dir: &Path) -> Result<CameraWatch, String> {
         let fd = Inotify::new()?;
-        let dev_wd = fd.add(dev_dir, DIR_MASK).map_err(|e| format!("cannot watch {} ({e})", dev_dir.display()))?;
+        let dev_wd =
+            fd.add(dev_dir, DIR_MASK).map_err(|e| format!("cannot watch the device directory ({})", crate::log::kind_word(e.kind())))?;
         let mut w =
             CameraWatch { fd, dev_dir: dev_dir.to_path_buf(), dev_wd, nodes: HashMap::new(), pending: HashSet::new(), limit_logged: false };
-        let entries = fs::read_dir(dev_dir).map_err(|e| format!("cannot list {} ({e})", dev_dir.display()))?;
+        let entries =
+            fs::read_dir(dev_dir).map_err(|e| format!("cannot list the device directory ({})", crate::log::kind_word(e.kind())))?;
         for entry in entries.flatten() {
             let file_name = entry.file_name();
             let Some(name) = file_name.to_str() else {
@@ -283,7 +286,7 @@ impl CameraWatch {
                 let refused = matches!(e.raw_os_error(), Some(libc::EACCES | libc::EPERM));
                 // A name already pending was reported (or is an expected refusal) the first time.
                 if self.pending.insert(name.to_string()) && !refused {
-                    log(&format!("privacy: camera devices not watched ({e})"));
+                    log(&format!("privacy: camera devices not watched ({word})", word = crate::log::error_word(&e)));
                 }
             }
         }
@@ -600,7 +603,7 @@ mod tests {
     fn a_dev_dir_that_does_not_exist_cannot_be_watched() {
         let t = dev("missing", &[]);
         let err = CameraWatch::start(&t.join("nope")).err().unwrap();
-        assert!(err.contains("nope"), "{err}");
+        assert_eq!(err, "cannot watch the device directory (not found)", "a kind word, never the path");
     }
 
     #[test]

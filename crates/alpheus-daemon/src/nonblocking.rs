@@ -28,8 +28,8 @@ pub const REFUSED: &str = "Executor::run refused: it blocks, and the daemon must
 pub struct NonBlocking<E: Executor>(pub E);
 
 impl<E: Executor> Executor for NonBlocking<E> {
-    fn run(&self, prog: &str, _args: &[&str]) -> Result<Output, ExecError> {
-        log(&format!("{prog}: {REFUSED}"));
+    fn run(&self, _prog: &str, _args: &[&str]) -> Result<Output, ExecError> {
+        log(REFUSED);
         Err(ExecError::Io(REFUSED.into()))
     }
 

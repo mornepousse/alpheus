@@ -370,7 +370,8 @@ pub(crate) fn resumed(q: &mut Quick, f: WifiFollow) -> QuickAction {
 }
 
 /// Spawns `argv` for the open panel `q` (None: none open), never waiting (spec § 5): the log line,
-/// "quick: <what>", or a program that cannot start, once per open (spec § 6; its row stays). A
+/// "quick: <what>", or "quick: <what> could not start (<kind word>)" once per program per open
+/// (spec § 6; its row stays), the program itself never named. A
 /// connection whose nmcli never started (NotFound) ends its attempt at once: nothing to follow.
 pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[String], what: &str) -> Option<String> {
     let (program, args) = argv.split_first()?;
@@ -390,7 +391,7 @@ pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[S
                 }
                 None => true,
             };
-            first.then(|| format!("quick: {program} could not start ({e:?})"))
+            first.then(|| format!("quick: {what} could not start ({})", crate::log::exec_word(&e)))
         }
     }
 }
@@ -415,7 +416,7 @@ pub(crate) fn quick_spawn_secret(exec: &dyn Executor, q: &mut Quick, argv: &[Str
             if e == ExecError::NotFound {
                 q.wifi.never_started();
             }
-            q.note_failure(&program).then(|| format!("quick: {program} could not start or take its input ({e:?})"))
+            q.note_failure(&program).then(|| format!("quick: {what} could not start or take its input ({})", crate::log::exec_word(&e)))
         }
         None => None,
     }

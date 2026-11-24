@@ -69,7 +69,7 @@ pub(crate) fn power_open_refusal(config: &crate::config::QuickConfig, has_anchor
 }
 
 /// Runs `s`'s command `argv` (`[quick]`'s, as given), never waiting for it, and returns the log
-/// line to write: "power: <word>", or "power: <word> could not start (<error>)". The line never
+/// line to write: "power: <word>", or "power: <word> could not start (<kind word>)". The line never
 /// holds the command itself, whose program or arguments may name the user (a path in a home
 /// directory). None when `argv` is empty, since there is nothing to run.
 pub(crate) fn spawn_session(exec: &dyn Executor, argv: &[String], s: Session) -> Option<String> {
@@ -79,7 +79,7 @@ pub(crate) fn spawn_session(exec: &dyn Executor, argv: &[String], s: Session) ->
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Some(match exec.spawn(program, &args) {
         Ok(()) => format!("power: {}", s.word()),
-        Err(e) => format!("power: {} could not start ({e:?})", s.word()),
+        Err(e) => format!("power: {} could not start ({})", s.word(), crate::log::exec_word(&e)),
     })
 }
 
@@ -281,15 +281,12 @@ mod tests {
         let fake = FakeExecutor::new();
         let mine = vec!["/home/someone/bin/leave".to_string(), "--user".into(), "someone".into()];
         let line = spawn_session(&fake, &mine, Session::Logout).unwrap_or_default();
-        assert_eq!(line, "power: log out could not start (NotFound)");
+        assert_eq!(line, "power: log out could not start (not found)");
         assert!(!line.contains("someone"), "never the command: {line}");
         assert_eq!(fake.calls(), ["/home/someone/bin/leave --user someone"]);
         let fake = FakeExecutor::new();
         fake.respond("loginctl lock-session", Err(ExecError::Io("busy".into())));
-        assert_eq!(
-            spawn_session(&fake, Session::Lock.command(&c), Session::Lock),
-            Some("power: lock could not start (Io(\"busy\"))".into())
-        );
+        assert_eq!(spawn_session(&fake, Session::Lock.command(&c), Session::Lock), Some("power: lock could not start (io)".into()));
         let fake = FakeExecutor::new();
         assert_eq!(spawn_session(&fake, Session::Logout.command(&c), Session::Logout), None, "empty: nothing to spawn");
         assert!(fake.calls().is_empty());

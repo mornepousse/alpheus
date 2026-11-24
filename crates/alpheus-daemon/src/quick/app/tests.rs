@@ -302,6 +302,7 @@ fn the_password_is_handed_on_stdin_and_the_field_closes() {
     let (argv, what) = type_the_password_and_press_enter(&mut q, t);
     let line = quick_spawn_secret(&fake, &mut q, &argv, &what).unwrap_or_default();
     assert!(!line.contains("fake-pass"), "{line}");
+    assert_eq!(line, "quick: wifi connect (password) could not start or take its input (io)", "no program, no error text");
     assert!(q.wifi.field.is_none() && q.wifi.attempt.is_some(), "maybe started: the attempt stays, never retried");
 }
 
@@ -313,7 +314,9 @@ fn an_nmcli_never_started_ends_the_attempt_at_once() {
     let fake = FakeExecutor::new();
     let mut q = panel_with_the_wifi_detail_on("Bureau-Test");
     let (argv, what) = type_the_password_and_press_enter(&mut q, t);
-    assert!(quick_spawn_secret(&fake, &mut q, &argv, &what).is_some_and(|l| l.contains("could not start")));
+    let line = quick_spawn_secret(&fake, &mut q, &argv, &what).unwrap_or_default();
+    assert_eq!(line, "quick: wifi connect (password) could not start or take its input (not found)");
+    assert!(!line.contains("nmcli"), "never the program: {line}");
     assert!(q.wifi.attempt.is_none() && q.wifi.deadline().is_none(), "no attempt, no timer");
     assert!(WifiFollow::leaving(&mut q.wifi).is_none(), "nothing to follow");
     q.wifi.pick = Pick::Network(b"Cafe-Libre".to_vec());
@@ -509,7 +512,9 @@ fn an_nmcli_never_started_ends_the_vpn_attempt() {
     q.set_vpn(Some(vpn_around()), t);
     let (argv, what) = up(&mut q);
     assert!(q.vpn.attempt.is_some());
-    assert!(spawn_logged(&FakeExecutor::new(), Some(&mut q), &argv, &what).is_some_and(|l| l.contains("could not start")));
+    let line = spawn_logged(&FakeExecutor::new(), Some(&mut q), &argv, &what).unwrap_or_default();
+    assert_eq!(line, "quick: vpn up could not start (not found)");
+    assert!(!line.contains("nmcli"), "never the program: {line}");
     assert!(q.vpn.attempt.is_none() && q.vpn.failed.is_none(), "ended at once, no `failed` mark");
     let fake = FakeExecutor::new();
     fake.respond(&argv.join(" "), Err(ExecError::Io("busy".into())));

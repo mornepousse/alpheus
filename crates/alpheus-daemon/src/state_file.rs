@@ -145,7 +145,7 @@ pub fn read_private(dir: &Path, name: &str, cap: u64) -> PrivateRead {
 pub fn read_dnd(state_dir: &Path) -> Option<String> {
     use std::io::Read;
     if let Err(e) = dir_is_ours(state_dir) {
-        crate::log::write(&format!("notifications: do-not-disturb read as off: {e}"));
+        crate::log::write(&format!("notifications: do-not-disturb read as off: {word}", word = crate::log::error_word(&e)));
         return None;
     }
     let path = state_dir.join(DND_FILE);

@@ -434,7 +434,7 @@ impl App {
         let bus = match SessionBus::session() {
             Ok(b) => b,
             Err(e) => {
-                log(&link_failed(who, &format!("no session bus ({e})")));
+                log(&link_failed(who, &format!("no session bus ({word})", word = crate::log::error_word(&e))));
                 return false;
             }
         };
@@ -442,7 +442,10 @@ impl App {
         let fd = match link.watch_fd() {
             Ok(fd) => fd,
             Err(e) => {
-                log(&link_failed(who, &format!("connected, but could not watch the session bus's fd ({e})")));
+                log(&link_failed(
+                    who,
+                    &format!("connected, but could not watch the session bus's fd ({word})", word = crate::log::error_word(&e)),
+                ));
                 return false;
             }
         };

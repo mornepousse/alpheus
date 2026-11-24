@@ -108,7 +108,7 @@ fn refusal(e: &ExecError) -> String {
     match e {
         ExecError::NotFound => "program not found".to_string(),
         ExecError::Timeout => format!("timed out after {} s", LIST_DEADLINE.as_secs()),
-        ExecError::Io(m) => m.clone(),
+        ExecError::Io(_) => "could not start".to_string(),
     }
 }
 

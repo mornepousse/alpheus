@@ -195,7 +195,7 @@ impl App {
         self.dnd = next.on;
         // Saved before the line is logged, so whoever waits for the line finds the file written.
         if let Err(e) = state_file::save_dnd(&paths::state_dir(), next.saved().map(saved_text).as_deref()) {
-            log(&format!("notifications: do not disturb could not be saved ({e})"));
+            log(&format!("notifications: do not disturb could not be saved ({word})", word = crate::log::error_word(&e)));
         }
         // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
         // line needs a server.
@@ -251,7 +251,7 @@ impl App {
         if loaded.saved() != read
             && let Err(e) = state_file::save_dnd(&dir, loaded.saved().map(saved_text).as_deref())
         {
-            log(&format!("notifications: do not disturb could not be saved ({e})"));
+            log(&format!("notifications: do not disturb could not be saved ({word})", word = crate::log::error_word(&e)));
         }
         self.dnd_timed.model = loaded;
         self.dnd = loaded.on;

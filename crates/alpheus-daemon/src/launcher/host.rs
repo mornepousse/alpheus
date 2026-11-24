@@ -542,7 +542,7 @@ impl App {
                 // mount): the box keeps the windows and history it already
                 // has, a message replaces the (empty) catalog, one log
                 // line — never closed, never retried in a loop.
-                log(&format!("launcher scan: {e}"));
+                log(&format!("launcher scan: {word}", word = crate::log::error_word(&e)));
                 if let Some(open) = self.launcher.as_mut() {
                     open.model.set_catalog(Catalog::default());
                     open.model.show_message(scan_failure_message(&e));
@@ -671,7 +671,7 @@ impl App {
         let fd = match pending.fd().try_clone_to_owned() {
             Ok(fd) => fd,
             Err(e) => {
-                log(&format!("launcher: client watch: {e}"));
+                log(&format!("launcher: client watch: {word}", word = crate::log::error_word(&e)));
                 return;
             }
         };
@@ -681,7 +681,7 @@ impl App {
             Ok(PostAction::Continue)
         }) {
             Ok(token) => open.set_client_watch(handle, token),
-            Err(e) => log(&format!("launcher: client watch: {}", e.error)),
+            Err(e) => log(&format!("launcher: client watch: {}", crate::log::error_word(&e.error))),
         }
     }
 }

@@ -3,6 +3,7 @@ use crate::compositor::example;
 use crate::config::{BarConfig, ModuleId};
 use crate::state::Msg;
 use crate::system::*;
+use alpheus_common::exec::ExecError;
 use alpheus_common::exec::fake::FakeExecutor;
 
 #[test]
@@ -335,4 +336,27 @@ fn a_tray_icon_runs_no_command() {
     for b in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
         assert_eq!(command(&full(), "eDP-1", &t, b), None, "{b:?}");
     }
+}
+
+/// A failed start logs a fixed line: never the command, whose program or arguments may name the
+/// user, nor the error's own text.
+#[test]
+fn a_failed_start_logs_a_kind_word_and_no_command() {
+    let argv = vec!["/home/someone/bin/open".to_string(), "--file".into(), "/home/someone/notes".into()];
+    let fake = FakeExecutor::new();
+    let mut lines = Vec::new();
+    run_logged(&fake, &argv, &mut |l| lines.push(l.to_string()));
+    assert_eq!(lines, ["action: could not start (not found)"]);
+    let fake = FakeExecutor::new();
+    fake.respond("/home/someone/bin/open --file /home/someone/notes", Err(ExecError::Io("/home/someone/notes: busy".into())));
+    let mut lines = Vec::new();
+    run_logged(&fake, &argv, &mut |l| lines.push(l.to_string()));
+    assert_eq!(lines, ["action: could not start (io)"]);
+    let ok = FakeExecutor::new();
+    ok.ok("/home/someone/bin/open --file /home/someone/notes", "");
+    let mut lines = Vec::new();
+    run_logged(&ok, &argv, &mut |l| lines.push(l.to_string()));
+    assert!(lines.is_empty(), "a start that works logs nothing: {lines:?}");
+    run_logged(&fake, &[], &mut |l| lines.push(l.to_string()));
+    assert!(lines.is_empty(), "an empty command is nothing to run");
 }

@@ -75,14 +75,13 @@ impl App {
         }
         let popup = MediaPopup::new(players);
         let rows = media::popup::rows(players, &popup, now, media::popup::WIDTH);
-        let heading = media::popup::heading(players, &rows);
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, Input::Grab) {
             self.popup_paint(rows);
             self.mpris_do(|m, out| m.popup_opened(out));
             self.media_timer_sync();
-            // What it shows on top, as drawn (the headless tests read it).
-            log(&format!("media popup shown: {heading}"));
+            // A fixed word: the track and the player are the user's (the headless tests read the grid).
+            log("media popup shown");
         }
     }
 

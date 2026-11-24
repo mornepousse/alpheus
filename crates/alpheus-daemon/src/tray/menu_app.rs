@@ -130,7 +130,7 @@ impl App {
             self.menu_repaint();
             return;
         }
-        let Some((key, anchor)) = self.menu.target.clone() else { return };
+        let Some((_, anchor)) = self.menu.target.clone() else { return };
         // The layout must come within `bus::TIMEOUT` of the request. Each call has its own 2 s, so
         // a layout can land later than that in all; the menu then opens nothing. See
         // docs/decisions.md, "A tray menu is shown only once its layout has arrived".
@@ -159,7 +159,7 @@ impl App {
         let (columns, rows) = grid.cells();
         if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, Input::Grab) {
             self.popup_paint(grid);
-            log(&format!("menu shown for {}{}", key.owner, key.path));
+            log("menu shown");
         } else {
             self.menu_end();
             log("tray: the menu could not open");

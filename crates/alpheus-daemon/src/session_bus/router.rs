@@ -513,7 +513,7 @@ impl Tray {
                     }
                     // Refused or unanswered: still follow a watcher if there is one.
                     Err(e) => {
-                        log(&format!("tray: the watcher's name could not be requested ({e:?})"));
+                        log(&format!("tray: the watcher's name could not be requested ({word})", word = e.word()));
                         self.call(Call::GetNameOwner { name: WATCHER_NAME.into() }, Own::WatcherOwner { retry: false });
                     }
                     Ok(_) => {}

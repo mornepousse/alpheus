@@ -2853,6 +2853,14 @@ fn popup_title(s: &Ppm) -> Vec<[u8; 3]> {
     (y - 8..y + 8).flat_map(|y| (x0 - 4..x1 + 4).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
+/// How many pixels of the popup's row `row` differ from its first pixel (the background): zero for a
+/// row with nothing drawn.
+fn popup_row_ink(s: &Ppm, row: u32) -> usize {
+    let ((x0, y), (x1, _)) = (popup_cell(0, 1, row), popup_cell(0, 30, row));
+    let px: Vec<[u8; 3]> = (y - 8..y + 8).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect();
+    px.first().map_or(0, |bg| px.iter().filter(|p| *p != bg).count())
+}
+
 /// Waits until the media popup is on screen: its title row drawn in the accent (catppuccin dark).
 /// "media popup shown" is logged when the popup is asked for, before the compositor's configure
 /// and the first buffer that maps it; a click in that gap lands on no surface, and sway ends the
@@ -2918,8 +2926,12 @@ fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
 fn the_media_popup_opens_on_a_left_click_and_escape_closes_it() {
     let (_bus, sway, _hypr, d, _players) = media_bar("media-open", 1, &[]);
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
-    // The fake track's title and artist, as the popup draws them.
-    assert!(d.wait_for("media popup shown: Paper Lanterns — Marlowe Vane", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    // The fake track's title and artist, as the popup draws them (the log names neither): the title
+    // row in the accent, the artist row drawn too.
+    wait_for_the_popup_drawn(&sway, &d);
+    let shot = sway.screenshot("HEADLESS-1").unwrap();
+    assert!(popup_row_ink(&shot, 1) > 0, "the artist row is drawn: {:?}", d.log());
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
     // On sway the release waits for Escape's key-up on the bar's surface.
@@ -3020,7 +3032,8 @@ fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
     players[1].set_status("Paused");
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != shown), "the bar never moved to lumen: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
-    assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    // The bar already shows lumen (the active player); the popup follows it.
+    assert!(d.wait_for("media popup shown", DELAY), "lumen active: {:?}", d.log());
     wait_for_the_popup_drawn(&sway, &d);
     let accent = rgb(preset("catppuccin").unwrap().dark.accent);
     let before = sway.screenshot("HEADLESS-1").map(|s| popup_title(&s)).unwrap();
@@ -3048,7 +3061,8 @@ fn a_player_chosen_in_the_popup_takes_the_bar() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-pin", 1, &["beta"]);
     players[1].set_status("Paused"); // lumen plays: it is the active one
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
-    assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    // The bar already shows lumen (the active player); the popup follows it.
+    assert!(d.wait_for("media popup shown", DELAY), "lumen active: {:?}", d.log());
     // media_bar's theme: catppuccin dark. Playing, the module takes the purple; paused, muted.
     let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "lumen playing: {:?}", d.log());

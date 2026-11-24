@@ -322,17 +322,6 @@ fn player_row(g: &mut Grid, q: &Player, active: bool, selected: bool, width: u16
     g.write(x, width, &media::truncate_title(&label(q), width.saturating_sub(x)), pick(Style::NORMAL));
 }
 
-/// What the popup shows on top, as drawn in `b` (cut to its width): "Title — Artist", or the title
-/// alone without an artist row; empty when nothing is shown. For the log line "media popup shown".
-pub fn heading(players: &Players, b: &Boxed) -> String {
-    // The text drawn in row `i`, trimmed; empty when there is no such row.
-    let drawn = |i: usize| b.rows.get(i).map(|g| g.text().trim().to_string()).unwrap_or_default();
-    match lines(players).get(1) {
-        Some(Line::Artist) => format!("{} — {}", drawn(0), drawn(1)),
-        _ => drawn(0),
-    }
-}
-
 /// What Enter (or a press) does on the selected row.
 fn activate(popup: &MediaPopup, players: &Players, lines: &[Line], p: &Player) -> MediaAction {
     match lines.get(popup.selected) {

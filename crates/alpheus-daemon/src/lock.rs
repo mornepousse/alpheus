@@ -4,7 +4,7 @@
 //! daemon can name it in the line it logs before exiting. The kernel releases the lock when the
 //! process ends, however it ends, so nothing stale is ever left to block the next start. A failed
 //! `flock` reads as "already running" only when the error is `EWOULDBLOCK`: any other error shows
-//! its own message, so a permission or file-system problem is not mistaken for a second daemon.
+//! its kind's word, so a permission or file-system problem is not mistaken for a second daemon.
 //!
 //! Never:
 //! - leave the lock behind: it belongs to the open file, and the kernel drops it;
@@ -25,14 +25,14 @@ pub struct InstanceLock {
 
 /// Message for a failed `flock`: "already running" only if the error is
 /// `EWOULDBLOCK` (the lock is held by another daemon, `LOCK_NB` refused to
-/// wait); any other error (permissions, filesystem…) shows its real message
+/// wait); any other error (permissions, filesystem…) shows its kind's word
 /// — otherwise it would be mistaken for a second daemon when the cause is
-/// elsewhere.
-fn flock_message(err: &io::Error, path: &Path, pid: &str) -> String {
+/// elsewhere. Never the lock's path nor the OS message.
+fn flock_message(err: &io::Error, pid: &str) -> String {
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-        format!("alpheus-demon is already running (pid {}); lock {}", pid.trim(), path.display())
+        format!("alpheus-demon is already running (pid {})", pid.trim())
     } else {
-        format!("lock {}: {err}", path.display())
+        format!("lock: refused ({})", crate::log::kind_word(err.kind()))
     }
 }
 
@@ -44,17 +44,17 @@ pub fn acquire(path: &Path) -> Result<InstanceLock, String> {
         .truncate(false)
         .mode(0o600)
         .open(path)
-        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+        .map_err(|e| format!("lock: could not open the lock file ({})", crate::log::kind_word(e.kind())))?;
     // SAFETY: flock(2) on a valid descriptor that `f` owns.
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let err = io::Error::last_os_error();
         let mut pid = String::new();
         let _ = f.read_to_string(&mut pid);
-        return Err(flock_message(&err, path, &pid));
+        return Err(flock_message(&err, &pid));
     }
     f.set_len(0)
         .and_then(|_| f.write_all(format!("{}\n", std::process::id()).as_bytes()))
-        .map_err(|e| format!("lock {}: {e}", path.display()))?;
+        .map_err(|e| format!("lock: could not write the pid ({})", crate::log::kind_word(e.kind())))?;
     Ok(InstanceLock { _file: f })
 }
 
@@ -86,20 +86,22 @@ mod tests {
 
     #[test]
     fn missing_directory_clear_message() {
-        assert!(acquire(Path::new("/nonexistent/alpheus-demon.lock")).unwrap_err().contains("/nonexistent"));
+        let m = acquire(Path::new("/nonexistent/alpheus-demon.lock")).unwrap_err();
+        assert_eq!(m, "lock: could not open the lock file (not found)", "a kind word, never the path");
     }
 
     #[test]
-    fn flock_failure_other_than_already_running_shows_the_real_error() {
+    fn flock_failure_other_than_already_running_shows_its_kind() {
         // EWOULDBLOCK (lock already held, LOCK_NB): "already running" message.
-        let path = Path::new("/run/alpheus-demon.lock");
-        let m = flock_message(&io::Error::from_raw_os_error(libc::EWOULDBLOCK), path, "42");
+        let m = flock_message(&io::Error::from_raw_os_error(libc::EWOULDBLOCK), "42");
         assert!(m.contains("already") && m.contains("42"), "{m}");
         // Any other error (simulated here, without really calling flock):
         // the real message, not "already running", which would suggest a
         // second daemon when the cause is elsewhere (permissions, FS…).
-        let m = flock_message(&io::Error::from_raw_os_error(libc::EACCES), path, "");
+        let m = flock_message(&io::Error::from_raw_os_error(libc::EACCES), "");
         assert!(!m.contains("already"), "{m}");
-        assert!(m.contains(&path.display().to_string()), "{m}");
+        assert_eq!(m, "lock: refused (permission denied)", "a kind word, never the path nor the OS text");
+        let m = flock_message(&io::Error::from_raw_os_error(libc::EWOULDBLOCK), "42");
+        assert!(!m.contains("/run"), "never the lock's path: {m}");
     }
 }
