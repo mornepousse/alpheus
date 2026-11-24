@@ -3717,8 +3717,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3746,8 +3745,7 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3808,8 +3806,7 @@ fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3877,8 +3874,7 @@ fn clipboard_app_never_panics_and_logs_fixed_words() {
     for p in [".expect(", ".unwrap()", "panic!("] {
         assert!(!production.contains(p), "{p} in {name}'s production code");
     }
-    for line in production.lines() {
-        let code = line.split("//").next().unwrap_or("");
+    for code in production_code_without_comments(t).lines() {
         if let Some(why) = panicking_index(code) {
             panic!("{why} in {name}'s production code");
         }
@@ -3899,8 +3895,7 @@ fn nothing_under_clipboard_prints() {
         }
         seen += 1;
         let production = production_code(&t);
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(&t).lines() {
             if let Some(m) = clipboard_print_macro(code) {
                 panic!("{m} in {name}'s production code");
             }
@@ -4542,8 +4537,7 @@ fn the_notes_glue_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -5435,12 +5429,12 @@ fn the_shield_watch_is_the_theme_watchs_instance() {
 fn the_shield_files_have_no_panicking_path() {
     let files = source_files();
     for name in ["shield/mod.rs", "shield/usb.rs", "shield/run.rs", "quick/shield.rs"] {
-        let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
