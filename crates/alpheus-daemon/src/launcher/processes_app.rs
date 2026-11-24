@@ -27,25 +27,34 @@ use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_common::compositor::Compositor;
 use smithay_client_toolkit::reexports::client::QueueHandle;
+use std::cell::RefCell;
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How long after the list opens the second sample is read (it fills in the CPU).
 pub const SAMPLE_AFTER: Duration = Duration::from_millis(300);
 
-/// The kill list's `Signaller`: `kill(2)`, and the start time from `stat` under `root`.
+/// The kill list's `Signaller`: the start time from `stat` under `root`, and the signal through a
+/// pidfd when the kernel has them (`kill(2)` otherwise).
+///
+/// `start_time` opens the pidfd first and reads the start time second, and `signal` sends through
+/// that descriptor: a pidfd names the process it was opened on for ever, so a pid reused after the
+/// check can no longer receive the signal (the start-time check alone leaves that window open).
 pub struct RealSignaller {
     root: PathBuf,
+    /// The pidfd `start_time` opened last, with the pid it was opened for; `signal` takes it.
+    pinned: RefCell<Option<(i32, OwnedFd)>>,
 }
 
 impl RealSignaller {
     pub fn new(root: PathBuf) -> RealSignaller {
-        RealSignaller { root }
+        RealSignaller { root, pinned: RefCell::new(None) }
     }
 }
 
-/// What `kill(2)` failing with `errno` means for the list.
+/// What `kill(2)` or `pidfd_send_signal(2)` failing with `errno` means for the list.
 pub fn signal_error_of(errno: i32) -> SignalError {
     match errno {
         libc::ESRCH => SignalError::Gone,
@@ -54,20 +63,47 @@ pub fn signal_error_of(errno: i32) -> SignalError {
     }
 }
 
+/// A pidfd for `pid`, or None (the process is gone, or the kernel has no `pidfd_open`).
+fn pidfd_open(pid: i32) -> Option<OwnedFd> {
+    // SAFETY: pidfd_open(2) takes two integers and no pointer; a result of 0 or more is a new
+    // descriptor that nothing else owns, wrapped at once.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: `fd` is the descriptor just returned and owned by nothing else.
+    Some(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+}
+
 impl Signaller for RealSignaller {
     fn signal(&self, pid: i32, sig: Sig) -> Result<(), SignalError> {
         let number = match sig {
             Sig::Term => libc::SIGTERM,
             Sig::Kill => libc::SIGKILL,
         };
-        // SAFETY: kill(2) takes two integers and no pointer; `processes::send` has already refused
-        // a pid of 1 or below, so this never names init or a process group.
-        let r = unsafe { libc::kill(pid, number) };
+        let pinned = self.pinned.borrow_mut().take();
+        let r = match pinned {
+            Some((pinned_pid, fd)) if pinned_pid == pid => {
+                // SAFETY: pidfd_send_signal(2) takes the descriptor, a signal number, a null
+                // `siginfo` (the default) and no flags; `fd` is open for the whole call.
+                let r =
+                    unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), number, std::ptr::null::<libc::siginfo_t>(), 0) };
+                i32::try_from(r).unwrap_or(-1)
+            }
+            // No pidfd (an old kernel, or `signal` without `start_time`): the pid itself.
+            // SAFETY: kill(2) takes two integers and no pointer; `processes::send` has already
+            // refused a pid of 1 or below, so this never names init or a process group.
+            _ => unsafe { libc::kill(pid, number) },
+        };
         if r == 0 { Ok(()) } else { Err(signal_error_of(io::Error::last_os_error().raw_os_error().unwrap_or(0))) }
     }
 
     fn start_time(&self, pid: i32) -> Option<u64> {
-        processes::start_time_in(&self.root, pid)
+        // Pinned before the start time is read: the process read is the one signalled.
+        let pidfd = pidfd_open(pid);
+        let start = processes::start_time_in(&self.root, pid)?;
+        *self.pinned.borrow_mut() = pidfd.map(|fd| (pid, fd));
+        Some(start)
     }
 }
 

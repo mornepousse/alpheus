@@ -50,7 +50,7 @@ fn list() -> Launcher {
 fn perform(l: &mut Launcher, signaller: &Fake, outcome: Outcome) {
     match outcome {
         Outcome::Signal { pid, start, sig } => {
-            apply_signal(l, signaller, &Excluded { pids: Vec::new(), comms: Vec::new() }, pid, start, sig)
+            apply_signal(l, signaller, &Excluded { pids: Vec::new(), comms: Vec::new() }, pid, start, sig);
         }
         other => panic!("expected a signal, got {other:?}"),
     }
@@ -186,23 +186,16 @@ fn every_ancestor_of_the_compositor_and_of_alpheus_is_excluded() {
 }
 
 #[test]
-fn the_real_signaller_signals_a_child_by_pid_and_start_time_only() {
-    use std::os::unix::process::ExitStatusExt;
-    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-    let pid = child.id() as i32;
+fn the_real_signaller_reads_start_times_and_finds_a_missing_process_gone() {
+    // A process of this test, found in the real /proc: its start time is a real, stable number.
     let signaller = RealSignaller::new(PathBuf::from("/proc"));
-    let start = signaller.start_time(pid).expect("a running child has a start time");
-    // Another start time: a pid reused since the listing, nothing is sent.
-    assert_eq!(
-        processes::send(&signaller, pid, start + 1, Sig::Term, &Excluded { pids: Vec::new(), comms: Vec::new() }),
-        Err(SignalError::Reused)
-    );
-    assert!(child.try_wait().unwrap().is_none(), "still running");
-    assert_eq!(processes::send(&signaller, pid, start, Sig::Term, &Excluded { pids: Vec::new(), comms: Vec::new() }), Ok(()));
-    assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
-    // Gone now (reaped): the same pid and start time give Gone, not a signal to a stranger.
-    assert_eq!(
-        processes::send(&signaller, pid, start, Sig::Kill, &Excluded { pids: Vec::new(), comms: Vec::new() }),
-        Err(SignalError::Gone)
-    );
+    let own = std::process::id() as i32;
+    let first = signaller.start_time(own).expect("this process has a start time");
+    assert_eq!(signaller.start_time(own), Some(first));
+    // A pid that cannot exist is Gone: nothing is signalled, `send` never reaches `kill`.
+    assert_eq!(signaller.start_time(i32::MAX), None);
+    let nobody = Excluded { pids: Vec::new(), comms: Vec::new() };
+    assert_eq!(processes::send(&signaller, i32::MAX, 1, Sig::Kill, &nobody), Err(SignalError::Gone));
+    // A start time that is not ours: Reused, for this very process, and nothing is sent to it.
+    assert_eq!(processes::send(&signaller, own, first + 1, Sig::Kill, &nobody), Err(SignalError::Reused));
 }

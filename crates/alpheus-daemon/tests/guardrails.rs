@@ -3711,6 +3711,9 @@ fn the_kill_list_has_no_panicking_path_and_logs_fixed_words() {
     assert!(glue.contains("log(\"kill list: signal\")"), "the one log line the glue writes about a signal");
     // Spawns nothing and sends no signal of its own: the one `kill(2)` is the signaller's.
     assert_eq!(glue.matches("libc::kill(").count(), 1, "one kill(2) in the glue");
+    // The signal goes through a pidfd, kill(2) being the fallback only; the compositor's pid is asked once per open.
+    assert!(glue.contains("SYS_pidfd_open") && glue.contains("SYS_pidfd_send_signal"), "the signal is pinned by a pidfd");
+    assert_eq!(glue.matches("peer_pid(").count(), 1, "the compositor's socket is asked in one place");
     assert!(!glue.contains("Command::new") && !glue.contains("thread::"), "no process, no thread");
 }
 
