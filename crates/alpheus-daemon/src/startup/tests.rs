@@ -308,7 +308,7 @@ fn end_of_session_recognizes_epipe_and_econnreset_only() {
 #[test]
 fn end_of_session_traverses_calloop_nesting() {
     use smithay_client_toolkit::reexports::calloop::Error as LoopError;
-    // Observed on this machine (headless sway, compositor killed):
+    // Observed with a headless sway whose compositor was killed:
     // calloop sometimes returns an `OtherError` wrapping a source's
     // `IoError`, instead of returning it directly — the real system
     // error is then at the second level of `source()`, not the first.

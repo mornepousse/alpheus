@@ -209,17 +209,16 @@ pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
     format!("{source}, {mode}{auto}")
 }
 
-/// Applies a message to the bar. Any compositor event, or a resources tick,
-/// also refreshes the clock: coming out of sleep, the timer (a monotonic
-/// clock, stopped during sleep) can lag by a minute; the first focus change
-/// puts the clock right again — and so does the next resources reading,
-/// which needs no user interaction with the compositor at all (the clock could otherwise stay stale for up to a minute after
-/// resume if nothing compositor-related happens meanwhile). Cheapest
-/// correct option: resources already ticks on its own already-scheduled
-/// timer whenever the module is shown, so this reuses an existing wakeup
-/// instead of adding one (e.g. threading a dedicated wake flag through the
-/// D-Bus session/publish plumbing, `PrepareForSleep(false)`, into every
-/// call site and test there).
+/// Applies a message to the bar. Any compositor event, or a resources tick, also refreshes the
+/// clock: coming out of sleep, the timer (a monotonic clock, stopped during sleep) can lag by a
+/// minute; the first focus change puts the clock right again — and so does the next resources
+/// reading, which needs no interaction with the compositor at all, so the clock cannot stay stale
+/// for up to a minute after a resume in which nothing compositor-related happens.
+///
+/// This is the cheapest correct option: the resources module, when shown, already ticks on a timer
+/// of its own, so the clock rides a wake-up that exists anyway rather than a new one (the
+/// alternative was a wake flag threaded through the D-Bus session and publish plumbing, from
+/// `PrepareForSleep(false)` into every call site and test there).
 pub fn dispatch_msg(bar: &mut Bar, m: Msg, now: impl Fn() -> LocalTime) -> bool {
     let refreshes_clock = matches!(m, Msg::Compositor(_) | Msg::Resources(_));
     let mut changed = bar.apply(m);
@@ -404,9 +403,8 @@ fn no_session_bus(e: impl std::fmt::Display) -> String {
 }
 
 /// The connection succeeded, but duplicating its fd for the event loop
-/// failed: a different step than `no_session_bus` (2026-10-06 —
-/// the two used to share the same wording, hiding which one actually
-/// failed).
+/// failed: a different step than `no_session_bus`, and a line of its own, so
+/// the log says which of the two failed (2026-10-06).
 fn watch_fd_failed(e: impl std::fmt::Display) -> String {
     format!("tray: connected, but could not watch the session bus's fd ({e})")
 }
@@ -458,10 +456,9 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
 /// way, as an ordinary end of session, keeps an external supervisor from
 /// reading an ordinary restart or logout as a sign of failure.
 ///
-/// `calloop` sometimes nests a source's error inside another (observed on
-/// this machine: an `OtherError` wrapping the original `IoError`): the real
-/// system error is thus not always first in the chain. We look for it by
-/// following `source()` all the way, rather than only looking at the top.
+/// `calloop` sometimes nests a source's error inside another (seen in practice: an `OtherError`
+/// wrapping the original `IoError`), so the real system error is not always first in the chain. It
+/// is looked for by following `source()` all the way down, not only at the top.
 fn end_of_session(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(e);
     while let Some(error) = current {

@@ -626,7 +626,7 @@ fn resources_tick_at_the_configured_interval() {
     // 5 ticks: each wakes the loop once for its timer, and a reading that
     // changes the bar adds further round trips (redraw commit, buffer
     // release, frame callback) — measured steadily at ~3 context switches
-    // per tick with 1 output (2026-10-05, release, this machine: 15, 15,
+    // per tick with 1 output (2026-10-05, release, one machine: 15, 15,
     // 17, 15 over 4 runs). ≥ 4: it really ticks every second; ≤ 20: never
     // faster — halving the period (the `ToDuration(period / 2)` mutation)
     // measured 27, comfortably outside this range. The old 4..=12 could

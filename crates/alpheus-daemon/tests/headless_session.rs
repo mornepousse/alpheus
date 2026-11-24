@@ -120,7 +120,7 @@ fn clean_shutdown_on_sigterm_and_lock_released() {
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn compositor_crash_is_an_end_of_session_exit_code_0() {
-    // Decided and verified on this machine (recorded 2026-10-04): killing
+    // Decided and verified by hand (recorded 2026-10-04): killing
     // sway with a SIGKILL closes the daemon's Wayland connection with EPIPE
     // ("Broken pipe (os error 32)"), exactly what a clean disconnect would
     // also produce (end of session, compositor restart — see spec § 3).
@@ -6693,7 +6693,7 @@ fn hooks_started_and_dnd_run_with_their_environment() {
     assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
     assert!(d.wait_for_count("do not disturb on", 1, DELAY), "{:?}", d.log());
     past_the_quiet_window();
-    // The marker says a change reached the model past the window: this machine was too slow for the
+    // The marker says a change reached the model past the window: the machine running the test was too slow for the
     // two verbs to land inside it, so the test proves nothing (never a failure).
     if d.count("hooks: quiet window over") > 0 {
         eprintln!("inconclusive: the first changes came after the quiet window: {:?}", d.log());

@@ -507,7 +507,7 @@ mod tests {
     fn inner_end_bound_respected() {
         // Bites on `let end = end.min(self.width());`: replacing it with
         // `let end = self.width();` (ignoring the parameter) leaves these
-        // two assertions red (see fix report).
+        // two assertions red.
         assert_eq!(Grid::empty(8).write(0, 3, "abcdef", Style::NORMAL), 3);
         let mut g = Grid::empty(8);
         g.write(0, 3, "abcdef", Style::NORMAL);

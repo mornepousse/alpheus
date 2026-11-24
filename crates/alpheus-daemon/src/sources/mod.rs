@@ -155,7 +155,7 @@ pub fn supervise<T>(
         // `&Box<dyn Any + Send>` wrongly lets itself be converted into a
         // trait object over THE BOX itself (which also implements `Any`)
         // rather than over the value it contains — `downcast_ref` would then
-        // always fail, silently (a verified trap: see the fix report).
+        // always fail, silently.
         let r: io::Result<()> = result.unwrap_or_else(|payload| Err(io::Error::other(format!("panic: {}", panic_text(&*payload)))));
         if closed {
             return; // the bar stops

@@ -827,7 +827,7 @@ fn ttc_collection_one_face_per_chosen_weight() {
     assert_eq!(p.loaded_faces(), 2, "faces loaded from the collection: {}", p.loaded_faces());
     // Not enough on its own: "2 faces" could also come from a
     // same-named system font (JetBrainsMono Nerd Font Mono is installed
-    // on this machine) if the built collection had in fact not been
+    // on the development machine) if the built collection had in fact not been
     // read. Check that it really is THAT one: every loaded face has
     // `path` as its source, and both of the collection's indices (0 and
     // 1) are there, with no duplicate or extra face.
