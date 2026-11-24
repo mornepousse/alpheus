@@ -4766,7 +4766,7 @@ fn the_capture_worker_always_mails_its_ending() {
     let encode = function_body(&app, "fn capture_encode(");
     let run = encode.find("let finish = run(").expect("the worker runs the job");
     let after_run = run + encode[run..].find(';').expect("the job is one statement") + 1;
-    let send = encode.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(finish)));").expect("the ending is mailed");
+    let send = encode.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
     assert!(after_run <= send, "after the job");
     assert_eq!(encode[after_run..send].trim(), "", "the next statement, under no condition");
     let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));

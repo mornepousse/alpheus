@@ -52,7 +52,8 @@ use std::time::Instant;
 pub enum CaptureMail {
     /// The frame of the capture numbered by the first field (`Flow::generation`).
     Frame(u64, Result<Frame, CaptureError>),
-    Delivered(Finish),
+    /// The worker's ending of the capture numbered by the first field.
+    Delivered(u64, Finish),
 }
 
 /// Everything the captures keep on the `App`: the flow, and while one runs, its output and area.
@@ -248,8 +249,8 @@ impl App {
     pub(crate) fn capture_mail(&mut self, mail: CaptureMail) {
         self.capture_guarded("mail", |app| match mail {
             CaptureMail::Frame(generation, result) => app.capture_frame(generation, result),
-            CaptureMail::Delivered(finish) => {
-                let step = app.capture.flow.delivered(finish);
+            CaptureMail::Delivered(generation, finish) => {
+                let step = app.capture.flow.delivered(generation, finish);
                 app.capture_step(step);
             }
         });
@@ -295,6 +296,7 @@ impl App {
         let (Some(job), Some(tx)) = (self.capture.flow.job(), self.mail.clone()) else {
             return self.capture_finish(Finish::CaptureFailed);
         };
+        let generation = self.capture.flow.generation();
         let info = self.capture.output.as_ref().and_then(|o| self.outputs.info(o));
         let area = self.capture.area.take().map(|logical| {
             let size = info.as_ref().and_then(|i| i.logical_size).map(|(w, h)| (w.max(0) as u32, h.max(0) as u32));
@@ -312,7 +314,7 @@ impl App {
             let delivery = Delivery { job, copy: &launcher.copy, save_dir: dir.as_deref(), file_name: name, temp_dir: &temp_dir };
             let finish = run(exec.as_ref(), frame, area, &delivery);
             // The frame and the image went with `run`: the loop frees what the thread's arena kept.
-            let _ = tx.send(Mail::Capture(CaptureMail::Delivered(finish)));
+            let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));
         });
         if started.is_err() {
             self.capture_finish(Finish::CaptureFailed);

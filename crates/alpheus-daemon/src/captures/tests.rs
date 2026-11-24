@@ -166,3 +166,19 @@ fn the_notices_say_what_happened_and_only_a_success_is_a_calm_one() {
     assert!(Finish::Copied(Scope::Area).touches_the_clipboard());
     assert!(!Finish::Saved("x.png".into()).touches_the_clipboard());
 }
+
+/// A worker's ending carries its capture's number: one left over from a capture the glue reset (a
+/// panic while the worker ran) never ends the next capture.
+#[test]
+fn a_late_ending_from_an_old_generation_is_ignored() {
+    let (mut flow, old) = grabbing(Scope::Screen);
+    assert_eq!(flow.grabbed(old, true), Step::Encode);
+    flow.finished();
+    flow.begin(job(Scope::Screen, Goal::Copy));
+    let new = flow.generation();
+    flow.settled(new);
+    assert_eq!(flow.grabbed(new, true), Step::Encode);
+    assert_eq!(flow.delivered(old, Finish::Copied(Scope::Screen)), Step::Nothing, "the old worker's ending");
+    assert!(flow.is_busy(), "the new capture still waits for its own worker");
+    assert_eq!(flow.delivered(new, Finish::Copied(Scope::Screen)), Step::Finish(Finish::Copied(Scope::Screen)));
+}

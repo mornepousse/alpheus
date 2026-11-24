@@ -292,9 +292,10 @@ impl Flow {
         self.end(Finish::CaptureFailed)
     }
 
-    /// The worker's result: the capture is over.
-    pub fn delivered(&mut self, finish: Finish) -> Step {
-        if self.stage != Stage::Encoding {
+    /// The worker's result for capture `generation`: the capture is over. An ending of another capture
+    /// (a worker left running when the glue reset its capture) is none of this one's.
+    pub fn delivered(&mut self, generation: u64, finish: Finish) -> Step {
+        if self.stage != Stage::Encoding || generation != self.generation {
             return Step::Nothing;
         }
         self.end(finish)
