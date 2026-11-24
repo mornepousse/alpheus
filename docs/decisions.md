@@ -1731,15 +1731,28 @@ answer never asks for the frame itself. On the harness's sway the dim stays out 
 (requests are handled in order), so the rule is pinned on the flow and by a guardrail, and the headless
 test checks the pixels.
 
-Date: 2026-11-24 · Source: tests `a_selection_waits_for_the_compositor_before_the_frame_is_asked` (`captures/tests.rs`), `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`), `an_area_capture_has_no_dim_tint` (`tests/headless_session.rs`)
+Date: 2026-11-24 · Source: tests `a_selection_waits_for_the_compositor_before_the_frame_is_asked`, `every_scope_waits_for_the_compositor_before_its_frame` (`captures/tests.rs`), `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`), `an_area_capture_has_no_dim_tint` (`tests/headless_session.rs`)
 
 ### A screenshot reaches the copy command as a file on its standard input
 
 `Executor::spawn_with_input` carries at most one page, which a PNG far exceeds. The worker writes the
 PNG to a private file (`$XDG_RUNTIME_DIR/alpheus/capture.png`, owner only, atomic), starts the copy
-command with that file as its standard input (`Executor::spawn_with_stdin_file`: no pipe to fill, the
-call never waits) and removes the file at once, the command holding its own descriptor. The cut, the
-encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
+command with that file as its standard input (`Executor::run_with_stdin_file`: no pipe to fill) and waits at most 5 s for the command's own exit,
+the foreground of `wl-copy` ending once it has read the file; "copied" means that exit was 0, as
+`screenshot.sh` checks `wl-copy`'s. A non-zero exit, a signal or the timeout (the command is killed,
+never what it left behind) is a copy failure. The file is removed afterwards, also when the worker
+panics (a panic ends the capture as a failure), and a start clears one a killed daemon left. The cut,
+the encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
 
-Date: 2026-11-24 · Source: tests `spawn_with_stdin_file_feeds_a_big_file_and_survives_its_deletion` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file` (`tests/guardrails.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+Date: 2026-11-24 · Source: tests `run_with_stdin_file_feeds_a_big_file_and_reports_the_exit`, `run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin`, `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`, `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, `stale_private_files_are_removed_at_start_and_nothing_else` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file` (`tests/guardrails.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
+### A frame that never comes fails the capture, and a late frame is never the next one's
+
+One capture runs at a time, so a compositor that never answered a frame request would hold the slot
+until the daemon restarted. A one-shot timer, armed only while a frame is awaited (5 s), fails the
+capture, destroys the frame object and frees the slot. Every answer (the round trip, the frame, the
+deadline) carries the number of the capture it is for, so the late answer of a capture that has ended
+is dropped unread and never taken for the next one's.
+
+Date: 2026-11-25 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
 
