@@ -1,0 +1,95 @@
+name: Release
+
+# A pushed tag vX.Y.Z builds the binaries and publishes the GitHub release.
+# A manual run builds and packages the same files and uploads them as a
+# workflow artifact without publishing anything (a dry run).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # pkg-config, libdbus-1-dev, libxkbcommon-dev: linked by the daemon.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The version is the workspace's; a tag must name the same one.
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Fails early when the CHANGELOG has no section for this version.
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          .github/release/notes.sh "$VERSION" > "$RUNNER_TEMP/dist/notes.md"
+
+      - name: Build
+        run: cargo build --release --locked --workspace
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: .github/release/package.sh "$VERSION" target/release "$RUNNER_TEMP/dist"
+
+      - name: Check the tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd "$RUNNER_TEMP/dist"
+          sha256sum -c SHA256SUMS
+          tar -tzf "alpheus-$VERSION-x86_64-linux.tar.gz"
+
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  # Only a tag publishes; the only job with write access.
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-files
+          path: files
+
+      - uses: softprops/action-gh-release@v3.0.4
+        with:
+          name: alpheus ${{ github.ref_name }}
+          body_path: files/notes.md
+          files: |
+            files/alpheus-*-x86_64-linux.tar.gz
+            files/SHA256SUMS
+          fail_on_unmatched_files: true
