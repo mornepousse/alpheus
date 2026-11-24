@@ -7,9 +7,10 @@
 //! `crate::displays::...` and `alpheus::backends::...` stay valid.
 //!
 //! Never:
-//! - launch a daemon or leave a process behind on exit (the spec's § 6, "Guardrails").
+//! - launch a daemon or leave a process behind on exit (docs/decisions.md "The control center runs a fixed list of commands, and systemctl only to read or to restart a unit").
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md, docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read or to restart a unit").
 
 pub use alpheus_common::{backends, config, diagnostics, displays, exec};
 

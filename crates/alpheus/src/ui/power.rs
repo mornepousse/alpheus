@@ -10,7 +10,7 @@
 //! - change the state: everything here reads the keymap and fills a list of hints;
 //! - run a tool or read a clock.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the Power row), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use crate::app::action::Action;
 use crate::app::keymap::Keymap;

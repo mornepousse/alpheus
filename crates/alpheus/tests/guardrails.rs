@@ -1,4 +1,4 @@
-//! Mechanically checked guardrails from the scoping doc: only the planned
+//! Mechanically checked guardrails (docs/SCOPE.md): only the listed
 //! commands are launched; nothing talks to the compositor directly, and
 //! nothing touches turning displays off.
 
@@ -30,7 +30,7 @@ fn copy_program() -> String {
     alpheus::config::DiagnosticsConfig::default().copy.remove(0)
 }
 
-/// The only `systemctl` lines the TUI's executor may run (spec § 8): the three power actions, the
+/// The only `systemctl` lines the TUI's executor may run: the three power actions, the
 /// diagnostics' reads, and the two user-unit actions (`--` before the unit, `--no-block` for the
 /// restart). System-unit actions never reach the executor: they run in the TUI's own window.
 fn systemctl_line_is_allowed(line: &str) -> bool {
@@ -179,7 +179,7 @@ fn the_systemctl_line_rule_itself_bites() {
 }
 
 /// Source guardrail: the code that builds `systemctl` arguments never spells a verb that starts,
-/// stops, enables, masks or kills a unit, nor one that changes the environment (spec § 8). The
+/// stops, enables, masks or kills a unit, nor one that changes the environment. The
 /// fix text the tab shows for a check is a string for the eyes, not an argument, and lives in
 /// the user's config, never in these files.
 #[test]

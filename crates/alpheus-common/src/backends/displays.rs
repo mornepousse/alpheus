@@ -1,5 +1,5 @@
 //! Displays: asked of the alpheus daemon, which owns the compositor's output
-//! management (displays protocol spec), over the launcher's owner-only socket.
+//! management, over the launcher's owner-only socket.
 //! Never the compositor directly, never a command.
 //!
 //! Never:

@@ -11,7 +11,7 @@
 //! - change the `App`;
 //! - write outside the body it was given (`draw::put` clips).
 //!
-//! See: docs/features/control-center.md, docs/specs/2026-11-15-alpheus-ui-refresh-design.md.
+//! See: docs/features/control-center.md.
 
 use super::Chrome;
 use super::appearance;

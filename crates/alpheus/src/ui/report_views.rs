@@ -9,8 +9,7 @@
 //! - change the state or run a tool: the text and the boot read are the `App`'s;
 //! - let text that came from a tool reach a cell as it is: it passes `clean_line` again on its way.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 4, the boot report; § 5, the bug
-//! report), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{put, truncate};

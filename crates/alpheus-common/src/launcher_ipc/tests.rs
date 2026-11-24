@@ -246,9 +246,9 @@ fn every_quick_word_parses_back() {
     }
     assert_eq!(QuickVerb::Top.word(), None, "the bare verb");
     assert_eq!(QuickVerb::parse("Sound"), None, "the words are exact");
-    assert_eq!(QuickVerb::parse("wifi"), Some(QuickVerb::Wifi), "quick Wi-Fi spec § 1");
-    assert_eq!(QuickVerb::parse("bluetooth"), Some(QuickVerb::Bluetooth), "quick Bluetooth spec § 1");
-    assert_eq!(QuickVerb::parse("vpn"), Some(QuickVerb::Vpn), "quick VPN spec § 1");
+    assert_eq!(QuickVerb::parse("wifi"), Some(QuickVerb::Wifi), "the wifi word");
+    assert_eq!(QuickVerb::parse("bluetooth"), Some(QuickVerb::Bluetooth), "the bluetooth word");
+    assert_eq!(QuickVerb::parse("vpn"), Some(QuickVerb::Vpn), "the vpn word");
     assert_eq!(QuickVerb::ALL.len(), 5);
     assert_eq!(QuickVerb::parse("network"), None, "the Wi-Fi's word is wifi");
 }
@@ -539,7 +539,7 @@ fn timed_dnd_has_its_wire_and_old_words_stay() {
     assert_eq!((DND_MIN_SECS, DND_MAX_SECS), (60, 86_400));
 }
 
-/// Timer spec § 7: each verb round-trips (`Start(1500)` as `timer start 1500`, the others by their
+/// Each verb round-trips (`Start(1500)` as `timer start 1500`, the others by their
 /// word); a start outside 1 s to a day, or not a number, is malformed; an unknown word is refused
 /// by name; `timer` alone is malformed.
 #[test]

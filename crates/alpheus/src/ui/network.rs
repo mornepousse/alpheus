@@ -8,9 +8,7 @@
 //! - change the state: everything here reads the `App` and fills a list of rows;
 //! - run a tool or read a clock.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the Network row),
-//! docs/specs/2026-11-15-alpheus-ui-refresh-design.md (the rail and the tab hues),
-//! docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::tabs::Row;
 use crate::app::action::Action;

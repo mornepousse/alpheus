@@ -12,7 +12,7 @@
 //! - change the `App`, or know what the control does when used: `app/mouse.rs` does that from the
 //!   regions the caller records.
 //!
-//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::draw::put;
 use super::shape::{self, Ink};

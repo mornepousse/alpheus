@@ -12,9 +12,7 @@
 //!   regions;
 //! - run a tool or read a clock: the countdown it shows is `Trial::remaining`, set by the tick.
 //!
-//! See: docs/specs/2026-10-03-alpheus-ecrans-design.md (§ 2, the tab; § 3, the "Keep these settings?"
-//! box), docs/specs/2026-11-15-alpheus-ui-refresh-design.md (the rail and the tab hues),
-//! docs/features/control-center.md.
+//! See: docs/features/displays.md, docs/features/control-center.md.
 
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};

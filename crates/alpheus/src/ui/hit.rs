@@ -8,7 +8,7 @@
 //! - hold anything beyond rectangles and targets: it knows no layout and no `App`;
 //! - keep an empty rectangle: `push` drops it.
 //!
-//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Mouse (everywhere)").
+//! See: docs/features/control-center.md.
 
 use crate::app::PanelField;
 use crate::app::action::Tab;

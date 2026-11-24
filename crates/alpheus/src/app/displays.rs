@@ -17,9 +17,9 @@
 //! - overwrite a `displays.toml` that could not be read (`profiles_invalid`);
 //! - draw anything: `ui/displays.rs` draws the tab from this state.
 //!
-//! See: docs/specs/2026-10-03-alpheus-ecrans-design.md (§ 2, the tab; § 3, safety and errors),
-//! docs/specs/2026-10-30-alpheus-displays-protocol-design.md ("The trial moves to the daemon",
-//! "What stays in the TUI"), docs/features/control-center.md.
+//! See: docs/features/displays.md,
+//! docs/decisions.md ("The displays are changed by the daemon, and its trial lives there"),
+//! docs/features/control-center.md.
 
 use super::worker::{Domain, Op};
 use super::{App, Item, Loadable, Overlay};
@@ -92,8 +92,7 @@ pub struct Trial {
     pub remaining: u64,
 }
 
-/// The "Keep these settings?" dialog. The focus starts on Cancel (displays spec § 3: "with focus on
-/// **Cancel**").
+/// The "Keep these settings?" dialog. The focus starts on Cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Keep {
     pub keep_focused: bool,

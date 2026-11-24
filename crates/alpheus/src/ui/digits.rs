@@ -5,7 +5,7 @@
 //! - write outside the clip it is given (`draw::put`);
 //! - draw anything but the ten digits and the colon: any other character is blank.
 //!
-//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md (Home).
+//! See: docs/features/control-center.md (Home).
 
 use super::draw::put;
 use ratatui::buffer::Buffer;

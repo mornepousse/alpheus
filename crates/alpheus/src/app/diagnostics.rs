@@ -19,8 +19,7 @@
 //! - write to a compositor: `socket_answers` connects to a socket and closes it at once;
 //! - draw anything: `ui/diagnostics.rs` draws the tab from this state.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 2 The Diag tab, § 2.2 Unit actions,
-//! § 2.3 Session health), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::worker::{DiagRead, DiagResult, Domain, Op, Request};
 use super::{App, Item, Loadable, Overlay, TOAST_TTL, Toast};

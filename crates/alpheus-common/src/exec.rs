@@ -61,7 +61,7 @@ pub enum ExecError {
 /// stream. Dropping it kills the command's process group and reaps it.
 pub type Stream = Box<dyn Read + Send>;
 
-/// What `capture` reads at most, and for how long (launcher sources spec § 2).
+/// What `capture` reads at most, and for how long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CaptureLimits {
     /// Counted from the spawn: past it, the command's group is killed.
@@ -280,8 +280,8 @@ fn unblock_signals() -> std::io::Result<()> {
 /// calls (sigprocmask via `unblock_signals`, fork, `_exit`); stdio, process
 /// group and the rest of `Command`'s setup already happened before this
 /// closure runs, and both forked copies inherit them identically. The
-/// grandchild then calls `setsid`: its own session (spec of the launcher,
-/// § 1, "fully detached, own session"), so no terminal or session leader of
+/// grandchild then calls `setsid`: its own session (fully detached: docs/decisions.md
+/// "A launched program is never a child of the bar"), so no terminal or session leader of
 /// ours can ever send it SIGHUP. It is not a group leader (the intermediate
 /// is), so `setsid` cannot fail with EPERM; async-signal-safe.
 fn detach() -> std::io::Result<()> {

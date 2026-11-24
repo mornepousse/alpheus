@@ -525,7 +525,7 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
     }
 }
 
-/// Quick spec § 1: `--quick [sound]` sends its word and exits 0 on Done.
+/// `--quick [sound]` sends its word and exits 0 on Done.
 #[test]
 fn quick_sends_its_word_and_exits_0() {
     for (i, (args, expected)) in [
@@ -544,7 +544,7 @@ fn quick_sends_its_word_and_exits_0() {
     }
 }
 
-/// Small features spec: `--calc` sends its request and exits 0 on Done; a daemon too old for it
+/// `--calc` sends its request and exits 0 on Done; a daemon too old for it
 /// answers the unknown request: exit 3, one request.
 #[test]
 fn calc_sends_its_request_and_an_old_daemon_exits_3() {
@@ -561,7 +561,7 @@ fn calc_sends_its_request_and_an_old_daemon_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
-/// Timer spec § 7: `--timer` sends its request and exits 0 on Done; a daemon too old for it answers
+/// `--timer` sends its request and exits 0 on Done; a daemon too old for it answers
 /// the unknown request: exit 3, one request; any other error is exit 2 with its text.
 #[test]
 fn timer_sends_its_request_and_an_old_daemon_exits_3() {
@@ -618,7 +618,7 @@ fn notes_sends_its_request_and_an_old_daemon_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
-/// Spec § 1: a daemon older than `--quick` refuses the word as an unknown request: exit 3, as for
+/// A daemon older than `--quick` refuses the word as an unknown request: exit 3, as for
 /// the other verbs, one request, no retry.
 #[test]
 fn an_old_daemon_refusing_quick_exits_3() {
@@ -634,7 +634,7 @@ fn an_old_daemon_refusing_quick_exits_3() {
     assert_eq!(launch(&["--quick", "sound"], &socket, b"").0, EXIT_UNREACHABLE, "no daemon: 3");
 }
 
-/// Quick Wi-Fi spec § 1: a daemon of delivery 1 knows `quick` but not its `wifi` word: exit 3, as for
+/// A daemon that knows `quick` but not its `wifi` word: exit 3, as for
 /// any verb an older daemon refuses, one request, no retry.
 #[test]
 fn a_daemon_without_the_wifi_word_exits_3() {
@@ -648,7 +648,7 @@ fn a_daemon_without_the_wifi_word_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
-/// Quick Bluetooth spec § 1: a daemon of delivery 2 knows `quick` but not its `bluetooth` word: exit
+/// A daemon that knows `quick` and `wifi` but not its `bluetooth` word: exit
 /// 3, as for any verb an older daemon refuses, one request, no retry.
 #[test]
 fn a_daemon_without_the_bluetooth_word_exits_3() {
@@ -662,7 +662,7 @@ fn a_daemon_without_the_bluetooth_word_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
-/// Quick VPN spec § 1: a daemon of delivery 3 knows `quick` but not its `vpn` word: exit 3, one
+/// A daemon that knows `quick`, `wifi` and `bluetooth` but not its `vpn` word: exit 3, one
 /// request, no retry.
 #[test]
 fn a_daemon_without_the_vpn_word_exits_3() {
@@ -775,7 +775,7 @@ fn other_refusals_of_a_dmenu_stay_errors() {
     }
 }
 
-/// Clipboard spec: both verbs send their request and exit 0 on Done; a daemon too old for one
+/// Both verbs send their request and exit 0 on Done; a daemon too old for one
 /// answers the unknown request: exit 3, one request; an error reply is exit 2 with its text.
 #[test]
 fn clipboard_clear_sends_its_request_and_an_old_daemon_exits_3() {
@@ -802,7 +802,7 @@ fn clipboard_clear_sends_its_request_and_an_old_daemon_exits_3() {
     daemon.join().unwrap();
 }
 
-/// Tools spec § 1, § 5: both verbs send their request and exit 0 on Done; a daemon too old for one
+/// Both verbs send their request and exit 0 on Done; a daemon too old for one
 /// answers the unknown request: exit 3, one request; the power menu's refusal is exit 2 with its text.
 #[test]
 fn tools_and_power_send_their_requests_and_an_old_daemon_exits_3() {
@@ -831,7 +831,7 @@ fn tools_and_power_send_their_requests_and_an_old_daemon_exits_3() {
     daemon.join().unwrap();
 }
 
-/// Shield spec § 9: every word sends its request; `status` prints the body (exit 0, 2 when the
+/// Every word sends its request; `status` prints the body (exit 0, 2 when the
 /// state is unknown); `allow` exits 1 when the picker is escaped; an old daemon exits 3, an
 /// unconfigured one 2 with its text.
 #[test]

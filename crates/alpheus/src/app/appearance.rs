@@ -7,15 +7,12 @@
 //! own reload of the file (an inotify watch).
 //!
 //! Never:
-//! - touch D-Bus: the tab reads the mode the daemon publishes in `$XDG_RUNTIME_DIR` instead (themes
-//!   spec § 2: "the TUI never uses D-Bus");
+//! - touch D-Bus: the tab reads the mode the daemon publishes in `$XDG_RUNTIME_DIR` instead;
 //! - write anything but `theme.toml`'s keys (`theme`, `mode`, `module_colors`, `style`): a setting
 //!   the user left alone is not written, and a failed write changes nothing but the status line;
 //! - draw anything: `ui/appearance.rs` draws the tab from this state.
 //!
-//! See: docs/specs/2026-10-07-alpheus-themes-design.md (§ 2, files and settings; § 9, module
-//! colours), docs/specs/2026-10-07-alpheus-shapes-design.md (§ 4, the Style row),
-//! docs/features/control-center.md.
+//! See: docs/features/themes.md, docs/features/control-center.md.
 
 use super::action::Action;
 use super::{App, Item};
@@ -53,7 +50,7 @@ pub fn colors_label(m: ModuleColors) -> &'static str {
     }
 }
 
-/// The bar styles, in display order (shapes spec § 4). theme.toml's value for a style is
+/// The bar styles, in display order. theme.toml's value for a style is
 /// `BarStyle::name()`: no second table to keep in step.
 pub const STYLES: [BarStyle; 6] = BarStyle::ALL;
 
