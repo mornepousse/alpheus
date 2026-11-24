@@ -17,6 +17,7 @@ use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
+use crate::launcher::processes::Sig;
 use crate::launcher::tools::catalog::Choices;
 use crate::launcher::tools::nav::{RowId, Trail};
 use crate::list::{self, Boxed, Row, tail, wrap};
@@ -199,7 +200,8 @@ fn calc_text(l: &Launcher) -> String {
 }
 
 fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
-    let selected = index == l.selected;
+    // The kill list can have nothing selected (the selected process went from it).
+    let selected = index == l.selected && !l.selection_lost();
     if let Source::Entry(i) = l.results[index].source
         && let Some(e) = l.entries.as_ref().and_then(|e| e.items.get(i))
     {
@@ -253,6 +255,12 @@ fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
     if l.proc_question_pid() == Some(p.pid) {
         let text = format!("Force kill {}? Enter again", p.name);
         list::row(g, 1, end, &Row { icon: None, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
+        return;
+    }
+    // A process that was sent a signal stays listed, dim, with what it was sent, until the next read.
+    if let Some(sig) = l.proc_mark(p.pid) {
+        let right = if sig == Sig::Kill { "killed" } else { "asked to quit" };
+        list::row(g, 1, end, &Row { icon: None, icon_style: Style::ACCENT, text: &p.name, right, style: Style::MUTED, selected });
         return;
     }
     let cpu = match p.cpu_pct {

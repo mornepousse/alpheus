@@ -1123,3 +1123,34 @@ fn a_hostile_process_name_never_misaligns_the_box() {
     let (_, rows) = draw(&mut l, 60);
     assert_no_raw_hostile_characters(&rows);
 }
+
+#[test]
+fn a_signalled_row_is_dim_and_says_what_it_was_sent() {
+    use crate::launcher::processes::Sig;
+    let mut l = kill_box();
+    l.signal_result(4242, Sig::Term, Ok(()));
+    let (b, rows) = draw(&mut l, 100);
+    let texts = row_texts(&rows, &b);
+    assert!(texts[0].contains("firefox") && texts[0].contains("asked to quit"), "{:?}", texts[0]);
+    assert!(!texts[0].contains("/nix/store"), "the marked row drops its stats and command line: {:?}", texts[0]);
+    l.signal_result(77, Sig::Kill, Ok(()));
+    let (b, rows) = draw(&mut l, 100);
+    assert!(row_texts(&rows, &b)[1].contains("killed"));
+}
+
+#[test]
+fn with_nothing_selected_no_row_is_highlighted() {
+    let mut l = kill_box();
+    l.key(Key::Down);
+    let (b, rows) = draw(&mut l, 100);
+    let top = usize::from(b.list_top) - 1;
+    let selected_cells = |r: &Grid| r.styles().chars().filter(|c| *c == Style::SELECTED.code()).count();
+    assert!(selected_cells(&rows.rows[top + 1]) > 0, "the second row is highlighted");
+    use crate::launcher::processes::ProcRow;
+    let row = |pid, name: &str| ProcRow { pid, start: 1, name: name.into(), cmdline: String::new(), rss_kb: 1, cpu_pct: Some(0.0) };
+    l.set_procs(vec![row(4242, "firefox"), row(9, "browser")]);
+    assert!(l.selection_lost());
+    let (b, rows) = draw(&mut l, 100);
+    let top = usize::from(b.list_top) - 1;
+    assert!((0..2).all(|i| selected_cells(&rows.rows[top + i]) == 0), "no highlight when nothing is selected");
+}

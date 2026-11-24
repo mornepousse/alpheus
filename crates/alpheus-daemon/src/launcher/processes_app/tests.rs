@@ -61,7 +61,7 @@ fn enter_sends_term_and_shows_the_result() {
     perform(&mut l, &fake, outcome);
     assert_eq!(fake.sent.borrow().as_slice(), [(200, Sig::Term)]);
     assert_eq!(l.message.as_deref(), Some("asked firefox to quit"));
-    assert_eq!(l.procs.len(), 1, "the row leaves the list");
+    assert_eq!(l.procs.len(), 2, "the row stays, marked");
 }
 
 #[test]
@@ -87,11 +87,14 @@ fn ctrl_enter_asks_then_a_second_enter_kills() {
 fn eperm_and_esrch_show_a_word_in_the_box() {
     let mut l = list();
     let denied = Fake::answering(Err(SignalError::Denied));
+    let t = Instant::now();
+    l.set_now(t);
     let outcome = l.key(Key::Enter);
     perform(&mut l, &denied, outcome);
     assert_eq!(l.message.as_deref(), Some("firefox: not allowed"));
     assert_eq!(l.procs.len(), 2, "still listed: it is still running");
     let gone = Fake { start: None, ..Fake::answering(Ok(())) };
+    l.set_now(t + Duration::from_millis(600));
     let outcome = l.key(Key::Enter);
     perform(&mut l, &gone, outcome);
     assert_eq!(l.message.as_deref(), Some("firefox: already gone"));

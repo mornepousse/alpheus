@@ -1657,13 +1657,14 @@ fn a_question_runs_out_after_three_seconds() {
 }
 
 #[test]
-fn a_signal_that_went_removes_the_row_and_says_so_in_the_box() {
+fn a_signal_that_went_keeps_the_row_marked_and_says_so_in_the_box() {
     let mut l = kill_list();
     l.signal_result(200, Sig::Term, Ok(()));
-    assert_eq!(l.procs.len(), 2);
+    assert_eq!(l.procs.len(), 3, "the row stays: nothing slides under the highlight");
     assert_eq!(l.message.as_deref(), Some("asked firefox to quit"));
     l.signal_result(201, Sig::Kill, Ok(()));
     assert_eq!(l.message.as_deref(), Some("killed editor"));
+    assert_eq!(l.procs.len(), 3);
 }
 
 #[test]
@@ -1678,4 +1679,98 @@ fn a_refused_signal_says_one_word_in_the_box() {
     l.signal_result(202, Sig::Term, Err(SignalError::Reused));
     assert_eq!(l.message.as_deref(), Some("sleep: pid reused, nothing sent"));
     assert_eq!(l.procs.len(), 1);
+}
+
+fn set_at(l: &mut Launcher, t: Instant, ms: u64) {
+    l.set_now(t + Duration::from_millis(ms));
+}
+
+#[test]
+fn a_question_never_falls_on_another_process_when_its_row_vanishes() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.key(Key::Down);
+    assert_eq!(selected_pid(&l), Some(201));
+    set_at(&mut l, t, 0);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Asked);
+    // The second sample no longer has 201: the question ends with it.
+    l.set_procs(vec![proc_row(200, "firefox", 900), proc_row(202, "sleep", 100)]);
+    assert!(!l.proc_question(), "the question went with its process");
+    set_at(&mut l, t, 600);
+    let o = l.key(Key::Enter);
+    assert!(!matches!(o, Outcome::Signal { .. }), "Enter must not signal the row that slid into place: {o:?}");
+}
+
+#[test]
+fn with_the_selected_process_gone_nothing_is_selected_until_a_key_moves() {
+    let mut l = kill_list();
+    l.key(Key::Down);
+    l.set_procs(vec![proc_row(200, "firefox", 900), proc_row(202, "sleep", 100)]);
+    assert_eq!(selected_pid(&l), None, "no row is selected");
+    assert!(!matches!(l.key(Key::Enter), Outcome::Signal { .. }));
+    assert!(!matches!(l.key(Key::CtrlEnter), Outcome::Signal { .. }));
+    // A move selects a row again, and Enter then means that row.
+    l.key(Key::Down);
+    assert!(selected_pid(&l).is_some());
+    let pid = selected_pid(&l).unwrap();
+    assert!(matches!(l.key(Key::Enter), Outcome::Signal { pid: p, .. } if p == pid));
+}
+
+#[test]
+fn enter_on_another_process_while_a_question_pends_does_nothing() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    set_at(&mut l, t, 0);
+    l.proc_ask = Some((999, t + Duration::from_secs(3)));
+    set_at(&mut l, t, 600);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.proc_ask.map(|(p, _)| p), Some(999), "left as it was");
+}
+
+#[test]
+fn no_second_signal_within_0_4_s_of_a_signal() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    set_at(&mut l, t, 0);
+    assert!(matches!(l.key(Key::Enter), Outcome::Signal { .. }));
+    set_at(&mut l, t, 100);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "a double tap signals once");
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+    assert!(!l.proc_question());
+    set_at(&mut l, t, 500);
+    assert!(matches!(l.key(Key::Enter), Outcome::Signal { .. }), "past 0.4 s it is a new press");
+}
+
+#[test]
+fn ctrl_enter_reaches_a_process_that_ignored_term() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    set_at(&mut l, t, 0);
+    let Outcome::Signal { pid, sig: Sig::Term, .. } = l.key(Key::Enter) else { panic!("a quit request") };
+    l.signal_result(pid, Sig::Term, Ok(()));
+    assert_eq!(selected_pid(&l), Some(pid), "the row is still the highlighted one");
+    set_at(&mut l, t, 600);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Asked);
+    set_at(&mut l, t, 1200);
+    assert!(matches!(l.key(Key::Enter), Outcome::Signal { pid: p, sig: Sig::Kill, .. } if p == pid));
+}
+
+#[test]
+fn a_signalled_row_is_marked_until_the_next_read() {
+    let mut l = kill_list();
+    l.signal_result(200, Sig::Term, Ok(()));
+    assert_eq!(l.proc_mark(200), Some(Sig::Term));
+    assert_eq!(l.proc_mark(201), None);
+    l.signal_result(200, Sig::Kill, Ok(()));
+    assert_eq!(l.proc_mark(200), Some(Sig::Kill), "the latest signal is the mark");
+    l.set_procs(vec![proc_row(200, "firefox", 900)]);
+    assert_eq!(l.proc_mark(200), None, "a new read drops the marks");
+}
+
+#[test]
+fn a_row_that_is_gone_leaves_and_nothing_is_selected_after_it() {
+    let mut l = kill_list();
+    l.signal_result(200, Sig::Term, Err(SignalError::Gone));
+    assert_eq!(l.procs.len(), 2);
+    assert_eq!(selected_pid(&l), None, "the neighbour must not slide under the highlight");
 }

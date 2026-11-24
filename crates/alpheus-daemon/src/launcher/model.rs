@@ -193,6 +193,15 @@ pub struct Launcher {
     pub procs: Vec<ProcRow>,
     /// The kill list's question: the pid whose force kill was asked, until when it may be confirmed.
     proc_ask: Option<(i32, Instant)>,
+    /// The kill list: no row is selected, because the selected process went from the list. Enter
+    /// does nothing until a key moves the selection (the neighbour that slid into its place was
+    /// never chosen).
+    proc_lost: bool,
+    /// The kill list's signalled rows, with the last signal sent to each, until the next read.
+    proc_marks: Vec<(i32, Sig)>,
+    /// When the kill list last sent a signal: keys within `CONFIRM_AFTER` of it do nothing, so a
+    /// double tap never signals twice.
+    proc_signalled_at: Option<Instant>,
     /// How this open began (`for_apps`, `for_tools`, the others).
     pub origin: Origin,
     /// The Tools menu's state: the catalog, the level, the states read. None until `set_tools` or
@@ -260,6 +269,9 @@ impl Launcher {
             clipboard: false,
             procs: Vec::new(),
             proc_ask: None,
+            proc_lost: false,
+            proc_marks: Vec::new(),
+            proc_signalled_at: None,
             origin: Origin::Other,
             tools: None,
             tool_level: Vec::new(),
@@ -430,9 +442,38 @@ impl Launcher {
     pub fn set_procs(&mut self, rows: Vec<ProcRow>) {
         let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.procs = rows;
+        self.proc_marks.clear();
         self.rank();
-        self.selected = kept.and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id))).unwrap_or(0);
+        match kept {
+            Some(id) => match self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id)) {
+                Some(at) => self.selected = at,
+                // The highlighted process is gone from the new read: nothing is selected, rather
+                // than whatever row slid into its place.
+                None => {
+                    self.proc_lost = true;
+                    self.selected = self.selected.min(self.results.len().saturating_sub(1));
+                }
+            },
+            None if self.proc_lost => self.selected = self.selected.min(self.results.len().saturating_sub(1)),
+            None => self.selected = 0,
+        }
+        // A question about a process that is no longer listed is over.
+        if let Some((pid, _)) = self.proc_ask
+            && !self.procs.iter().any(|p| p.pid == pid)
+        {
+            self.proc_ask = None;
+        }
         self.keep_visible();
+    }
+
+    /// Whether no row is selected in the kill list (the selected process went): the view draws no highlight.
+    pub fn selection_lost(&self) -> bool {
+        self.proc_lost
+    }
+
+    /// The last signal sent to `pid` in this list, shown on its row until the next read.
+    pub fn proc_mark(&self, pid: i32) -> Option<Sig> {
+        self.proc_marks.iter().find(|(p, _)| *p == pid).map(|(_, sig)| *sig)
     }
 
     /// Whether a force kill is being asked (the view draws it on the row and the help line).
@@ -461,7 +502,6 @@ impl Launcher {
     pub fn signal_result(&mut self, pid: i32, sig: Sig, result: Result<(), SignalError>) {
         let Some(at) = self.procs.iter().position(|p| p.pid == pid) else { return };
         let name = self.procs[at].name.clone();
-        let leaves = !matches!(result, Err(SignalError::Denied | SignalError::Other));
         self.message = Some(match (result, sig) {
             (Ok(()), Sig::Term) => format!("asked {name} to quit"),
             (Ok(()), Sig::Kill) => format!("killed {name}"),
@@ -470,15 +510,26 @@ impl Launcher {
             (Err(SignalError::Reused), _) => format!("{name}: pid reused, nothing sent"),
             (Err(SignalError::Other), _) => format!("{name}: could not signal"),
         });
-        if leaves {
-            let kept = self.selected_hit().and_then(|h| self.identity(h.source));
-            self.procs.remove(at);
-            self.rank();
-            self.selected = kept
-                .and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id)))
-                .unwrap_or(self.selected);
-            self.selected = self.selected.min(self.results.len().saturating_sub(1));
-            self.keep_visible();
+        match result {
+            // The row stays, marked: removing it would slide the next process under the
+            // highlight, and a process that ignored the quit request must stay reachable.
+            Ok(()) => {
+                self.proc_marks.retain(|(p, _)| *p != pid);
+                self.proc_marks.push((pid, sig));
+            }
+            // A process that is gone, or that the pid no longer names, leaves the list; if it was the
+            // selected one nothing is selected after it.
+            Err(SignalError::Gone | SignalError::Reused) => {
+                let was_selected = self.selected_proc().is_some_and(|(p, _)| p == pid);
+                self.procs.remove(at);
+                self.rank();
+                if was_selected {
+                    self.proc_lost = true;
+                }
+                self.selected = self.selected.min(self.results.len().saturating_sub(1));
+                self.keep_visible();
+            }
+            Err(SignalError::Denied | SignalError::Other) => {}
         }
         if self.proc_ask.is_some_and(|(asked, _)| asked == pid) {
             self.proc_ask = None;
@@ -1038,6 +1089,7 @@ impl Launcher {
     /// (2026-10-05) — the selection is on top unless the user navigated since the last
     /// query or mode change.
     fn refilter(&mut self) {
+        self.proc_lost = false;
         self.rank();
         self.selected = 0;
         self.top = 0;
@@ -1072,6 +1124,12 @@ impl Launcher {
     fn move_by(&mut self, delta: i32) -> Outcome {
         if self.results.is_empty() {
             return Outcome::Nothing;
+        }
+        // The kill list with nothing selected: the first move selects the row the highlight was at.
+        if self.proc_lost {
+            self.proc_lost = false;
+            self.moved = true;
+            return Outcome::Redraw;
         }
         let to = list::step(self.selected, delta, self.results.len(), |_| true);
         if to == self.selected {
@@ -1159,19 +1217,35 @@ impl Launcher {
         matches!(self.proc_ask, Some((asked, until)) if asked == pid && now < until)
     }
 
+    /// Whether a key at `now` falls inside `CONFIRM_AFTER` of the last signal sent.
+    fn proc_just_signalled(&self, now: Instant) -> bool {
+        self.proc_signalled_at.is_some_and(|at| now.saturating_duration_since(at) < session::CONFIRM_AFTER)
+    }
+
     /// The kill list's Enter: with the force-kill question pending for this process, a second
     /// Enter from 0.4 s on (and within 3 s) kills (`session::ask`'s rule, as the power menu);
-    /// otherwise it asks the process to quit.
+    /// otherwise it asks the process to quit. A question about another process, or a key within
+    /// 0.4 s of a signal, does nothing.
     fn proc_enter(&mut self) -> Outcome {
         let Some((pid, start)) = self.selected_proc() else { return Outcome::Nothing };
         let now = self.at.unwrap_or_else(Instant::now);
+        if self.proc_just_signalled(now) {
+            return Outcome::Nothing;
+        }
         if self.proc_pending(pid, now) {
             return match session::ask(&mut self.proc_ask, pid, now) {
-                session::Activation::Run => Outcome::Signal { pid, start, sig: Sig::Kill },
+                session::Activation::Run => {
+                    self.proc_signalled_at = Some(now);
+                    Outcome::Signal { pid, start, sig: Sig::Kill }
+                }
                 session::Activation::Wait | session::Activation::Ask => Outcome::Nothing,
             };
         }
+        if matches!(self.proc_ask, Some((_, until)) if now < until) {
+            return Outcome::Nothing;
+        }
         self.proc_ask = None;
+        self.proc_signalled_at = Some(now);
         Outcome::Signal { pid, start, sig: Sig::Term }
     }
 
@@ -1180,7 +1254,7 @@ impl Launcher {
     fn proc_force_ask(&mut self) -> Outcome {
         let Some((pid, _)) = self.selected_proc() else { return Outcome::Nothing };
         let now = self.at.unwrap_or_else(Instant::now);
-        if self.proc_pending(pid, now) {
+        if self.proc_just_signalled(now) || self.proc_pending(pid, now) {
             return Outcome::Nothing;
         }
         let _ = session::ask(&mut self.proc_ask, pid, now);
@@ -1349,6 +1423,7 @@ impl Launcher {
         if self.mode == Mode::Processes {
             self.at = None;
             self.proc_ask = None;
+            self.proc_lost = false;
             return Outcome::Redraw;
         }
         let o = if secondary { self.secondary() } else { self.primary() };
@@ -1373,6 +1448,9 @@ impl Launcher {
     }
 
     pub fn selected_hit(&self) -> Option<Hit> {
+        if self.proc_lost {
+            return None;
+        }
         self.results.get(self.selected).copied()
     }
 
