@@ -49,6 +49,9 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 - **Failed units, instant icon** (24): `[failed] subscribe` now defaults to `true`, so a failed unit
   shows at once; the cost lands on systemd and dbus-daemon, a signal per unit change. Set it to
   `false` to read the count on triggers only. [Page](docs/features/failed.md).
+- **Control center session actions** (24): the Power tab's Lock, Log out, Reboot and Power off run
+  `[quick]`'s commands from `bar.toml` (the bar's own, neutral defaults), no longer `hyprlock` and
+  `wm-set exit`; an empty command hides the button. [Page](docs/features/control-center.md).
 - **Open-source cleanup** (22-23): the daemon's code is organised in one folder per feature, a house
   standard ([docs/STYLE.md](docs/STYLE.md)) governs code comments and tests, and the documentation
   was rewritten: a page per feature, a tour, an architecture overview, the settled

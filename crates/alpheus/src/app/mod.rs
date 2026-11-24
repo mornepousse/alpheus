@@ -43,7 +43,8 @@ pub mod tab;
 pub mod worker;
 
 use crate::backends::{
-    AudioNode, AudioStatus, BResult, BackendError, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, UnitAction, Volume, brightness,
+    AudioNode, AudioStatus, BResult, BackendError, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, SessionCommands, UnitAction,
+    Volume, brightness,
 };
 use crate::config::Config;
 use crate::diagnostics::query::Scope;
@@ -281,6 +282,9 @@ pub struct App {
     pub toasts: Vec<Toast>,
     pub keymap: Keymap,
     pub config: Config,
+    /// bar.toml's `[quick]` session commands: which Power actions are offered (`items`, the
+    /// palette). The commands themselves run in the worker's backend.
+    pub session: SessionCommands,
     pub theme: Theme,
     /// Set by the Quit action; `run.rs` leaves its loop when it sees it.
     pub should_quit: bool,
@@ -327,6 +331,7 @@ impl App {
             toasts: Vec::new(),
             keymap,
             config,
+            session: SessionCommands::default(),
             theme,
             should_quit: false,
             displays: DisplaysTab::default(),
@@ -645,7 +650,7 @@ impl App {
             Tab::Sound => sound::items(self),
             Tab::Network => network::items(),
             Tab::Bluetooth => bluetooth::items(),
-            Tab::Power => power::items(),
+            Tab::Power => power::items(&self.session),
             Tab::Appearance => appearance::items(),
             Tab::Diagnostics => self.diag_items(),
             Tab::Displays => displays::items(self),
@@ -849,7 +854,7 @@ impl App {
             None => Vec::new(),
         };
         let display_profiles: Vec<String> = self.displays.profiles.iter().map(|p| p.name.clone()).collect();
-        let entries = palette_entries(&profiles, &display_profiles);
+        let entries = palette_entries(&profiles, &display_profiles, &self.session);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
         fuzzy::rank(query, &labels).into_iter().map(|i| entries[i].clone()).collect()
     }
@@ -997,9 +1002,15 @@ pub(crate) mod testing {
         AudioNode { id, name: name.into(), volume: Volume { percent, muted: false }, default }
     }
 
-    /// Ready data, taken from the machine's recordings.
+    /// The four `[quick]` commands all set: the Power tab offers its five buttons.
+    pub fn full_session() -> SessionCommands {
+        SessionCommands { logout: vec!["session-logout".into()], ..SessionCommands::default() }
+    }
+
+    /// Ready data, taken from the machine's recordings, with the five Power buttons.
     pub fn ready_app() -> App {
         let mut a = app();
+        a.session = full_session();
         a.take_requests();
         a.data = Data {
             volume: Loadable::Ready(Volume { percent: 62, muted: false }),

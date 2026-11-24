@@ -827,15 +827,16 @@ impl Default for QuickConfig {
     /// Neutral defaults (spec § 4): the session's lock through logind (hypridle or swayidle run the
     /// lock command), reboot and power off through systemd, no logout and no toggle.
     fn default() -> Self {
-        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The session commands are alpheus-common's: the control center's Power tab runs the same.
+        let session = alpheus_common::backends::SessionCommands::default();
         QuickConfig {
             step: 5,
             keep_awake: ToggleConfig::default(),
             night_light: ToggleConfig::default(),
-            lock: argv(&["loginctl", "lock-session"]),
-            logout: Vec::new(),
-            reboot: argv(&["systemctl", "reboot"]),
-            poweroff: argv(&["systemctl", "poweroff"]),
+            lock: session.lock,
+            logout: session.logout,
+            reboot: session.reboot,
+            poweroff: session.poweroff,
             wifi_more: None,
             vpn_more: None,
             mixer: None,

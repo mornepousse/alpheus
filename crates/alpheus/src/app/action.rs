@@ -14,7 +14,7 @@
 use super::tab::{TABS, TabSpec};
 use super::worker::Domain;
 use super::{ToggleId, toggle_label};
-use crate::backends::PowerAction;
+use crate::backends::{PowerAction, SessionCommands};
 use std::time::Duration;
 
 /// One of the eight tabs, in tab order (the order of `TABS` in `tab.rs`).
@@ -290,13 +290,13 @@ pub fn profile_label(p: &str) -> String {
 }
 
 /// All palette commands; the profiles (energy, displays) depend on the machine.
-pub fn palette_entries(profiles: &[String], display_profiles: &[String]) -> Vec<(String, Command)> {
+pub fn palette_entries(profiles: &[String], display_profiles: &[String], session: &SessionCommands) -> Vec<(String, Command)> {
     let mut v: Vec<Command> = vec![Command::ToggleDnd, Command::ToggleWifi, Command::ToggleBluetooth, Command::ToggleKeepAwake];
     v.extend(Tab::ALL.map(Command::GoTab));
     v.extend([External::Mixer, External::Network, External::Bluetooth].map(Command::Open));
     v.extend(profiles.iter().cloned().map(Command::SetProfile));
     v.extend(display_profiles.iter().cloned().map(Command::ApplyDisplayProfile));
-    v.extend(PowerAction::ALL.map(Command::Power));
+    v.extend(PowerAction::ALL.into_iter().filter(|a| session.shows(*a)).map(Command::Power));
     v.into_iter().map(|c| (c.label(), c)).collect()
 }
 
@@ -368,7 +368,11 @@ mod tests {
 
     #[test]
     fn the_palette_lists_every_action() {
-        let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()], &["Bureau".into()]);
+        let p = palette_entries(
+            &["performance".into(), "balanced".into(), "power-saver".into()],
+            &["Bureau".into()],
+            &SessionCommands::default(),
+        );
         let labels: Vec<&str> = p.iter().map(|(l, _)| l.as_str()).collect();
         for expected in [
             "Do not disturb",

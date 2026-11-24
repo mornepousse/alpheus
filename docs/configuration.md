@@ -234,7 +234,9 @@ the row shows `·`), `"file:<path>"` (on while the file exists; the path starts 
 `$XDG_RUNTIME_DIR/`) or `"process:<name>"` (on while a process with that name runs; 1 to 15 bytes,
 no `/`). A `state` without a `toggle` is refused. A row whose tool, device or command is missing
 does not show. Nothing in `[quick]` handles sleep or screen-off. Reboot and power off ask once more;
-the ⏻ menu and the quick panel share these commands. See
+the ⏻ menu, the quick panel and the control center's Power tab share `lock`, `logout`, `reboot` and
+`poweroff` (the control center reads them from this file, once at its start; an empty one hides the
+button there too). See
 [the quick settings panel](features/quick-settings.md) and [the power menu](features/power.md).
 
 ### `[timer]`

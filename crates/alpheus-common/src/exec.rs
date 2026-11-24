@@ -98,7 +98,7 @@ pub const MAX_INPUT: usize = 4096;
 pub trait Executor: Send + Sync {
     /// Launches `prog args…`, waits for it to finish (bounded delay), captures the outputs.
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError>;
-    /// Launches `prog args…` without waiting (e.g. hyprlock, or whatever a
+    /// Launches `prog args…` without waiting (e.g. a lock screen, or whatever a
     /// click's `[actions]`/`[workspaces]` command runs), outputs discarded.
     /// Fully detached (double fork): the launched program is never our
     /// child, so it is never reachable through `kill_running` and outlives

@@ -9,7 +9,7 @@ use alpheus::exec::fake::FakeExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const ALLOWED: [&str; 13] = [
+const ALLOWED: [&str; 12] = [
     "wpctl",
     "brightnessctl",
     "nmcli",
@@ -17,8 +17,7 @@ const ALLOWED: [&str; 13] = [
     "powerprofilesctl",
     "shell-ctl",
     "tools-menu",
-    "hyprlock",
-    "wm-set",
+    "loginctl",
     "systemctl",
     "journalctl",
     "coredumpctl",
@@ -134,6 +133,7 @@ fn every_launched_command_is_on_the_allowlist() {
                     "{c}"
                 );
             }
+            "loginctl" => assert_eq!(c, "loginctl lock-session"),
             "coredumpctl" => assert_eq!(c, "coredumpctl list --json=short --no-pager --reverse --since=-7d -n 20"),
             "systemd-analyze" => {
                 assert!(
@@ -144,10 +144,6 @@ fn every_launched_command_is_on_the_allowlist() {
             }
             p if p == copy_program() => assert_eq!(c, p, "the report goes on its standard input, never an argument"),
             _ => {}
-        }
-        if prog == "wm-set" {
-            // Leaving the session, nothing else: the displays go through the daemon.
-            assert_eq!(c, "wm-set exit", "wm-set subcommand off the list");
         }
     }
 }

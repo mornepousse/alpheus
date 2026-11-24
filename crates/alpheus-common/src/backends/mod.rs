@@ -33,7 +33,7 @@ pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
 pub use notifications::{Notifications, ShellCtl};
-pub use power::{Power, PowerAction, SessionPower};
+pub use power::{Power, PowerAction, SessionCommands, SessionPower};
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 
 /// Failure of a backend, displayed as-is in the relevant tab.
@@ -57,6 +57,9 @@ pub enum BackendError {
     /// What the alpheus daemon answered, or why it could not be asked: a
     /// sentence shown as it is (displays).
     Daemon(String),
+    /// An action the user's configuration leaves out (an empty session command): a sentence
+    /// shown as it is.
+    NotConfigured(String),
 }
 
 impl fmt::Display for BackendError {
@@ -65,7 +68,7 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} not found"),
             BackendError::Timeout { tool } => write!(f, "{tool} is not responding"),
             BackendError::Unparsable { tool, detail } => write!(f, "unreadable output from {tool}: {detail}"),
-            BackendError::Daemon(text) => f.write_str(text),
+            BackendError::Daemon(text) | BackendError::NotConfigured(text) => f.write_str(text),
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {
@@ -104,7 +107,7 @@ pub(crate) fn run_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<
     }
 }
 
-/// Launches without waiting (lock screen).
+/// Launches without waiting (the user's session commands: lock, log out, reboot, power off).
 pub(crate) fn spawn_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<()> {
     exec.spawn(prog, args).map_err(|e| exec_error(prog, e))
 }
@@ -126,8 +129,9 @@ pub struct Backends {
 
 impl Backends {
     /// v1 backends (command-line tools; the displays through the daemon's
-    /// socket in `runtime_dir` = $XDG_RUNTIME_DIR).
-    pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
+    /// socket in `runtime_dir` = $XDG_RUNTIME_DIR; the session actions run `session`, bar.toml's
+    /// `[quick]` commands).
+    pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf, session: SessionCommands) -> Self {
         Backends {
             sound: Arc::new(WpctlSound::new(exec.clone())),
             brightness: Arc::new(BrightnessCtl::new(exec.clone())),
@@ -135,7 +139,7 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir.clone())),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec.clone())),
+            power: Arc::new(SessionPower::new(exec.clone(), session)),
             displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
             diagnostics: Arc::new(SystemdTools::new(exec)),
             poke: Arc::new(SocketPoke::new(crate::launcher_ipc::socket_path(&runtime_dir))),
@@ -146,7 +150,7 @@ impl Backends {
     /// is none) and know no user, host or machine id, so no test reads the machine it runs on.
     #[cfg(any(test, feature = "testing"))]
     pub fn system_isolated(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
-        let mut b = Backends::system(exec.clone(), runtime_dir.clone());
+        let mut b = Backends::system(exec.clone(), runtime_dir.clone(), SessionCommands::default());
         b.diagnostics =
             Arc::new(SystemdTools::for_tests(exec, vec![runtime_dir.join("no-journal")], crate::diagnostics::report::HostFacts::default()));
         b
@@ -172,6 +176,7 @@ mod tests {
         assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: None, stderr: "".into() }), "nmcli failed");
         assert_eq!(m(unparsable("wpctl", "missing section")), "unreadable output from wpctl: missing section");
         assert_eq!(m(BackendError::Daemon("the alpheus daemon is not running".into())), "the alpheus daemon is not running");
+        assert_eq!(m(BackendError::NotConfigured("Log out is not configured".into())), "Log out is not configured");
     }
 
     #[test]
@@ -193,7 +198,7 @@ mod tests {
     fn system_wires_each_domain_to_its_tool() {
         let f = Arc::new(FakeExecutor::new());
         let dir = crate::temp_path::TempPath::new("backends-system");
-        let b = Backends::system(f.clone(), dir.to_path_buf());
+        let b = Backends::system(f.clone(), dir.to_path_buf(), SessionCommands::default());
         let _ = b.sound.volume();
         let _ = b.brightness.get();
         let _ = b.network.status();

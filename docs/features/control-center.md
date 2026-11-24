@@ -197,9 +197,9 @@ input. A node's name comes from `wpctl status`. While the audio data is loading 
    [ Per-app mixer ]
 ```
 
-(The classic layout, in a window narrower than 84 columns or shorter than 26 rows. From that size the tab is
-drawn with the rail: a blue hue for its headings and gauges, the focused row as a band, and a
-knob on each gauge. The items and their order are the same.)
+(The classic layout, in a window narrower than 84 columns or shorter than 26 rows. From that size
+the tab is drawn with the rail: a blue hue for its headings and gauges, the focused row as a band,
+and a knob on each gauge. The items and their order are the same.)
 
 ### Using it
 
@@ -531,8 +531,11 @@ on. (Reason for the 2 second period: not recorded.)
 
 ### What it does
 
-The Power tab is five buttons: **Lock**, **Log out**, **Suspend**, **Reboot** and **Power off**.
-It shows nothing else and reads nothing. Log out, Reboot and Power off ask first: a box
+The Power tab is up to five buttons: **Lock**, **Log out**, **Suspend**, **Reboot** and
+**Power off**. Lock, Log out, Reboot and Power off run the commands of `[quick]` in `bar.toml`, the
+same as the bar's ⏻ menu; one whose command is empty is not shown (with the defaults there is no
+Log out, which needs a command of yours). It shows nothing else; it reads `[quick]` from `bar.toml`
+once, when the control center starts. Log out, Reboot and Power off ask first: a box
 **Confirmation** with the question (`Log out of the session?`, `Restart the computer?`,
 `Shut down the computer?`) and two buttons, **Cancel** and **Confirm**. Lock and Suspend run at
 once.
@@ -549,9 +552,10 @@ once.
    [ Power off ]
 ```
 
-(The classic layout, in a window narrower than 84 columns or shorter than 26 rows. From that size the tab is
-drawn with the rail: a red hue, and a glyph and an arrow on each button. The items and their
-order are the same.)
+(The tab with all five commands set; the default `[quick]` has no log out command, so there the Log
+out button is absent and the others keep their order. The classic layout, in a window narrower than
+84 columns or shorter than 26 rows. From that size the tab is drawn with the rail: a red hue, and a
+glyph and an arrow on each button. The items and their order are the same.)
 
 ### Using it
 
@@ -567,9 +571,9 @@ order are the same.)
 There is no search on this tab. With the mouse: a click on a button is Enter on it; in the
 question, a click on Cancel or Confirm answers it, and a click elsewhere does nothing.
 
-The five actions are also in the palette (Ctrl+P, on any tab: `palette_entries`), and the palette
-runs them through the same `App::run_command`: **Power off**, **Reboot** and **Log out** from the
-palette get the same question, with the focus on Cancel.
+The actions the tab offers are also in the palette (Ctrl+P, on any tab: `palette_entries`), and
+the palette runs them through the same `App::run_command`: **Power off**, **Reboot** and **Log out**
+from the palette get the same question, with the focus on Cancel.
 
 In the question the focus starts on **Cancel**, so that an Enter pressed by reflex runs nothing (a
 comment on `Confirm::yes_focused`). The spec asks for the confirmation on power off, reboot and
@@ -579,26 +583,40 @@ not recorded.
 
 ### Configuration
 
-None: the commands are fixed in the backend and the tab reads no setting of its own. The keys come
-from `[keys]` and `[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see
+The tab has no setting of its own: it reads `[quick]`'s `lock`, `logout`, `reboot` and `poweroff`
+from `bar.toml` (the daemon's file, shared with the bar;
+[`[quick]`](../configuration.md#quick)), once, when the control center starts. A missing `bar.toml`
+or key gives the neutral defaults. A `bar.toml` that cannot be read, is not valid TOML, or has a
+wrong type in one of those four keys gives the defaults and a warning on the status line; the
+control center reads only these four keys, so an error elsewhere in the file (which the daemon
+rejects as a whole) does not show here. A command is run as given, never through a shell and started
+detached, like the bar's, so it is not timed and its exit status is not waited for; an empty one (or
+a blank program) hides its action. Suspend is fixed. The keys come from `[keys]` and
+`[keys.bindings]` (the names are `activate`, `left`, `right`, `back`; see
 [the action list](../configuration.md#configtoml)).
 
 What each button runs (`SessionPower::perform`, through the injectable command executor):
 
 | Button | Command |
 | --- | --- |
-| Lock | `hyprlock`, started and left to run on its own |
-| Log out | `wm-set exit` |
+| Lock | `[quick] lock` (default `loginctl lock-session`), started detached |
+| Log out | `[quick] logout` (default empty: no button), started detached |
 | Suspend | `systemctl suspend` |
-| Reboot | `systemctl reboot` |
-| Power off | `systemctl poweroff` |
+| Reboot | `[quick] reboot` (default `systemctl reboot`), started detached |
+| Power off | `[quick] poweroff` (default `systemctl poweroff`), started detached |
 
 ### How it is built
 
-Two small files and the tab's row in `app/tab.rs`.
+Two small files, the tab's row in `app/tab.rs`, and `SessionCommands` in alpheus-common
+(`backends/power.rs`).
 
-- `app/power.rs`: `items` (one button per `PowerAction`, in the order of `PowerAction::ALL`). The
-  rest is shared, in `app/mod.rs`: `App::run_command` opens the question (`Overlay::Confirm`) for
+- `SessionCommands` (alpheus-common): the four `[quick]` commands, their neutral defaults (which
+  the daemon's `QuickConfig::default` also takes, so the two cannot drift), `load` (reads only the
+  `[quick]` keys of `bar.toml`, leniently: the daemon owns validation) and `shows` (which action is
+  offered). `build_app` loads it and hands it to `App::session` (the items and the palette) and to
+  `Backends::system` (`SessionPower`, which runs the commands).
+- `app/power.rs`: `items` (one button per `PowerAction` that `App::session` shows, in the order
+  of `PowerAction::ALL`). The rest is shared, in `app/mod.rs`: `App::run_command` opens the question (`Overlay::Confirm`) for
   an action that needs it, and sends `Op::Power` straight away for the others;
   `App::close_confirm` sends `Op::Power` only when the question is answered Confirm (answered
   Cancel, it sends nothing). The question is drawn by `ui/overlays.rs`.

@@ -497,3 +497,31 @@ fn the_warning_survives_actions() {
     assert_eq!(a.status.error, None, "the last action error is cleared on the next success");
     assert_eq!(a.status.warning.as_deref(), Some("invalid config.toml: x"), "the warning remains");
 }
+
+#[test]
+fn an_empty_session_command_hides_its_power_action() {
+    use crate::backends::SessionCommands;
+    // The neutral defaults: no log out.
+    let mut a = app();
+    a.go_tab(Tab::Power, Instant::now());
+    let shown = |a: &App| -> Vec<PowerAction> {
+        a.items()
+            .into_iter()
+            .map(|i| match i {
+                Item::Button(Command::Power(p)) => p,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(shown(&a), vec![PowerAction::Lock, PowerAction::Suspend, PowerAction::Reboot, PowerAction::Poweroff]);
+    let labels = |a: &App| a.palette_matches().into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    assert!(!labels(&a).contains(&"Log out".to_string()), "not in the palette either");
+    // Everything empty but Suspend, which is fixed.
+    a.session = SessionCommands { lock: vec![], logout: vec![], reboot: vec![], poweroff: vec![] };
+    assert_eq!(shown(&a), vec![PowerAction::Suspend]);
+    assert!(!labels(&a).contains(&"Power off".to_string()));
+    // The focus never points past the shorter list.
+    a.focus = 3;
+    a.clamp_focus();
+    assert_eq!(a.focus, 0);
+}

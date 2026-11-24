@@ -1489,3 +1489,18 @@ reviewed but left unmerged; the file chooser was dropped during its design. A ne
 serve the core, not extend alpheus into another piece of the system.
 
 Date: 2026-10-11 · Source: CLAUDE.md, "Refocus" and "Dropped 2026-10-11"; SCOPE.md
+
+### The control center's session actions use bar.toml's [quick] commands
+
+The Power tab's Lock, Log out, Reboot and Power off run `[quick]`'s `lock`, `logout`, `reboot` and
+`poweroff`, the commands of the bar's ⏻ menu, and an empty command hides its button. They used to
+be `hyprlock` and `wm-set exit`, the author's own session, which broke every other setup. The
+control center must not depend on the daemon crate, so the four commands, their neutral defaults
+and a lenient reader of `bar.toml`'s `[quick]` keys live in alpheus-common (`SessionCommands`);
+the daemon takes its defaults from there and keeps the validation of the whole file: the control
+center reads only the four keys, so the two can differ when `bar.toml` has an error elsewhere. The
+commands start detached, as the bar starts them, so the TUI's 2 s tool limit never kills a user's
+command. Suspend stays
+`systemctl suspend`: the bar has no such entry and nothing in the project handles sleep policy.
+
+Date: 2026-11-24 · Source: maintainer's approval before the public release; `SessionCommands`, `App::session`
