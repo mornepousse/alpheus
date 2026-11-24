@@ -40,7 +40,13 @@ pub(super) fn run_supervised(
                 ok
             })
         }));
-        let r: io::Result<()> = result.unwrap_or_else(|payload| Err(io::Error::other(format!("panic: {}", panic_text(&*payload)))));
+        // The payload is dropped unread: a panic's message can quote private text. Its thread and
+        // place were logged by the daemon's panic hook when it happened (`log::install_panic_hook`).
+        let mut panicked = false;
+        let r: io::Result<()> = result.unwrap_or_else(|_| {
+            panicked = true;
+            Err(io::Error::other("panic"))
+        });
         if closed {
             return;
         }
@@ -52,7 +58,7 @@ pub(super) fn run_supervised(
         let down = match &r {
             Err(e) => {
                 if first || succeeded {
-                    log(&format!("source down: {e}"));
+                    log(&format!("source down: {}", if panicked { "panic" } else { crate::log::error_word(e) }));
                 }
                 match outage_of(e) {
                     // Never the Wi-Fi last read on NetworkManager's own outage:

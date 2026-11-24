@@ -229,7 +229,9 @@ fn panic_in_session_handled_like_an_outage_then_retried() {
     // A single line: on the panic (first), not on round 3 (neither
     // first, nor a recovery behind it) — same rule as an Err.
     assert_eq!(logs.borrow().len(), 1, "{:?}", logs.borrow());
-    assert!(logs.borrow()[0].contains("bug in the session"), "{:?}", logs.borrow());
+    // The panic's message can quote private text: the line names the panic and nothing else (the
+    // daemon-wide hook logged its thread and place).
+    assert_eq!(*logs.borrow(), ["source down: panic"]);
 }
 
 /// Defense in depth: even if a panic happens OUTSIDE the session watched

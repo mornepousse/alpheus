@@ -51,7 +51,7 @@ mod busctl_wire;
 #[cfg(test)]
 pub mod fake;
 
-use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
+use super::{Backoff, STABLE_DURATION, SourceGuard, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
@@ -265,7 +265,7 @@ pub fn start(
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });
     if let Err(e) = result {
-        log(&format!("D-Bus thread: {e}"));
+        log(&format!("D-Bus thread: {word}", word = crate::log::error_word(&e)));
     }
 }
 

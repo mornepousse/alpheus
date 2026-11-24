@@ -33,20 +33,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Readable message of a caught panic (`catch_unwind`): `panic!("…")` and
-/// `panic!("{}", x)` (the common case) give `&str` or `String`; anything
-/// else (a value that doesn't implement `Display`) stays anonymous rather
-/// than wrongly trying to show it.
-pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = p.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = p.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "panic with no message".to_string()
-    }
-}
-
 pub use alpheus_common::compositor::{Compositor, VARIABLES, detect, mango_socket};
 
 /// The daemon's start line naming a compositor (`Compositor` itself lives in alpheus-common).
@@ -151,12 +137,13 @@ pub fn supervise<T>(
                 ok
             })
         }));
-        // `&*payload` (not `&payload`): without the explicit dereference,
-        // `&Box<dyn Any + Send>` wrongly lets itself be converted into a
-        // trait object over THE BOX itself (which also implements `Any`)
-        // rather than over the value it contains — `downcast_ref` would then
-        // always fail, silently.
-        let r: io::Result<()> = result.unwrap_or_else(|payload| Err(io::Error::other(format!("panic: {}", panic_text(&*payload)))));
+        // The payload is dropped unread: a panic's message can quote private text. Its thread and
+        // place were logged by the daemon's panic hook when it happened (`log::install_panic_hook`).
+        let mut panicked = false;
+        let r: io::Result<()> = result.unwrap_or_else(|_| {
+            panicked = true;
+            Err(io::Error::other("panic"))
+        });
         if closed {
             return; // the bar stops
         }
@@ -178,7 +165,7 @@ pub fn supervise<T>(
             // `run`, further below); the tests pass a closure that doesn't
             // need it.
             if first || succeeded {
-                log(&format!("source down: {e}"));
+                log(&format!("source down: {}", if panicked { "panic" } else { crate::log::error_word(&e) }));
             }
         }
         first = false;
@@ -255,7 +242,7 @@ pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bo
         Some(Compositor::Sway { socket }) => spawn_source("compositor", move |p| sway::session(&socket, p), send),
     };
     if let Err(e) = r {
-        log(&format!("compositor thread: {e}"));
+        log(&format!("compositor thread: {word}", word = crate::log::error_word(&e)));
     }
 }
 

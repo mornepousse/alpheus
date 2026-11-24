@@ -1000,6 +1000,25 @@ fn a_domain_outage_blanks_only_that_domain_during_the_backoff() {
     assert_eq!(seen[1], seen[0], "the backoff \"down\" value: the same state, not a full blank");
 }
 
+/// A session that panics is an outage like an `Err`, and its one line says "panic" and nothing the
+/// panic carried: the payload can quote private text (the daemon's hook logged the thread and place).
+#[test]
+fn a_panic_in_the_session_is_logged_as_the_word_panic() {
+    let sends = RefCell::new(Vec::new());
+    let logs = RefCell::new(Vec::new());
+    run_supervised(
+        |_: &mut dyn FnMut(SystemState) -> bool| -> io::Result<()> { panic!("/home/someone/notes: secret payload") },
+        &|v: Option<SystemState>| {
+            sends.borrow_mut().push(v);
+            sends.borrow().is_empty()
+        },
+        |_| {},
+        clock(Duration::ZERO),
+        |m| logs.borrow_mut().push(m.to_string()),
+    );
+    assert_eq!(*logs.borrow(), ["source down: panic"]);
+}
+
 /// The state re-sent for a domain's outage carries no Wi-Fi: the last one
 /// read may be a detail's whole saved list, stale by the time the session is back.
 #[test]
