@@ -307,6 +307,9 @@ impl App {
             let transform = info.as_ref().map_or(Transform::Normal, |i| i.transform);
             buffer_area((frame.width, frame.height), logical, size, scale, transform)
         });
+        // The two small files (launcher.toml, user-dirs.dirs) are read here, on the loop, as the
+        // launcher reads launcher.toml at each open: read in the worker, a fault in them would come
+        // before the job whose panic is caught, and the ending might never be mailed.
         let launcher = read_config(&paths::config_dir(), &mut |_| {});
         let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
         let dir = save_dir(&self.bar.config.captures.dir, pictures_dir().as_deref(), home.as_deref());
