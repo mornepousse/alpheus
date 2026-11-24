@@ -1,4 +1,4 @@
-//! The block styles' passes (themes spec § 3): `islands` and `translucent` (the bar
+//! The block styles' passes (docs/features/themes.md): `islands` and `translucent` (the bar
 //! transparent or `bar_bg` at `opacity`, each group a rounded `pill_bg` block with a 1 px border,
 //! inset 2 px from the bar's top and bottom), the `pills` fill and its text colour, and the
 //! premultiplied pixel helpers the powerline and floating passes share. Every pixel written here
@@ -34,7 +34,7 @@ const fn hued_modules() -> usize {
     n
 }
 
-/// Logical px cap of an island's corner radius (spec § 3).
+/// Logical px cap of an island's corner radius.
 const ISLAND_RADIUS_CAP: u32 = 8;
 
 /// Logical px between an island block and the bar's top and bottom edges (the
@@ -74,7 +74,7 @@ pub(crate) fn over(src: Px, dst: Px, cov: u8) -> Px {
     [f(src[0], dst[0]), f(src[1], dst[1]), f(src[2], dst[2]), f(src[3], dst[3])]
 }
 
-/// An island's corner radius, logical px, for a bar `bar_height` logical px tall (spec § 3).
+/// An island's corner radius, logical px, for a bar `bar_height` logical px tall.
 pub(crate) fn island_radius(bar_height: u32) -> u32 {
     (bar_height / 2).saturating_sub(2).min(ISLAND_RADIUS_CAP)
 }
@@ -99,7 +99,7 @@ pub(crate) fn block_x(g: &Group, advance: f32) -> (u32, u32) {
     (cell_edge(g.start, advance), cell_edge(g.end, advance))
 }
 
-/// Whether `pills` applies: only under the block styles (spec § 1). Under flat and underline the
+/// Whether `pills` applies: only under the block styles. Under flat and underline the
 /// layout gives it `full`'s look, and the painter does nothing more.
 pub(crate) fn pills(bg: &Background) -> bool {
     bg.module_colors == ModuleColors::Pills && !matches!(bg.style, BarStyle::Flat | BarStyle::Underline)
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(on[n - 1].start, groups[n - 1].start, "the last one included");
     }
 
-    /// Spec § 3: half the bar height minus 2 px, capped at 8.
+    /// Half the bar height minus 2 px, capped at 8.
     #[test]
     fn island_radius_is_half_the_height_minus_2_capped_at_8() {
         assert_eq!(island_radius(22), 8, "the default bar: 9 capped to 8");
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(fitted_radius(8, 100, 0, 1), 0);
     }
 
-    /// Spec § 1: the text on a pill takes whichever of bar_bg and fg contrasts more with the hue.
+    /// The text on a pill takes whichever of bar_bg and fg contrasts more with the hue.
     #[test]
     fn on_fill_takes_whichever_of_bar_bg_and_fg_contrasts_more() {
         let mut r = Roles { bar_bg: Rgb(0x10, 0x10, 0x10), fg: Rgb(0xf0, 0xf0, 0xf0), ..Roles::default() };
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(on_fill(&r, Rgb(0xf9, 0xe2, 0xaf)), r.fg, "a light theme: the same rule, the other way round");
     }
 
-    /// Spec § 1: warn, error, urgent and attention (rendered as ERROR) win over the pill's ink, and
+    /// Warn, error, urgent and attention (rendered as ERROR) win over the pill's ink, and
     /// so does any cell carrying its own background (the active workspace).
     #[test]
     fn states_are_warn_error_urgent_and_any_cell_with_its_own_background() {

@@ -73,7 +73,7 @@ impl BarGeometry {
     }
 }
 
-/// The opaque parts of a bar for `style` (shapes spec § 3), into `out` (cleared first, its capacity
+/// The opaque parts of a bar for `style`, into `out` (cleared first, its capacity
 /// kept: no allocation once it has held a bar's rects). `flat`, `underline` and `powerline` paint
 /// every pixel opaque: the whole bar.
 pub fn opaque_rects(style: BarStyle, groups: &[Group], geometry: &BarGeometry, out: &mut Vec<Rect>) {
@@ -233,7 +233,7 @@ pub fn fill_rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32,
     }
 }
 
-/// `underline`'s background (shapes spec § 3): the bar on `bar_bg`, each block one tonal step up on
+/// `underline`'s background: the bar on `bar_bg`, each block one tonal step up on
 /// `pill_bg`, square. `edge` is the painter's cell edge (physical px).
 pub fn underline_blocks(px: &mut [u8], width: u32, height: u32, roles: &Roles, groups: &[Group], edge: impl Fn(u16) -> u32) {
     fill_rect(px, width, height, (0, width), (0, height), premultiplied(roles.bar_bg, 255));
@@ -243,7 +243,7 @@ pub fn underline_blocks(px: &mut [u8], width: u32, height: u32, roles: &Roles, g
     }
 }
 
-/// `underline`'s lines, over the cell backgrounds and under the text pass (shapes spec § 3): a one logical px bottom line in the
+/// `underline`'s lines, over the cell backgrounds and under the text pass: a one logical px bottom line in the
 /// border colour across the bar, and two logical px of underline just above it: `accent` under the
 /// active workspace (the `Style::ACTIVE` cells); under the module colours (icons, full, pills),
 /// also each block's hue under the blocks that have one.
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(out, [Rect { x: 0, y: 0, width: 960, height: 30 }], "logical px, not physical");
     }
 
-    /// Spec § 3: floating claims its rounded bar without the corners, in logical px; `geometry.height`
+    /// Floating claims its rounded bar without the corners, in logical px; `geometry.height`
     /// is the bar alone, so the shadow below it is never claimed.
     #[test]
     fn floating_claims_its_bar_without_the_corners_and_never_the_shadow() {
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(out, [Rect { x: 0, y: 6, width: 12, height: 10 }], "a bar too narrow for its radius: what is left");
     }
 
-    /// Spec § 3: islands and translucent claim their blocks, inset, without the rounded corners; in
+    /// Islands and translucent claim their blocks, inset, without the rounded corners; in
     /// logical px at every scale; nothing without a block.
     #[test]
     fn islands_and_translucent_claim_their_blocks_without_the_corners() {

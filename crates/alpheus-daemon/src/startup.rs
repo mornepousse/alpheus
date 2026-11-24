@@ -94,13 +94,13 @@ pub enum Mail {
         generation: u64,
         catalog: Catalog,
     },
-    /// A finished source run (sources spec § 6): the same open's second delivery, adopted under
+    /// A finished source run: the same open's second delivery, adopted under
     /// the catalog's rule on an app launcher only (`host::entries_are_current`).
     Entries {
         generation: u64,
         entries: Entries,
     },
-    /// One entry's `state`, read for the open Tools menu (tools spec § 6): adopted by the open
+    /// One entry's `state`, read for the open Tools menu: adopted by the open
     /// launcher with this generation only.
     ToolState {
         generation: u64,
@@ -123,7 +123,7 @@ pub enum Mail {
         lines: Vec<String>,
         failed: bool,
     },
-    /// A Shield worker's report (shield spec § 7).
+    /// A Shield worker's report.
     Shield(crate::shield::ShieldMail),
     Stop,
 }
@@ -186,7 +186,7 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-/// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode
+/// The theme: theme.toml, the mode in effect (`portal`: the portal's word in mode
 /// auto, None before it answers or without one) and the colour files, through the shared resolver.
 /// Startup and every reload (`App::theme_changed`) go through `resolve_dir`. Warnings: one line each.
 pub fn theme(directory: &Path, portal: Option<Scheme>) -> (ThemeSettings, Roles, Vec<String>) {
@@ -365,7 +365,7 @@ impl App {
     /// One message from a source thread, in the order the readers need: the quick panel takes a
     /// sound message's sink list first, the OSD reads every sound message before the
     /// bar keeps it (its trigger rules compare it with the last one), the privacy
-    /// indicators read sound and compositor messages first (privacy spec § 4); then the bar's own
+    /// indicators read sound and compositor messages first; then the bar's own
     /// handling, and the panel refreshes if it took something.
     pub(crate) fn on_bar_message(&mut self, mut m: Msg) {
         let quick = self.quick_take(&mut m);
@@ -373,7 +373,7 @@ impl App {
             self.osd_sound(s.as_ref());
         }
         // Hooks first: a sound or compositor source going down must be known when the privacy
-        // indicators it clears reach `hooks_capture` (hooks spec § 2).
+        // indicators it clears reach `hooks_capture`.
         self.hooks_msg(&m);
         self.privacy_feed(&m);
         self.battery_feed(&m);
@@ -396,7 +396,7 @@ impl App {
     }
 }
 
-/// `SessionBus::session()` itself found nothing to connect to (spec § 3): the
+/// `SessionBus::session()` itself found nothing to connect to: the
 /// one case that is really "no session bus".
 fn no_session_bus(e: &(dyn std::error::Error + 'static)) -> String {
     format!("tray: no session bus ({})", crate::log::error_word(e))
@@ -411,7 +411,7 @@ fn watch_fd_failed(e: &(dyn std::error::Error + 'static)) -> String {
 
 /// Connects the tray to the session bus (blocking, once: a local socket)
 /// and puts its fd in the loop — no thread. No session
-/// bus: one log line, the tray stays empty, never retried (spec § 3).
+/// bus: one log line, the tray stays empty, never retried.
 fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let bus = match SessionBus::session() {
         Ok(b) => b,
@@ -449,7 +449,7 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
 /// The Wayland connection closed gently (EPIPE on write, ECONNRESET on read
 /// — the socket closing), rather than with a real protocol error. That is
 /// what BOTH a clean end of session (log out, compositor restart — the
-/// Hyprland signature changes, see spec § 3) AND a crashing compositor
+/// Hyprland signature changes) AND a crashing compositor
 /// produce: nothing, on the client side, tells the two apart. The daemon
 /// never reconnects on its own in either case (it's the session, through
 /// `exec-once` then `shell-ctl`, that relaunches it): treating them the same
@@ -802,7 +802,7 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
-        // The quick panel's Wi-Fi (quick Wi-Fi spec § 5): the loop asks the D-Bus thread through this
+        // The quick panel's Wi-Fi: the loop asks the D-Bus thread through this
         // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match sources::dbus::wifi::WifiTap::new() {
@@ -817,7 +817,7 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no Bluetooth tap ({word})", word = crate::log::error_word(&e))),
             }
         }
-        // The VPN row and detail (quick VPN spec § 5): read on the network domain, with the Wi-Fi's.
+        // The VPN row and detail: read on the network domain, with the Wi-Fi's.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match sources::dbus::vpn::VpnTap::new() {
                 Ok(t) => state.quick.vpn_tap = Some(Arc::new(t)),

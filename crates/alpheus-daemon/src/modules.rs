@@ -72,10 +72,9 @@ pub(crate) struct ModuleSpec {
     pub id: ModuleId,
     /// Name in bar.toml.
     pub name: &'static str,
-    /// The block the module belongs to (shapes spec § 2). Media is a block of its own (media spec
-    /// § 1); the bell joins the status block.
+    /// The block the module belongs to. Media is a block of its own; the bell joins the status block.
     pub group: GroupKind,
-    /// A module's fixed hue (themes spec § 9; the CPU's orange for resources), None for the
+    /// A module's fixed hue (the CPU's orange for resources), None for the
     /// modules without one.
     pub hue: Option<Hue>,
     /// TUI tab opened by a left click (alpheus `--tab`).
@@ -136,7 +135,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup_needs_quick: true,
         ..row(ModuleId::Shield, "shield", GroupKind::Shield)
     },
-    // `󰀦 N` in the error role, nothing at 0 (diagnostics spec § 6); a left click opens the Diag tab.
+    // `󰀦 N` in the error role, nothing at 0; a left click opens the Diag tab.
     ModuleSpec {
         tab: Some("diagnostics"),
         segment: Some(|bar, _| segments::failed(&bar.failed)),
@@ -217,7 +216,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Calendar),
         ..row(ModuleId::Clock, "clock", GroupKind::Clock)
     },
-    // ⏻ alone; no segment when `[quick]` has no session command (power spec § 1).
+    // ⏻ alone; no segment when `[quick]` has no session command.
     ModuleSpec {
         segment: Some(|bar, _| segments::power(&bar.config.quick)),
         popup: Some(ModulePopup::Power),

@@ -50,7 +50,7 @@ const TABLE: [(&str, char); 40] = [
     ("libreoffice", '\u{f0219}'), // md-file_document
     ("obsidian", '\u{f082e}'),    // md-notebook
     ("github", '\u{f02a4}'),      // md-github
-    // Notification apps (notifications spec § 2); checked in the 3.4.0 post table.
+    // Notification apps; checked in the 3.4.0 post table.
     ("=signal", '\u{f0369}'),      // md-message_text
     ("=element", '\u{f0628}'),     // md-matrix
     ("slack", '\u{f04b1}'),        // md-slack

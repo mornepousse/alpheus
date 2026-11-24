@@ -110,7 +110,7 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
     match (m, b) {
         // Opens the launcher inside the daemon (`toggles_launcher`): no command.
         (ModuleId::Launcher, _) => None,
-        // With the quick panel (quick spec § 1): the left click opens it (`ModulePopup::Quick`), the
+        // With the quick panel: the left click opens it (`ModulePopup::Quick`), the
         // right click takes over the TUI tab the left click used to open.
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Left) if quick => None,
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Right) if quick => open_tab(bar, m),
@@ -119,7 +119,7 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
         (ModuleId::Resources, Button::Right) => Some(bar.config.actions.resources.clone()),
-        // The default source's mute, the quick panel's microphone command (privacy spec § 6).
+        // The default source's mute, the quick panel's microphone command.
         (ModuleId::Privacy, Button::Middle) => Some(wpctl(&["set-mute", crate::quick::SOURCE, "toggle"])),
         (m, Button::Left) => open_tab(bar, m),
         _ => None,
@@ -157,19 +157,19 @@ pub fn toggles_launcher(target: &Target, b: Button) -> bool {
     b == Button::Left && *target == Target::Module(ModuleId::Launcher)
 }
 
-/// The bell's middle button (notifications spec § 4): do-not-disturb flips inside the daemon,
+/// The bell's middle button: do-not-disturb flips inside the daemon,
 /// nothing is run. The left button is the panel's (`ModulePopup`).
 pub fn toggles_dnd(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Notifications)
 }
 
-/// The timer chip's middle button (timer spec § 2): handled inside the daemon, nothing is run.
+/// The timer chip's middle button: handled inside the daemon, nothing is run.
 /// The left button is the popup's, right and the wheel do nothing.
 pub fn timer_middle(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Timer)
 }
 
-/// The media module's middle button and wheel (spec § 1): a D-Bus call to the active player
+/// The media module's middle button and wheel: a D-Bus call to the active player
 /// (`Mpris::control`), never a command; the left button is its popup's (`ModulePopup`).
 pub fn media_control(target: &Target, b: Button) -> Option<Control> {
     match (target, b) {

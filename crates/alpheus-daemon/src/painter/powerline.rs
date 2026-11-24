@@ -1,4 +1,4 @@
-//! The `powerline` pass (spec § 3):
+//! The `powerline` pass:
 //! - full-height blocks on an opaque `bar_bg`, alternating `pill_bg` and `raised` counted from the
 //!   workspaces, which are on `pill_bg` (2026-10-08), or their hue under pills;
 //! - between them, a one-cell arrow drawn as an analytically anti-aliased triangle in the colour

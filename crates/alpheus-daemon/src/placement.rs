@@ -47,8 +47,7 @@ impl Placement {
                 Placement {
                     margin: (m, m, 0, m),
                     surface_height: bar_height.saturating_add(FLOAT_SHADOW),
-                    // The bar alone: the compositor adds the top margin itself (spec amendment
-                    // ad309a0), so windows start just under the floating bar.
+                    // The bar alone: the compositor adds the top margin itself, so windows start just under the floating bar.
                     exclusive_zone: int(bar_height),
                     input_height: Some(bar_height),
                 }
@@ -70,7 +69,7 @@ pub fn input_rect(p: &Placement) -> Option<(i32, i32, i32, i32)> {
 mod tests {
     use super::*;
 
-    /// Spec § 3 (amended ad309a0):
+    /// The floating bar:
     /// - margin 6 top, left and right;
     /// - the surface the bar plus a 4 px shadow;
     /// - exclusive zone = the bar height (compositors add the 6 px margin themselves);
@@ -90,8 +89,8 @@ mod tests {
         }
     }
 
-    /// Spec § 3: the input region covers the bar, never the shadow; other styles keep the default
-    /// (the whole surface, so clicks in the islands gaps still reach the bar's zones, spec § 4).
+    /// The input region covers the bar, never the shadow; other styles keep the default
+    /// (the whole surface, so clicks in the islands gaps still reach the bar's zones).
     #[test]
     fn the_input_region_covers_the_bar_only() {
         assert_eq!(input_rect(&Placement::for_style(BarStyle::Floating, 22)), Some((0, 0, INPUT_WIDTH, 22)));

@@ -1,5 +1,4 @@
-//! The session entries shared by the quick panel's session row and the ⏻ power menu (power spec
-//! § 4): lock, log out, reboot and power off — their glyph, their words and their `[quick]` command
+//! The session entries shared by the quick panel's session row and the ⏻ power menu: lock, log out, reboot and power off — their glyph, their words and their `[quick]` command
 //! — and the reboot and power-off question: asked by a first activation, confirmed by a second
 //! within CONFIRM, never before CONFIRM_AFTER. Pure: nothing here runs a command or arms a timer.
 //!
@@ -17,12 +16,12 @@
 use crate::config::QuickConfig;
 use std::time::{Duration, Instant};
 
-// The quick spec's glyphs (§ 2): Nerd Font Material Design icons, and the power symbol.
+// The session glyphs: Nerd Font Material Design icons, and the power symbol.
 pub const LOCK: char = '\u{f033e}';
 pub const LOGOUT: char = '\u{f0343}';
 pub const REBOOT: char = '\u{f0709}';
 pub const POWER: char = '\u{23fb}';
-/// How long "Reboot? ⏎" waits for its second activation (quick spec § 2).
+/// How long "Reboot? ⏎" waits for its second activation.
 pub const CONFIRM: Duration = Duration::from_secs(3);
 /// The second activation counts only this long after the question showed (2026-10-11): a
 /// double click or a double Enter never confirms.
@@ -74,7 +73,7 @@ impl Session {
         format!("{} {}? ⏎", self.glyph(), self.prompt())
     }
 
-    /// Reboot and power off ask once more first (quick spec § 2, power spec § 2).
+    /// Reboot and power off ask once more first.
     pub fn asks(self) -> bool {
         matches!(self, Session::Reboot | Session::Poweroff)
     }
@@ -101,7 +100,7 @@ impl Session {
 }
 
 /// The entries whose command is set, in `Session::ALL`'s order: the quick panel's buttons, the
-/// power menu's rows (power spec § 2, § 3).
+/// power menu's rows.
 pub fn configured(c: &QuickConfig) -> Vec<Session> {
     Session::ALL.into_iter().filter(|s| !s.command(c).is_empty()).collect()
 }
@@ -112,7 +111,7 @@ pub fn any_configured(c: &QuickConfig) -> bool {
     Session::ALL.iter().any(|s| !s.command(c).is_empty())
 }
 
-/// What an activation of an entry does (power spec § 4).
+/// What an activation of an entry does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activation {
     /// Run its command now: lock and log out at once, reboot and power off on the confirming one.

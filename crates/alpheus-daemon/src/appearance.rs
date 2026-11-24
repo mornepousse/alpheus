@@ -1,4 +1,4 @@
-//! The desktop's light/dark preference (themes spec § 2–3). With `mode = "auto"`, the portal's
+//! The desktop's light/dark preference (see docs/features/themes.md). With `mode = "auto"`, the portal's
 //! `org.freedesktop.appearance` `color-scheme` is read once (`ReadOne`: 2 s deadline, auto-start
 //! off), then followed (`SettingChanged`, through one match rule narrowed to that key).
 //!
