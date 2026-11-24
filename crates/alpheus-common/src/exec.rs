@@ -124,6 +124,9 @@ pub trait Executor: Send + Sync {
     /// (`None`: ended by a signal); `Timeout` kills the program (only it, never what it left behind);
     /// a file that cannot be opened is an `Io` error and starts nothing. Blocks: only on a worker
     /// thread, never the event loop. Not supported by default.
+    ///
+    /// The program is not registered in `Running`, so `kill_running` at shutdown does not reach it;
+    /// what bounds it is `limit`, at which only the direct child is killed (not its process group).
     fn run_with_stdin_file(
         &self,
         _prog: &str,
@@ -134,6 +137,11 @@ pub trait Executor: Send + Sync {
         Err(ExecError::Io("standard input from a file is not supported".into()))
     }
 
+    /// `spawn` (detached, double fork, own session, stdio nulled, never registered in `Running`), with
+    /// each `(name, value)` added to the inherited environment and each name of `unset` removed from
+    /// it first (so `env` wins for a name in both). Refused before anything starts
+    /// (`Io("invalid environment variable")`) when a name is empty or holds `=` or NUL, or a value
+    /// holds NUL.
     fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError>;
     /// Launches `prog args…` for as long as its output is read: standard
     /// output piped, standard error discarded, its own process group, and
