@@ -171,6 +171,8 @@ impl App {
         }
         // The name was just acquired: an alert held back for want of a server goes out now.
         if view.serving && !before.is_some_and(|b| b.serving) {
+            // A shutdown warning held back for want of a server goes out now, before its minute.
+            self.shutdown_check_clock();
             self.battery_deliver(None);
             self.failed_deliver(true);
         }

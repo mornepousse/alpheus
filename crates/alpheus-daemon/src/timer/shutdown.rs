@@ -33,6 +33,20 @@ const CANCEL: &str = "Cancel shutdown";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shutdown {
     pub end: u64,
+    /// When it was scheduled, as a wall-clock time. A shutdown saved by an earlier boot is dropped
+    /// at load by comparing this with the boot time: the state directory outlives a reboot.
+    pub set: u64,
+}
+
+/// A warning given this long ago and an end passed by more than this means the machine slept
+/// through the warning's minute (or the deadline was very late): the warning starts over.
+pub const STALE_MS: u64 = 5_000;
+
+/// Whether the warning given at `warned` still counts at `now`: not when the clock went back before
+/// it, nor when `end` passed by more than `STALE_MS` (a suspend in the last minute). A warning that
+/// no longer counts is given again, and the power off waits a fresh minute.
+pub fn warning_holds(s: &Shutdown, warned: Option<u64>, now: u64) -> bool {
+    warned.is_some_and(|w| now >= w && now <= s.end.saturating_add(STALE_MS))
 }
 
 /// What is due: the warning (given at `at`), or the power off.
@@ -54,7 +68,7 @@ pub enum ShutdownChoice {
 pub fn apply(_pending: Option<Shutdown>, choice: ShutdownChoice, now: u64) -> Option<Shutdown> {
     match choice {
         ShutdownChoice::Cancel => None,
-        ShutdownChoice::After(ms) => Some(Shutdown { end: now.saturating_add(ms) }),
+        ShutdownChoice::After(ms) => Some(Shutdown { end: now.saturating_add(ms), set: now }),
     }
 }
 
@@ -67,7 +81,7 @@ impl Shutdown {
     /// The shutdown once its warning is given at `now`: the end is never less than a minute away,
     /// so a warning always has its minute, however late it was noticed.
     pub fn warned_at(self, now: u64) -> Shutdown {
-        Shutdown { end: self.end.max(now.saturating_add(WARN_MS)) }
+        Shutdown { end: self.end.max(now.saturating_add(WARN_MS)), set: self.set }
     }
 
     /// Whether the last minute has begun: the chip turns to the warn colour.
@@ -80,19 +94,23 @@ impl Shutdown {
         minutes_text(self.left(now).div_ceil(MINUTE_MS))
     }
 
-    /// The state file's line: `shutdown <unix end in milliseconds>`.
+    /// The state file's line: `shutdown <unix end ms> <unix scheduled-at ms>`.
     pub fn saved(&self) -> String {
-        format!("shutdown {}", self.end)
+        format!("shutdown {} {}", self.end, self.set)
     }
 
     /// A state line read back, treated as hostile like the timer's (docs/decisions.md, "The state
     /// file is hostile input"): digits only, the exact fields, an end at most 25 hours ahead. A past
-    /// end is fine: the warning comes first.
+    /// end is fine: the warning comes first. A line from before the scheduled-at time existed (one
+    /// number) reads with `set` 0, which the boot check always drops: the safe side.
     pub fn parse_saved(line: &str, now: u64) -> Option<Shutdown> {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let ["shutdown", end] = fields.as_slice() else { return None };
-        let end = num(end)?;
-        (end <= now.saturating_add(SAVED_AHEAD_MS)).then_some(Shutdown { end })
+        let (end, set) = match fields.as_slice() {
+            ["shutdown", end] => (num(end)?, 0),
+            ["shutdown", end, set] => (num(end)?, num(set)?),
+            _ => return None,
+        };
+        (end <= now.saturating_add(SAVED_AHEAD_MS)).then_some(Shutdown { end, set })
     }
 }
 

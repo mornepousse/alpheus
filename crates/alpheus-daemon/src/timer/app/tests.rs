@@ -14,6 +14,8 @@ const L: Lengths = Lengths { work: 25 * MINUTE_MS, short: 5 * MINUTE_MS, long: 1
 const T0: u64 = 1_000_000_000;
 /// A timer with nothing running and nothing to dismiss.
 const IDLE: Model = Model::Idle { done: false };
+/// A machine booted long before `T0`, with a poweroff command.
+const CTX: LoadCtx = LoadCtx { boot_secs: Some(T0 / 1000 - 3_600), has_poweroff: true };
 
 /// A Pomodoro phase that is running and ends at `end`.
 fn running_pomodoro(end: u64, phase: Phase, round: u8) -> Model {
@@ -114,18 +116,18 @@ fn the_clock_check_applies_one_end_and_says_to_save() {
 
 #[test]
 fn loading_reads_a_good_file_drops_a_bad_one_and_ends_silently() {
-    let l = load(None, &L, T0);
-    assert_eq!(l, Loaded { model: IDLE, shutdown: None, unreadable: false, ended: false });
+    let l = load(None, &L, T0, &CTX);
+    assert_eq!(l, Loaded { model: IDLE, shutdown: None, dropped: None, unreadable: false, ended: false });
     let running = running_pomodoro(T0 + 60_000, Phase::Work, 2);
-    let l = load(running.saved().as_deref(), &L, T0);
-    assert_eq!(l, Loaded { model: running, shutdown: None, unreadable: false, ended: false });
+    let l = load(running.saved().as_deref(), &L, T0, &CTX);
+    assert_eq!(l, Loaded { model: running, shutdown: None, dropped: None, unreadable: false, ended: false });
     for bad in ["", "garbage", "countdown running 1 2 3", "countdown paused 999 999"] {
-        let l = load(Some(bad), &L, T0);
-        assert_eq!(l, Loaded { model: IDLE, shutdown: None, unreadable: true, ended: false }, "{bad:?}");
+        let l = load(Some(bad), &L, T0, &CTX);
+        assert_eq!(l, Loaded { model: IDLE, shutdown: None, dropped: None, unreadable: true, ended: false }, "{bad:?}");
     }
     let late = Model::Countdown { run: Run::Running(T0 - 1), total: MAX_MS };
-    let l = load(late.saved().as_deref(), &L, T0);
-    assert_eq!(l, Loaded { model: Model::Idle { done: true }, shutdown: None, unreadable: false, ended: true });
+    let l = load(late.saved().as_deref(), &L, T0, &CTX);
+    assert_eq!(l, Loaded { model: Model::Idle { done: true }, shutdown: None, dropped: None, unreadable: false, ended: true });
 }
 
 #[test]
@@ -165,28 +167,28 @@ fn closing_the_popup_dismisses_a_done_chip_only() {
 }
 
 /// What a shutdown at `end` does at `now`: after one clock check (warned or not before).
-fn check(end: u64, warned: bool, now: u64) -> (Option<Shutdown>, bool, Option<ShutdownStep>) {
-    shutdown_step(Shutdown { end }, warned, now)
+fn check(end: u64, warned: Option<u64>, now: u64) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
+    shutdown_step(Shutdown { end, set: T0 }, warned, now)
 }
 
 #[test]
 fn the_shutdown_check_warns_then_powers_off_and_never_at_once() {
     // Not yet: nothing happens, the shutdown stays.
-    assert_eq!(check(T0 + 10 * MINUTE_MS, false, T0), (Some(Shutdown { end: T0 + 10 * MINUTE_MS }), false, None));
+    assert_eq!(check(T0 + 10 * MINUTE_MS, None, T0), (Some(Shutdown { end: T0 + 10 * MINUTE_MS, set: T0 }), None, None));
     // The warning: given once, and the end is kept.
     let end = T0 + 10 * MINUTE_MS;
-    let (s, warned, due) = check(end, false, end - 30_000);
+    let (s, warned, due) = check(end, None, end - 30_000);
     assert_eq!(due, Some(ShutdownStep::Warn { at: end - 30_000 }));
-    assert!(warned);
-    assert_eq!(s, Some(Shutdown { end: end + 30_000 }), "a warning always has its minute");
+    assert_eq!(warned, Some(end - 30_000));
+    assert_eq!(s, Some(Shutdown { end: end + 30_000, set: T0 }), "a warning always has its minute");
     // A laptop that wakes long after the end: the warning, not the power off.
-    let (s, warned, due) = check(T0, false, T0 + 3_600_000);
-    assert_eq!((warned, due), (true, Some(ShutdownStep::Warn { at: T0 + 3_600_000 })));
-    assert_eq!(s, Some(Shutdown { end: T0 + 3_600_000 + WARN_MS }));
+    let (s, warned, due) = check(T0, None, T0 + 3_600_000);
+    assert_eq!((warned, due), (Some(T0 + 3_600_000), Some(ShutdownStep::Warn { at: T0 + 3_600_000 })));
+    assert_eq!(s, Some(Shutdown { end: T0 + 3_600_000 + WARN_MS, set: T0 }));
     // Warned and the end reached: it goes, and nothing is left.
-    assert_eq!(check(T0, true, T0), (None, false, Some(ShutdownStep::PowerOff)));
+    assert_eq!(check(T0, Some(T0 - 30_000), T0), (None, None, Some(ShutdownStep::PowerOff)));
     // Warned, the end ahead: waits.
-    assert_eq!(check(T0 + 5, true, T0), (Some(Shutdown { end: T0 + 5 }), true, None));
+    assert_eq!(check(T0 + 5, Some(T0 - 1), T0), (Some(Shutdown { end: T0 + 5, set: T0 }), Some(T0 - 1), None));
 }
 
 #[test]
@@ -209,14 +211,96 @@ fn the_power_off_runs_the_configured_command_and_logs_no_command() {
 #[test]
 fn loading_keeps_a_shutdown_beside_the_timer_and_never_drops_a_late_one() {
     let running = running_pomodoro(T0 + 60_000, Phase::Work, 2);
-    let s = Shutdown { end: T0 + 80 * MINUTE_MS };
+    let s = Shutdown { end: T0 + 80 * MINUTE_MS, set: T0 };
     let text = saved_pair(&running, Some(&s)).unwrap_or_default();
-    assert_eq!(load(Some(&text), &L, T0), Loaded { model: running, shutdown: Some(s), unreadable: false, ended: false });
+    assert_eq!(
+        load(Some(&text), &L, T0, &CTX),
+        Loaded { model: running, shutdown: Some(s), dropped: None, unreadable: false, ended: false }
+    );
     // A shutdown whose end is behind us is kept: the wiring warns first.
-    let past = Shutdown { end: T0 - 1 };
-    let l = load(Some(&past.saved()), &L, T0);
-    assert_eq!(l, Loaded { model: IDLE, shutdown: Some(past), unreadable: false, ended: false });
+    let past = Shutdown { end: T0 - 1, set: T0 };
+    let l = load(Some(&past.saved()), &L, T0, &CTX);
+    assert_eq!(l, Loaded { model: IDLE, shutdown: Some(past), dropped: None, unreadable: false, ended: false });
     // A bad line drops both.
-    let l = load(Some("shutdown nonsense"), &L, T0);
-    assert_eq!(l, Loaded { model: IDLE, shutdown: None, unreadable: true, ended: false });
+    let l = load(Some("shutdown nonsense"), &L, T0, &CTX);
+    assert_eq!(l, Loaded { model: IDLE, shutdown: None, dropped: None, unreadable: true, ended: false });
+}
+
+#[test]
+fn a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once() {
+    let end = T0 + 10 * MINUTE_MS;
+    let warned = Some(end - 30_000);
+    // Slept through the end: the warning is given again, with a fresh minute.
+    let late = end + 3_600_000;
+    let (s, w, due) = check(end, warned, late);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: late }), "a warning, not the power off");
+    assert_eq!(w, Some(late));
+    assert_eq!(s, Some(Shutdown { end: late + WARN_MS, set: T0 }));
+    // Woke a little late (within 5 s of the end): it still powers off, once warned for its minute.
+    assert_eq!(check(end, warned, end + 5_000).2, Some(ShutdownStep::PowerOff));
+    assert_eq!(check(end, warned, end + 5_001).2, Some(ShutdownStep::Warn { at: end + 5_001 }));
+    // The clock went back before the warning: it does not count.
+    let (s, w, due) = check(end, Some(end - 30_000), end - 120_000);
+    assert_eq!((due, w), (None, None), "not warned any more, and not yet due");
+    assert_eq!(s, Some(Shutdown { end, set: T0 }));
+    let (_, w, due) = check(end, Some(end - 30_000), end - 31_000);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: end - 31_000 }), "back in the last minute: warned again");
+    assert_eq!(w, Some(end - 31_000));
+}
+
+#[test]
+fn a_shutdown_from_before_this_boot_is_dropped() {
+    let boot_ms = T0 - 3_600_000;
+    let text = |set: u64| Shutdown { end: T0 + 60_000, set }.saved();
+    let ctx = LoadCtx { boot_secs: Some(boot_ms / 1000), has_poweroff: true };
+    // Scheduled after the boot: kept.
+    let kept = load(Some(&text(boot_ms + 5_000)), &L, T0, &ctx);
+    assert_eq!(kept.shutdown, Some(Shutdown { end: T0 + 60_000, set: boot_ms + 5_000 }));
+    assert_eq!(kept.dropped, None);
+    // Scheduled before it, even with its end after the boot: dropped, with the reason.
+    let old = load(Some(&text(boot_ms - 1)), &L, T0, &ctx);
+    assert_eq!((old.shutdown, old.dropped), (None, Some(Dropped::BeforeBoot)));
+    assert!(!old.unreadable, "not a bad file: the timer beside it still loads");
+    // The old file format (no scheduled-at time) is dropped, the safe side.
+    let legacy = load(Some(&format!("shutdown {}", T0 + 60_000)), &L, T0, &ctx);
+    assert_eq!((legacy.shutdown, legacy.dropped), (None, Some(Dropped::BeforeBoot)));
+    // An unknown boot time drops it too.
+    let unknown = LoadCtx { boot_secs: None, has_poweroff: true };
+    assert_eq!(load(Some(&text(T0)), &L, T0, &unknown).dropped, Some(Dropped::BeforeBoot));
+    // The timer line beside a dropped shutdown is kept.
+    let running = running_pomodoro(T0 + 60_000, Phase::Work, 2);
+    let both = format!("{}\n{}", running.saved().unwrap_or_default(), text(boot_ms - 1));
+    let l = load(Some(&both), &L, T0, &ctx);
+    assert_eq!((l.model, l.shutdown, l.dropped), (running, None, Some(Dropped::BeforeBoot)));
+    assert_eq!(Dropped::BeforeBoot.line(), "timer: shutdown from before this boot, dropped");
+}
+
+#[test]
+fn the_boot_time_is_read_from_the_btime_line() {
+    assert_eq!(parse_btime("cpu  1 2 3\nbtime 1700000000\nprocesses 5\n"), Some(1_700_000_000));
+    for bad in ["", "cpu 1\n", "btime\n", "btime x\n", "xbtime 5\n"] {
+        assert_eq!(parse_btime(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn no_poweroff_command_refuses_the_verb_and_drops_a_pending_shutdown() {
+    assert_eq!(shutdown_refusal(&[]), Some("no [quick] poweroff command is set"));
+    assert_eq!(shutdown_refusal(&["systemctl".to_string(), "poweroff".to_string()]), None);
+    let s = Shutdown { end: T0 + 60_000, set: T0 };
+    let none = LoadCtx { boot_secs: Some(T0 / 1000 - 3_600), has_poweroff: false };
+    let l = load(Some(&s.saved()), &L, T0, &none);
+    assert_eq!((l.shutdown, l.dropped), (None, Some(Dropped::NoPoweroff)), "dropped before any warning");
+    assert_eq!(Dropped::NoPoweroff.line(), "timer: shutdown dropped (no poweroff command)");
+    assert_eq!(load(Some(&s.saved()), &L, T0, &CTX).shutdown, Some(s), "with a command it is kept");
+}
+
+#[test]
+fn a_warning_waits_for_the_server_but_never_for_long() {
+    let s = Duration::from_secs;
+    assert!(warning_waits(true, false, s(0)), "the module is on and the name not held yet");
+    assert!(warning_waits(true, false, s(9)));
+    assert!(!warning_waits(true, false, SERVER_GRACE), "the grace is spent: warn anyway");
+    assert!(!warning_waits(true, true, s(0)), "serving: warn now");
+    assert!(!warning_waits(false, false, s(0)), "no notifications module: nothing to wait for");
 }

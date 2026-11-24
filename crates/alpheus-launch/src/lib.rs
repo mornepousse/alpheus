@@ -626,6 +626,9 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
+        // `timer shutdown <secs>` has one field too many for an old daemon's `timer` headers, so
+        // even one that has the timer refuses it as an unknown request "timer".
+        Request::Timer(TimerVerb::Shutdown(_)) if error == "malformed request: unknown request \"timer\"" => Some("--timer shutdown"),
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         Request::Tools if error == "malformed request: unknown request \"tools\"" => Some("--tools"),
@@ -679,12 +682,12 @@ const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
 /// What a daemon too old for `--timer` answers (`socket::describe` of an unknown request) and the
 /// name for the message; exit 3, so a key bound to it can fall back. A word added later adds a row,
 /// as `OLD_QUICK`'s.
-const OLD_TIMER: [(&str, &str); 3] = [
+const OLD_TIMER: [(&str, &str); 2] = [
     ("malformed request: unknown request \"timer\"", "--timer"),
-    // A daemon with the timer but not the shutdown knows `timer <word>` and `timer start <secs>` only:
-    // `timer shutdown <secs>` has one field too many for the first and the wrong word for the second.
+    // A daemon with the timer but not the shutdown knows `timer <word>` and `timer start <secs>`:
+    // the cancel is an unknown word to it (the 3-field `timer shutdown <secs>` is handled in
+    // `too_old_for`, because the same refusal text means a daemon with no timer at all there).
     ("malformed request: unknown timer word \"shutdown-cancel\"", "--timer shutdown-cancel"),
-    ("malformed request: unknown timer word \"shutdown\"", "--timer shutdown"),
 ];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
@@ -935,7 +938,7 @@ mod tests {
         let mut err = Vec::new();
         // A daemon with the timer but without the shutdown names the verb it lacks.
         for (verb, word, refusal) in [
-            (TimerVerb::Shutdown(60), "--timer shutdown", "malformed request: unknown timer word \"shutdown\""),
+            (TimerVerb::Shutdown(60), "--timer shutdown", "malformed request: unknown request \"timer\""),
             (TimerVerb::ShutdownCancel, "--timer shutdown-cancel", "malformed request: unknown timer word \"shutdown-cancel\""),
         ] {
             let mut err = Vec::new();

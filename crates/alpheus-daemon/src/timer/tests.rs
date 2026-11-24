@@ -388,7 +388,7 @@ fn the_notifications_say_what_ended() {
 
 /// The shutdown chip's own time: ends `minutes` from `T0`.
 fn shutdown_in(minutes: u64) -> Shutdown {
-    Shutdown { end: T0 + minutes * MINUTE_MS }
+    Shutdown { end: T0 + minutes * MINUTE_MS, set: T0 }
 }
 
 #[test]

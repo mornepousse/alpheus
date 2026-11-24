@@ -7017,6 +7017,49 @@ fn shutdown_warns_then_runs_poweroff() {
     assert_eq!(d.count("timer: shutdown power off"), 1, "{:?}", d.log());
 }
 
+/// A shutdown left on file with its end already past (the daemon started late, after a login or a
+/// sleep) warns first, and the warning is a visible bubble: the check at load must wait for the
+/// notification server to own its name instead of warning into the void. Nothing powers off before
+/// the bubble, and the log never says the warning was not shown.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off() {
+    let (bus, sway, _hypr, mut d) = timer_daemon_in("shutdown-late", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    ready(&d);
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    // The file a previous session left: an end ten seconds ago, scheduled just now (after the boot).
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let dir = sway.runtime.join("state/alpheus");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(dir.join("timer"), format!("shutdown {} {now}", now - 10_000)).unwrap();
+    let toml =
+        timer_toml(&sway, TIMER_END_MODULES, &format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", sway.runtime.join("off").display()));
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("timer: shutdown restored", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the warning must be seen: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "no power off before the bubble: {:?}", d.log());
+    assert_eq!(d.count("not shown"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+}
+
+/// With no `[quick] poweroff` command the shutdown verb is refused (an error, named) and nothing is
+/// scheduled; the cancel stays harmless.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_is_refused_without_a_poweroff_command() {
+    let (_bus, sway, _hypr, d) = timer_daemon("shutdown-nocmd", TIMER_END_MODULES, "[quick]\npoweroff = []\n");
+    ready(&d);
+    let (code, out, err) = timer_verb(&sway, &["--timer", "shutdown", "30m"]);
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("no [quick] poweroff command is set"), "{err}");
+    assert!(!sway.runtime.join("state/alpheus/timer").exists(), "nothing scheduled");
+    assert_eq!(d.count("timer: shutdown scheduled"), 0, "{:?}", d.log());
+}
+
 /// A shutdown and a timer coexist: starting and stopping the timer leaves the shutdown on file,
 /// and cancelling the shutdown leaves the timer.
 #[test]

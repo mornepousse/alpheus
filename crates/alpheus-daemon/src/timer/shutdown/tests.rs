@@ -9,7 +9,7 @@ const T0: u64 = 1_000_000_000;
 
 #[test]
 fn the_warning_comes_sixty_seconds_before_the_end() {
-    let s = Shutdown { end: T0 + 3_600_000 };
+    let s = Shutdown { end: T0 + 3_600_000, set: T0 };
     // Far from the end: nothing due, the next step is the warning.
     assert_eq!(next(&s, T0, false), (Some(T0 + 3_600_000 - WARN_MS), None));
     assert_eq!(next(&s, T0 + 3_600_000 - WARN_MS - 1, false), (Some(T0 + 3_600_000 - WARN_MS), None));
@@ -25,7 +25,7 @@ fn the_warning_comes_sixty_seconds_before_the_end() {
 #[test]
 fn a_past_shutdown_warns_first_then_powers_off() {
     // The laptop woke up an hour after the end: the warning first, never the power off.
-    let s = Shutdown { end: T0 };
+    let s = Shutdown { end: T0, set: T0 };
     let now = T0 + 3_600_000;
     let (_, due) = next(&s, now, false);
     assert_eq!(due, Some(ShutdownStep::Warn { at: now }), "a warning, not a power off");
@@ -35,24 +35,24 @@ fn a_past_shutdown_warns_first_then_powers_off() {
     assert_eq!(next(&warned, now, true), (Some(now + WARN_MS), None), "nothing at once");
     assert_eq!(next(&warned, now + WARN_MS, true).1, Some(ShutdownStep::PowerOff));
     // An end that is still ahead is kept when the warning is late by less than its minute.
-    let ahead = Shutdown { end: now + 30_000 };
+    let ahead = Shutdown { end: now + 30_000, set: T0 };
     assert_eq!(ahead.warned_at(now).end, now + WARN_MS, "never less than a minute after the warning");
-    let far = Shutdown { end: now + 90_000 };
+    let far = Shutdown { end: now + 90_000, set: T0 };
     assert_eq!(far.warned_at(now).end, far.end, "an end past the minute is kept");
 }
 
 #[test]
 fn cancel_clears_it() {
-    assert_eq!(apply(Some(Shutdown { end: T0 + 1 }), ShutdownChoice::Cancel, T0), None);
+    assert_eq!(apply(Some(Shutdown { end: T0 + 1, set: T0 }), ShutdownChoice::Cancel, T0), None);
     assert_eq!(apply(None, ShutdownChoice::Cancel, T0), None);
     // A duration replaces the one pending.
-    let s = apply(Some(Shutdown { end: T0 + 1 }), ShutdownChoice::After(1_800_000), T0);
-    assert_eq!(s, Some(Shutdown { end: T0 + 1_800_000 }));
+    let s = apply(Some(Shutdown { end: T0 + 1, set: T0 }), ShutdownChoice::After(1_800_000), T0);
+    assert_eq!(s, Some(Shutdown { end: T0 + 1_800_000, set: T0 }));
 }
 
 #[test]
 fn the_chip_text_is_the_time_left_and_turns_warn_in_the_last_minute() {
-    let s = Shutdown { end: T0 + 80 * MINUTE_MS };
+    let s = Shutdown { end: T0 + 80 * MINUTE_MS, set: T0 };
     assert_eq!(s.chip_text(T0), "1h20");
     assert_eq!(s.chip_text(T0 + 1), "1h20", "rounded up");
     assert!(!s.in_warning(T0));
@@ -61,18 +61,29 @@ fn the_chip_text_is_the_time_left_and_turns_warn_in_the_last_minute() {
     assert_eq!(s.chip_text(s.end - 30_000), "1m");
     // The chip changes once a minute, and at the warning.
     assert_eq!(wake(&s, T0, false), Some(T0 + MINUTE_MS)); // 1h20 reads 1h19 from a minute on
-    let quiet = Shutdown { end: T0 + 80 * MINUTE_MS - 10 };
+    let quiet = Shutdown { end: T0 + 80 * MINUTE_MS - 10, set: T0 };
     assert_eq!(wake(&quiet, T0, false), Some(T0 + 80 * MINUTE_MS - 10 - 79 * MINUTE_MS));
 }
 
 #[test]
 fn the_state_line_round_trips_and_refuses_the_rest() {
-    let s = Shutdown { end: T0 + 5 };
-    assert_eq!(s.saved(), format!("shutdown {}", T0 + 5));
+    let s = Shutdown { end: T0 + 5, set: T0 };
+    assert_eq!(s.saved(), format!("shutdown {} {T0}", T0 + 5));
     assert_eq!(Shutdown::parse_saved(&s.saved(), T0), Some(s));
     // Past ends are kept: the warning handles them.
-    assert_eq!(Shutdown::parse_saved("shutdown 5", T0), Some(Shutdown { end: 5 }));
-    for bad in ["shutdown", "shutdown -5", "shutdown 1 2", "shutdown 12x", "shutdown  ", "poweroff 5", "shutdown 99999999999999999999999"] {
+    assert_eq!(Shutdown::parse_saved("shutdown 5 7", T0), Some(Shutdown { end: 5, set: 7 }));
+    // The old one-number line reads with a scheduled-at time of 0.
+    assert_eq!(Shutdown::parse_saved("shutdown 5", T0), Some(Shutdown { end: 5, set: 0 }));
+    for bad in [
+        "shutdown",
+        "shutdown -5",
+        "shutdown 1 2 3",
+        "shutdown 1 x",
+        "shutdown 12x",
+        "shutdown  ",
+        "poweroff 5",
+        "shutdown 99999999999999999999999",
+    ] {
         assert_eq!(Shutdown::parse_saved(bad, T0), None, "{bad}");
     }
     assert_eq!(Shutdown::parse_saved(&format!("shutdown {}", T0 + 26 * 3_600_000), T0), None, "too far ahead to be ours");

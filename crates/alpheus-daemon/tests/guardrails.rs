@@ -3690,6 +3690,26 @@ fn the_shutdown_is_wired_through_one_path() {
     assert!(step.contains("warned_at(now)"), "a warning moves the end a minute away at least: {step}");
     let do_ = function_body(&app, "pub(crate) fn shutdown_do(");
     assert!(do_.contains("self.timer_save()"), "a change is saved: {do_}");
+    // The open popup follows (timer_chip redraws it) after a change and after a step.
+    assert!(do_.contains("self.timer_chip()"), "the popup follows a change: {do_}");
+    assert!(check.contains("self.timer_chip()"), "the popup follows a step: {check}");
+    // A warning nobody can see never starts the minute: it waits for the server's name, at most the
+    // grace, and the name's arrival re-runs the check.
+    assert!(check.contains("warning_waits("), "a due warning may wait for the server: {check}");
+    let waits = check.find("warning_waits(").unwrap_or(usize::MAX);
+    assert!(waits < check.find("self.timer.warned = warned").unwrap_or(0), "the wait comes before `warned` is set: {check}");
+    let notify = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap(),
+    );
+    let view = function_body(&notify, "pub(crate) fn notify_view(");
+    assert!(view.contains("shutdown_check_clock()"), "the server's arrival re-runs the check: {view}");
+    // A shutdown saved by an earlier boot is dropped at load, and one with no command to run never
+    // starts: the verb is refused and a pending one is dropped before any warning.
+    let load = function_body(&app, "pub(crate) fn timer_load(");
+    assert!(load.contains("boot_time_secs()"), "the boot time is read at load: {load}");
+    assert!(check.contains("shutdown_refusal("), "no poweroff command: dropped before a warning: {check}");
+    let verb = function_body(&app, "pub(crate) fn timer_verb(");
+    assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
 }
 
 /// No panic in the focus timer's production code (it parses a file it did not
