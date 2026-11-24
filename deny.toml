@@ -7,12 +7,12 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 [advisories]
 # Defaults: RustSec vulnerabilities, unmaintained and unsound crates, yanked
 # versions are all errors.
-# Two "unmaintained" notices (not vulnerabilities) reach the daemon only through
-# cosmic-text 0.12 (fontdb -> ttf-parser, rustybuzz). They go away with a
-# cosmic-text upgrade (skrifa is the maintained alternative): revisit then.
+# One "unmaintained" notice (not a vulnerability) remains: ttf-parser, reached
+# only through cosmic-text 0.19 -> fontdb 0.23 (fontdb parses face metadata with
+# it). The rustybuzz notice went with the cosmic-text 0.19 upgrade (shaping is
+# harfrust now). Revisit when fontdb moves to skrifa.
 ignore = [
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via cosmic-text 0.12, no safe upgrade yet" },
-    { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained; via cosmic-text 0.12, no safe upgrade yet" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via fontdb 0.23 (cosmic-text 0.19), no safe upgrade yet" },
 ]
 
 [licenses]
