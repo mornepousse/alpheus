@@ -6213,3 +6213,17 @@ fn a_pick_always_ends() {
     let answer = guard.find("self.capture_picked(generation, PickAnswer::Failed)").expect("and answers the flow");
     assert!(close < answer, "{guard}");
 }
+
+/// What a picker's buffer holds is recorded as soon as it is painted, before the attach: an attach
+/// that fails must not leave the buffer listed with its old overlay, or the next draw into it would
+/// wipe the wrong area and leave a lens behind.
+#[test]
+fn a_picker_buffer_is_recorded_before_its_attach() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let paint = function_body(&pick, "fn pick_paint(");
+    let recorded = paint.find("overlays.push((mark, drawn))").expect("the buffer's overlay is recorded");
+    let attach = paint.find(".attach_to(").expect("the buffer is attached");
+    assert!(recorded < attach, "recorded before the attach");
+    let committed = paint.find("*committed = drawn").expect("the screen's overlay is recorded");
+    assert!(paint.find("layer.commit()").is_some_and(|c| c < committed), "only once committed");
+}

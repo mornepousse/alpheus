@@ -526,14 +526,16 @@ impl App {
         if let Some((x0, y0, x1, y1)) = damaged {
             surface.damage_buffer(x0, y0, x1 - x0, y1 - y0);
         }
+        // The buffer holds the new overlay now, attached or not: recorded first, so an attach that
+        // fails never leaves the old area listed for the next draw into it to wipe.
         let mark = buffer.wl_buffer().clone();
+        overlays.retain(|(b, _)| b != &mark);
+        overlays.push((mark, drawn));
         if buffer.attach_to(surface).is_err() {
             return Painted::Done;
         }
         layer.commit();
         *committed = drawn;
-        overlays.retain(|(b, _)| b != &mark);
-        overlays.push((mark, drawn));
         open.last = Some(shown);
         if !open.shown_logged {
             open.shown_logged = true;
