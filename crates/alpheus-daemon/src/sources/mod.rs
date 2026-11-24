@@ -20,6 +20,7 @@ pub mod dbus;
 pub mod hypr;
 pub mod mango;
 pub mod niri;
+pub mod peer;
 pub mod resources;
 pub mod sound;
 pub mod sway;

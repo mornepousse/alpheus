@@ -1020,3 +1020,150 @@ fn select_row(l: &mut Launcher, name: &str) {
         l.key(Key::Down);
     }
 }
+
+// --- the kill list ---
+
+fn kill_box() -> Launcher {
+    use crate::launcher::processes::ProcRow;
+    let row = |pid, name: &str, cmdline: &str, rss_kb, cpu_pct| ProcRow {
+        pid,
+        start: 1,
+        name: name.into(),
+        cmdline: cmdline.into(),
+        rss_kb,
+        cpu_pct,
+    };
+    Launcher::for_processes(
+        LauncherConfig::default(),
+        vec![
+            row(4242, "firefox", "/nix/store/x-firefox/bin/firefox --new-window", 151_552, Some(12.3)),
+            row(77, "sleep", "sleep 600", 640, None),
+            row(9, "browser", "", 2_097_152, Some(0.0)),
+        ],
+    )
+}
+
+fn row_texts(rows: &Boxed, b: &BoxLayout) -> Vec<String> {
+    let top = usize::from(b.list_top) - 1;
+    rows.rows[top..top + 3].iter().map(Grid::text).collect()
+}
+
+#[test]
+fn a_kill_list_row_reads_name_command_line_pid_cpu_and_memory() {
+    let mut l = kill_box();
+    let (b, rows) = draw(&mut l, 100);
+    assert!(!l.has_modes() && l.is_bare(), "no modes row and no preview panel");
+    let texts = row_texts(&rows, &b);
+    let first = &texts[0];
+    assert!(first.contains("firefox") && first.contains("/nix/store/x-firefox"), "{first:?}");
+    assert!(first.contains("4242") && first.contains("12.3 %") && first.contains("148 MB"), "{first:?}");
+    assert!(
+        texts[1].contains("sleep 600") && texts[1].contains("77") && texts[1].contains("-") && texts[1].contains("640 KB"),
+        "{:?}",
+        texts[1]
+    );
+    assert!(texts[2].contains("2.0 GB") && texts[2].contains("0.0 %"), "{:?}", texts[2]);
+}
+
+#[test]
+fn the_command_line_is_dim_on_the_row_and_the_stats_too() {
+    let mut l = kill_box();
+    l.key(Key::Down);
+    let (b, rows) = draw(&mut l, 100);
+    let top = usize::from(b.list_top) - 1;
+    let styles = rows.rows[top].styles();
+    // Row 0 is not selected: the name is normal text, the command line and the stats are muted.
+    let text = rows.rows[top].text();
+    let at = text.find("/nix/store").unwrap();
+    let name_at = text.find("firefox").unwrap();
+    let style_at = |col: usize| styles.chars().nth(col).unwrap();
+    assert_ne!(style_at(name_at), style_at(at), "the command line has its own, dimmer style");
+}
+
+#[test]
+fn a_force_kill_question_replaces_the_row_and_the_help_line() {
+    let mut l = kill_box();
+    l.set_now(std::time::Instant::now());
+    assert_eq!(l.key(Key::CtrlEnter), crate::launcher::model::Outcome::Asked);
+    let (b, rows) = draw(&mut l, 100);
+    let texts = row_texts(&rows, &b);
+    assert!(texts[0].contains("Force kill firefox? Enter again"), "{:?}", texts[0]);
+    assert!(texts[1].contains("sleep 600"), "the other rows stay");
+    let help = rows.rows[usize::from(b.list_top) - 1 + usize::from(b.list_rows)].text();
+    assert!(help.contains("enter again to force kill"), "{help:?}");
+}
+
+#[test]
+fn the_kill_list_has_its_own_help_empty_states_and_a_filter_hint() {
+    let mut l = kill_box();
+    assert_eq!(help_text(&l), "enter quit · ctrl+enter force kill · esc close");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(rows.rows[usize::from(b.list_top) - 2].text().contains("type to filter the processes"));
+    typed(&mut l, "zzzz");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(rows.rows[usize::from(b.list_top) - 1].text().contains("no match"));
+    let empty = Launcher::for_processes(LauncherConfig::default(), vec![]);
+    assert_eq!(help_text(&empty), "esc close");
+    let mut empty = empty;
+    let (b, rows) = draw(&mut empty, 100);
+    assert!(rows.rows[usize::from(b.list_top) - 1].text().contains("no process"));
+}
+
+#[test]
+fn the_kill_list_fits_the_narrowest_box() {
+    let mut l = kill_box();
+    for columns in [MIN_COLUMNS, 30, 40] {
+        let _ = draw(&mut l, columns);
+    }
+    let limit = usize::from(layout(200, 40, l.config.rows, true, false).pane_end().saturating_sub(3));
+    for text in ["enter again to force kill · any other key cancels", "enter quit · ctrl+enter force kill · esc close"] {
+        assert!(text.chars().count() <= limit, "{text:?} is {} chars, limit {limit}", text.chars().count());
+    }
+}
+
+#[test]
+fn a_hostile_process_name_never_misaligns_the_box() {
+    use crate::launcher::processes::ProcRow;
+    let hostile = ProcRow {
+        pid: 5,
+        start: 1,
+        name: "bad\u{1b}[31m\u{200b}name日本".into(),
+        cmdline: "a\tb\u{7}c".into(),
+        rss_kb: 1,
+        cpu_pct: Some(1.0),
+    };
+    let mut l = Launcher::for_processes(LauncherConfig::default(), vec![hostile]);
+    let (_, rows) = draw(&mut l, 60);
+    assert_no_raw_hostile_characters(&rows);
+}
+
+#[test]
+fn a_signalled_row_is_dim_and_says_what_it_was_sent() {
+    use crate::launcher::processes::Sig;
+    let mut l = kill_box();
+    l.signal_result(4242, Sig::Term, Ok(()));
+    let (b, rows) = draw(&mut l, 100);
+    let texts = row_texts(&rows, &b);
+    assert!(texts[0].contains("firefox") && texts[0].contains("asked to quit"), "{:?}", texts[0]);
+    assert!(!texts[0].contains("/nix/store"), "the marked row drops its stats and command line: {:?}", texts[0]);
+    l.signal_result(77, Sig::Kill, Ok(()));
+    let (b, rows) = draw(&mut l, 100);
+    assert!(row_texts(&rows, &b)[1].contains("killed"));
+}
+
+#[test]
+fn with_nothing_selected_no_row_is_highlighted() {
+    let mut l = kill_box();
+    l.key(Key::Down);
+    let (b, rows) = draw(&mut l, 100);
+    let top = usize::from(b.list_top) - 1;
+    let selected_cells = |r: &Grid| r.styles().chars().filter(|c| *c == Style::SELECTED.code()).count();
+    assert!(selected_cells(&rows.rows[top + 1]) > 0, "the second row is highlighted");
+    use crate::launcher::processes::ProcRow;
+    let row = |pid, name: &str| ProcRow { pid, start: 1, name: name.into(), cmdline: String::new(), rss_kb: 1, cpu_pct: Some(0.0) };
+    l.set_procs(vec![row(4242, "firefox"), row(9, "browser")]);
+    assert!(l.selection_lost());
+    let (b, rows) = draw(&mut l, 100);
+    let top = usize::from(b.list_top) - 1;
+    assert!((0..2).all(|i| selected_cells(&rows.rows[top + i]) == 0), "no highlight when nothing is selected");
+}

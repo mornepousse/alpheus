@@ -46,6 +46,8 @@ pub enum BuiltinAction {
     UsbReset,
     /// The control center's Diag tab opened on this preset.
     Preset(Preset),
+    /// The kill list (`--kill`).
+    Kill,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +85,7 @@ const SESSION: &str = "Session";
 const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 35] = [
+pub const BUILTINS: [Builtin; 36] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -105,6 +107,7 @@ pub const BUILTINS: [Builtin; 35] = [
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
     b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
     b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown),
+    b("process.kill", "Kill a process", SYSTEM, '\u{F068C}', BuiltinAction::Kill),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
@@ -168,7 +171,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Toggle(Toggle::NightLight) => c.night_light,
         // Only the diagnostics tab is conditional, and it is the one with a hook.
         BuiltinAction::Tab => b.id != "tab.diagnostics" || c.diagnostics,
-        BuiltinAction::Notes | BuiltinAction::Emoji | BuiltinAction::UsbEvents => true,
+        BuiltinAction::Notes | BuiltinAction::Emoji | BuiltinAction::UsbEvents | BuiltinAction::Kill => true,
         BuiltinAction::Timer => c.timer,
         BuiltinAction::Shutdown => c.shutdown,
         BuiltinAction::Clipboard => c.clipboard,

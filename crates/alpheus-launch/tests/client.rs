@@ -775,6 +775,23 @@ fn other_refusals_of_a_dmenu_stay_errors() {
     }
 }
 
+/// `--kill` sends its request and exits 0 on Done; a daemon from before the kill list answers the
+/// unknown request: exit 3, one request, naming the flag.
+#[test]
+fn kill_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("kill", Reply::Done);
+    assert_eq!(launch(&["--kill"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Kill);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("kill-old", Reply::Error("malformed request: unknown request \"kill\"".into()));
+    let (code, out, err) = launch(&["--kill"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--kill"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
 /// Both verbs send their request and exit 0 on Done; a daemon too old for one
 /// answers the unknown request: exit 3, one request; an error reply is exit 2 with its text.
 #[test]

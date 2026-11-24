@@ -459,6 +459,7 @@ setting both of the first two.
 | `terminal_hold` | command | `["foot", "--hold", "-e"]` | non-empty, non-blank program | A command or typed shell text on Enter: the terminal stays open to read the output (`Ctrl+Enter` runs detached instead). |
 | `rows` | integer | `10` | 3 to 30 | Result rows. |
 | `history` | integer | `200` | 0 to 1000 | Entries kept; 0: no history file (never read, never written). |
+| `proc_dir` | path | `"/proc"` | absolute | A testing seam for the kill list (`alpheus-launch --kill`): it decides only which pids are listed (a folder of links to `/proc/<pid>` narrows the list). Start times, ancestors and signals always use the real `/proc`. Leave it alone: the headless tests point it at a folder of their own so that they can never list a real process. |
 | `focus` | command | `["wm-set", "focus-window", "{window}"]` | non-empty, non-blank program that does not contain `{window}`; some element must contain `{window}` | Run to focus a window; `{window}` is `address:0x…` on Hyprland, `id:N` elsewhere. `wm-set` is an external script, see [compositors.md](compositors.md#external-commands). |
 | `copy` | command | `["wl-copy"]` | non-blank program when set | The calculator's Enter, the emoji copy, the notepad's Ctrl+C/X: the text on its standard input; `[]` hides the action. |
 | `search` | string (URL) | `"https://duckduckgo.com/?q={query}"` | `""`, or `<scheme>://…` holding `{query}` | The `?` prefix's URL; `{query}` is percent-encoded; `""` turns `?` off. |
@@ -549,6 +550,7 @@ terminal = ["foot", "-e"]                        # Terminal=true apps, plain
 terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text on Enter: the terminal stays open
 rows = 10                                        # result rows (3 to 30)
 history = 200                                    # entries kept (0 to 1000; 0: no history file)
+proc_dir = "/proc"                               # testing seam: only narrows which pids the kill list shows; leave it
 focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
 copy = ["wl-copy"]                               # the calculator's Enter, the emoji copy, the notepad's Ctrl+C/X: the text on its standard input; [] hides the action
 search = "https://duckduckgo.com/?q={query}"    # the ? prefix's URL; {query} is required, percent-encoded; "" turns ? off

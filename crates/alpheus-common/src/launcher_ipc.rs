@@ -263,6 +263,9 @@ pub enum Request {
     /// Opens the Tools menu in the launcher, or closes it. An older daemon refuses
     /// it as an unknown request.
     Tools,
+    /// Opens the kill list (the user's processes) in the launcher, or closes it. An older daemon
+    /// refuses it as an unknown request.
+    Kill,
     /// Toggles the ⏻ power menu under the bar's right end: answered Done, or an
     /// error when no `[quick]` session command is set. An older daemon refuses it as an unknown request.
     Power,
@@ -407,6 +410,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Clipboard => format!("{MAGIC} clipboard\n").into_bytes(),
         Request::ClipboardClear => format!("{MAGIC} clipboard-clear\n").into_bytes(),
         Request::Tools => format!("{MAGIC} tools\n").into_bytes(),
+        Request::Kill => format!("{MAGIC} kill\n").into_bytes(),
         Request::Power => format!("{MAGIC} power\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
@@ -456,6 +460,7 @@ enum Header {
     Clipboard,
     ClipboardClear,
     Tools,
+    Kill,
     Power,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
@@ -613,6 +618,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Clipboard => Some(Request::Clipboard),
         Header::ClipboardClear => Some(Request::ClipboardClear),
         Header::Tools => Some(Request::Tools),
+        Header::Kill => Some(Request::Kill),
         Header::Power => Some(Request::Power),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::DndOn(end) => Some(Request::DndOn(end)),
@@ -644,6 +650,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["clipboard"] => Ok(Header::Clipboard),
         ["clipboard-clear"] => Ok(Header::ClipboardClear),
         ["tools"] => Ok(Header::Tools),
+        ["kill"] => Ok(Header::Kill),
         ["power"] => Ok(Header::Power),
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))

@@ -4717,3 +4717,113 @@ fn shield_threads_back_to_baseline() {
     eprintln!("shield threads: baseline {baseline}, {last} {:?} after the switch and the listing", t.elapsed());
     assert_eq!(last, baseline, "threads {last} vs the baseline {baseline} 3 s after a switch and a listing");
 }
+
+// ---- the kill list ----
+//
+// The list shows the real processes of the user running the test, so these tests only ever open
+// it, filter nothing and press nothing that signals: Ctrl+Enter asks, and no Enter is ever sent.
+
+/// One `--kill` cycle, closed by the verb: the n-th open is shown and its second sample (300 ms
+/// after the open) is taken before the reading. Returns (PSS, anonymous) in KB with the list open.
+fn kill_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
+    let open = (d.pss_kb(), anon_kb(d));
+    assert_eq!(launcher(sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    open
+}
+
+/// Once the kill list closed, however it was left (the verb, a force-kill question pending, a
+/// question expired), no timer, no wake-up, no spin, no thread.
+#[test]
+#[ignore = "headless sway, wtype and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_kill_list() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kill-rest");
+    let (sway, _hypr, d) = start_launcher("kill-rest", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    // Closed by the verb, after the second sample.
+    kill_cycle(&sway, &d, 1);
+    // A force-kill question pending (Ctrl+Enter asks and sends nothing), the box closed by the verb
+    // inside its 3 s; wtype keeps its keyboard up meanwhile, so nothing but the verb closes the box.
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 2, DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "20000"]);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", 2, DELAY), "{:?}", d.log());
+    drop(held);
+    // A question left to run out (3.5 s), the box then closed by Escape.
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 3, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "3500", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("launcher closed (", 3, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("kill list: signal"), 0, "nothing was ever signalled: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a kill list");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!(
+        "wake-ups at rest after a kill list (5 s): {delta} whole daemon, {main_delta} loop thread; threads {} -> {}",
+        threads,
+        d.threads()
+    );
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a kill list");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after a kill list");
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// The cost of the list: PSS and anonymous memory with it open on this machine's own processes,
+/// closed again, and after 20 more cycles. Total PSS moves with the page cache, so the bounds are
+/// on anonymous memory, as the Tools menu's.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn kill_list_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kill-cost");
+    let (sway, _hypr, d) = start_launcher("kill-cost", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let cold = (d.pss_kb(), anon_kb(&d));
+    let first_open = kill_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let open = kill_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    for n in 3..=22 {
+        kill_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "kill list PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
+        cold.0,
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "kill list anonymous (KB): cold {}, closed {}, open {} (+{}), closed again {} ({:+}), after 20 more {} ({:+}); threads {threads} -> {}",
+        cold.1,
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64,
+        d.threads()
+    );
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}

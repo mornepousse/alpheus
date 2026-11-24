@@ -564,8 +564,10 @@ impl App {
         }
         reply_on_close(open.reply.take(), reason);
         drop(open);
-        // The Tools question's timer goes with the box (nothing is armed at rest).
+        // The Tools question's timer goes with the box (nothing is armed at rest), and the kill
+        // list's second sample and timer with it.
         self.tools_timer_sync();
+        self.processes_timer_sync();
         self.tools_reads_stop();
         self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
@@ -680,14 +682,18 @@ impl App {
     /// Ok(Done::Close) → close Activated).
     pub fn launcher_outcome(&mut self, o: Outcome) {
         self.launcher_outcome_inner(o);
-        // A question asked, answered or cancelled by this outcome: the timer follows it.
+        // A question asked, answered or cancelled by this outcome: the timers follow it.
         self.tools_timer_sync();
+        self.processes_timer_sync();
     }
 
     fn launcher_outcome_inner(&mut self, o: Outcome) {
         match o {
             Outcome::Nothing => {}
             Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
+            // The kill list's key: the signal goes if the pid is still the listed process, and the
+            // box stays open to say what happened (launcher/processes_app.rs).
+            Outcome::Signal { pid, start, sig } => self.processes_signal(pid, start, sig),
             // The `/` jump into the Tools mode: the daemon's own states are read now (never at a
             // plain Mod+Space open), the reader starts the entries' (launcher/tools/app.rs).
             Outcome::EnterTools(job) => {

@@ -77,6 +77,7 @@ fn the_table_is_the_specs() {
             "clipboard",
             "emoji",
             "shutdown",
+            "process.kill",
             "lock",
             "power",
             "reload",
@@ -122,6 +123,7 @@ fn the_table_is_the_specs() {
             "Clipboard",
             "Emoji",
             "Schedule shutdown",
+            "Kill a process",
             "Lock",
             "Power menu",
             "Reload the bar",
@@ -143,7 +145,7 @@ fn the_table_is_the_specs() {
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
-    expected.extend([system; 1]);
+    expected.extend([system; 2]);
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
@@ -160,6 +162,7 @@ fn the_table_is_the_specs() {
     assert_eq!(action("night_light"), BuiltinAction::Toggle(Toggle::NightLight));
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
+    assert_eq!(action("process.kill"), BuiltinAction::Kill);
 }
 
 #[test]
@@ -177,9 +180,10 @@ fn shown_follows_the_context() {
             "tab.appearance",
             "notes",
             "emoji",
+            "process.kill",
             "diag.usb_events"
         ],
-        "the seven tabs (not diagnostics), notes, emoji and the USB events"
+        "the seven tabs (not diagnostics), notes, emoji, the kill list and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
     let flips: [Flip; 14] = [
@@ -222,7 +226,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 35);
+    assert_eq!(ids_shown(&all()).len(), 36);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -259,11 +263,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 35);
+    assert_eq!(builtin_ids(&cat).len(), 36);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 33);
+    assert_eq!(ids.len(), 34);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");

@@ -10,6 +10,7 @@ use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
 use crate::launcher::emoji;
 use crate::launcher::history::{History, source_id};
+use crate::launcher::processes::ProcRow;
 use crate::launcher::sources::SourceEntry;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -31,6 +32,8 @@ pub enum Mode {
     Clipboard,
     /// The Tools menu (`alpheus-launch --tools`, or the `/` prefix): not in `CYCLE`.
     Tools,
+    /// The kill list (`alpheus-launch --kill`): the user's processes, no modes row, not in `CYCLE`.
+    Processes,
 }
 
 impl Mode {
@@ -47,6 +50,7 @@ impl Mode {
             Mode::Calc => "Calculator",
             Mode::Clipboard => "Clipboard",
             Mode::Tools => "Tools",
+            Mode::Processes => "Processes",
         }
     }
 
@@ -90,6 +94,8 @@ pub enum Source {
     ClipClear,
     /// A tool row: an index into `Query::tools`.
     Tool(usize),
+    /// A process row of the kill list: an index into the model's `procs`.
+    Proc(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,7 +383,7 @@ fn kind(s: Source) -> u8 {
         Source::Command(_) => 4,
         Source::Line(_) => 5,
         Source::Calc => 6,
-        Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 7,
+        Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear | Source::Proc(_) => 7,
     }
 }
 
@@ -390,7 +396,8 @@ fn index(s: Source) -> usize {
         | Source::Entry(i)
         | Source::Tool(i)
         | Source::Emoji(i)
-        | Source::Clip(i) => i,
+        | Source::Clip(i)
+        | Source::Proc(i) => i,
         Source::Calc | Source::Search | Source::Shell | Source::ClipClear => 0,
     }
 }
@@ -409,7 +416,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
         Source::Tool(i) => &q.tools[i].name,
-        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => "",
+        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear | Source::Proc(_) => "",
     }
 }
 
@@ -499,9 +506,30 @@ impl Ranker {
         hits
     }
 
+    /// The kill list: `rows` in their order for a blank `text`, else the rows whose name or whole
+    /// command line matches (fuzzy, smart case), best score first, ties in row order. A name that
+    /// matches outranks a command line that does (`NAME_BONUS`).
+    pub fn rank_procs(&mut self, text: &str, rows: &[ProcRow]) -> Vec<Hit> {
+        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
+        let hit = |i, score| Hit { source: Source::Proc(i), score, frecency: 0 };
+        if pattern.atoms.is_empty() {
+            return (0..rows.len()).map(|i| hit(i, 0)).collect();
+        }
+        let mut hits = Vec::new();
+        for (i, r) in rows.iter().enumerate() {
+            let by_name = self.score(&pattern, &r.name).map(|s| s + NAME_BONUS);
+            let best = by_name.max(self.score(&pattern, &r.cmdline));
+            if let Some(score) = best {
+                hits.push(hit(i, score));
+            }
+        }
+        hits.sort_by(|a, b| b.score.cmp(&a.score).then(index(a.source).cmp(&index(b.source))));
+        hits
+    }
+
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
-        // The calculator and clipboard modes list nothing of the catalog: their rows are the model's.
-        if matches!(q.mode, Mode::Calc | Mode::Clipboard) {
+        // The calculator, clipboard and kill-list modes list nothing of the catalog: their rows are the model's.
+        if matches!(q.mode, Mode::Calc | Mode::Clipboard | Mode::Processes) {
             return Vec::new();
         }
         let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.tools.len(), q.now);
@@ -589,7 +617,7 @@ impl Ranker {
             Mode::Tools => {
                 hits.extend((0..q.tools.len()).take(MAX_RESULTS).map(|i| Hit { source: Source::Tool(i), score: 0, frecency: 0 }));
             }
-            Mode::All | Mode::Apps | Mode::Windows | Mode::Calc | Mode::Clipboard => {}
+            Mode::All | Mode::Apps | Mode::Windows | Mode::Calc | Mode::Clipboard | Mode::Processes => {}
         }
         hits
     }
@@ -690,7 +718,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             // The Tools mode keeps the level's order between equal hits (the index decides).
             Source::Tool(_) if q.mode == Mode::Tools => 0,
             Source::Tool(i) => pr.tool_name_rank[i],
-            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear => 0,
+            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell | Source::Clip(_) | Source::ClipClear | Source::Proc(_) => 0,
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {

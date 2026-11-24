@@ -394,6 +394,7 @@ impl App {
             | Request::Clipboard
             | Request::ClipboardClear
             | Request::Tools
+            | Request::Kill
             | Request::Power
             | Request::Outputs
             | Request::OutputsTry(_)
