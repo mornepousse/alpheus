@@ -11,9 +11,9 @@ use alpheus_common::launcher_ipc::QuickVerb;
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 4] = [10, 20, 30, 90];
+const BUILTIN_ORDERS: [u16; 5] = [10, 20, 30, 40, 90];
 /// Their glyphs (Nerd Font Material Design), in the same order.
-const BUILTIN_GLYPHS: [char; 4] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}'];
+const BUILTIN_GLYPHS: [char; 5] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F08D6}', '\u{F0343}'];
 
 /// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,8 @@ pub enum BuiltinAction {
     Tab,
     Notes,
     Timer,
+    /// The scheduled shutdown: its choices are the durations (and a cancel), see `timer::shutdown`.
+    Shutdown,
     Clipboard,
     Emoji,
     Lock,
@@ -66,10 +68,11 @@ const fn b(id: &'static str, label: &'static str, category: &'static str, glyph:
 const QUICK: &str = "Quick settings";
 const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
+const SYSTEM: &str = "System";
 const SESSION: &str = "Session";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 23] = [
+pub const BUILTINS: [Builtin; 24] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -90,6 +93,7 @@ pub const BUILTINS: [Builtin; 23] = [
     b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
     b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
+    b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
@@ -122,6 +126,10 @@ pub struct Context {
     pub clipboard: bool,
     /// The diagnostics hook says so.
     pub diagnostics: bool,
+    /// `timer` in `modules` and `[quick] poweroff` set: the shutdown can be scheduled.
+    pub shutdown: bool,
+    /// The time left of the shutdown pending, in milliseconds: its first choice cancels it.
+    pub shutdown_left: Option<u64>,
 }
 
 /// Whether `b` shows under `c`.
@@ -136,6 +144,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Tab => b.id != "tab.diagnostics" || c.diagnostics,
         BuiltinAction::Notes | BuiltinAction::Emoji => true,
         BuiltinAction::Timer => c.timer,
+        BuiltinAction::Shutdown => c.shutdown,
         BuiltinAction::Clipboard => c.clipboard,
         BuiltinAction::Lock => c.lock,
         BuiltinAction::Power => c.session,
@@ -208,6 +217,14 @@ pub struct Catalog {
     pub root: Vec<usize>,
 }
 
+/// The fixed choices of a built-in: only the shutdown has any.
+fn builtin_choices(b: &Builtin, c: &Context) -> Choices {
+    match b.action {
+        BuiltinAction::Shutdown => Choices::Fixed(crate::timer::shutdown::labels(c.shutdown_left)),
+        _ => Choices::None,
+    }
+}
+
 fn icon_of(s: &Option<String>) -> Option<char> {
     s.as_deref().and_then(|s| s.chars().next())
 }
@@ -255,7 +272,7 @@ impl Catalog {
                         category: category_of(b.category),
                         icon: Some(b.glyph),
                         order: DEFAULT_ORDER,
-                        choices: Choices::None,
+                        choices: builtin_choices(b, c),
                         confirm: false,
                         has_state: matches!(b.action, BuiltinAction::Dnd | BuiltinAction::Toggle(_)),
                         key: format!("tool:builtin:{}", b.id),

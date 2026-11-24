@@ -17,6 +17,8 @@
 use crate::config::{TimerConfig, TimerIdle};
 use crate::notify::{Incoming, Urgency};
 use crate::segments::PAUSE;
+use crate::session::POWER;
+use shutdown::Shutdown;
 
 /// One second, in milliseconds. Every time and length in this file is in milliseconds.
 pub const SECOND_MS: u64 = 1_000;
@@ -181,6 +183,8 @@ pub enum ChipLook {
     Running,
     Paused,
     Done,
+    /// A scheduled shutdown is in its last minute.
+    Warn,
 }
 
 /// The chip is the timer's small block in the bar. It shows a glyph and, except at rest, a text.
@@ -501,6 +505,52 @@ impl Timer {
             _ => None,
         }
     }
+
+    /// A state file's text read back into the timer (idle when there is no timer line) and the
+    /// shutdown. Hostile input: at most one line of each kind, in any order, each as strict as its own
+    /// parser; anything else refuses the whole text (None).
+    pub fn parse_pair(text: &str, now: u64) -> Option<(Self, Option<Shutdown>)> {
+        let (mut timer, mut shutdown) = (None, None);
+        let mut lines = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            lines += 1;
+            if lines > 2 {
+                return None;
+            }
+            if line.trim_start().starts_with("shutdown") {
+                if shutdown.replace(Shutdown::parse_saved(line, now)?).is_some() {
+                    return None;
+                }
+            } else if timer.replace(Self::parse_saved(line, now)?).is_some() {
+                return None;
+            }
+        }
+        if lines == 0 {
+            return None;
+        }
+        Some((timer.unwrap_or(Self::Idle { done: false }), shutdown))
+    }
+}
+
+/// The chip with a scheduled shutdown in front of the timer's: the power glyph and the time left,
+/// then ` · ` and the timer's own glyph and text when it has any (`⏻ 1h20 · 󰔛 25m`). The chip turns
+/// to the warn look in the shutdown's last minute. With no shutdown it is `timer` as it was. Shown
+/// even when the timer's idle chip is hidden: a pending shutdown must be seen.
+pub fn chip_with_shutdown(timer: Option<TimerChip>, s: Option<&Shutdown>, now: u64) -> Option<TimerChip> {
+    let Some(s) = s else { return timer };
+    let mut text = s.chip_text(now);
+    if let Some(TimerChip { glyph, text: Some(t), .. }) = &timer {
+        text.push_str(&format!(" \u{b7} {glyph} {t}"));
+    }
+    let look = if s.in_warning(now) { ChipLook::Warn } else { ChipLook::Running };
+    Some(TimerChip { glyph: POWER, text: Some(text), look })
+}
+
+/// The state file's text for the timer and the shutdown: the timer's line, then the shutdown's,
+/// each on its own line; None when neither has anything to keep.
+pub fn saved_pair(t: &Timer, s: Option<&Shutdown>) -> Option<String> {
+    let lines: Vec<String> = t.saved().into_iter().chain(s.map(Shutdown::saved)).collect();
+    if lines.is_empty() { None } else { Some(lines.join("\n")) }
 }
 
 /// A running end read from the state file, if it is believable: at most `SAVED_AHEAD_MS` after
@@ -577,6 +627,7 @@ pub fn incoming(end: End, l: &Lengths) -> Option<Incoming> {
 // the popup (`popup.rs`).
 pub mod app;
 pub mod popup;
+pub mod shutdown;
 
 #[cfg(test)]
 mod tests;

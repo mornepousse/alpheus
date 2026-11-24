@@ -188,7 +188,7 @@ pub(crate) fn timer(chip: Option<&TimerChip>, mc: ModuleColors) -> Option<Segmen
     let (icon, text) = match c.look {
         ChipLook::Running => (icon_style(mc, Hue::Yellow, Style::NORMAL), text_style(mc, Hue::Yellow, Style::NORMAL)),
         ChipLook::Paused | ChipLook::Idle => (Style::MUTED, Style::MUTED),
-        ChipLook::Done => (Style::WARN, Style::WARN),
+        ChipLook::Done | ChipLook::Warn => (Style::WARN, Style::WARN),
     };
     let pieces = match &c.text {
         Some(t) => vec![piece(format!("{} ", c.glyph), icon), piece(t.clone(), text)],

@@ -42,6 +42,8 @@ pub enum Item {
     Add,
     Skip,
     Stop,
+    /// Cancels the scheduled shutdown (the timer is not touched).
+    CancelShutdown,
 }
 
 /// The actions the state offers, top to bottom.
@@ -50,13 +52,23 @@ pub enum Item {
 /// Pause (when running) or Resume (when paused), then what only its kind has (Add 1 min for a
 /// countdown, Skip for a Pomodoro), then Stop.
 pub fn items(t: &Model) -> Vec<Item> {
+    items_with(t, false)
+}
+
+/// The actions the state offers, and a last row that cancels the scheduled shutdown while one is
+/// pending (`shutdown`).
+pub fn items_with(t: &Model, shutdown: bool) -> Vec<Item> {
     let toggle = if t.running() { Item::Pause } else { Item::Resume };
-    match t {
+    let mut rows = match t {
         Model::Idle { .. } => vec![Item::Countdown, Item::Pomodoro, Item::Stopwatch],
         Model::Countdown { .. } => vec![toggle, Item::Add, Item::Stop],
         Model::Pomodoro { .. } => vec![toggle, Item::Skip, Item::Stop],
         Model::Stopwatch { .. } => vec![toggle, Item::Stop],
+    };
+    if shutdown {
+        rows.push(Item::CancelShutdown);
     }
+    rows
 }
 
 /// The countdown row's length, in minutes, moved by `delta` steps (negative goes down). A step is
@@ -91,6 +103,8 @@ pub enum TimerAction {
     Close,
     /// Make this change to the timer.
     Do(Change),
+    /// Cancel the scheduled shutdown.
+    CancelShutdown,
 }
 
 /// The open popup's own state: which action is selected and the length of the Timer row.
@@ -102,24 +116,39 @@ pub struct TimerPopup {
     pub minutes: u32,
     /// The actions on screen, kept to notice when the timer's state changes them (`follow`).
     shown: Vec<Item>,
+    /// A shutdown is scheduled: the popup offers to cancel it (`set_shutdown`).
+    shutdown: bool,
 }
 
 impl TimerPopup {
     /// The popup at open: the first action selected.
     pub fn new(minutes: u32, t: &Model) -> TimerPopup {
-        TimerPopup { selected: 0, minutes: minutes.clamp(1, MINUTES_MAX), shown: items(t) }
+        TimerPopup { selected: 0, minutes: minutes.clamp(1, MINUTES_MAX), shown: items(t), shutdown: false }
     }
 
     /// The timer changed under the popup: true when its actions did (the selection goes back to
     /// the first).
     pub fn follow(&mut self, t: &Model) -> bool {
-        let now = items(t);
+        let now = items_with(t, self.shutdown);
         if now == self.shown {
             return false;
         }
         self.shown = now;
         self.selected = 0;
         true
+    }
+
+    /// Whether a shutdown is scheduled; the rows follow at the next `follow`.
+    pub fn set_shutdown(&mut self, pending: bool) {
+        self.shutdown = pending;
+    }
+
+    /// What an action asks of the wiring: its change to the timer, or the shutdown's cancel.
+    fn act(&self, item: Item) -> TimerAction {
+        match item {
+            Item::CancelShutdown => TimerAction::CancelShutdown,
+            other => TimerAction::Do(self.change_of(other)),
+        }
     }
 
     /// The change an action makes. The Timer row uses the length set on its row.
@@ -133,6 +162,8 @@ impl TimerPopup {
             Item::Add => Change::Add(MINUTE_MS),
             Item::Skip => Change::Skip,
             Item::Stop => Change::Stop,
+            // Not a change to the timer: `act` answers it before this is asked.
+            Item::CancelShutdown => Change::Seen,
         }
     }
 
@@ -172,7 +203,7 @@ impl TimerPopup {
             Key::Left if self.on_countdown() => self.adjust(-1),
             Key::Right if self.on_countdown() => self.adjust(1),
             Key::Enter | Key::Char(' ') if !repeat => match self.shown.get(self.selected) {
-                Some(&item) => TimerAction::Do(self.change_of(item)),
+                Some(&item) => self.act(item),
                 None => TimerAction::Nothing,
             },
             _ => TimerAction::Nothing,
@@ -198,7 +229,7 @@ impl TimerPopup {
     pub fn press(&mut self, _t: &Model, row: u16) -> TimerAction {
         let Some(i) = self.item_at(row) else { return TimerAction::Nothing };
         self.selected = i;
-        TimerAction::Do(self.change_of(self.shown[i]))
+        self.act(self.shown[i])
     }
 
     /// The wheel over the countdown row: up lengthens, down shortens. `steps` is negative for up.
@@ -257,6 +288,7 @@ fn item_face(item: Item) -> (char, &'static str) {
         Item::Add => (PLUS, "Add 1 min"),
         Item::Skip => (SKIP_NEXT, "Skip"),
         Item::Stop => (STOP, "Stop"),
+        Item::CancelShutdown => (STOP, "Cancel shutdown"),
     }
 }
 

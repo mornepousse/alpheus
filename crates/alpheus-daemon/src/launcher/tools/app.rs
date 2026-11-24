@@ -46,6 +46,7 @@ use crate::launcher::tools::read::{self, JobEvent};
 use crate::log::write as log;
 use crate::quick::Toggle;
 use crate::startup::Mail;
+use crate::timer::shutdown::ShutdownChoice;
 use crate::wayland::App;
 use alpheus_common::launcher_ipc::{DndVerb, Reply, Request, TimerVerb};
 use alpheus_common::paths;
@@ -77,6 +78,8 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         shield: join.shield,
         clipboard: join.clipboard,
         diagnostics: join.diagnostics,
+        shutdown: timer && !bar.quick.poweroff.is_empty(),
+        shutdown_left: None,
     }
 }
 
@@ -171,6 +174,7 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Dnd
         | BuiltinAction::Notes
         | BuiltinAction::Timer
+        | BuiltinAction::Shutdown
         | BuiltinAction::Clipboard
         | BuiltinAction::Emoji
         | BuiltinAction::Power
@@ -310,7 +314,10 @@ impl App {
             clipboard: tools::join::clipboard_available(self),
             diagnostics: tools::join::DIAGNOSTICS_TAB.is_some(),
         };
-        context(&self.bar.config, launcher, self.timer.enabled, join)
+        let mut c = context(&self.bar.config, launcher, self.timer.enabled, join);
+        // A shutdown pending: the entry's first choice cancels it, with the time left.
+        c.shutdown_left = self.timer.shutdown.map(|s| s.left(crate::timer::app::unix_ms()));
+        c
     }
 
     /// The catalog of this open (rebuilt at each open, dropped at close); its notes are logged
@@ -503,6 +510,8 @@ impl App {
             }
             BuiltinAction::Notes => Some(self.notes_verb(qh, &Request::Notes)),
             BuiltinAction::Timer => Some(self.timer_verb(&Request::Timer(TimerVerb::Popup))),
+            // Chosen without a duration (never from the menu: it has choices): nothing to do.
+            BuiltinAction::Shutdown => None,
             BuiltinAction::Clipboard => {
                 tools::join::open_clipboard(self, qh);
                 None
@@ -518,6 +527,29 @@ impl App {
             }
         };
         if reply.as_ref().is_some_and(is_refusal) {
+            log(&format!("tools: built-in {id} refused"));
+        }
+    }
+
+    /// Replays the shutdown built-in's chosen label after the box closed, through the timer's own
+    /// verbs (`--timer shutdown <secs>` or `shutdown-cancel`): one path for every way in. One log
+    /// line, by id.
+    pub(crate) fn run_builtin_choice(&mut self, i: usize, choice: &str) {
+        let Some(b) = BUILTINS.get(i) else { return };
+        let id = b.id;
+        log(&format!("tools: built-in {id}"));
+        let verb = match (b.action, crate::timer::shutdown::choice_of(choice)) {
+            (BuiltinAction::Shutdown, Some(ShutdownChoice::Cancel)) => TimerVerb::ShutdownCancel,
+            (BuiltinAction::Shutdown, Some(ShutdownChoice::After(ms))) => {
+                // At most 3 h: far inside a u32 of seconds.
+                TimerVerb::Shutdown(u32::try_from(ms / 1000).unwrap_or(u32::MAX))
+            }
+            _ => {
+                log(&format!("tools: built-in {id} refused"));
+                return;
+            }
+        };
+        if is_refusal(&self.timer_verb(&Request::Timer(verb))) {
             log(&format!("tools: built-in {id} refused"));
         }
     }

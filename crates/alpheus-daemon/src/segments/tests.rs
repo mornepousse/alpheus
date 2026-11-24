@@ -1010,6 +1010,11 @@ fn the_timer_chip_by_look() {
     for mc in [ModuleColors::None, ICONS, FULL] {
         assert_eq!(at(&done, mc), ("\u{f009e} done".into(), "wwwwww".into()), "{mc:?}");
     }
+    // A shutdown in its last minute reads like `done`: warn, glyph and text.
+    let warn = chip('\u{23fb}', Some("1m"), ChipLook::Warn);
+    for mc in [ModuleColors::None, ICONS, FULL] {
+        assert_eq!(at(&warn, mc), ("\u{23fb} 1m".into(), "wwww".into()), "{mc:?}");
+    }
     let idle = chip(TIMER, None, ChipLook::Idle);
     for mc in [ModuleColors::None, ICONS, FULL] {
         assert_eq!(at(&idle, mc), ("\u{f051b}".into(), "m".into()), "{mc:?}");

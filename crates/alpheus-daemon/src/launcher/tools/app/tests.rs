@@ -76,6 +76,20 @@ fn the_context_reads_the_configs() {
     assert!(c.quick && c.notifications);
 }
 
+/// The shutdown built-in needs the timer module (it is a mode of the timer) and a poweroff command.
+#[test]
+fn the_shutdown_needs_the_timer_and_a_poweroff_command() {
+    let mut bar = BarConfig::default();
+    let launcher = LauncherConfig::default();
+    let join = || join_answers(false, false, false);
+    assert!(!bar.quick.poweroff.is_empty(), "the default has a poweroff command");
+    assert!(context(&bar, &launcher, true, join()).shutdown);
+    assert!(!context(&bar, &launcher, false, join()).shutdown, "no timer module");
+    bar.quick.poweroff = Vec::new();
+    assert!(!context(&bar, &launcher, true, join()).shutdown, "no poweroff command: the entry is hidden");
+    assert_eq!(context(&bar, &launcher, true, join()).shutdown_left, None, "no shutdown pending by itself");
+}
+
 #[test]
 fn a_tab_opens_through_open_tab_or_the_terminal() {
     let bin = Bin::new("tab", &["alpheus-toggle", "foot"]);

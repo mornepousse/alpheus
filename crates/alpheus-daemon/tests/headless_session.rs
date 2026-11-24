@@ -6831,13 +6831,19 @@ const TIMER_AT: (u32, u32) = (12, 10);
 /// private path), `extra` appended. Never the real state directory: `XDG_STATE_HOME` is the
 /// runtime's.
 fn timer_daemon(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    timer_daemon_in(name, modules, |_| extra.to_string())
+}
+
+/// `timer_daemon` with `extra` made from the running sway (its runtime directory, for a command
+/// that must write inside it).
+fn timer_daemon_in(name: &str, modules: &str, extra: impl Fn(&Sway) -> String) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     let bus = PrivateBus::start(name);
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    let toml = timer_toml(&sway, modules, extra);
+    let toml = timer_toml(&sway, modules, &extra(&sway));
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
@@ -6979,6 +6985,65 @@ fn timer_survives_a_daemon_restart() {
     let toml = timer_toml(&sway, TIMER_END_MODULES, "");
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("timer: restored countdown", DELAY), "{:?}", d.log());
+}
+
+/// A shutdown whose end is inside its last minute warns at once (a critical bubble) and powers off
+/// a minute after the warning, never before. The `[quick] poweroff` command is a `touch` of a file
+/// in the test's own runtime directory: nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn shutdown_warns_then_runs_poweroff() {
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-warn", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (2 s)", DELAY), "{:?}", d.log());
+    // The end is inside the last minute: the warning comes at once, as a sticky critical bubble.
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("shutdown "), "kept in the state file: {file:?}");
+    // Never at once: past the original end, still nothing.
+    thread::sleep(Duration::from_secs(5));
+    assert!(!sway.runtime.join("off").exists(), "powered off before its minute: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "{:?}", d.log());
+    // A minute after the warning it runs the command, once, and the file goes.
+    assert!(d.wait_for("timer: shutdown power off", Duration::from_secs(75)), "{:?}", d.log());
+    assert_eq!(d.count("could not start"), 0, "{:?}", d.log());
+    wait_for_file(&sway.runtime.join("off"), DELAY);
+    assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 1, "{:?}", d.log());
+}
+
+/// A shutdown and a timer coexist: starting and stopping the timer leaves the shutdown on file,
+/// and cancelling the shutdown leaves the timer.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_and_a_timer_run_side_by_side() {
+    let (_bus, sway, _hypr, d) = timer_daemon("shutdown-both", TIMER_END_MODULES, "");
+    ready(&d);
+    let file = || std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap_or_default();
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2h"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (120 min)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "pomodoro"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: pomodoro started", DELAY), "{:?}", d.log());
+    let both = file();
+    assert!(both.contains("pomodoro running ") && both.contains("shutdown "), "both on file: {both:?}");
+    assert_eq!(timer_verb(&sway, &["--timer", "stop"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: stopped", DELAY), "{:?}", d.log());
+    let only = file();
+    assert!(only.starts_with("shutdown ") && !only.contains("pomodoro"), "the shutdown survives the stop: {only:?}");
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "30m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown-cancel"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+    let timer_only = file();
+    assert!(timer_only.starts_with("countdown running ") && !timer_only.contains("shutdown"), "{timer_only:?}");
+    // Nothing pending: the cancel has nothing to act on, and says so.
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown-cancel"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to shutdown-cancel", DELAY), "{:?}", d.log());
 }
 
 /// Without the module the verbs are an error (exit 2, named); with it, a verb with nothing to act

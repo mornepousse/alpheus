@@ -88,7 +88,15 @@ pub struct ToolRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolAction {
     Builtin(usize),
-    User { entry: usize, choice: Option<String> },
+    /// A built-in with fixed choices (the shutdown's durations): the built-in and the chosen label.
+    BuiltinChoice {
+        builtin: usize,
+        choice: String,
+    },
+    User {
+        entry: usize,
+        choice: Option<String>,
+    },
 }
 
 /// What `ToolsState::enter` decided.
@@ -397,7 +405,11 @@ impl ToolsState {
             RowId::Choice(e, k) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 let Some(choice) = self.choice_lines(e).get(k).cloned() else { return Step::Drill(None) };
-                self.answer(row, entry.confirm, ToolAction::User { entry: e, choice: Some(choice) }, now)
+                let action = match entry.kind {
+                    EntryKind::Builtin(builtin) => ToolAction::BuiltinChoice { builtin, choice },
+                    EntryKind::User(_) => ToolAction::User { entry: e, choice: Some(choice) },
+                };
+                self.answer(row, entry.confirm, action, now)
             }
         }
     }

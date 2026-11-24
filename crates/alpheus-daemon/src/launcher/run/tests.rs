@@ -612,6 +612,13 @@ fn perform_runs_through_the_scope_and_records() {
     assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:notes"));
     assert!(std::fs::read_to_string(&h).unwrap().contains("tool:builtin:notes"), "saved");
     assert_eq!(f.calls().len(), 4, "a built-in runs nothing here");
+    // A built-in's choice is handed back whole, and recorded under the built-in only.
+    let shutdown = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let a = Activation::Tool(ToolAction::BuiltinChoice { builtin: shutdown, choice: "1 h 30".into() });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::BuiltinChoice(shutdown, "1 h 30".into())));
+    assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:shutdown"));
+    assert!(l.history.entries().iter().all(|u| !u.id.contains("1 h")), "the duration is never kept");
+    assert_eq!(f.calls().len(), 4, "and runs nothing here");
 }
 
 #[test]

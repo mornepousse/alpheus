@@ -108,6 +108,8 @@ pub enum Done {
     /// A built-in of the Tools menu (an index into `BUILTINS`): the box closes, then the glue
     /// replays its verb.
     Builtin(usize),
+    /// A built-in with fixed choices, and the label chosen: replayed the same way.
+    BuiltinChoice(usize, String),
 }
 
 fn spawn(exec: &dyn Executor, argv: &[String]) -> Result<(), ExecError> {
@@ -170,6 +172,12 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
             let id = BUILTINS.get(i).ok_or_else(gone)?.id;
             remember(l, ctx, &format!("tool:builtin:{id}"));
             Ok(Done::Builtin(i))
+        }
+        ToolAction::BuiltinChoice { builtin, choice } => {
+            // Recorded under the built-in alone: the choice (a time) is not worth ranking by.
+            let id = BUILTINS.get(builtin).ok_or_else(gone)?.id;
+            remember(l, ctx, &format!("tool:builtin:{id}"));
+            Ok(Done::BuiltinChoice(builtin, choice))
         }
         ToolAction::User { entry, choice } => {
             let catalog = &l.tools().ok_or_else(gone)?.catalog;

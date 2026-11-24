@@ -19,6 +19,8 @@ fn all() -> Context {
         shield: true,
         clipboard: true,
         diagnostics: true,
+        shutdown: true,
+        shutdown_left: None,
     }
 }
 
@@ -72,6 +74,7 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "shutdown",
             "lock",
             "power",
             "reload",
@@ -105,16 +108,18 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Schedule shutdown",
             "Lock",
             "Power menu",
             "Reload the bar",
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, session] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, system, session] = BUILTIN_CATEGORIES;
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
+    expected.extend([system; 1]);
     expected.extend([session; 3]);
     assert_eq!(categories, expected);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
@@ -141,7 +146,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes and emoji"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 11] = [
+    let flips: [Flip; 12] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -153,6 +158,7 @@ fn shown_follows_the_context() {
         (|c| c.shield = true, &["quick.shield"]),
         (|c| c.clipboard = true, &["clipboard"]),
         (|c| c.diagnostics = true, &["tab.diagnostics"]),
+        (|c| c.shutdown = true, &["shutdown"]),
     ];
     for (flip, rows) in flips {
         let mut c = Context::default();
@@ -165,7 +171,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 23);
+    assert_eq!(ids_shown(&all()).len(), 24);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -182,6 +188,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "quick.shield" => c.shield = false,
         "clipboard" => c.clipboard = false,
         "tab.diagnostics" => c.diagnostics = false,
+        "shutdown" => c.shutdown = false,
         other => panic!("{other}"),
     }
 }
@@ -199,11 +206,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 23);
+    assert_eq!(builtin_ids(&cat).len(), 24);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 21);
+    assert_eq!(ids.len(), 22);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -251,7 +258,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 90 Session), names breaking the tie.
+    // 40 System, 50 Beta, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -265,6 +272,7 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
+            "[System]",
             "Beta",
             "[Session]",
         ]
@@ -417,4 +425,27 @@ fn history_keys() {
     let nix = cat.entries.iter().position(|e| e.name == "Nix").unwrap();
     assert!(cat.choice_key(nix, &long_choice).len() <= crate::launcher::history::ID_MAX);
     assert!(cat.entries.iter().any(|e| e.name == long_name && e.key.len() <= crate::launcher::history::ID_MAX));
+}
+
+/// The shutdown built-in's choices: the five durations, and a first one that cancels (with the time
+/// left) only while a shutdown is pending.
+#[test]
+fn the_shutdown_choices_follow_the_pending_state() {
+    let choices = |left: Option<u64>| {
+        let (cat, _) = build("", &Context { shutdown_left: left, ..all() });
+        let e = cat.entries.iter().find(|e| e.name == "Schedule shutdown").expect("the shutdown entry");
+        (e.choices.clone(), e.key.clone())
+    };
+    let (none, key) = choices(None);
+    assert_eq!(none, Choices::Fixed(["30 min", "1 h", "1 h 30", "2 h", "3 h"].map(String::from).to_vec()));
+    assert_eq!(key, "tool:builtin:shutdown");
+    let (pending, _) = choices(Some(80 * 60_000));
+    let Choices::Fixed(list) = pending else { panic!("fixed choices") };
+    assert_eq!(list[0], "Cancel shutdown (in 1h20)");
+    assert_eq!(list.len(), 6);
+    // It is in the System category, and its choices are in the flat search.
+    let (cat, _) = build("", &all());
+    let at = cat.entries.iter().position(|e| e.name == "Schedule shutdown").unwrap();
+    assert_eq!(cat.categories[cat.entries[at].category.unwrap()].name, "System");
+    assert_eq!(cat.flat().iter().filter(|f| f.entry == at && f.choice.is_some()).count(), 5);
 }

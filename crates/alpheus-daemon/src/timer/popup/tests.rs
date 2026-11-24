@@ -176,3 +176,29 @@ fn the_pointer_selects_presses_and_scrolls() {
     assert_eq!(p.minutes, 10);
     assert_eq!(p.scroll(&t, FIRST_ITEM_ROW + 1, -1), TimerAction::Nothing);
 }
+
+#[test]
+fn a_pending_shutdown_adds_a_cancel_row_and_it_cancels() {
+    use Item::*;
+    assert_eq!(items_with(&idle(), true), [Countdown, Pomodoro, Stopwatch, CancelShutdown]);
+    assert_eq!(items_with(&running_countdown(T0 + 1000, 1000), true), [Pause, Add, Stop, CancelShutdown]);
+    assert_eq!(items_with(&idle(), false), items(&idle()), "no shutdown: the rows as before");
+    let t = idle();
+    let mut p = TimerPopup::new(10, &t);
+    assert!(!p.follow(&t));
+    p.set_shutdown(true);
+    assert!(p.follow(&t), "the rows changed under the popup");
+    let r = row_texts(&rows(&p, &t));
+    assert_eq!(r[5], format!(" {STOP} Cancel shutdown"), "{r:?}");
+    // Down to it, Enter: the shutdown is cancelled, no timer change.
+    for _ in 0..3 {
+        p.key(&t, Key::Down, false);
+    }
+    assert_eq!(p.key(&t, Key::Enter, false), TimerAction::CancelShutdown);
+    // The pointer too, on its row.
+    assert_eq!(p.press(&t, FIRST_ITEM_ROW + 3), TimerAction::CancelShutdown);
+    // A cancelled shutdown takes the row away, and the selection goes back to the first row.
+    p.set_shutdown(false);
+    assert!(p.follow(&t));
+    assert_eq!(p.selected, 0);
+}

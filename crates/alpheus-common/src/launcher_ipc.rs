@@ -186,6 +186,11 @@ pub enum TimerVerb {
     Skip,
     /// Opens or closes the popup.
     Popup,
+    /// Schedules a shutdown this many seconds from now (`TIMER_MIN_SECS..=TIMER_MAX_SECS`),
+    /// replacing any pending one. It runs alongside the timer.
+    Shutdown(u32),
+    /// Cancels the scheduled shutdown.
+    ShutdownCancel,
 }
 
 impl TimerVerb {
@@ -201,10 +206,12 @@ impl TimerVerb {
             TimerVerb::Stop => "stop",
             TimerVerb::Skip => "skip",
             TimerVerb::Popup => "popup",
+            TimerVerb::Shutdown(_) => "shutdown",
+            TimerVerb::ShutdownCancel => "shutdown-cancel",
         }
     }
 
-    /// Every word but `start`, which carries a duration.
+    /// Every word but `start` and `shutdown`, which carry a duration.
     pub fn parse_word(s: &str) -> Option<TimerVerb> {
         [
             TimerVerb::Pomodoro,
@@ -215,6 +222,7 @@ impl TimerVerb {
             TimerVerb::Stop,
             TimerVerb::Skip,
             TimerVerb::Popup,
+            TimerVerb::ShutdownCancel,
         ]
         .into_iter()
         .find(|v| v.word() == s)
@@ -372,7 +380,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 failed-refresh\n"
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
-///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
+///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup|shutdown-cancel\n" | "alpheus-launcher/1 timer shutdown <secs>\n"
 ///   "alpheus-launcher/1 clipboard\n" | "alpheus-launcher/1 clipboard-clear\n"
 ///   "alpheus-launcher/1 shield on|off|toggle|status|allow\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
@@ -411,6 +419,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
             None => format!("{MAGIC} quick\n").into_bytes(),
         },
         Request::Timer(TimerVerb::Start(secs)) => format!("{MAGIC} timer start {secs}\n").into_bytes(),
+        Request::Timer(TimerVerb::Shutdown(secs)) => format!("{MAGIC} timer shutdown {secs}\n").into_bytes(),
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
@@ -660,6 +669,14 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
                 .ok()
                 .filter(|s| (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(s))
                 .map(|s| Header::Timer(TimerVerb::Start(s)))
+                .ok_or_else(|| IpcError::Malformed(format!("timer seconds out of range: {secs}")))
+        }
+        ["timer", "shutdown", secs] => {
+            let secs = number(secs, "timer seconds")?;
+            u32::try_from(secs)
+                .ok()
+                .filter(|s| (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(s))
+                .map(|s| Header::Timer(TimerVerb::Shutdown(s)))
                 .ok_or_else(|| IpcError::Malformed(format!("timer seconds out of range: {secs}")))
         }
         ["timer", word] => {

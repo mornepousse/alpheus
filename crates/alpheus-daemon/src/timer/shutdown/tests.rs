@@ -1,0 +1,107 @@
+//! Tests of the scheduled shutdown's model (`shutdown.rs`): the warning, the late end, the chip
+//! text, the state line and the choices. No clock, no file, no daemon.
+
+use super::*;
+use crate::notify::Urgency;
+
+/// The instant every test starts from (Unix milliseconds).
+const T0: u64 = 1_000_000_000;
+
+#[test]
+fn the_warning_comes_sixty_seconds_before_the_end() {
+    let s = Shutdown { end: T0 + 3_600_000 };
+    // Far from the end: nothing due, the next step is the warning.
+    assert_eq!(next(&s, T0, false), (Some(T0 + 3_600_000 - WARN_MS), None));
+    assert_eq!(next(&s, T0 + 3_600_000 - WARN_MS - 1, false), (Some(T0 + 3_600_000 - WARN_MS), None));
+    // At T-60 s the warning is due, and it is given now.
+    let at = T0 + 3_600_000 - WARN_MS;
+    assert_eq!(next(&s, at, false).1, Some(ShutdownStep::Warn { at }));
+    // Warned: the next step is the end, then the power off.
+    assert_eq!(next(&s, at, true), (Some(s.end), None));
+    assert_eq!(next(&s, s.end - 1, true), (Some(s.end), None));
+    assert_eq!(next(&s, s.end, true), (None, Some(ShutdownStep::PowerOff)));
+}
+
+#[test]
+fn a_past_shutdown_warns_first_then_powers_off() {
+    // The laptop woke up an hour after the end: the warning first, never the power off.
+    let s = Shutdown { end: T0 };
+    let now = T0 + 3_600_000;
+    let (_, due) = next(&s, now, false);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: now }), "a warning, not a power off");
+    // Once warned, the end is a minute from now.
+    let warned = s.warned_at(now);
+    assert_eq!(warned.end, now + WARN_MS);
+    assert_eq!(next(&warned, now, true), (Some(now + WARN_MS), None), "nothing at once");
+    assert_eq!(next(&warned, now + WARN_MS, true).1, Some(ShutdownStep::PowerOff));
+    // An end that is still ahead is kept when the warning is late by less than its minute.
+    let ahead = Shutdown { end: now + 30_000 };
+    assert_eq!(ahead.warned_at(now).end, now + WARN_MS, "never less than a minute after the warning");
+    let far = Shutdown { end: now + 90_000 };
+    assert_eq!(far.warned_at(now).end, far.end, "an end past the minute is kept");
+}
+
+#[test]
+fn cancel_clears_it() {
+    assert_eq!(apply(Some(Shutdown { end: T0 + 1 }), ShutdownChoice::Cancel, T0), None);
+    assert_eq!(apply(None, ShutdownChoice::Cancel, T0), None);
+    // A duration replaces the one pending.
+    let s = apply(Some(Shutdown { end: T0 + 1 }), ShutdownChoice::After(1_800_000), T0);
+    assert_eq!(s, Some(Shutdown { end: T0 + 1_800_000 }));
+}
+
+#[test]
+fn the_chip_text_is_the_time_left_and_turns_warn_in_the_last_minute() {
+    let s = Shutdown { end: T0 + 80 * MINUTE_MS };
+    assert_eq!(s.chip_text(T0), "1h20");
+    assert_eq!(s.chip_text(T0 + 1), "1h20", "rounded up");
+    assert!(!s.in_warning(T0));
+    assert!(!s.in_warning(s.end - WARN_MS - 1));
+    assert!(s.in_warning(s.end - WARN_MS));
+    assert_eq!(s.chip_text(s.end - 30_000), "1m");
+    // The chip changes once a minute, and at the warning.
+    assert_eq!(wake(&s, T0, false), Some(T0 + MINUTE_MS)); // 1h20 reads 1h19 from a minute on
+    let quiet = Shutdown { end: T0 + 80 * MINUTE_MS - 10 };
+    assert_eq!(wake(&quiet, T0, false), Some(T0 + 80 * MINUTE_MS - 10 - 79 * MINUTE_MS));
+}
+
+#[test]
+fn the_state_line_round_trips_and_refuses_the_rest() {
+    let s = Shutdown { end: T0 + 5 };
+    assert_eq!(s.saved(), format!("shutdown {}", T0 + 5));
+    assert_eq!(Shutdown::parse_saved(&s.saved(), T0), Some(s));
+    // Past ends are kept: the warning handles them.
+    assert_eq!(Shutdown::parse_saved("shutdown 5", T0), Some(Shutdown { end: 5 }));
+    for bad in ["shutdown", "shutdown -5", "shutdown 1 2", "shutdown 12x", "shutdown  ", "poweroff 5", "shutdown 99999999999999999999999"] {
+        assert_eq!(Shutdown::parse_saved(bad, T0), None, "{bad}");
+    }
+    assert_eq!(Shutdown::parse_saved(&format!("shutdown {}", T0 + 26 * 3_600_000), T0), None, "too far ahead to be ours");
+}
+
+#[test]
+fn the_choices_are_the_five_durations_and_a_cancel_while_one_is_pending() {
+    let idle = labels(None);
+    assert_eq!(idle, ["30 min", "1 h", "1 h 30", "2 h", "3 h"]);
+    let pending = labels(Some(80 * MINUTE_MS));
+    assert_eq!(pending[0], "Cancel shutdown (in 1h20)");
+    assert_eq!(&pending[1..], ["30 min", "1 h", "1 h 30", "2 h", "3 h"]);
+    assert_eq!(choice_of("30 min"), Some(ShutdownChoice::After(30 * MINUTE_MS)));
+    assert_eq!(choice_of("1 h"), Some(ShutdownChoice::After(60 * MINUTE_MS)));
+    assert_eq!(choice_of("1 h 30"), Some(ShutdownChoice::After(90 * MINUTE_MS)));
+    assert_eq!(choice_of("2 h"), Some(ShutdownChoice::After(120 * MINUTE_MS)));
+    assert_eq!(choice_of("3 h"), Some(ShutdownChoice::After(180 * MINUTE_MS)));
+    assert_eq!(choice_of(&pending[0]), Some(ShutdownChoice::Cancel));
+    assert_eq!(choice_of("Cancel shutdown"), Some(ShutdownChoice::Cancel));
+    assert_eq!(choice_of("4 h"), None);
+}
+
+#[test]
+fn the_warning_is_a_sticky_critical_notice_with_a_cancel_action() {
+    let n = warning();
+    assert_eq!(n.urgency, Urgency::Critical);
+    assert_eq!(n.expire_ms, 0, "never expires by itself");
+    assert_eq!(n.tag.as_deref(), Some("shutdown"));
+    assert_eq!(n.actions.len(), 1);
+    assert_eq!((n.actions[0].key.as_str(), n.actions[0].label.as_str()), ("default", "Cancel"));
+    assert!(!n.transient);
+}

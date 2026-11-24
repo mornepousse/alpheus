@@ -168,6 +168,8 @@ impl App {
                 Activation::Stale => Vec::new(),
             });
         });
+        // The scheduled shutdown's warning is answered by this click: its Cancel.
+        self.shutdown_notice_clicked(id);
     }
 
     /// A right click on a bubble: dismissed (reason 2), nothing run.
