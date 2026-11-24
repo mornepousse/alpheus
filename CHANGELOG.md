@@ -52,6 +52,8 @@ delivered before it, by the month it was merged.
 
 #### Changed
 
+- **smithay-client-toolkit 0.21** (24): the Wayland toolkit moves from 0.20; memory, binary size and
+  wake-ups are unchanged. [Measurements](docs/measurements.md).
 - **cosmic-text 0.19** (24): the bar's text library moves from 0.12 to 0.19, so the
   `rustybuzz` "unmaintained" advisory leaves the tree (`ttf-parser`'s stays, through `fontdb`); the
   daemon starts about 0.6 MB lighter and its binary grows by 280 KiB. [Measurements](docs/measurements.md).
