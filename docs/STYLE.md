@@ -55,10 +55,11 @@ Every fact of the old header is still there; the new one adds what an unfamiliar
 A word of warning: the guardrail tests that forbid a word outright (`thread::`, `spawn(`,
 `.unwrap()`) read a file's text, comments included. Do not write those exact strings in a comment of
 a file they cover; say it in words ("starts a thread"). The tests that read code instead — what
-calls what, which function owns a line, how many times a call appears — strip the comments first
-(`production_code_without_comments` in `crates/alpheus-daemon/tests/guardrails.rs`), so a comment
-there is harmless and a call named in a comment satisfies no check. A few tests do both, each view
-for its own half, so the safe habit stays: keep a forbidden token out of every comment.
+calls what, which function owns a line, how many times a call appears, and what a log line carries
+— strip the comments first (`production_code_without_comments` in
+`crates/alpheus-daemon/tests/guardrails.rs`), so a comment there is harmless and a call named in a
+comment satisfies no check. A few tests do both, each view for its own half, so the safe habit
+stays: keep a forbidden token out of every comment.
 
 ## 2. Every non-obvious line says why, in a full sentence
 

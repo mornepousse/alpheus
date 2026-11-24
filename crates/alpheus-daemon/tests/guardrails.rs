@@ -6,8 +6,9 @@
 //! forbidden words appear nowhere in its sources.
 //!
 //! Two views of a source file are read: `production_code_without_comments` for the scans that read
-//! code (what calls what, which function owns a line, how many times a call appears), and
-//! `production_code`, comments and all, for the lists that forbid a token outright.
+//! code (what calls what, which function owns a line, how many times a call appears, and what a log
+//! line carries), and `production_code`, comments and all, for the lists that forbid a token
+//! outright.
 
 use alpheus_common::exec::fake::FakeExecutor;
 use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
@@ -1157,15 +1158,21 @@ fn without_comments(text: &str) -> String {
 }
 
 /// A file's production code with its comments gone: the view every scan that reads code is given —
-/// what calls what, which function owns a line, how many times a call appears. `production_code`
-/// keeps the comments, so without this a call named in a comment would satisfy such a scan, and a
-/// `fn ` or a brace inside one would move the boundaries `function_body` and `popup_ops_row` find.
+/// what calls what, which function owns a line, how many times a call appears, and what a log line
+/// carries. `production_code` keeps the comments, so without this a call named in a comment would
+/// satisfy such a scan, and a `fn ` or a brace inside one would move the boundaries `function_body`
+/// and `popup_ops_row` find.
 ///
 /// Not for the scans that forbid a token outright (`.unwrap()`, `thread::`, `spawn(`, a leak form
-/// such as `{key:?}`, the words of a log line): those are given `production_code`, comments and
-/// all, so the token appears in neither the code nor a comment (docs/STYLE.md, rule 1, which tells
-/// a comment to say it in words instead). A test that does both keeps both views, and `both_bodies`
-/// is the shorthand when the second view is one function's body.
+/// such as `{key:?}`): those are given `production_code`, comments and all, so the token appears in
+/// neither the code nor a comment (docs/STYLE.md, rule 1, which tells a comment to say it in words
+/// instead). A test that does both keeps both views, and `both_bodies` is the shorthand when the
+/// second view is one function's body.
+///
+/// The log guardrails (the Shield's, the VPN's, the camera's, Bluetooth's, the clipboard's, the
+/// notepad's, the hooks' and the Tools menu's) read this view: what a line really carries is a
+/// question about the code, and a comment that shows a line which would leak — the very thing a
+/// page or a header may need to explain — is not one.
 ///
 /// The comments go first: a `#[cfg(test)]` or a brace written inside one would otherwise fool
 /// `production_code`'s brace counting and strip real production code with the test item
@@ -3171,13 +3178,15 @@ fn only_bt_app_and_bt_act_name_btact() {
 
 /// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
 /// the glue formats nothing with Debug but an `io::ErrorKind` (an `ActCall`, an `AgentRequest` or a
-/// `BtEvent` carries an object path).
+/// `BtEvent` carries an object path). The code alone, so a commented example of a line that would
+/// leak is not read as one.
 #[test]
 fn the_bluetooth_logs_name_no_device() {
     let files = source_files();
     let mut lines = 0;
     for name in ["quick/bt.rs", "quick/bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
-        let prod = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        let prod =
+            production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
             lines += 1;
             for word in ["path", "device", "label", "alias", "name", "address"] {
@@ -3188,7 +3197,8 @@ fn the_bluetooth_logs_name_no_device() {
         }
     }
     assert!(lines >= 3, "the log lines were not found: the check is hollow");
-    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt_app.rs").expect("quick/bt_app.rs").1);
+    let bt_app =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt_app.rs").expect("quick/bt_app.rs").1);
     for line in bt_app.lines().filter(|l| l.contains(":?") || l.contains(":#?")) {
         assert!(line.contains(".kind()"), "bt_app.rs: Debug of anything but an io::ErrorKind: {line}");
     }
@@ -3718,7 +3728,9 @@ fn clipboard_app_never_panics_and_logs_fixed_words() {
             panic!("{why} in {name}'s production code");
         }
     }
-    let code: String = production.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    // The log scan reads the code alone: a commented example of a line that would leak is not read
+    // as a log call, and a trailing comment is no longer part of the call.
+    let code = production_code_without_comments(t);
     assert_eq!(clipboard_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
 }
 
@@ -4069,11 +4081,12 @@ fn the_camera_scan_syncs_the_off_delay() {
     assert!(scan.contains("privacy_timer_sync()"), "an unchanged scan must still sync the off-delay: {scan}");
 }
 
-/// Privacy delivery 2: a log line never names a process or a pid.
+/// A log line of the camera watch never names a process or a pid. The code alone, so a commented
+/// example of a line that would leak is not read as one.
 #[test]
 fn the_camera_logs_name_no_process() {
     let mut logs = 0;
-    for (name, production) in camera_sources() {
+    for (name, production) in camera_code() {
         for line in production.lines().filter(|l| l.contains("log(")) {
             logs += 1;
             assert!(!line.contains("process::id"), "{name}: a log line carries a pid: {line}");
@@ -4202,12 +4215,13 @@ fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
 }
 
 /// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
-/// Whole statements, so a `format!` split over several lines is read as one.
+/// Whole statements, so a `format!` split over several lines is read as one, and the code alone, so
+/// a commented example of a line that would leak is not read as one.
 #[test]
 fn hook_logs_carry_fixed_words_only() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks/app.rs").expect("hooks/app.rs").1;
-    let production = production_code(t);
+    let production = production_code_without_comments(t);
     let statements = log_statements(&production);
     assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
     for s in statements {
@@ -4314,13 +4328,14 @@ fn log_calls_take_the_whole_statement() {
 }
 
 /// Quick notes: the pad's glue never logs the note: no `log(` line names its text, its selection
-/// or its buffer.
+/// or its buffer. The code alone, so a commented example of a line that would leak is not read as
+/// one.
 #[test]
 fn the_notes_glue_never_logs_the_text() {
     let files = source_files();
     for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let prod = production_code(t);
+        let prod = production_code_without_comments(t);
         for call in log_calls(&prod) {
             // A close reason's log word (`CloseReason::text`) is the one `text` allowed.
             let call = call.replace("reason.text()", "reason");
@@ -4646,11 +4661,14 @@ fn the_launcher_guard_never_logs_a_panic_payload() {
 }
 
 /// Quick VPN spec § 2: a log line never names a profile (its name, label, uuid or object path): the
-/// VPN's own files, and the VPN lines of the glue.
+/// VPN's own files, and the VPN lines of the glue. The code alone, so a commented example of a line
+/// that would leak is not read as one.
 #[test]
 fn the_vpn_logs_name_no_profile() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let mut statements = 0;
     for name in ["quick/vpn.rs", "sources/dbus/vpn.rs", "quick/app.rs"] {
         let prod = src(name);
@@ -5001,16 +5019,18 @@ fn the_tools_logs_are_fixed_words() {
     let mut seen = 0;
     for name in ["launcher/tools/read.rs", "launcher/tools/app.rs", "launcher/tools/join.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        // A log call is read with its comments, as in every other log guardrail; the per-line cut at
-        // `//` is what keeps a trailing comment out of the call the helper reads.
-        let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        // The code alone: a commented example of a line that would leak is not read as a log call,
+        // and a trailing comment is no longer part of the call the helper reads.
+        let code = production_code_without_comments(t);
         assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
         seen += code.matches("log(").count() + code.matches("note(").count();
     }
     let run = &files.iter().find(|(p, _)| relative_path(p) == "launcher/run.rs").expect("run.rs").1;
-    // Both views of `perform_tool`: a comment can neither end its body early nor pass for a log call.
+    // `perform_tool`'s body in the code view: a comment can neither end it early nor pass for a log
+    // call.
     let mut found = false;
-    for perform_tool in both_bodies(run, "fn perform_tool") {
+    {
+        let perform_tool = function_body(&production_code_without_comments(run), "fn perform_tool").to_string();
         assert_eq!(tools_unfixed_log(&perform_tool), None, "a log call in perform_tool names more than fixed words");
         found |= perform_tool.contains("log(");
     }
@@ -5196,8 +5216,11 @@ fn the_shield_logs_name_nothing() {
     ];
     const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
     let files = source_files();
-    // A log call is read with its comments, as in every other log guardrail of the repository.
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    // The code alone, as in every other log guardrail of the repository: a commented example of a
+    // line that would leak is not read as a log call.
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     // Every log call of the Shield's own files, and the Shield's lines of the others.
     let mut calls: Vec<(String, String)> = Vec::new();
     for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick/shield.rs"] {
@@ -5210,12 +5233,11 @@ fn the_shield_logs_name_nothing() {
             log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
         );
     }
-    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same way,
-    // and its body in both views, so a comment can neither end it early nor pass for a log call.
+    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same
+    // way, from its body in the code view, so a comment can neither end it early nor pass for a log
+    // call.
     let watch = src("watch.rs");
-    for body in both_bodies(&files.iter().find(|(p, _)| relative_path(p) == "watch.rs").expect("watch.rs").1, "fn shield_unwatched_line(") {
-        calls.push(("watch.rs".into(), body));
-    }
+    calls.push(("watch.rs".into(), function_body(&watch, "fn shield_unwatched_line(").to_string()));
     // The theme watch's own line for the flag's rearm.
     calls
         .extend(log_calls(&watch).into_iter().filter(|c| c.contains("mask not restored")).map(|c| ("watch.rs".to_string(), c.to_string())));
