@@ -103,18 +103,56 @@ impl OsdVerb {
     }
 }
 
-/// `--capture`'s word. `select` runs the area selector alone and asks nothing of it: the
-/// captures' own verbs join it.
+/// `--capture`'s word: what to capture and what to do with it. `select` is the debug verb: it
+/// runs the area selector alone and captures nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureVerb {
+    /// The focused output, copied.
+    Full,
+    /// An area picked with the selector, copied.
+    Area,
+    /// An area, saved to the pictures folder.
+    AreaSave,
+    /// The colour of one pixel, copied.
+    Pick,
+    /// An area, handed to the annotation tool.
+    Annotate,
+    /// An area's text, copied.
+    Ocr,
+    /// The focused output, recorded.
+    Record,
+    /// An area, recorded.
+    RecordArea,
+    /// Ends the recording.
+    Stop,
     Select,
 }
 
 impl CaptureVerb {
-    pub const ALL: [CaptureVerb; 1] = [CaptureVerb::Select];
+    pub const ALL: [CaptureVerb; 10] = [
+        CaptureVerb::Full,
+        CaptureVerb::Area,
+        CaptureVerb::AreaSave,
+        CaptureVerb::Pick,
+        CaptureVerb::Annotate,
+        CaptureVerb::Ocr,
+        CaptureVerb::Record,
+        CaptureVerb::RecordArea,
+        CaptureVerb::Stop,
+        CaptureVerb::Select,
+    ];
 
     pub fn word(self) -> &'static str {
         match self {
+            CaptureVerb::Full => "full",
+            CaptureVerb::Area => "area",
+            CaptureVerb::AreaSave => "area-save",
+            CaptureVerb::Pick => "pick",
+            CaptureVerb::Annotate => "annotate",
+            CaptureVerb::Ocr => "ocr",
+            CaptureVerb::Record => "record",
+            CaptureVerb::RecordArea => "record-area",
+            CaptureVerb::Stop => "stop",
             CaptureVerb::Select => "select",
         }
     }

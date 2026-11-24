@@ -508,6 +508,8 @@ pub struct App {
     pub(crate) notes: crate::notes::app::NotesApp,
     /// The capture area selector while open; None at rest (nothing of it resident).
     pub(crate) select: Option<crate::captures::select_app::OpenSelect>,
+    /// The capture flow: idle at rest, one capture at a time (nothing else of it resident).
+    pub(crate) capture: crate::captures::app::CaptureApp,
     /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
     /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
@@ -707,6 +709,7 @@ impl App {
             launcher_generation: 0,
             notes: crate::notes::app::NotesApp::new(),
             select: None,
+            capture: Default::default(),
             mail: None,
             xdg,
             popup: None,

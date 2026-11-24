@@ -4746,3 +4746,58 @@ fn at_rest_no_wakeups_after_an_area_capture() {
     eprintln!("wake-ups at rest after an area selection (5 s): {delta}");
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the selector was used");
 }
+
+/// One capture through the socket, the n-th: a whole screen when `n` is odd, an area picked with a
+/// drag when it is even; returns once its n-th ending is logged. The copy command is `cat` (its
+/// output is discarded): nothing reaches a clipboard.
+fn screen_capture_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    if n % 2 == 1 {
+        assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Full)), Reply::Done);
+    } else {
+        assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Area)), Reply::Done);
+        assert!(d.wait_for_count("capture: selector shown", n / 2, DELAY), "{:?}", d.log());
+        sway.hover(60, 60);
+        sway.drag((100, 100), (500, 400), false);
+    }
+    assert!(d.wait_for_count("capture: copied", n, DELAY), "{:?}", d.log());
+}
+
+/// The captures: the daemon's own anonymous memory is back within 64 KB after 10 more captures (the
+/// frame, the image and the worker's arena are all gone with each), no thread is left, and nothing
+/// wakes the loop at rest afterwards. The cost of a capture is printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_screen_capture() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("capture-rest");
+    let (sway, _hypr, d) = start_launcher("capture-rest", &bus, Some(AT_REST), &[], Some(&|_| "copy = [\"cat\"]\n".to_string()));
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    let anonymous_at_rest = d.anonymous_kb();
+    // The first captures warm the allocator, the glyph cache and the keymap: the baseline is after two.
+    screen_capture_cycle(&sway, &d, 1);
+    screen_capture_cycle(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    for n in 3..=12 {
+        screen_capture_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "captures: PSS {at_rest} KB at rest; anonymous {anonymous_at_rest} KB before the first, {baseline} KB after 2, {end} KB after 10 more; \
+         threads {} (before: {threads})",
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 captures grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the captures");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a capture");
+    eprintln!("wake-ups at rest after a capture (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after captures were taken");
+}

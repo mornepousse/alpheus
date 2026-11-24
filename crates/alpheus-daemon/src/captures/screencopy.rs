@@ -100,10 +100,7 @@ pub struct Frame {
 /// nothing is inside). A frame whose `data` is too short for its rows gives opaque black rows
 /// rather than a panic.
 pub fn to_rgba(frame: &Frame, area: Rect) -> Vec<u8> {
-    let x0 = i64::from(area.x).clamp(0, i64::from(frame.width));
-    let y0 = i64::from(area.y).clamp(0, i64::from(frame.height));
-    let x1 = (i64::from(area.x) + i64::from(area.width)).clamp(x0, i64::from(frame.width));
-    let y1 = (i64::from(area.y) + i64::from(area.height)).clamp(y0, i64::from(frame.height));
+    let (x0, y0, x1, y1) = clip(frame, area);
     let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
     let mut out = Vec::with_capacity(w * h * 4);
     for row in y0..y1 {
@@ -119,6 +116,21 @@ pub fn to_rgba(frame: &Frame, area: Rect) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The part of `area` inside `frame`, as (left, top, right, bottom) in buffer pixels.
+fn clip(frame: &Frame, area: Rect) -> (i64, i64, i64, i64) {
+    let x0 = i64::from(area.x).clamp(0, i64::from(frame.width));
+    let y0 = i64::from(area.y).clamp(0, i64::from(frame.height));
+    let x1 = (i64::from(area.x) + i64::from(area.width)).clamp(x0, i64::from(frame.width));
+    let y1 = (i64::from(area.y) + i64::from(area.height)).clamp(y0, i64::from(frame.height));
+    (x0, y0, x1, y1)
+}
+
+/// The width and height of what `to_rgba` returns for `area`: the part of it inside the frame.
+pub fn cut_size(frame: &Frame, area: Rect) -> (u32, u32) {
+    let (x0, y0, x1, y1) = clip(frame, area);
+    ((x1 - x0) as u32, (y1 - y0) as u32)
 }
 
 /// A logical area of an output (`logical_size` big, its own origin at 0, 0) as buffer pixels:
@@ -148,6 +160,18 @@ pub fn map_area(logical: Rect, scale: f64, transform: Transform, logical_size: (
     // The edges round, not the size: two areas side by side stay side by side.
     let (left, right, top, bottom) = (left.round(), right.round(), top.round(), bottom.round());
     Rect { x: left as i32, y: top as i32, width: (right - left) as u32, height: (bottom - top) as u32 }
+}
+
+/// `logical_area` of an output as pixels of its captured `frame` (width, height): `map_area` with the
+/// scale read off the frame (its width over the output's logical width, the height when the output
+/// is turned a quarter), so a fractional scale maps exactly. A logical size of zero keeps the area.
+pub fn buffer_area(frame: (u32, u32), logical_area: Rect, logical_size: (u32, u32), transform: Transform) -> Rect {
+    if logical_size.0 == 0 || logical_size.1 == 0 {
+        return logical_area;
+    }
+    let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
+    let across = if quarter { frame.1 } else { frame.0 };
+    map_area(logical_area, f64::from(across) / f64::from(logical_size.0), transform, logical_size)
 }
 
 /// Why a capture gave no frame. Never carries text: the glue logs a fixed word.
@@ -395,5 +419,16 @@ mod tests {
         for t in [Transform::_90, Transform::_270, Transform::Flipped90, Transform::Flipped270] {
             assert_eq!(map_area(whole_logical, 2.0, t, (100, 200)), Rect { x: 0, y: 0, width: 400, height: 200 }, "{t:?}");
         }
+    }
+
+    #[test]
+    fn the_scale_is_read_off_the_frame_so_a_fractional_scale_maps_exactly() {
+        let area = Rect { x: 10, y: 20, width: 30, height: 40 };
+        // 150 by 90 pixels under a 100 by 60 logical output: scale 1.5 (the integer scale says 2).
+        assert_eq!(buffer_area((150, 90), area, (100, 60), Transform::Normal), Rect { x: 15, y: 30, width: 45, height: 60 });
+        // A rotated output: the frame is 400 by 200 (native), shown 100 by 200 logical at scale 2.
+        assert_eq!(buffer_area((400, 200), area, (100, 200), Transform::_90), map_area(area, 2.0, Transform::_90, (100, 200)));
+        // A logical size of zero is no scale to read: the area is kept as it is.
+        assert_eq!(buffer_area((150, 90), area, (0, 0), Transform::Normal), area);
     }
 }

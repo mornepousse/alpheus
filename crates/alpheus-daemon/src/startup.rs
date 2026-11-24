@@ -125,6 +125,8 @@ pub enum Mail {
     },
     /// A Shield worker's report.
     Shield(crate::shield::ShieldMail),
+    /// A capture's frame, or the worker's ending.
+    Capture(crate::captures::app::CaptureMail),
     Stop,
 }
 
@@ -701,6 +703,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
             state.tools_choices(generation, token, entry, lines, failed);
         }
         channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
+        channel::Event::Msg(Mail::Capture(m)) => state.capture_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format

@@ -212,7 +212,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 // The failed-units count's verb: answered here, nothing of the launcher's.
                 Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),
                 // The captures' verb: answered here, its own guard inside.
-                Route::Capture => reply_guarded(conn, &state.capture_verb(&q, &request)),
+                Route::Capture => reply_guarded(conn, &state.capture_verb(&request)),
                 Route::Launcher => {
                     // A dmenu request may have buffered up to 4 MiB: once it
                     // reached RELEASE_AFTER, give the pages back as soon as it

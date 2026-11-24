@@ -194,6 +194,53 @@ fn spawn_with_input_of_a_missing_program_is_not_found() {
     assert_eq!(exec().spawn_with_input("alpheus-nonexistent-program", &[], &[b"x"]), Err(ExecError::NotFound));
 }
 
+/// A standard input from a file has no size bound: a megabyte arrives whole, the file may be
+/// deleted the moment the call returns (the program holds its own descriptor), and the call does
+/// not wait for the program to read it.
+#[test]
+fn spawn_with_stdin_file_feeds_a_big_file_and_survives_its_deletion() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, got, done) = (dir.join("in"), dir.join("got"), dir.join("done"));
+    let payload: Vec<u8> = (0..(1 << 20)).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&input, &payload).unwrap();
+    // The program waits for a go file before it reads: the call must have returned by then.
+    let go = dir.join("go");
+    let script = format!(
+        "while [ ! -e '{}' ]; do sleep 0.01; done; cat > '{}' && mv '{}' '{}'",
+        go.display(),
+        got.display(),
+        got.display(),
+        done.display()
+    );
+    exec().spawn_with_stdin_file("sh", &["-c", &script], &input).unwrap();
+    std::fs::remove_file(&input).unwrap();
+    std::fs::write(&go, "").unwrap();
+    let t = Instant::now();
+    while !done.exists() && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(std::fs::read(&done).unwrap(), payload, "the whole file, though it was deleted before the program read");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_with_stdin_file_names_a_missing_program_or_file() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let there = dir.join("there");
+    std::fs::write(&there, "x").unwrap();
+    assert_eq!(exec().spawn_with_stdin_file("alpheus-nonexistent-program", &[], &there), Err(ExecError::NotFound));
+    let marker = dir.join("started");
+    let touch = format!("touch '{}'", marker.display());
+    assert!(matches!(exec().spawn_with_stdin_file("sh", &["-c", &touch], &dir.join("absent")), Err(ExecError::Io(_))));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a missing file starts nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Threads of this whole test binary (other tests may have their own,
 /// transient ones): a regression that brings back a reaper thread per
 /// `spawn` shows up as a jump of (about) N, held for as long as the N

@@ -7,7 +7,7 @@
 //! - block in the daemon: `run` waits, and the daemon's wrapper refuses it outright
 //!   (`the_only_system_executor_is_wrapped_in_non_blocking`, in the daemon's guardrails);
 //! - write more than one page to a program's standard input (`MAX_INPUT`), so a write never waits
-//!   for the program to read.
+//!   for the program to read (a payload that needs more goes through a file: `spawn_with_stdin_file`).
 //!
 //! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/shield.md and
 //! docs/features/quick-settings.md (what runs through it).
@@ -115,6 +115,15 @@ pub trait Executor: Send + Sync {
     /// input, before reading it all): the program was launched, so the caller never runs it again
     /// for that error.
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError>;
+
+    /// `spawn`, with the standard input read from the file `file` (the descriptor is opened here and
+    /// handed to the program: deleting the file afterwards changes nothing for it). For a payload
+    /// `spawn_with_input`'s page cannot carry, a screenshot sent to the clipboard program: a file has
+    /// no pipe to fill, so the call never waits for the program to read. A file that cannot be opened
+    /// is an `Io` error and starts nothing. Not supported by default.
+    fn spawn_with_stdin_file(&self, _prog: &str, _args: &[&str], _file: &std::path::Path) -> Result<(), ExecError> {
+        Err(ExecError::Io("standard input from a file is not supported".into()))
+    }
 
     /// `spawn` (detached, double fork, own session, stdio nulled, never registered in `Running`), with
     /// each `(name, value)` added to the inherited environment and each name of `unset` removed from
@@ -385,6 +394,16 @@ fn spawn_detached_with_input(prog: &str, args: &[&str], input: &[&[u8]]) -> Resu
     Ok(pid)
 }
 
+/// `spawn_detached` with `file` as standard input: opened first (a file that is not there starts
+/// nothing), its descriptor inherited across the double fork like the pipe of `spawn_detached_with_input`.
+fn spawn_detached_with_stdin_file(prog: &str, args: &[&str], file: &std::path::Path) -> Result<u32, ExecError> {
+    let input = std::fs::File::open(file).map_err(|e| ExecError::Io(e.to_string()))?;
+    let mut intermediate = detached_command(prog, args, Stdio::from(input)).spawn().map_err(io_err)?;
+    let pid = intermediate.id();
+    let _ = intermediate.wait();
+    Ok(pid)
+}
+
 /// How `read_until` stopped.
 enum Stop {
     Exited,
@@ -628,6 +647,10 @@ impl Executor for SystemExecutor {
 
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
         spawn_detached_with_input(prog, args, input).map(|_intermediate_pid| ())
+    }
+
+    fn spawn_with_stdin_file(&self, prog: &str, args: &[&str], file: &std::path::Path) -> Result<(), ExecError> {
+        spawn_detached_with_stdin_file(prog, args, file).map(|_intermediate_pid| ())
     }
 
     fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {

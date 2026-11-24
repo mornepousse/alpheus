@@ -1742,6 +1742,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // switch waits for its flag (the 5 s grace or the 60 s bound).
         ("shield/run.rs", "thread::Builder", 1),
         ("shield/app.rs", "Timer::", 1),
+        // A capture's worker: the short-lived `alpheus-capture` thread that cuts, encodes and
+        // copies or saves one frame, started when the frame arrives and ending with its report
+        // (one capture at a time, so one thread at most).
+        ("captures/app.rs", "thread::Builder", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -4649,6 +4653,86 @@ fn the_selector_log_guardrail_helper_bites() {
     assert!(selector_unfixed_log("log(&format!(\"capture: area {rect:?}\"));").is_some(), "a geometry");
     assert!(selector_unfixed_log("log(&format!(\"capture: area {}x{}\", r.width, r.height));").is_some(), "a bare placeholder");
     assert!(selector_unfixed_log("log(&label);").is_some(), "a variable");
+}
+
+/// One capture file's text, by its path under `src/`.
+fn captures_file(name: &str) -> String {
+    let files = source_files();
+    files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone()
+}
+
+/// The capture glue logs fixed words only: never a path, a file name, a geometry or an output name
+/// (the notice carries the file's name, the log never does).
+#[test]
+fn the_capture_logs_fixed_words_only() {
+    for name in ["captures/app.rs", "captures/deliver.rs", "captures/mod.rs", "captures/paths.rs"] {
+        let t = captures_file(name);
+        let code = production_code_without_comments(&t);
+        assert_eq!(selector_unfixed_log(&code), None, "{name}");
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production_code(&t).contains(p), "{p} in {name}'s production code");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.matches("log(").count() >= 10, "the log calls were found");
+    // The worker and the pure files never log at all: the glue says one word per ending.
+    for name in ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs"] {
+        let code = production_code_without_comments(&captures_file(name));
+        assert!(!code.contains("log("), "{name} logs");
+    }
+}
+
+/// The flow and the paths are pure: no clock, no environment, no file, no thread.
+#[test]
+fn the_capture_flow_and_paths_are_pure() {
+    for name in ["captures/mod.rs", "captures/paths.rs"] {
+        let code = production_code_without_comments(&captures_file(name));
+        for p in ["Instant", "SystemTime", "std::env", "std::fs", "File::", "thread::", "Command"] {
+            assert!(!code.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// A capture's frame is asked of the compositor in one place, after the round trip that waits for
+/// the selector's removal: the selector's answer never asks for it itself, or the dim could be in
+/// the capture (docs/decisions.md, "A capture waits for the selector's removal").
+#[test]
+fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("capture_output(").count(), 1, "one place asks for a frame");
+    assert!(function_body(&app, "fn capture_grab(").contains("capture_output("));
+    let selected = function_body(&app, "pub(crate) fn capture_selected(");
+    for p in ["capture_grab", "capture_output", "Step::Grab"] {
+        assert!(!selected.contains(p), "the selector's answer reaches {p} directly");
+    }
+    assert!(function_body(&app, "fn capture_settle(").contains(".sync("), "the settle is a round trip");
+    // The step that follows the round trip is the only other way to a grab.
+    let settled = function_body(&app, "fn event(");
+    assert!(settled.contains("flow.settled()"), "the round trip's answer is what lets the flow go on");
+    let flow = production_code_without_comments(&captures_file("captures/mod.rs"));
+    assert!(function_body(&flow, "pub fn selected(").contains("Step::Settle"), "a selection waits");
+    assert!(!function_body(&flow, "pub fn selected(").contains("Step::Grab"), "and never grabs in the same turn");
+}
+
+/// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
+/// standard input (a PNG does not fit the page of `spawn_with_input`).
+#[test]
+fn the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        if name != "captures/encode.rs" && name != "captures/deliver.rs" {
+            assert!(!code.contains("encode_png("), "{name} encodes a PNG");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.contains(".name(\"alpheus-capture\".into())"), "the worker is named");
+    assert!(app.contains("run(exec.as_ref(), frame"), "the frame is encoded in the worker's closure");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(deliver.contains("spawn_with_stdin_file("));
+    for p in ["spawn_with_input(", ".spawn(", "Command::new", ".run(", ".capture("] {
+        assert!(!deliver.contains(p), "{p} in deliver.rs");
+    }
 }
 
 /// The pad's glue never panics on its own either: no unwrap, expect, panic or

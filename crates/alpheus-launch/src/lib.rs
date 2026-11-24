@@ -46,7 +46,7 @@ const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
-                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --capture select | --help]
+                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -84,7 +84,12 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --shield on|off|toggle  switch Shield mode (the commands of [shield] in bar.toml; the password prompt is theirs)
   --shield status         print the state, and the blocked USB devices while it is on
   --shield allow          pick a blocked USB device in the launcher's box and allow it
-  --capture select        run the screenshot area selector alone (drag, Enter or release to confirm, Esc to cancel); nothing is captured
+  --capture full          copy a screenshot of the focused output
+  --capture area          pick an area (drag, Enter or release to confirm, Esc to cancel), copy its screenshot
+  --capture area-save     pick an area, save its screenshot to the pictures folder
+  --capture pick|annotate|ocr|record|record-area|stop
+                          colour picker, annotate an area, text of an area, record the screen or an area, stop recording
+  --capture select        debug: run the area selector alone; nothing is captured
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
@@ -182,7 +187,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 &mut mode,
                 Invocation::Shield(verb_arg(&mut it, "--shield", "on, off, toggle, status or allow", ShieldVerb::parse)?),
             )?,
-            "--capture" => choose(&mut mode, Invocation::Capture(verb_arg(&mut it, "--capture", "select", CaptureVerb::parse)?))?,
+            "--capture" => choose(&mut mode, Invocation::Capture(verb_arg(&mut it, "--capture", CAPTURE_WORDS, CaptureVerb::parse)?))?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -630,7 +635,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
         Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
         Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
-        Request::Capture(_) if error == "malformed request: unknown request \"capture\"" => Some("--capture"),
+        Request::Capture(_) if error == OLD_CAPTURE || error.starts_with(OLD_CAPTURE_WORD) => Some("--capture"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
@@ -642,6 +647,15 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The words `--capture` takes, for the usage errors.
+const CAPTURE_WORDS: &str = "full, area, area-save, pick, annotate, ocr, record, record-area or stop";
+
+/// What a daemon from before the captures answers `--capture` (an unknown request), and the start
+/// of what one that has only the area selector answers any other word (an unknown capture word,
+/// which the refusal then names): exit 3, as for the other verbs.
+const OLD_CAPTURE: &str = "malformed request: unknown request \"capture\"";
+const OLD_CAPTURE_WORD: &str = "malformed request: unknown capture word ";
 
 /// What a daemon from before the clipboard history answers its two verbs (an unknown request,
 /// `socket::describe`): the refusal and the flag. Exit 3, as for the other verbs.
@@ -1141,5 +1155,36 @@ mod tests {
             reply_to_exit(&Request::DndOn(DndEnd::For(60)), Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err),
             EXIT_ERROR
         );
+    }
+
+    /// Every `--capture` word parses to its verb, and any other word is refused naming the choices.
+    #[test]
+    fn the_verbs_parse_and_an_old_daemon_exits_3() {
+        for v in CaptureVerb::ALL {
+            assert_eq!(parse_args(&args(&["--capture", v.word()])), Ok(Invocation::Capture(v)));
+            assert_eq!(request_of(Invocation::Capture(v), 0), Ok(Request::Capture(v)));
+        }
+        let e = parse_args(&args(&["--capture", "sideways"])).unwrap_err();
+        assert!(e.contains("area-save") && e.contains("record-area"), "{e}");
+        assert!(parse_args(&args(&["--capture"])).unwrap_err().contains("needs"));
+        // A daemon from before the captures knows no `capture` request; one that has the selector
+        // alone refuses each other word as unknown. Both are exit 3, naming the flag.
+        for refusal in ["malformed request: unknown request \"capture\"", "malformed request: unknown capture word \"area-save\""] {
+            let mut err = Vec::new();
+            let request = Request::Capture(CaptureVerb::AreaSave);
+            assert_eq!(
+                reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err),
+                EXIT_UNREACHABLE,
+                "{refusal}"
+            );
+            assert!(String::from_utf8_lossy(&err).contains("--capture"), "{}", String::from_utf8_lossy(&err));
+        }
+        // A current daemon's own refusals (no screencopy, not yet) are plain errors: exit 2, said.
+        let mut err = Vec::new();
+        let no_screencopy = "the compositor offers no screencopy";
+        let request = Request::Capture(CaptureVerb::Full);
+        assert_eq!(reply_to_exit(&request, Reply::Error(no_screencopy.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        assert!(String::from_utf8_lossy(&err).contains(no_screencopy), "{}", String::from_utf8_lossy(&err));
+        assert_eq!(reply_to_exit(&request, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
     }
 }

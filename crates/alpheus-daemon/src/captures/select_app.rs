@@ -31,7 +31,6 @@ use crate::painter::FrameInk;
 use crate::popup::{PopupClose, box_size};
 use crate::state::Feed;
 use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
-use alpheus_common::launcher_ipc::{CaptureVerb, Reply, Request};
 use alpheus_common::theme::Rgb;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
@@ -192,7 +191,7 @@ pub(crate) fn pointer_input(kind: &PointerEventKind, position: (f64, f64)) -> Op
 
 /// Runs `f`, catching a panic: logs "capture error in <what>" — never the panic's message — and
 /// returns None.
-fn guarded<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
+pub(super) fn guarded<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => Some(r),
         Err(_) => {
@@ -218,14 +217,9 @@ impl App {
         self.popup_close(PopupClose::Launcher);
         let c = self.hover.cancel();
         self.hover_apply(c);
-        let wanted = match &self.bar.compositor {
-            Feed::Ready(c) => c.focused_output().map(str::to_owned),
-            _ => None,
-        };
-        let named = wanted
-            .as_deref()
-            .and_then(|n| self.outputs.outputs().find(|o| self.outputs.info(o).and_then(|i| i.name).as_deref() == Some(n)));
-        let info = named.clone().or_else(|| self.outputs.outputs().next()).and_then(|o| self.outputs.info(&o));
+        // The same choice the whole-screen capture makes: the focused output, else the first one.
+        let named = self.focused_output();
+        let info = named.as_ref().and_then(|o| self.outputs.info(o));
         let scale = info.as_ref().map_or(1, |i| i.scale_factor).max(1);
         let size = info.as_ref().and_then(|i| i.logical_size).map_or(FALLBACK_OUTPUT_SIZE, |(w, h)| (w.max(1) as u32, h.max(1) as u32));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
@@ -261,19 +255,31 @@ impl App {
         log("capture: selector opened");
     }
 
-    /// `alpheus-launch --capture select` (`launcher/socket_glue.rs`): opens the selector, or
-    /// cancels it when it is already open. Answered Done: the selection is the surface's own.
-    pub(crate) fn capture_verb(&mut self, qh: &QueueHandle<App>, request: &Request) -> Reply {
-        if matches!(request, Request::Capture(CaptureVerb::Select)) {
-            self.select_guarded("verb", |app| {
-                if app.select_is_open() {
-                    app.select_close(SelectClose::Cancelled);
-                } else {
-                    app.select_open(qh);
-                }
-            });
-        }
-        Reply::Done
+    /// The output the captures work on: the focused one (by name among the bar's outputs), else the
+    /// first one the compositor listed; None with no output at all. The selector and the whole-screen
+    /// capture share this choice, so "the screen" is the one the selector would cover.
+    pub(crate) fn focused_output(&self) -> Option<wl_output::WlOutput> {
+        let wanted = match &self.bar.compositor {
+            Feed::Ready(c) => c.focused_output().map(str::to_owned),
+            _ => None,
+        };
+        let named = wanted
+            .as_deref()
+            .and_then(|n| self.outputs.outputs().find(|o| self.outputs.info(o).and_then(|i| i.name).as_deref() == Some(n)));
+        named.or_else(|| self.outputs.outputs().next())
+    }
+
+    /// `alpheus-launch --capture select`, the debug verb: opens the selector, or cancels it when it
+    /// is already open. Nothing is captured: the selection is the surface's own.
+    pub(crate) fn select_toggle(&mut self) {
+        let qh = self.qh.clone();
+        self.select_guarded("verb", |app| {
+            if app.select_is_open() {
+                app.select_close(SelectClose::Cancelled);
+            } else {
+                app.select_open(&qh);
+            }
+        });
     }
 
     pub(crate) fn select_is_open(&self) -> bool {
@@ -305,13 +311,14 @@ impl App {
         self.select_finished(output, area);
     }
 
-    /// The selector's answer. The capture flow takes over here; until it does, the answer is only
-    /// said, in fixed words.
-    fn select_finished(&mut self, _output: Option<wl_output::WlOutput>, area: Option<Rect>) {
+    /// The selector's answer, said in fixed words, then handed to the capture flow (which ignores
+    /// it when no capture asked for the selector: the debug verb).
+    fn select_finished(&mut self, output: Option<wl_output::WlOutput>, area: Option<Rect>) {
         match area {
             Some(_) => log("capture: area selected"),
             None => log("capture: nothing selected"),
         }
+        self.capture_selected(output, area);
     }
 
     /// A key press or repeat while the selector is open.

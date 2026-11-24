@@ -55,7 +55,8 @@ impl FakeExecutor {
         self.calls.lock().unwrap().clone()
     }
 
-    /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only).
+    /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only); a
+    /// `spawn_with_stdin_file`'s too, with the file's content.
     pub fn inputs(&self) -> Vec<(String, Vec<u8>)> {
         self.inputs.lock().unwrap().clone()
     }
@@ -134,6 +135,18 @@ impl Executor for FakeExecutor {
         let l = line(prog, args);
         self.calls.lock().unwrap().push(l.clone());
         self.inputs.lock().unwrap().push((l.clone(), input.concat()));
+        match self.responses.lock().unwrap().get(&l).cloned() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn spawn_with_stdin_file(&self, prog: &str, args: &[&str], file: &std::path::Path) -> Result<(), ExecError> {
+        let bytes = std::fs::read(file).map_err(|e| ExecError::Io(e.to_string()))?;
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        self.inputs.lock().unwrap().push((l.clone(), bytes));
         match self.responses.lock().unwrap().get(&l).cloned() {
             Some(Ok(_)) => Ok(()),
             Some(Err(e)) => Err(e),
@@ -311,5 +324,21 @@ mod tests {
             [("nmcli --ask device wifi connect Bureau-Test".to_string(), b"fake-pass\n".to_vec()), ("nmcli x".to_string(), b"y".to_vec())]
         );
         assert!(f.calls().iter().all(|c| !c.contains("fake-pass")), "the input is not on the line");
+    }
+
+    #[test]
+    fn spawn_with_stdin_file_records_the_line_and_the_file_content() {
+        let f = FakeExecutor::new();
+        let path = std::env::temp_dir().join(format!("alpheus-fake-stdin-{}", std::process::id()));
+        std::fs::write(&path, b"\x89PNG fake").unwrap();
+        f.ok("wl-copy --type image/png", "");
+        assert_eq!(f.spawn_with_stdin_file("wl-copy", &["--type", "image/png"], &path), Ok(()));
+        assert_eq!(f.spawn_with_stdin_file("wl-copy", &["x"], &path), Err(ExecError::NotFound), "never a real tool");
+        assert_eq!(
+            f.inputs(),
+            [("wl-copy --type image/png".to_string(), b"\x89PNG fake".to_vec()), ("wl-copy x".to_string(), b"\x89PNG fake".to_vec())]
+        );
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(f.spawn_with_stdin_file("wl-copy", &[], &path), Err(ExecError::Io(_))), "a missing file is an error");
     }
 }

@@ -24,7 +24,7 @@ pub const DEFAULT_ORDER: u16 = 50;
 /// The one element of `run` replaced by the chosen line, whole: never part of an argument.
 pub const CHOICE_PLACEHOLDER: &str = "{choice}";
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
-pub const BUILTIN_CATEGORIES: [&str; 4] = ["Quick settings", "Control center", "Utilities", "Session"];
+pub const BUILTIN_CATEGORIES: [&str; 5] = ["Quick settings", "Control center", "Utilities", "Captures", "Session"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]

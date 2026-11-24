@@ -77,6 +77,9 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         shield: join.shield,
         clipboard: join.clipboard,
         diagnostics: join.diagnostics,
+        // The captures' own answers are the daemon's, added by `tools_context`.
+        captures: false,
+        recording: false,
     }
 }
 
@@ -174,7 +177,8 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Clipboard
         | BuiltinAction::Emoji
         | BuiltinAction::Power
-        | BuiltinAction::Shield => return Ok(None),
+        | BuiltinAction::Shield
+        | BuiltinAction::Capture(_) => return Ok(None),
     };
     let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
@@ -310,7 +314,7 @@ impl App {
             clipboard: tools::join::clipboard_available(self),
             diagnostics: tools::join::DIAGNOSTICS_TAB.is_some(),
         };
-        context(&self.bar.config, launcher, self.timer.enabled, join)
+        Context { captures: self.screencopy.is_some(), ..context(&self.bar.config, launcher, self.timer.enabled, join) }
     }
 
     /// The catalog of this open (rebuilt at each open, dropped at close); its notes are logged
@@ -516,6 +520,7 @@ impl App {
                 tools::join::open_shield(self);
                 None
             }
+            BuiltinAction::Capture(verb) => Some(self.capture_verb(&Request::Capture(verb))),
         };
         if reply.as_ref().is_some_and(is_refusal) {
             log(&format!("tools: built-in {id} refused"));

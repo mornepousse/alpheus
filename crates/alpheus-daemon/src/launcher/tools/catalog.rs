@@ -5,15 +5,15 @@
 
 use super::config::{BUILTIN_CATEGORIES, DEFAULT_ORDER, ToolsConfig};
 use crate::quick::Toggle;
-use alpheus_common::launcher_ipc::QuickVerb;
+use alpheus_common::launcher_ipc::{CaptureVerb, QuickVerb};
 
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 4] = [10, 20, 30, 90];
+const BUILTIN_ORDERS: [u16; 5] = [10, 20, 30, 40, 90];
 /// Their glyphs (Nerd Font Material Design), in the same order.
-const BUILTIN_GLYPHS: [char; 4] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}'];
+const BUILTIN_GLYPHS: [char; 5] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0100}', '\u{F0343}'];
 
 /// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +34,8 @@ pub enum BuiltinAction {
     Power,
     Reload,
     Shield,
+    /// A capture verb of the daemon (`--capture <word>`), replayed after the box closed.
+    Capture(CaptureVerb),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,10 +68,11 @@ const fn b(id: &'static str, label: &'static str, category: &'static str, glyph:
 const QUICK: &str = "Quick settings";
 const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
+const CAPTURES: &str = "Captures";
 const SESSION: &str = "Session";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 23] = [
+pub const BUILTINS: [Builtin; 32] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -90,6 +93,15 @@ pub const BUILTINS: [Builtin; 23] = [
     b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
     b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
+    b("capture.full", "Screenshot", CAPTURES, '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)),
+    b("capture.area", "Area", CAPTURES, '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)),
+    b("capture.area_save", "Area (save)", CAPTURES, '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
+    b("capture.annotate", "Annotate", CAPTURES, '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)),
+    b("capture.record", "Record screen", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)),
+    b("capture.record_area", "Record area", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
+    b("capture.stop", "Stop recording", CAPTURES, '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)),
+    b("capture.pick", "Colour picker", CAPTURES, '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)),
+    b("capture.ocr", "Text from area (OCR)", CAPTURES, '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
@@ -122,6 +134,10 @@ pub struct Context {
     pub clipboard: bool,
     /// The diagnostics hook says so.
     pub diagnostics: bool,
+    /// The compositor offers screencopy: the Captures entries show.
+    pub captures: bool,
+    /// A recording runs: "Stop recording" shows.
+    pub recording: bool,
 }
 
 /// Whether `b` shows under `c`.
@@ -140,6 +156,8 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Lock => c.lock,
         BuiltinAction::Power => c.session,
         BuiltinAction::Reload => c.reload,
+        BuiltinAction::Capture(CaptureVerb::Stop) => c.captures && c.recording,
+        BuiltinAction::Capture(_) => c.captures,
     }
 }
 

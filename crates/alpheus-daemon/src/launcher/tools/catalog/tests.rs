@@ -1,5 +1,6 @@
 use super::*;
 use crate::launcher::config::LauncherConfig;
+use alpheus_common::launcher_ipc::CaptureVerb;
 
 fn tools(text: &str) -> ToolsConfig {
     LauncherConfig::from_text(text).unwrap().tools
@@ -19,6 +20,8 @@ fn all() -> Context {
         shield: true,
         clipboard: true,
         diagnostics: true,
+        captures: true,
+        recording: true,
     }
 }
 
@@ -72,6 +75,15 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "capture.full",
+            "capture.area",
+            "capture.area_save",
+            "capture.annotate",
+            "capture.record",
+            "capture.record_area",
+            "capture.stop",
+            "capture.pick",
+            "capture.ocr",
             "lock",
             "power",
             "reload",
@@ -105,16 +117,27 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Screenshot",
+            "Area",
+            "Area (save)",
+            "Annotate",
+            "Record screen",
+            "Record area",
+            "Stop recording",
+            "Colour picker",
+            "Text from area (OCR)",
             "Lock",
             "Power menu",
             "Reload the bar",
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, session] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, captures, session] = BUILTIN_CATEGORIES;
+    assert_eq!(captures, "Captures");
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
+    expected.extend([captures; 9]);
     expected.extend([session; 3]);
     assert_eq!(categories, expected);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
@@ -130,6 +153,20 @@ fn the_table_is_the_specs() {
     assert_eq!(action("night_light"), BuiltinAction::Toggle(Toggle::NightLight));
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
+    // Each capture entry replays the verb of its own name.
+    for (id, verb) in [
+        ("capture.full", CaptureVerb::Full),
+        ("capture.area", CaptureVerb::Area),
+        ("capture.area_save", CaptureVerb::AreaSave),
+        ("capture.annotate", CaptureVerb::Annotate),
+        ("capture.record", CaptureVerb::Record),
+        ("capture.record_area", CaptureVerb::RecordArea),
+        ("capture.stop", CaptureVerb::Stop),
+        ("capture.pick", CaptureVerb::Pick),
+        ("capture.ocr", CaptureVerb::Ocr),
+    ] {
+        assert_eq!(action(id), BuiltinAction::Capture(verb), "{id}");
+    }
 }
 
 #[test]
@@ -141,7 +178,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes and emoji"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 11] = [
+    let flips: [Flip; 12] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -153,6 +190,23 @@ fn shown_follows_the_context() {
         (|c| c.shield = true, &["quick.shield"]),
         (|c| c.clipboard = true, &["clipboard"]),
         (|c| c.diagnostics = true, &["tab.diagnostics"]),
+        (
+            |c| {
+                c.captures = true;
+                c.recording = true;
+            },
+            &[
+                "capture.full",
+                "capture.area",
+                "capture.area_save",
+                "capture.annotate",
+                "capture.record",
+                "capture.record_area",
+                "capture.stop",
+                "capture.pick",
+                "capture.ocr",
+            ],
+        ),
     ];
     for (flip, rows) in flips {
         let mut c = Context::default();
@@ -165,7 +219,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 23);
+    assert_eq!(ids_shown(&all()).len(), 32);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -182,6 +236,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "quick.shield" => c.shield = false,
         "clipboard" => c.clipboard = false,
         "tab.diagnostics" => c.diagnostics = false,
+        "capture.full" => c.captures = false,
         other => panic!("{other}"),
     }
 }
@@ -199,11 +254,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 23);
+    assert_eq!(builtin_ids(&cat).len(), 32);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 21);
+    assert_eq!(ids.len(), 30);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -251,7 +306,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 90 Session), names breaking the tie.
+    // 40 Captures, 50 Beta, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -265,6 +320,7 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
+            "[Captures]",
             "Beta",
             "[Session]",
         ]
@@ -417,4 +473,44 @@ fn history_keys() {
     let nix = cat.entries.iter().position(|e| e.name == "Nix").unwrap();
     assert!(cat.choice_key(nix, &long_choice).len() <= crate::launcher::history::ID_MAX);
     assert!(cat.entries.iter().any(|e| e.name == long_name && e.key.len() <= crate::launcher::history::ID_MAX));
+}
+
+/// A compositor without screencopy hides the Captures entries, and with them their category.
+#[test]
+fn no_screencopy_hides_the_captures() {
+    let c = Context { captures: false, ..all() };
+    assert!(ids_shown(&c).iter().all(|id| !id.starts_with("capture.")), "{:?}", ids_shown(&c));
+    let (cat, _) = build("", &c);
+    assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Captures]".to_string()), "no empty category");
+    let (cat, _) = build("", &all());
+    let at = cat.categories.iter().position(|k| k.name == "Captures").unwrap();
+    assert_eq!(
+        names(&cat, &cat.category_rows(at)),
+        [
+            "Screenshot",
+            "Area",
+            "Area (save)",
+            "Annotate",
+            "Record screen",
+            "Record area",
+            "Stop recording",
+            "Colour picker",
+            "Text from area (OCR)"
+        ]
+    );
+    // The category sits between Utilities and Session.
+    let root = category_names(&cat, &cat.root_rows());
+    let place = |n: &str| root.iter().position(|r| r == n).unwrap();
+    assert!(place("[Utilities]") < place("[Captures]") && place("[Captures]") < place("[Session]"), "{root:?}");
+}
+
+/// "Stop recording" shows only while something records.
+#[test]
+fn stop_recording_shows_only_while_recording() {
+    let idle = Context { recording: false, ..all() };
+    let ids = ids_shown(&idle);
+    assert!(!ids.contains(&"capture.stop") && ids.contains(&"capture.record"), "{ids:?}");
+    assert!(ids_shown(&all()).contains(&"capture.stop"));
+    // Recording without screencopy cannot be: the stop is hidden with the rest.
+    assert!(!ids_shown(&Context { captures: false, ..all() }).contains(&"capture.stop"));
 }

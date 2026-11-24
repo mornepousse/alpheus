@@ -927,3 +927,39 @@ fn shield_hard_checks_refuse_the_file() {
     );
     assert!(err(shield_text().replace("\"off\"]", "\"o\\u0000ff\"]")).contains("shield.off"), "NUL");
 }
+
+// ---- [captures] ----
+
+#[test]
+fn captures_default_to_the_external_tools_and_no_folder() {
+    let c = BarConfig::from_text("").unwrap().captures;
+    assert_eq!(c, CapturesConfig::default());
+    assert_eq!(c.dir, "", "empty: $XDG_PICTURES_DIR/screenshots");
+    assert_eq!(c.annotate, ["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]);
+    assert_eq!(c.ocr, ["tesseract", "{file}", "-", "-l", "eng"]);
+    assert_eq!(c.record, ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]);
+    assert_eq!(c.pick_format, "{hex}");
+}
+
+#[test]
+fn the_captures_table_is_read_and_checked() {
+    let c =
+        BarConfig::from_text("[captures]\ndir = \"~/Shots\"\nocr = [\"tesseract\", \"{file}\", \"-\"]\npick_format = \"{r} {g} {b}\"\n")
+            .unwrap()
+            .captures;
+    assert_eq!((c.dir.as_str(), c.pick_format.as_str()), ("~/Shots", "{r} {g} {b}"));
+    assert_eq!(c.ocr, ["tesseract", "{file}", "-"]);
+    assert_eq!(c.record, CapturesConfig::default().record, "a key left out keeps its default");
+    for (text, key) in [
+        ("[captures]\ndir = \"relative/shots\"", "captures.dir"),
+        ("[captures]\ndir = \"/a\\u0000b\"", "captures.dir"),
+        ("[captures]\nannotate = [\" \"]", "captures.annotate"),
+        ("[captures]\nocr = [\"tesseract\", \"a\\u0000\"]", "captures.ocr"),
+        ("[captures]\nrecord = [\"\"]", "captures.record"),
+        ("[captures]\nbogus = 1", "bogus"),
+    ] {
+        let e = BarConfig::from_text(text).unwrap_err();
+        assert!(e.contains(key), "{text}: {e}");
+    }
+    assert!(BarConfig::from_text("[captures]\nannotate = []").unwrap().captures.annotate.is_empty(), "[] turns the tool off");
+}
