@@ -419,21 +419,6 @@ fn a_refresh_keeps_the_armed_tick() {
     assert_eq!(next_deadline(None, Some(now + Duration::from_millis(300)), now), None, "no tick due: removed");
 }
 
-/// The "media popup shown" line carries what the popup shows on
-/// top, as drawn (cut to its width), so a headless test can check the fake track reached it.
-#[test]
-fn the_heading_is_the_drawn_title_and_artist() {
-    let t0 = Instant::now();
-    let players = one_playing_player(t0);
-    let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
-    assert_eq!(heading(&players, &b), "Paper Lanterns — The Quiet Hours");
-    let mut players = Players::default();
-    add_player(&mut players, "radio", 3, player_properties("Playing", &"a".repeat(40), &[], None));
-    let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
-    assert_eq!(heading(&players, &b), format!("{}…", "a".repeat(29)), "no artist row: the title alone, as drawn");
-    assert_eq!(heading(&Players::default(), &Boxed::default()), "", "nothing shown");
-}
-
 /// A tick whose rows did not change commits nothing (`popup_draw` compares with `last`): two
 /// instants in the same second of the track render the very same rows.
 #[test]

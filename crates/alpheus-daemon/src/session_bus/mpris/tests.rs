@@ -174,7 +174,8 @@ fn the_17th_player_is_turned_away_with_one_log_line_per_full_episode() {
     }
     assert_eq!(m.players().len(), MAX_PLAYERS);
     assert_eq!(out.ids(Method::GetNameOwner).len(), MAX_PLAYERS, "the 17th never asked");
-    assert_eq!(lines(&format!("16 players already followed; {} and any more", names[MAX_PLAYERS])), 1, "16 followed: it is ignored");
+    assert_eq!(lines("16 players already followed; any more are ignored"), 1, "16 followed: it is ignored");
+    assert_eq!(lines(&names[MAX_PLAYERS]), 0, "the line never names the player it turned away");
     out.take();
     // Still full: another arrival is turned away, without a second line.
     assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.late", "", ":1.200")));
@@ -503,7 +504,8 @@ fn an_arrival_is_followed_while_listed_names_resolve() {
         m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
     }
     assert_eq!(m.players().len(), MAX_PLAYERS);
-    assert_eq!(lines(&format!("16 players already followed; {} and any more", names[MAX_PLAYERS - 1])), 1);
+    assert_eq!(lines("16 players already followed; any more are ignored"), 1);
+    assert_eq!(lines(&names[MAX_PLAYERS - 1]), 0, "the line never names the player it turned away");
 }
 
 /// Departures in one batch share one listing; a new one is asked once it answered.

@@ -139,13 +139,13 @@ impl Mpris {
 
     /// Room for one more followed player. The first refusal of a full episode is logged; the rest
     /// are silent.
-    fn room(&mut self, bus_name: &str) -> bool {
+    fn room(&mut self) -> bool {
         if self.players.len() < MAX_PLAYERS {
             return true;
         }
         if !self.full {
             self.full = true;
-            (self.log)(&format!("media: {MAX_PLAYERS} players already followed; {bus_name} and any more are ignored"));
+            (self.log)(&format!("media: {MAX_PLAYERS} players already followed; any more are ignored"));
         }
         false
     }
@@ -153,7 +153,7 @@ impl Mpris {
     /// `bus_name` is owned by `unique`: followed and read once (GetAll, Identity), room permitting.
     /// An owner that is not a unique name never enters the owner table.
     fn arrive(&mut self, out: &mut impl Outbox, bus_name: &str, unique: &str) {
-        if !is_unique(unique) || !self.room(bus_name) || !self.players.add(bus_name.to_string(), unique.to_string()) {
+        if !is_unique(unique) || !self.room() || !self.players.add(bus_name.to_string(), unique.to_string()) {
             return;
         }
         self.stale = true;
@@ -190,8 +190,8 @@ impl Mpris {
             let resolving = self.resolving();
             if self.players.len() + resolving >= MAX_PLAYERS {
                 if resolving == 0 {
-                    let name = self.waiting.remove(0);
-                    self.room(&name);
+                    self.waiting.remove(0);
+                    self.room();
                     self.waiting.clear();
                 }
                 return;
@@ -279,7 +279,7 @@ impl Mpris {
             }
             // Lost to our own timeout: asked once more, in the slot it frees.
             (Ask::Owner(name, false), Err(CallError::Timeout)) => {
-                if self.room(&name) {
+                if self.room() {
                     self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
                 } else {
                     self.resolve_waiting(out);
