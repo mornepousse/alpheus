@@ -254,8 +254,8 @@ anything.
 - Tests never call a real `wpctl`, `nmcli`, `systemctl`...: use the injectable
   [executor](GLOSSARY.md#executor) and its fake (the timer's sound goes through it:
   `the_sound_spawns_its_argv_and_logs_no_command`).
-- The test, format and lint commands are in [`CONTRIBUTING.md`](../CONTRIBUTING.md) ("Building and
-  testing"); run all of them.
+- The test, format and lint commands are in [`CONTRIBUTING.md`](../CONTRIBUTING.md) ("Commands");
+  run all of them.
 - The release memory suite for anything resident, run against a base commit back to back.
 - Links: from the repository root, `nix run nixpkgs#lychee -- --offline --include-fragments
   '**/*.md'`.

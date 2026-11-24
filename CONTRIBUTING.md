@@ -114,8 +114,11 @@ displays.
   [`docs/comparison.md`](docs/comparison.md), and
   [`docs/measurements.md`](docs/measurements.md) when it costs anything.
 - A new module follows [`docs/adding-a-module.md`](docs/adding-a-module.md).
-- A design lands as a spec in `docs/specs/` before the code
-  ([`docs/specs/README.md`](docs/specs/README.md)).
+- A design of a delivery's size lands as a spec in `docs/specs/` before the code
+  ([`docs/specs/README.md`](docs/specs/README.md)). The specs already there are the records of
+  past deliveries, not the authority on what ships today: that is the code,
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+  [`docs/decisions.md`](docs/decisions.md).
 - Each module's `//!` header says what it is and what it never does; keep it
   true.
 

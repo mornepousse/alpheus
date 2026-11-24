@@ -221,7 +221,7 @@ the window title are empty there (see [compositors.md](compositors.md)).
 ```sh
 alpheus-demon            # in a terminal of the session: the log goes to standard error
 alpheus-launch --toggle  # opens the launcher; exit code 3 means the daemon is not running
-alpheus                  # the control center; 1 to 7 switch tabs, q quits
+alpheus                  # the control center; 1 to 8 switch tabs, q quits
 ```
 
 The first log lines name the detected compositor (`compositor: Sway ($SWAYSOCK)`)
