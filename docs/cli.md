@@ -74,6 +74,7 @@ alpheus-launch [--toggle | --close
                | --calc | --windows | --notes
                | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
                | --shield on|off|toggle|status|allow
+               | --capture select
                | --clipboard | --clipboard-clear
                | --tools
                | --power
@@ -99,6 +100,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--notes` | open or close the quick notepad ([notes](features/notes.md)); a `--notes` less than 250 ms after the one that opened it is ignored |
 | `--timer start <duration>\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup` | drive the focus timer: a duration is `90s`, `25m`, `1h30m` or a bare number of minutes, 1 second to 24 hours; `pause`... `skip` act on whatever runs (nothing to act on is no error); `popup` opens or closes the popup under the chip, the keyboard taken without a grab (a second within 250 ms of its own open is ignored); exit 2 without the `timer` module |
 | `--shield on\|off\|toggle\|status\|allow` | drive [Shield mode](features/shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run |
+| `--capture select` | run the screenshot area selector alone: drag to select, release or Enter to confirm, Esc, a right click or a click without a drag to cancel; nothing is captured yet (the capture verbs join it). Answers 0 once the selector is open or cancelled by a second call |
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
@@ -124,7 +126,7 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--clipboard`, `--clipboard-clear`, `--tools`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
 `--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard` and

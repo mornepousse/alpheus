@@ -8491,3 +8491,117 @@ fn shield_the_hook_fires_on_a_change_past_the_quiet_window() {
     assert!(w.d.wait_for("hook: shield", DELAY), "{:?}", w.d.log());
     assert_eq!(recorded(&w.sway, "hook-rec"), ["hook-rec up|ALPHEUS_EVENT=shield ALPHEUS_SHIELD=on "]);
 }
+
+// `alpheus-launch --capture select` end to end, on the Sway backend: the area selector alone.
+// Nothing is captured; the log says only that an area was selected or that nothing was (never the
+// geometry), so a geometry is pinned by the model's own tests.
+
+const SELECTOR_SHOWN: &str = "capture: selector shown";
+
+fn selector_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    // The pointer exists on the seat before the surface does.
+    sway.hover(50, 50);
+    (sway, d)
+}
+
+/// Sends the verb and waits for the selector's surface to be drawn.
+fn open_selector(sway: &Sway, d: &Daemon, nth: usize) {
+    assert_eq!(script(sway, &["--capture", "select"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(SELECTOR_SHOWN, nth, DELAY), "{:?}", d.log());
+    // A motion over the new surface, so the pointer has entered it.
+    sway.hover(60, 60);
+}
+
+/// Dragging with the left button selects, and the release closes the selector with an area.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn area_capture_by_drag_selects_the_area() {
+    let (sway, d) = selector_daemon("select-drag");
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: nothing selected"), 0, "{:?}", d.log());
+}
+
+/// A click without a drag, and a click of the right button, select nothing.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_click_without_a_drag_and_a_right_click_cancel() {
+    let (sway, d) = selector_daemon("select-click");
+    open_selector(&sway, &d, 1);
+    sway.hover(100, 100);
+    sway.command("seat - cursor press button1");
+    sway.command("seat - cursor release button1");
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    open_selector(&sway, &d, 2);
+    sway.hover(120, 120);
+    sway.click(120, 120, "button3");
+    assert!(d.wait_for_count("capture: selector closed (cancelled)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: area selected"), 0, "{:?}", d.log());
+}
+
+/// Escape cancels with nothing selected, and the clipboard is left as it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn esc_cancels_silently_and_leaves_the_clipboard() {
+    let (sway, d) = selector_daemon("select-esc");
+    let _selection = wl_copy(&sway, "kept text 31", None, false);
+    let t = Instant::now();
+    while wl_paste(&sway).as_deref() != Some("kept text 31") {
+        assert!(t.elapsed() < DELAY, "the clipboard never held the text");
+        thread::sleep(Duration::from_millis(20));
+    }
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (220, 180), true);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert_eq!(wl_paste(&sway).as_deref(), Some("kept text 31"), "a cancel never touches the clipboard: {:?}", d.log());
+}
+
+/// Enter confirms the rectangle while the button is still down.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn enter_confirms_the_rectangle_being_dragged() {
+    let (sway, d) = selector_daemon("select-enter");
+    open_selector(&sway, &d, 1);
+    // One continuous wtype: its keyboard leaving would close the selector as `focus lost`.
+    let keys = wtype_spawn(&sway, &["-s", "1800", "-k", "Return"]);
+    sway.drag((100, 100), (260, 200), true);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert!(keys.wait().unwrap().success());
+}
+
+/// The verb a second time cancels the open selector; the launcher and the pad give way to it, and
+/// it to them: one box at a time.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_selector_is_one_box_at_a_time() {
+    let (sway, d) = selector_daemon("select-exclusive");
+    open_selector(&sway, &d, 1);
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    // The pad replaces an open selector.
+    open_selector(&sway, &d, 2);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    // The selector replaces an open launcher box: its dmenu client is cancelled.
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+    let menu = script(&sway, &["--dmenu"], "a\nb\n");
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert_eq!(menu.join().unwrap().0, 1, "the dmenu client is cancelled");
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SELECTOR_SHOWN, 3, DELAY), "{:?}", d.log());
+}
