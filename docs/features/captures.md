@@ -114,6 +114,6 @@ crate, on a short-lived thread, and nothing of a capture is kept".
 Nothing at rest: no thread, no timer, no surface, no buffer. A capture lives for a few hundred
 milliseconds: the selector's shm pool (≈ 3.7 MB while it is open), one frame (3.6 MB at 1280 × 720),
 the PNG and the worker thread, all given back (`release_memory`). Ten more captures grew the daemon's
-anonymous memory by 16 KB (limit 64 KB), with 0 wake-ups at rest afterwards
+anonymous memory by 8 to 16 KB (limit 64 KB), with 0 wake-ups at rest afterwards
 (`at_rest_no_wakeups_after_a_screen_capture`). The `png` crate adds ≈ 78 KB to the stripped binary.
 See [measurements.md](../measurements.md).

@@ -1756,3 +1756,19 @@ is dropped unread and never taken for the next one's.
 
 Date: 2026-11-24 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline`, `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
 
+
+### Large blocks are always mapped on their own
+
+glibc raises its mmap threshold to the size of the first large block a program frees, and from then
+on serves blocks of that size from an arena's heap. In the daemon the first such block is a
+capture's frame (3.6 MB at 1280 × 720): after it, the worker's image and PNG came from the second
+arena (`M_ARENA_MAX` is 2), where a freed block at the heap's top is never returned by
+`malloc_trim`, and one frame's worth of anonymous memory stayed resident from the third capture on
+(1,080 → 4,740 KB over ten captures, three runs out of three). The daemon now sets
+`M_MMAP_THRESHOLD` to glibc's own default, 128 KiB, at start, next to `M_ARENA_MAX`: setting it
+turns the dynamic adjustment off, so every block of 128 KiB or more has its own mapping and is
+unmapped when freed. The cost is one `mmap` and one `munmap` per such block: a few per capture,
+and elsewhere only where a block that large is allocated. The memory suite is the check that no
+other figure rose with it: `startup_pss_per_source` reads the same on both sides, 3 runs each.
+
+Date: 2026-11-24 · Source: `limit_malloc_arenas` (`startup.rs`), test `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)

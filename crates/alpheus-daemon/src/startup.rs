@@ -544,14 +544,26 @@ pub fn run() -> i32 {
 /// 15 MB): otherwise the sound and D-Bus threads would each
 /// get their own arena, whose freed fragments `release_memory`
 /// (`malloc_trim`) can't always hand back to the system.
+///
+/// It also pins the mmap threshold at glibc's own default (128 KiB). Left dynamic, glibc raises it
+/// to the size of the first large block freed (a capture's 3.6 MB frame), after which such blocks
+/// come from an arena's heap; on the second arena the freed block is the heap's top, which
+/// `malloc_trim` never returns, so one frame's worth stayed resident after the third capture. A
+/// fixed threshold keeps every block of 128 KiB or more in its own mapping, unmapped when freed.
+/// See docs/decisions.md, "Large blocks are always mapped on their own".
 fn limit_malloc_arenas() {
     // SAFETY: mallopt(3) only changes the allocator's configuration; no
     // other thread exists yet (sources and the guard start further below).
     #[cfg(target_env = "gnu")]
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, MMAP_THRESHOLD);
     }
 }
+
+/// glibc's default mmap threshold, set explicitly so that it never moves (`limit_malloc_arenas`).
+#[cfg(target_env = "gnu")]
+const MMAP_THRESHOLD: libc::c_int = 128 * 1024;
 
 /// bar.toml and the theme, read once at start-up.
 struct Loaded {
