@@ -924,7 +924,10 @@ fn a_builtin_choice_activates_the_builtin_with_its_label() {
     assert_eq!(texts(&l), ["Cancel shutdown (in 1h20)", "30 min", "1 h", "1 h 30", "2 h", "3 h"]);
     let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     select(&mut l, "1 h 30");
-    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("1 h 30".into()), text: None })));
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("1 h 30".into()), text: None }))
+    );
     select(&mut l, "Cancel shutdown (in 1h20)");
     assert_eq!(
         l.key(Key::Enter),
@@ -982,5 +985,8 @@ fn a_builtin_choice_is_reachable_from_the_flat_search() {
     assert!(t.contains("2 h"), "{t}");
     let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     // The flat row of a fixed choice: Enter drills nowhere, it activates.
-    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("2 h".into()), text: None })));
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("2 h".into()), text: None }))
+    );
 }
