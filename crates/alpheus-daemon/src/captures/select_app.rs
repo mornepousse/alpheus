@@ -102,8 +102,8 @@ pub(crate) fn paint_dim(px: &mut [u8], width: u32, height: u32, area: Option<(i3
         return; // inconsistent buffer: do nothing rather than panic
     }
     // Black at a quarter: premultiplied, so only the alpha byte is not zero.
-    for pixel in px.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&[0, 0, 0, DIM_ALPHA]);
+    for pixel in px.as_chunks_mut::<4>().0 {
+        *pixel = [0, 0, 0, DIM_ALPHA];
     }
     let Some((x, y, w, h)) = area else { return };
     let (x1, y1) = (x.saturating_add(w as i32), y.saturating_add(h as i32));
@@ -127,8 +127,8 @@ fn fill_rect(px: &mut [u8], width: u32, height: u32, (x0, y0, x1, y1): (i32, i32
     }
     for row in y0..y1 {
         let start = (row * width as usize + x0) * 4;
-        for pixel in px[start..start + (x1 - x0) * 4].chunks_exact_mut(4) {
-            pixel.copy_from_slice(&value);
+        for pixel in px[start..start + (x1 - x0) * 4].as_chunks_mut::<4>().0 {
+            *pixel = value;
         }
     }
 }
@@ -229,13 +229,10 @@ impl App {
         let scale = info.as_ref().map_or(1, |i| i.scale_factor).max(1);
         let size = info.as_ref().and_then(|i| i.logical_size).map_or(FALLBACK_OUTPUT_SIZE, |(w, h)| (w.max(1) as u32, h.max(1) as u32));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
-        let pool = match SlotPool::new(pool_size(bytes, 0).max(4096), &self.shm) {
-            Ok(p) => p,
-            Err(_) => {
-                log("capture: no shared buffer, selector not opened");
-                self.select_finished(None, None);
-                return;
-            }
+        let Ok(pool) = SlotPool::new(pool_size(bytes, 0).max(4096), &self.shm) else {
+            log("capture: no shared buffer, selector not opened");
+            self.select_finished(None, None);
+            return;
         };
         let surface = self.compositor.create_surface(qh);
         let layer = self.layers.create_layer_surface(qh, surface, Layer::Overlay, Some(NAMESPACE), named.as_ref());
