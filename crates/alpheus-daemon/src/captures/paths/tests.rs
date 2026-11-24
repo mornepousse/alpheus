@@ -37,7 +37,11 @@ fn user_dirs_names_the_pictures_folder() {
     assert_eq!(user_dir("# XDG_PICTURES_DIR=\"/a\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
     // `$HOME` must open the value and be followed by a plain path: nothing else is expanded.
     assert_eq!(user_dir("XDG_PICTURES_DIR=\"$HOME/$OTHER\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
-    assert_eq!(user_dir("XDG_PICTURES_DIR=\"$HOME/\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None, "the home itself is no pictures folder");
+    assert_eq!(
+        user_dir("XDG_PICTURES_DIR=\"$HOME/\"\n", "XDG_PICTURES_DIR", Path::new("/h")),
+        None,
+        "the home itself is no pictures folder"
+    );
     // `$HOME` anywhere but the start is not expanded: it is not a path then.
     assert_eq!(user_dir("XDG_PICTURES_DIR=\"/x/$HOME\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
 }

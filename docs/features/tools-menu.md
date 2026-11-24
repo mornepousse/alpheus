@@ -22,7 +22,7 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
 ## Using it
 
 **Browsing.** With the query empty the box lists categories (`Quick settings`, `Control center`,
-`Utilities`, `Session`, and your own). Enter or → opens one; ← or Esc goes back up; Esc at the root
+`Utilities`, `Captures` (only with screencopy), `Session`, and your own). Enter or → opens one; ← or Esc goes back up; Esc at the root
 closes. Every action closes the box: a run, a built-in opening its feature, a toggle. Only opening a
 level, going up, a confirmation question and a program not on the `$PATH` (said in the box) keep it open.
 

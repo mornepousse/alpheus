@@ -1711,3 +1711,35 @@ leaves the anonymous memory where it was. One file, `captures/screencopy.rs`, sp
 protocol.
 
 Date: 2026-11-24 · Source: tests `encode_png_round_trips_a_small_image`, `a_wrong_size_is_refused` (`captures/encode.rs`), `a_capture_cycle_gives_its_memory_back` and `capture_output_returns_a_frame_of_the_output_size` (`tests/screencopy_headless.rs`), `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)
+
+### A capture never touches the clipboard unless it succeeded
+
+A cancelled selection is silent and leaves the clipboard as it was; a capture that failed gives one
+critical notice and leaves it too; the success notice follows a capture that happened. The clipboard is
+only reached by the worker with PNG bytes in hand, and a copy command that cannot start is a failure,
+not a success. A custom `copy` command must accept a PNG on its standard input: the default `wl-copy`
+alone is told `--type image/png`.
+
+Date: 2026-11-24 · Source: tests `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one` (`captures/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
+
+### A capture waits for the selector's removal
+
+The selector's surface is destroyed before its answer is used, but the compositor must deal with the
+removal before a frame is asked, or the dim is in the capture. The flow therefore waits for a
+`wl_display.sync` sent after the destruction (`Step::Settle`, then `Flow::settled`); the selector's
+answer never asks for the frame itself. On the harness's sway the dim stays out even without the wait
+(requests are handled in order), so the rule is pinned on the flow and by a guardrail, and the headless
+test checks the pixels.
+
+Date: 2026-11-24 · Source: tests `a_selection_waits_for_the_compositor_before_the_frame_is_asked` (`captures/tests.rs`), `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`), `an_area_capture_has_no_dim_tint` (`tests/headless_session.rs`)
+
+### A screenshot reaches the copy command as a file on its standard input
+
+`Executor::spawn_with_input` carries at most one page, which a PNG far exceeds. The worker writes the
+PNG to a private file (`$XDG_RUNTIME_DIR/alpheus/capture.png`, owner only, atomic), starts the copy
+command with that file as its standard input (`Executor::spawn_with_stdin_file`: no pipe to fill, the
+call never waits) and removes the file at once, the command holding its own descriptor. The cut, the
+encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
+
+Date: 2026-11-24 · Source: tests `spawn_with_stdin_file_feeds_a_big_file_and_survives_its_deletion` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file` (`tests/guardrails.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
