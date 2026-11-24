@@ -173,6 +173,20 @@ fn invalid_rules_make_the_file_invalid() {
             "tools.entry 1",
             "control character or U+FFFD",
         ),
+        // `ask` and `{text}` go together, `{text}` whole and once, as `{choice}` is.
+        (entry("ask = \"Target\"\n"), "tools.entry 1", "ask needs run to hold \"{text}\" exactly once"),
+        (entry("").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "no ask"),
+        (entry("").replace("run = [\"x\"]", "run = [\"x\", \"a{text}\"]"), "tools.entry 1", "no ask"),
+        (entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"x\", \"a{text}\"]"), "tools.entry 1", "exactly once, as a whole"),
+        (
+            entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\", \"{text}\"]"),
+            "tools.entry 1",
+            "exactly once, as a whole",
+        ),
+        (entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"{text}\"]"), "tools.entry 1", "run's program"),
+        (entry("ask = \"T\"\nconfirm = true\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask and confirm"),
+        (entry("ask = \" \"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must not be blank"),
+        (entry("ask = \"\"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must be 1 to 48 characters"),
         (entry("state = [\" \"]\n"), "tools.entry 1", "state empty"),
         (entry("choices_cmd = [\" \"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"), "tools.entry 1", "choices_cmd empty"),
         (cat(""), "tools.category 1", "name must be 1 to 48 characters"),
@@ -422,4 +436,25 @@ fn a_toml_error_names_its_line_and_never_the_value() {
     let err = parse("[[tools.entry]]\nname = \"x\"\nrun = \"hunter2 --flag\"\n").unwrap_err();
     assert!(err.ends_with("line 3"), "{err}");
     assert!(!err.contains("hunter2"), "{err}");
+}
+
+#[test]
+fn an_ask_entry_parses_with_or_without_choices() {
+    let text = r#"
+[[tools.entry]]
+name = "Scan"
+run = ["nmap", "-sS", "{text}"]
+ask = "Target"
+
+[[tools.entry]]
+name = "Pick"
+run = ["probe", "{choice}", "--", "{text}"]
+choices = ["a", "b"]
+ask = "Value"
+"#;
+    let t = parse(text).unwrap().tools;
+    assert_eq!(t.entries[0].ask.as_deref(), Some("Target"));
+    assert_eq!(t.entries[1].ask.as_deref(), Some("Value"));
+    assert_eq!(t.entries[1].choices, v(&["a", "b"]));
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].ask, None, "no ask by default");
 }

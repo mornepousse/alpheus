@@ -14,7 +14,7 @@ use crate::launcher::model::{Activation, Launcher};
 use crate::launcher::scan::has_program;
 use crate::launcher::sources::run_argv;
 use crate::launcher::tools::catalog::{BUILTINS, Choices, EntryKind};
-use crate::launcher::tools::config::{CHOICE_PLACEHOLDER, EntryConfig};
+use crate::launcher::tools::config::{CHOICE_PLACEHOLDER, EntryConfig, TEXT_PLACEHOLDER};
 use crate::launcher::tools::nav::ToolAction;
 use crate::log::write as log;
 use alpheus_common::exec::{ExecError, Executor};
@@ -70,9 +70,10 @@ pub fn shell_argv(text: &str, terminal: Option<&[String]>) -> Vec<String> {
 }
 
 /// A user entry's argv: `run` with `terminal` or `terminal_hold` in front, and the
-/// one element that is exactly `{choice}` replaced by the chosen line, whole: a space, a quote, `-rf`
-/// or `{choice}` in the line stays inside that one argument.
-pub fn tool_argv(e: &EntryConfig, choice: Option<&str>, terminal: &[String], terminal_hold: &[String]) -> Vec<String> {
+/// one element that is exactly `{choice}` replaced by the chosen line, and the one that is exactly
+/// `{text}` by the typed text, each whole: a space, a quote, `;`, `-rf` or `{choice}` in them stays
+/// inside that one argument (no shell is involved).
+pub fn tool_argv(e: &EntryConfig, choice: Option<&str>, text: Option<&str>, terminal: &[String], terminal_hold: &[String]) -> Vec<String> {
     let front: &[String] = if e.hold {
         terminal_hold
     } else if e.terminal {
@@ -80,8 +81,9 @@ pub fn tool_argv(e: &EntryConfig, choice: Option<&str>, terminal: &[String], ter
     } else {
         &[]
     };
-    let run = e.run.iter().map(|a| match choice {
-        Some(c) if a == CHOICE_PLACEHOLDER => c.to_string(),
+    let run = e.run.iter().map(|a| match (choice, text) {
+        (Some(c), _) if a == CHOICE_PLACEHOLDER => c.to_string(),
+        (_, Some(t)) if a == TEXT_PLACEHOLDER => t.to_string(),
         _ => a.clone(),
     });
     front.iter().cloned().chain(run).collect()
@@ -171,12 +173,12 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
             remember(l, ctx, &format!("tool:builtin:{id}"));
             Ok(Done::Builtin(i))
         }
-        ToolAction::User { entry, choice } => {
+        ToolAction::User { entry, choice, text } => {
             let catalog = &l.tools().ok_or_else(gone)?.catalog;
             let e = catalog.entries.get(entry).ok_or_else(gone)?;
             let EntryKind::User(at) = e.kind else { return Err(gone()) };
             let config = l.config.tools.entries.get(at).ok_or_else(gone)?;
-            let argv = tool_argv(config, choice.as_deref(), &l.config.terminal, &l.config.terminal_hold);
+            let argv = tool_argv(config, choice.as_deref(), text.as_deref(), &l.config.terminal, &l.config.terminal_hold);
             let key = match (&e.choices, &choice) {
                 (Choices::Fixed(_), Some(c)) => Some(catalog.choice_key(entry, c)),
                 // A process list or a file name is never kept.

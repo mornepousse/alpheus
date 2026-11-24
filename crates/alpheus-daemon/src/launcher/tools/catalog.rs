@@ -171,6 +171,8 @@ pub struct Entry {
     pub order: u16,
     pub choices: Choices,
     pub confirm: bool,
+    /// The label of the typed text the entry asks for, after its choice if it has one.
+    pub ask: Option<String>,
     /// Whether a state is known for it: a built-in with a daemon-side state, a user entry with `state`.
     pub has_state: bool,
     /// The history key; a fixed choice appends `/<choice>` (`Catalog::choice_key`).
@@ -257,6 +259,7 @@ impl Catalog {
                         order: DEFAULT_ORDER,
                         choices: Choices::None,
                         confirm: false,
+                        ask: None,
                         has_state: matches!(b.action, BuiltinAction::Dnd | BuiltinAction::Toggle(_)),
                         key: format!("tool:builtin:{}", b.id),
                     });
@@ -279,6 +282,7 @@ impl Catalog {
                 order: e.order.unwrap_or(DEFAULT_ORDER),
                 choices,
                 confirm: e.confirm,
+                ask: e.ask.clone(),
                 has_state: !e.state.is_empty(),
                 key: format!("tool:user:{}/{}", e.category.as_deref().unwrap_or(""), e.name),
             });

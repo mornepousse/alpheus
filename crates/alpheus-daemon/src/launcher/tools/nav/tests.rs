@@ -271,7 +271,7 @@ fn confirm_asks_waits_runs_and_expires() {
     assert_eq!(key_at(&mut l, Key::Enter, t0 + 300 * MS), Outcome::Nothing, "a double Enter never confirms");
     assert_eq!(
         key_at(&mut l, Key::Enter, t0 + 500 * MS),
-        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None }))
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None, text: None }))
     );
     assert_eq!(l.tools().unwrap().next_deadline(), None, "answered: no deadline");
     // Asked again, then left alone: 3 s expires it (the host redraws).
@@ -316,7 +316,7 @@ fn a_confirm_choice_asks_with_its_own_row() {
     assert!(!l.tools().unwrap().asking(RowId::Choice(generation, 0)), "the question is the row's, not the level's");
     assert_eq!(
         key_at(&mut l, Key::Enter, t0 + 500 * MS),
-        Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()) }))
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()), text: None }))
     );
 }
 
@@ -362,7 +362,7 @@ fn a_choices_cmd_entry_drills_with_a_job_and_reading() {
     assert!(!l.tools().unwrap().reading);
     assert_eq!(texts(&l), ["alpha", "beta"]);
     select(&mut l, "beta");
-    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry, choice: Some("beta".into()) })));
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry, choice: Some("beta".into()), text: None })));
 }
 
 #[test]
@@ -503,7 +503,7 @@ fn enter_on_a_plain_tool_runs_it_and_a_builtin_is_handed_out() {
     let mut l = apps(CFG);
     typed(&mut l, "update");
     let update = catalog_entry(&l, "Update");
-    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry: update, choice: None })));
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry: update, choice: None, text: None })));
     // The built-ins join the search as well (a context that shows Notes).
     let (config, catalog) = catalog("");
     let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
@@ -530,7 +530,10 @@ fn enter_on_a_tool_with_choices_drills() {
     typed(&mut l, "generation diff");
     assert_eq!(selected_text(&l), "Generation · diff");
     let generation = catalog_entry(&l, "Generation");
-    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()) })));
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: generation, choice: Some("diff".into()), text: None }))
+    );
     // A choices_cmd entry drills with its read.
     let mut l = apps(CFG);
     typed(&mut l, "pick");
@@ -554,7 +557,7 @@ fn enter_on_a_confirm_tool_in_all_asks_in_the_tools_mode() {
     assert_eq!(key_at(&mut l, Key::Enter, t0 + 100 * MS), Outcome::Nothing, "a double Enter never confirms");
     assert_eq!(
         key_at(&mut l, Key::Enter, t0 + 500 * MS),
-        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None }))
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: collect, choice: None, text: None }))
     );
     // A root confirm entry asks at the root.
     let mut l = apps(&CFG.replace("run = [\"x\", \"home\"]", "run = [\"x\", \"home\"]\nconfirm = true"));
@@ -660,4 +663,159 @@ fn leaving_tools_by_a_mode_click_cancels_the_pending_read() {
     assert!(!l.tools().unwrap().reading);
     assert!(!l.adopt_choices(entry, token, vec!["late".into()], false));
     assert_eq!(l.message, None, "no message nor refilter in All");
+}
+
+// ---- the typed text step (`ask`) ----
+
+const ASK: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Net"
+[[tools.entry]]
+name = "Scan"
+category = "Net"
+run = ["nmap", "{choice}", "{text}"]
+choices = ["quick", "full"]
+ask = "Target"
+[[tools.entry]]
+name = "Ping"
+category = "Net"
+run = ["ping", "-c1", "{text}"]
+ask = "Host"
+[[tools.entry]]
+name = "Plain"
+run = ["x"]
+"#;
+
+fn ask_entry(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+#[test]
+fn an_entry_with_ask_prompts_after_its_choice() {
+    let mut l = tools(ASK);
+    select(&mut l, "Net");
+    l.key(Key::Enter);
+    select(&mut l, "Scan");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "the entry drills into its choices first");
+    select(&mut l, "full");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "a choice of an ask entry opens the prompt, runs nothing");
+    assert_eq!(texts(&l), ["Target"], "one row: the label");
+    assert_eq!(breadcrumb(&l), "Tools › Net › Scan › full");
+    typed(&mut l, "10.0.0.0/24");
+    assert_eq!(texts(&l), ["Target"], "what is typed answers, it never filters the prompt");
+    let scan = ask_entry(&l, "Scan");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::User {
+            entry: scan,
+            choice: Some("full".into()),
+            text: Some("10.0.0.0/24".into())
+        }))
+    );
+    assert!(l.query.is_empty(), "the answer is moved out of the box");
+}
+
+#[test]
+fn an_ask_entry_without_choices_prompts_directly() {
+    let mut l = tools(ASK);
+    select(&mut l, "Net");
+    l.key(Key::Enter);
+    select(&mut l, "Ping");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!(texts(&l), ["Host"]);
+    assert_eq!(breadcrumb(&l), "Tools › Net › Ping");
+    typed(&mut l, "a b; rm -rf /");
+    let ping = ask_entry(&l, "Ping");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: ping, choice: None, text: Some("a b; rm -rf /".into()) }))
+    );
+    // A plain entry still runs at once.
+    let mut l = tools(ASK);
+    select(&mut l, "Plain");
+    assert!(matches!(l.key(Key::Enter), Outcome::Activate(_)));
+}
+
+#[test]
+fn esc_in_the_prompt_returns_to_the_choices() {
+    let mut l = tools(ASK);
+    select(&mut l, "Net");
+    l.key(Key::Enter);
+    select(&mut l, "Scan");
+    l.key(Key::Enter);
+    select(&mut l, "full");
+    l.key(Key::Enter);
+    typed(&mut l, "half");
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert_eq!(texts(&l), ["quick", "full"], "back on the choices, the typed text dropped");
+    assert_eq!(selected_text(&l), "full", "on the choice it came from");
+    assert!(l.query.is_empty());
+    // And an entry with no choices goes back to its category.
+    l.key(Key::Escape);
+    select(&mut l, "Ping");
+    l.key(Key::Enter);
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert_eq!(texts(&l), ["Scan", "Ping"]);
+    // The choice does not leak into the next prompt.
+    select(&mut l, "Ping");
+    l.key(Key::Enter);
+    typed(&mut l, "h");
+    let ping = ask_entry(&l, "Ping");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::User { entry: ping, choice: None, text: Some("h".into()) }))
+    );
+}
+
+#[test]
+fn an_empty_text_runs_nothing() {
+    let mut l = tools(ASK);
+    select(&mut l, "Net");
+    l.key(Key::Enter);
+    select(&mut l, "Ping");
+    l.key(Key::Enter);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    typed(&mut l, "   ");
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "blank is empty");
+    assert_eq!(texts(&l), ["Host"], "still in the prompt");
+}
+
+#[test]
+fn the_flat_search_and_mod_space_reach_the_prompt() {
+    // Flat search at the Tools root: a fixed choice of an ask entry goes down through its choices.
+    let mut l = tools(ASK);
+    typed(&mut l, "scan full");
+    select(&mut l, "Scan · full");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!(breadcrumb(&l), "Tools › Net › Scan › full");
+    l.key(Key::Escape);
+    assert_eq!(texts(&l), ["quick", "full"]);
+    // The entry itself from the flat search.
+    let mut l = tools(ASK);
+    typed(&mut l, "ping");
+    select(&mut l, "Ping");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!(breadcrumb(&l), "Tools › Net › Ping");
+    // Mod+Space: the hit switches the box to the Tools mode, at the prompt.
+    let mut l = apps(ASK);
+    typed(&mut l, "ping");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(_))).expect("the tool hit");
+    l.selected = at;
+    assert!(!matches!(l.key(Key::Enter), Outcome::Activate(_)), "it asks first, it never runs");
+    assert_eq!(l.mode, Mode::Tools);
+    assert_eq!(breadcrumb(&l), "Tools › Net › Ping");
+    assert_eq!(texts(&l), ["Host"]);
+}
+
+#[test]
+fn a_right_arrow_on_an_ask_entry_opens_its_prompt() {
+    let mut l = tools(ASK);
+    select(&mut l, "Net");
+    l.key(Key::Enter);
+    select(&mut l, "Ping");
+    assert_eq!(l.key(Key::Right), Outcome::Redraw);
+    assert_eq!(texts(&l), ["Host"]);
+    assert_eq!(l.key(Key::Right), Outcome::Nothing, "→ in the prompt does nothing");
 }

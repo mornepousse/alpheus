@@ -23,6 +23,8 @@ pub const ORDER_MAX: u16 = 1000;
 pub const DEFAULT_ORDER: u16 = 50;
 /// The one element of `run` replaced by the chosen line, whole: never part of an argument.
 pub const CHOICE_PLACEHOLDER: &str = "{choice}";
+/// The one element of `run` replaced by the typed text (`ask`), whole: never part of an argument.
+pub const TEXT_PLACEHOLDER: &str = "{text}";
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
 pub const BUILTIN_CATEGORIES: [&str; 4] = ["Quick settings", "Control center", "Utilities", "Session"];
 
@@ -78,6 +80,8 @@ pub struct EntryConfig {
     pub choices: Vec<String>,
     /// Argv whose output lines are the choices, run at drill-in.
     pub choices_cmd: Vec<String>,
+    /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
+    pub ask: Option<String>,
     /// 1-based position in the file (what logs name an entry by); set after parsing.
     #[serde(skip)]
     pub position: usize,
@@ -146,6 +150,30 @@ fn check_argv(at: &str, key: &str, argv: &[String]) -> Result<(), String> {
     }
 }
 
+/// `ask` and `{text}` go together: the label is a name's text, `confirm` is not offered (the typed
+/// text is the confirmation), and `{text}` is one whole argument, never the program, as `{choice}` is.
+fn check_ask(at: &str, e: &EntryConfig) -> Result<(), String> {
+    let whole = e.run.iter().filter(|a| a.as_str() == TEXT_PLACEHOLDER).count();
+    let partial = e.run.iter().any(|a| a.contains(TEXT_PLACEHOLDER) && a.as_str() != TEXT_PLACEHOLDER);
+    let Some(label) = &e.ask else {
+        if whole != 0 || partial {
+            return Err(format!("{at}: run holds \"{TEXT_PLACEHOLDER}\" but the entry has no ask"));
+        }
+        return Ok(());
+    };
+    check_text(at, "ask", label, TOOL_NAME_MAX)?;
+    if e.confirm {
+        return Err(format!("{at}: ask and confirm are both set"));
+    }
+    if e.run.first().is_some_and(|p| p.as_str() == TEXT_PLACEHOLDER) {
+        return Err(format!("{at}: run's program must not be \"{TEXT_PLACEHOLDER}\""));
+    }
+    if whole != 1 || partial {
+        return Err(format!("{at}: ask needs run to hold \"{TEXT_PLACEHOLDER}\" exactly once, as a whole argument"));
+    }
+    Ok(())
+}
+
 /// The rules of a valid `[tools]` table. A message names the key and `tools.entry <i>` / `tools.category <i>`
 /// (1-based), never the text of a name, command or choice.
 pub fn validate(t: &ToolsConfig) -> Result<(), String> {
@@ -199,6 +227,7 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         for (k, choice) in e.choices.iter().enumerate() {
             check_text(&at, &format!("choice {}", k + 1), choice, CHOICE_MAX)?;
         }
+        check_ask(&at, e)?;
         let whole = e.run.iter().filter(|a| a.as_str() == CHOICE_PLACEHOLDER).count();
         let partial = e.run.iter().any(|a| a.contains(CHOICE_PLACEHOLDER) && a.as_str() != CHOICE_PLACEHOLDER);
         if e.has_choices() {

@@ -33,6 +33,15 @@ choices, that level only. Entries also rank in Mod+Space's normal search.
 **Confirming.** An entry with `confirm = true` turns into `Name? ⏎` on the first Enter and runs on a
 second one between 0.4 s and 3 s later. A double Enter never runs it.
 
+**Typing a value.** An entry with `ask = "Target"` has a prompt step: Enter on it (or, when it has
+choices, on one of its choices) opens a level with one row, the label, and what you type goes in the
+box's own input line, not into a filter. Enter runs with the text, Esc (or ⌫ on an empty line) goes
+back to the choices, or to the category. A blank text runs nothing and the prompt stays. The text
+reaches `run` as the one whole element `{text}`, the same rule as `{choice}`: spaces, quotes and `;`
+stay inside that one argument, and alpheus never passes it through a shell. It is never logged and
+never kept in the history (the history records the entry, and its fixed choice if it has one). An
+entry with `ask` and `confirm` is refused: the typed text is the confirmation.
+
 **A held Enter** does nothing in the Tools mode, so the repeat of the key that ran a built-in does not
 act in the popup it just opened.
 
@@ -58,9 +67,10 @@ most 128) has:
 | Key | What it does |
 | --- | --- |
 | `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root |
-| `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}` |
+| `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}`; with `ask`, exactly one element is `{text}` |
 | `terminal`, `hold` | Run in launcher.toml's `terminal`, or its `terminal_hold` |
-| `confirm` | Ask `Name? ⏎` first (see above) |
+| `confirm` | Ask `Name? ⏎` first (see above); not with `ask` |
+| `ask` | A label: the entry asks for a text first (see "Typing a value") |
 | `state` | An argv run once when the Tools mode is entered; exit 0 is on, any other exit off. At most 16 entries have one |
 | `choices` | Fixed choices, at most 32 |
 | `choices_cmd` | An argv whose output lines are the choices, run at each drill-in |
@@ -90,7 +100,7 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 
 - `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 23
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
-  entries; the levels, rows and confirmation question.
+  entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
   `choices_cmd`, through the executor's `capture`.
 - `app.rs`: the wiring on the daemon's state. `context` builds the `Context` from the configuration and
@@ -125,6 +135,8 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
   never panic and log nothing.
 - `the_tools_logs_are_fixed_words`: a log line of the menu is a fixed word, a built-in's id, an entry's
   position or counts, never a name, a command, a choice or a line.
+- `the_typed_text_is_one_whole_argv_element`, `text_is_never_logged_nor_recorded_in_history`: a typed
+  text is one argv element, and neither a log line, the history nor a `{:?}` of the action shows it.
 - `the_tools_glue_spawns_only_through_launch`: `app.rs` starts no process itself and calls the
   launcher's start function exactly once.
 - `every_builtin_argv_stays_on_the_allowlist`: a built-in's argv is the configured command,

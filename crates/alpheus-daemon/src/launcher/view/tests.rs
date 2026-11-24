@@ -884,6 +884,19 @@ fn tools_category_snapshot_with_switch_and_chevron() {
 }
 
 #[test]
+fn the_prompt_shows_its_label_the_typed_text_and_its_own_hint() {
+    let cfg = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Ping\"\nrun = [\"ping\", \"{text}\"]\nask = \"Host to ping\"\n";
+    let mut l = tools_box(cfg);
+    l.key(Key::Enter);
+    typed(&mut l, "10.0.0.1");
+    let (_, rows) = draw(&mut l, 100);
+    let text = tool_text(&rows);
+    assert!(text[0].contains("Tools › Ping") && text[0].contains("10.0.0.1"), "breadcrumb and typed text: {text:?}");
+    assert!(text.iter().any(|t| t.contains("Host to ping")), "the label is the one row: {text:?}");
+    assert!(text.iter().any(|t| t.contains("⏎ run · esc back")), "the prompt's own hint: {text:?}");
+}
+
+#[test]
 fn tools_flat_search_snapshot() {
     let mut l = tools_box(TOOLS_CFG);
     typed(&mut l, "gen");

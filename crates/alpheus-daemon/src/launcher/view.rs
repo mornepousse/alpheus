@@ -297,6 +297,7 @@ fn help_text(l: &Launcher) -> &'static str {
         // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
         Mode::Tools if l.tools().is_some_and(|t| t.at_root()) && l.origin == Origin::Apps => "⏎ open/run · ⌫ all · esc close",
         Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · esc close",
+        Mode::Tools if l.tools().is_some_and(|t| t.prompting()) => "⏎ run · esc back",
         Mode::Tools => "⏎ open/run · ← esc back",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
@@ -474,10 +475,11 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((String::new(), Style::NORMAL));
                 let opens = match row.id {
                     RowId::Category(_) => true,
-                    RowId::Entry(e) => {
-                        l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(|e| !matches!(e.choices, Choices::None))
-                    }
-                    RowId::Choice(..) => false,
+                    RowId::Entry(e) => l
+                        .tools()
+                        .and_then(|t| t.catalog.entries.get(e))
+                        .is_some_and(|e| !matches!(e.choices, Choices::None) || e.ask.is_some()),
+                    RowId::Choice(..) | RowId::Prompt(_) => false,
                 };
                 out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
             }

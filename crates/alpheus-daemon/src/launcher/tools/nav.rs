@@ -51,6 +51,10 @@ pub enum Level {
     Choices {
         entry: usize,
     },
+    /// The text the entry asks for: one row, the typed query is its answer.
+    Prompt {
+        entry: usize,
+    },
 }
 
 /// A row's identity, stable while the rows around it change: the question and the selection
@@ -61,6 +65,8 @@ pub enum RowId {
     Entry(usize),
     /// A choice of the entry: an index into its fixed choices or into the lines read.
     Choice(usize, usize),
+    /// The prompt row of the entry.
+    Prompt(usize),
 }
 
 /// What a row shows at its right edge.
@@ -84,11 +90,24 @@ pub struct ToolRow {
 }
 
 /// What a row runs. `Builtin` indexes `catalog::BUILTINS`; `User` names the catalog entry (its
-/// `EntryKind::User` indexes the `[[tools.entry]]` list) and the chosen line, whole.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `EntryKind::User` indexes the `[[tools.entry]]` list), the chosen line and the typed text, whole.
+/// The text is never written to a log or to the history.
+#[derive(Clone, PartialEq, Eq)]
 pub enum ToolAction {
     Builtin(usize),
-    User { entry: usize, choice: Option<String> },
+    User { entry: usize, choice: Option<String>, text: Option<String> },
+}
+
+// By hand: the typed text never reaches a `{:?}`, a panic message or an assertion's output.
+impl std::fmt::Debug for ToolAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolAction::Builtin(i) => write!(f, "Builtin({i})"),
+            ToolAction::User { entry, choice, text } => {
+                write!(f, "User {{ entry: {entry}, choice: {choice:?}, text: {} }}", if text.is_some() { "Some(..)" } else { "None" })
+            }
+        }
+    }
 }
 
 /// What `ToolsState::enter` decided.
@@ -114,6 +133,9 @@ pub struct ToolsState {
     dynamic: Option<(usize, Vec<String>)>,
     /// A `choices_cmd` is being read for the open level.
     pub reading: bool,
+    /// The choice the open prompt level follows, when its entry has choices; set by each
+    /// `drill_prompt`, read only while a prompt is open.
+    asked: Option<String>,
     /// The question pending and the instant it expires.
     question: Option<(RowId, Instant)>,
     /// The token of the choices read the open level waits for.
@@ -137,6 +159,7 @@ impl ToolsState {
             states,
             dynamic: None,
             reading: false,
+            asked: None,
             question: None,
             token: 0,
             rev: 0,
@@ -227,6 +250,15 @@ impl ToolsState {
                 .enumerate()
                 .map(|(k, line)| ToolRow { id: RowId::Choice(entry, k), icon: None, text: line.clone(), trail: Trail::None })
                 .collect(),
+            Level::Prompt { entry } => self
+                .catalog
+                .entries
+                .get(entry)
+                .and_then(|e| {
+                    e.ask.as_ref().map(|label| ToolRow { id: RowId::Prompt(entry), icon: e.icon, text: label.clone(), trail: Trail::None })
+                })
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -244,7 +276,7 @@ impl ToolsState {
                 Some(Choices::Fixed(list)) => list.get(k).map(|c| self.catalog.choice_key(e, c)),
                 _ => None,
             },
-            RowId::Category(_) => None,
+            RowId::Category(_) | RowId::Prompt(_) => None,
         };
         ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default() }
     }
@@ -269,11 +301,13 @@ impl ToolsState {
                 parts.extend(self.catalog.categories.get(c).map(|c| c.name.clone()));
                 None
             }
-            Level::Choices { entry } => Some(entry),
+            Level::Choices { entry } | Level::Prompt { entry } => Some(entry),
         };
         if let Some(e) = entry.and_then(|e| self.catalog.entries.get(e)) {
             parts.extend(e.category.and_then(|c| self.catalog.categories.get(c)).map(|c| c.name.clone()));
             parts.push(e.name.clone());
+            // A prompt after a choice names it: `Tools › Net › Scan › Quick`.
+            parts.extend(self.asked.clone().filter(|_| matches!(self.level, Level::Prompt { .. })));
         }
         parts.join(PATH_JOIN)
     }
@@ -378,28 +412,73 @@ impl ToolsState {
             RowId::Entry(e) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 if !matches!(entry.choices, Choices::None) {
-                    // From the root's flat search an entry of a category goes down through that
-                    // category, as the breadcrumb shows: ← and Esc land on it.
-                    if let (Level::Root, Some(c)) = (self.level, entry.category) {
-                        let from = self.position(Level::Root, RowId::Category(c));
-                        self.open(Level::Category(c), from);
-                        let at = self.position(Level::Category(c), RowId::Entry(e));
-                        return self.drill_choices(config, e, at);
-                    }
+                    let selected = self.through_category(e, selected);
                     return self.drill_choices(config, e, selected);
+                }
+                if entry.ask.is_some() {
+                    let selected = self.through_category(e, selected);
+                    return self.drill_prompt(e, None, selected);
                 }
                 let action = match entry.kind {
                     EntryKind::Builtin(b) => ToolAction::Builtin(b),
-                    EntryKind::User(_) => ToolAction::User { entry: e, choice: None },
+                    EntryKind::User(_) => ToolAction::User { entry: e, choice: None, text: None },
                 };
                 self.answer(row, entry.confirm, action, now)
             }
             RowId::Choice(e, k) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 let Some(choice) = self.choice_lines(e).get(k).cloned() else { return Step::Drill(None) };
-                self.answer(row, entry.confirm, ToolAction::User { entry: e, choice: Some(choice) }, now)
+                if entry.ask.is_some() {
+                    // From the root's flat search the prompt goes down through the entry's
+                    // choices, so Esc lands on them.
+                    let selected = if matches!(self.level, Level::Root) {
+                        let at = self.through_category(e, selected);
+                        self.drill_choices(config, e, at);
+                        k
+                    } else {
+                        selected
+                    };
+                    return self.drill_prompt(e, Some(choice), selected);
+                }
+                self.answer(row, entry.confirm, ToolAction::User { entry: e, choice: Some(choice), text: None }, now)
             }
+            // Its answer is the typed text: `submit`.
+            RowId::Prompt(_) => Step::Wait,
         }
+    }
+
+    /// From the root's flat search an entry of a category goes down through that category, as
+    /// the breadcrumb shows: ← and Esc land on it. Returns the selection to restore in the next
+    /// level (`selected` when already below the root).
+    fn through_category(&mut self, e: usize, selected: usize) -> usize {
+        if let (Level::Root, Some(c)) = (self.level, self.catalog.entries.get(e).and_then(|e| e.category)) {
+            let from = self.position(Level::Root, RowId::Category(c));
+            self.open(Level::Category(c), from);
+            return self.position(Level::Category(c), RowId::Entry(e));
+        }
+        selected
+    }
+
+    /// Opens the prompt of `entry`, after `choice` when it has choices.
+    fn drill_prompt(&mut self, entry: usize, choice: Option<String>, selected: usize) -> Step {
+        self.open(Level::Prompt { entry }, selected);
+        self.asked = choice;
+        Step::Drill(None)
+    }
+
+    /// Whether the open level is a prompt: the model's query is then the answer, not a filter.
+    pub fn prompting(&self) -> bool {
+        matches!(self.level, Level::Prompt { .. })
+    }
+
+    /// Enter in the prompt with `text`: the action, with the text whole. A blank text runs
+    /// nothing. None when no prompt is open.
+    pub fn submit(&mut self, text: String) -> Option<Step> {
+        let Level::Prompt { entry } = self.level else { return None };
+        if text.trim().is_empty() {
+            return Some(Step::Wait);
+        }
+        Some(Step::Run(ToolAction::User { entry, choice: self.asked.clone(), text: Some(text) }))
     }
 
     fn answer(&mut self, row: RowId, confirm: bool, action: ToolAction, now: Instant) -> Step {
