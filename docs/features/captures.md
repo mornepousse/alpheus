@@ -84,15 +84,19 @@ A whole screen goes through the same `Settle`, since a menu may be closing.
 - "Copied" means the copy command exited 0: `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`.
 - One capture at a time, an answer is for its own capture, a frame that never comes fails:
   `one_capture_at_a_time`, `a_late_frame_from_an_old_generation_is_ignored`,
-  `a_frame_that_never_comes_fails_the_capture`, `a_second_capture_while_one_runs_is_ignored` (headless).
+  `a_frame_that_never_comes_fails_the_capture`, `a_second_capture_while_one_runs_is_ignored` (headless,
+  the debug `select` verb included); the deadline is armed only while a frame is awaited:
+  `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` (`tests/guardrails.rs`).
 - The frame is asked only after the compositor dealt with the removal, for an area and for a whole
   screen: `a_selection_waits_for_the_compositor_before_the_frame_is_asked`,
   `every_scope_waits_for_the_compositor_before_its_frame`,
   `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`),
   `an_area_capture_has_no_dim_tint` (headless).
 - A panic on the worker ends the capture as a failure and leaves no file:
-  `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`; a start clears a stale
-  file: `stale_private_files_are_removed_at_start_and_nothing_else`.
+  `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, and the worker always mails
+  its ending: `the_capture_worker_always_mails_its_ending`; a start clears a stale file:
+  `stale_private_files_are_removed_at_start_and_nothing_else`,
+  `a_start_clears_the_capture_files_a_killed_daemon_left` (headless).
 - Without screencopy the verbs exit 2 and the Tools rows are hidden: `no_screencopy_hides_the_captures`,
   `the_tools_menu_hides_the_captures_without_screencopy`; the rows of unbuilt verbs are hidden:
   `the_unbuilt_captures_are_hidden_until_their_tasks_land`.

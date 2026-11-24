@@ -1744,7 +1744,7 @@ never what it left behind) is a copy failure. The file is removed afterwards, al
 panics (a panic ends the capture as a failure), and a start clears one a killed daemon left. The cut,
 the encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
 
-Date: 2026-11-24 · Source: tests `run_with_stdin_file_feeds_a_big_file_and_reports_the_exit`, `run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin`, `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`, `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, `stale_private_files_are_removed_at_start_and_nothing_else` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file` (`tests/guardrails.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+Date: 2026-11-24 · Source: tests `run_with_stdin_file_feeds_a_big_file_and_reports_the_exit`, `run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin`, `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`, `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, `stale_private_files_are_removed_at_start_and_nothing_else` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file`, `the_capture_worker_always_mails_its_ending` (`tests/guardrails.rs`), `a_start_clears_the_capture_files_a_killed_daemon_left` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
 
 ### A frame that never comes fails the capture, and a late frame is never the next one's
 
@@ -1754,5 +1754,5 @@ capture, destroys the frame object and frees the slot. Every answer (the round t
 deadline) carries the number of the capture it is for, so the late answer of a capture that has ended
 is dropped unread and never taken for the next one's.
 
-Date: 2026-11-25 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
+Date: 2026-11-24 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline`, `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
 

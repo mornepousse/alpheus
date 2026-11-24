@@ -5,8 +5,9 @@
 //! it); `render` and `deliver` are its two halves, tested apart. The copy goes through the
 //! executor like every other tool: the PNG is written to a private file in `$XDG_RUNTIME_DIR/alpheus`
 //! (owner only, atomically) and handed to the copy command as its standard input, since a PNG is
-//! far past the page a pipe write may carry (`run_with_stdin_file`), whose exit code is what "copied" means; the file is removed as soon
-//! as the command is done. A save writes a new file in the pictures folder, never over one.
+//! far past the page a pipe write may carry (`run_with_stdin_file`). The command's exit code is what
+//! "copied" means, and the file is removed as soon as the command is done. A save writes a new file
+//! in the pictures folder, never over one.
 //!
 //! Never:
 //! - copy a capture that failed, or save it: the clipboard is only reached with PNG bytes in hand

@@ -17,7 +17,9 @@
 //!   one runs (`Flow`);
 //! - write a path, a geometry, an output name or a file name into a log line (a guardrail,
 //!   `the_capture_logs_fixed_words_only`);
-//! - poll or keep a timer: every step is an event of the compositor, the mail or the verb.
+//! - poll, or keep a timer armed when no frame is awaited: every step is an event of the compositor,
+//!   the mail or the verb, and the one deadline (`GRAB_LIMIT`) runs only from the frame request to
+//!   its answer (`the_frame_deadline_is_armed_only_while_a_frame_is_awaited`).
 //!
 //! See: docs/features/captures.md, docs/decisions.md ("A capture never touches the clipboard unless
 //! it succeeded", "A capture waits for the selector's removal", "The capture's PNG is encoded on a
