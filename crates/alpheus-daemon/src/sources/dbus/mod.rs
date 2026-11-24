@@ -247,8 +247,8 @@ pub fn start(
     }
     let result = std::thread::Builder::new().name("D-Bus".into()).spawn(move || {
         let _guard = SourceGuard { name: "D-Bus", send: &send, value: PhantomData };
-        // Owned here, across every `run_supervised` round (follow-up,
-        // re-review): a domain stuck down must log once, not once per round.
+        // Owned here, across every `run_supervised` round:
+        // a domain stuck down must log once, not once per round.
         let mut log_state = DomainLog::default();
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();

@@ -295,10 +295,10 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspacesConfig {
-    /// Command run to go to a workspace (click, wheel); `{workspace}` and
-    /// `{output}` are replaced in it. Default: `wm-set` (the author's
-    /// script), the only path to the compositor allowed by the
-    /// framing document.
+    /// Command run to go to a workspace (click, wheel); `{workspace}` and `{output}` are replaced
+    /// in it. Default: `wm-set`, a script of the maintainer's own session (docs/compositors.md,
+    /// "External commands"). This command is the one write to the compositor the daemon makes:
+    /// everything else it does with the compositor is a read (CONTRIBUTING.md, "The rules").
     pub command: Vec<String>,
 }
 
@@ -311,13 +311,11 @@ impl Default for WorkspacesConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActionsConfig {
-    /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
-    /// battery, `failed`); `{tab}` becomes home, sound, network, bluetooth or
-    /// diagnostics (the TUI's
-    /// `--tab`). Default: `alpheus-toggle` (the author's script), which
-    /// opens the TUI in a floating terminal, or closes it if already open —
-    /// not a neutral default yet (CONTRIBUTING.md, "What is accepted": personal
-    /// setups stay out of the code).
+    /// Opens alpheus on a tab (left click on volume, network, Bluetooth, battery, `failed`);
+    /// `{tab}` becomes home, sound, network, bluetooth or diagnostics (the TUI's `--tab`).
+    /// Default: `alpheus-toggle`, a script of the maintainer's own session (docs/compositors.md,
+    /// "External commands") that opens the TUI in a floating terminal, or closes it if already
+    /// open — not a neutral default yet, which CONTRIBUTING.md's "What is accepted" asks for.
     pub open_tab: Vec<String>,
     /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
     /// popup): a system monitor. Default: btop in

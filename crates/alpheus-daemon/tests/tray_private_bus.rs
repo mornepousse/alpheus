@@ -1351,7 +1351,7 @@ fn the_menu_closes_when_its_app_leaves() {
 
 use alpheus_daemon::session_bus::Gesture;
 
-/// Steam's libappindicator has no Activate (spike § 4): the left click's
+/// Steam's libappindicator has no Activate: the left click's
 /// UnknownMethod answer opens its menu instead.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]

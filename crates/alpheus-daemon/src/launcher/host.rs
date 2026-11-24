@@ -873,12 +873,9 @@ mod tests {
         assert_eq!(reply, Some(Reply::Done));
     }
 
-    /// Was `toggle_twice_quickly_leaves_it_closed`: before this fix, two
-    /// Toggles in a row (the exact shape of the Hyprland press-bind refire)
-    /// opened then immediately closed the box again. That is the bug this
-    /// fix removes — adapted here to assert the new, intended behaviour: a
-    /// quick second Toggle is swallowed and the box stays open; only once
-    /// `TOGGLE_DEBOUNCE` has elapsed does a Toggle close it.
+    /// Two Toggles in a row are the exact shape of the Hyprland press-bind refire, which would
+    /// otherwise open the box and close it again at once: the quick second Toggle is swallowed and
+    /// the box stays open; only once `TOGGLE_DEBOUNCE` has elapsed does a Toggle close it.
     #[test]
     fn toggle_twice_quickly_is_debounced_and_leaves_it_open() {
         let (action, reply) = decide(Request::Toggle, None, Duration::ZERO);

@@ -24,9 +24,8 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 /// A UPower device's properties the bar reads (the laptop's DisplayDevice,
 /// or a peripheral — never a raw battery_BAT0 or line_power_*, dropped
 /// below by `upower_device_ignored` regardless of which property changed).
-/// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`) —
-/// missing from this list (re-review, follow-up): a rename wouldn't have
-/// re-read it until something else happened to change too. `BatteryLevel`
+/// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`), without which a rename
+/// would not be read again until something else about the device changed too. `BatteryLevel`
 /// (2026-10-05): a coarse-reporting peripheral (a Logitech HID++
 /// receiver…) going Low or Critical, or recovering from it, must re-read.
 const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
@@ -48,10 +47,9 @@ const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 /// systemd's Manager: the failed-units count, the only property of it that emits a change.
 const SYSTEMD_PROPS: [&str; 1] = [units::PROPERTY];
 
-/// The properties of `path`/`interface` the bar reads: an
-/// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
-/// not named here can't change what the bar shows. None: an interface the
-/// bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
+/// The properties of `path`/`interface` the bar reads: an ALLOWLIST, so a property not named here
+/// cannot change what the bar shows, and a service that grows a new one wakes nothing. None: an
+/// interface the bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
 fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [&'static str]> {
     if under(path, "/org/freedesktop/NetworkManager/ActiveConnection") {
         Some(&NM_ACTIVE_PROPS)
@@ -80,7 +78,7 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
 /// ThinkPad-style `BATC`/`BATT`, `CMB0`/`CMB1`… A peripheral's native name
 /// always carries its own driver's prefix, joined with an underscore
 /// (`hidpp_battery_1`, `sony_controller_battery_0`…), which is what still
-/// tells the two apart (follow-up, re-review: not only `BATn`).
+/// tells the two apart, whatever the built-in's own name.
 fn looks_like_builtin_battery_name(native: &str) -> bool {
     !native.is_empty() && !native.contains('_')
 }

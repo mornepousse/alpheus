@@ -1,4 +1,4 @@
-//! Guardrails from the framing document for the daemon, checked
+//! The daemon's guardrails (CONTRIBUTING.md, "The rules"), checked
 //! mechanically: it only ever runs the workspace command (`wm-set
 //! workspace …` by default), only ever reads the compositor (four fixed
 //! Hyprland requests, the niri stream), only opens the compositor's

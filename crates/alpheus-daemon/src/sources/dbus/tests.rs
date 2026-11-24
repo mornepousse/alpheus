@@ -870,7 +870,7 @@ fn upower_raw_battery_and_line_power_signals_are_dropped_display_device_carries_
 
 #[test]
 fn other_acpi_battery_naming_schemes_are_dropped_too() {
-    // Follow-up (5), re-review: not only BATn — other machines' ACPI
+    // Not only BATn: other machines' ACPI
     // battery drivers use their own short, underscore-free native name
     // (ThinkPads: BATC/BATT; some boards: CMB0/CMB1…). A peripheral's
     // native name always carries its driver's own prefix with an
@@ -1221,7 +1221,7 @@ fn wanted_is_false_only_when_no_domain_is_shown() {
     assert!(wanted(&DOMAINS));
 }
 
-/// A smoke test, not a bite-proof (re-review, follow-up 4): `start`'s
+/// A smoke test, not a bite-proof: `start`'s
 /// own `if !wanted(&domains) { return; }` guard sits first, synchronously,
 /// in its body, so removing it here wouldn't reliably turn this test red
 /// (the thread it would then spawn runs asynchronously, and its real
