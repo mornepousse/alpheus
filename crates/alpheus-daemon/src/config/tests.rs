@@ -842,6 +842,11 @@ fn failed_defaults_and_settings() {
     let d = FailedConfig::default();
     assert_eq!((d.user_units, d.subscribe, d.notify), (true, true, false), "subscribe is on by default (an instant icon); no notice");
     assert_eq!(BarConfig::default().failed, d);
+    assert_eq!(
+        crate::sources::dbus::units::UnitsOptions::default().subscribe,
+        d.subscribe,
+        "the source's own default follows the config's"
+    );
     assert_eq!(BarConfig::from_text("height = 22").unwrap().failed, d, "absent: defaults");
     let c = BarConfig::from_text("[failed]\nsubscribe = false\nnotify = true\n").unwrap();
     assert_eq!((c.failed.user_units, c.failed.subscribe, c.failed.notify), (true, false, true), "subscribe = false is still honoured");

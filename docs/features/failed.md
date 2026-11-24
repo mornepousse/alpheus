@@ -55,7 +55,9 @@ list you wrote yourself needs `"failed"` added after `"shield"`.
 With the default `subscribe = true` the count is read at start, on resume and on `failed-refresh`,
 and systemd pushes every change; the read added to another D-Bus domain's wake-up is skipped. With
 `false` that read comes back: once more whenever another domain wakes the daemon and the count was
-last read a minute ago or more.
+last read a minute ago or more. A `Subscribe` that systemd refuses falls back to those triggers; on
+the user manager's side the count is then re-read with the system count's reads (the next system
+unit change, a resume or `failed-refresh`), so a failed user unit can show late, never lost.
 
 ```toml
 [failed]

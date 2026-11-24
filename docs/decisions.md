@@ -219,7 +219,7 @@ skipped, since systemd pushes the change. With `subscribe = false` the count is 
 session start, resume, `alpheus-launch --failed-refresh`, and a read added to another domain's
 wake-up at most once a minute. No timer is added for it, either way.
 
-Date: 2026-11-24 · Source: the owner's choice at the trial of the diagnostics work: an instant icon is worth a signal per unit change on systemd and dbus-daemon. It replaces the 2026-11-22 entry, "`Subscribe` is off by default until it is chosen after use"; diagnostics spec §§ 6 and 9, and its "Decisions written down" 1
+Date: 2026-11-24 · Source: the owner's choice at the trial of the diagnostics work: an instant icon is worth a signal per unit change on systemd and dbus-daemon. It replaces the 2026-11-22 entry "The failed-units count is read on triggers, and `Subscribe` is off by default"; diagnostics spec §§ 6 and 9, and its "Decisions written down" 1
 
 ### The failed-units count is asked for one property, never the whole interface
 
