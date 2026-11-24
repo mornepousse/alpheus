@@ -205,8 +205,8 @@ impl Tray {
         self.media.as_ref()
     }
 
-    /// Follows the user manager's failed-units count on this connection: two rules, then the
-    /// owner asked for (pending, on the tray's timer). Once: a second call is a no-op.
+    /// Follows the user manager's failed-units count on this connection: two match rules, then the
+    /// question for the owner (pending, on the tray's timer). Once: a second call is a no-op.
     pub fn start_failed(&mut self, subscribe: bool) {
         if self.failed.is_none() {
             self.failed = Some(UserUnits::start(&mut self.bus, subscribe));
