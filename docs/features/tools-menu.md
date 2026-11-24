@@ -143,7 +143,9 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 - `the_tools_glue_spawns_only_through_launch`: `app.rs` starts no process itself and calls the
   launcher's start function exactly once.
 - `every_builtin_argv_stays_on_the_allowlist`: a built-in's argv is the configured command,
-  `[actions] open_tab`, or the terminal running `alpheus --tab`, never through a shell.
+  `[actions] open_tab`, or the terminal running `alpheus --tab`, never through a shell except two fixed,
+  pinned `sh -c` scripts in the held terminal: the USB events (two streams share one terminal) and the USB
+  reset (`modprobe -r` then `modprobe`, chained). Nothing typed ever goes into either.
 - `the_parallel_branches_are_named_only_in_tools_join`, `the_join_hooks_are_filled_in`: the folder's other
   files never name `clipboard_availability`, `launcher_open_clipboard`, `shield_open_detail`,
   `ShieldConfig` or the `"diagnostics"` slug, so `join.rs` is the one file that calls the clipboard's and

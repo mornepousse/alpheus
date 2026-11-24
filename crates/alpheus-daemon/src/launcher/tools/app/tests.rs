@@ -459,6 +459,9 @@ fn each_scan_runs_in_the_held_terminal_with_its_target_whole() {
         Ok(Some(strings(&["foot", "--hold", "-e", "nmap", "-p", "22,80", "--", "10.0.0.5"])))
     );
     assert!(run(Scan::Ports, Some("10.0.0.5")).unwrap_err().contains("ports"), "ports missing: said in the box");
+    for bad in ["10.0.0.5 -oN /tmp/x", "10.0.0.5 --script=x", "10.0.0.5 22;ls"] {
+        assert!(run(Scan::Ports, Some(bad)).unwrap_err().contains("digits, commas, dashes"), "{bad}");
+    }
     assert!(run(Scan::Quick, None).is_err(), "a scan without a target runs nothing");
     // An unknown choice (a list that changed) runs nothing.
     let stale = builtin_argv(scan, &diag_with(&quick, &hold, &[], &net, &dirs, Some("gone"), Some("h")));
@@ -532,7 +535,11 @@ fn the_usb_events_run_the_fixed_script_in_the_held_terminal() {
     let c = diag_with(&quick, &hold, &[], &NO_SUBNET, &dirs, None, None);
     let argv = builtin_argv(builtin_by_id("diag.usb_events"), &c).unwrap().unwrap();
     assert_eq!(&argv[..4], &strings(&["foot", "-e", "sh", "-c"])[..]);
-    assert!(argv[4].starts_with("trap \"kill 0\" EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb &"), "{}", argv[4]);
+    assert!(
+        argv[4].starts_with("trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb &"),
+        "{}",
+        argv[4]
+    );
 }
 
 #[test]

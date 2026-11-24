@@ -175,6 +175,7 @@ fn scan_in_terminal(c: &Commands) -> Result<Option<Vec<String>>, String> {
     let Some(scan) = c.choice.and_then(Scan::from_label) else { return Err("the list changed: try again".to_string()) };
     let (target, ports) = match (scan, c.text) {
         (Scan::Ports, Some(text)) => match diag::split_ports(text) {
+            Some((_, ports)) if !diag::valid_ports(ports) => return Err("ports: digits, commas, dashes".to_string()),
             Some((target, ports)) => (Some(target), Some(ports)),
             None => return Err("type the target, then the ports".to_string()),
         },

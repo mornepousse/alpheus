@@ -65,6 +65,16 @@ fn the_typed_text_of_a_port_scan_is_a_target_then_the_ports() {
     assert_eq!(split_ports("   "), None);
 }
 
+#[test]
+fn only_digits_commas_and_dashes_are_ports() {
+    for ok in ["22", "22,80,443", "1-1024", "22,8000-8100"] {
+        assert!(valid_ports(ok), "{ok}");
+    }
+    for bad in ["", "-oN /tmp/x", "--script=x", "22 80", "22;ls", "T:22", "U:53", "$(id)", "-p-"] {
+        assert!(!valid_ports(bad), "{bad}");
+    }
+}
+
 const ROUTE: &str = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
 wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n\
 wlan0\t0000A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n\
@@ -124,6 +134,10 @@ fn the_real_subnet_reads_the_route_file_and_a_missing_one_is_none() {
 fn the_usb_events_script_is_the_scripts() {
     assert_eq!(
         usb_events_argv(),
-        v(&["sh", "-c", "trap \"kill 0\" EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb"])
+        v(&[
+            "sh",
+            "-c",
+            "trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb"
+        ])
     );
 }

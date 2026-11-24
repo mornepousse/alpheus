@@ -5504,7 +5504,7 @@ fn every_builtin_argv_stays_on_the_allowlist() {
             BuiltinAction::UsbEvents => Some(held(&[
                 "sh",
                 "-c",
-                "trap \"kill 0\" EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb",
+                "trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb",
             ])),
             BuiltinAction::UsbReset => Some(held(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"])),
             BuiltinAction::Preset(p) => Some(strings(&["foot", "alpheus", "--tab", "diagnostics", "--preset", p.slug()])),

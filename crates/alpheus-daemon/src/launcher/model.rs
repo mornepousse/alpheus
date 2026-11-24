@@ -540,9 +540,7 @@ impl Launcher {
                 if self.query.pop().is_some() {
                     self.query_changed()
                 } else if self.by_prefix {
-                    self.by_prefix = false;
-                    self.mode = Mode::All;
-                    self.query_changed()
+                    self.switch_mode(Mode::All)
                 } else {
                     Outcome::Nothing
                 }
@@ -668,11 +666,26 @@ impl Launcher {
         true
     }
 
+    /// What leaving the Tools mode drops, by whichever way it is left.
+    fn forget_tools(&mut self) {
+        // The Tools list's prepared facts are not another mode's, whatever its row count.
+        self.ranker.forget();
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel_read();
+            // A prompt's query is an answer, not a filter: it stays in no other mode, and the
+            // Tools mode does not come back to the prompt.
+            if t.prompting() {
+                t.up();
+                self.query.clear();
+            }
+        }
+    }
+
     fn back_to_all(&mut self) -> Outcome {
+        self.forget_tools();
         self.mode = Mode::All;
         self.by_prefix = false;
         self.query.clear();
-        self.ranker.forget();
         self.refilter();
         Outcome::BackToAll
     }
@@ -810,17 +823,7 @@ impl Launcher {
             return Outcome::Nothing;
         }
         if self.mode == Mode::Tools {
-            // The Tools list's prepared facts are not another mode's, whatever its row count.
-            self.ranker.forget();
-            if let Some(t) = self.tools.as_mut() {
-                t.cancel_read();
-                // A prompt's query is an answer, not a filter: it stays in no other mode, and the
-                // Tools mode does not come back to the prompt.
-                if t.prompting() {
-                    t.up();
-                    self.query.clear();
-                }
-            }
+            self.forget_tools();
         }
         self.mode = m;
         self.by_prefix = false;

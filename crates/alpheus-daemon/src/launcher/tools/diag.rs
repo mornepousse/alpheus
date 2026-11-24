@@ -90,6 +90,13 @@ pub fn split_ports(text: &str) -> Option<(&str, &str)> {
     (!ports.is_empty()).then_some((target, ports))
 }
 
+/// Whether `ports` is only digits, commas and dashes (`22,80,8000-8100`). The text becomes the value
+/// of `-p`, so anything else (`-oN /tmp/x`, `--script=x`, a space) could pass nmap an option. nmap's
+/// `T:`/`U:` prefixes are left out on purpose: the box takes plain port lists.
+pub fn valid_ports(ports: &str) -> bool {
+    !ports.is_empty() && ports.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '-')
+}
+
 /// The argv of `scan`: None when something it needs is missing (the target, the ports, or the subnet
 /// of a sweep). A target comes after `--`.
 pub fn scan_argv(scan: Scan, target: Option<&str>, ports: Option<&str>, subnet: Option<&str>) -> Option<Vec<String>> {
@@ -116,11 +123,18 @@ pub fn scan_argv(scan: Scan, target: Option<&str>, ports: Option<&str>, subnet: 
 }
 
 /// The argv of the USB events built-in (`sh -c`, because two streams share one terminal; the
-/// script is fixed, nothing typed goes in it). `trap "kill 0"` stops `udevadm` with the terminal.
+/// script is fixed, nothing typed goes in it). The trap stops `udevadm` with the terminal. It differs
+/// from the original script's `trap "kill 0" EXIT INT TERM` on purpose: `kill 0` signals the whole
+/// group, itself included, so the TERM re-ran the trap without end and bash crashed on every close;
+/// the trap is cleared first.
 pub fn usb_events_argv() -> Vec<String> {
-    ["sh", "-c", "trap \"kill 0\" EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb"]
-        .map(String::from)
-        .to_vec()
+    [
+        "sh",
+        "-c",
+        "trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 /// Where the host discovery's subnet comes from.
@@ -162,7 +176,8 @@ const NARROWEST: u32 = 30;
 
 /// The net of the default route's interface in `/proc/net/route` text: among that interface's
 /// connected lines (a destination and a mask, no gateway, up), the lowest metric, link-local
-/// (169.254/16) left out. Addresses are little-endian hex in that file.
+/// (169.254/16) left out. Addresses are the kernel's native-order words printed in hex, so their
+/// network-order bytes are the word's native bytes, on either byte order.
 pub fn subnet_from_route(route: &str) -> Option<String> {
     let iface = default_route(route)?;
     route
@@ -177,8 +192,8 @@ pub fn subnet_from_route(route: &str) -> Option<String> {
             if name != iface || !up || gateway != "00000000" {
                 return None;
             }
-            let dest = u32::from_str_radix(dest, 16).ok()?.to_le_bytes();
-            let mask = u32::from_be_bytes(u32::from_str_radix(mask, 16).ok()?.to_le_bytes());
+            let dest = u32::from_str_radix(dest, 16).ok()?.to_ne_bytes();
+            let mask = u32::from_be_bytes(u32::from_str_radix(mask, 16).ok()?.to_ne_bytes());
             let prefix = mask.leading_ones();
             // A contiguous mask: its ones, then its zeros.
             if mask == 0 || prefix + mask.trailing_zeros() != 32 || !(WIDEST..=NARROWEST).contains(&prefix) || dest[..2] == [169, 254] {
