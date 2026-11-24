@@ -1,4 +1,4 @@
-//! Spec criterion: first render < 100 ms, even if every tool takes 500 ms
+//! Criterion: first render < 100 ms, even if every tool takes 500 ms
 //! to answer (rendering never waits for any tool).
 
 use alpheus::app::action::Tab;

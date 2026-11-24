@@ -31,7 +31,7 @@ impl Compositor {
     }
 }
 
-/// The four variables, in detection order (Mango and Sway spec § 1).
+/// The four variables, in detection order.
 pub const VARIABLES: [&str; 4] = ["SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "MANGO_INSTANCE_SIGNATURE", "NIRI_SOCKET"];
 
 /// The usual session-script order, with niri last: SWAYSOCK,
@@ -58,8 +58,8 @@ pub fn detect(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositor> {
 }
 
 /// `$MANGO_INSTANCE_SIGNATURE` is the socket's own path (`/run/user/1000/mango-<pid>.sock`),
-/// absolute only. Read at detection, and again at each session start (spec § 2: the path embeds
-/// the compositor's pid).
+/// absolute only. Read at detection, and again at each session start (the path embeds the
+/// compositor's pid: docs/decisions.md "Mango's socket path is read again at each session").
 pub fn mango_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     var("MANGO_INSTANCE_SIGNATURE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute())
 }

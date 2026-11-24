@@ -15,8 +15,8 @@
 //!   `controls.rs` recolours one cell after its own clip check;
 //! - panic on a small window (`small_sizes_never_panic`, `overlays_never_panic_in_a_small_window`).
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2), docs/specs/2026-11-15-alpheus-ui-refresh-design.md,
-//! docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center draws its rail from 84 by 26 cells, and its dashboard from 64 by 20").
 
 mod appearance;
 mod bluetooth;

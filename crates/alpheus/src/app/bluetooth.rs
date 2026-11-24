@@ -15,7 +15,7 @@
 //!   by `external_tools.rs`;
 //! - draw anything: `ui/bluetooth.rs` draws the tab from the same items, in the same order.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the Bluetooth row), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::action::{Command, External};
 use super::{Item, ToggleId};

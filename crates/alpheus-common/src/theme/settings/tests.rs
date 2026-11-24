@@ -160,7 +160,7 @@ fn module_colors_is_carried_through_load_settings_and_resolve_dir() {
     assert_eq!(resolve_dir(&dir, || None).0.module_colors, ModuleColors::None);
 }
 
-// ---- style and opacity (shapes spec § 1) ----
+// ---- style and opacity ----
 
 #[test]
 fn every_style_is_read_and_flat_is_the_default() {
@@ -280,7 +280,7 @@ fn load_settings_reads_theme_toml_and_is_silent_when_absent() {
     assert_eq!(load_settings(&dir), (ThemeSettings { source: ThemeSource::Preset("kanagawa"), ..ThemeSettings::default() }, NONE));
 }
 
-// ---- the default source (spec § 2 as amended) ----
+// ---- the default source ----
 
 #[test]
 fn no_theme_toml_with_colors_toml_present_is_the_wallpaper() {
@@ -414,7 +414,7 @@ fn the_wallpaper_without_a_usable_file_falls_back_to_the_default_theme() {
     assert!(w[0].contains("invalid colors-light.toml"), "{w:?}");
 }
 
-/// Controller reconciliation 9: a file that exists but cannot be used is flagged, so a hot
+/// A file that exists but cannot be used is flagged, so a hot
 /// reload can keep the previous roles; an absent file is a normal fallback, never flagged.
 #[test]
 fn a_bad_wallpaper_file_is_flagged_an_absent_one_is_not() {

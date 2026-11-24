@@ -152,7 +152,7 @@ fn spawn_missing_program() {
     assert_eq!(exec().spawn("alpheus-nonexistent-program", &[]), Err(ExecError::NotFound));
 }
 
-/// Quick Wi-Fi spec § 3: the parts reach the program's standard input in order, then its end
+/// The parts reach the program's standard input in order, then its end
 /// (`cat` ends only on it): never an argument.
 #[test]
 fn spawn_with_input_writes_the_parts_then_closes_stdin() {
@@ -567,7 +567,7 @@ fn the_cut_found_chunk_by_chunk_is_the_whole_buffer_s() {
     }
 }
 
-/// Hooks spec § 3: the variables reach the program, added to the inherited environment.
+/// The variables reach the program, added to the inherited environment.
 #[test]
 fn spawn_with_env_hands_the_variables_to_the_program() {
     let dir = std::env::temp_dir().join(format!("alpheus-env-{}", std::process::id()));

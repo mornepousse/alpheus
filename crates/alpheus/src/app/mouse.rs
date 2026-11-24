@@ -10,7 +10,7 @@
 //! - draw or know a layout: the regions come in as an argument;
 //! - read the clock: `on_mouse` takes `now` from its caller.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Mouse (everywhere)"), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::action::{Command, Tab};
 use super::{App, Item, Overlay, PanelField, STEP};

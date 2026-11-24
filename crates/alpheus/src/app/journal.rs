@@ -12,8 +12,7 @@
 //! - ask for a read while another is out: a slow read delays the next one, it never stacks;
 //! - draw anything: `ui/journal.rs` draws the view from this state.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 3, the journal view),
-//! docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::action::Action;
 use super::diagnostics::View;

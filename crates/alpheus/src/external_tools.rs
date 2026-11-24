@@ -14,7 +14,7 @@
 //! - leave the control center killed by the tool's Ctrl+C: `ProcessLauncher` swaps the SIGINT and
 //!   SIGQUIT handlers for an empty one for the length of the run.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, the "per-app mixer", "choose a network" and "pair" buttons).
+//! See: docs/features/control-center.md.
 
 use std::io;
 use std::process::Command;

@@ -10,7 +10,7 @@
 //!   methods it calls);
 //! - read the clock: `on_key` takes `now` from its caller.
 //!
-//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Keyboard").
+//! See: docs/features/control-center.md.
 
 use super::action::{Action, Tab};
 use super::{App, Confirm, Item, Overlay, Palette, PanelField, Search};

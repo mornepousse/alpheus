@@ -20,7 +20,8 @@
 //!   returns to zero. `Op::FailedRefresh` is not counted (its `domains` are empty): the daemon is
 //!   poked once per burst and answered by `Update::Poke`, never `Done`.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3), docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center reads only the visible tab, and a failed domain waits").
 
 use crate::app::diagnostics::{HealthRead, health};
 use crate::backends::{

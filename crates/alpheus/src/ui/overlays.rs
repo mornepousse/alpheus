@@ -7,7 +7,7 @@
 //! Never:
 //! - change the `App`.
 //!
-//! See: docs/features/control-center.md, docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, "Visual cues").
+//! See: docs/features/control-center.md.
 
 use super::draw::{centered, clear, put, truncate};
 use super::hit::{HitMap, Target};

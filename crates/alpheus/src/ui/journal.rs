@@ -10,8 +10,7 @@
 //! - let text that came from a tool reach a cell as it is: it passes `clean_line` again on its way,
 //!   whatever the parser did.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 3, the journal view),
-//! docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{put, truncate};

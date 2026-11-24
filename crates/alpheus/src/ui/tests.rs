@@ -19,7 +19,7 @@ fn the_selected_tab_sits_on_selection_and_the_title_stays_accent() {
     })
     .unwrap();
     let cell = &t.backend().buffer()[(tab.x + 1, tab.y)];
-    assert_eq!((cell.fg, cell.bg), (a.theme.fg, a.theme.selection), "spec § 4: a selected tab is on selection");
+    assert_eq!((cell.fg, cell.bg), (a.theme.fg, a.theme.selection), "a selected tab is on selection");
     assert_ne!(a.theme.selection, a.theme.accent, "the test bites only if the two differ");
 }
 use crate::app::{Confirm, Loadable, Overlay, Palette, SliderId};
@@ -652,7 +652,7 @@ fn rail_tab_snapshots() {
     }
 }
 
-/// An 87 by 26 window (a 67×20 body; the UI refresh plan's amendment set the rail's 84×26 after measuring a real 87×26 window): nothing the classic layout showed whole is cut, the
+/// An 87 by 26 window (a 67×20 body; the rail's 84×26 was set after measuring a real 87×26 window): nothing the classic layout showed whole is cut, the
 /// controls are whole, and what is clickable is what is drawn.
 #[test]
 fn rail_controls_fit_an_87_by_26_window() {

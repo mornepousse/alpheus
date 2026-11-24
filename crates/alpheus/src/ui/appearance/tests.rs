@@ -314,7 +314,7 @@ fn powerline_previews_full_blocks_and_arrows() {
     let a = styled("prev-powerline", "powerline", "icons");
     let p = preset("tokyo-night").unwrap().dark;
     let b = buffer(&a);
-    // Left (shapes spec § 3, amended 2026-10-08): workspaces on pill_bg, an arrow into the title's block (raised),
+    // Left: workspaces on pill_bg, an arrow into the title's block (raised),
     // and one out of it into the bar.
     assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.pill_bg), rgb(p.raised)), "workspaces -> title");
     let second = (find(&b, 4, "\u{e0b0}") + 1..100).find(|x| b[(*x, 4)].symbol() == "\u{e0b0}").expect("a second arrow");
@@ -368,7 +368,7 @@ fn underline_previews_a_rule_under_the_active_workspace_and_the_hued_blocks() {
     let b = buffer(&a);
     let one = find(&b, 4, "1");
     assert_eq!((b[(one, 5)].symbol(), b[(one, 5)].fg), ("━", rgb(p.accent)), "under the active workspace");
-    // Shapes spec § 3, amended 2026-10-08: no accent fill, its text in accent on the block.
+    // Underline: no accent fill, its text in accent on the block.
     assert_eq!(cell(&b, 4, "1"), (rgb(p.accent), rgb(p.pill_bg)), "the active workspace: accent text, no fill");
     assert_ne!(p.accent, p.pill_bg, "the test bites only if the two differ");
     assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "under the sound block, its hue");
@@ -376,14 +376,14 @@ fn underline_previews_a_rule_under_the_active_workspace_and_the_hued_blocks() {
     let a = styled("prev-underline-none", "underline", "none");
     let b = buffer(&a);
     assert_eq!((33..100).filter(|x| b[(*x, 5)].symbol() == "━").count(), 1, "module colours none: the workspace only");
-    // Pills under underline is full (spec § 1): the hue rules stay, the text takes its hue on pill_bg.
+    // Pills under underline is full: the hue rules stay, the text takes its hue on pill_bg.
     let a = styled("prev-underline-pills", "underline", "pills");
     let b = buffer(&a);
     assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "pills: the sound block's rule in its hue");
     assert_eq!(cell(&b, 4, "8"), (rgb(p.hues.blue), rgb(p.pill_bg)), "pills: the text in its hue, as under full");
 }
 
-/// A workspace visible on another output ("2"), as the bar paints it (fix wave B): `raised` on
+/// A workspace visible on another output ("2"), as the bar paints it: `raised` on
 /// a `pill_bg` block (islands, translucent, powerline, underline, and islands under pills: the
 /// workspaces have no hue), `pill_bg` on the bar itself (floating); its padding stays the block's.
 #[test]

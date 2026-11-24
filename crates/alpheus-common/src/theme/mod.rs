@@ -1,4 +1,4 @@
-//! Colours (spec § 1, § 9): 16 named roles and 7 named hues shared by the daemon and the TUI,
+//! Colours: 16 named roles and 7 named hues shared by the daemon and the TUI,
 //! read from a colour file holding either the 16 roles or the legacy 7 keys
 //! (derived per mode). Independent of any display: the TUI converts to
 //! ratatui colours (alpheus::theme), the daemon to pixels.
@@ -27,7 +27,7 @@ pub enum Mode {
     Light,
 }
 
-/// The seven named hues (spec § 9): what the modules' icons and text take
+/// The seven named hues: what the modules' icons and text take
 /// when `module_colors` asks for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hues {
@@ -60,7 +60,7 @@ impl Hues {
     }
 }
 
-/// The 16 colour roles (spec § 1) and the 7 hues (spec § 9). The frame
+/// The 16 colour roles and the 7 hues. The frame
 /// colour is not a role: it is derived from `fg_dim` by `border_over`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Roles {
@@ -141,7 +141,7 @@ fn mix_toward(c: Rgb, toward: Rgb) -> Rgb {
 }
 
 impl Roles {
-    /// fg_dim at 40 % over `bg`, rounded: frames and borders (spec § 1).
+    /// fg_dim at 40 % over `bg`, rounded: frames and borders.
     pub fn border_over(&self, bg: Rgb) -> Rgb {
         let mix = |f: u8, b: u8| ((u16::from(f) * BORDER_ALPHA + u16::from(b) * (255 - BORDER_ALPHA) + 127) / 255) as u8;
         Rgb(mix(self.fg_dim.0, bg.0), mix(self.fg_dim.1, bg.1), mix(self.fg_dim.2, bg.2))
@@ -210,7 +210,7 @@ fn step(c: Rgb, mode: Mode, times: u8) -> Rgb {
     Rgb(f(c.0), f(c.1), f(c.2))
 }
 
-/// The 16 roles from a legacy file (spec § 1, backward compatibility).
+/// The 16 roles from a legacy file (backward compatibility).
 fn derive_legacy(l: &Legacy, mode: Mode, hues: Hues) -> Roles {
     Roles {
         bar_bg: l.bg,
@@ -237,8 +237,8 @@ fn derive_legacy(l: &Legacy, mode: Mode, hues: Hues) -> Roles {
 }
 
 /// A colour file's text: the 16 role keys, or the legacy 7 (`bg fg accent
-/// muted surface error ok`), derived for `mode` (spec § 1). Either may add the
-/// seven hue keys (`red` … `purple`, spec § 9); a missing one is Catppuccin's
+/// muted surface error ok`), derived for `mode`. Either may add the
+/// seven hue keys (`red` … `purple`); a missing one is Catppuccin's
 /// (Mocha for dark, the contrast-fixed Latte of the preset for light) mixed 30 % toward `accent`. Unknown keys
 /// are ignored. Err: one human line.
 pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(r.accent, Rgb(0xcb, 0xa6, 0xf7)); // Mauve
     }
 
-    // ---- seven hues (spec § 9) ----
+    // ---- seven hues ----
 
     #[test]
     fn hue_names_cover_every_field_once_in_order() {

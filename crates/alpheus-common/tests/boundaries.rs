@@ -1,5 +1,5 @@
 //! Workspace boundaries, read from Cargo.lock: the foundation carries no
-//! display dependency, the TUI does not carry Wayland (and, task 3, the
+//! display dependency, the TUI does not carry Wayland (and the
 //! daemon does not carry ratatui).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -109,7 +109,7 @@ fn nucleo_stays_in_the_daemon() {
 
 /// `alpheus-launch` runs on every key press and in every script menu: std
 /// and alpheus-common only — no Wayland, no fonts, no TUI, no D-Bus, no
-/// matcher, no keyboard library (Global Constraints of the launcher plan).
+/// matcher, no keyboard library.
 #[test]
 fn alpheus_launch_stays_tiny() {
     let g = graph();

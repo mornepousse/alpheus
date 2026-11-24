@@ -58,7 +58,7 @@ pub enum DndEnd {
     Until(u64),
 }
 
-/// `--dnd`'s word: the bar's do-not-disturb (notifications spec).
+/// `--dnd`'s word: the bar's do-not-disturb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DndVerb {
     On,
@@ -82,7 +82,7 @@ impl DndVerb {
     }
 }
 
-/// `--osd`'s word: what the on-screen display reads, then shows (OSD spec § 2). Volume and the
+/// `--osd`'s word: what the on-screen display reads, then shows. Volume and the
 /// microphone have none: the bar follows them on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsdVerb {
@@ -103,7 +103,7 @@ impl OsdVerb {
     }
 }
 
-/// `--shield`'s word (shield spec § 9).
+/// `--shield`'s word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldVerb {
     On,
@@ -133,8 +133,7 @@ impl ShieldVerb {
     }
 }
 
-/// `--quick`'s optional word (quick spec § 1, quick Wi-Fi spec § 1, quick Bluetooth spec § 1): where
-/// the panel opens.
+/// `--quick`'s optional word: where the panel opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickVerb {
     /// `--quick`: the first row.
@@ -173,7 +172,7 @@ impl QuickVerb {
 pub const TIMER_MIN_SECS: u32 = 1;
 pub const TIMER_MAX_SECS: u32 = 86_400;
 
-/// `--timer`'s verb (timer spec § 7).
+/// `--timer`'s verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerVerb {
     /// A countdown of this many seconds (`TIMER_MIN_SECS..=TIMER_MAX_SECS`).
@@ -232,7 +231,7 @@ pub struct DmenuFlags {
     /// nor kept.
     pub password: bool,
     /// `--visible N`: with the query empty, only the first N lines are listed; typing searches
-    /// them all (sources spec § 4). None: every line, as before.
+    /// them all. None: every line, as before.
     pub visible: Option<usize>,
 }
 
@@ -244,19 +243,19 @@ pub enum Request {
     Calc,
     /// Opens the window switcher (the previous window selected), or steps to the next one when it is open.
     Windows,
-    /// Toggles the quick notepad (quick notes spec): answered Done (the pad is no module: it is
+    /// Toggles the quick notepad: answered Done (the pad is no module: it is
     /// always available). An older daemon refuses it as an unknown request.
     Notes,
-    /// Opens the clipboard history in the launcher (clipboard spec). An older daemon refuses it as
+    /// Opens the clipboard history in the launcher. An older daemon refuses it as
     /// an unknown request.
     Clipboard,
-    /// Empties the clipboard history, pins kept (clipboard spec): answered Done, or an error when
+    /// Empties the clipboard history, pins kept: answered Done, or an error when
     /// the history is off.
     ClipboardClear,
-    /// Opens the Tools menu in the launcher (tools spec § 1), or closes it. An older daemon refuses
+    /// Opens the Tools menu in the launcher, or closes it. An older daemon refuses
     /// it as an unknown request.
     Tools,
-    /// Toggles the ⏻ power menu under the bar's right end (tools spec § 5): answered Done, or an
+    /// Toggles the ⏻ power menu under the bar's right end: answered Done, or an
     /// error when no `[quick]` session command is set. An older daemon refuses it as an unknown request.
     Power,
     Dmenu {
@@ -264,26 +263,26 @@ pub enum Request {
         lines: Vec<String>,
         flags: DmenuFlags,
     },
-    /// The notifications module's do-not-disturb (notifications spec): answered Done.
+    /// The notifications module's do-not-disturb: answered Done.
     Dnd(DndVerb),
-    /// Do-not-disturb on, ending at `DndEnd` (small features spec): answered Done. An older daemon
+    /// Do-not-disturb on, ending at `DndEnd`: answered Done. An older daemon
     /// refuses it as an unknown `dnd` request.
     DndOn(DndEnd),
-    /// Empties the notification history (notifications spec): answered Done.
+    /// Empties the notification history: answered Done.
     ClearNotifications,
-    /// Reads the failed-unit counts again now (diagnostics spec § 6): answered Done, also with the
+    /// Reads the failed-unit counts again now: answered Done, also with the
     /// module off (nothing read). An older daemon refuses it as an unknown request.
     FailedRefresh,
-    /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
+    /// The OSD: read the backlight once and show it. Answered Done, also with the
     /// module off or no backlight (nothing shown).
     Osd(OsdVerb),
-    /// The quick settings panel (quick spec § 1): toggled, at the volume row with `sound`. Answered
+    /// The quick settings panel: toggled, at the volume row with `sound`. Answered
     /// Done, also with the module off (nothing opens).
     Quick(QuickVerb),
-    /// The focus timer (timer spec § 7): answered Done, or an error when the module is not in `modules`.
+    /// The focus timer: answered Done, or an error when the module is not in `modules`.
     /// An older daemon refuses it as an unknown `timer` request.
     Timer(TimerVerb),
-    /// The Displays tab (displays protocol spec): the snapshot of the heads, answered
+    /// The Displays tab: the snapshot of the heads, answered
     /// `Reply::Outputs`.
     Outputs,
     /// Tries a desired state (`displays::wire::encode_desired`): answered Done once applied, Error
@@ -293,7 +292,7 @@ pub enum Request {
     OutputsKeep,
     /// Reverts the trial that is open: answered Done.
     OutputsRevert,
-    /// Shield mode (shield spec § 9): answered Done, `Reply::Shield` for `status`, Cancelled for an
+    /// Shield mode: answered Done, `Reply::Shield` for `status`, Cancelled for an
     /// escaped picker. An older daemon refuses it as an unknown request.
     Shield(ShieldVerb),
 }

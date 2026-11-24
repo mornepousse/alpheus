@@ -1,6 +1,5 @@
 //! alpheus-launch — the bridge to the launcher that lives inside
-//! `alpheus-demon` (spec docs/specs/2026-10-05-alpheus-launcher-design.md,
-//! § 1). No Wayland, no fonts: it sends one request on
+//! `alpheus-demon` (docs/features/launcher.md). No Wayland, no fonts: it sends one request on
 //! `$XDG_RUNTIME_DIR/alpheus-launcher.sock` and waits for the answer.
 //!
 //! `--dmenu` keeps `fuzzel --dmenu`'s contract, so scripts switch without
@@ -661,11 +660,11 @@ const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visibl
 /// fall back. A new word adds a row, nothing else.
 const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
     (None, "malformed request: unknown request \"quick\"", "--quick"),
-    // Quick settings delivery 1's daemon.
+    // A daemon that has `--quick` but no word.
     (Some(QuickVerb::Wifi), "malformed request: unknown quick word \"wifi\"", "--quick wifi"),
-    // Delivery 2's daemon.
+    // A daemon that knows `wifi` but not `bluetooth`.
     (Some(QuickVerb::Bluetooth), "malformed request: unknown quick word \"bluetooth\"", "--quick bluetooth"),
-    // Delivery 3's daemon.
+    // A daemon that knows `wifi` and `bluetooth` but not `vpn`.
     (Some(QuickVerb::Vpn), "malformed request: unknown quick word \"vpn\"", "--quick vpn"),
 ];
 
@@ -832,7 +831,7 @@ mod tests {
         assert!(parse_args(&bad).unwrap_err().contains("UTF-8"));
     }
 
-    /// OSD spec § 4: the daemon unreachable is exit 3 for `--osd` too (the caller's fallback is to
+    /// The daemon unreachable is exit 3 for `--osd` too (the caller's fallback is to
     /// show nothing).
     #[test]
     fn osd_against_no_daemon_exits_3() {
@@ -853,7 +852,7 @@ mod tests {
         assert_eq!(reply_to_exit(&Request::Calc, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
     }
 
-    /// Timer spec § 7, plan decision 12: durations as typed, in seconds.
+    /// Durations as typed, in seconds.
     #[test]
     fn timer_durations_are_read_as_typed() {
         for (text, secs) in [
@@ -1008,7 +1007,7 @@ mod tests {
         }
     }
 
-    /// Spec § 9: `status` prints the daemon's text (exit 0 on or off, 2 unknown), the others exit 0
+    /// `status` prints the daemon's text (exit 0 on or off, 2 unknown), the others exit 0
     /// on Done; a Cancelled picker is 1; a daemon from before the verb is exit 3, a current daemon's
     /// error exit 2.
     #[test]

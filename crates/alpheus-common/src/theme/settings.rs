@@ -1,6 +1,7 @@
-//! theme.toml (spec § 2, § 9): which theme, which mode, how the modules take the hues, and per-role and per-hue overrides;
+//! theme.toml: which theme, which mode, how the modules take the hues, and per-role and per-hue overrides;
 //! the resolver that turns them and the wallpaper colour files into `Roles`,
-//! with spec § 6's fallbacks (one line each, never fatal); and the portal's
+//! with its fallbacks (one line each, never fatal; docs/decisions.md "A bad theme input falls back
+//! one line at a time, and a reload keeps the colours"); and the portal's
 //! `color-scheme` value. Pure apart from reading the files it is given.
 //!
 //! Never:
@@ -56,10 +57,10 @@ pub enum ThemeSource {
     Wallpaper,
 }
 
-/// `module_colors` in theme.toml (spec § 9): how much of each module takes its hue.
+/// `module_colors` in theme.toml: how much of each module takes its hue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModuleColors {
-    /// Delivery 1's look: no hue.
+    /// No hue: the bar as it was before the modules took colours.
     None,
     /// The module's icon takes its hue.
     #[default]
@@ -67,7 +68,7 @@ pub enum ModuleColors {
     /// The icon and the text.
     Full,
     /// The block styles fill each block with its first module's hue, its text and icons in
-    /// `bar_bg` or `fg`, whichever contrasts more (shapes spec § 1); under `flat` and
+    /// `bar_bg` or `fg`, whichever contrasts more; under `flat` and
     /// `underline`, as `Full`.
     Pills,
 }
@@ -92,7 +93,7 @@ impl ModuleColors {
     }
 }
 
-/// `style` in theme.toml (shapes spec § 1): the bar's shape.
+/// `style` in theme.toml: the bar's shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BarStyle {
     /// Today's bar.
@@ -128,7 +129,7 @@ impl BarStyle {
     }
 }
 
-/// `opacity` in theme.toml (shapes spec § 1): the bar's alpha under `translucent`.
+/// `opacity` in theme.toml: the bar's alpha under `translucent`.
 pub const OPACITY_DEFAULT: f32 = 0.8;
 /// The lowest `opacity`; below, clamped with one warning.
 pub const OPACITY_MIN: f32 = 0.3;
@@ -272,7 +273,7 @@ fn parse_settings_or(text: &str, source: ThemeSource) -> (ThemeSettings, Vec<Str
     (s, w)
 }
 
-/// The theme when theme.toml names none (spec § 2 as amended): the
+/// The theme when theme.toml names none: the
 /// wallpaper when matugen's colors.toml exists, as before themes existed, so
 /// an upgrade changes nothing; else catppuccin.
 fn default_source(dir: &Path) -> ThemeSource {
@@ -344,7 +345,7 @@ fn read_colors(dir: &Path, file: &str, mode: Mode) -> ColorFile {
     }
 }
 
-/// theme = "wallpaper" (spec § 2): the light file in light mode, else the
+/// theme = "wallpaper": the light file in light mode, else the
 /// dark file (read as dark, since that is what it is); any unusable file →
 /// the default theme, and `bad` set (an absent file leaves it alone).
 fn wallpaper(mode: Mode, dir: &Path, w: &mut Lines, bad: &mut bool) -> Roles {
@@ -375,8 +376,8 @@ fn wallpaper(mode: Mode, dir: &Path, w: &mut Lines, bad: &mut bool) -> Roles {
 }
 
 /// `resolve`'s result, plus whether a wallpaper colour file existed but was
-/// unreadable or invalid (controller reconciliation 9: a hot reload keeps the
-/// previous roles then; startup falls back to the default theme, spec § 6).
+/// unreadable or invalid (a hot reload keeps the
+/// previous roles then; startup falls back to the default theme).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub roles: Roles,
@@ -395,7 +396,7 @@ impl Resolved {
 }
 
 /// The roles for `settings` in `mode`. Reads `dir/colors.toml` /
-/// `dir/colors-light.toml` for Wallpaper only; falls back per spec § 6;
+/// `dir/colors-light.toml` for Wallpaper only; falls back one line at a time;
 /// overrides apply last. Each failure is one warning line.
 pub fn resolve(settings: &ThemeSettings, mode: Mode, dir: &Path) -> (Roles, Vec<String>) {
     let r = resolve_detailed(settings, mode, dir);

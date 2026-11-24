@@ -12,8 +12,7 @@
 //! - run a tool: the worker runs the command of `Op::Power`;
 //! - draw anything: `ui/tabs.rs` draws the buttons, in this order.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 2, the mandatory confirmation, and § 3, the
-//! Power row), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::Item;
 use super::action::Command;

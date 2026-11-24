@@ -11,8 +11,7 @@
 //! - copy when `[diagnostics] copy` is empty (`report_can_copy`);
 //! - draw anything: `ui/report_views.rs` draws the two views from this state.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 4, the boot report; § 5, the bug
-//! report), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::action::Action;
 use super::diagnostics::View;

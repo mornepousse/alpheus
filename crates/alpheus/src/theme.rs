@@ -8,12 +8,10 @@
 //! cleanup. The rest of the control center only ever sees `Theme`.
 //!
 //! Never:
-//! - use D-Bus, to learn the mode or for anything else (the themes spec's amendment of
-//!   2026-10-07: "the TUI never uses D-Bus");
+//! - use D-Bus, to learn the mode or for anything else (the TUI never uses D-Bus);
 //! - write a file: the Theme tab's one write is in `theme_file.rs`.
 //!
-//! See: docs/specs/2026-10-07-alpheus-themes-design.md (the TUI paragraph),
-//! docs/specs/2026-10-07-alpheus-shapes-design.md, docs/features/control-center.md (Theme).
+//! See: docs/features/themes.md, docs/features/control-center.md (Theme).
 
 use alpheus_common::theme::contrast::ratio;
 use alpheus_common::theme::mode_file::read_mode;
@@ -22,8 +20,7 @@ use alpheus_common::theme::{Rgb, Roles};
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
 
-/// The roles the control center draws with (the themes spec, § 4, "Applying the roles"); the
-/// themes plan has the mapping table.
+/// The roles the control center draws with; each field says which theme role it is taken from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// `bar_bg`: the screen's background.
@@ -313,7 +310,7 @@ mod tests {
         );
     }
 
-    /// Controller reconciliation 1–2: with colors.toml alone and no theme.toml, the TUI resolves the
+    /// With colors.toml alone and no theme.toml, the TUI resolves the
     /// wallpaper (load_settings' default-source rule), as before themes existed.
     #[test]
     fn colors_toml_alone_is_the_wallpaper() {
