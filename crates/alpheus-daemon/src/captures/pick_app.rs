@@ -514,7 +514,7 @@ impl App {
             let (ox, oy) = lens_origin((px_x, px_y), block, *size);
             let (pe, ie) = (e as i32, (lens + gap) as i32);
             let lens_area = paint_lens(px, w, h, (ox * pe, oy * pe, ZOOM * e), &cells, BORDER * e, roles.accent);
-            let swatch = paint_swatch(px, w, h, (ox * pe, (oy + ie) * pe, lh * e), colour, e, roles.accent);
+            let swatch = paint_swatch(px, w, h, (ox * pe, (oy + ie) * pe, lh * e), colour, BORDER * e, roles.accent);
             let card_at = ((ox + (lh + gap) as i32) * pe, (oy + ie) * pe);
             lay_over(px, w, h, card, cw, ch, card_at);
             let card_area = (card_at.0, card_at.1, card_at.0 + cw as i32, card_at.1 + ch as i32);

@@ -9063,6 +9063,13 @@ fn colour_picker_copies_the_pixel_under_the_pointer() {
         "the lens: {:?}",
         d.log()
     );
+    // The lens's and the swatch's frames are both 2 px, outside them: the lens's left edge at x 424,
+    // the swatch's below it (from y 420), so x 422 is frame for both.
+    let screen = sway.screenshot("HEADLESS-1").expect("a screenshot");
+    let frame = screen.at(422, 360);
+    assert_ne!(frame, Some(bg), "the lens's frame");
+    assert_eq!(screen.at(422, 430), frame, "the swatch's frame, as wide as the lens's");
+    assert_eq!(screen.at(421, 430), Some(bg), "and no wider");
     sway.click(400, 300, "button1");
     assert!(d.wait_for("capture: colour copied", DELAY), "{:?}", d.log());
     assert!(d.wait_for("bubbles shown: 1", DELAY), "the notice: {:?}", d.log());
