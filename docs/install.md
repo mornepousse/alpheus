@@ -24,7 +24,7 @@ curl -fLO "$base/alpheus-$v-x86_64-linux.tar.gz"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS                      # must print: alpheus-0.1.0-x86_64-linux.tar.gz: OK
 tar -xzf "alpheus-$v-x86_64-linux.tar.gz"
-install -Dm755 -t ~/.local/bin "alpheus-$v-x86_64-linux"/alpheus{,-demon,-launch}
+install -Dm755 -t ~/.local/bin "alpheus-$v-x86_64-linux"/alpheus "alpheus-$v-x86_64-linux"/alpheus-demon "alpheus-$v-x86_64-linux"/alpheus-launch
 ```
 
 The tarball also holds `LICENSE`, `NOTICE`, `README.md` and an `INSTALL` note. The

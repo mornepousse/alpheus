@@ -28,19 +28,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev libxkbcommon-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      # A fixed toolchain, so a rebuild of a tag is the same build; bump it
+      # deliberately (docs/releasing.md).
+      - uses: dtolnay/rust-toolchain@1.98
 
-      # The version is the workspace's; a tag must name the same one.
+      # The version is the workspace's. On a tag run: the tag names it, flake.nix
+      # carries the same one, and the CHANGELOG section is dated. A manual dry
+      # run skips the tag check and accepts a "- unreleased" section.
       - name: Version
         id: version
         run: |
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
           test -n "$version"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
-            exit 1
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+              exit 1
+            fi
+            flake=$(sed -n 's/^ *version = "\(.*\)";/\1/p' flake.nix)
+            if [ "$flake" != "$version" ]; then
+              echo "flake.nix version '$flake' differs from Cargo.toml's $version" >&2
+              exit 1
+            fi
+            if ! grep -Eq "^## \[$version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md; then
+              echo "CHANGELOG.md has no dated section for $version" >&2
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       # Fails early when the CHANGELOG has no section for this version.
       - name: Release notes
@@ -55,6 +71,7 @@ jobs:
 
       - name: Package
         env:
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.epoch }}
           VERSION: ${{ steps.version.outputs.version }}
         run: .github/release/package.sh "$VERSION" target/release "$RUNNER_TEMP/dist"
 
@@ -72,9 +89,9 @@ jobs:
           path: ${{ runner.temp }}/dist/*
           if-no-files-found: error
 
-  # Only a tag publishes; the only job with write access.
+  # Only a pushed tag publishes (never a manual run); the only job with write access.
   publish:
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
