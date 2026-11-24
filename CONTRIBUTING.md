@@ -74,8 +74,10 @@ for the words, [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
   absolute figures: PSS drifts by about half a megabyte between boots. Leak
   bounds read anonymous memory. Record the result in
   [`docs/measurements.md`](docs/measurements.md), which also gives the method.
-- **One logical change per commit**, with a subject in the imperative
-  (`fix(quick): …`, `feat(bar): …`, `docs: …`) and a body that says why. A
+- **One logical change per commit**, with a subject that states
+  what the change does as a short statement, behind a `type(scope):` prefix
+  (`docs: the bar page in the house layout`, `fix(tui): Dvorak navigation keys
+  off by default`), and a body that says why. A
   move or rename is its own commit and changes nothing else.
 - **Style.** [`docs/STYLE.md`](docs/STYLE.md) says how code and comments are
   written: module headers, names, early returns, no `unwrap` outside a
