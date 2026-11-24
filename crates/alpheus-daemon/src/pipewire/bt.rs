@@ -1,8 +1,8 @@
-//! The bluez5 devices and their profiles, for the headset row (quick Bluetooth spec § 4).
+//! The bluez5 devices and their profiles, for the headset row.
 
 use super::*;
 
-/// The most bluez5 devices kept, and the most profiles kept of each (quick Bluetooth spec § 4).
+/// The most bluez5 devices kept, and the most profiles kept of each.
 pub const MAX_BT_DEVICES: usize = 8;
 pub const MAX_PROFILES: usize = 32;
 /// A bluez5 device as the headset row reads it: what a person reads, its profiles, the active one.
@@ -76,8 +76,7 @@ impl Model {
         }
     }
 
-    /// The default sink's bluez5 device when it offers both kinds of profile and is on one of them
-    /// (quick Bluetooth spec § 4): the highest-priority available profile of each kind, by name
+    /// The default sink's bluez5 device when it offers both kinds of profile and is on one of them: the highest-priority available profile of each kind, by name
     /// prefix (`bap-sink` is neither).
     pub fn headset(&self) -> Option<Headset> {
         let named = self.default_sink.as_ref().filter(|n| !n.gone)?;

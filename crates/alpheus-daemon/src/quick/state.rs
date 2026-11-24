@@ -15,7 +15,7 @@
 //! - guess "off": a state that cannot be read is unknown, not off;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md (§ 4, § 6), docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/decisions.md ("A toggle's state that cannot be read shows `·`, never off").
 
 use crate::config::{StateForm, state_form};
@@ -23,7 +23,7 @@ use alpheus_common::theme::settings::read_capped;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-/// `/proc` entries looked at, at most (spec § 6).
+/// `/proc` entries looked at, at most.
 pub const MAX_PROC_ENTRIES: usize = 4096;
 
 /// The environment variable `key` as a directory, or None when it is unset or empty.

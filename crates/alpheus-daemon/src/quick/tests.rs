@@ -239,7 +239,7 @@ fn toggle_rows_end_in_a_switch() {
 }
 
 #[test]
-fn every_row_shows_in_the_spec_order_with_its_separators() {
+fn every_row_shows_in_its_order_with_its_separators() {
     let w = World::full();
     let l = w.live();
     let q = panel_opened_on(&w, Focus::Top);
@@ -370,13 +370,13 @@ fn with_nothing_to_show_the_panel_is_empty() {
 #[test]
 fn the_section_asked_for_is_selected_at_open() {
     assert_eq!(Focus::of(&Target::Module(ModuleId::Volume)), Focus::Sound);
-    assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "quick Wi-Fi spec § 1");
+    assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "the network module opens the Wi-Fi detail");
     assert_eq!(
         panel_opened_on(&World::full(), Focus::Wifi).selected,
         Row::Volume,
         "no Wi-Fi state read yet, so no Wi-Fi row: the first row"
     );
-    assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Bluetooth, "quick Bluetooth spec § 1");
+    assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Bluetooth, "the Bluetooth module opens the Bluetooth detail");
     let w = World::full();
     assert_eq!(panel_opened_on(&w, Focus::Sound).selected, Row::Volume);
     assert_eq!(panel_opened_on(&w, Focus::Top).selected, Row::Volume, "the volume is the first row");
@@ -388,7 +388,7 @@ fn the_section_asked_for_is_selected_at_open() {
     );
 }
 
-/// Quick Bluetooth spec § 1: a click on the Bluetooth module, or `--quick bluetooth`, opens its
+/// A click on the Bluetooth module, or `--quick bluetooth`, opens its
 /// detail; Enter on the row too, Escape goes back to the row.
 #[test]
 fn focus_bluetooth_opens_the_detail() {
@@ -518,7 +518,7 @@ fn a_held_key_never_answers_a_code_question() {
     );
 }
 
-/// Spec § 3: a code question cancels a pending `Forget?`; leaving drops it too.
+/// A code question cancels a pending `Forget?`; leaving drops it too.
 #[test]
 fn the_question_cancels_forget() {
     use crate::quick::bt::BtOrder;
@@ -581,7 +581,7 @@ fn bluetooth_deadlines_and_logs_go_through_due() {
     assert_eq!((a, log.as_deref()), (QuickAction::Nothing, Some("quick: bluetooth discovery failed (org.bluez.Error.InProgress)")));
 }
 
-/// Spec § 2: a left press on the device asked about is the forget question's second activation;
+/// A left press on the device asked about is the forget question's second activation;
 /// a press on any other line cancels it.
 #[test]
 fn a_press_on_the_asking_device_confirms_forget() {
@@ -619,7 +619,7 @@ fn a_left_click_on_the_bluetooth_row_opens_the_detail() {
     assert_eq!(q.selected, Row::Bluetooth);
 }
 
-/// Spec § 2: Space on the Bluetooth row is a power action with its 30 s deadline.
+/// Space on the Bluetooth row is a power action with its 30 s deadline.
 #[test]
 fn the_rows_power_toggle_is_armed() {
     use crate::quick::bt::{CALL_DEADLINE, Step};
@@ -1232,7 +1232,7 @@ fn space_toggles_the_radio_and_enter_right_or_a_click_open_the_detail() {
     assert_eq!(row_texts(&rows(&l, &q))[2].trim(), OFF_NOTE);
 }
 
-/// Quick Wi-Fi spec § 1: from the network module (or `--quick wifi`), the first Wi-Fi
+/// From the network module (or `--quick wifi`), the first Wi-Fi
 /// state with a device selects the row and opens the detail, once.
 #[test]
 fn the_network_module_opens_the_detail_once_the_state_arrives() {
@@ -1346,7 +1346,7 @@ fn a_wifi_state_moves_the_window_with_the_selection_and_a_closed_detail_goes_bac
     assert_eq!(q.top, 0, "back to the top");
 }
 
-/// The panel's one timer covers the connect timeout and the `failed` display (quick Wi-Fi § 5).
+/// The panel's one timer covers the connect timeout and the `failed` display.
 #[test]
 fn the_wifi_attempt_rides_the_panel_s_one_timer() {
     let (w, t) = (World::full(), Instant::now());
@@ -1950,7 +1950,7 @@ fn a_click_on_the_shield_module_asks_for_the_shield_focus() {
     assert_eq!(Focus::of(&Target::Module(ModuleId::Shield)), Focus::Shield);
 }
 
-// ---- the Shield row (shield spec § 5) ----
+// ---- the Shield row ----
 
 fn shield_view(state: Option<bool>, can_list: bool, can_allow: bool) -> crate::shield::ShieldView {
     crate::shield::ShieldView { state, switching: false, failed_until: None, can_list, can_allow }

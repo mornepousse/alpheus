@@ -17,7 +17,7 @@
 //! - run a command or write to the compositor (guardrails check the OSD's files);
 //! - write a log line per change: one when the surface appears and one when it goes.
 //!
-//! See: docs/specs/2026-10-09-alpheus-osd-design.md (§ 2, § 3), docs/features/osd.md, and
+//! See: docs/features/osd.md and
 //! docs/decisions.md ("The OSD pill is an Overlay surface with an empty input region, made on
 //! show", "The pill follows the focused output only when its content changes", "The OSD logs once
 //! when its surface appears and once when it goes").
@@ -113,7 +113,7 @@ impl App {
         self.osd_sync(&what);
     }
 
-    /// `alpheus-launch --osd brightness` (OSD spec § 2, § 4): the backlight read once, then the pill.
+    /// `alpheus-launch --osd brightness` the backlight read once, then the pill.
     /// Always Done: with the module off or no backlight, nothing shows (exit 0). Brightness is
     /// shown on request only; see docs/decisions.md, "Brightness is shown on request, read once".
     pub(crate) fn osd_verb(&mut self, request: &Request) -> Reply {
@@ -375,7 +375,7 @@ impl App {
         true
     }
 
-    /// A restyle or a theme change (OSD spec § 3): the shown pill painted again with the current roles.
+    /// A restyle or a theme change: the shown pill painted again with the current roles.
     pub(crate) fn osd_repaint(&mut self) {
         if let Some(open) = self.osd.open.as_mut() {
             open.last = None;
@@ -383,7 +383,7 @@ impl App {
         self.osd_draw();
     }
 
-    /// The hide timer follows the pill's deadline: armed only while it shows (OSD spec § 3).
+    /// The hide timer follows the pill's deadline: armed only while it shows.
     pub(crate) fn osd_timer_sync(&mut self) {
         let deadline = self.osd.model.deadline();
         self.osd.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);

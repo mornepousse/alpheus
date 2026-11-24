@@ -37,8 +37,7 @@ pub struct NodeProps {
     pub description: Option<String>,
     #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
     pub nick: Option<String>,
-    /// A device's (`bluez5` is the one kept) and a node's device: the headset (quick Bluetooth
-    /// spec § 4).
+    /// A device's (`bluez5` is the one kept) and a node's device: the headset row's.
     #[serde(rename = "device.api", default, deserialize_with = "lenient_text")]
     pub device_api: Option<String>,
     #[serde(rename = "device.description", default, deserialize_with = "lenient_text")]
@@ -47,7 +46,7 @@ pub struct NodeProps {
     pub device_id: Option<u32>,
 }
 
-/// `Object`'s twin for a model built for privacy (privacy spec § 8): the same fields plus what the
+/// `Object`'s twin for a model built for privacy: the same fields plus what the
 /// capture rules read. Only `follow_tapped` with the tap's privacy flag deserializes it; without
 /// the module the lean `Object` is parsed and nothing more.
 #[derive(Deserialize)]
@@ -70,7 +69,7 @@ pub struct PrivacyInfo {
     #[serde(default, deserialize_with = "null_as_default")]
     pub params: Params,
     /// A node's (`running`) or a link's (`active`) state; any other value, or a type that is not
-    /// text, reads as neither (privacy spec § 2).
+    /// text, reads as neither.
     #[serde(default, deserialize_with = "lenient_text")]
     pub state: Option<String>,
     /// A link's ends.
@@ -80,7 +79,7 @@ pub struct PrivacyInfo {
     pub input_node: Option<u32>,
 }
 
-/// `NodeProps` and what the privacy rules read (spec § 2).
+/// `NodeProps` and what the privacy rules read.
 #[derive(Deserialize, Default)]
 pub struct PrivacyProps {
     #[serde(rename = "media.class", default, deserialize_with = "lenient_text")]
@@ -91,7 +90,7 @@ pub struct PrivacyProps {
     pub description: Option<String>,
     #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
     pub nick: Option<String>,
-    // What the privacy rules read (spec § 2); parsed always, kept only with the module.
+    // What the privacy rules read; parsed always, kept only with the module.
     #[serde(rename = "media.role", default, deserialize_with = "lenient_text")]
     pub media_role: Option<String>,
     #[serde(rename = "device.api", default, deserialize_with = "lenient_text")]
@@ -120,7 +119,7 @@ pub struct PrivacyProps {
 pub struct Params {
     #[serde(rename = "Props", default, deserialize_with = "null_as_default")]
     pub props: Vec<PropsParam>,
-    /// A device's profiles and its active one (the headset, quick Bluetooth spec § 4).
+    /// A device's profiles and its active one (the headset row).
     #[serde(rename = "EnumProfile", default, deserialize_with = "null_as_default")]
     pub enum_profile: Vec<ProfileParam>,
     #[serde(rename = "Profile", default, deserialize_with = "null_as_default")]

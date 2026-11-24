@@ -28,8 +28,7 @@
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
 //! - read a clock: the caller passes `now` (no guardrail checks it).
 //!
-//! See: docs/specs/2026-10-20-alpheus-quick-settings-bluetooth-design.md,
-//! docs/features/quick-settings.md, and docs/decisions.md ("Space on a blocked Bluetooth radio
+//! See: docs/features/quick-settings.md and docs/decisions.md ("Space on a blocked Bluetooth radio
 //! unblocks it, then powers it on", "Nearby Bluetooth devices are inserted once, by signal strength",
 //! "A paired Bluetooth device is trusted, and a connect that is already done counts as done",
 //! "Forgetting a Bluetooth device asks first, as the power menu does", "Bluetooth deadlines live in
@@ -49,12 +48,12 @@ use crate::system::{BtAdapter, BtEntry, BtKind, BtScope, BtState, BtView};
 use crate::text;
 use std::time::{Duration, Instant};
 
-/// The most devices the detail lists, paired and nearby together (spec § 2).
+/// The most devices the detail lists, paired and nearby together.
 pub const ROWS_MAX: usize = 32;
 /// The row's glyph for an adapter that is off or blocked: `md-bluetooth-off` (Nerd Font's Material
 /// Design set; the bar's module has no glyph for off, it hides). The on and connected glyphs are the
 /// module's own (`segments::BLUETOOTH`, `segments::BLUETOOTH_CONNECTED`), so the row draws as the
-/// module does (spec § 1).
+/// module does.
 pub const BT_OFF: char = '\u{f00b2}';
 /// A device's glyph by its kind: headphones, keyboard, mouse, speaker, cellphone, and the
 /// bluetooth-connect glyph for any other kind.
@@ -69,16 +68,15 @@ pub const OFF_NOTE: &str = "Bluetooth is off";
 pub const NEARBY: &str = "Nearby";
 /// A paired, unconnected device's tag.
 const PAIRED_TAG: &str = "paired";
-/// The tag a device shows while its forget question is asked (spec § 2).
+/// The tag a device shows while its forget question is asked.
 const FORGET_TAG: &str = "Forget? ⏎";
-/// How long each call of an action may wait for its answer (spec § 2): an action with several calls
+/// How long each call of an action may wait for its answer: an action with several calls
 /// (a pairing is a pair, a trust, a connect) gives each one its own.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
-/// BlueZ's answer to a `Connect` on a device already connected. It counts as a success (spec § 2:
-/// a Bluetooth LE device is often connected by the pairing itself).
+/// BlueZ's answer to a `Connect` on a device already connected. It counts as a success (a Bluetooth LE device is
+/// often connected by the pairing itself).
 const ALREADY_CONNECTED: &str = "org.bluez.Error.AlreadyConnected";
-/// BlueZ's answer for an object that went (a device removed meanwhile): the action ends silently
-/// (spec § 6).
+/// BlueZ's answer for an object that went (a device removed meanwhile): the action ends silently.
 const UNKNOWN_OBJECT: &str = "org.freedesktop.DBus.Error.UnknownObject";
 
 /// What the panel asks of the acting connection: a call to BlueZ, the agent's answer to one of
@@ -117,7 +115,7 @@ pub struct Action {
     pub deadline: Option<Instant>,
 }
 
-/// A pairing's code (spec § 3): shown to be typed on the device, or asked to be compared with the
+/// A pairing's code: shown to be typed on the device, or asked to be compared with the
 /// one the device shows (`id` names the BlueZ request the answer goes to).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Code {
@@ -172,7 +170,7 @@ fn orders(v: Vec<BtOrder>) -> QuickAction {
 
 impl Bt {
     /// Whether the row shows: BlueZ has an adapter. `Absent`, or a state the bar has not read, hides
-    /// it (spec § 1).
+    /// it.
     pub fn shows(bt: Option<&BtState>) -> bool {
         matches!(bt, Some(BtState::Off | BtState::On { .. }))
     }
@@ -201,7 +199,7 @@ impl Bt {
         }
     }
 
-    /// The row's value (spec § 1): the first connected device's name (the bar's order, cleaned, cut
+    /// The row's value: the first connected device's name (the bar's order, cleaned, cut
     /// to `VALUE_CELLS`, `?` when nothing is left), else `on`, `off`, or `blocked` when rfkill holds
     /// the adapter off.
     pub fn value(&self, bt: &BtState) -> String {
@@ -223,7 +221,7 @@ impl Bt {
         }
     }
 
-    /// The detail's devices (spec § 2): none unless the adapter is powered; the paired ones,
+    /// The detail's devices: none unless the adapter is powered; the paired ones,
     /// connected first, then by name (any case), then the ones nearby in the reader's order; at most
     /// `ROWS_MAX` in all.
     pub fn devices(&self) -> Vec<&BtEntry> {
@@ -252,7 +250,7 @@ impl Bt {
     }
 
     /// Enter, →, a click on the row: the detail, the first device selected (the header without
-    /// one); discovery starts when the adapter is powered (spec § 2).
+    /// one); discovery starts when the adapter is powered.
     pub fn open_detail(&mut self) -> QuickAction {
         self.open = true;
         self.selected = self.devices().first().map(|d| d.path.clone());
@@ -272,7 +270,7 @@ impl Bt {
     }
 
     /// Leaving the detail or closing the panel, in order: a pending code question rejected, a
-    /// pairing cancelled and its call forgotten (the code could no longer show: spec § 3),
+    /// pairing cancelled and its call forgotten (the code could no longer show),
     /// discovery stopped if this open started it. Any action but a pairing's Pair step outlives the
     /// detail.
     pub fn leaving(&mut self) -> Vec<BtOrder> {
@@ -311,7 +309,7 @@ impl Bt {
     }
 
     /// Whether the acting connection is wanted: the detail is open, an action runs or a code shows
-    /// (spec § 5: it lives while the detail is open or a call is in flight).
+    /// (it lives while the detail is open or a call is in flight).
     pub fn wants_connection(&self) -> bool {
         self.open || self.action.is_some() || self.code.is_some()
     }
@@ -359,7 +357,7 @@ impl Bt {
         }
     }
 
-    /// Enter (or a left press) on the selected device, no action running (spec § 2): a connected one
+    /// Enter (or a left press) on the selected device, no action running: a connected one
     /// disconnects, a paired one connects, a nearby one pairs.
     pub fn enter(&mut self, now: Instant) -> QuickAction {
         if self.action.is_some() {
@@ -380,7 +378,7 @@ impl Bt {
     }
 
     /// The selected device's forget question (Delete, a right press): only on a paired device, with
-    /// no action running (spec § 2: a nearby device cannot be forgotten). The question lasts
+    /// no action running (a nearby device cannot be forgotten). The question lasts
     /// `session::CONFIRM`.
     fn ask_forget(&mut self, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
         let Some(p) = self.selected.clone() else { return QuickAction::Nothing };
@@ -486,7 +484,7 @@ impl Bt {
     }
 
     /// `code` replaces the one showing: a pending question is rejected first (its order is pushed
-    /// on `v`). The action's deadline waits while a code shows (spec § 2: BlueZ's own pairing
+    /// on `v`). The action's deadline waits while a code shows (BlueZ's own pairing
     /// timeout ends it).
     fn show(&mut self, code: Code, v: &mut Vec<BtOrder>) {
         if let Some(Code::Question { id, .. }) = self.code.take() {
@@ -498,7 +496,7 @@ impl Bt {
         }
     }
 
-    /// One of BlueZ's agent requests (spec § 3), for the device being paired only: a code shown, a
+    /// One of BlueZ's agent requests, for the device being paired only: a code shown, a
     /// code question, a code to type in (refused: `failed`), BlueZ cancelling. Anything else, or for
     /// any other device, is rejected. Every request but BlueZ's own Cancel and Release (already
     /// answered by the connection) gets its reply as a `BtOrder::Reply`.
@@ -583,7 +581,7 @@ impl Bt {
     }
 
     /// Whether the running action is on a device that is no longer there: its adapter is off, or the
-    /// device is in neither list of the view (spec § 6). An action on the adapter itself is never gone.
+    /// device is in neither list of the view. An action on the adapter itself is never gone.
     fn action_device_gone(&self) -> bool {
         let Some(device) = self.action.as_ref().and_then(|a| a.device.as_deref()) else { return false };
         if !self.powered() {
@@ -637,7 +635,7 @@ impl Bt {
         orders(v)
     }
 
-    /// Space on the row (spec § 1): the adapter's power the other way; with rfkill holding it off,
+    /// Space on the row: the adapter's power the other way; with rfkill holding it off,
     /// `rfkill unblock bluetooth` first. Nothing without an adapter read.
     pub fn power(&mut self, bt: &BtState) -> QuickAction {
         if *bt == BtState::Absent {
@@ -847,7 +845,7 @@ fn push_device(v: &mut Vec<Line>, i: usize, shown: Option<usize>) {
 }
 
 impl Bt {
-    /// A device's tag, the first that applies (spec §§ 2–3): its forget question, its code
+    /// A device's tag, the first that applies: its forget question, its code
     /// question, its action running, its failure, paired.
     fn tag(&self, d: &BtEntry, confirm: Option<&(Question, Instant)>) -> (String, Style) {
         // Whether the object path `p` is this device's.
@@ -870,7 +868,7 @@ impl Bt {
     }
 }
 
-/// One device's row, as "● 󰋋 Headset" or "  󰌌 Keyboard      paired" (spec § 2): ● on a connected one
+/// One device's row, as "● 󰋋 Headset" or "  󰌌 Keyboard      paired": ● on a connected one
 /// in the accent, the kind's glyph, the label cut to fit (`?` when empty), the tag right-aligned
 /// one cell from the end. Selected: the band across the whole row.
 fn device_row(g: &mut Grid, d: &BtEntry, tag: &str, tag_style: Style, selected: bool) {

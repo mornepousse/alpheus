@@ -53,7 +53,7 @@ pub struct Model {
     default_source: Option<Named>,
     /// The bluez5 devices (device id → profiles), bounded (`MAX_BT_DEVICES`, `MAX_PROFILES`).
     bt: HashMap<u32, BtDevice>,
-    /// With the `privacy` module (spec § 8): the capture graph, bounded, and whether its bound was
+    /// With the `privacy` module: the capture graph, bounded, and whether its bound was
     /// told (nodes, links) in this model's life. Empty and untouched otherwise.
     privacy: bool,
     graph: HashMap<u32, GraphNode>,
@@ -62,7 +62,7 @@ pub struct Model {
 }
 
 impl Model {
-    /// A model that keeps the capture graph too when `privacy` is on (privacy spec § 8).
+    /// A model that keeps the capture graph too when `privacy` is on.
     pub fn new(privacy: bool) -> Model {
         Model { privacy, ..Model::default() }
     }

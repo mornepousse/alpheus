@@ -55,7 +55,7 @@ fn reads(f: &FakeSway, n: usize) -> Vec<u32> {
     }
 }
 
-/// Spec § 3: the magic, a little-endian u32 length and type, the payload.
+/// The magic, a little-endian u32 length and type, the payload.
 #[test]
 fn frames_are_magic_length_type_payload() {
     assert_eq!(frame(Message::GetTree), b"i3-ipc\x00\x00\x00\x00\x04\x00\x00\x00");
@@ -67,7 +67,7 @@ fn frames_are_magic_length_type_payload() {
     assert_eq!(read_frame(&mut &b"i3-ipc\x02\x00"[..]).unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "a cut header");
 }
 
-/// Spec § 3: SUBSCRIBE to the two events on one connection, then GET_WORKSPACES and GET_TREE
+/// SUBSCRIBE to the two events on one connection, then GET_WORKSPACES and GET_TREE
 /// on the other; the state is the model's for those replies.
 #[test]
 fn subscribe_first_then_the_two_reads() {
@@ -80,7 +80,7 @@ fn subscribe_first_then_the_two_reads() {
     assert_eq!(received[1..], [(1, 1, Vec::new()), (1, 4, Vec::new())]);
 }
 
-/// Spec § 3: after an event, the events already readable are drained without blocking, then
+/// After an event, the events already readable are drained without blocking, then
 /// both requests are read once: a burst costs one re-read. 200 events of 64 bytes overflow
 /// the reader's 8 KiB buffer, the 128th ending exactly at its end: the buffer is then empty,
 /// and the rest is found by the zero-timeout poll alone.
@@ -97,7 +97,7 @@ fn a_burst_of_events_costs_one_reread() {
     assert_eq!(reads(&f, 4).len(), 4, "200 events, one re-read");
     f.push(&window_event());
     assert_eq!(reads(&f, 6), [1, 4, 1, 4, 1, 4], "a later event: one more");
-    assert!(r.states.recv_timeout(QUIET).is_err(), "the same state: not published again (spec § 3)");
+    assert!(r.states.recv_timeout(QUIET).is_err(), "the same state: not published again");
 }
 
 /// A burst is drained MAX_BURST events at a time, then read again: an endless stream of events
@@ -122,7 +122,7 @@ fn a_bad_magic_ends_the_session() {
     assert!(e.to_string().contains("bad magic"), "{e}");
 }
 
-/// Spec § 3: a reply over 4 MiB ends the session before its payload is read (the fake never
+/// A reply over 4 MiB ends the session before its payload is read (the fake never
 /// sends it: reading it would wait for the 2 s timeout instead).
 #[test]
 fn an_oversized_reply_ends_the_session() {
@@ -168,7 +168,7 @@ fn nested(levels: usize) -> Vec<u8> {
     reply(4, objects.as_bytes())
 }
 
-/// Spec § 3, on the compositor thread's real 256 KiB stack (`spawn_source`'s): a tree nested
+/// A tree nested
 /// exactly MAX_NESTING levels is read and published; one level more ends the session as
 /// unreadable, before serde_json recurses.
 #[test]

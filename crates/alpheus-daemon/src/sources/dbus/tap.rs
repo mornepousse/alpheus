@@ -102,7 +102,7 @@ impl Wake for Tap {
     }
 }
 
-/// What the loop asks the D-Bus thread about the failed-units count (diagnostics spec § 6): one
+/// What the loop asks the D-Bus thread about the failed-units count: one
 /// word, "read it again now" (`failed-refresh`). Unlike a panel tap it has no scope: each poke is
 /// counted, so one that arrives while the thread is busy is still read once, and a count read
 /// twice for one poke never happens. The same socket pair, polled beside the bus: no thread, no

@@ -13,7 +13,7 @@
 //!   watch there is no fd, no timer and no scan;
 //! - start a thread, a process or a command: the scan runs on the event loop.
 //!
-//! See: docs/specs/2026-10-20-alpheus-privacy-camera-design.md, docs/features/privacy.md, and
+//! See: docs/features/privacy.md and
 //! docs/decisions.md ("The camera is read from `/proc` after a trigger, never counted", "A burst of
 //! camera triggers is scanned at most one second after its first", "The camera scan runs on the
 //! event loop", "The camera watch is a second inotify instance").

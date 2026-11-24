@@ -21,7 +21,7 @@ pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &m
         t.privacy
     };
     let _forget = Forget(tap);
-    // Without the module the lean `Object` is parsed: nothing more (privacy spec § 8).
+    // Without the module the lean `Object` is parsed: nothing more.
     if privacy {
         follow_batches::<PrivacyObject>(output, base, tap, publish, Model::apply_privacy)
     } else {

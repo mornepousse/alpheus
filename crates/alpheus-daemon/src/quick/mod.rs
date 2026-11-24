@@ -5,7 +5,7 @@
 //! popup; `Live` borrows what the rest of the daemon knows (the sound state, do-not-disturb, the
 //! power profile, the configuration) each time it is used; `QuickAction` is what a key or a click
 //! asks the wiring to do (run a command, close the panel, repaint). `ROWS` says which rows exist
-//! and when each shows, and the selection is kept by the row it is on, not by its position (spec § 5).
+//! and when each shows, and the selection is kept by the row it is on, not by its position.
 //! The other files of this folder: `app.rs` is the wiring (the popup, the reads, spawning the
 //! commands), `state.rs` reads a configured toggle's state, `draw.rs` turns the state into cells,
 //! and `wifi.rs`, `bt.rs`, `vpn.rs`, `dnd.rs` and `shield.rs` are the lists with a detail: each
@@ -27,8 +27,8 @@
 //!   instead;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/decisions.md ("A slider
-//! sends one level per 150 ms window and keeps showing it", "The quick panel never sets the backlight below 1 %",
+//! See: docs/features/quick-settings.md and docs/decisions.md ("A slider sends one level per
+//! 150 ms window and keeps showing it", "The quick panel never sets the backlight below 1 %",
 //! "A click on a slider's bar sets the level of the cell", "Only the arrow keys repeat in the quick
 //! panel", "The quick panel's outputs detail stays open after a choice", "A session button closes the
 //! quick panel", "Do not disturb shows in the quick panel only with the notifications module",
@@ -83,13 +83,13 @@ pub const MORE_AT: u16 = 32;
 /// wpctl's targets: the default output, as the bar's own clicks name it, and the default input.
 pub const SINK: &str = crate::actions::SINK;
 pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
-// The row glyphs (spec § 2): Nerd Font Material Design icons; the session row's are
-// session.rs's (shared with the power menu, power spec § 4).
+// The row glyphs: Nerd Font Material Design icons; the session row's are
+// session.rs's (shared with the power menu).
 pub const PROFILE: char = '\u{f0f85}';
 pub const KEEP_AWAKE: char = '\u{f0176}';
 pub const NIGHT_LIGHT: char = '\u{f0594}';
 pub const MIXER: char = '\u{f066a}'; // md-tune_vertical
-/// Re-reads after a command (spec § 5): the backlight, a configured toggle's state.
+/// Re-reads after a command: the backlight, a configured toggle's state.
 pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
 /// A slider sends at most one command per window this long: a held key, the wheel or clicks in a
@@ -111,23 +111,23 @@ pub(crate) const RUNNING_TAG: &str = "…";
 /// The tag a list's entry shows for `FAILED_SHOWN` after what ran on it failed.
 pub(crate) const FAILED_TAG: &str = "failed";
 
-/// Where the panel opens (spec § 1).
+/// Where the panel opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The first row: the bare verb.
     Top,
     /// The volume row: a click on the volume module, or `--quick sound`.
     Sound,
-    /// The Wi-Fi row, its detail opened once the Wi-Fi state arrives (quick Wi-Fi spec § 1): a
+    /// The Wi-Fi row, its detail opened once the Wi-Fi state arrives: a
     /// click on the network module, or `--quick wifi`. Without a Wi-Fi row, the first row.
     Wifi,
-    /// The Bluetooth row, its detail opened (quick Bluetooth spec § 1): a click on the Bluetooth
+    /// The Bluetooth row, its detail opened: a click on the Bluetooth
     /// module, or `--quick bluetooth`. Without a Bluetooth row, the first row.
     Bluetooth,
-    /// The VPN row, its detail opened once the VPN state arrives (quick VPN spec): `--quick vpn`.
+    /// The VPN row, its detail opened once the VPN state arrives: `--quick vpn`.
     /// Without a VPN row, the first row.
     Vpn,
-    /// The Shield row (shield spec § 4): a click on the `shield` glyph. Nothing opens.
+    /// The Shield row: a click on the `shield` glyph. Nothing opens.
     Shield,
 }
 
@@ -149,16 +149,16 @@ impl Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Volume,
-    /// The default sink's Bluetooth headset: Hi-Fi or call mode (quick Bluetooth spec § 4).
+    /// The default sink's Bluetooth headset: Hi-Fi or call mode.
     Headset,
     Brightness,
-    /// The Wi-Fi (quick Wi-Fi spec § 1): first under the sliders' separator.
+    /// The Wi-Fi: first under the sliders' separator.
     Wifi,
-    /// The Bluetooth adapter (quick Bluetooth spec § 1): right under the Wi-Fi row.
+    /// The Bluetooth adapter: right under the Wi-Fi row.
     Bluetooth,
-    /// The VPN (quick VPN spec): right under the Bluetooth row.
+    /// The VPN: right under the Bluetooth row.
     Vpn,
-    /// Shield mode (shield spec § 5): right under the VPN row.
+    /// Shield mode: right under the VPN row.
     Shield,
     Mic,
     /// `Mixer…` (`[quick] mixer`): opens a terminal mixer, right under the microphone.
@@ -187,7 +187,7 @@ impl Row {
     }
 }
 
-/// A configured toggle (spec § 4).
+/// A configured toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toggle {
     KeepAwake,
@@ -347,7 +347,7 @@ pub enum QuickAction {
     /// Do-not-disturb flips through `App::set_dnd`, the bell's and the verb's one path.
     ToggleDnd,
     /// Spawn `argv` with the open password field's bytes and a newline on its standard input, then
-    /// close the field (its buffer wiped): `nmcli --ask` (quick Wi-Fi spec § 3). The password is never
+    /// close the field (its buffer wiped): `nmcli --ask`. The password is never
     /// in `argv`, nor anywhere in this action.
     RunSecret {
         argv: Vec<String>,
@@ -559,7 +559,7 @@ pub struct Quick {
     /// The selected line's index when the window last followed it: a Wi-Fi state that leaves it
     /// there leaves the window (a wheel scroll) alone.
     pub kept_at: Option<usize>,
-    /// Programs that failed to start during this open: each logged once (spec § 6).
+    /// Programs that failed to start during this open: each logged once.
     pub failed: Vec<String>,
     /// The Wi-Fi row and its detail (`wifi.rs`).
     pub wifi: Wifi,
@@ -593,13 +593,13 @@ struct RowSpec {
     name: &'static str,
     /// Its block: the sliders, the toggles, the session buttons (a 1 px line between two).
     group: u8,
-    /// Whether it shows (spec § 2): a row whose tool, hardware or command is missing does not.
+    /// Whether it shows: a row whose tool, hardware or command is missing does not.
     present: fn(&Live, &Quick) -> bool,
     /// Draws it, `selected` for the band.
     draw: fn(&mut Grid, &Live, &Quick, bool),
 }
 
-/// Every row, top to bottom (spec § 2): also the order a selection falls back along when its row
+/// Every row, top to bottom: also the order a selection falls back along when its row
 /// goes. A test pins each entry's `row` to its index. Adding a row:
 /// - a toggle with no configuration (like the microphone or do-not-disturb): a `Row` variant at its
 ///   place, one entry here (its `draw_*` in `draw.rs`, `draw_mark` for a switch), its Space/Enter arm
@@ -664,7 +664,7 @@ const ROWS: [RowSpec; 14] = [
     RowSpec { row: Row::Session, name: "session", group: 2, present: |live, _| session::any_configured(live.config), draw: session_row },
 ];
 
-/// Whether `r` shows (spec § 2): a row whose tool, hardware or command is missing does not.
+/// Whether `r` shows: a row whose tool, hardware or command is missing does not.
 fn present(r: Row, live: &Live, q: &Quick) -> bool {
     (r.spec().present)(live, q)
 }
@@ -891,7 +891,7 @@ impl Quick {
         self.kept_at = at;
     }
 
-    /// A key (spec § 3). `repeat`: the keyboard's auto-repeat, which only ↑ ↓ ← → (and Ctrl+P,
+    /// A key. `repeat`: the keyboard's auto-repeat, which only ↑ ↓ ← → (and Ctrl+P,
     /// Ctrl+N) follow, and Backspace in the password field: a held Space or Enter acts once. See
     /// docs/decisions.md, "Only the arrow keys repeat in the quick panel".
     pub fn key(&mut self, live: &Live, k: Key, repeat: bool, now: Instant) -> QuickAction {
@@ -906,7 +906,7 @@ impl Quick {
         self.wifi.focus_pending = false;
         self.vpn.focus_pending = false;
         self.fit(live);
-        // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
+        // Moving away cancels "Reboot? ⏎": any key but Enter, its second activation.
         let cancelled = k != Key::Enter && self.confirm.take().is_some();
         let action = if self.bt.open {
             let a = self.bt.key(k, &mut self.confirm, now);
@@ -968,7 +968,7 @@ impl Quick {
         }
     }
 
-    /// Space, Enter and ← → on a row (spec § 3).
+    /// Space, Enter and ← → on a row.
     fn act(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
         let step = live.config.step;
         match (self.selected, k) {
@@ -1023,7 +1023,7 @@ impl Quick {
     }
 
     /// The backlight by a step or to a level, never below BRIGHTNESS_MIN: shown at once, sent as
-    /// the volume is; re-read BRIGHTNESS_REREAD after the last command (spec § 5).
+    /// the volume is; re-read BRIGHTNESS_REREAD after the last command.
     fn brightness(&mut self, to: Level, now: Instant) -> QuickAction {
         let Some(b) = self.backlight.as_mut() else { return QuickAction::Nothing };
         b.percent = to.from(b.percent, BRIGHTNESS_MIN);
@@ -1051,7 +1051,7 @@ impl Quick {
         }
     }
 
-    /// A session button (spec § 2): lock and log out at once; reboot and power off on a second
+    /// A session button: lock and log out at once; reboot and power off on a second
     /// activation within CONFIRM, the first one turning the row into the question.
     fn activate(&mut self, live: &Live, s: Session, now: Instant) -> QuickAction {
         let argv = s.command(live.config).to_vec();
@@ -1074,7 +1074,7 @@ impl Quick {
         }
     }
 
-    /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown), spec § 3.
+    /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown).
     pub fn press(&mut self, live: &Live, cell: (u16, u16), b: Button, now: Instant) -> QuickAction {
         self.wifi.focus_pending = false;
         self.vpn.focus_pending = false;
@@ -1166,7 +1166,7 @@ impl Quick {
                 }
             }
             (Line::Row(Row::Session), Button::Left) => self.press_session(live, cell.0, now),
-            // A left click on any other row is Enter (spec § 3).
+            // A left click on any other row is Enter.
             (Line::Row(r), Button::Left) => {
                 self.selected = r;
                 self.act(live, Key::Enter, now)
@@ -1316,7 +1316,7 @@ impl Quick {
     }
 
     /// `program` failed to start: true the first time this open (log it), false after, so a program
-    /// that is missing is logged once (spec § 6).
+    /// that is missing is logged once.
     pub fn note_failure(&mut self, program: &str) -> bool {
         if self.failed.iter().any(|p| p == program) {
             return false;
@@ -1325,7 +1325,7 @@ impl Quick {
         true
     }
 
-    /// `›`, or Enter on the volume (spec § 2): the outputs in place of the rows, the default chosen.
+    /// `›`, or Enter on the volume: the outputs in place of the rows, the default chosen.
     /// With a single sink, nothing.
     fn open_outputs(&mut self) -> QuickAction {
         if self.sinks.len() < 2 {
@@ -1337,7 +1337,7 @@ impl Quick {
         QuickAction::Redraw
     }
 
-    /// Enter, →, or a click on the Wi-Fi row (quick Wi-Fi spec § 1): its detail in place of the rows.
+    /// Enter, →, or a click on the Wi-Fi row: its detail in place of the rows.
     fn open_wifi(&mut self) -> QuickAction {
         if !self.wifi.shows() {
             return QuickAction::Nothing;
@@ -1400,7 +1400,7 @@ impl Quick {
         self.wifi.scope()
     }
 
-    /// Enter, →, or a click on the Bluetooth row (quick Bluetooth spec § 1): its detail in place of
+    /// Enter, →, or a click on the Bluetooth row: its detail in place of
     /// the rows, discovery started on a powered adapter.
     fn open_bt(&mut self, live: &Live) -> QuickAction {
         if !present(Row::Bluetooth, live, self) {
@@ -1412,7 +1412,7 @@ impl Quick {
         self.bt.open_detail()
     }
 
-    /// Enter, →, or a click on the VPN row (quick VPN spec): its detail in place of the rows.
+    /// Enter, →, or a click on the VPN row: its detail in place of the rows.
     fn open_vpn(&mut self, live: &Live) -> QuickAction {
         if !present(Row::Vpn, live, self) {
             return QuickAction::Nothing;
@@ -1464,7 +1464,7 @@ impl Quick {
         QuickAction::Redraw
     }
 
-    /// Enter, →, or a click on the Shield row (shield spec § 5): its detail in place of the rows, a
+    /// Enter, →, or a click on the Shield row: its detail in place of the rows, a
     /// read of the blocked devices asked for while the mode is on. Nothing when `blocked` is `[]`.
     pub fn open_shield(&mut self, live: &Live) -> QuickAction {
         let (Some(view), true) = (live.shield, present(Row::Shield, live, self)) else { return QuickAction::Nothing };
@@ -1496,7 +1496,7 @@ impl Quick {
     }
 
     /// One of BlueZ's agent requests (`Bt::agent`), then fitted; a code question cancels a pending
-    /// `Forget?` (quick Bluetooth spec § 3).
+    /// `Forget?`.
     pub fn bt_agent(&mut self, id: AgentId, request: AgentRequest, now: Instant) -> QuickAction {
         let a = self.bt.agent(id, request, now);
         if matches!(self.bt.code, Some(Code::Question { .. })) && matches!(self.confirm, Some((Question::Forget(_), _))) {
@@ -1545,7 +1545,7 @@ impl Quick {
         moved(&mut self.sink, to)
     }
 
-    /// `wpctl set-default <id>` for the i-th sink (spec § 5).
+    /// `wpctl set-default <id>` for the i-th sink.
     fn choose_sink(&self, i: usize) -> QuickAction {
         match self.sinks.get(i) {
             Some(s) => {

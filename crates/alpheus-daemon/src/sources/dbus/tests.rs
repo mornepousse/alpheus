@@ -262,7 +262,7 @@ fn radio_changed() -> Signal {
     with_names(signal(network::PATH, PROPERTIES, "PropertiesChanged", Some(network::INTERFACE)), &["WirelessEnabled"])
 }
 
-/// Quick Wi-Fi spec § 5: closed, a network signal reads no Wi-Fi; the loop's word reads the row;
+/// Closed, a network signal reads no Wi-Fi; the loop's word reads the row;
 /// a network signal re-reads it while open; closed again, the state goes and nothing is read.
 #[test]
 fn the_wifi_row_is_read_on_a_poke_followed_while_open_and_dropped_on_close() {
@@ -466,7 +466,7 @@ fn voisin(s: &SystemState) -> Option<u8> {
     d.access_points.as_ref()?.iter().find(|a| a.ssid == b"Voisin-Test").map(|a| a.strength)
 }
 
-/// Quick Wi-Fi spec § 5: an access point's change is read only while the detail is open.
+/// An access point's change is read only while the detail is open.
 #[test]
 fn detail_signals_are_followed_only_while_the_detail_is_open() {
     let mut bus = FakeBus::workstation();
@@ -527,7 +527,7 @@ fn profiles_gone(b: &mut FakeBus) {
     b.owners.remove(POWER_PROFILES);
 }
 
-/// Quick spec § 5: read at start, followed on `PropertiesChanged` (only the two properties the
+/// Read at start, followed on `PropertiesChanged` (only the two properties the
 /// panel shows), gone with its owner; every call to its one object, through its unique name.
 #[test]
 fn the_power_profile_is_read_followed_and_gone_with_its_daemon() {
@@ -1533,7 +1533,7 @@ fn the_activation_is_logged_with_fixed_words() {
     assert_eq!(lines, ["upower: activation asked"]);
 }
 
-// The failed-units count (diagnostics spec § 6).
+// The failed-units count.
 
 /// A session over `domains` with `opts`: the publications, how many times the loop was told the
 /// count was read, and the session's end.
@@ -1777,7 +1777,7 @@ fn battery_reads(bus: &FakeBus) -> usize {
 }
 
 /// A read error of the count (systemd1 timing out, an odd reply) is the count's alone: unknown for
-/// that read, and the session, with the other domains, goes on (diagnostics spec § 6).
+/// that read, and the session, with the other domains, goes on.
 #[test]
 fn a_units_read_error_hides_the_count_and_the_session_goes_on() {
     let mut bus = FakeBus::workstation();

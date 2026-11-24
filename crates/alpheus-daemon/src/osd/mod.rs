@@ -15,7 +15,7 @@
 //! - read the clock: every method takes `now`;
 //! - panic (a guardrail checks).
 //!
-//! See: docs/specs/2026-10-09-alpheus-osd-design.md, docs/features/osd.md, and docs/decisions.md
+//! See: docs/features/osd.md and docs/decisions.md
 //! ("The microphone pill shows only when its mute flips", "A sound change within a second of a
 //! start or a new default device shows nothing", "The OSD counts a volume change in whole
 //! percent", "Brightness is shown on request, read once").
@@ -28,8 +28,7 @@ use crate::segments::{VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
 use crate::system::{DeviceName, SoundState, Volume};
 use std::time::{Duration, Instant};
 
-/// After startup, a pw-dump restart, or a default device appearing or switching: no pill (OSD
-/// spec § 2). See docs/decisions.md, "A sound change within a second of a start or a new default
+/// After startup, a pw-dump restart, or a default device appearing or switching: no pill. See docs/decisions.md, "A sound change within a second of a start or a new default
 /// device shows nothing".
 pub const GRACE: Duration = Duration::from_secs(1);
 /// Cells the percentage takes: "100%", " 64%", "255%".
@@ -42,7 +41,7 @@ pub const MIC_ON: char = '\u{f036c}'; // md-microphone
 pub const MIC_OFF: char = '\u{f036d}'; // md-microphone_off
 pub const BRIGHTNESS: char = '\u{f00e0}'; // md-brightness_7 (a sun)
 
-/// What the pill says (OSD spec § 1). One at a time: a newer one replaces it.
+/// What the pill says. One at a time: a newer one replaces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pill {
     /// The default sink's level.
@@ -210,7 +209,7 @@ impl Watch {
             now,
         );
         // The sink comes first: a message that changes both the sink and the microphone shows the
-        // sink (OSD spec § 2, amendment).
+        // sink.
         match (sink, source) {
             (Change::Level(v), _) => Heard::Show(Pill::Volume(v)),
             (Change::Card(v), _) => {
@@ -221,7 +220,7 @@ impl Watch {
                 Heard::Show(Pill::Sink { label, volume: v })
             }
             (Change::Nothing, Change::Level(v)) => Heard::Show(Pill::Mic(v)),
-            // The source has no name card (OSD spec § 1): its switch shows nothing.
+            // The source has no name card: its switch shows nothing.
             (Change::Nothing, Change::Card(_) | Change::Nothing) => Heard::Quiet,
         }
     }
@@ -321,7 +320,7 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
     let x = g.write(at, end, &glyph.to_string(), pick(glyph_style(v)));
     let x = g.write(x, end, " ", pick(Style::NORMAL));
     let over = v.percent > 100;
-    // Above 100 % the whole bar is filled (OSD spec § 1) and the real number is still shown.
+    // Above 100 % the whole bar is filled and the real number is still shown.
     // Otherwise percent ≤ 100, so filled ≤ bar.
     let filled = if over { bar } else { (u32::from(v.percent) * u32::from(bar) / 100) as u16 };
     let (on, off) = match (v.muted, over) {

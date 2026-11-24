@@ -17,7 +17,7 @@ pub fn to_volume(p: &PropsParam) -> Option<Volume> {
 /// A label's longest form, in bytes (cut on a character boundary).
 pub const LABEL_MAX: usize = 128;
 
-/// The most sinks the quick panel lists (spec § 6).
+/// The most sinks the quick panel lists.
 pub const MAX_SINKS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +200,7 @@ impl Model {
             return false;
         }
         // The microphone's mute (the dim indicator) and the capture reach the bar under every
-        // scope (privacy spec § 8).
+        // scope.
         if self.privacy && (self.seen(Kind::Source).0.map(|v| v.muted) != s.source.map(|v| v.muted) || s.capture != Some(self.held())) {
             return false;
         }

@@ -15,7 +15,7 @@
 //!   none checks the file);
 //! - panic (a guardrail checks).
 //!
-//! See: docs/specs/2026-10-13-alpheus-power-menu-design.md (§ 2, § 4), docs/features/power.md, and
+//! See: docs/features/power.md and
 //! docs/decisions.md ("The power menu runs the `[quick]` commands and has no setting of its own",
 //! "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s", "Nothing
 //! is selected when the power menu opens", "A held key repeats only to move, in the power menu").

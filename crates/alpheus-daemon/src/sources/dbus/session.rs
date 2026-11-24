@@ -77,7 +77,7 @@ pub(super) fn read_all(
         let r = read(bus, *d, s, log_state);
         if *d == Domain::Units {
             *units_ok = r.is_ok();
-            // A failed count is not a failed session (diagnostics spec § 6): the count is unknown
+            // A failed count is not a failed session: the count is unknown
             // for this read, logged under the rate limit, and the other domains carry on.
             if r.as_ref().is_err_and(is_units_error) {
                 continue;
@@ -198,7 +198,7 @@ fn spoke(now: (PanelScope, u64), seen: &mut (PanelScope, u64)) -> bool {
 /// that, so it is the caller's (`start`'s closure persists across every backoff round, while this
 /// function's own locals, like `s`, do not).
 ///
-/// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
+/// `wifi`, `bt`: what the open quick panel asks: read when the session starts,
 /// again on each of its pokes and with every network re-read; Closed reads nothing. `units`: the
 /// loop's word "read the failed-units count now"; `opts`: whether to `Subscribe` to systemd and
 /// how long another domain's wake-up waits before it reads the count too; `units_read`: told

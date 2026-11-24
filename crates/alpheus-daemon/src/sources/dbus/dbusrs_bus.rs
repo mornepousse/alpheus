@@ -168,7 +168,7 @@ pub const MATCH_RULES: [(Domain, &str); 15] = [
         Domain::Power,
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='net.hadess.PowerProfiles'",
     ),
-    // The only Manager property that emits a change is `NFailedUnits` (spec § 9), so this rule
+    // The only Manager property that emits a change is `NFailedUnits`, so this rule
     // alone names no unit, and a `daemon-reexec` brings the owner's change.
     (
         Domain::Units,
@@ -187,7 +187,7 @@ pub const MATCH_RULES: [(Domain, &str); 15] = [
 /// PowerOff… the guardrail already forbids those words in this directory).
 pub const LOGIN1_RULE: &str = "type='signal',sender='org.freedesktop.login1',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
 
-/// The Wi-Fi detail's signals (quick Wi-Fi spec § 5), added when it opens and removed when it
+/// The Wi-Fi detail's signals, added when it opens and removed when it
 /// closes, never among a session's own rules: an access point's properties, the device's list of
 /// access points, the saved connections.
 pub const WIFI_RULES: [&str; 5] = [
@@ -584,7 +584,7 @@ impl DbusRsBus {
         Self::subscribe(channel, domains)
     }
 
-    /// Also wakes on `tap`'s word (quick Wi-Fi spec § 5): `next_signal` then polls the bus's socket
+    /// Also wakes on `tap`'s word: `next_signal` then polls the bus's socket
     /// and every tap's together and returns `Signal::poke()` when the loop asks. A tap without its
     /// socket pair changes nothing.
     pub fn waking(mut self, tap: Arc<impl Wake + 'static>) -> DbusRsBus {
@@ -884,7 +884,7 @@ mod tests {
         assert_eq!(call_error(e, false).kind(), io::ErrorKind::UnexpectedEof);
     }
 
-    /// A Wi-Fi profile still reads as before (quick Wi-Fi spec § 5): its uuid and the SSID, the
+    /// A Wi-Fi profile still reads as before: its uuid and the SSID, the
     /// security setting never decoded; a wired one, neither Wi-Fi nor VPN, is dropped.
     #[test]
     fn settings_reply_still_reads_wifi_and_drops_ethernet() {
