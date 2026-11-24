@@ -182,10 +182,16 @@ pub fn media_control(target: &Target, b: Button) -> Option<Control> {
 
 /// Runs the command without waiting for it; a failure goes to the log.
 pub fn run(exec: &dyn Executor, argv: &[String]) {
+    run_logged(exec, argv, &mut log);
+}
+
+/// `run`, its log line handed to `log`. The line is a fixed word with the error's kind, never the
+/// command (its program or arguments may name the user) nor the error's own text.
+fn run_logged(exec: &dyn Executor, argv: &[String], log: &mut dyn FnMut(&str)) {
     let Some((prog, args)) = argv.split_first() else { return };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     if let Err(e) = exec.spawn(prog, &args) {
-        log(&format!("{}: {e:?}", argv.join(" ")));
+        log(&format!("action: could not start ({})", crate::log::exec_word(&e)));
     }
 }
 

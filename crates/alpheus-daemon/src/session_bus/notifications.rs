@@ -99,7 +99,7 @@ impl Notifications {
             Ok(Reply::RequestName(2)) => log("notifications: another server holds the name; waiting in the queue"),
             Ok(Reply::RequestName(code)) => log(&format!("notifications: the name was refused ({code})")),
             Ok(_) => {}
-            Err(e) => log(&format!("notifications: the name could not be requested ({e:?})")),
+            Err(e) => log(&format!("notifications: the name could not be requested ({word})", word = e.word())),
         }
     }
 

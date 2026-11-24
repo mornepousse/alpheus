@@ -62,7 +62,7 @@ impl Inotify {
         // SAFETY: inotify_init1 only takes flags; it returns a new descriptor or -1.
         let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         if raw < 0 {
-            return Err(format!("inotify unavailable ({})", io::Error::last_os_error()));
+            return Err(format!("inotify unavailable ({})", crate::log::kind_word(io::Error::last_os_error().kind())));
         }
         // SAFETY: `raw` was just returned by inotify_init1 and belongs to nothing else.
         Ok(Inotify { fd: unsafe { OwnedFd::from_raw_fd(raw) } })

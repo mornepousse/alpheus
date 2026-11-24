@@ -24,10 +24,10 @@ const RELEASE_AFTER: usize = 1 << 20;
 /// What `run` does with the launcher socket's bind result: kept (Some) when
 /// it succeeds; logged and dropped (None) when it fails — a socket is
 /// optional (spec § 3): never a reason to refuse to start the bar.
-pub(crate) fn launcher_socket_outcome<T, E: std::fmt::Display>(r: Result<T, E>) -> (Option<T>, Option<String>) {
+pub(crate) fn launcher_socket_outcome<T, E: std::error::Error + 'static>(r: Result<T, E>) -> (Option<T>, Option<String>) {
     match r {
         Ok(v) => (Some(v), None),
-        Err(e) => (None, Some(format!("launcher socket: {e} — the bar runs without a launcher"))),
+        Err(e) => (None, Some(format!("launcher socket: {} — the bar runs without a launcher", crate::log::error_word(&e)))),
     }
 }
 
@@ -84,7 +84,11 @@ fn drain_listener<C>(
             Ok(None) => return PostAction::Continue,
             Err(e) => {
                 if !failing.replace(true) {
-                    log(&format!("launcher socket: accept: {e} — paused, retried every {} s", ACCEPT_PAUSE.as_secs()));
+                    log(&format!(
+                        "launcher socket: accept: {word} — paused, retried every {} s",
+                        ACCEPT_PAUSE.as_secs(),
+                        word = crate::log::error_word(&e)
+                    ));
                 }
                 return PostAction::Disable;
             }
@@ -139,12 +143,15 @@ fn resume_listener_later(state: &App, listener: Option<RegistrationToken>) {
     let h = handle.clone();
     let timer = handle.insert_source(Timer::from_duration(ACCEPT_PAUSE), move |_, _, _: &mut App| {
         if let Err(e) = h.enable(&token) {
-            log(&format!("launcher socket: not resumed: {e}"));
+            log(&format!("launcher socket: not resumed: {word}", word = crate::log::error_word(&e)));
         }
         TimeoutAction::Drop
     });
     if let Err(e) = timer {
-        log(&format!("launcher socket: resume timer: {} — the launcher stays off until the bar restarts", e.error));
+        log(&format!(
+            "launcher socket: resume timer: {} — the launcher stays off until the bar restarts",
+            crate::log::error_word(&e.error)
+        ));
     }
 }
 
@@ -161,7 +168,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
     let fd = match conn.fd().try_clone_to_owned() {
         Ok(fd) => fd,
         Err(e) => {
-            log(&format!("launcher socket: {e}"));
+            log(&format!("launcher socket: {word}", word = crate::log::error_word(&e)));
             return;
         }
     };
@@ -218,7 +225,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 }
             },
             Progress::Failed(m) => {
-                log(&format!("launcher socket: {m}"));
+                log("launcher socket: request refused");
                 let buffered = conn.received();
                 reply_guarded(conn, &Reply::Error(m));
                 if buffered >= RELEASE_AFTER {
@@ -234,7 +241,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
         Ok(PostAction::Remove)
     });
     if let Err(e) = read {
-        log(&format!("launcher socket: {}", e.error));
+        log(&format!("launcher socket: {}", crate::log::error_word(&e.error)));
         untrack_connection(inflight);
         return;
     }
@@ -253,7 +260,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
     });
     match timer {
         Ok(t) => deadline.set(Some(t)),
-        Err(e) => log(&format!("launcher socket: deadline timer: {}", e.error)),
+        Err(e) => log(&format!("launcher socket: deadline timer: {}", crate::log::error_word(&e.error))),
     }
 }
 

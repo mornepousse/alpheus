@@ -54,7 +54,7 @@ pub fn session(exec: &dyn Executor, scope: Scope, tap: &SoundTap, publish: &mut 
 /// (quick spec § 5).
 pub fn start(exec: Arc<dyn Executor>, scope: Scope, tap: Arc<SoundTap>, send: impl Fn(Option<SoundState>) -> bool + Send + 'static) {
     if let Err(e) = spawn_source("sound", move |p| session(exec.as_ref(), scope, &tap, p), send) {
-        log(&format!("sound thread: {e}"));
+        log(&format!("sound thread: {word}", word = crate::log::error_word(&e)));
     }
 }
 

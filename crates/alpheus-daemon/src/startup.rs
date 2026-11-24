@@ -398,15 +398,15 @@ impl App {
 
 /// `SessionBus::session()` itself found nothing to connect to (spec § 3): the
 /// one case that is really "no session bus".
-fn no_session_bus(e: impl std::fmt::Display) -> String {
-    format!("tray: no session bus ({e})")
+fn no_session_bus(e: &(dyn std::error::Error + 'static)) -> String {
+    format!("tray: no session bus ({})", crate::log::error_word(e))
 }
 
 /// The connection succeeded, but duplicating its fd for the event loop
 /// failed: a different step than `no_session_bus`, and a line of its own, so
 /// the log says which of the two failed (2026-10-06).
-fn watch_fd_failed(e: impl std::fmt::Display) -> String {
-    format!("tray: connected, but could not watch the session bus's fd ({e})")
+fn watch_fd_failed(e: &(dyn std::error::Error + 'static)) -> String {
+    format!("tray: connected, but could not watch the session bus's fd ({})", crate::log::error_word(e))
 }
 
 /// Connects the tray to the session bus (blocking, once: a local socket)
@@ -416,7 +416,7 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let bus = match SessionBus::session() {
         Ok(b) => b,
         Err(e) => {
-            log(&no_session_bus(e));
+            log(&no_session_bus(&e));
             return;
         }
     };
@@ -424,7 +424,7 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let fd = match tray.watch_fd() {
         Ok(fd) => fd,
         Err(e) => {
-            log(&watch_fd_failed(e));
+            log(&watch_fd_failed(&e));
             return;
         }
     };
@@ -491,7 +491,7 @@ pub fn run() -> i32 {
     let signals = match shutdown::block_signals() {
         Ok(s) => s,
         Err(e) => {
-            log(&format!("signals: {e}"));
+            log(&format!("signals: {word}", word = crate::log::error_word(&e)));
             return 1;
         }
     };
@@ -525,7 +525,7 @@ pub fn run() -> i32 {
     if let Some(server) = &launcher_server {
         match watch_launcher_socket(&core.handle, server, core.qh.clone()) {
             Ok(()) => log("launcher socket ready"),
-            Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
+            Err(e) => log(&format!("launcher socket: {word} — the bar runs without a launcher", word = crate::log::error_word(&e))),
         }
     }
     // After the socket watch: a `started` hook may call `alpheus-launch`.
@@ -634,14 +634,14 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
-            log(&format!("no Wayland session: {e}"));
+            log(&format!("no Wayland session: {word}", word = crate::log::error_word(&e)));
             return None;
         }
     };
     let (globals, file) = match registry_queue_init::<App>(&conn) {
         Ok(x) => x,
         Err(e) => {
-            log(&format!("Wayland registry: {e}"));
+            log(&format!("Wayland registry: {word}", word = crate::log::error_word(&e)));
             return None;
         }
     };
@@ -662,7 +662,7 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
     let event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
-            log(&format!("event loop: {e}"));
+            log(&format!("event loop: {word}", word = crate::log::error_word(&e)));
             return None;
         }
     };
@@ -807,28 +807,28 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match sources::dbus::wifi::WifiTap::new() {
                 Ok(t) => state.quick.wifi_tap = Some(Arc::new(t)),
-                Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
+                Err(e) => log(&format!("quick: no Wi-Fi tap ({word})", word = crate::log::error_word(&e))),
             }
         }
         // The Bluetooth row and detail, the same way as the Wi-Fi tap above.
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
             match sources::dbus::bt::BtTap::new() {
                 Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),
-                Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
+                Err(e) => log(&format!("quick: no Bluetooth tap ({word})", word = crate::log::error_word(&e))),
             }
         }
         // The VPN row and detail (quick VPN spec § 5): read on the network domain, with the Wi-Fi's.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match sources::dbus::vpn::VpnTap::new() {
                 Ok(t) => state.quick.vpn_tap = Some(Arc::new(t)),
-                Err(e) => log(&format!("quick: no VPN tap ({e})")),
+                Err(e) => log(&format!("quick: no VPN tap ({word})", word = crate::log::error_word(&e))),
             }
         }
         // The failed-units count's word (`failed-refresh`), only with its domain.
         if want.dbus.contains(&Domain::Units) {
             match sources::dbus::UnitsTap::new() {
                 Ok(t) => state.units_tap = Some(Arc::new(t)),
-                Err(e) => log(&format!("failed: no units tap ({e})")),
+                Err(e) => log(&format!("failed: no units tap ({word})", word = crate::log::error_word(&e))),
             }
         }
         let tx_read = tx.clone();
@@ -868,9 +868,9 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
     while !state.stop {
         if let Err(e) = event_loop.dispatch(None, state) {
             if end_of_session(&e) {
-                log(&format!("end of session: {e}"));
+                log(&format!("end of session: {word}", word = crate::log::error_word(&e)));
             } else {
-                log(&format!("loop: {e}"));
+                log(&format!("loop: {word}", word = crate::log::error_word(&e)));
                 dispatch_failure = true;
             }
             break;

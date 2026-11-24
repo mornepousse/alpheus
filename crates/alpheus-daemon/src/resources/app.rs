@@ -44,7 +44,7 @@ pub(crate) const OPS: PopupOps = PopupOps {
 };
 
 /// Runs `argv` (`[actions] resources`, as written), never waiting for it, and returns the log line
-/// to write: "resources: monitor", or "resources: monitor could not start (<error>)". The line
+/// to write: "resources: monitor", or "resources: monitor could not start (<kind word>)". The line
 /// never holds the command itself, whose program or arguments may name the user. None for an empty
 /// command, since there is nothing to run.
 pub(crate) fn spawn_monitor(exec: &dyn Executor, argv: &[String]) -> Option<String> {
@@ -55,7 +55,7 @@ pub(crate) fn spawn_monitor(exec: &dyn Executor, argv: &[String]) -> Option<Stri
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Some(match exec.spawn(program, &args) {
         Ok(()) => "resources: monitor".to_string(),
-        Err(e) => format!("resources: monitor could not start ({e:?})"),
+        Err(e) => format!("resources: monitor could not start ({})", crate::log::exec_word(&e)),
     })
 }
 
@@ -172,10 +172,10 @@ mod tests {
         let fake = FakeExecutor::new();
         fake.respond("fake-monitor --x", Err(ExecError::Io("busy".into())));
         let line = spawn_monitor(&fake, &argv).unwrap_or_default();
-        assert_eq!(line, "resources: monitor could not start (Io(\"busy\"))");
+        assert_eq!(line, "resources: monitor could not start (io)");
         let fake = FakeExecutor::new();
         let line = spawn_monitor(&fake, &argv).unwrap_or_default();
-        assert!(line.starts_with("resources: monitor could not start ("), "{line}");
+        assert_eq!(line, "resources: monitor could not start (not found)");
         assert!(!line.contains("fake-monitor"), "never the command: {line}");
         assert_eq!(spawn_monitor(&fake, &[]), None, "empty: nothing to spawn");
     }

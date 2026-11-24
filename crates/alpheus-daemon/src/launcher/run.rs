@@ -154,7 +154,7 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
     let Some(path) = ctx.history_path else { return };
     l.history.record(key, l.now);
     if let Err(e) = l.history.save(path) {
-        log(&format!("launcher history not saved ({}): {e}", path.display()));
+        log(&format!("launcher history not saved ({})", crate::log::error_word(&e)));
     }
 }
 

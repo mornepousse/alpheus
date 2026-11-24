@@ -85,7 +85,7 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>, dev_dir:
     let fd = match watch.watch_fd() {
         Ok(fd) => fd,
         Err(e) => {
-            log(&format!("privacy: camera devices not watched (inotify fd: {e})"));
+            log(&format!("privacy: camera devices not watched (inotify fd: {word})", word = crate::log::error_word(&e)));
             return;
         }
     };

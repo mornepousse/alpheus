@@ -96,7 +96,7 @@ fn send_within(stream: &UnixStream, bytes: &[u8], limit: Duration) -> io::Result
 fn finish(stream: UnixStream, r: &Reply) {
     let mut bytes = encode_reply(r);
     if let Err(e) = send_within(&stream, &bytes, REPLY_TIMEOUT) {
-        log(&format!("launcher socket: reply not delivered: {e}"));
+        log(&format!("launcher socket: reply not delivered: {word}", word = crate::log::error_word(&e)));
     }
     // A chosen text may be a `--password`: its encoded copy is overwritten before it is freed.
     if matches!(r, Reply::Chosen(_)) {
@@ -173,7 +173,7 @@ impl Server {
                 return Ok(None);
             }
             Err(e) => {
-                log(&format!("launcher socket: peer credentials unreadable: {e}"));
+                log(&format!("launcher socket: peer credentials unreadable: {word}", word = crate::log::error_word(&e)));
                 return Ok(None);
             }
         }

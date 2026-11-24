@@ -52,6 +52,12 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   [decisions](docs/decisions.md), the configuration reference and the [measurements](docs/measurements.md).
   Behaviour is unchanged.
 - The right click on the resources module runs `[actions] resources`; the left click opens the popup.
+- **Log lines are fixed words** (24): a failed start of a command logs the entry's word and the error's
+  kind (`not found`, `permission denied`, `io`), never the program, the argv or the OS message; the
+  quick panel, the power menu, the resources popup and the module clicks follow it, as do the lock,
+  the theme and Shield watches, the launcher's socket, the buffers and the source threads. A source
+  thread that panics logs `source down: panic` and no payload. A guardrail reads the whole daemon for
+  it ([decisions](docs/decisions.md), "Logs carry fixed words and numbers only").
 
 ### 2026-10
 

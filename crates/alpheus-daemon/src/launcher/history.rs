@@ -113,7 +113,7 @@ impl History {
                 (History::parse(&String::from_utf8_lossy(&bytes), limit, now), None)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => (History::empty(limit), None),
-            Err(e) => (History::empty(limit), Some(format!("launcher history unreadable ({}): {e}", path.display()))),
+            Err(e) => (History::empty(limit), Some(format!("launcher history unreadable ({})", crate::log::kind_word(e.kind())))),
         }
     }
 

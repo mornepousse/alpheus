@@ -1,5 +1,6 @@
 use super::*;
 use alpheus_common::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, ShieldVerb, TimerVerb};
+use std::io;
 
 /// Each verb to the one that answers it: the displays verbs to the output controller, never to
 /// the launcher (which would close or open on them).
@@ -38,10 +39,12 @@ fn each_verb_goes_to_its_handler() {
 
 #[test]
 fn a_socket_bind_failure_is_logged_and_the_bar_runs_without_a_launcher() {
-    assert_eq!(launcher_socket_outcome(Ok::<_, &str>(5)), (Some(5), None));
+    assert_eq!(launcher_socket_outcome(Ok::<_, io::Error>(5)), (Some(5), None));
+    // The error's text can quote the socket's path: the line carries the kind's word.
+    let refused = io::Error::new(io::ErrorKind::PermissionDenied, "/run/user/1000/alpheus.sock: refused");
     assert_eq!(
-        launcher_socket_outcome(Err::<u8, _>("EACCES")),
-        (None, Some("launcher socket: EACCES — the bar runs without a launcher".to_string()))
+        launcher_socket_outcome(Err::<u8, _>(refused)),
+        (None, Some("launcher socket: permission denied — the bar runs without a launcher".to_string()))
     );
 }
 

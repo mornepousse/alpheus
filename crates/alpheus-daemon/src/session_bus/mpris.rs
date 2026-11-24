@@ -266,7 +266,7 @@ impl Mpris {
             }
             (Ask::List(again), Err(e)) => {
                 if !again {
-                    (self.log)(&format!("media: the players could not be listed ({e:?})"));
+                    (self.log)(&format!("media: the players could not be listed ({})", e.word()));
                 }
                 // Lost to our own timeout (a slow bus at login): asked once more, at once.
                 if !again && e == CallError::Timeout {

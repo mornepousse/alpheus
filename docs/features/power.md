@@ -104,7 +104,7 @@ menu's `closed` hook, disarms it whatever closed the menu, so nothing is left ru
 `toggle` for it, which is `power_toggle`. It builds a `Power` from `[quick]`, asks for the popup,
 paints the rows and logs `power menu shown (lock reboot poweroff)` (the entries, never the
 commands). A key reaches `power_key`, the pointer `power_pointer`; an entry that runs is spawned
-and logged as `power: power off` (`power: <word> could not start (<error>)` on a failed start),
+and logged as `power: power off` (`power: <word> could not start (<kind word>)` on a failed start),
 never as its command, which can name the user.
 
 ## Rules it keeps

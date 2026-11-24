@@ -561,7 +561,7 @@ impl App {
         let pool = match SlotPool::new(bytes.max(4096), &self.shm) {
             Ok(pool) => pool,
             Err(e) => {
-                log(&format!("popup: no shared buffer ({e})"));
+                log(&format!("popup: no shared buffer ({word})", word = crate::log::error_word(&e)));
                 return false;
             }
         };
@@ -604,7 +604,7 @@ impl App {
         let popup = match Popup::from_surface(None, &positioner, qh, surface, xdg) {
             Ok(popup) => popup,
             Err(e) => {
-                log(&format!("popup: {e}"));
+                log(&format!("popup: {word}", word = crate::log::error_word(&e)));
                 // Only what was set: on Hyprland nothing was (`exclusive_during_grab`), and a
                 // needless commit on the bar is a needless roundtrip of its own.
                 if grab && (self.exclusive_during_grab || keyed) {
@@ -964,7 +964,9 @@ impl App {
             // UnsupportedCapability just means the seat has no keyboard yet
             // (retried once the capability appears, new_capability): routine,
             // not worth a line every time.
-            Err(e) if crate::launcher::surface::should_log_keyboard_error(&e) => log(&format!("keyboard: {e}")),
+            Err(e) if crate::launcher::surface::should_log_keyboard_error(&e) => {
+                log(&format!("keyboard: {word}", word = crate::log::error_word(&e)));
+            }
             Err(_) => {}
         }
     }

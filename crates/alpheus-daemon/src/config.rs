@@ -1125,7 +1125,7 @@ impl BarConfig {
     pub fn load(path: &Path) -> (BarConfig, Option<String>) {
         match std::fs::read_to_string(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BarConfig::default(), None),
-            Err(e) => (BarConfig::default(), Some(format!("bar.toml unreadable: {e}"))),
+            Err(e) => (BarConfig::default(), Some(format!("bar.toml unreadable: {}", crate::log::kind_word(e.kind())))),
             Ok(s) => match Self::from_text(&s) {
                 Ok(c) => (c, None),
                 Err(m) => (BarConfig::default(), Some(format!("bar.toml invalid: {m}"))),

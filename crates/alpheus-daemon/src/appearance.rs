@@ -29,7 +29,7 @@ use crate::session_bus::router::TrayOutput;
 use crate::state_file;
 use crate::wayland::App;
 use alpheus_common::theme::Mode;
-use alpheus_common::theme::mode_file::{MODE_DIR, MODE_FILE, mode_path, mode_text};
+use alpheus_common::theme::mode_file::{MODE_DIR, MODE_FILE, mode_text};
 use alpheus_common::theme::settings::{ModeSetting, ThemeSettings, effective_mode, portal_mode};
 use std::io;
 use std::path::Path;
@@ -47,13 +47,8 @@ fn name(m: Mode) -> &'static str {
     }
 }
 
-fn why(e: &CallError) -> String {
-    match e {
-        CallError::Timeout => "no answer within 2 s".into(),
-        CallError::Disconnected => "the session bus closed".into(),
-        CallError::Remote(name) => name.clone(),
-        CallError::BadReply(what) => what.clone(),
-    }
+fn why(e: &CallError) -> &'static str {
+    e.word()
 }
 
 /// The theme's state, one field of `App`: theme.toml as read, the portal's word, the config
@@ -129,8 +124,8 @@ impl Appearance {
         self.read = None;
         match result {
             Ok(Reply::ColorScheme(value)) => self.changed(value),
-            Ok(other) => {
-                log(&format!("appearance: no portal (unexpected answer {other:?}); dark"));
+            Ok(_) => {
+                log("appearance: no portal (unexpected answer); dark");
                 None
             }
             Err(e) => {
@@ -188,7 +183,7 @@ pub fn publish(
             *last_error = None;
         }
         Err(e) => {
-            let text = format!("appearance: cannot write {} ({e})", mode_path(runtime).display());
+            let text = format!("appearance: cannot write the mode file ({})", crate::log::kind_word(e.kind()));
             if last_error.as_deref() != Some(text.as_str()) {
                 say(&text);
                 *last_error = Some(text);

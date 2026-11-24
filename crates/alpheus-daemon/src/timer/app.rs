@@ -33,7 +33,7 @@ use crate::state_file;
 use crate::timer::popup::{TimerAction, TimerPopup};
 use crate::timer::{Change, End, Lengths, Phase, Timer as Model, incoming, length_text};
 use crate::wayland::App;
-use alpheus_common::exec::{ExecError, Executor};
+use alpheus_common::exec::Executor;
 use alpheus_common::launcher_ipc::{Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb};
 use alpheus_common::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -181,16 +181,7 @@ pub(crate) fn spawn_sound(exec: &dyn Executor, argv: &[String]) -> Option<String
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match exec.spawn(program, &args) {
         Ok(()) => None,
-        Err(e) => Some(format!("timer: sound could not start ({})", spawn_error_word(&e))),
-    }
-}
-
-/// A failed start as a fixed word: never the error's text, which may carry a path.
-fn spawn_error_word(e: &ExecError) -> &'static str {
-    match e {
-        ExecError::NotFound => "not found",
-        ExecError::Timeout => "timeout",
-        _ => "io",
+        Err(e) => Some(format!("timer: sound could not start ({})", crate::log::exec_word(&e))),
     }
 }
 

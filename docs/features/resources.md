@@ -38,8 +38,8 @@ timer, and only while it is open.
 - **Left click on the module** opens the popup; a second left click on the module closes it.
 - **The right click** on the module runs `[actions] resources` directly (`foot -e btop` by default);
   it was the left click's job before the popup existed. That path goes through `actions::run`, which
-  logs the whole argv when the start fails (the argv can name the user): a known follow-up, not
-  changed here.
+  logs `action: could not start (<kind word>)` when the start fails, never the argv (it can name the
+  user).
 - **Keys:** nothing is selected when the popup opens. ↓, ↑, Tab, Shift+Tab, Home and End select
   `Monitor…`; Enter or Space runs it once selected; Esc closes. Every other key does nothing.
 - **Mouse:** hovering `Monitor…` selects it, and a left press on it runs it. The wheel and the
@@ -93,9 +93,9 @@ Two files in `crates/alpheus-daemon/src/resources/`, and the figures they read i
 popup table's `toggle`, which is `resources_toggle`; a right press runs `[actions] resources`. Inside
 the popup a key reaches `resources_key` and the pointer `resources_pointer`; a left press on
 `Monitor…`, or Enter on it, spawns the command, logs `resources: monitor` (never the command, which
-can name the user; `resources: monitor could not start (<error>)` on a failed start) and closes the
-popup. The right click is not that path: `actions::run` logs the whole argv of a failed start (see
-"Using it").
+can name the user; `resources: monitor could not start (<kind word>)` on a failed start) and closes
+the popup. The right click is not that path: `actions::run` logs `action: could not start (<kind
+word>)` (see "Using it").
 
 **The path of a tick.** The timer's callback in `startup.rs` calls `resources_tick` with the new
 reading. The popup owns no timer: opening it adds no wake-up.

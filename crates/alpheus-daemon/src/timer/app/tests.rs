@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::timer::{MAX_MS, MINUTE_MS, Run};
+use alpheus_common::exec::ExecError;
 use alpheus_common::exec::fake::FakeExecutor;
 
 /// The same lengths as the model's tests: 25 minutes of work, 5 and 15 of break, 4 rounds.
