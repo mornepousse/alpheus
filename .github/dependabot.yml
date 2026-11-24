@@ -5,12 +5,20 @@ updates:
     schedule:
       interval: monthly
     groups:
+      # Small updates arrive together. The text renderer and the Wayland toolkit come one by one:
+      # their minor versions break the API and move the memory figures, so each needs its own
+      # branch and a release memory run (docs/measurements.md).
       cargo:
         patterns: ["*"]
+        exclude-patterns: ["cosmic-text", "smithay-client-toolkit"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # dtolnay/rust-toolchain is used by branch name (@stable, @1.95): its "versions" are
+      # toolchain names, and the msrv job's 1.95 must follow rust-version in Cargo.toml, not a bot.
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       github-actions:
         patterns: ["*"]
