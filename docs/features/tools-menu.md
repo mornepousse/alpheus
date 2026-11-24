@@ -13,16 +13,19 @@ too, so typing a path that starts with `/` does as well, from its first characte
 gives the key back). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
-  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, Lock,
-  the Power menu and an optional "Reload the bar". There are 23.
+  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, the
+  captures (Screenshot, Area, Area (save)), Schedule shutdown, Kill a process, Lock, the Power menu, an
+  optional "Reload the bar", and the Diagnostics entries (network scan, USB events and reset, the
+  journal presets). The table has 45; the six captures not built yet stay hidden.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
   with a confirmation, an on/off state, or choices.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.
 
 ## Using it
 
-**Browsing.** With the query empty the box lists categories (`Quick settings`, `Control center`,
-`Utilities`, `Captures` (only with screencopy), `Session`, and your own). Enter or → opens one; ← or Esc goes back up; Esc at the root
+**Browsing.** With the query empty the box lists categories by their order (`Quick settings` 10,
+`Control center` 20, `Utilities` 30, `Captures` 40 (only with screencopy), `Diagnostics` 70, `System` 80,
+`Session` 90, and your own, 50 by default; a category with nothing to show is not listed). Enter or → opens one; ← or Esc goes back up; Esc at the root
 closes. Every action closes the box: a run, a built-in opening its feature, a toggle. Only opening a
 level, going up, a confirmation question and a program not on the `$PATH` (said in the box) keep it open.
 
@@ -101,7 +104,7 @@ twice in Mod+Space's search: drop the source once the menu is yours).
 
 In `crates/alpheus-daemon/src/launcher/tools/`:
 
-- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 23
+- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 45
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
   entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
