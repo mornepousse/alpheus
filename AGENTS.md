@@ -66,7 +66,8 @@ anonymised fixtures, budgets, one change per commit, English) are in `CONTRIBUTI
   `bar.toml`, `launcher.toml` or `theme.toml`, the compositor's config). A change needed there is
   written as a note for the owner, not made.
 - **No private data in fixtures or logs.** A log line is a fixed word: it never carries an SSID,
-  a password, a command or argument list, an app, device or screen name, an address or object path,
+  a password, a command or argument list, an app, a track or an artist, a device name, a monitor's
+  make or model (a connector name such as `DP-1` is allowed), an address or object path,
   a VPN profile name, the launcher's query text, note or clipboard text, a MIME list, a panic
   payload, a unit name, a USB device name or id, or a flag file's path. Each feature's guardrail
   test in `crates/alpheus-daemon/tests/guardrails.rs` pins its own files; a new log line follows it.

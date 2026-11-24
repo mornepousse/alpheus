@@ -189,7 +189,16 @@ quote a path, and so can a library's. A source thread that panics logs `source d
 nothing the panic carried; the daemon-wide hook already logged its thread and place. The guardrail
 `no_log_line_names_a_program_an_error_text_or_a_panic_payload` reads every production line and keeps
 a short list of lines that format an error for a reader that is not the log (the launcher's box, a
-client's reply).
+client's reply, the errors that cross a thread and become a word before a `log(` sees them, and the
+panic messages the hook never prints). The media lines follow it: `media popup shown` and the
+"players already followed" line name neither the track, the artist nor the player; the headless
+tests read the popup from the grid.
+
+Four exceptions are kept, approved by the maintainer on 2026-11-24, because each is the user's own
+or is not private: the output's connector name in `bar placed on` and `bar removed from` (a
+connector such as `DP-1`, never a monitor's make or model); the config parser's message for
+`bar.toml` and `launcher.toml` (the user's own file, which can quote a value of it); the user's own
+labels for launcher sources and sensor patterns; and UPower's validated D-Bus error name.
 
 Date: 2026-11-15 (extended 2026-11-24: the whole daemon) · Source: timer spec "Constraints"; timer plan 1, decision 18; power spec § 3 and plan 1, decision 10; resources popup spec "Constraints"
 

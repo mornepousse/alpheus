@@ -55,7 +55,8 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 - **Log lines are fixed words** (24): a failed start of a command logs the entry's word and the error's
   kind (`not found`, `permission denied`, `io`), never the program, the argv or the OS message; the
   quick panel, the power menu, the resources popup and the module clicks follow it, as do the lock,
-  the theme and Shield watches, the launcher's socket, the buffers and the source threads. A source
+  the theme and Shield watches, the launcher's socket, the buffers, the media popup and player
+  lines (no track, artist or player name) and the source threads. A source
   thread that panics logs `source down: panic` and no payload. A guardrail reads the whole daemon for
   it ([decisions](docs/decisions.md), "Logs carry fixed words and numbers only").
 
