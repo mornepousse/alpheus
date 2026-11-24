@@ -4714,6 +4714,13 @@ fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
     assert!(!function_body(&flow, "pub fn selected(").contains("Step::Grab"), "and never grabs in the same turn");
 }
 
+/// The Tools menu shows the Captures entries only when the compositor has screencopy.
+#[test]
+fn the_tools_menu_hides_the_captures_without_screencopy() {
+    let app = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
+    assert!(function_body(&app, "fn tools_context(").contains("captures: self.screencopy.is_some()"));
+}
+
 /// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
 /// standard input (a PNG does not fit the page of `spawn_with_input`).
 #[test]

@@ -35,6 +35,9 @@ fn user_dirs_names_the_pictures_folder() {
     assert_eq!(user_dir("XDG_PICTURES_DIR=\"Images\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
     assert_eq!(user_dir("XDG_PICTURES_DIR=\"\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
     assert_eq!(user_dir("# XDG_PICTURES_DIR=\"/a\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
+    // `$HOME` must open the value and be followed by a plain path: nothing else is expanded.
+    assert_eq!(user_dir("XDG_PICTURES_DIR=\"$HOME/$OTHER\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
+    assert_eq!(user_dir("XDG_PICTURES_DIR=\"$HOME/\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None, "the home itself is no pictures folder");
     // `$HOME` anywhere but the start is not expanded: it is not a path then.
     assert_eq!(user_dir("XDG_PICTURES_DIR=\"/x/$HOME\"\n", "XDG_PICTURES_DIR", Path::new("/h")), None);
 }
@@ -42,9 +45,9 @@ fn user_dirs_names_the_pictures_folder() {
 #[test]
 fn a_file_is_named_by_its_second() {
     use crate::clock::LocalTime;
-    let t = LocalTime { year: 2026, month: 11, day: 4, weekday: 3, hour: 9, minute: 5, second: 7 };
-    assert_eq!(file_name(&t), "20261104-090507.png");
+    let t = LocalTime { year: 2026, month: 3, day: 4, weekday: 3, hour: 9, minute: 5, second: 7 };
+    assert_eq!(file_name(&t), "20260304-090507.png", "every field is zero-padded");
     // A second shot in the same second gets a number before the extension, never over the first.
-    assert_eq!(numbered("20261104-090507.png", 0), "20261104-090507.png");
-    assert_eq!(numbered("20261104-090507.png", 2), "20261104-090507-2.png");
+    assert_eq!(numbered("20260304-090507.png", 0), "20260304-090507.png");
+    assert_eq!(numbered("20260304-090507.png", 2), "20260304-090507-2.png");
 }

@@ -118,6 +118,9 @@ fn decode(png: &[u8]) -> (u32, u32, Vec<u8>) {
 fn a_frame_is_cut_to_its_area_and_encoded() {
     let png = render(&frame(), Some(Rect { x: 1, y: 1, width: 2, height: 1 })).unwrap();
     assert_eq!(decode(&png), (2, 1, vec![10, 20, 30, 255, 20, 20, 30, 255]));
+    // An area partly past the frame is cut to what is inside, and the PNG has that size.
+    let cut = render(&frame(), Some(Rect { x: 3, y: 1, width: 5, height: 5 })).unwrap();
+    assert_eq!(decode(&cut), (1, 1, vec![30, 20, 30, 255]));
     let whole = render(&frame(), None).unwrap();
     let (w, h, _) = decode(&whole);
     assert_eq!((w, h), (4, 2), "no area: the whole frame");
