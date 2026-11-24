@@ -21,7 +21,7 @@ cosmic-text = "0.19"
 # "xkbcommon": keymaps for the launcher's keyboard (layout-aware keys,
 # Dvorak), repeat on calloop. Links the system libxkbcommon; the keyboard
 # object and its keymap exist only while the launcher is open.
-smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
+smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "xkbcommon"] }
 insta = "1"
 # Fuzzy matching of the launcher (Helix's matcher, fzf scoring). Daemon only.
 nucleo-matcher = "0.3"

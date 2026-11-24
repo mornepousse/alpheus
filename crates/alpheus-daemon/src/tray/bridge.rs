@@ -31,6 +31,7 @@ use crate::session_bus::{Gesture, ItemKey, icons};
 use crate::state::Msg;
 use crate::wayland::{App, eligible_for_frame};
 
+use smithay_client_toolkit::compositor::FrameCallbackData;
 use smithay_client_toolkit::shell::WaylandSurface;
 use std::time::Instant;
 
@@ -240,7 +241,7 @@ impl App {
             return;
         };
         let surface = bar.layer.wl_surface().clone();
-        surface.frame(&self.qh, surface.clone());
+        surface.frame(&self.qh, FrameCallbackData(surface.clone()));
         // One pixel of buffer damage, on every compositor: a commit with no damage may get no
         // frame callback at all (Hyprland) or a throttled one (niri, about 1 s). The buffer already
         // attached is not sent again. See docs/decisions.md, "A burst of tray changes is redrawn
