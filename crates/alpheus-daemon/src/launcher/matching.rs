@@ -1,4 +1,4 @@
-//! Matching and ranking (spec § 1): `nucleo-matcher` (fzf scoring, smart
+//! Matching and ranking: `nucleo-matcher` (fzf scoring, smart
 //! case, Unicode folding) then frecency from the history. Pure: the lists
 //! come in through `Query`, the hits go out as indices into them. The
 //! `Ranker` owns the matcher's scratch memory: built when the launcher
@@ -74,7 +74,7 @@ pub enum Source {
     Window(usize),
     Command(usize),
     Line(usize),
-    /// A command-source entry (sources spec § 3): an index into `Query::entries`.
+    /// A command-source entry: an index into `Query::entries`.
     Entry(usize),
     /// The calculator's row (`Launcher::calc` holds its answer): first in All and alone in Calc.
     Calc,
@@ -88,7 +88,7 @@ pub enum Source {
     Clip(usize),
     /// The history's last row: forget everything unpinned (asks first).
     ClipClear,
-    /// A tool row (tools spec § 1, § 2): an index into `Query::tools`.
+    /// A tool row: an index into `Query::tools`.
     Tool(usize),
 }
 
@@ -368,7 +368,7 @@ impl Default for Ranker {
 }
 
 /// Window, App, Tool, Entry, Command, Line: the order between kinds at equal score and frecency
-/// (sources spec § 3: Window, App, Source, Command; tools spec § 1 puts Tool before Source).
+///.
 fn kind(s: Source) -> u8 {
     match s {
         Source::Window(_) => 0,
@@ -603,7 +603,7 @@ impl Ranker {
                 let mut score = self.score(p, &w.title).max(self.score(p, &w.class));
                 if let Some(a) = pr.window_apps[i] {
                     // The app's own score (its name included): when the app
-                    // matches, the window ties with it and wins on kind (spec § 1).
+                    // matches, the window ties with it and wins on kind.
                     score = score.max(self.app_score(p, &q.apps[a], pr.programs[a].as_deref()));
                 }
                 if let Some(score) = score {
@@ -618,7 +618,7 @@ impl Ranker {
                 }
             }
         }
-        // Command-source entries (sources spec § 3), in All only: a prefix leaves All, so none shows
+        // Command-source entries, in All only: a prefix leaves All, so none shows
         // behind one. A hit on the entry ranks as is; a hit that needs the path — scored on the whole
         // line, so "captures zone" finds "Captures · Zone" — ranks below every other hit.
         let mut path_hits = Vec::new();
@@ -634,7 +634,7 @@ impl Ranker {
                 }
             }
         }
-        // Tool rows (tools spec § 1): in All on a typed query, and alone in the Tools mode. A hit on the
+        // Tool rows: in All on a typed query, and alone in the Tools mode. A hit on the
         // name ranks as is; one that needs the category ranks below every other hit.
         if matches!(q.mode, Mode::All | Mode::Tools) {
             for (i, t) in q.tools.iter().enumerate() {
@@ -752,7 +752,7 @@ pub fn app_for_window(apps: &[DesktopEntry], class: &str) -> Option<usize> {
 /// Full path of a $PATH command, the first of `path_dirs` where it is an actual file ("btop"
 /// → the first ".../btop" found); None when it is not there (removed since the scan, or
 /// `path_dirs` not known yet — the preview then falls back to naming $PATH alone). Resolved
-/// at preview time, not kept: the catalog's `commands` are names only (spec § 1).
+/// at preview time, not kept: the catalog's `commands` are names only.
 pub fn command_path(path_dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     path_dirs.iter().map(|d| d.join(name)).find(|p| p.is_file())
 }

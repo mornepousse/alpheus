@@ -1,4 +1,5 @@
-//! The only file that names a data-control protocol (clipboard spec): ext-data-control-v1 first,
+//! The only file that names a data-control protocol (docs/decisions.md, "One file names the clipboard
+//! protocol, and only it sets the selection"): ext-data-control-v1 first,
 //! wlr-data-control-unstable-v1 (version 1) as the fallback, both through one macro. The manager,
 //! the device, the offers and the one pending read on the loop. Never logs, and nothing here shows
 //! an offer's types or text.

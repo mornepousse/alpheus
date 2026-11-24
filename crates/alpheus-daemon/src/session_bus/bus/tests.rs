@@ -169,7 +169,7 @@ fn request_name_only_ever_asks_the_watcher_name_without_replacing() {
     assert_eq!(flags & 1, 0, "never ALLOW_REPLACEMENT: an owner may not take it from us either");
 }
 
-/// Queued behind mako, never taking the name, never letting it be taken (spec § 1).
+/// Queued behind mako, never taking the name, never letting it be taken.
 #[test]
 fn the_notifications_name_is_requested_queued_never_replacing() {
     let m = message(&Call::RequestNotifications);

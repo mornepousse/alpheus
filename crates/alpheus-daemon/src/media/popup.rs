@@ -12,7 +12,7 @@
 //!   them out;
 //! - read the clock: the caller passes `now`.
 //!
-//! See: docs/specs/2026-10-08-alpheus-media-design.md (§ 2), docs/features/media.md, and
+//! See: docs/features/media.md, and
 //! docs/decisions.md ("The media popup computes the position, and reads it only while open", "The
 //! active media player is the pinned one, else the best status").
 
@@ -23,8 +23,8 @@ use crate::media::{self, Control, Player, Players, Status};
 use crate::segments::{PAUSE, PLAY, SKIP_NEXT, SKIP_PREVIOUS};
 use std::time::{Duration, Instant};
 
-/// Content width in cells (the width of the spec's mockup, media spec § 2); `list::padded` adds one
-/// blank cell each side.
+/// Content width in cells (`list::padded` adds one
+/// blank cell each side).
 pub const WIDTH: u16 = 30;
 /// Added to every tick so it lands just past the second it waits for, never a hair before it (a
 /// tick that early would redraw the same rows and ask for another tick a microsecond later).
@@ -76,7 +76,7 @@ pub enum MediaAction {
     Close,
     /// To the active player (`Mpris::control`, which checks the capability again).
     Control(Control),
-    /// This player becomes the active one (media spec § 3, the pin), by bus name.
+    /// This player becomes the active one, by bus name.
     Pin(String),
 }
 
@@ -120,7 +120,7 @@ fn button_at(x: u16, width: u16) -> Option<usize> {
 }
 
 /// The popup's rows for the active player; empty when no player is shown. The artist row is there
-/// only with an artist, the time row only with a known length (media spec § 2), the player list
+/// only with an artist, the time row only with a known length, the player list
 /// only from two players up.
 pub fn lines(players: &Players) -> Vec<Line> {
     let Some(p) = shown_active(players) else { return Vec::new() };

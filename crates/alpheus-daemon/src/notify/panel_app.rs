@@ -17,7 +17,7 @@
 //! - start a thread or run a command: this file only asks the notification server and the players,
 //!   through `notify_act` and `mpris_do`.
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4 and docs/features/notifications.md.
+//! See: docs/features/notifications.md.
 
 use crate::keys::Key;
 use crate::log::write as log;
@@ -45,7 +45,7 @@ pub(crate) const OPS: PopupOps = PopupOps {
 
 impl App {
     /// Left press on the bell: toggles the panel under it (a second click closes it). Opening marks
-    /// everything read (spec § 4), once the popup is up; the card's Seeked rule and tick start as the
+    /// everything read, once the popup is up; the card's Seeked rule and tick start as the
     /// media popup's do.
     pub(crate) fn panel_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
         if self.panel_shown() {
@@ -135,7 +135,7 @@ impl App {
     }
 
     /// After anything that may change what the panel shows (a host's output, a tick, a key, a
-    /// notification action): whatever arrived is marked read while it shows (spec § 4), the window
+    /// notification action): whatever arrived is marked read while it shows, the window
     /// follows the selection, the rows are rebuilt and painted (`popup_draw` commits nothing when they
     /// did not change), and the card's tick re-synced. The consumer gone (its bus closed): the panel
     /// closes.
@@ -171,7 +171,7 @@ impl App {
         self.media_timer_sync();
     }
 
-    /// ↑ ↓ Home End, Enter, Delete, Escape; the card's keys on the card (spec § 4).
+    /// ↑ ↓ Home End, Enter, Delete, Escape; the card's keys on the card.
     fn panel_key(&mut self, k: Key) {
         let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
         self.panel_action(action);

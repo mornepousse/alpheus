@@ -12,7 +12,7 @@
 //! - read the clock: the time a bubble shows is passed in (`now`, local minutes since 1970);
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 3, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("The bubbles move to the focused output only when the stack changes").
 
 use crate::clock::{DAY_MINUTES, SHORT_MONTHS, civil_from_days};
@@ -23,9 +23,9 @@ use crate::notify::{Center, Entry, Shown};
 
 /// Logical px between two bubbles, and between the bar and the first one.
 pub const GAP: u32 = 6;
-/// Body lines a bubble shows at most (spec § 2).
+/// Body lines a bubble shows at most.
 pub const BODY_LINES: usize = 3;
-/// The action a left click on a bubble (or Enter in the panel) runs (spec § 3).
+/// The action a left click on a bubble (or Enter in the panel) runs.
 pub const DEFAULT_ACTION: &str = "default";
 
 /// One bubble: its notification (id and revision: a late click on a replaced one does nothing) and
@@ -135,13 +135,13 @@ fn px(v: u32) -> i32 {
     i32::try_from(v).unwrap_or(i32::MAX)
 }
 
-/// The input region (spec § 3): one rect per bubble, `width` logical px wide, (x, y, w, h); the gaps
+/// The input region: one rect per bubble, `width` logical px wide, (x, y, w, h); the gaps
 /// are left out, so a click between two bubbles reaches the window under them.
 pub fn input_rects(spans: &[(u32, u32)], width: u32) -> Vec<(i32, i32, i32, i32)> {
     spans.iter().map(|&(top, h)| (0, px(top), px(width), px(h))).collect()
 }
 
-/// What a left click on a bubble does (spec § 3).
+/// What a left click on a bubble does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activation {
     /// `ActionInvoked("default")`, then closed (dismissed) unless the notification is resident.

@@ -1,4 +1,4 @@
-//! The launcher drawn as rows of cells (spec § 2, mockups A and C): the
+//! The launcher drawn as rows of cells: the
 //! modes row, the input line, the results, the help line; a preview panel
 //! on the right when it has something to show; the frame is the painter's
 //! (a pixel line, `list::Boxed`). Every row is a `Grid` written only
@@ -160,8 +160,8 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, Cow<'_, str>, String) {
         Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)).into(), "shell".into()),
         Source::Clip(i) => match l.clips.get(i) {
             // Borrowed here; the list's `truncate` and the grid cells then make per-frame copies of
-            // the visible rows' first lines that are freed unwiped — out of scope ("where practical",
-            // clipboard spec § wiping): the model's own rows (`ClipRow`) are the ones wiped.
+            // the visible rows' first lines that are freed unwiped — out of scope ("where practical"):
+            // the model's own rows (`ClipRow`) are the ones wiped.
             Some(c) => (Some(if c.pinned { PIN_ICON } else { ' ' }), Cow::Borrowed(c.first.as_str()), more_lines(c.more_lines)),
             None => (None, Cow::Borrowed(""), String::new()),
         },
@@ -223,7 +223,7 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
     list::row(g, 1, b.pane_end(), &row);
 }
 
-/// A Tools row (tools spec § 2): `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
+/// A Tools row: `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
 /// panel's switch, or, in a flat search, the category dimmed after the entry (`entry_row`, no glyph).
 /// A pending question replaces the text with `<name>? ⏎` in warn.
 fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
@@ -258,7 +258,7 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
     }
 }
 
-/// A command-source entry (sources spec § 3): the entry, then its path dimmed two cells after it,
+/// A command-source entry: the entry, then its path dimmed two cells after it,
 /// cut to fit; no glyph, nothing right-aligned. Selected: SELECTED across the span, the path
 /// included, as `list::row` draws its secondary text.
 fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>, selected: bool) {

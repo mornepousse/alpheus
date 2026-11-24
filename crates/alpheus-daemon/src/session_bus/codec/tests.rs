@@ -428,7 +428,7 @@ fn layout_decodes_checkmarks_radios_separators_submenus() {
     assert!(!n(6).is_visible() && n(6).is_enabled());
     assert!(n(7).has_submenu() && n(7).children.is_empty(), "a submenu announced, its children fetched when opened");
     assert!(!n(1).has_submenu());
-    assert_eq!(n(8).props, MenuProps::default(), "values of the wrong type are absent, the spec defaults apply");
+    assert_eq!(n(8).props, MenuProps::default(), "values of the wrong type are absent, the dbusmenu defaults apply");
     assert!(l.node(99).is_none());
 }
 
@@ -503,7 +503,7 @@ fn labels_lose_mnemonics_and_controls() {
     assert_eq!(clean("a\u{61c}b"), "ab", "the Arabic Letter Mark is a bidi control too, removed");
 }
 
-// ---- MPRIS (media spec § 3) ----
+// ---- MPRIS ----
 
 /// A property value, written inside its variant by `write`.
 #[derive(Clone)]
@@ -621,7 +621,7 @@ fn get_all_decodes_a_player() {
     assert_eq!(reply(&get_all(), &m), Ok(Reply::Props(want)));
 }
 
-/// The codec keeps the type it found; `media::Track` decides what it means (spec § 3, Tolerance).
+/// The codec keeps the type it found; `media::Track` decides what it means.
 #[test]
 fn every_integer_type_is_an_int_and_odd_types_are_other() {
     let length = |w: W| {
@@ -792,7 +792,7 @@ fn seeked_carries_its_position() {
     assert_eq!(seeked("/elsewhere", &|i| i.append(3i64)), Signal::Other, "not the MPRIS object");
 }
 
-// ---- the notification server (notifications spec § 1, § 2) ----
+// ---- the notification server ----
 
 /// A hint value, written in its variant.
 enum H {

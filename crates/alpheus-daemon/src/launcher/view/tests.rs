@@ -524,7 +524,7 @@ fn an_entry_row_shows_its_path_dimmed_two_cells_after_it() {
     assert_eq!(g.styles(), "S".repeat(40), "selected: the whole span, as list::row");
 }
 
-/// Sources spec § 3: on the selected row the path takes the treatment `list::row` gives its
+/// On the selected row the path takes the treatment `list::row` gives its
 /// secondary text — SELECTED, like the rest of the band.
 #[test]
 fn a_selected_entry_row_draws_its_path_as_list_row_draws_secondary_text() {
@@ -707,7 +707,7 @@ fn the_switcher_has_no_modes_row() {
     assert!(!l.has_modes());
 }
 
-// ---- the clipboard history (clipboard spec, task 5) ----
+// ---- the clipboard history (clipboard history) ----
 
 fn clip_row(id: u64, preview: &str, first: &str, more_lines: usize, pinned: bool) -> crate::clipboard::history::ClipRow {
     crate::clipboard::history::ClipRow { id, preview: preview.into(), first: first.into(), more_lines, pinned }
@@ -811,7 +811,7 @@ fn the_panel_wipes_its_text_temporaries_and_the_row_text_is_borrowed() {
     assert!(describe.contains("Cow::Borrowed(c.first.as_str())"), "a history row's text is borrowed, never cloned");
 }
 
-// -- The Tools menu (tools spec § 2) --
+// -- The Tools menu --
 
 const TOOLS_CFG: &str = r#"
 [tools]

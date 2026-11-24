@@ -93,7 +93,7 @@ impl Item {
         self.is_ready() && self.errors < Prop::ALL.len()
     }
 
-    /// ToolTip title, else Title, else Id (spec § 2).
+    /// ToolTip title, else Title, else Id.
     pub fn tooltip_text(&self) -> Option<&str> {
         self.tooltip.as_deref().or(self.title.as_deref()).or(self.id.as_deref())
     }
@@ -179,7 +179,7 @@ fn is_bus_name(n: &str) -> bool {
     elements >= 2
 }
 
-/// The three registration forms (spec § 1): a bus name → (name, DEFAULT_ITEM_PATH); a path alone →
+/// The three registration forms: a bus name → (name, DEFAULT_ITEM_PATH); a path alone →
 /// (sender, path); "name/path" → split at the first '/'. None: empty, or a path with no sender —
 /// and a name or path D-Bus would not accept (nothing is ever sent to it).
 pub fn split_service(service: &str, sender: &str) -> Option<(String, String)> {
@@ -248,7 +248,7 @@ impl Host {
         self.calls.insert(id, pending);
     }
 
-    /// Startup inventory (spec § 1): ListNames, then every name with an ITEM_NAME_PREFIXES prefix is
+    /// Startup inventory: ListNames, then every name with an ITEM_NAME_PREFIXES prefix is
     /// registered as if it had called RegisterStatusNotifierItem(name) — at DEFAULT_ITEM_PATH.
     pub fn start(&mut self, out: &mut dyn Outbox) {
         self.call(Call::ListNames, Pending::Names, out);
@@ -519,7 +519,7 @@ impl Host {
     }
 }
 
-/// What a gesture on a tray icon asks of the wiring (spec § 2).
+/// What a gesture on a tray icon asks of the wiring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GestureOutcome {
     Nothing,

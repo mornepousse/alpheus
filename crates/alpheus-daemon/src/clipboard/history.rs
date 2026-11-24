@@ -1,5 +1,5 @@
-//! The in-memory history (clipboard spec): the last `MAX_ENTRIES` plain-text copies of at most
-//! `MAX_BYTES`, newest first, with pins. Nothing here logs, panics or prints a text: `Debug` shows
+//! The in-memory history (docs/decisions.md, "The clipboard history is off by default, kept in memory, and
+//! wiped when removed"): the last `MAX_ENTRIES` plain-text copies of at most `MAX_BYTES`, newest first, with pins. Nothing here logs, panics or prints a text: `Debug` shows
 //! ids and flags only, and every text that leaves is zeroed before it is freed.
 
 use alpheus_common::launcher_ipc::wipe;

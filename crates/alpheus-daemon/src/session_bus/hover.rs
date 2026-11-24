@@ -1,5 +1,5 @@
-//! The tooltip's delay (spec § 2: "hover ½ s: tooltip with ToolTip title,
-//! else Title, else Id — the timer runs only while hovering"), pure: which
+//! The tooltip's delay (hover ½ s: tooltip with ToolTip title,
+//! else Title, else Id; the timer runs only while hovering), pure: which
 //! icon the pointer rests on and since when. The wiring arms one
 //! `DeadlineTimer` on `Arm`, removes it on `Cancel`; with the pointer
 //! anywhere else, nothing is armed.

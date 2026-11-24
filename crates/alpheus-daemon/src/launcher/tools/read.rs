@@ -1,4 +1,4 @@
-//! The Tools menu's reader (tools spec § 6): the `state` of every entry that has one, and a
+//! The Tools menu's reader: the `state` of every entry that has one, and a
 //! `choices_cmd`, read on one short-lived thread (`alpheus-tools`) through `sources::capture_*`
 //! (1 s, 2,000 lines, 256 KiB, the group killed and reaped). One job at a time across opens; states
 //! arrive one entry per delivery; a waiting choices job (`preempt`) stops a states job after its

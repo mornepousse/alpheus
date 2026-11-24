@@ -207,7 +207,7 @@ fn revision_is_not_bumped_when_a_submenus_graft_fails() {
     assert_eq!(s.layout().unwrap().revision, 5);
     assert!(s.layout().unwrap().node(8).is_none(), "More is gone");
     // The orphaned submenu reply arrives after: its root id (8) still matches what was asked, so it
-    // is not a bad reply (fix #1) — but there is no node 8 left to graft onto.
+    // is not a bad reply — but there is no node 8 left to graft onto.
     let stray = more(vec![node(9, "Settings", false, vec![])]);
     assert_eq!(s.answer(get8, Ok(stray), &mut out), MenuUpdate::Nothing);
     assert_eq!(s.layout().unwrap().revision, 5, "a failed graft must never move the revision");

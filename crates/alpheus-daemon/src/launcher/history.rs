@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "launcher-history";
 const COUNT_MAX: u32 = 10_000;
-/// A source entry's id starts so (sources spec § 3).
+/// A source entry's id starts so.
 const SOURCE_PREFIX: &str = "source:";
-/// A tool's id starts so (tools spec § 5): "tool:builtin:<id>" or "tool:user:<category>/<name>[/<choice>]".
+/// A tool's id starts so: "tool:builtin:<id>" or "tool:user:<category>/<name>[/<choice>]".
 const TOOL_PREFIX: &str = "tool:";
 /// A user entry's id starts so: "tool:user:<category>/<name>[/<choice>]".
 const TOOL_USER_PREFIX: &str = "tool:user:";
@@ -239,7 +239,7 @@ pub fn source_id(name: &str, line: &str) -> String {
     format!("{name}:{line}")
 }
 
-/// A source entry's history id (sources spec § 3): its source's name and its whole line.
+/// A source entry's history id: its source's name and its whole line.
 pub fn source_key(name: &str, line: &str) -> String {
     format!("{SOURCE_PREFIX}{}", source_id(name, line))
 }

@@ -42,16 +42,16 @@ pub const ROWS_MIN: u16 = 3;
 pub const ROWS_MAX: u16 = 30;
 /// Bounds the history file: HISTORY_MAX lines of at most ~680 bytes (history::ID_MAX).
 pub const HISTORY_MAX: usize = 1_000;
-/// At most this many `[[sources]]` (sources spec § 1).
+/// At most this many `[[sources]]`.
 pub const MAX_SOURCES: usize = 8;
 /// A source's name: 1 to NAME_MAX characters (not bytes).
 pub const NAME_MAX: usize = 32;
-/// A source's line, cleaned, is at most this many bytes; longer ones are skipped (sources spec § 2).
+/// A source's line, cleaned, is at most this many bytes; longer ones are skipped.
 pub const LINE_MAX: usize = 512;
 /// The one element of `run` replaced by the chosen line, whole: never part of an argument.
 pub const LINE_PLACEHOLDER: &str = "{line}";
 
-/// One `[[sources]]` table: a menu script whose lines the launcher searches (sources spec § 1).
+/// One `[[sources]]` table: a menu script whose lines the launcher searches.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceConfig {
@@ -67,7 +67,7 @@ pub struct SourceConfig {
 pub struct Prefixes {
     pub commands: String,
     pub windows: String,
-    /// The Tools menu's jump (tools spec § 1); empty turns it off and exempts it from the rules.
+    /// The Tools menu's jump; empty turns it off and exempts it from the rules.
     pub tools: String,
 }
 
@@ -81,7 +81,7 @@ impl Default for Prefixes {
 pub struct LauncherConfig {
     /// `Terminal=true` apps: never held (the app manages its own terminal's lifetime).
     pub terminal: Vec<String>,
-    /// A $PATH command or typed shell text, Enter (spec § 1): held open after the command
+    /// A $PATH command or typed shell text, Enter: held open after the command
     /// exits, so its output stays readable. Ctrl+Enter never uses this (it runs detached).
     pub terminal_hold: Vec<String>,
     /// The calculator's copy command (small features 1): the text goes on its stdin, never on
@@ -97,9 +97,9 @@ pub struct LauncherConfig {
     pub history: usize,
     pub prefixes: Prefixes,
     pub focus: Vec<String>,
-    /// Command sources (sources spec § 1): none by default.
+    /// Command sources: none by default.
     pub sources: Vec<SourceConfig>,
-    /// The Tools menu's entries and categories (tools spec § 4), bounded.
+    /// The Tools menu's entries and categories, bounded.
     pub tools: ToolsConfig,
     /// What this read cut past a bound (one line each, counts only): the caller logs them.
     pub notes: Vec<String>,
@@ -544,7 +544,7 @@ mod tests {
         assert!(w.starts_with("launcher.toml unreadable"), "{w}");
     }
 
-    /// A `[[sources]]` table (sources spec § 1), `list` as tools-menu's, `run` given as TOML.
+    /// A `[[sources]]` table, `list` as tools-menu's, `run` given as TOML.
     fn source(name: &str, run: &str) -> String {
         format!("[[sources]]\nname = {name:?}\nlist = [\"tools-menu\", \"--list\"]\nrun = {run}\n")
     }

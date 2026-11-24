@@ -3,7 +3,7 @@
 //! "scrim" per output scaled by wp_viewporter to catch a click outside, a
 //! keyboard that is the App's (shared with the popups, popup.rs), buffers
 //! from a pool of its own. Everything lives in `OpenLauncher`, dropped whole
-//! on close: nothing of the launcher stays resident (spec § 3).
+//! on close: nothing of the launcher stays resident.
 
 use crate::actions::{self, Button};
 use crate::keys;
@@ -756,7 +756,7 @@ impl App {
                 };
                 match run::perform(&mut open.model, a, &ctx) {
                     Err(m) => {
-                        // A launch failure shows in the box, which stays open (spec § 3).
+                        // A launch failure shows in the box, which stays open.
                         open.model.show_message(m);
                         self.launcher_redraw();
                     }

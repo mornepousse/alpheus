@@ -1,8 +1,10 @@
-//! The launcher's command sources (docs/specs/2026-10-10-alpheus-launcher-sources-design.md): a
-//! `[[sources]]` table's `list` read once per open on the scan thread (`Executor::capture`, 1 s,
-//! 2,000 lines, 256 KiB), its lines cleaned and split into an entry and its path; `run` built with
+//! The launcher's command sources: a `[[sources]]` table's `list` read once per open on the scan thread
+//! (`Executor::capture`, 1 s, 2,000 lines, 256 KiB), its lines cleaned and split into an entry and its path; `run` built with
 //! the chosen line as one argument. Nothing here runs between opens, nothing through a shell, and
 //! no line ever reaches the log.
+//!
+//! See: docs/features/launcher.md and docs/decisions.md ("The launcher reads its command sources after the
+//! apps, on the same thread", "A command source is bounded and cannot stall the launcher").
 
 use crate::launcher::config::{LINE_MAX, LINE_PLACEHOLDER, SourceConfig};
 use crate::text::invisible;
@@ -10,7 +12,7 @@ use alpheus_common::exec::{CaptureEnd, CaptureLimits, ExecError, Executor};
 use std::collections::HashSet;
 use std::time::Duration;
 
-/// A source's `list` gets this long in all, from its spawn (sources spec § 2).
+/// A source's `list` gets this long in all, from its spawn.
 pub const LIST_DEADLINE: Duration = Duration::from_secs(1);
 /// Lines read at most per source.
 pub const MAX_SOURCE_LINES: usize = 2_000;
@@ -158,7 +160,7 @@ pub fn read_source(source: &SourceConfig, exec: &dyn Executor, log: &mut dyn FnM
     kept
 }
 
-/// Every source, one after another in launcher.toml's order (sources spec § 6: at most 8 × 1 s).
+/// Every source, one after another in launcher.toml's order.
 pub fn read_all(sources: &[SourceConfig], exec: &dyn Executor, log: &mut dyn FnMut(&str)) -> Entries {
     let mut items = Vec::new();
     for (i, s) in sources.iter().enumerate() {

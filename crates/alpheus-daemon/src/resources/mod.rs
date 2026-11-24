@@ -16,10 +16,8 @@
 //!   command, none checks the file or the clock): everything is handed in as arguments;
 //! - panic (a guardrail checks).
 //!
-//! See: docs/specs/2026-11-15-alpheus-resources-popup-design.md (§ 2 to § 6),
-//! docs/specs/2026-11-15-alpheus-small-features-2-design.md (§ 1, the items), docs/features/resources.md,
-//! and docs/decisions.md ("The resources history is kept always, as whole samples", "The resources
-//! popup spans 60 times the interval", "Every resources item keeps its block in the popup",
+//! See: docs/features/resources.md, and docs/decisions.md ("The resources history is kept always, as whole samples",
+//! "The resources popup spans 60 times the interval", "Every resources item keeps its block in the popup",
 //! "Each resources graph has a set scale; the network's follows its peak, with a floor").
 
 use crate::actions::Button;
@@ -32,8 +30,8 @@ use crate::segments::{CPU, DOWNLOAD, GPU, HARDDISK, HOT, MEMORY, THERMOMETER, UP
 use crate::system::{HISTORY, History, Resources};
 use alpheus_common::theme::settings::ModuleColors;
 
-/// A row's cells, its pad cell at each end included: 40 cells, as the spec sets, which leaves the
-/// column positions inside them to this file (resources popup spec, "Left to the builder").
+/// A row's cells, its pad cell at each end included: 40 cells; the column positions
+/// inside them are this file's own.
 pub const WIDTH: u16 = 40;
 /// Rows each graph takes, under its figure's row.
 pub const GRAPH_ROWS: u16 = 2;

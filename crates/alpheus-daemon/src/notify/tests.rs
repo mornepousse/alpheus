@@ -85,7 +85,7 @@ fn live(c: &Center) -> usize {
     c.slots.iter().filter(|s| s.entry.live).count()
 }
 
-// ---- cleaning (spec § 2, Fields) ----
+// ---- cleaning ----
 
 #[test]
 fn markup_is_stripped_and_the_five_entities_decoded() {
@@ -198,7 +198,7 @@ fn an_action_needs_a_sane_key_and_its_label_is_capped() {
     assert_eq!(action("x", "<b>Reply</b>\n").map(|a| a.label), Some("<b>Reply</b>".into()), "a label is plain text");
 }
 
-// ---- timeouts (spec § 2, Timeout; docs/decisions.md, "A bubble's timeout follows its urgency") ----
+// ---- timeouts ----
 
 #[test]
 fn a_bubbles_timeout_follows_its_urgency_and_the_apps_own_choice() {
@@ -219,7 +219,7 @@ fn a_bubbles_timeout_follows_its_urgency_and_the_apps_own_choice() {
     assert_eq!(timeout(Normal, 1_000, &odd), Some(secs(10)), "min above max: no panic");
 }
 
-// ---- ids, revisions, tags (spec § 1, Ids) ----
+// ---- ids, revisions, tags ----
 
 #[test]
 fn ids_count_from_1_and_an_unknown_replaces_id_makes_the_counter_jump() {
@@ -281,7 +281,7 @@ fn the_same_tag_from_the_same_app_replaces_it() {
     assert_eq!(c.history().count(), 2);
 }
 
-// ---- spam (spec § 2, Spam) ----
+// ---- spam ----
 
 #[test]
 fn an_identical_notification_within_one_second_merges() {
@@ -395,7 +395,7 @@ fn an_app_sending_1000_notifications_in_a_loop_stays_bounded() {
     assert!(c.slots.len() <= 50 + MAX_LIVE);
 }
 
-// ---- history, transient, closing (spec § 2, § 3, § 4) ----
+// ---- history, transient, closing ----
 
 #[test]
 fn the_history_keeps_the_newest_and_0_keeps_none() {
@@ -473,7 +473,7 @@ fn the_next_expiry_is_the_earliest_and_none_at_rest() {
     assert_eq!(c.bubbles().len(), 1);
 }
 
-// ---- bubbles, do-not-disturb, unread (spec § 3, § 4) ----
+// ---- bubbles, do-not-disturb, unread ----
 
 #[test]
 fn at_most_max_visible_bubbles_newest_first_extras_wait() {
@@ -488,7 +488,7 @@ fn at_most_max_visible_bubbles_newest_first_extras_wait() {
     assert!(!c.bubbles()[1].critical);
 }
 
-/// Spec § 3, "extras wait and show as space frees up": a bubble waiting beyond `max_visible`
+/// Extras wait and show as space frees up: a bubble waiting beyond `max_visible`
 /// has no expiry yet; it gets its whole timeout from the moment it shows.
 #[test]
 fn a_waiting_bubble_gets_its_full_timeout_once_shown() {
@@ -748,7 +748,7 @@ fn a_portal_notification_shows_its_desktop_entrys_last_label() {
     assert_eq!(c.entry(named).map(|e| e.app.as_str()), Some("Fractal Beta"), "a name sent wins");
 }
 
-// ---- glyphs (spec § 2, Identity and glyph) ----
+// ---- glyphs ----
 
 #[test]
 fn the_glyph_comes_from_the_table_then_the_category_then_the_first_letter() {

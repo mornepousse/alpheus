@@ -206,7 +206,7 @@ fn an_entry_may_name_a_builtin_category() {
     for name in BUILTIN_CATEGORIES {
         assert!(parse(&entry(&format!("category = {name:?}\n"))).is_ok(), "{name}");
     }
-    // A user category of the same name restyles it (spec § 3): valid too.
+    // A user category of the same name restyles it: valid too.
     assert!(parse("[[tools.category]]\nname = \"Session\"\nicon = \"x\"\n").is_ok());
 }
 

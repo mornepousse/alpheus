@@ -52,7 +52,7 @@ pub fn render(n: &Notes, b: &NotesLayout) -> Boxed {
     };
     // Title row: the name on the left, the status word flush right.
     let status = n.status();
-    // Decision 4: `read only` in warn, `not saved` in error, the others muted.
+    // `read only` in warn, `not saved` in error, the others muted.
     let status_style = if n.read_only.is_some() {
         Style::WARN
     } else if n.save_failed {

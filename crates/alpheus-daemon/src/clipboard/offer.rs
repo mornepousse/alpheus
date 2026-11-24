@@ -1,4 +1,4 @@
-//! What to do with an offer (clipboard spec): the verdict on its MIME types, the password quiet
+//! What to do with an offer (docs/features/clipboard.md): the verdict on its MIME types, the password quiet
 //! window, and the bounded read buffer. Pure: no log, no panic, no text in `Debug`.
 
 use crate::clipboard::history::MAX_BYTES;

@@ -13,7 +13,7 @@
 //!   `the_parallel_branches_are_named_only_in_tools_join`, looks for their names in this folder's
 //!   other files).
 //!
-//! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§ 8), docs/features/tools-menu.md, and
+//! See: docs/features/tools-menu.md, and
 //! docs/decisions.md ("The Tools menu reaches the clipboard, the shield and the diagnostics tab
 //! through one file").
 

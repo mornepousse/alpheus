@@ -41,7 +41,7 @@ fn active_player(p: &Players) -> Option<&str> {
     p.active().map(|a| a.unique.as_str())
 }
 
-// ---- status and metadata (media spec § 3, Tolerance and Bounds) ----
+// ---- status and metadata ----
 
 #[test]
 fn status_reads_playing_and_paused_and_anything_else_is_stopped() {
@@ -283,7 +283,7 @@ fn identity_is_cleaned_and_a_blank_one_is_none() {
     assert_eq!(p.get(":1.4").unwrap().identity, None, "and the known one is untouched");
 }
 
-// ---- the active player (media spec § 3) ----
+// ---- the active player ----
 
 #[test]
 fn playing_beats_paused_and_a_tie_goes_to_the_latest_change() {
@@ -337,7 +337,7 @@ fn controls_follow_the_capabilities() {
     assert_eq!(caps(&p), [true, true, true]);
 }
 
-// ---- what the bar shows (media spec § 1) ----
+// ---- what the bar shows ----
 
 #[test]
 fn the_title_falls_back_to_the_url_then_the_name() {
@@ -400,7 +400,7 @@ fn view_is_none_without_an_active_player_and_truncated_otherwise() {
     assert_eq!(view(&p, 30).map(|v| v.playing), Some(false));
 }
 
-// ---- truncation (media spec § 1, amended: no new dependency) ----
+// ---- truncation ----
 
 #[test]
 fn truncation_counts_cells_like_the_grid() {
@@ -432,7 +432,7 @@ fn truncation_never_splits_a_cluster() {
     assert_eq!(truncate_title("ab🇫🇷🇩🇪", 5), "ab🇫🇷…");
 }
 
-// ---- time (media spec § 2) ----
+// ---- time ----
 
 /// A player with the given status, track length and rate, whose position was read as `sync_us` at `at`.
 fn player_with_position(status: &str, length: Option<u64>, rate: f64, sync_us: u64, at: Instant) -> Player {

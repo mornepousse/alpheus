@@ -23,7 +23,7 @@ const RELEASE_AFTER: usize = 1 << 20;
 
 /// What `run` does with the launcher socket's bind result: kept (Some) when
 /// it succeeds; logged and dropped (None) when it fails — a socket is
-/// optional (spec § 3): never a reason to refuse to start the bar.
+/// optional: never a reason to refuse to start the bar.
 pub(crate) fn launcher_socket_outcome<T, E: std::error::Error + 'static>(r: Result<T, E>) -> (Option<T>, Option<String>) {
     match r {
         Ok(v) => (Some(v), None),
@@ -43,7 +43,7 @@ fn releases_memory_once_consumed(request: &Request, buffered: usize) -> bool {
 }
 
 /// Whether a newly accepted connection is refused for being the
-/// `MAX_CONNECTIONS + 1`th at once (spec § 3): `watch_connection`'s only
+/// `MAX_CONNECTIONS + 1`th at once: `watch_connection`'s only
 /// stateful decision, pulled out so it is tested without a socket.
 fn too_many_connections(inflight: usize) -> bool {
     inflight >= MAX_CONNECTIONS

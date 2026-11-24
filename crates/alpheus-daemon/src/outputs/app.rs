@@ -18,13 +18,12 @@
 //! Never:
 //! - send a configuration that the controller did not ask for, or write to the compositor in any other
 //!   way (power management included);
-//! - write a screen's identity or an error text that may quote one into a log line: only the spec's fixed
+//! - write a screen's identity or an error text that may quote one into a log line: only the fixed
 //!   lines, and a profile's name, which is the user's own word (`profile_line`);
 //! - start a thread or a command (the module is checked by `the_tray_spawns_no_thread`), or read
 //!   anything unbounded: `displays.toml` is read capped, from a regular file only.
 //!
-//! See: docs/specs/2026-10-30-alpheus-displays-protocol-design.md (§§ 1 and 2),
-//! docs/features/displays.md, and docs/decisions.md ("The displays are changed by the daemon, and its
+//! See: docs/features/displays.md, and docs/decisions.md ("The displays are changed by the daemon, and its
 //! trial lives there", "displays.toml is read at each evaluation of the profiles, never watched", "A DisplayLink
 //! screen is told from the DRM directory, once per screen name").
 
@@ -229,7 +228,7 @@ impl TryClient {
     }
 
     /// Keeps `pending` until the answer; watched for a hang-up when there is a loop. A watch
-    /// that cannot be made is not logged (only the spec's fixed lines are): a client gone is then
+    /// that cannot be made is not logged (only the fixed lines are): a client gone is then
     /// noticed at its answer, the watchdog's at the latest.
     pub(crate) fn wait(&mut self, pending: Pending, handle: Option<&LoopHandle<'static, App>>) {
         // One try at a time: the controller refuses a second, and this one is told so

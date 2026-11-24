@@ -12,7 +12,7 @@
 //! - open the menu before its layout has arrived, or when the first layout arrives more than 2 s
 //!   after the request.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
+//! See: docs/features/tray.md, and docs/decisions.md
 //! ("A tray menu is shown only once its layout has arrived", "A tray menu opens with its first entry
 //! selected", "A submenu opens in the same popup", "A failed Activate opens the menu of the icon
 //! that was pressed", "A tray menu is closed by the button that opened it, or by any right click",

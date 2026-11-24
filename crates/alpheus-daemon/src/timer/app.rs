@@ -15,7 +15,7 @@
 //! - log the sound's command or a path: logs carry fixed words and numbers only (the command may
 //!   name the user).
 //!
-//! See: docs/specs/2026-11-15-alpheus-timer-design.md (§ 4, § 5, § 6), docs/features/timer.md, and
+//! See: docs/features/timer.md, and
 //! docs/decisions.md ("One deadline, armed only while a timer runs", "A change applies a due end
 //! first").
 

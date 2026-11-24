@@ -16,7 +16,7 @@
 //!   numbers only");
 //! - panic (a guardrail checks).
 //!
-//! See: docs/specs/2026-11-15-alpheus-resources-popup-design.md (§ 1, § 6), docs/features/resources.md.
+//! See: docs/features/resources.md.
 
 use crate::clock::LocalTime;
 use crate::keys::Key;

@@ -13,7 +13,7 @@
 //! - keep anything for later: no events, no network, no state outside a `Calendar`;
 //! - start a thread or a process (a guardrail checks).
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md ("Calendar", § 2), docs/features/calendar.md,
+//! See: docs/features/calendar.md,
 //! and docs/decisions.md ("The calendar is written in English, like the clock", "The calendar's
 //! first day comes from the locale, read at each open", "Calendar week numbers are ISO 8601").
 

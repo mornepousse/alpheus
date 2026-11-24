@@ -18,7 +18,7 @@
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`);
 //! - hold more than `history + MAX_LIVE` entries, each field capped.
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("A bubble's timeout follows its urgency", "A bubble is given by guards in a
 //! fixed order, and a critical one always shows", "A bubble's timeout starts when it first shows", "An identical notification within one second is
 //! merged, unless it would add a bubble", "A notification's text is cleaned in one linear pass",
@@ -32,7 +32,7 @@ use crate::text::invisible;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Bytes kept of each field (spec § 2), cut on a character boundary.
+/// Bytes kept of each field, cut on a character boundary.
 pub const MAX_APP: usize = 64;
 pub const MAX_SUMMARY: usize = 256;
 pub const MAX_BODY: usize = 1024;
@@ -55,7 +55,7 @@ pub const MAX_LIVE: usize = 32;
 /// Identities with a bucket at most; a full bucket is forgotten.
 pub const MAX_BUCKETS: usize = 64;
 
-/// Category glyphs (spec § 2), checked in JetBrainsMono Nerd Font Mono 3.4.0's post table.
+/// Category glyphs, checked in JetBrainsMono Nerd Font Mono 3.4.0's post table.
 pub const EMAIL: char = '\u{f01ee}'; // md-email
 pub const CHAT: char = '\u{f0369}'; // md-message_text
 pub const NETWORK: char = '\u{f0317}'; // md-lan
@@ -249,7 +249,7 @@ fn tag_end(at: &str) -> TagEnd {
     TagEnd::Unclosed
 }
 
-/// Markup to plain text (spec § 2), in one linear pass: a tag (`<` then an ASCII letter, `/`, `!`
+/// Markup to plain text, in one linear pass: a tag (`<` then an ASCII letter, `/`, `!`
 /// or `?`, up to its `>` outside quotes) is removed, its content kept, a `<br>` becoming `\n`; any
 /// other `<` is text, and so is a tag left unclosed, after which every `<` is text (no second
 /// scan). The five XML entities are decoded once; anything else after `&` stays as sent.
@@ -342,7 +342,7 @@ fn first_letter(s: &str) -> Option<char> {
     None
 }
 
-/// A notification's glyph (spec § 2): the bar's table by identity, then the category's glyph, then
+/// A notification's glyph: the bar's table by identity, then the category's glyph, then
 /// the identity's first letter (a reverse-DNS identity's last label first), then GENERIC.
 pub fn glyph_for(identity: &str, category: Option<&str>) -> char {
     if let Some(glyph) = icons::find(identity) {
@@ -588,8 +588,8 @@ impl Center {
         self.slots.retain(|s| s.kept || s.entry.live);
     }
 
-    /// Takes in one notification and returns its id: always answered, bubble or not (see the
-    /// notifications spec for replacement, tags, merging, the bucket and the history).
+    /// Takes in one notification and returns its id: always answered, bubble or not (replacement, tags,
+    /// merging, the bucket and the history: docs/decisions.md, docs/features/notifications.md).
     pub fn notify(&mut self, mut n: Incoming, now: Instant, at: u32) -> u32 {
         // The rules come first: a drop is answered and forgotten, an urgency replaces the sender's,
         // a mute leaves the bubble out of everything below (the merge included).
@@ -734,7 +734,7 @@ impl Center {
         live(true).chain(live(false))
     }
 
-    /// The expiries after a change to the bubbles, from `now` (spec § 3, extras wait; docs/decisions.md,
+    /// The expiries after a change to the bubbles, from `now` (extras wait; docs/decisions.md,
     /// "A bubble's timeout starts when it first shows"): each bubble
     /// that shows, do-not-disturb aside (a bubble it hides keeps its timer), is armed when it has no
     /// expiry yet. One pushed back beyond `max_visible` before the host drew it (`seen`: six at
