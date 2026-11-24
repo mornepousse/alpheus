@@ -87,7 +87,11 @@ lines are in [`docs/cli.md`](docs/cli.md).
 
 ## Install
 
+Download the x86_64 Linux tarball of a [release](https://github.com/mornepousse/alpheus/releases)
+(with its `SHA256SUMS`: `sha256sum -c SHA256SUMS`), or use Nix, or build from source:
+
 ```sh
+nix run github:mornepousse/alpheus#alpheus-demon       # straight from GitHub, no clone
 nix build .#alpheus-demon .#alpheus-launch .#alpheus   # or: cargo build --release
 alpheus-demon                                          # from your compositor's startup
 alpheus-launch --toggle                                # bind this to a key

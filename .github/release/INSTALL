@@ -1,0 +1,28 @@
+alpheus: install from the release tarball
+=========================================
+
+This tarball holds three x86_64 Linux programs, built on Ubuntu 24.04:
+
+  alpheus          the terminal control center
+  alpheus-demon    the resident daemon: bar, launcher, notifications, OSD
+  alpheus-launch   the client that talks to the daemon (bind it to keys)
+
+Put them on your PATH, for example:
+
+  install -Dm755 -t ~/.local/bin alpheus alpheus-demon alpheus-launch
+
+Runtime libraries (dynamically linked):
+
+  libdbus-1        Debian/Ubuntu: libdbus-1-3     Fedora: dbus-libs     Arch: dbus
+  libxkbcommon     Debian/Ubuntu: libxkbcommon0   Fedora: libxkbcommon  Arch: libxkbcommon
+
+A Nerd Font: the bar's icons are Nerd Font glyphs. The default face is
+"JetBrainsMono Nerd Font Mono" (https://www.nerdfonts.com/); set another one in
+bar.toml's [font], or point ALPHEUS_POLICES at a folder of font files.
+
+The binaries are built against Ubuntu 24.04's glibc: an older distribution may
+refuse them; build from source or use the Nix flake there.
+
+Start alpheus-demon from your compositor's autostart. Key binds, the other
+runtime tools each module uses and the configuration files are documented in
+docs/install.md and docs/configuration.md of the source repository.
