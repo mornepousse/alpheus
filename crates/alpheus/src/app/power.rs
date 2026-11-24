@@ -5,7 +5,8 @@
 //! asks for a confirmation first when the action needs one (`PowerAction::needs_confirm`: log out,
 //! reboot and power off), and `App::close_confirm` queues `Op::Power` only when the answer is
 //! Confirm (`close_confirm(false)` sends nothing). The commands themselves are in the backend
-//! (`SessionPower`).
+//! (`SessionPower`), which runs bar.toml's `[quick]` commands; an action whose command is empty is
+//! not an item here and not a palette entry.
 //!
 //! Never:
 //! - run a tool: the worker runs the command of `Op::Power`;
@@ -16,10 +17,11 @@
 
 use super::Item;
 use super::action::Command;
-use crate::backends::PowerAction;
+use crate::backends::{PowerAction, SessionCommands};
 
-/// The focusable items of the Power tab: one button per action of `PowerAction::ALL`, in that
-/// order (Lock, Log out, Suspend, Reboot, Power off).
-pub(super) fn items() -> Vec<Item> {
-    PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect()
+/// The focusable items of the Power tab: one button per action of `PowerAction::ALL` that
+/// `session` offers (bar.toml's `[quick]`: an empty command hides its action), in that order
+/// (Lock, Log out, Suspend, Reboot, Power off).
+pub(super) fn items(session: &SessionCommands) -> Vec<Item> {
+    PowerAction::ALL.iter().filter(|a| session.shows(**a)).map(|a| Item::Button(Command::Power(*a))).collect()
 }

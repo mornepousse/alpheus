@@ -87,7 +87,6 @@ commands at your own tools.
 |---|---|---|---|
 | `wm-set workspace <ref> <output>` | the bar, on a click or wheel on a workspace | yes: `[workspaces] command` in `bar.toml`, with `{workspace}` and `{output}` | switch `<output>` to the workspace `<ref>` |
 | `wm-set focus-window <selector>` | the launcher, when a window is chosen | yes: `focus` in `launcher.toml`, with `{window}` (required) | focus that window |
-| `wm-set exit` | the TUI's Power tab "Log out"; the bar's quick panel and ⏻ menu do **not** use it | the TUI: no; the bar: `[quick] logout` (empty by default) | end the compositor session |
 
 `<ref>` and `<selector>` are opaque strings that the daemon takes from the
 compositor you run, so your script only has to hand them back to it:
@@ -124,8 +123,8 @@ nothing else breaks. At most 3 profiles are applied automatically per set of scr
 | `foot` / `foot --hold` | the launcher, for terminal apps (`terminal`, `terminal_hold`) | yes: `launcher.toml` | a terminal that accepts a command after its arguments |
 | `systemd-run --user --scope --quiet --collect -- <command>` | the launcher, to start apps | no (falls back to a detached spawn when `systemd-run` is not installed) | systemd with a user manager |
 | `loginctl lock-session`, `systemctl reboot`, `systemctl poweroff` | the quick panel and the ⏻ menu | yes: `[quick] lock`, `reboot`, `poweroff` (empty hides the entry); `logout` is empty by default | any command; reboot and power off ask for confirmation first |
-| `hyprlock` | the TUI's Power tab "Lock" | no | a screen locker started detached (non-Hyprland users: put a `hyprlock` shim on `PATH` that runs yours) |
-| `systemctl suspend`, `reboot`, `poweroff` | the TUI's Power tab | no | systemd |
+| `[quick]` `lock`, `logout`, `reboot`, `poweroff` | the TUI's Power tab, the same commands as the bar's | yes: `bar.toml`; empty hides the button | any command; lock is started detached |
+| `systemctl suspend` | the TUI's Power tab | no | systemd |
 | `shell-ctl dnd-status` / `dnd-on` / `dnd-off` | the TUI's Home tab (do not disturb) | no | `dnd-status` prints `on` or `off` on standard output (anything else is an error); the other two set the state, exit 0. The bar's own notifications module does not use it: it has `alpheus-launch --dnd` |
 | `tools-menu "Garder éveillé"` | the TUI's "Keep awake" | no | toggles keep-awake; alpheus reads the state from the flag file `$XDG_RUNTIME_DIR/garder-eveille`, which the script must create or remove (names kept as the author's contract) |
 | `wpctl`, `nmcli`, `bluetoothctl`, `brightnessctl`, `powerprofilesctl` | the TUI's tabs | no | the stock tools |
@@ -134,7 +133,7 @@ nothing else breaks. At most 3 profiles are applied automatically per set of scr
 | `foot -e nmtui` | the quick panel's Wi-Fi "More…" | yes: `[quick] wifi_more` | a terminal command |
 | `[[sources]]` `list` / `run` | the launcher's command sources | yes: `launcher.toml` | `list` prints one entry per line within 1 s; `run` receives the chosen line as `{line}` |
 
-The TUI hard-wires `hyprlock`, `shell-ctl` and `tools-menu` today; making them
+The TUI hard-wires `shell-ctl` and `tools-menu` today; making them
 configurable with neutral fallbacks is the portability work that is still open
 (the daemon's bar side is already configurable, as above). Until then, a user
 of another setup either provides small scripts with these names or leaves the

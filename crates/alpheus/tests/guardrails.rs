@@ -9,7 +9,7 @@ use alpheus::exec::fake::FakeExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const ALLOWED: [&str; 13] = [
+const ALLOWED: [&str; 12] = [
     "wpctl",
     "brightnessctl",
     "nmcli",
@@ -17,8 +17,7 @@ const ALLOWED: [&str; 13] = [
     "powerprofilesctl",
     "shell-ctl",
     "tools-menu",
-    "hyprlock",
-    "wm-set",
+    "loginctl",
     "systemctl",
     "journalctl",
     "coredumpctl",

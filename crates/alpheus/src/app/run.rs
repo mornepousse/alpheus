@@ -20,7 +20,7 @@ use super::App;
 use super::action::Tab;
 use super::keymap::Keymap;
 use super::worker::{self, Domain, Request, Update};
-use crate::backends::{Backends, Displays};
+use crate::backends::{Backends, Displays, SessionCommands};
 use crate::config::Config;
 use crate::displays::profiles;
 use crate::exec::SystemExecutor;
@@ -139,9 +139,11 @@ pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
         Ok(k) => (k, None),
         Err(e) => (Keymap::default(), Some(format!("keys: {e}"))),
     };
+    let (session, w_session) = SessionCommands::load(&dir.join("bar.toml"));
     let displays_toml = dir.join("displays.toml");
     let (display_profiles, w_displays) = profiles::load(&displays_toml);
     let mut app = App::with_tab(config, theme, keymap, tab, now);
+    app.session = session;
     app.displays.profiles = display_profiles;
     app.displays.profiles_path = Some(displays_toml);
     // Unreadable or invalid file: saving would overwrite it without having
@@ -152,7 +154,7 @@ pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     if app.tab == Tab::Appearance {
         app.appearance_open();
     }
-    for w in [w_config, w_keys, w_displays].into_iter().flatten().chain(w_theme) {
+    for w in [w_config, w_keys, w_displays, w_session].into_iter().flatten().chain(w_theme) {
         app.warn(w);
     }
     app
@@ -179,8 +181,9 @@ impl Drop for Cleanup {
 pub fn run(options: Options) -> io::Result<()> {
     install_signals()?;
     let app = build_app(&config_dir(), options.tab, Instant::now());
+    let session = app.session.clone();
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
-    let backends = Backends::system(exec.clone(), runtime_dir());
+    let backends = Backends::system(exec.clone(), runtime_dir(), session);
     let displays = backends.displays.clone();
     let (tx, rx) = worker::spawn_with(backends, Arc::new(|k| std::env::var_os(k)));
     spawn_guard(exec.clone());
@@ -272,6 +275,25 @@ mod tests {
         assert!(e.contains("weather") && e.contains("home, sound"), "{e}");
         assert!(parse_options(&args(&["--tab"])).unwrap_err().contains("expects"));
         assert!(parse_options(&args(&["-v"])).unwrap_err().contains("unknown option"));
+    }
+
+    /// The Power tab follows bar.toml's `[quick]` (the bar's own session commands): a command
+    /// given shows its button, an empty one hides it, the file's other keys are not ours.
+    #[test]
+    fn bar_toml_quick_commands_shape_the_power_tab() {
+        let dir = alpheus_common::temp_path::TempPath::dir("run-power-session");
+        std::fs::write(dir.join("bar.toml"), "height = 24\n[quick]\nlogout = [\"session-logout\"]\nreboot = []\n").unwrap();
+        let a = build_app(&dir, Tab::Power, Instant::now());
+        let power: Vec<_> = a.items().into_iter().map(|i| format!("{i:?}")).collect();
+        assert_eq!(power.len(), 4, "{power:?}");
+        assert!(power.iter().any(|i| i.contains("Logout")) && !power.iter().any(|i| i.contains("Reboot")), "{power:?}");
+        assert!(a.status.warning.is_none(), "{:?}", a.status.warning);
+        // A broken bar.toml is a warning, and the neutral defaults.
+        std::fs::write(dir.join("bar.toml"), "[quick\n").unwrap();
+        let b = build_app(&dir, Tab::Power, Instant::now());
+        assert_eq!(b.items().len(), 4);
+        assert!(!format!("{:?}", b.items()).contains("Logout"));
+        assert!(b.status.warning.as_deref().is_some_and(|w| w.starts_with("bar.toml invalid")));
     }
 
     #[test]

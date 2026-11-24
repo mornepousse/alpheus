@@ -33,7 +33,7 @@ pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
 pub use notifications::{Notifications, ShellCtl};
-pub use power::{Power, PowerAction, SessionPower};
+pub use power::{Power, PowerAction, SessionCommands, SessionPower};
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 
 /// Failure of a backend, displayed as-is in the relevant tab.
@@ -126,8 +126,9 @@ pub struct Backends {
 
 impl Backends {
     /// v1 backends (command-line tools; the displays through the daemon's
-    /// socket in `runtime_dir` = $XDG_RUNTIME_DIR).
-    pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
+    /// socket in `runtime_dir` = $XDG_RUNTIME_DIR; the session actions run `session`, bar.toml's
+    /// `[quick]` commands).
+    pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf, session: SessionCommands) -> Self {
         Backends {
             sound: Arc::new(WpctlSound::new(exec.clone())),
             brightness: Arc::new(BrightnessCtl::new(exec.clone())),
@@ -135,7 +136,7 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir.clone())),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec.clone())),
+            power: Arc::new(SessionPower::new(exec.clone(), session)),
             displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
             diagnostics: Arc::new(SystemdTools::new(exec)),
             poke: Arc::new(SocketPoke::new(crate::launcher_ipc::socket_path(&runtime_dir))),
@@ -146,7 +147,7 @@ impl Backends {
     /// is none) and know no user, host or machine id, so no test reads the machine it runs on.
     #[cfg(any(test, feature = "testing"))]
     pub fn system_isolated(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
-        let mut b = Backends::system(exec.clone(), runtime_dir.clone());
+        let mut b = Backends::system(exec.clone(), runtime_dir.clone(), SessionCommands::default());
         b.diagnostics =
             Arc::new(SystemdTools::for_tests(exec, vec![runtime_dir.join("no-journal")], crate::diagnostics::report::HostFacts::default()));
         b
@@ -193,7 +194,7 @@ mod tests {
     fn system_wires_each_domain_to_its_tool() {
         let f = Arc::new(FakeExecutor::new());
         let dir = crate::temp_path::TempPath::new("backends-system");
-        let b = Backends::system(f.clone(), dir.to_path_buf());
+        let b = Backends::system(f.clone(), dir.to_path_buf(), SessionCommands::default());
         let _ = b.sound.volume();
         let _ = b.brightness.get();
         let _ = b.network.status();
