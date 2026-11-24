@@ -123,7 +123,7 @@ fn compositor_crash_is_an_end_of_session_exit_code_0() {
     // Decided and verified by hand (recorded 2026-10-04): killing
     // sway with a SIGKILL closes the daemon's Wayland connection with EPIPE
     // ("Broken pipe (os error 32)"), exactly what a clean disconnect would
-    // also produce (end of session, compositor restart — see spec § 3).
+    // also produce (end of session, compositor restart).
     // Nothing, on the client side, tells the two apart. The daemon never
     // reconnects on its own in either case (it's the session that
     // relaunches it, through exec-once then shell-ctl): treating them the
@@ -346,7 +346,7 @@ fn tools_opens_and_a_builtin_runs_after_the_box_closed() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
-// ---- the Tools menu (tools spec § 9, plan task 8) ----
+// ---- the Tools menu  ----
 //
 // Each test names only fake scripts (never a real tool). Assertions are recorders and log lines,
 // never drawn text (the rows are pinned by the view's snapshots).
@@ -711,7 +711,7 @@ fn tools_tab_builtin_runs_open_tab_or_falls_back() {
 
 /// The Shield built-in opens the quick panel on the Shield detail when `[shield]` is configured
 /// and the `quick` module is on; without `[shield]` the row is absent (typing `Shield` and Enter
-/// runs nothing). Tools spec § 8: the join's hook points, filled once `feat/shield` merged.
+/// runs nothing).
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn tools_shield_builtin_opens_the_detail_when_configured() {
@@ -1302,7 +1302,7 @@ fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
 /// hovered icon's OWN position changed. `ToolTip` here never affects which letter/glyph is drawn
 /// (`icons::icons` falls back to the item's Title, never its tooltip text), so `bar.apply` reports
 /// no change and the hover is left alone entirely: the tooltip stays shown with its original text
-/// (the simpler of the two options the brief allowed — see task-16-fix-report.md).
+/// (the hover is left alone rather than rebuilt).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_hovered_items_tooltip_text_changing_does_not_close_it() {
@@ -1520,7 +1520,7 @@ fn a_second_left_click_on_steams_icon_only_closes_its_menu() {
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn an_outside_click_closes_the_menu() {
     let (_bus, sway, _hypr, d, item) = menu_bar("menu-outside");
-    // Escape first, spec § 2's other way out.
+    // Escape first, the menu's other way out.
     sway.click(12, 10, "button3");
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
     keys(&sway, &["Escape"]);
@@ -2154,7 +2154,7 @@ fn writing_theme_toml_repaints_the_bar_in_the_new_bar_bg() {
     assert!(d.wait_for("theme reloaded: gruvbox, dark", DELAY), "{:?}", d.log());
     let gruvbox = bar_bg("gruvbox");
     assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some(gruvbox)), "{:?}", d.log());
-    // theme.toml removed (IN_DELETE): no theme key and a colors.toml, so the wallpaper (spec § 2 as amended).
+    // theme.toml removed (IN_DELETE): no theme key and a colors.toml, so the wallpaper.
     std::fs::remove_file(config.join("theme.toml")).unwrap();
     assert!(d.wait_for("theme reloaded: wallpaper, dark", DELAY), "{:?}", d.log());
     assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some([0x10, 0x20, 0x30])), "{:?}", d.log());
@@ -2187,7 +2187,7 @@ fn a_style_set_at_startup_is_painted() {
 #[ignore = "headless sway and grim (nix develop)"]
 fn a_module_colours_change_alone_repaints_the_bar() {
     let (_sway, _hypr, mut d, config) = theme_bar("theme-module-colors");
-    // Same theme and mode, so the roles are equal: only the setting differs (themes spec § 9).
+    // Same theme and mode, so the roles are equal: only the setting differs.
     write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"full\"\n");
     assert!(d.wait_for("theme reloaded: catppuccin, dark, module colours full", DELAY), "{:?}", d.log());
     // The same text again: nothing changed, nothing repainted.
@@ -3140,7 +3140,7 @@ fn pid_of(bus: &PrivateBus, unique: &str) -> Option<u32> {
     peer.call(m).ok().and_then(|r| r.read1::<u32>().ok())
 }
 
-/// Spec § 1: tray off, the media module, the portal and the notifications server share ONE
+/// Tray off, the media module, the portal and the notifications server share ONE
 /// connection, and it is the daemon's own that holds the name.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3171,7 +3171,7 @@ fn with_the_tray_the_bell_rides_its_connection() {
     assert_eq!(client.owner(NOTIFICATIONS), client.owner("org.kde.StatusNotifierWatcher"), "one connection holds both names");
 }
 
-/// Spec § 6: without `notifications` in `modules`, the name is never requested, and the verbs say so.
+/// Without `notifications` in `modules`, the name is never requested, and the verbs say so.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn without_the_module_the_name_is_never_requested() {
@@ -3189,7 +3189,7 @@ fn without_the_module_the_name_is_never_requested() {
     assert_eq!((d.count("notifications:"), d.count("bell:")), (0, 0), "{:?}", d.log());
 }
 
-/// Spec § 5: `alpheus-launch --dnd …` reaches the bell (its line), writes the owner-only empty file,
+/// `alpheus-launch --dnd …` reaches the bell (its line), writes the owner-only empty file,
 /// removes it, is idempotent, and the state comes back at the next start; DND still answers Notify.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3240,7 +3240,7 @@ fn bell_daemon_with_dnd_file(name: &str, text: &str) -> (PrivateBus, Sway, FakeH
     (bus, sway, hypr, d)
 }
 
-/// Small features 1, decisions 6, 8, 11: `--dnd on --for 30m` writes `until <unix>`, survives a
+/// `--dnd on --for 30m` writes `until <unix>`, survives a
 /// restart, and a file whose end is about to pass turns do-not-disturb off by the timer, removing
 /// the file.
 #[test]
@@ -3274,7 +3274,7 @@ fn a_timed_dnd_is_saved_restored_and_ends() {
     assert!(!file.exists(), "the end removes the file: {:?}", d.log());
 }
 
-/// Decision 6: at start, an end already passed and a `sharing` file read as off, and the file goes.
+/// At start, an end already passed and a `sharing` file read as off, and the file goes.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_past_or_sharing_dnd_file_is_cleaned_at_start() {
@@ -3291,7 +3291,7 @@ fn a_past_or_sharing_dnd_file_is_cleaned_at_start() {
     }
 }
 
-/// Decision 7: `--dnd off` and `toggle` end a timed do-not-disturb.
+/// `--dnd off` and `toggle` end a timed do-not-disturb.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_timed_dnd_is_cancelled_by_off_and_toggle() {
@@ -3328,7 +3328,7 @@ fn mako_holding_the_name_dims_the_bell_until_it_stops() {
     assert!(client.notify(&Note::new("Fictional", "to alpheus")).is_ok_and(|id| id < 1000));
 }
 
-/// Spec § 7: a dead session bus dims the bell once; its source goes, nothing spins.
+/// A dead session bus dims the bell once; its source goes, nothing spins.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
@@ -3349,7 +3349,7 @@ fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
-/// Spec § 4 and § 8: the bell's middle click toggles do-not-disturb inside the daemon, through the
+/// The bell's middle click toggles do-not-disturb inside the daemon, through the
 /// same path as the verb (the file follows), and runs no command.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3488,7 +3488,7 @@ fn bubble_at(sway: &Sway, output: &str) -> (u32, u32) {
     ((left + right) / 2, top + 12)
 }
 
-/// Spec § 3: a bubble appears top centre, under the bar, on the focused output only.
+/// A bubble appears top centre, under the bar, on the focused output only.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
 fn a_bubble_appears_top_centre_on_the_focused_output() {
@@ -3511,7 +3511,7 @@ fn a_bubble_appears_top_centre_on_the_focused_output() {
     assert_eq!(bubble_box(&s, 3), None, "nothing on the other output");
 }
 
-/// Spec § 3, clicks: a left click runs the `default` action, then the bubble closes (dismissed)
+/// A left click runs the `default` action, then the bubble closes (dismissed)
 /// unless the notification is resident.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -3537,7 +3537,7 @@ fn a_left_click_runs_the_default_action_then_closes_unless_resident() {
     assert_eq!(d.count("bubbles surface dropped"), 1, "{:?}", d.log());
 }
 
-/// Spec § 3: a right click dismisses (reason 2) and runs nothing.
+/// A right click dismisses (reason 2) and runs nothing.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
 fn a_right_click_dismisses_with_reason_2_and_runs_nothing() {
@@ -3554,7 +3554,7 @@ fn a_right_click_dismisses_with_reason_2_and_runs_nothing() {
     assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
 }
 
-/// Spec § 3, expiry: `NotificationClosed(1)` at its time, never before, and the surface goes with
+/// `NotificationClosed(1)` at its time, never before, and the surface goes with
 /// the last bubble.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -3570,7 +3570,7 @@ fn an_expired_bubble_sends_closed_1_and_its_surface_goes() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_none()), "gone from the screen");
 }
 
-/// Spec § 3: under do-not-disturb, only critical notifications get a bubble.
+/// Under do-not-disturb, only critical notifications get a bubble.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
 fn do_not_disturb_shows_only_critical_bubbles() {
@@ -3583,12 +3583,12 @@ fn do_not_disturb_shows_only_critical_bubbles() {
     let (x, y) = bubble_at(&sway, "HEADLESS-1");
     let urgent = rgb(preset("catppuccin").unwrap().dark.urgent);
     let frame = bubble_frame(&sway.screenshot("HEADLESS-1").expect("grim"));
-    assert_eq!(frame, Some(urgent), "spec § 3: a critical bubble is framed in urgent");
+    assert_eq!(frame, Some(urgent), "a critical bubble is framed in urgent");
     sway.click(x, y, "button3");
     assert!(client.wait_heard(&Heard::Closed(critical, 2)), "{:?}", d.log());
 }
 
-/// Spec § 3 and § 7: 0 loop wake-ups at rest once the bubbles expired, and while a sticky critical
+/// 0 loop wake-ups at rest once the bubbles expired, and while a sticky critical
 /// bubble shows (no finite expiry: no timer).
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -3702,7 +3702,7 @@ fn a_bubble_follows_the_scale_from_1_to_2_and_back() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some_and(|(_, l, r)| (r - l).abs_diff(w1) <= 4)), "and back");
 }
 
-/// Constraints, Lightness: the timer follows every live bubble with a finite
+/// The timer follows every live bubble with a finite
 /// timeout, hidden by do-not-disturb or not. A bubble hidden by DND, then replaced with a 2 s
 /// timeout, closes on time with reason 1, and never shows up later past its time.
 #[test]
@@ -3797,7 +3797,7 @@ fn after_the_bell(s: &Ppm) -> Vec<[u8; 3]> {
     (2..20).flat_map(|y| (17..60).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
-/// Spec § 4: a bell click opens the panel with the media card and the history. Delete removes an
+/// A bell click opens the panel with the media card and the history. Delete removes an
 /// entry; Clear all empties the history and closes the live bubbles; the DND row toggles the file.
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
@@ -3884,7 +3884,7 @@ fn the_panel_closed_after_a_repeat_delay_keeps_the_bar_alive() {
     survives(&mut d, "the panel closed after wtype left");
 }
 
-/// Spec § 4: the media card's 1 s tick runs while the panel shows it and the player plays, and
+/// The media card's 1 s tick runs while the panel shows it and the player plays, and
 /// stops with the panel, its Seeked rule too.
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
@@ -4051,7 +4051,7 @@ fn a_pw_dump_send_above_pipe_buf_fails_clearly() {
     pw_dump_send(Path::new("/nonexistent-alpheus-it"), &"x".repeat(4096));
 }
 
-// ---- The OSD (osd plan). The fake pw-dump is `Fifo`; the backlight a fake tree
+// ---- The OSD . The fake pw-dump is `Fifo`; the backlight a fake tree
 // under the test's runtime directory, never /sys. ----
 
 /// The OSD's tests' bar: the volume (its sound source), the OSD, the clock. `extra`: more `[osd]`
@@ -4063,7 +4063,7 @@ fn osd_bar(sway: &Sway, extra: &str) -> String {
     )
 }
 
-/// After the baseline, past the start-up grace (OSD spec § 2: 1 s).
+/// After the baseline, past the start-up grace (1 s).
 const GRACE_OVER: Duration = Duration::from_millis(1300);
 
 /// A daemon on `outputs` headless outputs (the fixture's focus on HEADLESS-2 when there are two),
@@ -4105,7 +4105,7 @@ fn osd_box(s: &Ppm) -> Option<(u32, u32, u32)> {
     osd_box_in(s, popup_bg("catppuccin"))
 }
 
-/// OSD spec § 1, § 3: a volume change shows the pill bottom centre, `margin` px above the edge, on
+/// A volume change shows the pill bottom centre, `margin` px above the edge, on
 /// the focused output only; it goes `timeout_ms` after the change.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4132,7 +4132,7 @@ fn osd_a_volume_change_shows_the_pill_bottom_centre_then_it_goes() {
     assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_none()), "gone from the screen too");
 }
 
-/// OSD spec § 2: the state pw-dump starts with is the baseline; nothing shows.
+/// The state pw-dump starts with is the baseline; nothing shows.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn osd_the_start_up_state_shows_nothing() {
@@ -4142,7 +4142,7 @@ fn osd_the_start_up_state_shows_nothing() {
     assert_eq!(osd_box(&sway.screenshot("HEADLESS-1").expect("grim")), None);
 }
 
-/// OSD spec § 3: a held key (30 changes at 25 Hz) keeps ONE pill up, its content replaced, then it
+/// A held key (30 changes at 25 Hz) keeps ONE pill up, its content replaced, then it
 /// goes once, `timeout_ms` after the last change.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4159,7 +4159,7 @@ fn osd_a_held_key_keeps_one_pill_up_until_the_last_change() {
     assert_eq!(d.count("osd surface on"), 1, "one surface for the whole hold: {:?}", d.log());
 }
 
-/// OSD spec § 3: the input region is empty. A click on the pill never reaches it, and leaves it
+/// The input region is empty. A click on the pill never reaches it, and leaves it
 /// alone.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4185,7 +4185,7 @@ fn osd_the_pill_never_takes_a_click() {
     assert_eq!(d.count("osd surface dropped"), 0, "and the clicks left it alone");
 }
 
-/// OSD spec § 1, § 2: the microphone's mute shows its pill, its level never does. A switch of the default sink shows its
+/// The microphone's mute shows its pill, its level never does. A switch of the default sink shows its
 /// name and level, the fixture's speaker at 94 %.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4207,7 +4207,7 @@ fn osd_the_microphone_and_a_default_sink_switch_show_their_pills() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "{:?}", d.log());
 }
 
-/// OSD spec § 3: a change while the pill shows repaints its level on the same surface. The lit
+/// A change while the pill shows repaints its level on the same surface. The lit
 /// part of the bar is counted in the accent colour, below the screen's middle: the bar's own volume
 /// gauge, at the top, is never counted.
 #[test]
@@ -4236,7 +4236,7 @@ fn osd_a_change_while_shown_repaints_the_level() {
     assert_eq!(d.count("osd surface on"), 1, "the same surface");
 }
 
-/// OSD spec § 3: a theme change while the pill shows repaints it in place.
+/// A theme change while the pill shows repaints it in place.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn osd_a_theme_change_repaints_the_shown_pill() {
@@ -4256,7 +4256,7 @@ fn osd_a_theme_change_repaints_the_shown_pill() {
     assert_eq!(d.count("osd surface on"), 1, "in place, never recreated");
 }
 
-/// OSD spec, success criteria: at rest nothing is mapped and the loop never wakes, before any pill
+/// At rest nothing is mapped and the loop never wakes, before any pill
 /// and once one went (the CPU checked too: a spin makes no wake-up).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4321,7 +4321,7 @@ fn osd_brightness(sway: &Sway) -> i32 {
     run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
 }
 
-/// OSD spec § 2: `alpheus-launch --osd brightness` reads the fake backlight once and shows its
+/// `alpheus-launch --osd brightness` reads the fake backlight once and shows its
 /// level; the files are never written.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4339,7 +4339,7 @@ fn osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill() {
     assert_eq!(std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap(), before);
 }
 
-/// OSD spec § 3: a volume change while the brightness pill shows replaces its content on the same
+/// A volume change while the brightness pill shows replaces its content on the same
 /// surface and pushes its deadline back: it goes `timeout_ms` after the volume change, not after
 /// the brightness. The volume lights more of the bar (90 % against 50 %), counted in the accent
 /// below the screen's middle (the bar's own gauge, at the top, is never counted).
@@ -4380,7 +4380,7 @@ fn osd_a_volume_change_replaces_the_brightness_pill_and_pushes_its_deadline_back
     assert_eq!(d.count("osd surface on"), 1, "one surface, its content replaced: {:?}", d.log());
 }
 
-/// OSD spec § 4: with no backlight device, or without the module, the verb answers Done (exit 0)
+/// With no backlight device, or without the module, the verb answers Done (exit 0)
 /// and nothing shows.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -4532,7 +4532,7 @@ fn quick_volume_bar(s: &Ppm) -> Vec<[u8; 3]> {
     (y - 8..y + 8).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
-/// Quick spec § 1, § 3, § 7: a left click on the volume opens the panel at the volume row; → sets
+/// A left click on the volume opens the panel at the volume row; → sets
 /// the volume through wpctl (84 % + 5, an absolute level), then ↓ → the brightness through
 /// brightnessctl (50 % + 5), on the configured device.
 #[test]
@@ -4568,7 +4568,7 @@ fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_br
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// Spec § 7: the outputs detail lists two sinks (the HDMI output unplugged first); Enter on the one
+/// The outputs detail lists two sinks (the HDMI output unplugged first); Enter on the one
 /// above the default records `wpctl set-default <its id>`.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -4589,7 +4589,7 @@ fn quick_the_outputs_detail_lists_two_sinks_and_enter_sets_the_default() {
     assert!(d.wait_for("quick: default sink 99", DELAY), "{:?}", d.log());
 }
 
-/// Spec § 1, § 7: a pw-dump volume change made elsewhere repaints the open panel.
+/// A pw-dump volume change made elsewhere repaints the open panel.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
 fn quick_a_volume_change_elsewhere_repaints_the_open_panel() {
@@ -4629,7 +4629,7 @@ fn quick_a_microphone_muted_while_closed_shows_at_the_next_open() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| quick_panel(s) != before), "the microphone muted at open: {:?}", d.log());
 }
 
-/// Spec § 1: with the panel, the right click opens the TUI tab the left click used to.
+/// With the panel, the right click opens the TUI tab the left click used to.
 #[test]
 #[ignore = "headless sway, dbus-daemon (nix develop)"]
 fn quick_the_right_click_still_opens_the_tui_tab() {
@@ -4639,7 +4639,7 @@ fn quick_the_right_click_still_opens_the_tui_tab() {
     assert_eq!(d.count("quick shown"), 0, "the right click opens no panel");
 }
 
-/// Spec § 1, § 7: Escape, a second click on the module and a click elsewhere on the bar close it;
+/// Escape, a second click on the module and a click elsewhere on the bar close it;
 /// 0 loop wake-ups while it is open and idle, and once it closed.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -4707,7 +4707,7 @@ fn quick_drawn_on_the_right(s: &Ppm) -> bool {
     (29..51).any(|y| (s.width / 2..s.width).any(|x| s.at(x, y) == Some(accent)))
 }
 
-/// Quick spec § 1: `alpheus-launch --quick sound` opens the panel under the bar's
+/// `alpheus-launch --quick sound` opens the panel under the bar's
 /// right end at the volume row; its keys work without a grab; Escape closes it and gives the
 /// keyboard back; the verb again closes an open one; nothing stays awake. The bar's keyboard
 /// interactivity is read from sway's seat focus: 0 while the bar holds the keyboard (Exclusive),
@@ -4746,7 +4746,7 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
 }
 
-/// Quick spec § 1: the verb opens the panel under the bar of the focused output, whichever it is:
+/// The verb opens the panel under the bar of the focused output, whichever it is:
 /// HEADLESS-2 (the fake Hyprland's own), then HEADLESS-1 once the focus moved. Before the verb,
 /// neither screen shows a panel.
 #[test]
@@ -4799,7 +4799,7 @@ fn quick_a_verb_right_after_the_verb_opened_it_is_debounced() {
     assert_eq!(d.count("quick shown"), 1, "{:?}", d.log());
 }
 
-/// Spec § 1: without `quick` in `modules`, the verb exits 0 and opens nothing.
+/// Without `quick` in `modules`, the verb exits 0 and opens nothing.
 #[test]
 #[ignore = "headless sway, dbus-daemon (nix develop)"]
 fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
@@ -4814,7 +4814,7 @@ fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
 }
 
 /// The network module and the panel; `More…` a fake; the backlight directory one with no device
-/// (never the real /sys: ledger, delivery 1, P3).
+/// (never the real /sys).
 fn wifi_bar(sway: &Sway) -> String {
     format!(
         "modules = [\"network\", \"quick\", \"clock\"]\n[quick]\nwifi_more = [\"fake-more\"]\n[osd]\nbacklight_dir = \"{}\"\n",
@@ -4850,7 +4850,7 @@ fn wifi_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprlan
 
 /// Waits until the fake NetworkManager answered the detail's reads: its own evidence is the access
 /// points' reads (only the Wi-Fi detail makes them) and a saved profile's settings (the last of the
-/// detail's reads); the VPN row reads the same profiles with the same calls (quick VPN spec § 5), so
+/// detail's reads); the VPN row reads the same profiles with the same calls, so
 /// then the calls must stop coming for 300 ms, which also lets the state reach the panel and be painted.
 /// The VPN reading ends on the actives the network domain reads too, so there is no call of its own
 /// to wait for: calls that never stop for DELAY (a reader re-reading in a loop) are a failure.
@@ -4895,7 +4895,7 @@ fn the_wifi_rules_are_gone(nm: &FakeNetworkManager, d: &Daemon) {
     assert_eq!(d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(thread_before), 0, "the rule gone: asleep");
 }
 
-/// Quick Wi-Fi spec § 1, § 2, § 7: a click on the network module opens the panel on the Wi-Fi detail
+/// A click on the network module opens the panel on the Wi-Fi detail
 /// (one rescan); Enter on the saved network, first in the list, records `connection up uuid …`; no
 /// SSID reaches the log.
 #[test]
@@ -4913,16 +4913,16 @@ fn quick_wifi_a_click_on_the_network_opens_the_detail_and_enter_connects_a_saved
     assert!(no_ssid_logged(&d), "never an SSID in the log: {:?}", d.log());
 }
 
-/// Any pixel of the panel's first lines in catppuccin dark's warn: the `failed` tag (P8).
+/// Any pixel of the panel's first lines in catppuccin dark's warn: the `failed` tag.
 fn warn_in_the_panel(s: &Ppm) -> bool {
     let warn = rgb(preset("catppuccin").unwrap().dark.warn);
     quick_panel(s).contains(&warn)
 }
 
-/// Quick Wi-Fi spec § 3, § 7: a new secured network asks for its password; typed and Enter, nmcli
+/// A new secured network asks for its password; typed and Enter, nmcli
 /// gets `--ask device wifi connect Bureau-Test` and the password on its standard input only. The
 /// fake NetworkManager then activates, makes a profile, fails: `failed` painted (warn, the
-/// selection moved off it first: P8), one log line, and the profile deleted. Closed, nothing stays
+/// selection moved off it first), one log line, and the profile deleted. Closed, nothing stays
 /// awake.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -4962,7 +4962,7 @@ fn quick_wifi_a_new_secured_network_takes_its_password_on_stdin_only_then_fails_
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
 }
 
-/// Quick Wi-Fi spec § 5: open, an access point's change is followed; closed with no attempt under
+/// Open, an access point's change is followed; closed with no attempt under
 /// way (straight from the detail, a second click on the network module), its rules are gone: the
 /// same change reaches neither the D-Bus thread nor the fake (no call), and nothing wakes.
 #[test]
@@ -4981,7 +4981,7 @@ fn quick_wifi_closed_nothing_follows_the_access_points_and_nothing_wakes() {
     assert_eq!(rest_over_5_s(&d), 0);
 }
 
-/// Quick Wi-Fi spec § 1: `alpheus-launch --quick wifi` opens the panel on the Wi-Fi detail (its
+/// `alpheus-launch --quick wifi` opens the panel on the Wi-Fi detail (its
 /// rescan); the verb again closes it.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -5151,7 +5151,7 @@ fn open_the_bt_detail(sway: &Sway, d: &Daemon, b: &FakeBluez) {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| panel_height(s) > 22), "the panel drawn: {:?}", d.log());
 }
 
-/// No device name, address or object path of the fixtures in the daemon's log (constraints: BlueZ
+/// No device name, address or object path of the fixtures in the daemon's log (BlueZ
 /// paths embed the address).
 fn no_device_logged(d: &Daemon) -> bool {
     !d.log()
@@ -5165,7 +5165,7 @@ fn panel_height(s: &Ppm) -> usize {
     column(s, popup_cell(0, 2, 0).0).iter().filter(|p| **p == bg).count()
 }
 
-/// Quick Bluetooth spec § 2, § 5: a click on the bluetooth module opens the panel on its detail; a
+/// A click on the bluetooth module opens the panel on its detail; a
 /// second connection to the system bus registers the pairing agent (KeyboardDisplay, never as the
 /// default agent) and starts discovery on hci0.
 #[test]
@@ -5184,7 +5184,7 @@ fn bluetooth_a_module_click_opens_the_detail() {
     assert!(no_device_logged(&d), "{:?}", d.log());
 }
 
-/// Quick Bluetooth spec § 3: Enter on the paired headset (selected first) calls `Connect` on it;
+/// Enter on the paired headset (selected first) calls `Connect` on it;
 /// once BlueZ says it is connected, the bar's module shows it (more ink); nothing names it in the
 /// log.
 #[test]
@@ -5201,7 +5201,7 @@ fn bluetooth_enter_connects_a_paired_device() {
     assert!(no_device_logged(&d), "{:?}", d.log());
 }
 
-/// Quick Bluetooth spec § 3, § 5: Enter on a nearby keyboard calls `Pair` (held by the fake); BlueZ
+/// Enter on a nearby keyboard calls `Pair` (held by the fake); BlueZ
 /// shows a passkey through the agent, which answers it, and the panel grows one line: `Type 482
 /// 913 then ⏎`.
 #[test]
@@ -5228,7 +5228,7 @@ fn bluetooth_pairing_a_keyboard_shows_its_code() {
     assert!(no_device_logged(&d), "{:?}", d.log());
 }
 
-/// Quick Bluetooth spec § 3: Delete asks `Forget? ⏎`; Enter past `CONFIRM_AFTER` removes the
+/// Delete asks `Forget? ⏎`; Enter past `CONFIRM_AFTER` removes the
 /// device from the adapter.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -5248,7 +5248,7 @@ fn bluetooth_forget_removes_a_device() {
     assert!(no_device_logged(&d), "{:?}", d.log());
 }
 
-/// Quick Bluetooth spec § 4: the default sink on a Bluetooth headset adds the headset row under
+/// The default sink on a Bluetooth headset adds the headset row under
 /// the volume; Enter on it switches the headset to its other mode (`headset-head-unit`, index 3).
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -5276,7 +5276,7 @@ fn bluetooth_headset_row_switches_profile() {
     assert!(wait_for_call(&sway, "wpctl", "wpctl set-profile 61 3"), "{:?} {:?}", recorded(&sway, "wpctl"), d.log());
 }
 
-/// Constraints (acting connection): closing the panel unregisters the agent and lets the acting
+/// Closing the panel unregisters the agent and lets the acting
 /// connection go; a device found afterwards reaches no reader that calls BlueZ, and nothing wakes.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -5296,7 +5296,7 @@ fn bluetooth_at_rest_no_wakeups_after_the_panel_closes() {
     assert_eq!(rest_over_5_s(&d), 0, "closed: nothing left awake");
 }
 
-/// Quick Bluetooth spec § 6: BlueZ leaving while a `Pair` is under way ends it silently: no
+/// BlueZ leaving while a `Pair` is under way ends it silently: no
 /// `failed` drawn, no failure logged, and the acting connection goes.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -5367,7 +5367,7 @@ fn settled_box(sway: &Sway) -> Vec<[u8; 3]> {
     }
 }
 
-/// Spec § 3: an empty query lists today's apps and windows, never a source entry. Watched on
+/// An empty query lists today's apps and windows, never a source entry. Watched on
 /// screen, never by pressing Return (it would act on the fixture's windows): the box with the
 /// entries delivered is the box of an open with no source at all.
 #[test]
@@ -5449,7 +5449,7 @@ fn a_hung_source_is_killed_and_nothing_stays_awake() {
     assert_eq!(rest_over_5_s(&d), 0, "the loop woke at rest after an open that ran sources");
 }
 
-/// Mango and Sway spec § 6: the Sway fixtures come from THIS isolated headless sway, never the user's
+/// The Sway fixtures come from THIS isolated headless sway, never the user's
 /// session. Two outputs; on workspace 1, two windows (a then b, a focused last); on the named
 /// workspace "music", a floating c (urgent) and d moved to the scratchpad. With
 /// ALPHEUS_CAPTURE_SWAY=<directory>, writes the three replies there (once, to make them); always checks
@@ -5512,7 +5512,7 @@ fn ink(shot: &Ppm, x0: u32, x1: u32) -> usize {
     (4..18).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| shot.at(x, y).is_some_and(|p| p != background)).count()
 }
 
-/// Mango and Sway spec § 6: on the isolated headless sway, read as the compositor ($SWAYSOCK of
+/// On the isolated headless sway, read as the compositor ($SWAYSOCK of
 /// THIS sway), the bar shows the focused window's title, a click on workspace 1 runs `wm-set
 /// workspace 1 HEADLESS-1` (a fake wm-set), and the title goes with the window.
 #[test]
@@ -5538,7 +5538,7 @@ fn under_sway_the_bar_shows_the_workspaces_and_the_title() {
     assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }
 
-/// Spec § 6: under Sway the launcher lists the window; Enter on it runs `wm-set focus-window
+/// Under Sway the launcher lists the window; Enter on it runs `wm-set focus-window
 /// id:<its con_id>` (a fake wm-set).
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -5641,7 +5641,7 @@ fn back_to_back_steps_end_on_the_last_selection_drawn() {
     assert!(below_bar() == paced, "after a burst of three steps the box shows the selection two paced steps showed");
 }
 
-/// Spec § 6: under Mango (a fake socket serving the real captures, outputs renamed after headless
+/// Under Mango (a fake socket serving the real captures, outputs renamed after headless
 /// sway's), the two watch lines, the active output's title, a click on tag 1 runs `wm-set
 /// workspace 1 HEADLESS-1`.
 #[test]
@@ -5713,7 +5713,7 @@ fn power_open(sway: &Sway, d: &Daemon, n: usize) {
     power_drawn(sway, d);
 }
 
-/// Power spec § 2, § 5: a click on ⏻ opens the menu (logout is empty by default); ↓ selects Lock
+/// A click on ⏻ opens the menu (logout is empty by default); ↓ selects Lock
 /// and Enter runs it through the fake loginctl; the menu closes.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5727,7 +5727,7 @@ fn power_a_click_opens_the_menu_and_down_enter_locks() {
     assert!(recorded(&sway, "systemctl").is_empty(), "nothing else ran");
 }
 
-/// Power spec § 2: hovering selects and a left press activates: a click on the first row locks.
+/// Hovering selects and a left press activates: a click on the first row locks.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
 fn power_a_click_on_a_row_runs_it() {
@@ -5739,7 +5739,7 @@ fn power_a_click_on_a_row_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Power spec § 2, § 5: ↑ selects Power off (the last entry); Enter asks; a second Enter 0.8 s later
+/// ↑ selects Power off (the last entry); Enter asks; a second Enter 0.8 s later
 /// runs it (a margin of 0.4 s to the 0.4 s rule, which a loaded machine eats) through the fake systemctl.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5752,7 +5752,7 @@ fn power_off_asks_then_a_second_enter_after_half_a_second_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Power spec § 2, § 5 (docs/decisions.md, "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s"): two Enters 0.1 s apart never confirm. Nothing runs, the menu
+/// Two Enters 0.1 s apart never confirm (see "Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s" in `docs/decisions.md`). Nothing runs, the menu
 /// stays open with its question; a third Enter, past 0.4 s and inside 3 s, runs it.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5767,7 +5767,7 @@ fn power_two_enters_a_tenth_of_a_second_apart_run_nothing() {
     assert!(wait_for_call(&sway, "systemctl", "systemctl poweroff"), "{:?} {:?}", recorded(&sway, "systemctl"), d.log());
 }
 
-/// Power spec § 2, § 5: Escape closes the menu while the question is pending; nothing runs and
+/// Escape closes the menu while the question is pending; nothing runs and
 /// nothing wakes (the question's 3 s timer went with the menu); a second click on ⏻ closes it too.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5819,7 +5819,7 @@ fn power_verb_drawn(sway: &Sway, d: &Daemon) {
     assert!(sway.wait_for_screen("HEADLESS-1", filled), "the power menu drawn: {:?}", d.log());
 }
 
-/// Tools spec § 5: `--power` opens the menu under the bar's right end with the keyboard and no grab;
+/// `--power` opens the menu under the bar's right end with the keyboard and no grab;
 /// ↓ then Enter runs Lock through the fake loginctl; the verb again, past the debounce, closes it as
 /// "popup closed (verb)"; with all four `[quick]` commands empty it is refused (exit 2's text).
 #[test]
@@ -5871,7 +5871,7 @@ fn power_verb_opens_and_closes_the_menu() {
     assert_eq!(d.count("power menu shown"), 0, "{:?}", d.log());
 }
 
-// ---- The resources popup (resources popup plan). The daemon reads the host's real /proc and
+// ---- The resources popup . The daemon reads the host's real /proc and
 // /sys, so only the memory graph is looked for: it has a point on any machine. ----
 
 /// The resources module's bar (catppuccin dark): the module alone, a reading every second, a fake
@@ -5905,7 +5905,7 @@ fn resources_open(sway: &Sway, d: &Daemon, n: usize) {
     resources_drawn(sway, d);
 }
 
-/// Resources popup spec §§ 1, 5: a left click opens the popup; after a few readings the memory
+/// A left click opens the popup; after a few readings the memory
 /// graph (its row, two cell rows under the Memory line) holds the yellow hue's body and line; a
 /// second click closes it.
 #[test]
@@ -5938,7 +5938,7 @@ fn resources_a_click_opens_the_popup_with_graphs() {
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
 }
 
-/// Resources popup spec § 6: ↓ selects `Monitor…`, Enter runs the command through the fake and
+/// ↓ selects `Monitor…`, Enter runs the command through the fake and
 /// closes the popup; the log names the monitor, never its command.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5969,7 +5969,7 @@ fn resources_a_left_press_on_the_monitor_row_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Resources popup spec § 1: Escape closes the popup; a right click on the module then runs the
+/// Escape closes the popup; a right click on the module then runs the
 /// monitor once and opens no popup.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -5988,13 +5988,13 @@ fn resources_escape_closes_and_right_click_runs_the_monitor() {
     assert_eq!(d.count("resources popup shown"), 1, "no popup for the right click: {:?}", d.log());
 }
 
-// ---- The privacy indicators (privacy plan). The fake pw-dump is `Fifo`, the batches
+// ---- The privacy indicators . The fake pw-dump is `Fifo`, the batches
 // synthetic (`capture_delta`); wpctl a fake recorder; the compositor the fake Hyprland. ----
 
 /// The bar's height in px (default font): the glyphs are looked for above it.
 const BAR_HEIGHT: u32 = 22;
 
-/// A daemon with the default modules (privacy among them, privacy spec § 1) on one output,
+/// A daemon with the default modules (privacy among them) on one output,
 /// catppuccin dark with `module_colors = "none"`: no other module paints a hue, so a pixel in
 /// orange, green or red on the bar is a privacy glyph (they keep their hue whatever
 /// `module_colors` says). The temperature sensor named matches none: never the machine's own, hot
@@ -6106,7 +6106,7 @@ fn firefox_records(sway: &Sway, d: &Daemon) -> u32 {
 
 /// Waits until the privacy popup is on screen: its heading's glyph (orange, below the bar), then,
 /// one 22 px row down, a name 7 cells wide starting 4 cells to the right of the heading's glyph
-/// (`    firefox`, privacy spec § 5), before the popup's right frame. "privacy popup shown" is logged before the
+/// (`    firefox`), before the popup's right frame. "privacy popup shown" is logged before the
 /// configure and the first buffer: a key or click in that gap is lost.
 fn wait_for_the_privacy_popup(sway: &Sway, d: &Daemon) {
     wait_for_the_privacy_popup_in(sway, d, privacy_orange(), 45..=70);
@@ -6142,7 +6142,7 @@ fn wait_for_the_privacy_popup_in(sway: &Sway, d: &Daemon, heading_hue: [u8; 3], 
     assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the popup with its holder drawn: {:?}", d.log());
 }
 
-/// Privacy spec § 2, § 4: a recording stream lights the microphone in orange; its removal hides
+/// A recording stream lights the microphone in orange; its removal hides
 /// it after the 0.5 s off-delay, through the timer (never a later message).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -6156,7 +6156,7 @@ fn privacy_a_recording_stream_shows_the_microphone_then_it_goes() {
     assert!(gone.is_some_and(|t| t <= Duration::from_secs(2)), "gone after the off-delay: {gone:?} {:?}", d.log());
 }
 
-/// Privacy spec § 2: a meter (`stream.monitor`) linked and running never lights it.
+/// A meter (`stream.monitor`) linked and running never lights it.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn privacy_a_meter_never_lights_it() {
@@ -6172,7 +6172,7 @@ fn privacy_a_meter_never_lights_it() {
     firefox_records(&sway, &d);
 }
 
-/// Privacy spec § 5, § 6: a left click opens the popup listing the app; Escape closes it; a middle
+/// A left click opens the popup listing the app; Escape closes it; a middle
 /// click toggles the default source's mute through wpctl.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
@@ -6190,7 +6190,7 @@ fn privacy_left_click_lists_the_app_and_middle_click_mutes() {
     assert_eq!(d.count("privacy popup shown"), 1, "the middle click opens nothing: {:?}", d.log());
 }
 
-/// Privacy spec § 4, § 5: the open popup stays through the off-delay, a capture
+/// The open popup stays through the off-delay, a capture
 /// back within it keeps it open, and once the capture ends for good it closes with
 /// "nothing captured" no sooner than the delay; then nothing wakes (the timer went with it).
 #[test]
@@ -6216,7 +6216,7 @@ fn privacy_the_popup_closes_when_the_capture_ends() {
     assert_eq!(rest, 0, "the popup closed, nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
 }
 
-/// Privacy spec § 3: Hyprland's screencast events light the screen glyph in red; the release
+/// Hyprland's screencast events light the screen glyph in red; the release
 /// counts after its 1 s hold, then the 0.5 s off-delay.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -6240,7 +6240,7 @@ fn sharing_daemon(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
     (sway, hypr, d)
 }
 
-/// Small features 1, decision 7: a screencast turns do-not-disturb on, its end turns it off.
+/// A screencast turns do-not-disturb on, its end turns it off.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn dnd_while_sharing_follows_a_hyprland_screencast() {
@@ -6254,7 +6254,7 @@ fn dnd_while_sharing_follows_a_hyprland_screencast() {
     assert!(!file.exists(), "the file is gone");
 }
 
-/// Small features 1, decision 7: a timed do-not-disturb that ends while a screen is shared
+/// A timed do-not-disturb that ends while a screen is shared
 /// hands over to sharing, so it stays on, and the cast's end turns it off.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -6280,7 +6280,8 @@ fn a_timed_dnd_ending_during_a_share_hands_over_to_sharing() {
     assert!(!file.exists(), "the cast's end turned it off: {:?}", d.log());
 }
 
-/// Decision 7: the user's word wins over the capture, either way.
+/// The user's word wins over the capture, either way (see "The user's choice wins over a capture" in
+/// `docs/decisions.md`).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn the_users_choice_wins_over_sharing() {
@@ -6337,7 +6338,7 @@ fn without_the_option_a_screencast_leaves_dnd_alone() {
     assert!(!sway.runtime.join("state/alpheus/dnd").exists());
 }
 
-/// Privacy spec § 8: once a capture ended and its glyph went, the loop sleeps (no timer left).
+/// Once a capture ended and its glyph went, the loop sleeps (no timer left).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn privacy_at_rest_no_wakeups_after_a_capture() {
@@ -6349,7 +6350,7 @@ fn privacy_at_rest_no_wakeups_after_a_capture() {
     assert_eq!(rest, 0, "nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
 }
 
-// ---- The camera opened outside PipeWire (privacy delivery 2). Fake `/dev` and `/proc` trees in a
+// ---- The camera opened outside PipeWire . Fake `/dev` and `/proc` trees in a
 // temporary directory, handed to the daemon through `[privacy] dev_dir` and `proc_dir`. ----
 
 /// A fake `dev/video0` (a plain file) and a fake `proc`, both below one guard.
@@ -6398,7 +6399,7 @@ fn privacy_camera_daemon(name: &str, cam: &FakeCam, held: bool) -> (Sway, FakeHy
     out
 }
 
-/// Privacy delivery 2 spec § 1-2: a holder plus one open and close lights the camera in green
+/// A holder plus one open and close lights the camera in green
 /// within a second; once it is gone and a trigger follows, the glyph goes within 1.5 s (the 300 ms
 /// debounce, the 0.5 s off-delay).
 #[test]
@@ -6457,7 +6458,7 @@ fn privacy_a_default_test_daemon_watches_no_real_device() {
     drop(sway);
 }
 
-/// Privacy delivery 2 spec § 5: the popup names a direct holder under the camera heading.
+/// The popup names a direct holder under the camera heading.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
 fn privacy_the_popup_names_a_direct_camera() {
@@ -6484,7 +6485,7 @@ fn displays_daemon_with(sway: &Sway, bar_toml: Option<&str>) -> Daemon {
     d
 }
 
-/// Displays protocol spec: the heads come from `zwlr_output_manager_v1`, answered from memory.
+/// The heads come from `zwlr_output_manager_v1`, answered from memory.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn outputs_are_read_from_the_protocol() {
@@ -6505,7 +6506,7 @@ fn try_scale(s: &Snapshot, name: &str, scale: u32) -> Request {
     Request::OutputsTry(wire::encode_desired(&[Step { output: name.into(), active: Some(Active { scale: Scale(scale), ..active }) }]))
 }
 
-/// Displays protocol spec, the trial: a try answers done once the compositor applied it, the
+/// A try answers done once the compositor applied it, the
 /// next snapshot shows it with the trial open; keep ends it as kept, and the scale stays.
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -6526,7 +6527,7 @@ fn a_try_applies_and_keep_keeps() {
     assert!(d.log().iter().all(|l| !l.contains("displays: configuration refused") && !l.contains("displays: no answer")), "{:?}", d.log());
 }
 
-/// Displays protocol spec, the trial: with no keep, the daemon brings the state from before
+/// With no keep, the daemon brings the state from before
 /// back at the 15 s deadline, without the TUI.
 #[test]
 #[ignore = "headless sway, 16 s (nix develop)"]
@@ -6542,7 +6543,7 @@ fn a_try_reverts_at_the_deadline() {
     assert_eq!(output(&s, "HEADLESS-1").active, output(&before, "HEADLESS-1").active, "the state from before");
 }
 
-/// Displays protocol spec, the TUI's errors: a mode the screen does not have is refused,
+/// A mode the screen does not have is refused,
 /// `the compositor refused this configuration`, and nothing changes. The refusal comes from the
 /// controller (the screen has no such mode, so nothing is sent); a real compositor `failed` is
 /// covered by the controller's unit tests only: headless sway refuses nothing the controller
@@ -6561,7 +6562,7 @@ fn a_refused_configuration_answers_refused() {
     assert_eq!((s.trial, s.outputs), (TrialState::None, before.outputs), "no trial, nothing changed");
 }
 
-/// Displays protocol spec, hotplug: a plugged screen whose set matches a profile of
+/// A plugged screen whose set matches a profile of
 /// displays.toml gets its positions once the debounce ended, and only once.
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -6601,7 +6602,7 @@ fn hotplug_applies_the_matching_profile_once() {
             && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (1920, 0))
     };
     let s = snapshot_until(&sway, &d, placed);
-    // An apply logs nothing (the spec's fixed lines): a second evaluation would show as the
+    // An apply logs nothing (see "A screen's identity and a profile file's errors are never logged" in `docs/decisions.md`): a second evaluation would show as the
     // loop waking each debounce, with no request on the socket meanwhile. The snapshot request
     // and the apply's last events settle first: no wake-up for 300 ms.
     let quiet_since = |d: &Daemon| {
@@ -6625,7 +6626,7 @@ fn hotplug_applies_the_matching_profile_once() {
     assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
 }
 
-/// Hooks spec § 2, `displays`: the hook runs once the compositor accepted a profile applied on
+/// The `displays` hook runs once the compositor accepted a profile applied on
 /// hotplug, with the profile's name in its environment; the log says `hook: displays` and never the
 /// name.
 #[test]
@@ -6702,7 +6703,7 @@ fn past_the_quiet_window() {
 
 const HOOKS_DND_BAR: &str = "modules = [\"notifications\", \"clock\"]\n[hooks]\nstarted = [\"hook-rec\", \"up\"]\ndnd = [\"hook-rec\"]\n";
 
-/// Hooks spec §§ 2 to 4: `started` runs with its variable and its arguments; a do-not-disturb loaded
+/// `started` runs with its variable and its arguments; a do-not-disturb loaded
 /// `on` fires nothing (inside the quiet window); a later change fires once with `ALPHEUS_DND`, and
 /// the same verb again, which changes nothing, fires nothing. The log names the event only.
 #[test]
@@ -6737,7 +6738,7 @@ fn hooks_started_and_dnd_run_with_their_environment() {
     assert_eq!(d.count("hook: dnd"), 1, "{:?}", d.log());
 }
 
-/// Hooks spec § 2, `theme_mode`: a `theme.toml` change of the mode fires once the quiet window has
+/// The `theme_mode` hook: a `theme.toml` change of the mode fires once the quiet window has
 /// passed, with `ALPHEUS_MODE`; the first value is only a seed.
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -6757,7 +6758,7 @@ fn hooks_theme_mode_follows_a_theme_toml_change() {
     assert!(d.wait_for("hook: theme_mode", DELAY), "{:?}", d.log());
 }
 
-/// Hooks spec § 4: a flapping event runs five times, then is throttled with one log line per
+/// A flapping event runs five times, then is throttled with one log line per
 /// episode, and runs again once a token has come back.
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -6786,7 +6787,7 @@ fn hooks_a_flapping_event_is_throttled() {
     assert_eq!(hook_calls(&sway, &d, 6).len(), 6, "a token came back: {:?}", d.log());
 }
 
-/// Hooks spec § 5: a program that does not exist is said by kind only, never by its name or arguments.
+/// A program that does not exist is said by kind only, never by its name or arguments.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn hooks_a_missing_program_is_logged_by_kind_only() {
@@ -6798,7 +6799,7 @@ fn hooks_a_missing_program_is_logged_by_kind_only() {
     assert!(log.iter().all(|l| !l.contains("hook-x") && !l.contains("secret-arg")), "{log:?}");
 }
 
-/// Hooks spec § 1: without `[hooks]` nothing hook-related runs, and nothing is said.
+/// Without `[hooks]` nothing hook-related runs, and nothing is said.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn hooks_an_empty_table_runs_nothing() {
@@ -6812,7 +6813,7 @@ fn hooks_an_empty_table_runs_nothing() {
     assert!(recorded(&sway, "hook-rec").is_empty());
 }
 
-/// Hooks spec § 2: a hook whose source the configured `modules` never read is said once at start.
+/// A hook whose source the configured `modules` never read is said once at start.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn hooks_say_what_never_fires() {
@@ -6861,7 +6862,7 @@ fn timer_drawn(sway: &Sway, d: &Daemon) {
     assert!(sway.wait_for_screen("HEADLESS-1", filled), "the timer popup drawn: {:?}", d.log());
 }
 
-/// Timer spec § 3: a click on the chip opens the popup (idle: its Timer row selected); Enter starts
+/// A click on the chip opens the popup (idle: its Timer row selected); Enter starts
 /// the countdown of the row's length (10 min), the popup stays open; Escape closes it; the state
 /// file says it runs.
 #[test]
@@ -6879,7 +6880,7 @@ fn timer_a_click_opens_the_popup_and_enter_starts_a_countdown() {
     assert!(file.starts_with("countdown running "), "{file:?}");
 }
 
-/// Plan decision 4, F6: with the popup open and a countdown running the loop wakes each second;
+/// With the popup open and a countdown running the loop wakes each second;
 /// once the popup is closed (a second click on the chip: Escape's key-up and repeat make one
 /// unrelated wake-up of their own) it does not wake at all, the countdown's next chip change being
 /// a minute away; the window starts right after the close's own round trip (a barrier verb), so a
@@ -6918,7 +6919,7 @@ fn timer_the_popups_second_tick_stops_at_close() {
 
 const TIMER_END_MODULES: &str = "[\"timer\", \"notifications\", \"clock\"]";
 
-/// Timer spec § 5, § 7: `--timer start 2s` ends with the notification (a bubble) and the sound
+/// `--timer start 2s` ends with the notification (a bubble) and the sound
 /// (the stub touches `<runtime>/rang`), and the state file is gone once it ended.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -6935,7 +6936,7 @@ fn timer_a_short_countdown_ends_with_a_bubble_and_the_sound() {
     assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
 }
 
-/// Plan decision 8: under do-not-disturb the end goes to the history only (no bubble) and makes no sound.
+/// Under do-not-disturb the end goes to the history only (no bubble) and makes no sound.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn timer_under_dnd_ends_without_bubble_or_sound() {
@@ -6963,7 +6964,7 @@ fn timer_under_dnd_ends_without_bubble_or_sound() {
     );
 }
 
-/// Timer spec § 6: a running countdown is on file, and a daemon started on it restores it.
+/// A running countdown is on file, and a daemon started on it restores it.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn timer_survives_a_daemon_restart() {
@@ -7003,7 +7004,7 @@ fn timer_verbs_need_the_module() {
     assert!(d.wait_for("timer: nothing to skip", DELAY), "{:?}", d.log());
 }
 
-/// Plan decision 17: `--timer popup` opens the popup under the chip (not the bar's right end: the
+/// `--timer popup` opens the popup under the chip (not the bar's right end: the
 /// drawn background fills the area under the chip's cell), a second within 250 ms is the press
 /// bind's refire and is ignored, a later one closes it.
 #[test]
@@ -7079,7 +7080,7 @@ fn every_test_compositor_has_its_own_name() {
     assert!(shared.is_empty(), "compositor names used by two tests: {shared:?}");
 }
 
-/// Small features 1, task 9: a laptop at 8 % at start, discharging, alerts once, for the lowest
+/// A laptop at 8 % at start, discharging, alerts once, for the lowest
 /// threshold crossed (10 %), once the server holds the name (whichever of the reading and
 /// the name comes first: an alert is never lost to the start-up order).
 #[test]
@@ -7106,7 +7107,7 @@ fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
     assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
 }
 
-/// Small features 2, task 5: the panel's do-not-disturb detail, Enter on its default choice, sets a
+/// The panel's do-not-disturb detail, Enter on its default choice, sets a
 /// 30-minute do-not-disturb through the one path (the log lines and the state file say so).
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -7128,7 +7129,7 @@ fn quick_the_dnd_detail_sets_a_timed_do_not_disturb() {
     assert!(text.starts_with("until "), "{text:?}");
 }
 
-// Quick notes, task 5: `alpheus-launch --notes` end to end, on the Sway backend.
+// `alpheus-launch --notes` end to end, on the Sway backend.
 
 const NOTES_SHOWN: &str = "notes shown on";
 
@@ -7156,7 +7157,7 @@ fn wait_for_text(path: &Path, want: &str) {
     }
 }
 
-/// Spec § 1, § 3, § 5: typed text (a newline included) is on disk after the close, private (file
+/// Typed text (a newline included) is on disk after the close, private (file
 /// 0600, directory 0700), the log never holds it, and a reopen puts the caret at the end.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -7180,7 +7181,7 @@ fn notes_type_close_and_find_the_file() {
     assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("qx")), "{:?}", d.log());
 }
 
-/// Spec § 3: the pad saves itself once the typing pauses, with the pad still open.
+/// The pad saves itself once the typing pauses, with the pad still open.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn notes_autosaves_while_open() {
@@ -7204,7 +7205,7 @@ fn notes_autosaves_while_open() {
     assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
 }
 
-/// Spec § 1: two verbs 50 ms apart open once; a click outside the box closes it and the text is kept.
+/// Two verbs 50 ms apart open once; a click outside the box closes it and the text is kept.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn notes_toggle_is_debounced_and_a_click_outside_closes() {
@@ -7225,7 +7226,7 @@ fn notes_toggle_is_debounced_and_a_click_outside_closes() {
     drop(keys);
 }
 
-/// Spec § 1: opening one box closes the other, in both directions.
+/// Opening one box closes the other, in both directions.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn notes_replaces_the_launcher_and_back() {
@@ -7242,7 +7243,7 @@ fn notes_replaces_the_launcher_and_back() {
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
 }
 
-/// Spec § 3: a file the pad refuses (too large) opens read only, and is never rewritten.
+/// A file the pad refuses (too large) opens read only, and is never rewritten.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn a_refused_notes_file_opens_read_only() {
@@ -7404,7 +7405,7 @@ fn notes_sigterm_saves_an_edit_younger_than_the_autosave() {
     assert!(d.log().iter().all(|l| !l.contains("qz")), "the text reached the log: {:?}", d.log());
 }
 
-/// Quick notes, task 6: Ctrl+V pastes the seat's selection (a fictional text served by `wl-copy` on
+/// Ctrl+V pastes the seat's selection (a fictional text served by `wl-copy` on
 /// THIS sway only, through the harness helper) and the log never holds it.
 #[test]
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
@@ -7420,7 +7421,7 @@ fn notes_paste_from_the_selection() {
     assert!(d.log().iter().all(|l| !l.contains("pasted") && !l.contains("zq")), "the clipboard reached the log: {:?}", d.log());
 }
 
-/// Quick notes, task 6: a selection with no text type (an image) pastes nothing: the pad stays
+/// A selection with no text type (an image) pastes nothing: the pad stays
 /// unedited, so no file is written.
 #[test]
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
@@ -7475,7 +7476,7 @@ fn no_vpn_name_logged(d: &Daemon) -> bool {
     !d.log().iter().any(|l| ["VPN-Test-01", "WG-Test"].iter().any(|s| l.contains(s)))
 }
 
-/// Quick VPN spec § 1, § 3: `--quick vpn` opens the panel on the VPN detail; Enter on the first
+/// `--quick vpn` opens the panel on the VPN detail; Enter on the first
 /// profile records `connection up uuid …`; once NetworkManager says activated, Enter records
 /// `connection down uuid …`; no profile name reaches the log.
 #[test]
@@ -7501,7 +7502,7 @@ fn quick_vpn_the_verb_opens_the_detail_and_enter_brings_a_profile_up_then_down()
     assert!(no_vpn_name_logged(&d), "never a profile name in the log: {:?}", d.log());
 }
 
-/// Quick VPN spec § 3: an activation that fails (activating, then gone) is logged once, with a fixed
+/// An activation that fails (activating, then gone) is logged once, with a fixed
 /// reason, and the rest stays quiet: closed, nothing wakes.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
@@ -7525,7 +7526,7 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
 }
 
-// ---- The failed-units module (diagnostics plan 1, task 9). Two private buses: the system one and
+// ---- The failed-units module . Two private buses: the system one and
 // the session one each carry a `FakeSystemd`; the compositor is the headless sway. ----
 
 /// The bar with the failed count and the clock only: no hue but the error role's could be red.
@@ -7572,7 +7573,7 @@ fn error_red_on_the_bar(sway: &Sway) -> bool {
     sway.screenshot("HEADLESS-1").is_some_and(|s| on_the_bar(&s, privacy_red()).is_some())
 }
 
-/// Spec § 6: nothing drawn at 0; a count pushed by a subscribed manager draws `󰀦 N` in the error
+/// Nothing drawn at 0; a count pushed by a subscribed manager draws `󰀦 N` in the error
 /// role and it goes again at 0. Either manager's count counts. `[failed]` is left at its defaults:
 /// `subscribe` is on by default, so both managers are subscribed with no key written.
 #[test]
@@ -7684,7 +7685,7 @@ fn failed_refresh_without_the_module_is_done_and_reads_nothing() {
     assert_eq!((sys.calls("Get"), usr.calls("Get")), (0, 0), "nothing read: {:?}", d.log());
 }
 
-/// Spec § 6, the hook: `failed_units` fires on a change of the total (past the quiet window), with
+/// `failed_units` fires on a change of the total (past the quiet window), with
 /// both counts in its environment, and not twice for a total that did not change.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -7731,7 +7732,7 @@ fn the_failed_notice_at_start_is_one_with_the_total() {
     assert_eq!(d.count("failed: notice"), 1, "one notice for both managers: {:?}", d.log());
 }
 
-/// Spec § 6, the notice: with `[failed] notify` and the notifications module, a total that rises
+/// With `[failed] notify` and the notifications module, a total that rises
 /// above the last notified sends one notice; the same total, or a fall, none; zero re-arms it.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -7754,7 +7755,7 @@ fn the_failed_notice_goes_on_a_rise_and_is_rearmed_at_zero() {
     assert!(d.wait_for_count("failed: notice", 3, DELAY), "re-armed at zero: {:?}", d.log());
 }
 
-// ---- the clipboard history (clipboard spec, task 6) ----
+// ---- the clipboard history ----
 //
 // Fictional texts only, served by the harness `wl_copy` on THIS sway; `wl_paste` reads this sway's
 // selection back. Each copy waits for the selection, then 200 ms (no per-copy log line exists, by design), and the
@@ -8008,7 +8009,7 @@ fn clipboard_replaces_another_launcher_mode() {
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
 }
 
-// ---- Shield mode (shield spec) ----
+// ---- Shield mode ----
 
 /// What a Shield test starts the daemon with.
 struct ShieldSetup<'a> {
@@ -8443,7 +8444,7 @@ fn shield_at_rest_no_wakeups() {
     w.open_panel();
     keys(&w.sway, &["space"]);
     assert!(w.d.wait_for("shield: now on", DELAY), "{:?}", w.d.log());
-    // Past the key's repeat timer (SCTK's, once ~0.6 s after a press: older than this delivery).
+    // Past the key's repeat timer (SCTK's, once ~0.6 s after a press).
     thread::sleep(Duration::from_millis(1300));
     let (before, ticks) = (w.d.main_thread_wakeups(), w.d.main_thread_cpu_ticks());
     thread::sleep(Duration::from_secs(5));
@@ -8452,7 +8453,7 @@ fn shield_at_rest_no_wakeups() {
     keys(&w.sway, &["Return"]);
     assert!(wait_until(|| w.record().contains(&"list".to_string())), "{:?}", w.record());
     thread::sleep(Duration::from_millis(400));
-    // Closed by a click (a key's close leaves SCTK's repeat timer to fire once, older than this delivery).
+    // Closed by a click (a key's close leaves SCTK's repeat timer to fire once).
     w.sway.click(640, 10, "button1");
     assert!(w.d.wait_for("popup closed (outside click)", DELAY), "{:?}", w.d.log());
     early_in_the_minute();
@@ -8463,7 +8464,7 @@ fn shield_at_rest_no_wakeups() {
     assert_no_spin(w.d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(5), "the loop thread");
 }
 
-/// Hooks spec, `shield`: a change inside the quiet window fires nothing; one past it runs the hook once
+/// The `shield` hook: a change inside the quiet window fires nothing; one past it runs the hook once
 /// with `ALPHEUS_SHIELD` (the flag's change, whoever made it); the log names the event only.
 #[test]
 #[ignore = "headless sway (nix develop)"]

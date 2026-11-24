@@ -129,7 +129,7 @@ fn the_session_on_an_empty_bus_hides_everything() {
     assert_eq!(s.power, Some(ProfileState::default()), "no power-profiles-daemon: the row hidden");
 }
 
-/// Quick spec § 7: the profile is read at start, follows a `PropertiesChanged`, and an owner going
+/// The profile is read at start, follows a `PropertiesChanged`, and an owner going
 /// away hides the row — over the wire, through the real connection and its match rules.
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
@@ -358,7 +358,7 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     assert_ne!(next_kind, io::ErrorKind::NotFound, "next_signal after a disconnect must be an outage, not an absence: {next_kind:?}");
 }
 
-/// Quick Wi-Fi spec § 5, § 7: closed, nothing of the Wi-Fi is read; the loop's word wakes the thread
+/// Closed, nothing of the Wi-Fi is read; the loop's word wakes the thread
 /// asleep on a quiet bus, which reads the row (past the wired device); the radio is followed; closed
 /// again, the state goes. Over the wire, through the real connection and its poll.
 #[test]
@@ -403,7 +403,7 @@ fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
     assert_eq!(next(), None, "closed: the state goes");
 }
 
-/// Quick Wi-Fi spec § 5, § 7: the detail reads every access point and the saved profiles; a
+/// The detail reads every access point and the saved profiles; a
 /// strength change and a new profile are followed; back to the row, its rules are gone: the next
 /// change reaches nothing, not even a call. No secret is ever asked.
 #[test]
@@ -483,7 +483,7 @@ fn detail_rules(b: &PrivateBus) -> usize {
     all.values().flatten().filter(|r| wanted.contains(&parts(r))).count()
 }
 
-/// Quick VPN spec § 5: closed, no VPN is read; the loop's word reads the two profiles and the
+/// Closed, no VPN is read; the loop's word reads the two profiles and the
 /// actives; an active connection's change is followed; closed again, the state goes and nothing more
 /// is asked of NetworkManager. Over the wire, through the real connection and its poll.
 #[test]
@@ -544,7 +544,7 @@ fn the_vpn_reading_on_a_private_bus() {
     assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
 }
 
-// The failed-units count over the wire (diagnostics spec § 6): a fake systemd that, like the real
+// The failed-units count over the wire : a fake systemd that, like the real
 // one, sends the Manager's `PropertiesChanged` only while a client has called `Subscribe`.
 
 /// A session over `domains` on the bus, publishing the count it sees; the tap that pokes it.
@@ -633,7 +633,7 @@ fn without_subscribe_a_change_is_seen_on_the_next_trigger() {
 }
 
 /// A systemd that answers `Get` with an error leaves the count unknown and the session alive: the
-/// other domains keep flowing (diagnostics spec § 6).
+/// other domains keep flowing.
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
 fn a_failing_systemd_leaves_the_other_domains_flowing() {

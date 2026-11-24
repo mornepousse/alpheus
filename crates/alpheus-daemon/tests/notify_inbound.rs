@@ -1,4 +1,4 @@
-//! The notification server never reads an image (notifications spec § 2): a Notify carrying an
+//! The notification server never reads an image: a Notify carrying an
 //! 8 MiB `image-data` decodes with no more allocation than one without it. Measured by this test
 //! binary's own counting allocator, per thread, so nothing else in the binary blurs the count.
 

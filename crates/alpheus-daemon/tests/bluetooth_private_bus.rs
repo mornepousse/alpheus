@@ -226,7 +226,7 @@ fn bluez_error_name_is_kept() {
     );
 }
 
-/// Spec § 6: BlueZ leaving with a call held makes the bus answer `NoReply`; asked
+/// BlueZ leaving with a call held makes the bus answer `NoReply`; asked
 /// again, `org.bluez` has no owner (or another one): the call ends `Gone`, never `failed`, and no
 /// later call goes to the old name nor to the new owner.
 #[test]
