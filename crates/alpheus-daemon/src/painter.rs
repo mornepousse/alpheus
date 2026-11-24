@@ -155,7 +155,7 @@ struct ShapedGlyph {
 /// width already made it, just with nothing painted into it.
 fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool) -> Vec<ShapedGlyph> {
     let mut s = [0u8; 4];
-    buffer.set_text(fs, ch.encode_utf8(&mut s), attrs(family, bold), Shaping::Advanced);
+    buffer.set_text(ch.encode_utf8(&mut s), &attrs(family, bold), Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
     let mut shaped = Vec::new();
     for run in buffer.layout_runs() {
@@ -575,11 +575,11 @@ impl Fonts {
         // every memoized shape stale.
         self.shapes.clear();
         let (t, h) = (self.size * e as f32, (self.height * e as u32) as f32);
-        self.buffer.set_metrics_and_size(&mut self.fs, Metrics::new(t, h), None, Some(h));
+        self.buffer.set_metrics_and_size(Metrics::new(t, h), None, Some(h));
         self.advance = match self.advances.iter().find(|(scale, _)| *scale == e) {
             Some((_, advance)) => *advance,
             None => {
-                self.buffer.set_text(&mut self.fs, "M", attrs(&self.family, false), Shaping::Advanced);
+                self.buffer.set_text("M", &attrs(&self.family, false), Shaping::Advanced, None);
                 self.buffer.shape_until_scroll(&mut self.fs, false);
                 let advance = self.buffer.layout_runs().flat_map(|r| r.glyphs.iter()).map(|g| g.w).next().unwrap_or(t * 0.6);
                 self.advances.push((e, advance));

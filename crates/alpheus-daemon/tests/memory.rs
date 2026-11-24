@@ -3053,13 +3053,17 @@ fn small_features_cost_nothing_at_start() {
         let (_sway, _hypr, d) = start(name, 3, &bus, Some(&session), Some(&toml), PwDump::Silent);
         wait_for_the_notification_server(&session);
         std::thread::sleep(TRAY_SETTLE);
-        kb.push(d.pss_kb());
+        kb.push((d.pss_kb(), d.anonymous_kb()));
     }
-    let (base, with) = (kb[0], kb[1]);
+    let ((pss_base, base), (pss_with, with)) = (kb[0], kb[1]);
     eprintln!(
-        "notification-rules PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
+        "notification-rules at start (KB): PSS {pss_base} notifications, battery and privacy alone, {pss_with} with 32 rules, 4 thresholds and dnd_while_sharing; anonymous {base} and {with}"
     );
-    assert!(with <= base + 128, "{with} KB vs {base} KB: more than 128 KB for configuration alone — report, never raise");
+    // Anonymous memory, not PSS: the bar's shm pool (a `memfd:smithay-client-toolkit` mapping) reads
+    // 112 KB or 220 KB at the same point, depending on whether a second frame buffer was drawn by
+    // the time of the reading, which moves PSS by about 108 KB on either daemon; `Anonymous:` holds
+    // the heap the configuration allocates and neither the pool nor the file pages.
+    assert!(with <= base + 128, "{with} KB vs {base} KB anonymous: more than 128 KB for configuration alone — report, never raise");
 }
 
 /// One `--calc` cycle: open, `6*7` typed, closed by a typed Escape; the n-th of each. The open

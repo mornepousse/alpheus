@@ -17,7 +17,7 @@ libc = "0.2"
 ratatui = "0.30"
 unicode-width = "0.2"
 unicode-normalization = "0.1"
-cosmic-text = "0.12"
+cosmic-text = "0.19"
 # "xkbcommon": keymaps for the launcher's keyboard (layout-aware keys,
 # Dvorak), repeat on calloop. Links the system libxkbcommon; the keyboard
 # object and its keymap exist only while the launcher is open.

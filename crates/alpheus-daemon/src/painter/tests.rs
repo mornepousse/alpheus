@@ -136,7 +136,7 @@ fn glyph_reshaped_every_time(p: &mut Fonts, ch: char, bold: bool, x0: f32, ink: 
         p.cache.outline_command_cache.clear();
     }
     let mut s = [0u8; 4];
-    p.buffer.set_text(&mut p.fs, ch.encode_utf8(&mut s), attrs(&p.family, bold), Shaping::Advanced);
+    p.buffer.set_text(ch.encode_utf8(&mut s), &attrs(&p.family, bold), Shaping::Advanced, None);
     p.buffer.shape_until_scroll(&mut p.fs, false);
     let Rgb(r, g, b) = ink;
     let base = Color::rgb(r, g, b);
