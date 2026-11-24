@@ -178,7 +178,7 @@ impl SessionLink {
         }
     }
 
-    /// The user manager's failed-units count: two rules and the owner asked for, sent at once.
+    /// The user manager's failed-units count: the two match rules and the question for the owner, sent at once.
     /// Once: a second call is a no-op.
     pub fn start_failed(&mut self, subscribe: bool) {
         if self.failed.is_none() {

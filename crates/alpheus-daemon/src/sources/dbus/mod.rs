@@ -204,7 +204,7 @@ pub struct SystemState {
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
     /// earlier open.
     pub wifi_open: u64,
-    /// The quick panel's Bluetooth, only while it is open (quick settings delivery 3); None
+    /// The quick panel's Bluetooth, only while it is open; None
     /// otherwise. The bar's `bluetooth` is separate and unchanged.
     pub bt: Option<BtView>,
     /// The open `bt` was read for (`BtTap::snapshot`), as `wifi_open`.

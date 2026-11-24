@@ -1,4 +1,4 @@
-//! The block styles' passes (themes delivery 2, spec § 3): `islands` and `translucent` (the bar
+//! The block styles' passes (themes spec § 3): `islands` and `translucent` (the bar
 //! transparent or `bar_bg` at `opacity`, each group a rounded `pill_bg` block with a 1 px border,
 //! inset 2 px from the bar's top and bottom), the `pills` fill and its text colour, and the
 //! premultiplied pixel helpers the powerline and floating passes share. Every pixel written here

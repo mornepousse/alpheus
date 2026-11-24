@@ -227,10 +227,9 @@ pub fn spawn_source<T: Send + 'static>(
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name(name.into())
-        // A source thread only reads and publishes a small, bounded state:
-        // the default 8 MB stack is overkill (startup budget, step 6's
-        // second lever; only touched pages count towards PSS, so the gain
-        // is modest, but real).
+        // A source thread only reads and publishes a small, bounded state: the default 8 MB stack
+        // is overkill, and the smaller one serves the startup budget (only touched pages count
+        // towards PSS, so the gain is modest, but real).
         .stack_size(256 * 1024)
         .spawn(move || {
             let _guard = SourceGuard { name, send: &send, value: PhantomData };

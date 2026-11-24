@@ -336,8 +336,7 @@ pub enum Edge {
 }
 
 /// What the bar and the panel read: a `Copy` view kept up to date by `ShieldApp`. It is `Copy`
-/// because the quick panel's `Live`, which derives `Copy`, holds it (shield plan 1, "Decisions
-/// written down", item 3).
+/// because the quick panel's `Live`, which derives `Copy`, holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShieldView {
     pub state: Option<bool>,

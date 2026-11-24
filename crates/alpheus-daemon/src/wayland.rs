@@ -553,7 +553,7 @@ pub struct App {
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
-    /// The camera devices' watch and scan state (privacy delivery 2, privacy/camera_app.rs).
+    /// The camera devices' watch and scan state (privacy/camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
     /// The tray menus' and tooltip's state (tray/menu_app.rs).
     pub(crate) menu: crate::tray::menu_app::TrayMenu,
@@ -835,7 +835,7 @@ impl App {
         self.redraw_all();
     }
 
-    /// Re-places every bar for the bar's current `style` (themes delivery 2, spec § 4). Called after
+    /// Re-places every bar for the bar's current `style` (themes spec § 4). Called after
     /// a theme reload. A bar whose `Placement` changes (a switch to or from floating) gets
     /// its new margin, size, exclusive zone and input region, and paints again only on the
     /// compositor's configure (its size always changes, so that configure always comes). A no-op for
@@ -984,7 +984,7 @@ impl App {
             self.set_dnd(!self.dnd);
             return;
         }
-        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec decision 16).
+        // The timer chip's middle button: pause or resume, or dismiss `done`.
         if timer {
             self.timer_middle_click();
             return;

@@ -1,6 +1,6 @@
 //! A camera opened outside PipeWire: who holds a `video*` device, and what a device event means.
 //!
-//! This file is the part of privacy delivery 2 that touches the file system. `scan` finds who holds
+//! This file is the part of the camera watch that touches the file system. `scan` finds who holds
 //! a `video*` node by reading the links of `<proc_dir>/<pid>/fd` (never by opening anything under
 //! `dev_dir`). `classify` turns one inotify record into what the glue should do with it. `CameraWatch`
 //! is the inotify instance on `dev_dir` and on each node in it. The other half, `camera_app.rs`,
@@ -45,7 +45,7 @@ pub const MAX_PIDS: usize = 4096;
 pub const MAX_FDS: usize = 4096;
 
 /// Holders that are not an app's own use: PipeWire and its session manager hold the node for the
-/// clients that delivery 1's graph already names. See docs/decisions.md, "PipeWire's own hold on a
+/// clients PipeWire's own graph already names. See docs/decisions.md, "PipeWire's own hold on a
 /// camera adds no name".
 const DROPPED: [&str; 2] = ["pipewire", "wireplumber"];
 

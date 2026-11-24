@@ -1,5 +1,5 @@
 //! NetworkManager: the kind of the primary connection, how many other VPNs
-//! are active, connectivity. No name is read: the bar shows icons only (Q1).
+//! are active, connectivity. No name is read: the bar shows icons only.
 //!
 //! Never:
 //! - read a connection's name, uuid or address: the module draws icons and a count, so nothing

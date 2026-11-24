@@ -766,7 +766,7 @@ impl Launcher {
             };
         }
         // A confirm entry or choice: the box goes to its level with its question asked, so the
-        // question, its expiry and its timer are the Tools mode's only (spec decision 20).
+        // question, its expiry and its timer are the Tools mode's only (tools menu spec, decision 20).
         match choice {
             Some(_) => {
                 t.goto_choices(&self.config.tools, entry);
@@ -1243,7 +1243,7 @@ fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig, clipboar
     prefix::split(query, config.search_enabled(), clipboard)
 }
 
-/// The history rows' text is overwritten before it is freed (clipboard spec decision 18).
+/// The history rows' text is overwritten before it is freed: a copied line never lingers in freed memory.
 fn wipe_clips(clips: &mut [ClipRow]) {
     for c in clips {
         wipe(&mut c.preview);

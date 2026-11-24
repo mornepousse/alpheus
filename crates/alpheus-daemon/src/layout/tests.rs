@@ -221,7 +221,7 @@ fn hostile_title() {
 }
 
 /// The window module's icon is purple under icons and full; the title only under full; a bar
-/// that has not heard from the theme yet (`Bar::new`) is delivery 1's look.
+/// that has not heard from the theme yet (`Bar::new`) takes no hue at all.
 #[test]
 fn the_window_title_takes_the_purple_by_module_colours() {
     let styles = |mc| {
@@ -241,7 +241,7 @@ fn the_window_title_takes_the_purple_by_module_colours() {
 }
 
 #[test]
-fn modules_not_yet_delivered_are_invisible() {
+fn a_module_that_draws_nothing_takes_no_separator() {
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Volume, ModuleId::Tray, ModuleId::Clock];
     let t = b.grid("HDMI-A-1", 60).text();

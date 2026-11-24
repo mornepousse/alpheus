@@ -30,7 +30,7 @@ fn load_reads_plain_text_as_is() {
     assert_eq!(load(&dir), Loaded::Text("buy milk\n    café".to_string()));
 }
 
-/// M3: a file `clean` would change (edited outside the pad: CRLF, a tab, a control) opens read only,
+/// A file `clean` would change (edited outside the pad: CRLF, a tab, a control) opens read only,
 /// shown cleaned, and is never silently rewritten.
 #[test]
 fn a_file_with_tabs_or_controls_opens_read_only_cleaned() {

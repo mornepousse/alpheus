@@ -417,7 +417,7 @@ fn exec_program_follows_exec_argv_s_quoting() {
     assert_eq!(exec_program("prog\\ it\\'s"), Some("prog it's".into()), "backslash escapes outside quotes too");
 }
 
-// --- Performance round (delivery 3): precomputed orders, select_nth_unstable_by, a
+// --- The performance pass: precomputed orders, select_nth_unstable_by, a
 // frecency map and a window → app index, plus two minor correctness fixes. ---
 
 #[test]

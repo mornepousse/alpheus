@@ -46,8 +46,7 @@ pub const MAX_NAMES: usize = 8;
 /// The model keeps no more nodes and links than this (privacy spec § 8).
 pub const MAX_NODES: usize = 1024;
 pub const MAX_LINKS: usize = 4096;
-/// The popup is at most this many cells wide, a longer name being cut (privacy plan 1, "Decisions
-/// written down", item 6).
+/// The popup is at most this many cells wide, a longer name being cut.
 pub const POPUP_WIDTH: u16 = 32;
 
 /// One indicator: the apps holding the device, and whether a holder has no name.
@@ -259,7 +258,7 @@ pub struct Privacy {
     /// PipeWire's last capture, the ignored names already removed.
     pw: Capture,
     mic_muted: bool,
-    /// The holders of the video devices, the ignored names already removed (privacy delivery 2).
+    /// The holders of the video devices, the ignored names already removed (the camera scan's).
     devices: Indicator,
     /// The compositor says a screen is being cast.
     casting: bool,

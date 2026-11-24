@@ -344,7 +344,7 @@ fn a_closed_menu_stops_the_running_states_read_after_its_entry() {
     assert!(s.finished(None).is_none(), "and never started again");
 }
 
-/// Review M3: the spawn the glue really makes is wrapped when the runtime dir has systemd's
+/// The spawn the glue really makes is wrapped when the runtime dir has systemd's
 /// private socket, bare when it has none.
 #[test]
 fn the_glues_spawn_follows_the_runtime_dirs_systemd() {
@@ -366,7 +366,7 @@ fn the_glues_spawn_follows_the_runtime_dirs_systemd() {
     assert_eq!(fake.calls(), ["shell-ctl reload-bar"]);
 }
 
-/// Review M4: a replayed verb that was refused is logged (by id); one that was done is not.
+/// A replayed verb that was refused is logged (by id); one that was done is not.
 #[test]
 fn a_refused_verb_reply_is_a_refusal() {
     use alpheus_common::launcher_ipc::Reply;

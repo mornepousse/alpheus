@@ -20,7 +20,7 @@ fn watch_fd_failing_says_which_step_broke_not_no_session_bus() {
     assert!(watch.contains("fd"), "names the step that failed: {watch:?}");
 }
 
-/// Privacy delivery 2: the camera watch (an inotify instance, a scan) exists only with `privacy`.
+/// The camera watch (an inotify instance, a scan) exists only with `privacy`.
 #[test]
 fn the_camera_watch_starts_only_with_privacy() {
     assert!(camera_wanted(&[ModuleId::Privacy]));

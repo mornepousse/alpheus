@@ -56,7 +56,7 @@ struct Level {
 
 const ROOT_LEVEL: Level = Level { parent: ROOT, selected: None, top: 0 };
 
-/// The open menu's view state: a stack of levels (drill-down, question 2), each with its selection.
+/// The open menu's view state: a stack of levels (drill-down), each with its selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
     levels: Vec<Level>,

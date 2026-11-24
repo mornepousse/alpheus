@@ -58,7 +58,7 @@ pub enum Msg {
         open: Option<u64>,
         state: Option<WifiState>,
     },
-    /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
+    /// The quick panel's Bluetooth (quick settings Bluetooth spec), only while it is open: the panel's
     /// (`quick/app.rs` takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
@@ -119,7 +119,7 @@ pub struct Bar {
     /// The privacy indicators (privacy spec §§ 3 and 4), fed by `privacy_at`; empty without the module.
     pub privacy: Privacy,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
-    /// at start and on every theme reload. `None` until then, the look of delivery 1.
+    /// at start and on every theme reload. `None` until then: no module takes its hue.
     pub module_colors: ModuleColors,
     /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
     /// by the wiring like `module_colors`; `Flat` until then.
@@ -455,7 +455,7 @@ mod tests {
         assert!(!b.apply(Msg::Wifi { open: None, state: None }));
     }
 
-    /// Quick settings delivery 3: the Bluetooth view is the open panel's, as the Wi-Fi state is.
+    /// Quick settings Bluetooth spec: the Bluetooth view is the open panel's, as the Wi-Fi state is.
     #[test]
     fn a_bt_view_is_never_kept_nor_drawn_by_the_bar() {
         let mut b = Bar::new(BarConfig::default());

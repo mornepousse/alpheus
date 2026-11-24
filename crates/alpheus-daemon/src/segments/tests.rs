@@ -11,7 +11,7 @@ use crate::session_bus::icons::{DISCORD, STEAM, TELEGRAM};
 use crate::state::{Bar, Msg};
 use crate::system::{Battery, BtDevice, Charge, NetRate, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
 
-// The segments under `module_colors = "none"` (delivery 1's look), shadowing the real ones: the
+// The segments under `module_colors = "none"` (no module takes its hue), shadowing the real ones: the
 // tests of the modules' own shapes stay as they were; the hue tests call `super::…` with a setting.
 fn volume(f: &Feed<SoundState>) -> Option<Segment> {
     super::volume(f, ModuleColors::None)
@@ -136,7 +136,7 @@ fn bluetooth_battery_tint_boundary_at_19_and_20() {
 
 #[test]
 fn hostile_names_truncated_without_controls() {
-    // The only name the bar shows: a Bluetooth device's (the network shows icons only, Q1).
+    // The only name the bar shows: a Bluetooth device's (the network shows icons only).
     let name = format!("a\tb\n\u{1b}[31m🦀 {}", "x".repeat(40));
     let b = bluetooth(&Feed::Ready(BtState::On { devices: vec![BtDevice { name, battery: None }] })).unwrap();
     let (t, _) = draw(&b);
@@ -422,7 +422,7 @@ fn battery_tint_boundary_at_19_and_20() {
 
 #[test]
 fn peripheral_tint_boundary_at_19_and_20() {
-    // Same threshold as the laptop battery (Q7), on each peripheral
+    // Same threshold as the laptop battery, on each peripheral
     // independently: the first (19 %) errs, the second (20 %) doesn't.
     let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
     let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(19), mouse(20)] });
@@ -591,7 +591,7 @@ fn discharging(percent: u8) -> Feed<PowerState> {
 }
 
 #[test]
-fn none_is_the_look_of_delivery_1_and_icons_tints_only_the_icons() {
+fn none_tints_nothing_and_icons_tints_only_the_icons() {
     let v = sound(84, false);
     assert_eq!(draw(&super::volume(&v, ModuleColors::None).unwrap()).1, ".....");
     assert_eq!(draw(&super::volume(&v, ICONS).unwrap()).1, "BB...", "blue icon (and its space), the number as before");

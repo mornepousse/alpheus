@@ -3,7 +3,7 @@
 //! - `.socket2.sock`: the event stream, read continuously;
 //! - `.socket.sock`: four read requests (`Request`), at startup and after a
 //!   structure event. The stream never gives back the initial state, hence
-//!   these reads (Q1 of the plan). The only function that writes to this
+//!   these reads. The only function that writes to this
 //!   socket takes a `Request`, whose four texts are fixed and checked by
 //!   tests/guardrails.rs: no action, no setting.
 //!

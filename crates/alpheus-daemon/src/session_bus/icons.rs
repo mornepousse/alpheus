@@ -37,7 +37,7 @@ pub const TABLE: &[(&str, char)] = &[
     ("bluetooth", BLUETOOTH),
     ("kdeconnect", KDE_CONNECT),
 ];
-/// An item nothing is known about: no Title, Id nor process (question 6).
+/// An item nothing is known about: no Title, Id nor process.
 pub const UNKNOWN_LETTER: char = '?';
 
 #[derive(Debug, Clone, PartialEq, Eq)]

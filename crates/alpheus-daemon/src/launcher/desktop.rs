@@ -4,7 +4,8 @@
 //! (`lang_COUNTRY@MODIFIER` lookup order), `Hidden`, `NoDisplay`,
 //! `OnlyShowIn`/`NotShowIn`, `TryExec`, and the `Exec` quoting rules and
 //! field codes. Hand-written (≈ 400 lines) rather than the
-//! `freedesktop-desktop-entry` crate: see the plan's dependency decisions.
+//! `freedesktop-desktop-entry` crate: one dependency fewer for the part of the format the launcher
+//! actually reads (CONTRIBUTING.md, "No heavy dependency for configuration or convenience").
 //!
 //! Lenient where real files are sloppy (unknown escapes kept, booleans
 //! "true"/"1", desktop names compared case-insensitively), strict where a

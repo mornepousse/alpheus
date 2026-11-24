@@ -229,7 +229,7 @@ pub(crate) fn network(feed: &Feed<NetState>, mc: ModuleColors) -> Option<Segment
         Feed::Waiting | Feed::Ready(NetState::Absent) => return None,
         Feed::Down => return Some(down(ModuleId::Network, NETWORK_DOWN)),
         Feed::Ready(NetState::Offline) => vec![piece(OFFLINE.to_string(), Style::MUTED)],
-        // Icons only (Q1): the primary link's, then the VPN count.
+        // Icons only, never a network's name: the primary link's, then the VPN count.
         Feed::Ready(NetState::Online { link, vpns, limited }) => {
             let icon = match link {
                 Link::Wifi => WIFI,
@@ -447,7 +447,7 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
                 pieces.push(piece(format!("{gap}{CPU} "), icon_style(mc, Hue::Orange, Style::NORMAL)));
                 pieces.push(piece(text, text_style(mc, Hue::Orange, Style::NORMAL)));
             }
-            // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
+            // Tenths of GiB, one decimal (the decimal part is always ".D").
             ResourceItem::Memory => {
                 if let Some(m) = s.memory {
                     figure(&mut pieces, gap, MEMORY, Hue::Yellow, format!("{}.{}G", m / 10, m % 10), mc);
@@ -543,7 +543,7 @@ fn tray_piece(i: &TrayIcon, passive: Passive) -> Option<Piece> {
 }
 
 /// None when nothing is drawn (no icon, or all passive and hidden). One
-/// piece per icon, separated by one blank cell (question 9), each its own
+/// piece per icon, separated by one blank cell, each its own
 /// zone (Target::TrayItem); no zone over the whole segment.
 pub(crate) fn tray(icons: &[TrayIcon], config: &TrayConfig) -> Option<Segment> {
     let mut pieces = Vec::new();

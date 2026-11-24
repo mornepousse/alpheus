@@ -22,9 +22,10 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-/// Do-not-disturb's file under the state directory (notifications spec § 5; small features 1,
-/// decision 6): any file means on to other readers (a session script reading the state); its
-/// text says whether it ends (`until <unix>`) or came from a screen share (`sharing`).
+/// Do-not-disturb's file under the state directory (notifications spec § 5): any file means on to
+/// other readers (a session script reading the state); its text says whether it ends
+/// (`until <unix>`) or came from a screen share (`sharing`). See docs/decisions.md, "The
+/// do-not-disturb file holds one of three forms".
 pub const DND_FILE: &str = "dnd";
 
 /// The focus timer's file: one line of the timer spec § 6, removed while the timer is idle.

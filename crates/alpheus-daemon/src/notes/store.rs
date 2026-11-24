@@ -36,7 +36,7 @@ pub fn load(state_dir: &Path) -> Loaded {
             Err(e) => Loaded::Refused(Refusal::NotUtf8, shown(e.as_bytes())),
             Ok(text) => {
                 let cleaned = clean(&text);
-                // Edited outside the pad: shown cleaned, never silently rewritten (M3).
+                // Edited outside the pad: shown cleaned, never silently rewritten.
                 if cleaned == text { Loaded::Text(text) } else { Loaded::Refused(Refusal::NotClean, capped(&cleaned)) }
             }
         },

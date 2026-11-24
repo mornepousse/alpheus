@@ -34,7 +34,7 @@ pub fn layout(output_columns: u16, output_rows: u16) -> NotesLayout {
     NotesLayout { columns, rows: text_rows + 6, text_top: 3, text_rows, text_columns: columns.saturating_sub(4) }
 }
 
-/// The wrap width: one cell is kept for the caret at a row's end (decision 8).
+/// The wrap width: one cell is kept for the caret at a row's end.
 pub fn wrap_width(b: &NotesLayout) -> u16 {
     b.text_columns.saturating_sub(1).max(1)
 }

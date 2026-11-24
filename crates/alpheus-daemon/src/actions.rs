@@ -163,7 +163,7 @@ pub fn toggles_dnd(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Notifications)
 }
 
-/// The timer chip's middle button (timer spec decision 16): handled inside the daemon, nothing is
+/// The timer chip's middle button: handled inside the daemon, nothing is
 /// run. The left button is the popup's, right and the wheel do nothing.
 pub fn timer_middle(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Timer)

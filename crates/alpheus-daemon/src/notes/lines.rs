@@ -1,4 +1,4 @@
-//! The pad's soft wrap (decision 8): visual rows over the text, and the maps between a byte offset
+//! The pad's soft wrap: visual rows over the text, and the maps between a byte offset
 //! and a (row, column) cell. Pure, and never panics: slices only through `str::get`.
 
 use crate::grid::char_width;

@@ -534,7 +534,7 @@ mod tests {
         let drm = TempPath::dir("drm-displaylink");
         add_drm_card(&drm, "card0", "i915", &["eDP-1", "DVI-I-10", "HDMI-A-1"]);
         add_drm_card(&drm, "card2", "evdi", &["DVI-I-1", "HDMI-A-11"]);
-        // The connector's own `device/driver` (the brief's shape).
+        // A DisplayLink connector can carry the driver link itself, under the connector.
         std::fs::create_dir_all(drm.join("card3-DP-5/device")).unwrap();
         symlink("../../../../bus/platform/drivers/evdi", drm.join("card3-DP-5/device/driver")).unwrap();
         assert!(is_displaylink(&drm, "DVI-I-1"), "a connector of the evdi card");

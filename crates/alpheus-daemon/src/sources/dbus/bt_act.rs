@@ -1,4 +1,4 @@
-//! Bluetooth's acting connection (quick settings delivery 3, spec § 5): the only place alpheus
+//! Bluetooth's acting connection (quick settings Bluetooth spec § 5): the only place alpheus
 //! changes anything on BlueZ. Its own private connection to the system bus: reads never block, the
 //! connect and the writes do, as the tray's session connection does; opened only while the panel's
 //! Bluetooth detail is open or a call is in flight. Every call is a typed `ActCall`, built in ONE

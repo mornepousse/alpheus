@@ -32,17 +32,14 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
 /// BlueZ: the properties the bar reads, by interface.
 const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
-// Deviation from the brief's Device1{Connected, Alias, Name} (reported):
-// `Name` stays out of the live allowlist. `bluez::read` does fall back to
-// it, but only once Alias is absent — rare for anything that ever got
-// paired — while BlueZ keeps correcting a scanned device's advertised Name
-// as it collects more of it, right alongside RSSI/UUIDs; keeping it in
-// would defeat the scan-storm test below (a batch carrying Name, even with
-// nothing else relevant, would re-read on every such correction).
-// Settled (re-review, follow-up): a device with no alias of its own has
-// BlueZ mirror its Name into Alias, so a rename of an unaliased device
-// already arrives as an Alias change too — Name carries nothing Alias
-// doesn't, for anything the bar actually shows.
+// `Name` stays out of this live allowlist, narrower than the `Device1{Connected, Alias, Name}` the
+// spec names. `bluez::read` does fall back to it, but only once Alias is absent — rare for anything
+// that ever got paired — while BlueZ keeps correcting a scanned device's advertised Name as it
+// collects more of it, right alongside RSSI/UUIDs; keeping it in would defeat the scan-storm test
+// below (a batch carrying Name, even with nothing else relevant, would re-read on every such
+// correction). Nothing is lost: a device with no alias of its own has BlueZ mirror its Name into
+// Alias, so a rename of an unaliased device already arrives as an Alias change too — Name carries
+// nothing Alias does not, for anything the bar actually shows.
 const BLUEZ_DEVICE_PROPS: [&str; 2] = ["Connected", "Alias"];
 const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
 /// power-profiles-daemon: what the quick panel shows.
@@ -126,7 +123,7 @@ impl Signal {
         }
     }
 
-    /// A Bluetooth panel signal (quick settings delivery 3), heard only while the panel is open:
+    /// A Bluetooth panel signal, heard only while the panel is open:
     /// what a device's or the adapter's properties changed to show, or a device appearing or going.
     /// None: not one (the bar's own signals, a scan's noise). `domain` does not change.
     pub fn bt_change(&self) -> Option<bt::BtChange> {

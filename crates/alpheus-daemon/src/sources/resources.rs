@@ -60,7 +60,7 @@ pub fn cpu_percent(a: CpuTimes, b: CpuTimes) -> Option<u8> {
 /// KiB in a GiB.
 const GIB_KB: u64 = 1024 * 1024;
 
-/// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like htop
+/// Memory in use, in tenths of GiB, rounded (shown as "10.5G"). Like htop
 /// (2026-10-06: RAM only, caches left out): MemTotal − MemFree −
 /// Buffers − (Cached + SReclaimable − Shmem). Shmem (tmpfs, shared buffers)
 /// sits inside Cached but cannot be reclaimed, so it stays counted as used;
@@ -576,8 +576,8 @@ mod tests {
 
     #[test]
     fn memory_falls_back_to_memfree_without_memavailable() {
-        // Pre-3.14 kernels have no MemAvailable at all; same fixture, that
-        // line (and the cache lines) dropped — matches the 217 already worked out in step 6.
+        // Pre-3.14 kernels have no MemAvailable at all; the same fixture with that line (and the
+        // cache lines) dropped, so the figure below is MemTotal − MemFree on it.
         let no_available: String = MEMINFO
             .lines()
             .filter(|l| !["MemAvailable:", "Buffers:", "Cached:", "SReclaimable:"].iter().any(|k| l.starts_with(k)))

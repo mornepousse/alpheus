@@ -121,9 +121,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The bar's modules (spec, § 2), left to right by default. All are
-/// accepted from the start: a bar.toml written today stays valid once
-/// deliveries 3 to 5 arrive. Those not yet delivered simply do not show.
+/// The bar's modules (spec § 2), left to right by default: `[bar] modules` both orders the bar and
+/// says which daemon features run at all, so the OSD, the quick panel and the screens are named
+/// here although they draw no segment. An unknown name is an error when the file is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModuleId {
@@ -196,7 +196,7 @@ pub struct FontConfig {
     /// loaded) shipped alongside alpheus specifically to cover the symbols
     /// a Nerd Font window manager or terminal likes to put in a title (✳,
     /// ◐◓◑◒…) that JetBrainsMono Nerd Font Mono itself does not have; each
-    /// added or removed family changes memory by its own faces (Q11),
+    /// added or removed family changes memory by its own faces,
     /// `[]` disables fallback entirely. A character that still has no
     /// glyph anywhere (checked family then every fallback) is masked
     /// rather than drawn as a `.notdef` box (`painter.rs`).
@@ -372,7 +372,7 @@ pub struct ResourcesConfig {
     /// Accepted (0 to 60) and ignored: the CPU sparkline is gone; kept so an existing `bar.toml` still loads.
     pub graph: u16,
     /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
-    /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).
+    /// zone `type` (x86_pkg_temp…); empty = automatic.
     pub sensor: String,
     /// The figures shown, in this order (never empty, no repeat).
     pub show: Vec<ResourceItem>,
@@ -407,7 +407,7 @@ pub enum BatteryVisibility {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatteryConfig {
-    /// Peripherals with a real percentage (spec Q7's default: always shown,
+    /// Peripherals with a real percentage (always shown,
     /// error tint below 20 %).
     pub peripherals: BatteryVisibility,
     /// Peripherals that only report a coarse level: "always" shows the bare
@@ -532,7 +532,7 @@ impl ShieldConfig {
     }
 }
 
-/// `[shield]` checked (decision 8 of the plan): the hard errors of the file.
+/// `[shield]` checked: the hard errors of the file.
 fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
     if !sh.flag.is_empty() {
         let p = Path::new(&sh.flag);

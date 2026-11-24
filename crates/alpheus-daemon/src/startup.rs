@@ -142,10 +142,11 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     (config, warnings)
 }
 
-/// `[shield]` once the config directory is known (shield plan, decisions 8 and 9): a partial table
-/// or a flag whose watch would share a descriptor with the theme's turns Shield mode off, with the
-/// warning to log. The flag's directory and its parent may equal neither the config directory nor
-/// its parent (compared as written: an alias the paths do not show is caught when the watch arms).
+/// `[shield]` once the config directory is known: a partial table, or a flag whose watch would
+/// share a descriptor with the theme's, turns Shield mode off, with the warning to log. The flag's
+/// directory and its parent may equal neither the config directory nor its parent (compared as
+/// written: an alias the paths do not show is caught when the watch arms). See docs/decisions.md,
+/// "The Shield flag may not share a directory with alpheus's configuration".
 pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &Path) -> Option<String> {
     if *s == crate::config::ShieldConfig::default() {
         return None;
@@ -751,7 +752,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     let want = &plan.want;
     // Hot reload of the theme: one inotify fd, no thread, no timer.
     crate::watch::start(state, handle);
-    // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
+    // The camera devices: an inotify fd and one scan, only with `privacy`.
     if plan.privacy {
         crate::privacy::camera_app::start(state, handle, &plan.camera_roots.0, &plan.camera_roots.1);
     }
@@ -813,7 +814,7 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
-        // The Bluetooth row and detail, the same way (quick settings delivery 3).
+        // The Bluetooth row and detail, the same way as the Wi-Fi tap above.
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
             match sources::dbus::bt::BtTap::new() {
                 Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),

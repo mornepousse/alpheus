@@ -1,6 +1,6 @@
 //! The camera devices' wiring on the bar: the watch on the event loop, the debounce and the scan.
 //!
-//! This is the glue half of privacy delivery 2; the file-system half is `camera.rs`. `start` puts
+//! This is the glue half of the camera watch; the file-system half is `camera.rs`. `start` puts
 //! one inotify fd on the event loop, level-triggered and drained to the end (EAGAIN), so it never
 //! wakes the loop at rest. An event is only a trigger: it moves the 300 ms debounce (`camera.timer`)
 //! back, at most 1 s after the first trigger of the burst, and when that timer fires one scan of
@@ -58,7 +58,7 @@ pub(crate) enum AfterScan {
     /// What is shown changed: the bar, the popup and the off-delay's timer follow.
     Changed,
     /// Nothing shown changed, but a pending off may have appeared, and that arms the off-delay's
-    /// timer (privacy delivery 1's): so only that timer is synced.
+    /// timer (the indicators' own, `privacy_timer`): so only that timer is synced.
     SyncOffDelay,
 }
 
@@ -72,7 +72,7 @@ fn euid() -> u32 {
 }
 
 /// Watches the video devices and scans once. Without a watch (inotify unavailable, or `dev_dir`
-/// cannot be watched) one line is logged and delivery 1 works alone.
+/// cannot be watched) one line is logged and the PipeWire indicators work alone.
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>, dev_dir: &Path, proc_dir: &Path) {
     let watch = match CameraWatch::start(dev_dir) {
         Ok(w) => w,
@@ -149,8 +149,8 @@ impl App {
 mod tests {
     use super::*;
 
-    /// A scan that changed nothing shown must still sync the off-delay (a pending off arms delivery
-    /// 1's timer); one that changed something redraws.
+    /// A scan that changed nothing shown must still sync the off-delay (a pending off arms the indicators'
+    /// off-delay timer); one that changed something redraws.
     #[test]
     fn an_unchanged_scan_still_syncs_the_off_delay() {
         assert_eq!(after_scan(true), AfterScan::Changed);

@@ -1,16 +1,16 @@
 //! The pad's text buffer: a `String` of at most `CAP` bytes, a caret and an optional anchor, both
-//! byte offsets on scalar boundaries and never inside a glued mark (decision 7: a zero-width scalar
+//! byte offsets on scalar boundaries and never inside a glued mark (a zero-width scalar
 //! belongs to the scalar before it). Pure, and never panics: slices only through `str::get`.
 
 use crate::grid::char_width;
 use std::ops::Range;
 
-/// Most bytes a pad holds (decision 10).
+/// Most bytes a pad holds.
 pub const CAP: usize = 65_536;
 /// What Tab inserts.
 pub const TAB: &str = "    ";
 
-/// `s` as the pad keeps it (decision 9): `\r\n` and `\r` become `\n`, a tab four spaces, every other
+/// `s` as the pad keeps it: `\r\n` and `\r` become `\n`, a tab four spaces, every other
 /// control is dropped.
 pub fn clean(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

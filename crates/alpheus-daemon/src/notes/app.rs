@@ -192,7 +192,7 @@ impl App {
         }
     }
 
-    /// Runs a pad entry point; a panic saves what was typed and closes the pad (decision 17), the
+    /// Runs a pad entry point; a panic saves what was typed and closes the pad, the
     /// bar goes on.
     pub(crate) fn notes_guarded<R>(&mut self, what: &str, f: impl FnOnce(&mut App) -> R) -> Option<R> {
         let r = guarded_with(what, || f(self), &mut |m| log(m));
