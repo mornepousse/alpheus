@@ -12,6 +12,27 @@ You need `alpheus-demon` for anything graphical, `alpheus-launch` to bind
 keys to it, and `alpheus` for the control center. Command lines are in
 [cli.md](cli.md), compositor specifics in [compositors.md](compositors.md).
 
+## Download a release
+
+Each release at <https://github.com/mornepousse/alpheus/releases> carries an
+x86_64 Linux tarball (built by CI on Ubuntu 24.04) and a `SHA256SUMS` file:
+
+```sh
+v=0.1.0
+base=https://github.com/mornepousse/alpheus/releases/download/v$v
+curl -fLO "$base/alpheus-$v-x86_64-linux.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS                      # must print: alpheus-0.1.0-x86_64-linux.tar.gz: OK
+tar -xzf "alpheus-$v-x86_64-linux.tar.gz"
+install -Dm755 -t ~/.local/bin "alpheus-$v-x86_64-linux"/alpheus{,-demon,-launch}
+```
+
+The tarball also holds `LICENSE`, `NOTICE`, `README.md` and an `INSTALL` note. The
+binaries link libdbus-1 and libxkbcommon dynamically and need a Nerd Font (see
+[Without Nix](#without-nix) and [Runtime requirements](#runtime-requirements)); they
+are built against Ubuntu 24.04's glibc, so on an older distribution build from
+source or use Nix.
+
 ## Build
 
 ### With Nix
@@ -25,6 +46,15 @@ nix build .#alpheus-launch   # the client
 nix develop                  # dev shell: cargo, rustfmt, clippy, sway for the tests
 ```
 
+Without cloning, the flake runs or builds a program straight from GitHub (each
+package names its main program):
+
+```sh
+nix build github:mornepousse/alpheus#alpheus-demon     # ./result/bin/alpheus-demon
+nix run github:mornepousse/alpheus#alpheus             # the control center
+nix run github:mornepousse/alpheus#alpheus-launch -- --help
+```
+
 The daemon package sets `ALPHEUS_POLICES` at build time to a folder holding
 JetBrainsMono Nerd Font Mono and DejaVu Sans Mono (the fallback for glyphs the
 first one lacks), so no font needs installing on Nix.
@@ -35,7 +65,7 @@ NixOS or home-manager module, you wire the packages yourself):
 ```nix
 {
   inputs.alpheus = {
-    url = "github:OWNER/alpheus";          # or "git+file:///path/to/alpheus"
+    url = "github:mornepousse/alpheus";    # or "git+file:///path/to/alpheus"
     inputs.nixpkgs.follows = "nixpkgs";    # the daemon then maps the same libdbus as the rest of your session
   };
 
@@ -46,8 +76,7 @@ NixOS or home-manager module, you wire the packages yourself):
 }
 ```
 
-Replace `OWNER` with wherever you fetch the repository from. Whatever is not
-committed in a `git+file://` checkout is not seen by the build.
+Whatever is not committed in a `git+file://` checkout is not seen by the build.
 
 ### Without Nix
 

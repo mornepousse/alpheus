@@ -118,6 +118,7 @@ displays.
   code. Settled choices go to [`docs/decisions.md`](docs/decisions.md) with the tests that pin
   them, and the feature page documents the result. The authority on what ships today is the
   code, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and that file.
+- A release follows [`docs/releasing.md`](docs/releasing.md).
 - Each module's `//!` header says what it is and what it never does; keep it
   true.
 
