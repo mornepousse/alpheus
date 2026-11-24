@@ -64,8 +64,7 @@ use smithay_client_toolkit::shm::{
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     data_device_manager::DataDeviceManagerState,
-    delegate_compositor, delegate_data_device, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
+    delegate_dispatch2, delegate_registry,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -1279,7 +1278,7 @@ impl SeatHandler for App {
         self.clipboard_seat(qh);
         if c == Capability::Pointer && self.pointer.is_none() {
             let surface = self.compositor.create_surface(qh);
-            match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
+            match self.seats.get_pointer_with_theme::<_, ()>(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
                 Ok(p) => self.pointer = Some(p),
                 Err(e) => log(&format!("pointer unavailable: {word}", word = crate::log::error_word(&e))),
             }
@@ -1477,17 +1476,8 @@ impl ProvidesRegistryState for App {
     registry_handlers![OutputState, SeatState];
 }
 
-delegate_compositor!(App);
-delegate_output!(App);
-delegate_shm!(App);
-delegate_layer!(App);
-delegate_seat!(App);
-delegate_pointer!(App);
-delegate_keyboard!(App);
-delegate_xdg_shell!(App);
-delegate_xdg_popup!(App);
+delegate_dispatch2!(App);
 // wp_viewporter and wp_viewport have no events.
-delegate_data_device!(App);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);

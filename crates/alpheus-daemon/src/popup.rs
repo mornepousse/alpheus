@@ -1126,7 +1126,7 @@ impl PopupHandler for App {
     }
 }
 
-/// `delegate_xdg_shell!` needs it; the daemon creates no xdg toplevel.
+/// `delegate_dispatch2!` needs it; the daemon creates no xdg toplevel.
 impl WindowHandler for App {
     fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {}
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window, _: WindowConfigure, _: u32) {}
