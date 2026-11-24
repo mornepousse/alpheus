@@ -4679,10 +4679,13 @@ fn the_capture_logs_fixed_words_only() {
     }
     let app = production_code_without_comments(&captures_file("captures/app.rs"));
     assert!(app.matches("log(").count() >= 10, "the log calls were found");
-    // The worker and the pure files never log at all: the glue says one word per ending.
-    for name in ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs"] {
+    // The worker, the protocol, the encoder and the pure files never log at all: the glue says one
+    // word per ending, and a frame or a buffer never reaches a log line.
+    for name in ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/screencopy.rs", "captures/encode.rs"] {
         let code = production_code_without_comments(&captures_file(name));
-        assert!(!code.contains("log("), "{name} logs");
+        for p in ["log(", "log::", "eprintln!", "println!", "eprint!", "dbg!("] {
+            assert!(!code.contains(p), "{p} in {name}");
+        }
     }
 }
 
