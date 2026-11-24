@@ -540,9 +540,7 @@ impl Launcher {
                 if self.query.pop().is_some() {
                     self.query_changed()
                 } else if self.by_prefix {
-                    self.by_prefix = false;
-                    self.mode = Mode::All;
-                    self.query_changed()
+                    self.switch_mode(Mode::All)
                 } else {
                     Outcome::Nothing
                 }
@@ -668,11 +666,26 @@ impl Launcher {
         true
     }
 
+    /// What leaving the Tools mode drops, by whichever way it is left.
+    fn forget_tools(&mut self) {
+        // The Tools list's prepared facts are not another mode's, whatever its row count.
+        self.ranker.forget();
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel_read();
+            // A prompt's query is an answer, not a filter: it stays in no other mode, and the
+            // Tools mode does not come back to the prompt.
+            if t.prompting() {
+                t.up();
+                self.query.clear();
+            }
+        }
+    }
+
     fn back_to_all(&mut self) -> Outcome {
+        self.forget_tools();
         self.mode = Mode::All;
         self.by_prefix = false;
         self.query.clear();
-        self.ranker.forget();
         self.refilter();
         Outcome::BackToAll
     }
@@ -689,15 +702,25 @@ impl Launcher {
     fn tools_drill(&mut self) -> Outcome {
         let drills = match (self.selected_tool(), &self.tools) {
             (Some(RowId::Category(_)), _) => true,
-            (Some(RowId::Entry(e)), Some(t)) => {
-                t.catalog.entries.get(e).is_some_and(|e| !matches!(e.choices, crate::launcher::tools::catalog::Choices::None))
-            }
+            (Some(RowId::Entry(e)), Some(t)) => t
+                .catalog
+                .entries
+                .get(e)
+                .is_some_and(|e| !matches!(e.choices, crate::launcher::tools::catalog::Choices::None) || e.ask.is_some()),
             _ => false,
         };
         if drills { self.tools_enter() } else { Outcome::Nothing }
     }
 
     fn tools_enter(&mut self) -> Outcome {
+        // The prompt's answer is the query, moved out whole: nothing of it stays in the box.
+        if self.tools.as_ref().is_some_and(ToolsState::prompting) {
+            let text = std::mem::take(&mut self.query);
+            return match self.tools.as_mut().and_then(|t| t.submit(text)) {
+                Some(Step::Run(action)) => Outcome::Activate(Activation::Tool(action)),
+                _ => Outcome::Nothing,
+            };
+        }
         match self.selected_tool() {
             Some(row) => self.tools_activate(row),
             None => Outcome::Nothing,
@@ -745,10 +768,15 @@ impl Launcher {
         let (entry, choice) = match row {
             RowId::Entry(e) => (e, None),
             RowId::Choice(e, k) => (e, Some(k)),
-            RowId::Category(_) => return Outcome::Nothing,
+            RowId::Category(_) | RowId::Prompt(_) => return Outcome::Nothing,
         };
         let Some(e) = t.catalog.entries.get(entry) else { return Outcome::Nothing };
-        let (confirm, with_choices) = (e.confirm, !matches!(e.choices, Choices::None));
+        // The fixed choice's own text, for the entries whose choices ask differently (the scan's sweep).
+        let chosen = match (&e.choices, choice) {
+            (Choices::Fixed(lines), Some(k)) => lines.get(k).map(String::as_str),
+            _ => None,
+        };
+        let (confirm, with_choices) = (e.confirm || e.ask_for(chosen).is_some(), !matches!(e.choices, Choices::None));
         if choice.is_none() && with_choices {
             let step = t.goto_choices(&self.config.tools, entry);
             self.enter_tools_mode();
@@ -795,11 +823,7 @@ impl Launcher {
             return Outcome::Nothing;
         }
         if self.mode == Mode::Tools {
-            // The Tools list's prepared facts are not another mode's, whatever its row count.
-            self.ranker.forget();
-            if let Some(t) = self.tools.as_mut() {
-                t.cancel_read();
-            }
+            self.forget_tools();
         }
         self.mode = m;
         self.by_prefix = false;
@@ -919,6 +943,11 @@ impl Launcher {
             let rows = t.rows();
             self.tool_level_hits = rows.iter().map(|r| t.hit_row(r)).collect();
             self.tool_level = rows;
+        }
+        // A prompt's one row is never filtered: what is typed is its answer.
+        if t.prompting() {
+            self.results = vec![Hit { source: Source::Tool(0), score: 0, frecency: 0 }];
+            return;
         }
         let tools = if flat { t.flat().1 } else { &self.tool_level_hits[..] };
         let q = Query {

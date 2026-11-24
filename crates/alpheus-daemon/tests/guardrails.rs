@@ -5419,12 +5419,23 @@ fn the_tools_glue_spawns_only_through_launch() {
 }
 
 /// Every built-in's argv is the configured command, `[actions] open_tab` with the tab, or the
-/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell.
+/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell. The diagnostics are
+/// the only ones that name a program of their own, each in the one form pinned below: the fixed USB
+/// events script and the default USB reset (the only two `sh -c`, both in the held terminal), the
+/// control center with `--preset`, and the ten nmap lines, each target behind `--`.
 #[test]
 fn every_builtin_argv_stays_on_the_allowlist() {
     use alpheus_daemon::config::QuickConfig;
     use alpheus_daemon::launcher::tools::app::{Commands, builtin_argv};
     use alpheus_daemon::launcher::tools::catalog::{BUILTINS, BuiltinAction};
+    use alpheus_daemon::launcher::tools::config::BuiltinCommands;
+    use alpheus_daemon::launcher::tools::diag::Subnet;
+    struct Net;
+    impl Subnet for Net {
+        fn default_v4(&self) -> Option<String> {
+            Some("192.168.1.0/24".to_string())
+        }
+    }
     use std::os::unix::fs::PermissionsExt;
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
@@ -5442,9 +5453,45 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let terminal = vec!["foot".to_string()];
     // `open_tab`'s program is missing: the terminal fallback is what runs.
     let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
-    let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
+    let hold = vec!["foot".to_string(), "--hold".to_string(), "-e".to_string()];
+    let usb_reset = BuiltinCommands::default().usb_reset;
+    let c = Commands {
+        quick: &quick,
+        reload: &reload,
+        open_tab: &open_tab,
+        terminal: &terminal,
+        terminal_hold: &hold,
+        usb_reset: &usb_reset,
+        subnet: &Net,
+        choice: None,
+        text: None,
+        path_dirs: &dirs,
+    };
+    let strings = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    // The nmap lines, one per scan label; the `choice` and `text` are the box's answers.
+    let held = |rest: &[&str]| strings(&["foot", "--hold", "-e"]).into_iter().chain(strings(rest)).collect::<Vec<String>>();
+    let scans: [(&str, Option<&str>, Vec<String>); 10] = [
+        ("Host discovery (ping sweep)", None, held(&["nmap", "-sn", "192.168.1.0/24"])),
+        ("Quick scan (common ports)", Some("t"), held(&["nmap", "-F", "--", "t"])),
+        ("Full scan (all ports)", Some("t"), held(&["nmap", "-p-", "--", "t"])),
+        ("Services and versions", Some("t"), held(&["nmap", "-sV", "--", "t"])),
+        ("Default scripts and versions", Some("t"), held(&["nmap", "-sC", "-sV", "--", "t"])),
+        ("Specific ports", Some("t 22,80"), held(&["nmap", "-p", "22,80", "--", "t"])),
+        ("UDP scan (top 20, sudo)", Some("t"), held(&["sudo", "nmap", "-sU", "--top-ports", "20", "--", "t"])),
+        ("Vulnerabilities (--script vuln)", Some("t"), held(&["nmap", "--script", "vuln", "--", "t"])),
+        ("OS detection (sudo)", Some("t"), held(&["sudo", "nmap", "-O", "--", "t"])),
+        ("Aggressive scan -A (sudo)", Some("t"), held(&["sudo", "nmap", "-A", "--", "t"])),
+    ];
+    let scan = BUILTINS.iter().find(|b| b.id == "diag.scan").expect("the scan built-in");
+    for (label, text, expected) in scans {
+        let c = Commands { choice: Some(label), text, ..c };
+        assert_eq!(builtin_argv(scan, &c), Ok(Some(expected)), "{label}");
+    }
     let mut spawned = 0;
     for b in &BUILTINS {
+        if b.action == BuiltinAction::Scan {
+            continue;
+        }
         let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
         let expected: Option<Vec<String>> = match b.action {
             BuiltinAction::Lock => Some(quick.lock.clone()),
@@ -5454,11 +5501,20 @@ fn every_builtin_argv_stays_on_the_allowlist() {
                 let slug = b.id.strip_prefix("tab.").expect("a tab id");
                 Some(["foot", "alpheus", "--tab", slug].map(String::from).to_vec())
             }
+            BuiltinAction::UsbEvents => Some(held(&[
+                "sh",
+                "-c",
+                "trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb",
+            ])),
+            BuiltinAction::UsbReset => Some(held(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"])),
+            BuiltinAction::Preset(p) => Some(strings(&["foot", "alpheus", "--tab", "diagnostics", "--preset", p.slug()])),
             _ => None,
         };
         assert_eq!(got, expected, "{}", b.id);
         if let Some(argv) = got {
-            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
+            // The two pinned scripts above are the only shell lines.
+            let shell = matches!(b.action, BuiltinAction::UsbEvents | BuiltinAction::UsbReset);
+            assert!(shell || !argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
             spawned += 1;
         }
     }

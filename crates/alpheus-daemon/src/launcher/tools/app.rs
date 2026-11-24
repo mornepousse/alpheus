@@ -41,6 +41,7 @@ use crate::launcher::run::{self, RunContext};
 use crate::launcher::scan::{ScanEnv, has_program};
 use crate::launcher::tools;
 use crate::launcher::tools::catalog::{BUILTINS, Builtin, BuiltinAction, Catalog, Context, Entry, EntryKind};
+use crate::launcher::tools::diag::{self, Scan, Subnet};
 use crate::launcher::tools::nav::{Counts, Job, StateJob};
 use crate::launcher::tools::read::{self, JobEvent};
 use crate::log::write as log;
@@ -55,12 +56,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-/// The three answers of `join.rs` (the clipboard, the shield, the diagnostics tab).
+/// The three answers of `join.rs` (the clipboard, the shield, the diagnostics tab), and whether
+/// `nmap` is on the `$PATH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Join {
     pub shield: bool,
     pub clipboard: bool,
     pub diagnostics: bool,
+    pub nmap: bool,
 }
 
 /// What decides which built-ins show, from the configs and what the app knows.
@@ -77,6 +80,8 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         shield: join.shield,
         clipboard: join.clipboard,
         diagnostics: join.diagnostics,
+        nmap: join.nmap,
+        usb_reset: !launcher.tools.builtin.usb_reset.is_empty(),
     }
 }
 
@@ -140,8 +145,48 @@ pub struct Commands<'a> {
     pub open_tab: &'a [String],
     /// launcher.toml's `terminal`.
     pub terminal: &'a [String],
+    /// launcher.toml's `terminal_hold`: where the diagnostics run, so `sudo` can ask there.
+    pub terminal_hold: &'a [String],
+    /// `[tools.builtin] usb_reset`.
+    pub usb_reset: &'a [String],
+    /// Where the host discovery's subnet is read.
+    pub subnet: &'a dyn Subnet,
+    /// The built-in's fixed choice, when it has one (the scan).
+    pub choice: Option<&'a str>,
+    /// What was typed for it. Never logged.
+    pub text: Option<&'a str>,
     /// The open's `$PATH`.
     pub path_dirs: &'a [PathBuf],
+}
+
+/// `rest` behind `terminal` (its first element's program must be on the `$PATH`); `name` is what
+/// the box says when the setting is empty.
+fn in_terminal(terminal: &[String], name: &str, rest: Vec<String>, path_dirs: &[PathBuf]) -> Result<Option<Vec<String>>, String> {
+    let Some(program) = terminal.first() else { return Err(run::failure(name, not_found())) };
+    if !has_program(path_dirs, program) {
+        return Err(run::failure(program, not_found()));
+    }
+    Ok(Some(terminal.iter().cloned().chain(rest).collect()))
+}
+
+/// The scan the choice names, with the box's answers: the argv in the held terminal. Err says, in
+/// the box, what is missing: nothing is started.
+fn scan_in_terminal(c: &Commands) -> Result<Option<Vec<String>>, String> {
+    let Some(scan) = c.choice.and_then(Scan::from_label) else { return Err("the list changed: try again".to_string()) };
+    let (target, ports) = match (scan, c.text) {
+        (Scan::Ports, Some(text)) => match diag::split_ports(text) {
+            Some((_, ports)) if !diag::valid_ports(ports) => return Err("ports: digits, commas, dashes".to_string()),
+            Some((target, ports)) => (Some(target), Some(ports)),
+            None => return Err("type the target, then the ports".to_string()),
+        },
+        (_, text) => (text, None),
+    };
+    let subnet = if scan == Scan::HostDiscovery { c.subnet.default_v4() } else { None };
+    match diag::scan_argv(scan, target, ports, subnet.as_deref()) {
+        Some(argv) => in_terminal(c.terminal_hold, "terminal_hold", argv, c.path_dirs),
+        None if scan == Scan::HostDiscovery => Err("no network".to_string()),
+        None => Err("no target".to_string()),
+    }
 }
 
 /// The command a built-in spawns (never a shell, always the configured argv or the `alpheus --tab`
@@ -166,6 +211,20 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
                     Err(run::failure(program, not_found()))
                 }
             };
+        }
+        BuiltinAction::Scan => return scan_in_terminal(c),
+        BuiltinAction::UsbEvents => return in_terminal(c.terminal_hold, "terminal_hold", diag::usb_events_argv(), c.path_dirs),
+        BuiltinAction::UsbReset => {
+            if c.usb_reset.is_empty() {
+                return Err("nothing to run".to_string());
+            }
+            return in_terminal(c.terminal_hold, "terminal_hold", c.usb_reset.to_vec(), c.path_dirs);
+        }
+        // `open_tab`'s script takes a tab and nothing else, so a preset always runs the TUI itself.
+        BuiltinAction::Preset(preset) => {
+            let Some(tab) = tools::join::DIAGNOSTICS_TAB else { return Err("nothing to run".to_string()) };
+            let rest = ["alpheus", "--tab", tab, "--preset", preset.slug()].map(String::from).to_vec();
+            return in_terminal(c.terminal, "terminal", rest, c.path_dirs);
         }
         BuiltinAction::Quick(_)
         | BuiltinAction::Dnd
@@ -309,6 +368,7 @@ impl App {
             shield: tools::join::shield_available(self),
             clipboard: tools::join::clipboard_available(self),
             diagnostics: tools::join::DIAGNOSTICS_TAB.is_some(),
+            nmap: has_program(&ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs, "nmap"),
         };
         context(&self.bar.config, launcher, self.timer.enabled, join)
     }
@@ -474,13 +534,18 @@ impl App {
 
     /// What a built-in that spawns will run, checked while the box is still open: Err stays in the
     /// box. None for a built-in that replays a verb, or when the box is gone.
-    pub(crate) fn tools_prepare(&self, i: usize) -> Result<Option<Vec<String>>, String> {
+    pub(crate) fn tools_prepare(&self, i: usize, choice: Option<&str>, text: Option<&str>) -> Result<Option<Vec<String>>, String> {
         let (Some(b), Some(open)) = (BUILTINS.get(i), self.launcher.as_ref()) else { return Ok(None) };
         let commands = Commands {
             quick: &self.bar.config.quick,
             reload: &open.model.config.tools.reload,
             open_tab: &self.bar.config.actions.open_tab,
             terminal: &open.model.config.terminal,
+            terminal_hold: &open.model.config.terminal_hold,
+            usb_reset: &open.model.config.tools.builtin.usb_reset,
+            subnet: &diag::ProcSubnet::new(),
+            choice,
+            text,
             path_dirs: &open.model.path_dirs,
         };
         builtin_argv(b, &commands)
@@ -495,7 +560,14 @@ impl App {
         let reply = match b.action {
             BuiltinAction::Quick(verb) => Some(self.quick_verb(&Request::Quick(verb))),
             BuiltinAction::Dnd => Some(self.notifications_verb(&Request::Dnd(DndVerb::Toggle))),
-            BuiltinAction::Toggle(_) | BuiltinAction::Lock | BuiltinAction::Reload | BuiltinAction::Tab => {
+            BuiltinAction::Toggle(_)
+            | BuiltinAction::Lock
+            | BuiltinAction::Reload
+            | BuiltinAction::Tab
+            | BuiltinAction::Scan
+            | BuiltinAction::UsbEvents
+            | BuiltinAction::UsbReset
+            | BuiltinAction::Preset(_) => {
                 if let Some(argv) = argv {
                     self.tools_spawn(id, argv);
                 }

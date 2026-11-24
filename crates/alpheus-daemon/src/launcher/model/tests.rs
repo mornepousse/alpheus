@@ -1497,3 +1497,46 @@ fn a_state_delivery_rebuilds_the_level() {
     l.adopt_state(1, Some(true));
     assert!(l.tool_level_builds > built);
 }
+
+/// The typed answer of a prompt is never carried into another mode, and the prompt is not where
+/// the Tools mode comes back to.
+#[test]
+fn a_mode_click_from_the_prompt_drops_the_typed_text() {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let text = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Scan\"\nrun = [\"x\", \"{text}\"]\nask = \"Target\"\n";
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    typed(&mut l, "/");
+    l.key(Key::Enter);
+    assert!(l.tools().is_some_and(|t| t.prompting()), "the prompt is open");
+    typed(&mut l, "secret");
+    l.click_mode(Mode::Commands);
+    assert_eq!(l.mode, Mode::Commands);
+    assert!(l.query.is_empty(), "the typed text did not follow into Commands");
+    l.click_mode(Mode::Tools);
+    assert!(l.tools().is_some_and(|t| !t.prompting()), "Tools does not come back to the prompt");
+    assert!(l.query.is_empty());
+}
+
+/// Leaving Tools by Backspace on an empty line (entered with `/`) resets a prompt like every other
+/// exit does: the next Tools entry is the list, not the old prompt.
+#[test]
+fn backspace_out_of_a_prompt_forgets_it() {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let text = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Scan\"\nrun = [\"x\", \"{text}\"]\nask = \"Target\"\n";
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    typed(&mut l, "/");
+    l.key(Key::Enter);
+    assert!(l.tools().is_some_and(|t| t.prompting()), "the prompt is open");
+    l.key(Key::Backspace); // up out of the prompt
+    l.key(Key::Backspace); // the root, entered by the prefix: back to All
+    assert_eq!(l.mode, Mode::All, "an empty line, entered by the prefix: back to All");
+    typed(&mut l, "/");
+    assert_eq!(l.mode, Mode::Tools);
+    assert!(l.tools().is_some_and(|t| !t.prompting()), "Tools does not come back to the prompt");
+}

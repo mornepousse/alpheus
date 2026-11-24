@@ -19,6 +19,8 @@ fn all() -> Context {
         shield: true,
         clipboard: true,
         diagnostics: true,
+        nmap: true,
+        usb_reset: true,
     }
 }
 
@@ -75,6 +77,17 @@ fn the_table_is_the_specs() {
             "lock",
             "power",
             "reload",
+            "diag.scan",
+            "diag.usb_events",
+            "diag.usb_reset",
+            "diag.preset.errors",
+            "diag.preset.usb",
+            "diag.preset.suspend",
+            "diag.preset.oom",
+            "diag.preset.thermal",
+            "diag.preset.network",
+            "diag.preset.live",
+            "diag.preset.service",
         ]
     );
     let mut unique = ids.clone();
@@ -108,14 +121,26 @@ fn the_table_is_the_specs() {
             "Lock",
             "Power menu",
             "Reload the bar",
+            "Network scan",
+            "USB events",
+            "Reset USB (xHCI)",
+            "Errors this boot",
+            "USB",
+            "Suspend and resume",
+            "Out of memory",
+            "Thermal and throttling",
+            "NetworkManager",
+            "Live journal",
+            "Logs of a service…",
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, session] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, session, diagnostics] = BUILTIN_CATEGORIES;
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
     expected.extend([session; 3]);
+    expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
     assert_eq!(slugs, ["home", "sound", "network", "bluetooth", "power", "displays", "appearance", "diagnostics"]);
@@ -137,11 +162,22 @@ fn shown_follows_the_context() {
     let none = Context::default();
     assert_eq!(
         ids_shown(&none),
-        ["tab.home", "tab.sound", "tab.network", "tab.bluetooth", "tab.power", "tab.displays", "tab.appearance", "notes", "emoji"],
-        "the seven tabs (not diagnostics), notes and emoji"
+        [
+            "tab.home",
+            "tab.sound",
+            "tab.network",
+            "tab.bluetooth",
+            "tab.power",
+            "tab.displays",
+            "tab.appearance",
+            "notes",
+            "emoji",
+            "diag.usb_events"
+        ],
+        "the seven tabs (not diagnostics), notes, emoji and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 11] = [
+    let flips: [Flip; 13] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -152,7 +188,22 @@ fn shown_follows_the_context() {
         (|c| c.reload = true, &["reload"]),
         (|c| c.shield = true, &["quick.shield"]),
         (|c| c.clipboard = true, &["clipboard"]),
-        (|c| c.diagnostics = true, &["tab.diagnostics"]),
+        (
+            |c| c.diagnostics = true,
+            &[
+                "tab.diagnostics",
+                "diag.preset.errors",
+                "diag.preset.usb",
+                "diag.preset.suspend",
+                "diag.preset.oom",
+                "diag.preset.thermal",
+                "diag.preset.network",
+                "diag.preset.live",
+                "diag.preset.service",
+            ],
+        ),
+        (|c| c.nmap = true, &["diag.scan"]),
+        (|c| c.usb_reset = true, &["diag.usb_reset"]),
     ];
     for (flip, rows) in flips {
         let mut c = Context::default();
@@ -165,7 +216,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 23);
+    assert_eq!(ids_shown(&all()).len(), 34);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -182,6 +233,8 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "quick.shield" => c.shield = false,
         "clipboard" => c.clipboard = false,
         "tab.diagnostics" => c.diagnostics = false,
+        "diag.scan" => c.nmap = false,
+        "diag.usb_reset" => c.usb_reset = false,
         other => panic!("{other}"),
     }
 }
@@ -199,11 +252,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 23);
+    assert_eq!(builtin_ids(&cat).len(), 34);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 21);
+    assert_eq!(ids.len(), 32);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -251,7 +304,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 90 Session), names breaking the tie.
+    // 50 Beta, 70 Diagnostics, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -266,6 +319,7 @@ run = [\"x\"]
             "[Utilities]",
             "[Zed]",
             "Beta",
+            "[Diagnostics]",
             "[Session]",
         ]
     );
@@ -417,4 +471,56 @@ fn history_keys() {
     let nix = cat.entries.iter().position(|e| e.name == "Nix").unwrap();
     assert!(cat.choice_key(nix, &long_choice).len() <= crate::launcher::history::ID_MAX);
     assert!(cat.entries.iter().any(|e| e.name == long_name && e.key.len() <= crate::launcher::history::ID_MAX));
+}
+
+#[test]
+fn nmap_missing_hides_the_scan_entry() {
+    let ids = |c: &Context| ids_shown(c);
+    assert!(ids(&all()).contains(&"diag.scan"));
+    let none = Context { nmap: false, ..all() };
+    assert!(!ids(&none).contains(&"diag.scan"), "no nmap on the $PATH: no scan entry");
+}
+
+#[test]
+fn an_empty_usb_reset_hides_it() {
+    let shown = |c: &Context| ids_shown(c).contains(&"diag.usb_reset");
+    assert!(shown(&all()));
+    assert!(!shown(&Context { usb_reset: false, ..all() }), "[tools.builtin] usb_reset = [] hides it");
+}
+
+#[test]
+fn every_preset_has_a_builtin_and_a_slug_that_round_trips() {
+    use alpheus_common::diagnostics::query::Preset;
+    for p in Preset::ALL {
+        assert_eq!(Preset::from_slug(p.slug()), Some(p));
+        let id = format!("diag.preset.{}", p.slug());
+        let b = BUILTINS.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("a built-in for {id}"));
+        assert_eq!(b.action, BuiltinAction::Preset(p));
+        assert_eq!(b.label, p.label(), "the built-in is named as the Diag tab's chip");
+        assert_eq!(b.category, DIAGNOSTICS);
+    }
+    assert_eq!(BUILTINS.iter().filter(|b| matches!(b.action, BuiltinAction::Preset(_))).count(), Preset::ALL.len());
+}
+
+#[test]
+fn the_scan_entry_lists_the_ten_scans_and_asks_except_for_the_sweep() {
+    use crate::launcher::tools::diag::{PORTS_PROMPT, Scan, TARGET_PROMPT};
+    let (cat, _) = build("", &all());
+    let scan = cat.entries.iter().find(|e| e.name == "Network scan").unwrap();
+    let labels: Vec<String> = Scan::ALL.iter().map(|s| s.label().to_string()).collect();
+    assert_eq!(scan.choices, Choices::Fixed(labels));
+    assert_eq!(scan.category.map(|c| cat.categories[c].name.as_str()), Some("Diagnostics"));
+    assert_eq!(scan.ask_for(Some(Scan::Quick.label())), Some(TARGET_PROMPT));
+    assert_eq!(scan.ask_for(Some(Scan::Udp.label())), Some(TARGET_PROMPT));
+    assert_eq!(scan.ask_for(Some(Scan::Ports.label())), Some(PORTS_PROMPT));
+    assert_eq!(scan.ask_for(Some(Scan::HostDiscovery.label())), None, "the sweep runs without a prompt");
+    let reset = cat.entries.iter().find(|e| e.name == "Reset USB (xHCI)").unwrap();
+    assert!(reset.confirm, "the reset asks for a second Enter");
+    let events = cat.entries.iter().find(|e| e.name == "USB events").unwrap();
+    assert!(!events.confirm && events.ask_for(None).is_none());
+    assert_eq!(scan.key, "tool:builtin:diag.scan");
+    assert_eq!(
+        cat.choice_key(cat.entries.iter().position(|e| e.name == "Network scan").unwrap(), Scan::Full.label()),
+        "tool:builtin:diag.scan/Full scan (all ports)"
+    );
 }

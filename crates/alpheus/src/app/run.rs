@@ -19,10 +19,12 @@
 
 use super::App;
 use super::action::Tab;
+use super::diagnostics::DiagItem;
 use super::keymap::Keymap;
 use super::worker::{self, Domain, Request, Update};
 use crate::backends::{Backends, Displays, SessionCommands};
 use crate::config::Config;
+use crate::diagnostics::query::Preset;
 use crate::displays::profiles;
 use crate::exec::SystemExecutor;
 use crate::external_tools::{self, CrosstermScreen, ProcessLauncher};
@@ -103,30 +105,54 @@ fn should_exit(app: &App, done: &AtomicBool) -> bool {
 pub struct Options {
     /// Tab shown on startup (`--tab <name>`).
     pub tab: Tab,
+    /// The Diag tab's preset to open on startup (`--preset <slug>`, only with `--tab diagnostics`).
+    pub preset: Option<Preset>,
 }
 
-/// `alpheus [--tab <name>]`, also `--tab=<name>`. The error is a message
-/// for the user: main shows it and exits with code 2.
+/// `alpheus [--tab <name>] [--preset <slug>]`, also `--tab=<name>`, `--preset=<slug>`; a preset needs
+/// `--tab diagnostics`. The error is a message for the user: main shows it and exits with code 2.
 pub fn parse_options(args: &[String]) -> Result<Options, String> {
     let mut tab = Tab::Home;
+    let mut preset = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
-        let value = if a == "--tab" {
-            i += 1;
-            args.get(i).map(String::as_str).ok_or("--tab expects a tab name")?
-        } else if let Some(v) = a.strip_prefix("--tab=") {
-            v
+        if a == "--tab" || a.starts_with("--tab=") {
+            let value = if a == "--tab" {
+                i += 1;
+                args.get(i).map(String::as_str).ok_or("--tab expects a tab name")?
+            } else {
+                &a["--tab=".len()..]
+            };
+            tab = Tab::from_slug(value).ok_or_else(|| {
+                let names: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
+                format!("unknown tab: \"{value}\" (expected: {})", names.join(", "))
+            })?;
+        } else if a == "--preset" || a.starts_with("--preset=") {
+            let value = if a == "--preset" {
+                i += 1;
+                args.get(i).map(String::as_str).ok_or("--preset expects a preset name")?
+            } else {
+                &a["--preset=".len()..]
+            };
+            preset = Some(Preset::from_slug(value).ok_or_else(|| {
+                let names: Vec<&str> = Preset::ALL.iter().map(|p| p.slug()).collect();
+                format!("unknown preset: \"{value}\" (expected: {})", names.join(", "))
+            })?);
         } else {
-            return Err(format!("unknown option: \"{a}\" (usage: alpheus [--tab <name>])"));
-        };
-        tab = Tab::from_slug(value).ok_or_else(|| {
-            let names: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
-            format!("unknown tab: \"{value}\" (expected: {})", names.join(", "))
-        })?;
+            return Err(format!("unknown option: \"{a}\" (usage: alpheus [--tab <name>] [--preset <slug>])"));
+        }
         i += 1;
     }
-    Ok(Options { tab })
+    if preset.is_some() && tab != Tab::Diagnostics {
+        return Err("--preset needs --tab diagnostics".to_string());
+    }
+    Ok(Options { tab, preset })
+}
+
+/// Opens the Diag tab's journal on `preset`, as Enter on its chip does.
+fn open_preset(app: &mut App, preset: Preset) {
+    app.diag_activate(DiagItem::Preset(preset));
 }
 
 /// Builds the `App` from the files in `dir`: config.toml, the theme, the keys and displays.toml. A
@@ -187,7 +213,10 @@ fn backends_for(app: &App, exec: Arc<dyn crate::exec::Executor>, runtime_dir: st
 /// Runs the control center until the user quits or a stop signal arrives.
 pub fn run(options: Options) -> io::Result<()> {
     install_signals()?;
-    let app = build_app(&config_dir(), options.tab, Instant::now());
+    let mut app = build_app(&config_dir(), options.tab, Instant::now());
+    if let Some(preset) = options.preset {
+        open_preset(&mut app, preset);
+    }
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let backends = backends_for(&app, exec.clone(), runtime_dir());
     let displays = backends.displays.clone();
@@ -271,16 +300,47 @@ mod tests {
 
     #[test]
     fn the_command_line_options_are_read() {
-        assert_eq!(parse_options(&[]), Ok(Options { tab: Tab::Home }));
-        assert_eq!(parse_options(&args(&["--tab", "sound"])), Ok(Options { tab: Tab::Sound }));
-        assert_eq!(parse_options(&args(&["--tab=Network"])), Ok(Options { tab: Tab::Network }));
-        assert_eq!(parse_options(&args(&["--tab", "displays"])), Ok(Options { tab: Tab::Displays }));
-        assert_eq!(parse_options(&args(&["--tab", "diagnostics"])), Ok(Options { tab: Tab::Diagnostics }));
-        assert_eq!(parse_options(&args(&["--tab=diag"])), Ok(Options { tab: Tab::Diagnostics }));
+        assert_eq!(parse_options(&[]), Ok(Options { tab: Tab::Home, preset: None }));
+        assert_eq!(parse_options(&args(&["--tab", "sound"])), Ok(Options { tab: Tab::Sound, preset: None }));
+        assert_eq!(parse_options(&args(&["--tab=Network"])), Ok(Options { tab: Tab::Network, preset: None }));
+        assert_eq!(parse_options(&args(&["--tab", "displays"])), Ok(Options { tab: Tab::Displays, preset: None }));
+        assert_eq!(parse_options(&args(&["--tab", "diagnostics"])), Ok(Options { tab: Tab::Diagnostics, preset: None }));
+        assert_eq!(parse_options(&args(&["--tab=diag"])), Ok(Options { tab: Tab::Diagnostics, preset: None }));
         let e = parse_options(&args(&["--tab", "weather"])).unwrap_err();
         assert!(e.contains("weather") && e.contains("home, sound"), "{e}");
         assert!(parse_options(&args(&["--tab"])).unwrap_err().contains("expects"));
         assert!(parse_options(&args(&["-v"])).unwrap_err().contains("unknown option"));
+    }
+
+    #[test]
+    fn parse_options_accepts_a_preset_with_the_diagnostics_tab() {
+        use crate::diagnostics::query::Preset;
+        let want = Ok(Options { tab: Tab::Diagnostics, preset: Some(Preset::Usb) });
+        assert_eq!(parse_options(&args(&["--tab", "diagnostics", "--preset", "usb"])), want);
+        assert_eq!(parse_options(&args(&["--preset=usb", "--tab=diag"])), want, "the order does not matter");
+        for p in Preset::ALL {
+            let r = parse_options(&args(&["--tab", "diagnostics", "--preset", p.slug()]));
+            assert_eq!(r, Ok(Options { tab: Tab::Diagnostics, preset: Some(p) }));
+        }
+        let e = parse_options(&args(&["--tab", "diagnostics", "--preset", "weather"])).unwrap_err();
+        assert!(e.contains("weather") && e.contains("errors, usb"), "{e}");
+        assert!(parse_options(&args(&["--tab", "diagnostics", "--preset"])).unwrap_err().contains("expects"));
+    }
+
+    #[test]
+    fn a_preset_without_the_diagnostics_tab_is_refused() {
+        assert!(parse_options(&args(&["--preset", "usb"])).unwrap_err().contains("diagnostics"));
+        assert!(parse_options(&args(&["--tab", "sound", "--preset", "usb"])).unwrap_err().contains("diagnostics"));
+    }
+
+    #[test]
+    fn a_preset_opens_its_journal_on_the_diagnostics_tab() {
+        use crate::diagnostics::query::Preset;
+        let dir = alpheus_common::temp_path::TempPath::new("run-preset");
+        let mut a = build_app(&dir, Tab::Diagnostics, Instant::now());
+        open_preset(&mut a, Preset::OutOfMemory);
+        let crate::app::diagnostics::View::Journal(j) = &a.diag.view else { panic!("the journal is open") };
+        assert_eq!(j.query.preset, Preset::OutOfMemory);
     }
 
     /// The Power tab follows bar.toml's `[quick]` (the bar's own session commands): a command

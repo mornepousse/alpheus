@@ -510,6 +510,12 @@ bound the first ones are kept, with one log line of counts.
 | `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
 
+`[tools.builtin]`:
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `usb_reset` | command | `["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]` | non-blank program | The "Reset USB (xHCI)" built-in's command, run in `terminal_hold` after a second Enter (so `sudo` can ask there; alpheus never runs as root); `[]` hides the entry. |
+
 `[[tools.category]]`, **at most 16**:
 
 | Key | Type | Default | Bounds | Meaning |
@@ -526,10 +532,11 @@ bound the first ones are kept, with one log line of counts.
 | `category` | string | the root | a `[[tools.category]]` or a built-in category | Where the entry lives. |
 | `icon` | one character | none | exactly 1 character | The row's glyph. |
 | `order` | integer | `50` | 0 to 1000 | Sort order among its siblings. |
-| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}` | What the entry runs (no shell). |
+| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}`; with `ask`, `{text}` exactly once as a whole element (not the program), and without `ask`, no `{text}`; `{text}` never in `state` or `choices_cmd` | What the entry runs (no shell). |
 | `terminal` | bool | `false` | not with `hold` | `true`: the launcher's `terminal` is put in front. |
 | `hold` | bool | `false` | not with `terminal` | `true`: `terminal_hold` instead (the output stays readable). |
-| `confirm` | bool | `false` | | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
+| `confirm` | bool | `false` | not with `ask` | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
+| `ask` | string | none | 1 to 48 characters, not blank; `run` must hold `{text}` | A label: the entry asks for a text (after its choice, if it has choices) and runs with it as the one element `{text}`. Never logged, never kept in the history. |
 | `state` | command | `[]` | not with choices; read for at most 16 entries | Run when the box opens: exit 0 shows the switch on, any other exit off; a hung one is killed at 1 s. |
 | `choices` | list of strings | `[]` | at most 32, each 1 to 64 characters; not with `choices_cmd` | Fixed choices for `{choice}`. |
 | `choices_cmd` | command | `[]` | non-blank program; not with `choices` | A command whose output lines are the choices, run when the entry is opened (1 s, 2,000 lines, 256 KiB). |
