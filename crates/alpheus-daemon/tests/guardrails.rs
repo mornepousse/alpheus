@@ -1000,6 +1000,13 @@ fn production_code(text: &str) -> String {
         let after_marker = &view[marker_end..];
         let open = after_marker.find('{');
         let semi = after_marker.find(';');
+        // A field (`#[cfg(test)] built: usize,` in a struct or a struct literal) ends at its comma, or
+        // at the `}` that closes the list: without this the next `{` would be taken for its body and
+        // the whole following item stripped.
+        if let Some(end) = field_end(after_marker).filter(|e| open.is_none_or(|o| *e < o) && semi.is_none_or(|s| *e < s)) {
+            done = marker_end + end;
+            continue;
+        }
         // A brace-less item (`pub mod fake;`, a `use`, a unit struct…) ends
         // at its `;`: stop there rather than let `find('{')` run past it
         // into some later, unrelated item's brace — which would wrongly
@@ -1041,6 +1048,25 @@ fn production_code(text: &str) -> String {
     }
     out.push_str(&text[done..]);
     out
+}
+
+/// Where the field that starts `after` ends, when it is one: the offset just past its comma, or of the
+/// `}` that closes the list. Commas inside `()`, `[]` and `<>` (generics, tuples) do not end it.
+fn field_end(after: &str) -> Option<usize> {
+    let (mut nesting, mut previous) = (0i32, ' ');
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' | '[' | '<' => nesting += 1,
+            ')' | ']' => nesting -= 1,
+            '>' if previous != '-' => nesting -= 1,
+            ',' if nesting <= 0 => return Some(i + 1),
+            '}' => return Some(i),
+            '{' | ';' => return None,
+            _ => {}
+        }
+        previous = c;
+    }
+    None
 }
 
 /// Blanks `out` for one character of a comment or a literal: a space per byte, so the copy keeps
@@ -1441,6 +1467,21 @@ fn a_semicolon_inside_a_string_does_not_end_a_brace_less_test_item() {
     let code = production_code(text);
     assert!(code.contains("fn real()"), "{code}");
     assert!(!code.contains("const S"), "the brace-less test item goes: {code}");
+}
+
+/// An attribute on a field strips the field, not the item that follows the list.
+#[test]
+fn a_cfg_test_field_strips_only_the_field() {
+    let text = "struct S {\n    a: u8,\n    #[cfg(test)]\n    built: HashMap<u8, u8>,\n    b: u8,\n}\nimpl S {\n    fn kept() {}\n}\n\
+                fn lit() -> S {\n    S {\n        a: 1,\n        #[cfg(test)]\n        built: 0\n    }\n}\n\
+                #[cfg(test)]\nfn gone<A, B>(x: (u8, u8)) -> u8 {\n    0\n}\nfn kept_too() {}\n";
+    let code = production_code(text);
+    for kept in ["a: u8,", "b: u8,", "fn kept()", "a: 1,", "fn kept_too()"] {
+        assert!(code.contains(kept), "{kept} is production code: {code}");
+    }
+    for gone in ["built", "fn gone"] {
+        assert!(!code.contains(gone), "{gone} is test code: {code}");
+    }
 }
 
 #[test]
@@ -4793,17 +4834,23 @@ const ERROR_PLACEHOLDERS: [&str; 9] = ["{e}", "{e:?}", "{e:#?}", "{err}", "{err:
 /// offending line, or None.
 fn log_word_leak(code: &str) -> Option<String> {
     // An error handed to a positional placeholder: `format!("… {}", e)`, `{}", e.error)`, `e.to_string()`.
+    // Also bound by name (`word = e`) and, once it is bound, nothing says it is the log's word.
     const POSITIONAL: [&str; 7] = [", e)", ", &e)", ", err)", ", &err)", ", e.error)", "e.to_string()", "err.to_string()"];
+    // An argument list bound by name goes through `argv.join(`, caught above.
+    const NAMED: [&str; 9] = [" = e)", " = e,", " = &e)", " = &e,", " = err)", " = err,", " = &err)", " = &err,", " = e.error"];
     // The program or the argument list named in a line (`{program}`, `{prog}`, `{argv…}`, `argv.join(`).
     const COMMAND: [&str; 6] = ["{program", "{prog}", "{prog:", "{argv", "argv.join(", "args.join("];
+    // What a player or a program is called: the media heading, a bus name, a title, an artist, an app.
+    const NAMES: [&str; 10] =
+        ["{heading}", "{heading:", "{bus_name}", "{bus_name:", "{title}", "{title:", "{artist}", "{artist:", "{app}", "{app:"];
     // A panic's message read back out of a caught payload.
     const PAYLOAD: [&str; 3] = ["panic_text", "downcast_ref::<&str>", "downcast_ref::<String>"];
     code.lines().find_map(|line| {
         // A pattern that starts with a letter must start a word: `e.to_string()` is not `name.to_string()`.
         // A positional argument only means something next to a format string.
-        let formats = line.contains("{}") || line.contains("{:?}");
+        let formats = ["{}", "{:?}", "{0", "{1", "{2"].iter().any(|f| line.contains(f));
         let positional = if formats { POSITIONAL.as_slice() } else { &[] };
-        let leaks = ERROR_PLACEHOLDERS.iter().chain(positional).chain(&COMMAND).chain(&PAYLOAD).any(|p| {
+        let leaks = ERROR_PLACEHOLDERS.iter().chain(positional).chain(&NAMED).chain(&COMMAND).chain(&NAMES).chain(&PAYLOAD).any(|p| {
             line.match_indices(p).any(|(i, _)| {
                 !p.starts_with(|c: char| c.is_alphanumeric() || c == '_')
                     || !line[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
@@ -4908,6 +4955,14 @@ fn the_log_word_guardrail_helper_bites() {
         "let t = panic_text(&*payload);",
         "if let Some(s) = p.downcast_ref::<&str>() {",
         "log(&format!(\"{}\", e.to_string()));",
+        "log(&format!(\"x {0} {1}\", a, e));",
+        "log(&format!(\"x {w}\", w = e));",
+        "log(&format!(\"x {w}\", w = &err));",
+        "log(&format!(\"media popup shown: {heading}\"));",
+        "log(&format!(\"media: {bus_name} ignored\"));",
+        "log(&format!(\"track {title}\"));",
+        "log(&format!(\"by {artist}\"));",
+        "log(&format!(\"app {app}\"));",
     ] {
         assert!(log_word_leak(leak).is_some(), "not seen: {leak}");
     }
