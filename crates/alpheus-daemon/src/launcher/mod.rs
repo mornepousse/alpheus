@@ -14,6 +14,8 @@ pub mod host;
 pub mod matching;
 pub mod model;
 pub mod prefix;
+pub mod processes;
+pub(crate) mod processes_app;
 pub mod run;
 pub mod scan;
 pub mod socket;

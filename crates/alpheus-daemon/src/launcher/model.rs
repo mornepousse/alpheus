@@ -13,6 +13,7 @@ use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow};
 use crate::launcher::prefix::{self, Prefix, search_url};
+use crate::launcher::processes::{ProcRow, Sig, SignalError};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
@@ -101,6 +102,13 @@ pub enum Outcome {
     BackToAll,
     /// A confirmation question was asked: the host syncs its timer.
     Asked,
+    /// The kill list's Enter (`Sig::Term`) or its confirmed Ctrl+Enter (`Sig::Kill`): the glue
+    /// sends the signal if the pid still started at `start`, then reports back (`signal_result`).
+    Signal {
+        pid: i32,
+        start: u64,
+        sig: Sig,
+    },
 }
 
 /// How the launcher was opened: what scan deliveries and window lists it takes.
@@ -133,6 +141,8 @@ enum Identity {
     Clip(u64),
     /// A tool row by its identity in the catalog.
     Tool(RowId),
+    /// A kill-list row by its pid: the sort moves rows, the pid stays.
+    Proc(i32),
 }
 
 pub struct Launcher {
@@ -179,6 +189,10 @@ pub struct Launcher {
     pub clips: Vec<ClipRow>,
     /// The `"` prefix is claimed in All (the history is on and a protocol bound).
     pub clipboard: bool,
+    /// The kill list's rows, in the order shown (`Mode::Processes` only; empty elsewhere).
+    pub procs: Vec<ProcRow>,
+    /// The kill list's question: the pid whose force kill was asked, until when it may be confirmed.
+    proc_ask: Option<(i32, Instant)>,
     /// How this open began (`for_apps`, `for_tools`, the others).
     pub origin: Origin,
     /// The Tools menu's state: the catalog, the level, the states read. None until `set_tools` or
@@ -244,6 +258,8 @@ impl Launcher {
             calc: None,
             clips: Vec::new(),
             clipboard: false,
+            procs: Vec::new(),
+            proc_ask: None,
             origin: Origin::Other,
             tools: None,
             tool_level: Vec::new(),
@@ -318,6 +334,14 @@ impl Launcher {
     pub fn for_clipboard(config: LauncherConfig, rows: Vec<ClipRow>) -> Launcher {
         let mut l = Launcher::new(config, Mode::Clipboard);
         l.clips = rows;
+        l.refilter();
+        l
+    }
+
+    /// The kill list (`alpheus-launch --kill`): `rows` in their order, no modes row, no catalog.
+    pub fn for_processes(config: LauncherConfig, rows: Vec<ProcRow>) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Processes);
+        l.procs = rows;
         l.refilter();
         l
     }
@@ -400,6 +424,67 @@ impl Launcher {
         self.refilter_keeping(kept);
     }
 
+    /// The kill list's second sample: the rows replaced and sorted, the highlighted process still
+    /// highlighted (by its pid, not its place: the sort moves it) whether or not the user moved,
+    /// because a hasty Enter must hit the process that was shown. A question stays with its pid.
+    pub fn set_procs(&mut self, rows: Vec<ProcRow>) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
+        self.procs = rows;
+        self.rank();
+        self.selected = kept.and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id))).unwrap_or(0);
+        self.keep_visible();
+    }
+
+    /// Whether a force kill is being asked (the view draws it on the row and the help line).
+    pub fn proc_question(&self) -> bool {
+        self.proc_ask.is_some()
+    }
+
+    /// The pid the force-kill question is about.
+    pub fn proc_question_pid(&self) -> Option<i32> {
+        self.proc_ask.map(|(pid, _)| pid)
+    }
+
+    /// When the question stops being one: None without a question.
+    pub fn processes_deadline(&self) -> Option<Instant> {
+        self.proc_ask.map(|(_, until)| until)
+    }
+
+    /// The question's three seconds are up at `now`: true when it just went (its row is redrawn).
+    pub fn processes_expire(&mut self, now: Instant) -> bool {
+        session::expire(&mut self.proc_ask, now)
+    }
+
+    /// What the signal did, said in the box (never in a log): a process that went or is gone leaves
+    /// the list; one that refused stays. The text names the process, which the box may; a
+    /// notification or a log line never does.
+    pub fn signal_result(&mut self, pid: i32, sig: Sig, result: Result<(), SignalError>) {
+        let Some(at) = self.procs.iter().position(|p| p.pid == pid) else { return };
+        let name = self.procs[at].name.clone();
+        let leaves = !matches!(result, Err(SignalError::Denied | SignalError::Other));
+        self.message = Some(match (result, sig) {
+            (Ok(()), Sig::Term) => format!("asked {name} to quit"),
+            (Ok(()), Sig::Kill) => format!("killed {name}"),
+            (Err(SignalError::Gone), _) => format!("{name}: already gone"),
+            (Err(SignalError::Denied), _) => format!("{name}: not allowed"),
+            (Err(SignalError::Reused), _) => format!("{name}: pid reused, nothing sent"),
+            (Err(SignalError::Other), _) => format!("{name}: could not signal"),
+        });
+        if leaves {
+            let kept = self.selected_hit().and_then(|h| self.identity(h.source));
+            self.procs.remove(at);
+            self.rank();
+            self.selected = kept
+                .and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id)))
+                .unwrap_or(self.selected);
+            self.selected = self.selected.min(self.results.len().saturating_sub(1));
+            self.keep_visible();
+        }
+        if self.proc_ask.is_some_and(|(asked, _)| asked == pid) {
+            self.proc_ask = None;
+        }
+    }
+
     /// The instant of the next key or click (the Clear question's clock).
     pub fn set_now(&mut self, at: Instant) {
         self.at = Some(at);
@@ -427,7 +512,7 @@ impl Launcher {
 
     /// A menu with no modes row and no preview: a script's, the calculator's or the history's.
     pub fn is_bare(&self) -> bool {
-        matches!(self.mode, Mode::Script | Mode::Calc | Mode::Clipboard)
+        matches!(self.mode, Mode::Script | Mode::Calc | Mode::Clipboard | Mode::Processes)
     }
 
     /// Refilters; keeps the selection on the same item if it is still present (by identity,
@@ -473,6 +558,7 @@ impl Launcher {
             Source::Shell => Identity::Shell,
             Source::Clip(i) => Identity::Clip(self.clips.get(i)?.id),
             Source::ClipClear => return None,
+            Source::Proc(i) => Identity::Proc(self.procs.get(i)?.pid),
             Source::Tool(i) => Identity::Tool(self.tool_rows().get(i)?.id),
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
@@ -504,6 +590,8 @@ impl Launcher {
         if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
             let hit = self.selected_hit().map(|h| h.source);
             let guarded = match k {
+                // A held key never signals a process: one press, one signal.
+                _ if matches!(hit, Some(Source::Proc(_))) => true,
                 Key::Enter => matches!(hit, Some(Source::ClipClear)),
                 _ => matches!(hit, Some(Source::Clip(_) | Source::ClipClear)),
             };
@@ -517,9 +605,11 @@ impl Launcher {
         let cancelled = k != Key::Enter && self.clear_asked.take().is_some();
         // The same for a Tools question.
         let cancelled_tool = k != Key::Enter && self.tools.as_mut().is_some_and(ToolsState::cancel);
+        // The kill list's question is answered by Enter or asked again by Ctrl+Enter; any other key ends it.
+        let cancelled_proc = !matches!(k, Key::Enter | Key::CtrlEnter) && self.proc_ask.take().is_some();
         let o = self.apply(k);
         self.at = None;
-        if (had_message || cancelled || cancelled_tool) && o == Outcome::Nothing { Outcome::Redraw } else { o }
+        if (had_message || cancelled || cancelled_tool || cancelled_proc) && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     fn apply(&mut self, k: Key) -> Outcome {
@@ -826,6 +916,12 @@ impl Launcher {
             self.calc = None;
             return;
         }
+        // The kill list: the query filters its rows.
+        if self.mode == Mode::Processes {
+            self.results = self.ranker.rank_procs(&self.query, &self.procs);
+            self.calc = None;
+            return;
+        }
         // The history alone: the query filters its rows.
         if self.mode == Mode::Clipboard {
             self.results = self.ranker.rank_clips(&self.query, &self.clips);
@@ -1025,6 +1121,7 @@ impl Launcher {
         let hit = self.selected_hit();
         match self.mode {
             Mode::Tools => self.tools_enter(),
+            Mode::Processes => self.proc_enter(),
             Mode::Script => match hit {
                 Some(Hit { source: Source::Line(i), .. }) => self.choose_line(i),
                 _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose { text: self.query.clone(), line: None }),
@@ -1044,9 +1141,50 @@ impl Launcher {
                 Some(Source::Shell) => self.dollar(false),
                 Some(Source::Clip(i)) => self.clips.get(i).map_or(Outcome::Nothing, |c| Outcome::Activate(Activation::Clip { id: c.id })),
                 Some(Source::ClipClear) => self.clear(),
-                None => Outcome::Nothing,
+                // A kill-list row exists only in `Mode::Processes`, handled above.
+                Some(Source::Proc(_)) | None => Outcome::Nothing,
             },
         }
+    }
+
+    /// The selected kill-list row's pid and start time.
+    fn selected_proc(&self) -> Option<(i32, u64)> {
+        let Some(Source::Proc(i)) = self.selected_hit().map(|h| h.source) else { return None };
+        let row = self.procs.get(i)?;
+        Some((row.pid, row.start))
+    }
+
+    /// Whether `pid`'s force-kill question is pending at `now`.
+    fn proc_pending(&self, pid: i32, now: Instant) -> bool {
+        matches!(self.proc_ask, Some((asked, until)) if asked == pid && now < until)
+    }
+
+    /// The kill list's Enter: with the force-kill question pending for this process, a second
+    /// Enter from 0.4 s on (and within 3 s) kills (`session::ask`'s rule, as the power menu);
+    /// otherwise it asks the process to quit.
+    fn proc_enter(&mut self) -> Outcome {
+        let Some((pid, start)) = self.selected_proc() else { return Outcome::Nothing };
+        let now = self.at.unwrap_or_else(Instant::now);
+        if self.proc_pending(pid, now) {
+            return match session::ask(&mut self.proc_ask, pid, now) {
+                session::Activation::Run => Outcome::Signal { pid, start, sig: Sig::Kill },
+                session::Activation::Wait | session::Activation::Ask => Outcome::Nothing,
+            };
+        }
+        self.proc_ask = None;
+        Outcome::Signal { pid, start, sig: Sig::Term }
+    }
+
+    /// The kill list's Ctrl+Enter: asks "Enter again to force kill"; it never confirms (a second
+    /// Ctrl+Enter leaves the question as it is, it neither confirms nor restarts it).
+    fn proc_force_ask(&mut self) -> Outcome {
+        let Some((pid, _)) = self.selected_proc() else { return Outcome::Nothing };
+        let now = self.at.unwrap_or_else(Instant::now);
+        if self.proc_pending(pid, now) {
+            return Outcome::Nothing;
+        }
+        let _ = session::ask(&mut self.proc_ask, pid, now);
+        Outcome::Asked
     }
 
     /// The `$` row: the text after the prefix, through `sh -c`, detached or held in the terminal.
@@ -1164,6 +1302,7 @@ impl Launcher {
         match (self.mode, hit) {
             // Ctrl+Enter and a right click do nothing in the Tools mode.
             (Mode::Tools, _) => Outcome::Nothing,
+            (Mode::Processes, _) => self.proc_force_ask(),
             (Mode::Commands, Some(Source::Command(index))) if !self.query.contains(char::is_whitespace) => {
                 Outcome::Activate(Activation::Command { index, terminal: false })
             }
@@ -1206,6 +1345,12 @@ impl Launcher {
         self.moved = true;
         self.selected = index;
         self.keep_visible();
+        // A click on a process only selects it: a signal is a key, never a stray click.
+        if self.mode == Mode::Processes {
+            self.at = None;
+            self.proc_ask = None;
+            return Outcome::Redraw;
+        }
         let o = if secondary { self.secondary() } else { self.primary() };
         self.at = None;
         if (had_message || cancelled) && o == Outcome::Nothing { Outcome::Redraw } else { o }
@@ -1221,7 +1366,8 @@ impl Launcher {
     /// Wheel: moves the selection by `rows`, clamped.
     pub fn scroll(&mut self, rows: i32) -> Outcome {
         // Any other input cancels the Clear question.
-        let cancelled = self.clear_asked.take().is_some() | self.tools.as_mut().is_some_and(ToolsState::cancel);
+        let cancelled =
+            self.clear_asked.take().is_some() | self.tools.as_mut().is_some_and(ToolsState::cancel) | self.proc_ask.take().is_some();
         let o = self.move_by(rows);
         if cancelled && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }

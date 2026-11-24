@@ -174,7 +174,8 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Clipboard
         | BuiltinAction::Emoji
         | BuiltinAction::Power
-        | BuiltinAction::Shield => return Ok(None),
+        | BuiltinAction::Shield
+        | BuiltinAction::Kill => return Ok(None),
     };
     let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
@@ -514,6 +515,11 @@ impl App {
             BuiltinAction::Power => Some(self.power_verb(qh, &Request::Power)),
             BuiltinAction::Shield => {
                 tools::join::open_shield(self);
+                None
+            }
+            // The kill list replaces nothing: the box that held this entry is already closed.
+            BuiltinAction::Kill => {
+                self.launcher_open_processes(qh, Instant::now());
                 None
             }
         };

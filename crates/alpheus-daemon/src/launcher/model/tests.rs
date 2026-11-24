@@ -1497,3 +1497,185 @@ fn a_state_delivery_rebuilds_the_level() {
     l.adopt_state(1, Some(true));
     assert!(l.tool_level_builds > built);
 }
+
+// --- the kill list ---
+
+fn proc_row(pid: i32, name: &str, rss_kb: u64) -> ProcRow {
+    ProcRow {
+        pid,
+        start: u64::from(pid.unsigned_abs()) * 10,
+        name: name.into(),
+        cmdline: format!("/usr/bin/{name} --flag"),
+        rss_kb,
+        cpu_pct: None,
+    }
+}
+
+fn kill_list() -> Launcher {
+    Launcher::for_processes(
+        LauncherConfig::default(),
+        vec![proc_row(200, "firefox", 900), proc_row(201, "editor", 500), proc_row(202, "sleep", 100)],
+    )
+}
+
+fn selected_pid(l: &Launcher) -> Option<i32> {
+    match l.selected_hit()?.source {
+        Source::Proc(i) => Some(l.procs[i].pid),
+        _ => None,
+    }
+}
+
+#[test]
+fn the_kill_list_lists_every_row_in_order_and_filters_by_the_query() {
+    let mut l = kill_list();
+    assert_eq!(l.mode, Mode::Processes);
+    assert!(l.is_bare(), "no modes row, no preview");
+    assert_eq!(l.results.len(), 3);
+    typed(&mut l, "edit");
+    assert_eq!(selected_pid(&l), Some(201));
+    assert_eq!(l.results.len(), 1);
+}
+
+#[test]
+fn enter_asks_the_selected_process_to_quit() {
+    let mut l = kill_list();
+    l.key(Key::Down);
+    assert_eq!(l.key(Key::Enter), Outcome::Signal { pid: 201, start: 2010, sig: Sig::Term });
+}
+
+#[test]
+fn ctrl_enter_asks_and_a_second_enter_after_0_4_s_kills() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.set_now(t);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Asked, "Ctrl+Enter only asks");
+    assert!(l.proc_question(), "the box shows the question");
+    l.set_now(t + Duration::from_millis(200));
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "too soon: a double press is not a yes");
+    assert!(l.proc_question());
+    l.set_now(t + Duration::from_millis(500));
+    assert_eq!(l.key(Key::Enter), Outcome::Signal { pid: 200, start: 2000, sig: Sig::Kill });
+    assert!(!l.proc_question());
+}
+
+#[test]
+fn ctrl_enter_never_confirms_its_own_question() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.set_now(t);
+    l.key(Key::CtrlEnter);
+    l.set_now(t + Duration::from_secs(1));
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+    assert!(l.proc_question(), "still asking, not restarted");
+}
+
+#[test]
+fn an_enter_after_the_question_ran_out_asks_to_quit_only() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.set_now(t);
+    l.key(Key::CtrlEnter);
+    // The timer has not fired yet but the three seconds are over: the question is no longer one.
+    l.set_now(t + Duration::from_secs(4));
+    assert_eq!(l.key(Key::Enter), Outcome::Signal { pid: 200, start: 2000, sig: Sig::Term });
+}
+
+#[test]
+fn the_question_is_for_one_process() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.set_now(t);
+    l.key(Key::CtrlEnter);
+    // Another key cancels it (the row is redrawn), here a move to the next row.
+    assert_eq!(l.key(Key::Down), Outcome::Redraw);
+    assert!(!l.proc_question());
+    l.set_now(t + Duration::from_millis(600));
+    assert_eq!(l.key(Key::Enter), Outcome::Signal { pid: 201, start: 2010, sig: Sig::Term }, "no stale yes for the first row");
+}
+
+#[test]
+fn a_held_enter_or_ctrl_enter_does_nothing() {
+    let mut l = kill_list();
+    assert_eq!(l.key_repeat(Key::Enter, true), Outcome::Nothing);
+    assert_eq!(l.key_repeat(Key::CtrlEnter, true), Outcome::Nothing);
+    assert!(!l.proc_question());
+}
+
+#[test]
+fn a_click_selects_a_process_without_signalling_it() {
+    let mut l = kill_list();
+    assert_eq!(l.click(2, false), Outcome::Redraw);
+    assert_eq!(selected_pid(&l), Some(202));
+    assert_eq!(l.click(1, true), Outcome::Redraw);
+    assert_eq!(selected_pid(&l), Some(201));
+    assert!(!l.proc_question());
+}
+
+#[test]
+fn the_selection_follows_the_pid_when_the_list_is_sorted_again() {
+    let mut l = kill_list();
+    l.key(Key::Down);
+    assert_eq!(selected_pid(&l), Some(201));
+    // The CPU sample re-sorts: `sleep` now busiest, `editor` last.
+    let mut sampled = vec![proc_row(202, "sleep", 100), proc_row(200, "firefox", 900), proc_row(201, "editor", 500)];
+    sampled[0].cpu_pct = Some(50.0);
+    l.set_procs(sampled);
+    assert_eq!(selected_pid(&l), Some(201), "the highlighted process stays highlighted, wherever it went");
+}
+
+#[test]
+fn the_selection_follows_the_pid_even_before_the_user_moved() {
+    // On top at open, then the re-sort lands 300 ms later: a hasty Enter must still hit what was shown.
+    let mut l = kill_list();
+    assert_eq!(selected_pid(&l), Some(200));
+    l.set_procs(vec![proc_row(202, "sleep", 100), proc_row(201, "editor", 500), proc_row(200, "firefox", 900)]);
+    assert_eq!(selected_pid(&l), Some(200));
+}
+
+#[test]
+fn a_question_survives_the_sort_for_its_process() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.set_now(t);
+    l.key(Key::CtrlEnter);
+    l.set_procs(vec![proc_row(201, "editor", 500), proc_row(200, "firefox", 900)]);
+    l.set_now(t + Duration::from_millis(500));
+    assert_eq!(l.key(Key::Enter), Outcome::Signal { pid: 200, start: 2000, sig: Sig::Kill });
+}
+
+#[test]
+fn a_question_runs_out_after_three_seconds() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    assert_eq!(l.processes_deadline(), None);
+    l.set_now(t);
+    l.key(Key::CtrlEnter);
+    assert_eq!(l.processes_deadline(), Some(t + Duration::from_secs(3)));
+    assert!(!l.processes_expire(t + Duration::from_secs(2)));
+    assert!(l.processes_expire(t + Duration::from_secs(3)));
+    assert_eq!(l.processes_deadline(), None);
+}
+
+#[test]
+fn a_signal_that_went_removes_the_row_and_says_so_in_the_box() {
+    let mut l = kill_list();
+    l.signal_result(200, Sig::Term, Ok(()));
+    assert_eq!(l.procs.len(), 2);
+    assert_eq!(l.message.as_deref(), Some("asked firefox to quit"));
+    l.signal_result(201, Sig::Kill, Ok(()));
+    assert_eq!(l.message.as_deref(), Some("killed editor"));
+}
+
+#[test]
+fn a_refused_signal_says_one_word_in_the_box() {
+    let mut l = kill_list();
+    l.signal_result(200, Sig::Term, Err(SignalError::Denied));
+    assert_eq!(l.message.as_deref(), Some("firefox: not allowed"));
+    assert_eq!(l.procs.len(), 3, "the process is still there");
+    l.signal_result(201, Sig::Term, Err(SignalError::Gone));
+    assert_eq!(l.message.as_deref(), Some("editor: already gone"));
+    assert_eq!(l.procs.len(), 2, "a process that is gone leaves the list");
+    l.signal_result(202, Sig::Term, Err(SignalError::Reused));
+    assert_eq!(l.message.as_deref(), Some("sleep: pid reused, nothing sent"));
+    assert_eq!(l.procs.len(), 1);
+}

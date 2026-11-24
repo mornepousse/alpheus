@@ -8491,3 +8491,66 @@ fn shield_the_hook_fires_on_a_change_past_the_quiet_window() {
     assert!(w.d.wait_for("hook: shield", DELAY), "{:?}", w.d.log());
     assert_eq!(recorded(&w.sway, "hook-rec"), ["hook-rec up|ALPHEUS_EVENT=shield ALPHEUS_SHIELD=on "]);
 }
+
+/// The kill list, `--kill`: a `sleep` the test started and nothing else is filtered to, and Enter
+/// sends it SIGTERM (it exits by that signal); a second one that ignores SIGTERM takes Ctrl+Enter
+/// then Enter and dies of SIGKILL. The list shows this user's real processes, so each child carries a
+/// number of its own that the typed filter matches, and nothing else is ever signalled. No log line
+/// holds a name, a pid or a command line.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn kill_list_opens_and_signals_by_enter() {
+    use std::os::unix::process::ExitStatusExt;
+    let sway = Sway::start("kill-list", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut d = start_daemon_with(&sway, &DaemonOptions::default());
+    ready(&d);
+    // A number of this test's own, so the filter finds the child and no other process.
+    let marker = format!("{}", 600_000 + std::process::id() % 100_000);
+    let mut sleeper = GroupChild::spawn(Command::new("sleep").arg(&marker));
+    // A program that ignores SIGTERM: the shell traps it, and its command line names the marker.
+    let stubborn_marker = format!("{}", 700_000 + std::process::id() % 100_000);
+    let mut stubborn = GroupChild::spawn(Command::new("sh").args(["-c", "trap '' TERM; while :; do sleep 1; done", &stubborn_marker]));
+    // The children are in /proc before the list is read.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the kill list scans no application: {:?}", d.log());
+    // The filter, then Enter: SIGTERM to the one row.
+    assert!(wtype(&sway, &["-s", "300", &marker, "-s", "200", "-k", "Return"]).success());
+    let status = wait_for_exit(&mut sleeper);
+    assert_eq!(status.signal(), Some(15), "ended by SIGTERM: {status:?} {:?}", d.log());
+    assert!(d.wait_for("kill list: signal", DELAY), "{:?}", d.log());
+    // wtype's keyboard goes with its process: the box closes on the lost focus; open it again.
+    assert!(d.wait_for("launcher closed (focus lost)", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    // Ctrl+Enter asks; Enter 0.6 s later kills.
+    assert!(
+        wtype(
+            &sway,
+            &["-s", "300", &stubborn_marker, "-s", "200", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "600", "-k", "Return"]
+        )
+        .success()
+    );
+    let status = wait_for_exit(&mut stubborn);
+    assert_eq!(status.signal(), Some(9), "ended by SIGKILL: {status:?} {:?}", d.log());
+    assert!(
+        d.log().iter().all(|l| !l.contains(&marker) && !l.contains(&stubborn_marker) && !l.contains("sleep") && !l.contains("trap")),
+        "never a name or a command line in the log: {:?}",
+        d.log()
+    );
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// Waits (at most `DELAY`) for the harness's own child to exit; its status.
+fn wait_for_exit(child: &mut GroupChild) -> std::process::ExitStatus {
+    let t = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(t.elapsed() < DELAY, "the child was never signalled");
+        thread::sleep(Duration::from_millis(50));
+    }
+}

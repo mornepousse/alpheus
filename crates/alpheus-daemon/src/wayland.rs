@@ -544,6 +544,9 @@ pub struct App {
     /// The Tools menu's question timer and reader schedule (launcher/tools/app.rs); nothing armed or
     /// running while the menu is closed.
     pub(crate) tools: crate::launcher::tools::app::ToolsApp,
+    /// The kill list's timer, first sample and signal seam (launcher/processes_app.rs); nothing armed or
+    /// held while the list is closed.
+    pub(crate) processes: crate::launcher::processes_app::ProcessesApp,
     /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
     pub(crate) power_verb_opened: Option<Instant>,
     /// The focus timer's model, lengths and deadline (timer/app.rs); the deadline is armed only
@@ -716,6 +719,7 @@ impl App {
             units_tap: None,
             power_timer: DeadlineTimer::new(),
             tools: crate::launcher::tools::app::ToolsApp::new(),
+            processes: crate::launcher::processes_app::ProcessesApp::new(),
             power_verb_opened: None,
             timer,
             privacy_timer: DeadlineTimer::new(),

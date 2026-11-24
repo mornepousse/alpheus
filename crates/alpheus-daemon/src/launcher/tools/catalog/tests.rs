@@ -72,6 +72,7 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "process.kill",
             "lock",
             "power",
             "reload",
@@ -105,16 +106,18 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Kill a process",
             "Lock",
             "Power menu",
             "Reload the bar",
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, session] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, system, session] = BUILTIN_CATEGORIES;
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
+    expected.extend([system; 1]);
     expected.extend([session; 3]);
     assert_eq!(categories, expected);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
@@ -130,6 +133,7 @@ fn the_table_is_the_specs() {
     assert_eq!(action("night_light"), BuiltinAction::Toggle(Toggle::NightLight));
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
+    assert_eq!(action("process.kill"), BuiltinAction::Kill);
 }
 
 #[test]
@@ -137,8 +141,19 @@ fn shown_follows_the_context() {
     let none = Context::default();
     assert_eq!(
         ids_shown(&none),
-        ["tab.home", "tab.sound", "tab.network", "tab.bluetooth", "tab.power", "tab.displays", "tab.appearance", "notes", "emoji"],
-        "the seven tabs (not diagnostics), notes and emoji"
+        [
+            "tab.home",
+            "tab.sound",
+            "tab.network",
+            "tab.bluetooth",
+            "tab.power",
+            "tab.displays",
+            "tab.appearance",
+            "notes",
+            "emoji",
+            "process.kill"
+        ],
+        "the seven tabs (not diagnostics), notes, emoji and the kill list"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
     let flips: [Flip; 11] = [
@@ -165,7 +180,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 23);
+    assert_eq!(ids_shown(&all()).len(), 24);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -199,11 +214,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 23);
+    assert_eq!(builtin_ids(&cat).len(), 24);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 21);
+    assert_eq!(ids.len(), 22);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -251,7 +266,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 90 Session), names breaking the tie.
+    // 40 System, 50 Beta, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -265,6 +280,7 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
+            "[System]",
             "Beta",
             "[Session]",
         ]

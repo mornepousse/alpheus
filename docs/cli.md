@@ -76,6 +76,7 @@ alpheus-launch [--toggle | --close
                | --shield on|off|toggle|status|allow
                | --clipboard | --clipboard-clear
                | --tools
+               | --kill
                | --power
                | -h|--help]
 ```
@@ -102,6 +103,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
+| `--kill` | open the kill list (your own processes, sorted by memory then by CPU), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
 | `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
 
@@ -124,7 +126,7 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--clipboard`, `--clipboard-clear`, `--tools`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
 `--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard` and

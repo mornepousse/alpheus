@@ -24,6 +24,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::Shield(ShieldVerb::Allow), Route::Shield),
         (Request::Clipboard, Route::Launcher),
         (Request::Tools, Route::Launcher),
+        (Request::Kill, Route::Launcher),
         (Request::Power, Route::Power),
         (Request::FailedRefresh, Route::Failed),
         (Request::Toggle, Route::Launcher),

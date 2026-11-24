@@ -123,7 +123,7 @@ fn builtin_argv_is_only_the_configured_command() {
     // A program that is not there: said in the box, never spawned.
     assert_eq!(builtin_argv(builtin_by_id("night_light"), &c), Err("no-such-toggle: program not found".into()));
     // The others spawn nothing of their own.
-    for id in ["quick.sound", "dnd", "notes", "timer", "clipboard", "emoji", "power", "quick.shield"] {
+    for id in ["quick.sound", "dnd", "notes", "timer", "clipboard", "emoji", "power", "quick.shield", "process.kill"] {
         assert_eq!(builtin_argv(builtin_by_id(id), &c), Ok(None), "{id}");
     }
     let empty_reload: Vec<String> = Vec::new();

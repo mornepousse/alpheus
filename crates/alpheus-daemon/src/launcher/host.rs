@@ -80,6 +80,8 @@ pub enum Action {
     OpenClipboard,
     /// `--tools`: the Tools menu alone, replacing any other open launcher.
     OpenTools,
+    /// `--kill`: the kill list alone, replacing any other open launcher.
+    OpenProcesses,
     /// `--windows` while the switcher is open: select the next window.
     StepWindows,
     Close(CloseReason),
@@ -103,7 +105,7 @@ pub enum ScriptOwner {
 }
 
 /// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
-/// window switcher, the clipboard history, or the Tools menu.
+/// window switcher, the clipboard history, the Tools menu, or the kill list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opened {
     Apps,
@@ -111,6 +113,7 @@ pub enum Opened {
     Switcher,
     Clipboard,
     Tools,
+    Processes,
 }
 
 /// The open model's kind.
@@ -121,6 +124,8 @@ pub fn opened(model: &Launcher) -> Opened {
         Opened::Switcher
     } else if model.mode == crate::launcher::matching::Mode::Clipboard {
         Opened::Clipboard
+    } else if model.mode == crate::launcher::matching::Mode::Processes {
+        Opened::Processes
     } else if model.mode == crate::launcher::matching::Mode::Tools {
         // A Mod+Space open that jumped in with `/` counts: `--tools` closes it.
         Opened::Tools
@@ -164,6 +169,11 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Tools, Some(Opened::Tools)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Tools, Some(Opened::Tools)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Tools, Some(_)) => (Action::OpenTools, Some(Reply::Done)),
+        // `--kill` toggles the list (with the same debounce) and replaces anything else open.
+        (Request::Kill, None) => (Action::OpenProcesses, Some(Reply::Done)),
+        (Request::Kill, Some(Opened::Processes)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Kill, Some(Opened::Processes)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        (Request::Kill, Some(_)) => (Action::OpenProcesses, Some(Reply::Done)),
         // The socket still answers Done (alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
@@ -206,6 +216,7 @@ pub fn open_after(open: Option<Opened>, action: &Action) -> Option<Opened> {
         Action::OpenWindows => Some(Opened::Switcher),
         Action::OpenClipboard => Some(Opened::Clipboard),
         Action::OpenTools => Some(Opened::Tools),
+        Action::OpenProcesses => Some(Opened::Processes),
     }
 }
 
@@ -348,6 +359,7 @@ impl App {
         }
         self.keyboard_release();
         self.tools_timer_sync();
+        self.processes_timer_sync();
         self.tools_reads_stop();
         if !was_open {
             return;
@@ -414,6 +426,12 @@ impl App {
                             self.launcher_close(CloseReason::Replaced);
                         }
                         self.launcher_open_tools(qh, requested_at);
+                    }
+                    Action::OpenProcesses => {
+                        if self.launcher_is_open() {
+                            self.launcher_close(CloseReason::Replaced);
+                        }
+                        self.launcher_open_processes(qh, requested_at);
                     }
                     Action::OpenWindows => {
                         if self.launcher_is_open() {
@@ -702,7 +720,7 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
-        use Opened::{Apps, Clipboard, Script, Switcher, Tools};
+        use Opened::{Apps, Clipboard, Processes, Script, Switcher, Tools};
         let script =
             Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
         let not_ours = || Action::Nothing;
@@ -740,6 +758,20 @@ mod tests {
             (Request::Tools, Some(Script), Action::OpenTools, done()),
             (Request::Tools, Some(Switcher), Action::OpenTools, done()),
             (Request::Tools, Some(Clipboard), Action::OpenTools, done()),
+            (Request::Kill, None, Action::OpenProcesses, done()),
+            (Request::Kill, Some(Processes), Action::Close(R::Toggle), done()),
+            (Request::Kill, Some(Apps), Action::OpenProcesses, done()),
+            (Request::Kill, Some(Script), Action::OpenProcesses, done()),
+            (Request::Kill, Some(Switcher), Action::OpenProcesses, done()),
+            (Request::Kill, Some(Clipboard), Action::OpenProcesses, done()),
+            (Request::Kill, Some(Tools), Action::OpenProcesses, done()),
+            (Request::Toggle, Some(Processes), Action::Close(R::Toggle), done()),
+            (Request::Close, Some(Processes), Action::Close(R::Close), done()),
+            (Request::Calc, Some(Processes), Action::Close(R::Toggle), done()),
+            (Request::Windows, Some(Processes), Action::OpenWindows, done()),
+            (Request::Clipboard, Some(Processes), Action::OpenClipboard, done()),
+            (Request::Tools, Some(Processes), Action::OpenTools, done()),
+            (dmenu(), Some(Processes), script.clone(), None),
             (Request::Toggle, Some(Tools), Action::Close(R::Toggle), done()),
             (Request::Close, Some(Tools), Action::Close(R::Close), done()),
             (Request::Calc, Some(Tools), Action::Close(R::Toggle), done()),
@@ -1007,6 +1039,24 @@ mod tests {
             }
         }
         assert_eq!(open_after(None, &Action::OpenTools), Some(Opened::Tools));
+    }
+
+    /// `--kill` toggles the list, ignoring a press-bind refire inside the debounce, and replaces any
+    /// other open launcher; a model in the kill-list mode is the one it closes.
+    #[test]
+    fn kill_toggles_with_the_debounce_and_replaces_others() {
+        let open = Some(Opened::Processes);
+        assert_eq!(decide(Request::Kill, open, Duration::from_millis(10)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Kill, open, TOGGLE_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        for other in [Opened::Apps, Opened::Script, Opened::Switcher, Opened::Clipboard, Opened::Tools] {
+            assert_eq!(
+                decide(Request::Kill, Some(other), Duration::from_millis(10)),
+                (Action::OpenProcesses, Some(Reply::Done)),
+                "{other:?}"
+            );
+        }
+        assert_eq!(open_after(None, &Action::OpenProcesses), open);
+        assert_eq!(opened(&Launcher::for_processes(LauncherConfig::default(), vec![])), Opened::Processes);
     }
 
     /// A Mod+Space open that jumped into the Tools mode is one `--tools` closes; a `--tools` open too.

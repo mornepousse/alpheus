@@ -907,6 +907,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Clipboard => "clipboard",
             Request::ClipboardClear => "clipboard-clear",
             Request::Tools => "tools",
+            Request::Kill => "kill",
             Request::Power => "power",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
@@ -932,6 +933,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Clipboard,
         Request::ClipboardClear,
         Request::Tools,
+        Request::Kill,
         Request::Power,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
@@ -958,6 +960,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "clipboard",
             "clipboard-clear",
             "tools",
+            "kill",
             "power",
             "dmenu",
             "dnd",
@@ -1665,6 +1668,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
         // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
         ("launcher/tools/app.rs", "Timer::", 1),
+        // The kill list's timer, built in `ProcessesApp::new`: armed only while the list is open and its
+        // second sample (300 ms after the open) or a force-kill question (3 s) is pending, disarmed
+        // by `launcher_close` and `launcher_fail`.
+        ("launcher/processes_app.rs", "Timer::", 1),
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
@@ -3672,6 +3679,35 @@ fn the_timer_has_no_panicking_path() {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }
+}
+
+/// The kill list shows other programs' names and command lines, which are hostile text: its files
+/// never panic (a boundary panic's message would embed them) and log nothing that names a process.
+/// The pure files and the peer lookup log nothing at all; the glue logs fixed words only.
+#[test]
+fn the_kill_list_has_no_panicking_path_and_logs_fixed_words() {
+    let files = source_files();
+    let production_of =
+        |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    for name in ["launcher/processes.rs", "launcher/processes_app.rs", "sources/peer.rs"] {
+        let production = production_of(name);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+    for name in ["launcher/processes.rs", "sources/peer.rs"] {
+        let production = production_of(name);
+        for p in ["log(", "log::write", "crate::log", "println!", "dbg!"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code: it logs nothing");
+        }
+    }
+    let glue =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "launcher/processes_app.rs").expect("glue").1);
+    assert_eq!(clipboard_unfixed_log(&glue), None, "a log line of the kill list's glue is not fixed words");
+    assert!(glue.contains("log(\"kill list: signal\")"), "the one log line the glue writes about a signal");
+    // Spawns nothing and sends no signal of its own: the one `kill(2)` is the signaller's.
+    assert_eq!(glue.matches("libc::kill(").count(), 1, "one kill(2) in the glue");
+    assert!(!glue.contains("Command::new") && !glue.contains("thread::"), "no process, no thread");
 }
 
 /// The calculator's evaluator runs on each keystroke of the launcher's
