@@ -1,6 +1,6 @@
 //! Fake tray applications on a `PrivateBus`, for the tests only: SNI items,
 //! their dbusmenu servers and another watcher, each answering like the
-//! client it models (research: spike-rustsni-rustbus.md § 3–4) — Chromium's
+//! client it models — Chromium's
 //! host pre-check and failing `Get(IconName)`, KDE's `ProtocolVersion`
 //! check, libayatana's path-only registration, Steam's missing `Activate`,
 //! Electron's lazy menus. Fictional applications only (Nimbus, Kettle,

@@ -342,7 +342,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
 }
 
 /// Whether a peripheral is shown under `visibility`, given whether it
-/// currently counts as low (spec `[battery]`, 2026-10-05).
+/// counts as low (spec `[battery]`, 2026-10-05).
 fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     match visibility {
         BatteryVisibility::Always => true,
@@ -359,7 +359,7 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        // A charging battery never alarms: the accent without hues (the old look), green with them,
+        // A charging battery never alarms: the accent when no module takes a hue, green when they do,
         // at any level (2026-10-07). Warn and error apply only while discharging.
         let state = match b.charge {
             Charge::Charging if mc == ModuleColors::None => Some(Style::ACCENT),

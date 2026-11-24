@@ -201,7 +201,7 @@ fn full() -> Bar {
     b
 }
 
-/// The bar as it was before the quick panel: `quick` out of `modules`.
+/// A bar without the quick panel: `quick` out of `modules`.
 fn without_quick(mut b: Bar) -> Bar {
     b.config.modules.retain(|m| *m != ModuleId::Quick);
     b

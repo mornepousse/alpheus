@@ -85,12 +85,11 @@ const GRACE: Duration = Duration::from_secs(1);
 #[allow(clippy::large_enum_variant)]
 pub enum Mail {
     Bar(Msg),
-    /// A finished scan: adopted by the open launcher if `generation` is its
-    /// own, OR if it has no catalog of its own yet — a reopen racing a
-    /// still-running scan (`scan::catalog_is_current`); otherwise a stale
-    /// scan from a launcher already closed or already fed, ignored (review
-    /// This used to say "ignored unless
-    /// generation is the open launcher's", true only for the common case).
+    /// A finished scan: adopted by the open launcher if `generation` is its own, OR if it has no
+    /// catalog of its own yet — a reopen racing a still-running scan
+    /// (`scan::catalog_is_current`); otherwise it is a stale scan, from a launcher already closed
+    /// or already fed, and is ignored. The generation alone is not the rule: it decides the common
+    /// case only.
     Catalog {
         generation: u64,
         catalog: Catalog,

@@ -1028,12 +1028,13 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
     }
 }
 
-/// 2026-10-05, generalised 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click on the icon whose menu is shown, with the
-/// button that opened it, only closes that menu and does nothing else; a right click always
-/// closes it, whatever opened it — the press that closed it never reopens it (like `decide_click`
+/// 2026-10-05, generalised 2026-10-06: a click on the icon whose menu is shown, with the button
+/// that opened it, only closes that menu and does nothing else; a right click always closes it,
+/// whatever opened it — the press that closed it never reopens it (like `decide_click`
 /// for the launcher). Steam's menu, opened by a left click (a failed Activate, no `Menu` of its
 /// own on the press), is closed the same way: the same left click again, no new Activate, no
-/// flicker.
+/// flicker. See docs/decisions.md, "A tray menu is closed by the button that opened it, or by any
+/// right click".
 fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemKey>, b: Option<Button>, opened_by: Option<Button>) -> bool {
     menu_shown_for.is_some() && menu_shown_for == pressed_icon && b.is_some() && (b == Some(Button::Right) || b == opened_by)
 }

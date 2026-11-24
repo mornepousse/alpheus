@@ -233,8 +233,8 @@ impl Menu {
         }
     }
 
-    /// Left press on content row `row`: Click, Submenu, back a level (the header row; there is none at the root, so row 0 there is the first entry), or Nothing
-    /// (separator, disabled).
+    /// Left press on content row `row`: Click, Submenu, back a level (the header row; there is none
+    /// at the root, so row 0 there is the first entry), or Nothing (separator, disabled).
     pub fn press(&mut self, row: u16, layout: &Layout) -> MenuAction {
         if row == 0 && self.header() == 1 {
             return self.back();

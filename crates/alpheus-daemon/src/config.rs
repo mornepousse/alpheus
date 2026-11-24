@@ -472,9 +472,10 @@ pub struct FailedConfig {
     /// Also count the user manager's failed units (the session bus).
     pub user_units: bool,
     /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
-    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
-    /// see docs/decisions.md, "The failed-units count is read on triggers, and `Subscribe` is off by default"): the count is read on triggers only (a resume, `failed-refresh`, another
-    /// domain's wake-up, a piggyback).
+    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default): the
+    /// count is read on triggers only (a resume, `failed-refresh`, another domain's wake-up, a
+    /// piggyback). See docs/decisions.md, "The failed-units count is read on triggers, and
+    /// `Subscribe` is off by default".
     pub subscribe: bool,
     /// A notification when the count rises.
     pub notify: bool,

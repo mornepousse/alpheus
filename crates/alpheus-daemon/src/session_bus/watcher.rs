@@ -1,6 +1,6 @@
 //! The `org.kde.StatusNotifierWatcher` object, served through
 //! dbus-crossroads (the only file that knows it): what real clients check
-//! before registering (spike-rustsni-rustbus.md § 3) — Chromium reads
+//! before registering — Chromium reads
 //! `IsStatusNotifierHostRegistered`, KDE reads `ProtocolVersion`,
 //! libayatana falls back on an error reply — plus `Introspectable` and
 //! `Peer`. Registrations are answered at once and queued for the host;

@@ -656,7 +656,8 @@ impl Fonts {
             // Over the cell backgrounds, under the glyphs: a descender is never cut.
             background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
         }
-        // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
+        // No inks unless pills applies (`blocks::pills`): the other styles draw their glyphs in the
+        // foreground role.
         let (on, n) = blocks::pill_inks(roles, bg);
         self.glyphs(grid, roles, roles.bar_bg, px, width, band, 0, &on[..n], bg.style == BarStyle::Underline);
     }

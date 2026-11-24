@@ -17,7 +17,7 @@ use super::{ItemKey, Status};
 use crate::grid::text_width;
 use std::collections::BTreeMap;
 
-// Codepoints verified in Nerd Fonts 3.4 (prior-art-icons.md).
+// Codepoints verified in Nerd Fonts 3.4.
 pub const STEAM: char = '\u{f04d3}'; // md-steam
 pub const DISCORD: char = '\u{f066f}'; // md-discord
 pub const TELEGRAM: char = '\u{f2c6}'; // fa-telegram

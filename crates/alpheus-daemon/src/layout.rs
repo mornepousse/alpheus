@@ -14,8 +14,8 @@
 //! Blocks: consecutive modules of one kind (`ModuleSpec::group`) make one block, never across the
 //! free space. The block styles put one blank pad cell inside each end of a block, one blank cell
 //! between blocks (powerline's arrow cell) and two blank cells between the modules of one block.
-//! The grid records the blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly
-//! what it always was.
+//! The grid records the blocks (`Grid::groups`) for every style but `flat`, which has none: its
+//! grid is cells and separators, nothing else.
 //!
 //! Never:
 //! - drop a module a narrow bar must keep: the workspaces, the clock and the bell are not in
@@ -34,12 +34,12 @@ use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
 use alpheus_common::theme::settings::{BarStyle, ModuleColors};
 
-/// Order of disappearance when space runs short: the spec's (resources,
-/// media, title), then the system indicators; the tray goes right
-/// after resources (tray spec), and the launcher button
-/// after the system indicators (2026-10-05: `Mod+Space` still opens the
-/// launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb), then the failed-units count (diagnostics spec § 6), then the Shield glyph (shield spec § 4), then the privacy indicators (privacy spec § 1), then the power button, the last of
-/// all (power spec § 1).
+/// Order of disappearance when space runs short: the spec's (resources, media, title), then the
+/// system indicators; the tray goes right after resources (tray spec), and the launcher button
+/// after the system indicators (2026-10-05: `Mod+Space` still opens the launcher), then the timer
+/// chip (timer spec § 2: its popup is also reachable from a verb), then the failed-units count
+/// (diagnostics spec § 6), then the Shield glyph (shield spec § 4), then the privacy indicators
+/// (privacy spec § 1), then the power button, the last of all (power spec § 1).
 /// Workspaces, the clock and the bell always stay.
 const REMOVAL: [ModuleId; 14] = [
     ModuleId::Resources,
@@ -261,14 +261,12 @@ impl Bar {
         lay_out_styled(&segs, columns, gap_at, self.style)
     }
 
-    /// When the window module is configured but has no segment (no active
-    /// window: `window()` returned `None`, so nothing in `segs` is elastic),
-    /// the index in `segs` where its free space belongs: just before the
-    /// segment that follows it in the configured module order, counting
-    /// only modules that actually survived into `segs` (narrow screens may
-    /// have dropped others along the way). `None` when the window module is
-    /// absent from the configuration entirely (the old "before the last
-    /// segment" rule applies then) or when it does have a segment (its own
+    /// When the window module is configured but has no segment (no active window: `window()`
+    /// returned `None`, so nothing in `segs` is elastic), the index in `segs` where its free space
+    /// belongs: just before the segment that follows it in the configured module order, counting
+    /// only modules that actually survived into `segs` (narrow screens may have dropped others
+    /// along the way). `None` when the window module is absent from the configuration entirely (the
+    /// free space then goes before the last segment) or when it does have a segment (its own
     /// elasticity handles the free space).
     fn window_gap(&self, segs: &[Segment]) -> Option<usize> {
         if segs.iter().any(|s| s.module == ModuleId::Window) {
@@ -301,7 +299,7 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
     let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(spacing_width(segs, space, spacing), u16::saturating_add);
     let free = columns.saturating_sub(fixed);
     let pad = if spacing == Spacing::Blocks { PAD } else { 0 };
-    // `flat` paints no block: its grid records none, exactly today's.
+    // `flat` paints no block: its grid records none.
     let record = style != BarStyle::Flat;
     // The block being laid out: its kind, first cell and hue; and where the last segment's text ended.
     let mut open: Option<(GroupKind, u16, Option<Hue>)> = None;

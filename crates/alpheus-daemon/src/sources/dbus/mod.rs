@@ -105,7 +105,8 @@ pub trait Bus {
     /// gone, the call fails with NotFound.
     fn owner(&mut self, service: &str) -> io::Result<Option<String>>;
     /// `StartServiceByName("org.freedesktop.UPower", 0)` on the bus driver: the one activation
-    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the activation fails; blocks at most `TIMEOUT`.
+    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the
+    /// activation fails; blocks at most `TIMEOUT`.
     fn start_upower(&mut self) -> io::Result<()>;
     /// `org.freedesktop.DBus.Properties.GetAll`, to `destination` (a unique name).
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props>;

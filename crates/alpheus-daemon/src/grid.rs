@@ -219,7 +219,7 @@ pub(crate) fn char_width(c: char) -> u16 {
 /// so the announced width stays what is actually written. A combining mark
 /// with no precomposed form (e.g. `q\u{301}`) cannot be recomposed: it stays
 /// alone in the stream, and so is always skipped further on (width 0),
-/// unchanged behaviour.
+/// so the text still reads as it was written.
 enum NfcChars<'a> {
     /// `s` is already NFC (the case of nearly all titles): no allocation, we
     /// read its characters directly.
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn combining_mark_without_precomposed_form_always_skipped() {
         // "q" has no precomposed form with the acute accent: the combining
-        // mark stays skipped, unchanged behaviour.
+        // mark keeps its own place in the stream, and is skipped for its width.
         let mut g = Grid::empty(4);
         g.write(0, 4, "q\u{301}x", Style::NORMAL);
         assert_eq!(g.text(), "qx  ");
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_text_already_composed_is_left_as_it_is() {
-        // A title already in NFC (accents and CJK) is written as before.
+        // A title already in NFC (accents and CJK) is written through unchanged.
         let mut g = Grid::empty(8);
         g.write(0, 8, "é日本", Style::NORMAL);
         assert_eq!(g.text(), "é日本   ");

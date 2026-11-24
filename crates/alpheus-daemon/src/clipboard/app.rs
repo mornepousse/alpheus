@@ -393,7 +393,7 @@ impl App {
 
     /// At start: a seat that exists already gets the device even if it has no capability yet (a
     /// compositor with no input device announces none), as data-control needs no focus nor
-    /// capability. `new_seat` and `new_capability` follow it later as before.
+    /// capability. `new_seat` and `new_capability` do the same for a seat that appears later.
     pub(crate) fn clipboard_attach_at_start(&mut self) {
         self.clipboard_attach_any(None);
     }

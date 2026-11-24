@@ -114,8 +114,8 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
         // right click takes over the TUI tab the left click used to open.
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Left) if quick => None,
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Right) if quick => open_tab(bar, m),
-        // -l 1.0: never beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
+        // `-l 1.0`: a wheel notch never takes the volume beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
         (ModuleId::Resources, Button::Right) => Some(bar.config.actions.resources.clone()),
