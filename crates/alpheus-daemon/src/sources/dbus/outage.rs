@@ -108,7 +108,7 @@ fn domain_index(d: Domain) -> usize {
     }
 }
 
-/// Per-domain log rate limiting (follow-up, re-review): `read` runs again,
+/// Per-domain log rate limiting: `read` runs again,
 /// fresh, on every backoff round — a new `session`, a new `SystemState` —
 /// so without state that outlives one round, a domain stuck down would
 /// repeat the same log line every round, forever. One `DomainLog` lives for

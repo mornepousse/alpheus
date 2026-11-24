@@ -531,8 +531,8 @@ pub(crate) fn calendar_month(c: &Calendar) -> String {
 }
 
 impl App {
-    /// Closes any open popup (Replaced) and the launcher (it closes with ClickOutside first, decision of
-    /// the launcher plan), then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
+    /// Closes any open popup (Replaced) and the launcher (which closes with ClickOutside first),
+    /// then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
     /// comes on top: `Fonts::frame`). `input`: `Grab` takes the keyboard and closes on an outside
     /// click (uses `last_press`'s serial); `Keys` takes the keyboard without a grab (the quick verb);
     /// `Tooltip` neither. false when the output's bar is not configured.
@@ -592,7 +592,7 @@ impl App {
         let layer = self.surfaces[i].layer.clone();
         let parent = layer.wl_surface().clone();
         if grab && (self.exclusive_during_grab || keyed) {
-            // Fact check 5: committed before the popup exists, so the bar's surface holds the
+            // Committed before the popup exists, so the bar's surface holds the
             // keyboard focus while the grab lasts (back to None on close). A keyed popup has no
             // grab to hand it the keyboard: the bar goes Exclusive on every compositor.
             layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
