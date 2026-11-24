@@ -168,11 +168,16 @@ impl App {
     pub(crate) fn launcher_open_processes(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         // The configuration's warnings are said by the opens that use more of it (the apps and the Tools menu).
         let config = crate::launcher::host::read_config(&alpheus_common::paths::config_dir(), &mut |_| {});
+        // `proc_dir` is `/proc` but for a test's own folder: the signaller reads start times from the same place.
+        self.processes.root = config.proc_dir.clone();
+        self.processes.signaller = Box::new(RealSignaller::new(config.proc_dir.clone()));
         // SAFETY: getuid(2) takes nothing and cannot fail.
         let uid = unsafe { libc::getuid() };
         let samples = processes::snapshot(&self.processes.root, uid, MAX_PROCESSES);
         self.processes.excluded = self.processes_excluded();
         let rows = processes::rows(None, &samples, &self.processes.excluded);
+        // A count, never a name: how many rows the box opens with.
+        log(&format!("kill list: {count} listed", count = rows.len()));
         let model = Launcher::for_processes(config, rows);
         // Opened first: opening replaces any other box, whose close clears this state.
         self.launcher_open(qh, model, None, requested_at);
