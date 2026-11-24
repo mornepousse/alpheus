@@ -24,7 +24,7 @@
 //!   `the_vpn_logs_name_no_profile`, which reads this file's VPN lines);
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md, docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/decisions.md ("A verb-opened quick panel takes the keyboard without a grab",
 //! "A Wi-Fi attempt on a new network outlives the quick panel", "The quick panel reads the sink
 //! list through a shared tap").
@@ -134,7 +134,7 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
     }
 }
 
-/// The headset a bar message carries for the open panel (quick Bluetooth spec § 4), taken out of it
+/// The headset a bar message carries for the open panel, taken out of it
 /// like the sink list (the bar never keeps one), and read before `taken_sinks`: a message carries
 /// the panel's state only when it has a sink list (`Scope::Panel`); a base-scope one, whose headset
 /// is None for "not carried", gives None and leaves the panel's row alone. pw-dump gone
@@ -150,7 +150,7 @@ pub(crate) fn taken_headset(m: &mut Msg) -> Option<Option<Headset>> {
     }
 }
 
-/// The Wi-Fi state a bar message carries for the open panel (quick Wi-Fi spec § 5), taken out of it
+/// The Wi-Fi state a bar message carries for the open panel, taken out of it
 /// with the open it was read for: the bar never keeps one. None: not a Wi-Fi message.
 pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)> {
     match m {
@@ -159,7 +159,7 @@ pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)
     }
 }
 
-/// The VPN state a bar message carries for the open panel (quick VPN spec § 5), taken out of it
+/// The VPN state a bar message carries for the open panel, taken out of it
 /// with the open it was read for: the bar never keeps one. None: not a VPN message.
 pub(crate) fn taken_vpn(m: &mut Msg) -> Option<(Option<u64>, Option<VpnState>)> {
     match m {
@@ -211,7 +211,7 @@ pub(crate) fn panel_vpn(
     Some(q.follow_vpn(live, state, now))
 }
 
-/// The Bluetooth view a bar message carries for the open panel (quick Bluetooth spec § 5), taken out
+/// The Bluetooth view a bar message carries for the open panel, taken out
 /// of it with the open it was read for: the bar never keeps one. None: not a Bluetooth view message.
 pub(crate) fn taken_bt(m: &mut Msg) -> Option<(Option<u64>, Option<BtView>)> {
     match m {
@@ -369,9 +369,9 @@ pub(crate) fn resumed(q: &mut Quick, f: WifiFollow) -> QuickAction {
     q.resumed_wifi_focus().unwrap_or(QuickAction::Redraw)
 }
 
-/// Spawns `argv` for the open panel `q` (None: none open), never waiting (spec § 5): the log line,
+/// Spawns `argv` for the open panel `q` (None: none open), never waiting: the log line,
 /// "quick: <what>", or "quick: <what> could not start (<kind word>)" once per program per open
-/// (spec § 6; its row stays), the program itself never named. A
+/// (its row stays), the program itself never named. A
 /// connection whose nmcli never started (NotFound) ends its attempt at once: nothing to follow.
 pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[String], what: &str) -> Option<String> {
     let (program, args) = argv.split_first()?;
@@ -396,8 +396,7 @@ pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[S
     }
 }
 
-/// Spawns `argv` with the open password field's bytes and a newline on its standard input
-/// (quick Wi-Fi spec § 3), never as an argument; the field closes right after, its buffer wiped,
+/// Spawns `argv` with the open password field's bytes and a newline on its standard input, never as an argument; the field closes right after, its buffer wiped,
 /// whatever happened. The log line: "quick: <what>", never the password, never the SSID. nmcli
 /// not found ends the attempt at once; any other error may come after it started (it closed its
 /// input early): the attempt stays, never retried, and ends by NetworkManager's word or its timeout.
@@ -487,14 +486,14 @@ impl App {
         self.quick_toggle(qh, Some(anchor), Focus::of(target));
     }
 
-    /// ↑ ↓ ← →, Space, Enter, Escape, Home, End (quick spec § 3); the repeat tells a held key.
+    /// ↑ ↓ ← →, Space, Enter, Escape, Home, End; the repeat tells a held key.
     fn quick_key(&mut self, k: Key) {
         let (repeat, now) = (self.keyboard.repeat, Instant::now());
         let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
         self.quick_action(action);
     }
 
-    /// A press acts on its row; the wheel steps a slider or moves the window (quick spec § 3).
+    /// A press acts on its row; the wheel steps a slider or moves the window.
     fn quick_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
         let now = Instant::now();
         let action = match (kind, cell) {
@@ -592,7 +591,7 @@ impl App {
         self.quick_action(action);
     }
 
-    /// `alpheus-launch --quick [sound]` (spec § 1), answered before the launcher's guard
+    /// `alpheus-launch --quick [sound]`, answered before the launcher's guard
     /// (`launcher/socket_glue.rs`, `watch_connection`): toggles the panel on the focused output, the keyboard without a grab;
     /// a verb within TOGGLE_DEBOUNCE of the verb's own open is ignored. Done, also
     /// without the module (nothing opens).
@@ -685,7 +684,7 @@ impl App {
         }
     }
 
-    /// Spawns `argv` through the daemon's executor, never waiting (spec § 5): `spawn_logged`.
+    /// Spawns `argv` through the daemon's executor, never waiting: `spawn_logged`.
     fn quick_spawn(&mut self, argv: &[String], what: &str) {
         let App { popup, exec, .. } = self;
         let q = match popup.as_mut().map(|p| &mut p.body) {
@@ -746,7 +745,7 @@ impl App {
         self.quick.timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
 
-    /// The D-Bus thread follows what the open panel shows of the Wi-Fi (quick Wi-Fi spec § 5): its row,
+    /// The D-Bus thread follows what the open panel shows of the Wi-Fi: its row,
     /// or its detail (and while a connection is under way); with no panel, only a followed attempt's
     /// detail; else nothing. A change wakes the thread once; the same scope again,
     /// nothing.
@@ -759,7 +758,7 @@ impl App {
         tap.set(wifi_scope(panel, self.quick.wifi_follow.as_ref()));
     }
 
-    /// The D-Bus thread follows what the open panel shows of the VPNs (quick VPN spec § 5): the row's
+    /// The D-Bus thread follows what the open panel shows of the VPNs: the row's
     /// state, or the detail's lists (and while a connection is under way); closed, nothing. A change
     /// wakes the thread once; the same scope again, nothing.
     pub(crate) fn quick_vpn_sync(&self) {

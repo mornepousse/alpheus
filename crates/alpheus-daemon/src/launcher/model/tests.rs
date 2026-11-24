@@ -389,7 +389,7 @@ fn a_chosen_line_keeps_its_position_on_stdin_through_filtering() {
     assert_eq!(s.click(0, false), choose("b", Some(1)), "a click too: the first result is the second line");
 }
 
-/// `--visible N` (sources spec § 4): the first N lines on an empty query, every line once typing.
+/// `--visible N`: the first N lines on an empty query, every line once typing.
 #[test]
 fn visible_lists_the_first_lines_on_an_empty_query_and_searches_them_all() {
     let lines = ["Captures", "Affichage", "Captures · Zone", "Affichage · Luminosité · 50%"].map(String::from).to_vec();
@@ -993,7 +993,7 @@ fn a_typed_query_filters_then_steps() {
     assert_eq!(l.step(1), Outcome::Nothing);
 }
 
-// ---- the clipboard history (clipboard spec, task 5) ----
+// ---- the clipboard history (clipboard history) ----
 
 use crate::clipboard::history::{ClipRow, MAX_PINS};
 use std::time::{Duration, Instant};
@@ -1333,7 +1333,7 @@ fn unpinning_puts_the_row_where_the_history_lists_it() {
     assert_eq!(l.clips.iter().map(|c| c.id).collect::<Vec<_>>(), [10, 12, 11], "pinned first, then the unpinned head");
 }
 
-/// Tools spec § 1: a new Tools catalog forgets what the ranker had prepared, or its frecency and
+/// A new Tools catalog forgets what the ranker had prepared, or its frecency and
 /// name ranks would index the old rows.
 #[test]
 fn set_tools_forgets_the_prepared_catalog() {

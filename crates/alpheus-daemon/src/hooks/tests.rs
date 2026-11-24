@@ -405,7 +405,7 @@ fn a_throttled_event_is_said_once_per_episode() {
     assert_eq!(h.fire(Event::Dnd(true), late + REFILL), Verdict::Throttled(HookId::Dnd), "a new episode");
 }
 
-/// Diagnostics spec § 6: `failed_units` fires when the total of the two counts changes; the first
+/// `failed_units` fires when the total of the two counts changes; the first
 /// total is a seed, a source that is down (None) is not a state.
 #[test]
 fn failed_units_fires_when_the_total_changes() {

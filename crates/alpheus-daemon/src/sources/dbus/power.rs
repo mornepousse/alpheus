@@ -1,4 +1,4 @@
-//! power-profiles-daemon (quick spec § 5): the active profile and the profiles it offers, read from
+//! power-profiles-daemon: the active profile and the profiles it offers, read from
 //! `net.hadess.PowerProfiles`'s one object through its owner's unique name, as every reader here
 //! does. Read only: the quick panel sets a profile with `powerprofilesctl`.
 //!

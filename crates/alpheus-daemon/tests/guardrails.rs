@@ -90,7 +90,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
     b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60), ..Sample::default() }));
     b.apply(Msg::Notifications(NotifyView { unread: 2, dnd: false, serving: true }));
-    // A shown microphone, so the privacy module has a zone (privacy spec § 6).
+    // A shown microphone, so the privacy module has a zone.
     let mic = Capture { mic: Indicator { names: vec!["firefox".into()], unnamed: false }, ..Capture::default() };
     b.privacy_at(&Msg::Sound(Some(SoundState { capture: Some(mic), ..SoundState::default() })), Instant::now());
     b
@@ -154,7 +154,7 @@ fn compositor_requests_are_read_only() {
 const OTHER_WRITES: [&str; 8] =
     [".write(", "libc::write", "libc::send", "send_to(", "write_vectored(", "write!(", "writeln!(", "write_fmt("];
 
-/// Mango and Sway spec § 5: the Mango source writes one thing, its request line (`request_line`,
+/// The Mango source writes one thing, its request line (`request_line`,
 /// built from `REQUESTS` only), and every request is a watch: no dispatch, no other verb. No
 /// other way to write on a socket (`OTHER_WRITES`) is used.
 #[test]
@@ -170,7 +170,7 @@ fn mango_writes_only_its_request_lines() {
     }
 }
 
-/// Mango and Sway spec § 3: the Sway source writes one thing, a `Message`'s frame; adding a
+/// The Sway source writes one thing, a `Message`'s frame; adding a
 /// message type must update this exhaustive match (and so this review). No other way to write on
 /// a socket (`OTHER_WRITES`) is used.
 #[test]
@@ -193,7 +193,7 @@ fn sway_writes_only_its_three_messages() {
 }
 
 /// The four files of the two backends parse what a compositor sends: no path in them may panic
-/// (Mango and Sway spec § 5). Production code only.
+/// (see "The Mango and Sway backends read bounded data" in `docs/decisions.md`). Production code only.
 #[test]
 fn the_mango_and_sway_backends_have_no_panicking_path() {
     for file in ["compositor/mango.rs", "compositor/sway.rs", "sources/mango.rs", "sources/sway.rs"] {
@@ -220,7 +220,7 @@ fn the_media_files_have_no_panicking_path() {
     }
 }
 
-/// Small features 1, notification rules: the rules never name an app or a text in a log, and
+/// Notification rules: the rules never name an app or a text in a log, and
 /// notify/mod.rs, the pure model, logs nothing.
 #[test]
 fn the_notification_rules_log_nothing() {
@@ -321,8 +321,9 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 /// The daemon only reads from the compositor, plus two writes: the workspace command, and output
 /// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
 /// and sent only by `outputs/app.rs` (the controller's one-in-flight, last-screen and cap rules);
-/// never output power management, never dpms (displays spec § 2, as amended). A third write is the
-/// clipboard's own selection, set in `clipboard/control.rs` only (clipboard spec decision 14): the
+/// never output power management, never dpms (see "alpheus never handles sleep or the screens' power" in `docs/decisions.md`). A third write is the
+/// clipboard's own selection, set in `clipboard/control.rs` only (see "One file names the clipboard protocol, and only it sets the
+/// selection" in `docs/decisions.md`): the
 /// daemon's re-copy of a history entry, never a primary selection.
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
@@ -338,7 +339,7 @@ fn the_daemon_only_reads_from_the_compositor() {
             assert!(compositor_connection_allowed(&name), "connection to the compositor in {name}");
         }
         assert!(!t.contains("Command::new"), "process spawned directly in {name} (go through the executor)");
-        // The one compositor write besides the workspace command (displays spec § 2): an output
+        // The one compositor write besides the workspace command: an output
         // configuration, built and applied in the protocol file only.
         if let Some(w) = OUTPUT_WRITES.iter().find(|w| t.contains(**w)) {
             assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{w}\": an output configuration outside the protocol file");
@@ -374,14 +375,14 @@ fn the_displays_are_restored_before_the_app_is_dropped() {
     assert!(restore < at("core.conn.flush()"), "restored before the last flush");
 }
 
-/// The only file that speaks `zwlr_output_manager_v1` (displays spec § 1).
+/// The only file that speaks `zwlr_output_manager_v1`.
 const OUTPUTS_PROTOCOL_FILE: &str = "outputs/wlr.rs";
 
 /// What builds or applies an output configuration. `.apply()` with nothing inside: `Bar::apply`
 /// takes a message.
 const OUTPUT_WRITES: [&str; 4] = ["zwlr_output_configuration", "ZwlrOutputConfiguration", "create_configuration", ".apply()"];
 
-/// Displays spec § 1: one file speaks the output protocol; the glue and the rest of the daemon
+/// One file speaks the output protocol; the glue and the rest of the daemon
 /// only see the pure model (`outputs::model`, `outputs::control`).
 #[test]
 fn outputs_protocol_only_in_wlr_rs() {
@@ -398,7 +399,7 @@ fn outputs_protocol_only_in_wlr_rs() {
     assert!(seen, "the protocol file names the protocol");
 }
 
-/// Displays spec § 2 and the DisplayLink freeze: no output power management anywhere in alpheus,
+/// No output power management anywhere in alpheus,
 /// never a screen powered off (`dpms` is already a forbidden word in the daemon).
 #[test]
 fn output_power_management_never_appears() {
@@ -423,7 +424,7 @@ fn output_power_management_never_appears() {
     assert!(files > 100, "the workspace's sources were not found ({files})");
 }
 
-/// Diagnostics spec § 8: the daemon reads systemd's failed-units count and subscribes to its signals,
+/// The daemon reads systemd's failed-units count and subscribes to its signals,
 /// and asks it for nothing else. No method that starts, stops, restarts, resets, kills, enables,
 /// masks, reloads or changes anything of systemd's may be named in `sources/dbus/` (the acting
 /// Bluetooth connection excepted: it names none of them either), the count's one `Get` never
@@ -541,7 +542,7 @@ fn shutting_down_closes_and_saves_the_pad() {
     assert!(close < drop_at, "the pad is saved before the app goes");
 }
 
-/// OSD spec § 1 and the bubbles' (notifications spec § 3): the pill and the bubbles live on the
+/// The OSD pill and the bubbles: the pill and the bubbles live on the
 /// Overlay layer, the only one Hyprland draws above a fullscreen window (the launcher box's rule,
 /// above). A headless sway cannot tell the layers apart (no fullscreen window there), so this
 /// checks the one call that would regress it: each file creates exactly one layer surface, in its
@@ -721,7 +722,7 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
 }
 
-/// Opening the panel marks everything read (spec § 4), but only once it shows:
+/// Opening the panel marks everything read, but only once it shows:
 /// a `popup_open` that refuses (no shared buffer, no positioner) must leave the count on the bell.
 /// Those refusals need a failing compositor or allocator, so the order is checked in the source.
 #[test]
@@ -828,7 +829,7 @@ fn popup_close_resets_tooltip_item_for_a_closed_tooltip() {
     assert!(popup_close.contains("tooltip_item = None"), "popup_close must reset tooltip_item on a closed tooltip: {popup_close}");
 }
 
-/// The launcher socket (spec § 3): bound in exactly one place, its file
+/// The launcher socket: bound in exactly one place, its file
 /// name only ever built by `launcher_ipc::socket_path` (never spelled out,
 /// so it cannot drift between the daemon and alpheus-launch).
 #[test]
@@ -846,7 +847,7 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
-/// Launcher sources (sources spec § 6) and Shield (shield spec § 7): `Executor::capture` blocks for
+/// Launcher sources and Shield: `Executor::capture` blocks for
 /// up to its deadline, so only the source runner (on the scan thread) and the Shield runner (on its
 /// own worker thread) call it (`NonBlocking` delegates it); and neither builds a shell command from
 /// a line — the line is one argv element.
@@ -875,7 +876,7 @@ fn only_the_runners_capture_and_never_through_a_shell() {
     for never in ["shell_argv", "\"sh\"", "\"-c\"", "spawn("] {
         assert!(!runner.contains(never), "{never} in launcher/sources.rs");
     }
-    // The Shield runner (shield spec § 7): a configured argv through `capture`, on its own worker
+    // The Shield runner: a configured argv through `capture`, on its own worker
     // thread (`thread::Builder` is its one way to start it), never a shell and never a detached spawn.
     let shield = shield.expect("shield/run.rs");
     assert!(shield.contains(".capture("), "the Shield runner reads through the executor");
@@ -1610,8 +1611,8 @@ fn the_only_stream_is_pw_dump_monitor() {
     }
 }
 
-/// Nothing of the launcher is resident at rest (spec § 3, Global
-/// Constraints): every place in the daemon that can start a thread, arm a
+/// Nothing of the launcher is resident at rest (see "Nothing of the launcher stays
+/// resident while it is closed" in `docs/decisions.md`): every place in the daemon that can start a thread, arm a
 /// timer, watch a file descriptor or bind a keyboard is in this table with
 /// the reason it does not run at rest. A new one fails until it is added —
 /// and justified — here. Production code only (comments included: never
@@ -1639,18 +1640,19 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("startup.rs", "Generic::new", 1),
         // In wayland.rs: the tray's DeadlineTimer, armed only while calls are pending; the tooltip's,
         // armed only while the pointer rests on a tray icon; the media popup's tick, armed only while
-        // that popup is open and its player plays; the power menu's (power spec § 4), armed only
+        // that popup is open and its player plays; the power menu's, armed only
         // while it is open and its reboot or power-off question (3 s) is pending; the privacy
-        // indicators' off-delay (privacy spec § 4), armed only while an indicator is pending off.
+        // indicators' off-delay, armed only while an indicator is pending off.
         // The other features' timers are built in their own files, listed below.
         ("wayland.rs", "Timer::", 5),
-        // The camera scan's debounce (privacy delivery 2), built in `Camera::new`: armed only for
+        // The camera scan's debounce (see "A burst of camera triggers is scanned at most one second after its first" in
+        // `docs/decisions.md`), built in `Camera::new`: armed only for
         // 300 ms after a device open, close, creation or removal.
         ("privacy/camera_app.rs", "Timer::", 1),
         // The quick panel's timer, built in `QuickApp::new`: armed only while it is open and a
         // re-read (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
-        // forget question (quick delivery 3) is.
+        // forget question is.
         ("quick/app.rs", "Timer::", 1),
         // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
         // runs (at its end, and at each minute of the chip).
@@ -1666,7 +1668,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
-        // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
+        // The displays' one DeadlineTimer: the hotplug debounce (500 ms after a
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
         ("outputs/app.rs", "Timer::", 1),
@@ -1687,10 +1689,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The theme's inotify fd: readable only when theme.toml or a colour file
         // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
         ("watch.rs", "Generic::new", 1),
-        // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
+        // The camera watch's inotify fd (see "The camera watch is a second inotify instance" in `docs/decisions.md`): readable only on an open, close,
         // creation or removal of a video device; `drain` reads it to EAGAIN.
         ("privacy/camera_app.rs", "Generic::new", 1),
-        // The quick panel's acting Bluetooth connection (quick delivery 3): inserted only while the
+        // The quick panel's acting Bluetooth connection: inserted only while the
         // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
         // answers or calls the agent.
         ("quick/bt_app.rs", "Generic::new", 1),
@@ -1707,7 +1709,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The keyboard, shared by the launcher and the grabbing popups: bound
         // while one of them is open, released once neither is.
         ("popup.rs", "get_keyboard", 1),
-        // The Shield command or read (shield spec § 7): one worker thread, alive only while that
+        // The Shield command or read: one worker thread, alive only while that
         // command or read runs (one action slot and one read slot, each held until the worker's
         // report), and its one DeadlineTimer, built in `ShieldApp::new`: armed only while a
         // switch waits for its flag (the 5 s grace or the 60 s bound).
@@ -1823,7 +1825,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     }
     assert!(
         MATCH_RULES.iter().filter(|(_, r)| r.contains("PowerProfiles")).all(|(_, r)| r.contains("'net.hadess.PowerProfiles'")),
-        "power profiles: its own signals only, never a write (quick spec § 5)"
+        "power profiles: its own signals only, never a write"
     );
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
@@ -1840,7 +1842,7 @@ const DBUS_FILES: [&str; 6] = [
     "session_bus/router.rs",
 ];
 
-/// Bluetooth's acting connection (quick settings delivery 3, spec § 5): the
+/// Bluetooth's acting connection: the
 /// only D-Bus file that changes anything, and only through the pinned
 /// `ActMethod` list; one builder, one sender, auto-start off; never a name
 /// requested, never the default agent, never a blocking call.
@@ -1909,7 +1911,7 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
     }
 }
 
-/// Bluetooth spec § 3, § 5: the acting connection serves one object, `org.bluez.Agent1` at
+/// The acting connection serves one object, `org.bluez.Agent1` at
 /// AGENT_PATH, to BlueZ's unique name only; every reply is built in `answer`.
 #[test]
 fn the_bluetooth_connection_serves_only_the_agent() {
@@ -1928,7 +1930,7 @@ fn the_bluetooth_connection_serves_only_the_agent() {
     assert!(screen.find("ACCESS_DENIED") < screen.find("UNKNOWN_METHOD"), "the sender is checked first");
 }
 
-/// The tray's D-Bus (spec § 3): dbus-crossroads
+/// The tray's D-Bus: dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
 /// no libdbus session lookup (it could autolaunch `dbus-launch`); no
 /// blocking call nor `RefArg` decoding; the only names ever requested are the
@@ -2045,7 +2047,7 @@ fn the_portal_is_read_through_exactly_two_members() {
     }
 }
 
-/// Diagnostics spec § 8: the user manager is asked for one property and told `Subscribe`, nothing
+/// The user manager is asked for one property and told `Subscribe`, nothing
 /// else of systemd's. `Subscribe` is the only call on the Manager interface the session bus's
 /// allowlist holds; the count is a `Get` of one property, never `GetAll` (its `Environment` may
 /// hold secrets); `failed/app.rs` names no dbus type, builds no call, and logs fixed words (no
@@ -2328,7 +2330,7 @@ fn a_clipboard_row_spawns_nothing_from_the_launcher() {
 
 /// Every activation the launcher can produce — every result of every mode,
 /// Enter and Ctrl+Enter, typed shell text, under both spawners — only runs
-/// the shapes of the allowlist (Global Constraints): an app's argv, alone
+/// the shapes of the allowlist: an app's argv, alone
 /// or in its systemd scope, after the terminal for Terminal=true; a $PATH
 /// command, alone (Ctrl+Enter, detached) or held in the terminal (Enter,
 /// `terminal_hold`); `sh -c` only from the Commands mode, alone or held the
@@ -2430,8 +2432,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             outcomes.push((dollared.key(Key::Enter), mode, reads_it));
             outcomes.push((dollared.key(Key::CtrlEnter), mode, reads_it));
             if mode == Mode::All {
-                // The prefix route into Commands mode (Global Constraints:
-                // `>` by default): starting in All and typing the prefix
+                // The prefix route into Commands mode (`>` by default): starting in All and typing the prefix
                 // switches mode exactly like click_mode, so typed shell
                 // text after it reaches `sh` too — tagged Commands below,
                 // the mode it actually ran in by the time Enter fired.
@@ -2562,7 +2563,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert_eq!(argv, ["tools-menu", "--run", line], "{spawner:?}: the line is one argv element, as is");
         assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell: {argv:?}");
     }
-    // The calculator (small features 1): Enter and Ctrl+Enter on its row, in its own mode and in All,
+    // The calculator: Enter and Ctrl+Enter on its row, in its own mode and in All,
     // reach exactly one call, the configured `copy` command, the text on its input and never in its
     // argv, never in a scope, never through a shell; and Copy comes from the calculator row alone.
     let copy_bin = bin.join("copy-stub");
@@ -2721,7 +2722,7 @@ fn the_daemon_paints_with_roles_never_the_legacy_palette() {
     assert!(files.len() > 20, "the daemon's sources were not found");
 }
 
-/// Privacy delivery 2: the config directory and the video devices are only watched,
+/// The config directory and the video devices are only watched,
 /// never written by the daemon; inotify lives in inotify.rs (the wrapper), watch.rs (the theme) and
 /// privacy/camera.rs (the cameras) alone.
 #[test]
@@ -2730,7 +2731,7 @@ fn the_theme_and_camera_watches_only_read() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
-        // privacy/camera.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
+        // privacy/camera.rs holds the second inotify instance, on /dev's video nodes.
         if name == "watch.rs" || name == "privacy/camera.rs" || name == "inotify.rs" {
             found |= name == "watch.rs";
             for never in
@@ -2763,7 +2764,7 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     }
 }
 
-/// Timed do-not-disturb (small features 1, decisions 7 and 8): the timer's callback calls `fired()`
+/// Timed do-not-disturb (see "A late end is applied once" and "The clock's minute tick re-checks the timer" in `docs/decisions.md`): the timer's callback calls `fired()`
 /// before anything arms the timer again, and the clock's minute tick re-checks the wall-clock end
 /// (a suspended laptop's monotonic timer is late).
 #[test]
@@ -2850,7 +2851,7 @@ fn the_notification_server_has_no_panicking_path() {
 /// (`unmatched_entries`), so a rename cannot take one out of the checks in silence.
 const OSD_FILES: &[&str] = &["osd/mod.rs", "osd/surface.rs", "backlight.rs"];
 
-/// OSD spec § 2 and its guardrails: the OSD reads sysfs and shows, nothing else. Its three files
+/// The OSD reads sysfs and shows, nothing else. Its three files
 /// write no file, create nothing, change no permission, make no raw system call (no `libc::`, no
 /// `unsafe`), and, through `NO_THREAD_NOR_COMMAND`, run no command. Production code only.
 #[test]
@@ -2885,7 +2886,7 @@ fn the_osd_only_reads() {
     assert_eq!(checked, 3, "osd/mod.rs, osd/surface.rs and backlight.rs");
 }
 
-/// No panic in the OSD's production code (spec § 5): with its tests left out, each file has no
+/// No panic in the OSD's production code: with its tests left out, each file has no
 /// `.expect(`, `.unwrap()` nor `panic!(`.
 #[test]
 fn the_osd_has_no_panicking_path() {
@@ -2916,7 +2917,7 @@ fn the_resources_popup_has_no_panicking_path() {
     }
 }
 
-/// Quick spec § 5, § 6: the panel's model and its state reader read and decide, nothing else: no
+/// The panel's model and its state reader read and decide, nothing else: no
 /// file written, nothing created, no raw system call; and, through `NO_THREAD_NOR_COMMAND`, no
 /// command run. Production code only.
 #[test]
@@ -2958,7 +2959,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     }
 }
 
-/// Quick spec § 5: every command the panel can build — every key on every row (twice: the
+/// Every command the panel can build — every key on every row (twice: the
 /// confirmation's second activation), the outputs detail, every press of every cell with every
 /// button (twice), the wheel both ways — is one of the exact shapes; the configured commands run as
 /// given. And each shape is reached.
@@ -3030,7 +3031,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             }
         }
     }
-    // Quick Wi-Fi spec § 5: the Wi-Fi row and its detail, the radio on and off, a network of every
+    // The Wi-Fi row and its detail, the radio on and off, a network of every
     // kind; every key on every pick (twice), every press of every cell with every button (twice).
     const UUID_HOME: &str = "11111111-2222-4333-8444-555555555555";
     const UUID_SAVED: &str = "33333333-4444-4555-8666-777777777777";
@@ -3111,7 +3112,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         record(q.set_wifi(Some(failing), t).action);
         record(q.due(t + quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
-    // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
+    // The VPN row and its detail with one profile of each kind, active or not; every
     // key on every pick (twice), every press of every cell with every button (twice).
     const UUID_VPN_1: &str = "00000000-0000-4000-8000-000000000001";
     const UUID_VPN_2: &str = "00000000-0000-4000-8000-000000000002";
@@ -3155,7 +3156,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             }
         }
     }
-    // Quick Bluetooth spec § 2: Space on the row with rfkill holding the adapter off unblocks it.
+    // Space on the row with rfkill holding the adapter off unblocks it.
     let bt_off = Live { bluetooth: Some(&BtState::Off), ..live };
     let mut q = Quick::new(Focus::Top, &bt_off, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
     q.bt.view =
@@ -3271,7 +3272,7 @@ fn every_quick_command_stays_on_the_allowlist() {
     }
 }
 
-/// Quick spec § 6: no panic in the panel's production code.
+/// No panic in the panel's production code.
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
@@ -3297,7 +3298,7 @@ fn the_quick_panel_has_no_panicking_path() {
     }
 }
 
-/// Quick Bluetooth spec § 5: the acting connection goes with the panel and is
+/// The acting connection goes with the panel and is
 /// let go without a call when BlueZ goes.
 #[test]
 fn the_bluetooth_connection_goes_with_the_panel() {
@@ -3328,7 +3329,7 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     let drop = function_body(&bt_app, "fn bt_let_go(");
     assert!(function_body(&bt_app, "pub(crate) fn bt_drop(").contains("self.bt_let_go()"), "bt_drop is bt_let_go's action taken");
     assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
-    // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
+    // A call in flight ends without `failed` (its answer can no longer come).
     assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
     // A connection lost under us is reopened by the syncs once per open, not forever.
     let readable = function_body(&bt_app, "pub(crate) fn bt_readable(");
@@ -3372,7 +3373,7 @@ fn only_bt_app_and_bt_act_name_btact() {
     assert_eq!(naming, ["quick/app.rs", "quick/bt_app.rs", "sources/dbus/bt_act.rs"]);
 }
 
-/// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
+/// A log line never names a device (BlueZ paths embed the address), and
 /// the glue formats nothing with Debug but an `io::ErrorKind` (an `ActCall`, an `AgentRequest` or a
 /// `BtEvent` carries an object path). The code alone, so a commented example of a line that would
 /// leak is not read as one.
@@ -3400,7 +3401,7 @@ fn the_bluetooth_logs_name_no_device() {
     }
 }
 
-/// Quick Wi-Fi spec § 3: the password goes to nmcli's standard input with a newline, never as an
+/// The password goes to nmcli's standard input with a newline, never as an
 /// argument, and its field closes (the buffer wiped) right after; nothing of the panel formats a key
 /// or the secret with Debug; the buffer's only unsafe is its volatile wipe.
 #[test]
@@ -3439,7 +3440,7 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
 }
 
-/// Quick Wi-Fi spec § 6 and quick VPN spec: no panic in the panel readers (the D-Bus thread's):
+/// No panic in the panel readers (the D-Bus thread's):
 /// bounded, cleaned, never unwrapped.
 #[test]
 fn the_panel_readers_have_no_panicking_path() {
@@ -3453,7 +3454,7 @@ fn the_panel_readers_have_no_panicking_path() {
     }
 }
 
-/// Quick spec § 5: whatever closes the panel (Escape, an outside click, a restyle, the output gone,
+/// Whatever closes the panel (Escape, an outside click, a restyle, the output gone,
 /// a replacing popup), the sound thread goes back to its own scope and the panel's timer goes; a
 /// do-not-disturb change from anywhere repaints its row. No fake Wayland popup can be closed every
 /// way in a unit test: the wiring is checked in the source.
@@ -3492,12 +3493,12 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
             && closed.contains("self.quick.wifi_follow.as_ref().map(WifiFollow::deadline)"),
         "{closed}"
     );
-    // Quick Wi-Fi spec § 5 and the decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the D-Bus thread stops reading the Wi-Fi, unless an
+    // The decision "A Wi-Fi attempt on a new network outlives the quick panel" (docs/decisions.md): the D-Bus thread stops reading the Wi-Fi, unless an
     // attempt on a new network is still followed.
     assert!(closed.contains("wifi_closed(") && closed.contains("self.quick.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
     let wifi_closed = function_body(&quick_app, "pub(crate) fn wifi_closed(");
     assert!(wifi_closed.contains("WifiScope::Closed"), "closed: no Wi-Fi read any more: {wifi_closed}");
-    // Quick Wi-Fi spec § 5: the D-Bus thread follows what the open panel shows, and nothing once closed.
+    // The D-Bus thread follows what the open panel shows, and nothing once closed.
     for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
         let body = function_body(&quick_app, f);
         assert!(body.contains("self.quick_wifi_sync()"), "{f}: the tap follows the panel: {body}");
@@ -3525,7 +3526,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }
 
-/// Power spec § 3, § 5: whatever keys, hovers and presses reach the menu — every pair of keys at
+/// Whatever keys, hovers and presses reach the menu — every pair of keys at
 /// once, then a third past CONFIRM_AFTER; every row pressed twice, at once and past it — it only ever
 /// runs a `[quick]` session entry whose command is set, each one is reached, and reboot or power
 /// off never run without a second activation CONFIRM_AFTER after the first.
@@ -3594,7 +3595,7 @@ fn every_power_menu_activation_is_a_configured_session() {
     }
 }
 
-/// Power spec § 5: no panic in the power menu's production code.
+/// No panic in the power menu's production code.
 #[test]
 fn the_power_menu_has_no_panicking_path() {
     let files = source_files();
@@ -3659,7 +3660,7 @@ fn the_timer_is_wired_through_one_path() {
     assert!(!body.contains(".apply("), "timer_do applies no change but through change_step: {body}");
 }
 
-/// Timer spec § 8: no panic in the focus timer's production code (it parses a file it did not
+/// No panic in the focus timer's production code (it parses a file it did not
 /// write, and does arithmetic on wall-clock times).
 #[test]
 fn the_timer_has_no_panicking_path() {
@@ -3673,7 +3674,7 @@ fn the_timer_has_no_panicking_path() {
     }
 }
 
-/// Small features 1: the calculator's evaluator runs on each keystroke of the launcher's
+/// The calculator's evaluator runs on each keystroke of the launcher's
 /// query and must never panic, whatever is typed. Production code only.
 #[test]
 fn the_calculator_has_no_panicking_path() {
@@ -3772,7 +3773,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
-/// The Tools menu's pure parts (tools spec § 9): no panicking path (a name, a command or a choice
+/// The Tools menu's pure parts: no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
 /// range. Production code only.
 const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs"];
@@ -3795,7 +3796,7 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
 }
 
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
-/// `launcher/tools/join.rs` alone (tools spec § 8): no other production file of the menu names their items.
+/// `launcher/tools/join.rs` alone: no other production file of the menu names their items.
 /// A plain word search for the shield would hit the emoji table and the VPN model, so the
 /// searched words are the hook points' own names; `"diagnostics"` quoted is the tab's slug (the
 /// table's `tab.diagnostics` id is another literal).
@@ -4025,8 +4026,7 @@ fn notes_files_are_written_only_through_state_file() {
     assert!(seen >= 7, "the notes files were found: {seen}");
 }
 
-/// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus
-/// thread and the bar's loop; neither may panic (constraints: no panicking path).
+/// Bluetooth's D-Bus files run on the D-Bus thread and the bar's loop; neither may panic.
 #[test]
 fn the_bluetooth_d_bus_files_have_no_panicking_path() {
     let files = source_files();
@@ -4039,7 +4039,7 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
     }
 }
 
-/// Power spec § 3, § 4: whatever closes the menu (Escape, an entry run, an outside click, a restyle,
+/// Whatever closes the menu (Escape, an entry run, an outside click, a restyle,
 /// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
 /// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
 /// in a unit test: the wiring is checked in the source.
@@ -4067,14 +4067,14 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
     assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");
     assert_eq!(power_app.matches("spawn_session(").count(), 2, "defined once, called once: {power_app}");
-    // A held Enter acts once (power spec § 2): the menu's key hook hands the keyboard's own repeat
+    // A held Enter acts once: the menu's key hook hands the keyboard's own repeat
     // flag to the model, never a constant.
     assert!(row.contains("key: App::power_key,"), "{row}");
     let key = function_body(&power_app, "fn power_key(");
     assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
 }
 
-/// Timer spec § 3, § 8: whatever closes the timer popup, the one-second cadence goes (`timer_sync`
+/// Whatever closes the timer popup, the one-second cadence goes (`timer_sync`
 /// sees the popup gone) and an end the popup showed is seen. No fake Wayland popup can be closed
 /// every way in a unit test: the wiring is checked in the source.
 #[test]
@@ -4092,7 +4092,7 @@ fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     assert!(matches!((seen, sync), (Some(a), Some(b)) if a < b), "seen first, then the deadline without the seconds: {closed}");
 }
 
-/// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
+/// Only the arrows repeat in the panel, so SCTK's own repeat must be told from a
 /// press: both repeat paths raise `keyboard.repeat` around `key_event`.
 #[test]
 fn the_keyboards_own_repeat_is_told_from_a_press() {
@@ -4106,7 +4106,7 @@ fn the_keyboards_own_repeat_is_told_from_a_press() {
     }
 }
 
-/// Privacy spec § 8: no panic in the privacy module's production code, nor in the sound model's
+/// No panic in the privacy module's production code, nor in the sound model's
 /// privacy functions. The bodies pulled out of `pipewire/graph.rs` are scanned in both views, so a
 /// panicking call hides from this neither behind a comment that names it nor behind a comment's
 /// brace that would end a body early.
@@ -4127,7 +4127,7 @@ fn the_privacy_module_has_no_panicking_path() {
     }
 }
 
-/// Small features 1, decision 7: every change of what the privacy graph shows ends in
+/// Every change of what the privacy graph shows ends in
 /// `privacy_changed`, which hands the screen's edge to do-not-disturb after the timer sync
 /// (`privacy_tick` and `privacy_feed` both reach it).
 #[test]
@@ -4140,7 +4140,7 @@ fn privacy_changed_follows_sharing_for_dnd() {
     assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
 }
 
-/// Privacy spec § 4: the off-delay's timer is the bar's, not the popup's. It follows
+/// The off-delay's timer is the bar's, not the popup's. It follows
 /// `Privacy::deadline` after every change, popup open or not (so `popup_close` never lets it go),
 /// and the tick forgets its dropped source before applying what is due.
 #[test]
@@ -4181,7 +4181,7 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 
-/// Resources popup spec § 6: a tick applies the reading before it repaints, and repaints only
+/// A tick applies the reading before it repaints, and repaints only
 /// while the popup is the open one (`App` cannot be built without Wayland: a source guardrail, as
 /// for the privacy feed). The timer in `startup.rs` goes through it.
 #[test]
@@ -4225,7 +4225,7 @@ fn camera_code() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// Privacy delivery 2: no panic in the camera watch's production code.
+/// No panic in the camera watch's production code.
 #[test]
 fn the_camera_watch_has_no_panicking_path() {
     for (name, production) in camera_sources() {
@@ -4235,7 +4235,7 @@ fn the_camera_watch_has_no_panicking_path() {
     }
 }
 
-/// Privacy delivery 2: nothing under /dev is ever opened or read; the one `read_to_string` is a
+/// Nothing under /dev is ever opened or read; the one `read_to_string` is a
 /// process's `comm`.
 #[test]
 fn the_camera_watch_opens_nothing_under_dev() {
@@ -4253,7 +4253,7 @@ fn the_camera_watch_opens_nothing_under_dev() {
     assert!(reads > 0, "the comm read was not found: the check is hollow");
 }
 
-/// Privacy delivery 2: the debounce's timer is forgotten first, and a scan that
+/// The debounce's timer is forgotten first, and a scan that
 /// changes nothing still syncs the off-delay's timer (a pending off arms it).
 #[test]
 fn the_camera_tick_fires_before_scanning() {
@@ -4302,7 +4302,7 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
     assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick/bt.rs takes the module's glyphs");
 }
 
-/// Small features 1, task 9: the alerts' production code cannot panic, and `on_bar_message` feeds
+/// The alerts' production code cannot panic, and `on_bar_message` feeds
 /// them before the bar keeps the message.
 #[test]
 fn on_bar_message_feeds_the_battery_alerts() {
@@ -4323,7 +4323,7 @@ fn on_bar_message_feeds_the_battery_alerts() {
     }
 }
 
-/// Small features 1, task 9: a server that just started serving re-offers the last battery
+/// A server that just started serving re-offers the last battery
 /// reading (an alert held back before the name was held must not be lost).
 #[test]
 fn a_new_server_gets_the_last_battery_reading() {
@@ -4333,7 +4333,7 @@ fn a_new_server_gets_the_last_battery_reading() {
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }
 
-/// Hooks spec § 3: `spawn_with_env(` starts a user's command with the event's variables; only the
+/// `spawn_with_env(` starts a user's command with the event's variables; only the
 /// hooks' glue calls it (once), beside the executor's own wrapper. Production code only.
 #[test]
 fn spawn_with_env_only_runs_hooks() {
@@ -4404,7 +4404,7 @@ fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
     assert_eq!(found[1], "log(&line)");
 }
 
-/// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
+/// A hook's log lines hold fixed words only, never a command, a variable or a name.
 /// Whole statements, so a `format!` split over several lines is read as one, and the code alone, so
 /// a commented example of a line that would leak is not read as one.
 #[test]
@@ -4425,7 +4425,7 @@ fn hook_logs_carry_fixed_words_only() {
     }
 }
 
-/// Hooks spec § 3: `started` runs once the launcher's socket is watched, so a `started` hook can
+/// `started` runs once the launcher's socket is watched, so a `started` hook can
 /// call `alpheus-launch`.
 #[test]
 fn hooks_start_after_the_launcher_socket_watch() {
@@ -4437,7 +4437,7 @@ fn hooks_start_after_the_launcher_socket_watch() {
     assert!(watch < started, "hooks_started() must come after the launcher socket watch");
 }
 
-/// Hooks spec § 2: each state change the hooks follow is handed to them where it happens, and each
+/// Each state change the hooks follow is handed to them where it happens, and each
 /// public entry point is a no-op without hooks.
 #[test]
 fn the_hooks_are_fed_where_state_changes() {
@@ -4566,7 +4566,7 @@ fn the_notes_spawn_only_the_copy_command() {
     assert!(seen >= 8, "the notes files were found: {seen}");
 }
 
-/// Quick notes (P9): the pad's glue never panics on its own either: no unwrap, expect, panic or
+/// The pad's glue never panics on its own either: no unwrap, expect, panic or
 /// panicking index (a boundary panic's message embeds the text, and the panic hook logs it).
 #[test]
 fn the_notes_glue_has_no_panicking_path() {
@@ -4597,7 +4597,7 @@ fn a_bar_press_swallows_only_a_launcher_it_closed() {
     assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
 }
 
-/// Quick notes, task 6: the paste pipe is a source of the loop only inside `notes/paste.rs`, and
+/// The paste pipe is a source of the loop only inside `notes/paste.rs`, and
 /// goes with the pad; the pad never owns a selection nor starts a drag.
 #[test]
 fn the_paste_pipe_lives_only_while_the_pad_is_open() {
@@ -4641,7 +4641,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
 }
 
-/// Clipboard task 4: the daemon sets a selection in one place only, `own_selection` of
+/// The daemon sets a selection in one place only, `own_selection` of
 /// `clipboard/control.rs`, for a history entry's re-copy: never `None` (it would clear the user's
 /// clipboard), never the primary selection.
 #[test]
@@ -4882,11 +4882,7 @@ fn no_log_line_names_a_program_an_error_text_or_a_panic_payload() {
         ("compositor/niri.rs", "unreadable {name}: {e}", "the same"),
         ("compositor/niri.rs", "unreadable niri line: {e}", "the same"),
         ("launcher/host.rs", "could not scan applications: {e}", "the launcher's message box (the user's own screen), not the log"),
-        (
-            "launcher/run.rs",
-            "{program}: program not found",
-            "the launcher's message box (spec § 3: a launch failure shows in the box), not the log",
-        ),
+        ("launcher/run.rs", "{program}: program not found", "the launcher's message box (a launch failure shows in the box), not the log"),
         ("launcher/run.rs", "{program}: timed out", "the same"),
         ("launcher/run.rs", "{program}: {m}", "the same"),
         ("launcher/socket.rs", "read: {e}", "the reply to the launcher's client, not the log"),
@@ -5003,7 +4999,7 @@ fn the_launcher_guard_never_logs_a_panic_payload() {
     }
 }
 
-/// Quick VPN spec § 2: a log line never names a profile (its name, label, uuid or object path): the
+/// A log line never names a profile (its name, label, uuid or object path): the
 /// VPN's own files, and the VPN lines of the glue. The code alone, so a commented example of a line
 /// that would leak is not read as one.
 #[test]
@@ -5048,7 +5044,7 @@ fn vpn_log_statements(text: &str) -> Vec<&str> {
     found
 }
 
-/// Quick VPN spec § 5: the D-Bus thread reads the VPNs only while the panel is open and follows it,
+/// The D-Bus thread reads the VPNs only while the panel is open and follows it,
 /// and the VPN state goes to the panel alone.
 #[test]
 fn the_vpn_tap_follows_the_panel() {
@@ -5067,7 +5063,7 @@ fn the_vpn_tap_follows_the_panel() {
     assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
 }
 
-/// Clipboard task 3: every data-control token is named in `clipboard/control.rs` only.
+/// Every data-control token is named in `clipboard/control.rs` only.
 #[test]
 fn data_control_only_in_control_rs() {
     let mut seen = false;
@@ -5118,7 +5114,7 @@ fn every_clipboard_read_start_and_end_syncs_the_timer() {
     assert!(body("clipboard/control.rs", "fn start_read(").contains("clipboard_stop_read()"), "a new read drops the pending one");
 }
 
-/// The clipboard's log lines are the fixed words of the plan, never a text, a type or a count.
+/// The clipboard's log lines are the fixed words, never a text, a type or a count.
 #[test]
 fn clipboard_logs_only_fixed_words() {
     const ALLOWED: [&str; 9] = [
@@ -5185,7 +5181,7 @@ fn the_clipboard_shutdown_wipes_pins_too() {
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }
 
-/// Tools spec § 9: every command a Tools row starts is one the user configured
+/// Every command a Tools row starts is one the user configured
 /// (`[[tools.entry]]`: its `run`, `terminal` or `terminal_hold` in front), the chosen line one
 /// whole element — from the Tools box and from Mod+Space's search alike, in a scope or detached —
 /// never through a shell alpheus builds; and each shape is reached.
@@ -5530,7 +5526,7 @@ fn literals_and_rest(call: &str) -> (Vec<String>, String) {
     (quoted, rest)
 }
 
-/// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
+/// A log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
 /// command, argument or path: what is left of each whole `log(` call once its literals are removed
 /// names none of them, and every literal is one of the list's (a `<reason>` slot is filled by
 /// `Reason::text` alone).
@@ -5602,7 +5598,7 @@ fn the_shield_logs_name_nothing() {
     }
 }
 
-/// Shield spec § 3 and decision 4: the flag is watched in the theme watch's one inotify instance; the
+/// The flag is watched in the theme watch's one inotify instance; the
 /// Shield's own files create none.
 #[test]
 fn the_shield_watch_is_the_theme_watchs_instance() {
@@ -5617,7 +5613,7 @@ fn the_shield_watch_is_the_theme_watchs_instance() {
     assert_eq!(watch.matches("Inotify::new()").count(), 1, "one inotify instance, the theme watch's, carries both targets");
 }
 
-/// Shield spec § 12 and the plan's constraints: the pure model, the parser, the runner and the panel
+/// The pure model, the parser, the runner and the panel
 /// detail have no panicking path (a USB name is hostile text).
 #[test]
 fn the_shield_files_have_no_panicking_path() {
@@ -5636,7 +5632,7 @@ fn the_shield_files_have_no_panicking_path() {
     }
 }
 
-/// Shield spec § 7: an action (on, off, allow) never goes through a pipe it could
+/// An action (on, off, allow) never goes through a pipe it could
 /// be cut by (`capture` drops its read end at a deadline: a privileged helper we cannot kill would die
 /// of SIGPIPE half way through its work); only the listing does. And the daemon's shutdown stops what
 /// it can still reach.
@@ -5666,7 +5662,7 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     assert!(function_body(&startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
 }
 
-/// Shield spec § 5: the panel's timer follows its view from the open, so a
+/// The panel's timer follows its view from the open, so a
 /// `failed` shown at open (a switch that failed a moment before the panel was reopened) clears at its
 /// 4 s: `quick_toggle` syncs it itself, whatever refresh happens to follow.
 #[test]

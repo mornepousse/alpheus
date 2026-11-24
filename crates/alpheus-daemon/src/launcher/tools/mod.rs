@@ -1,5 +1,6 @@
-//! The Tools menu (spec docs/specs/2026-11-21-alpheus-tools-menu-design.md): built-in and
-//! user entries behind `alpheus-launch --tools`. Pure parts here; the glue is `app.rs`, in this folder.
+//! The Tools menu: built-in and user entries behind `alpheus-launch --tools`. Pure parts here; the glue is `app.rs`, in this folder.
+//!
+//! See: docs/features/tools-menu.md.
 
 pub mod app;
 pub mod catalog;

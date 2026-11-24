@@ -528,7 +528,7 @@ pub fn default_sink_delta(node: &str) -> String {
 
 /// A pw-dump delta in which app `app` records the fixture's AG06 source: its `Stream/Input/Audio`
 /// node `consumer_id` in `state`, and the link `link_id` from the source to it (`active` or
-/// `paused`). Only the props the privacy rules read (privacy spec § 2): well under PIPE_BUF.
+/// `paused`). Only the props the privacy rules read: well under PIPE_BUF.
 pub fn capture_delta(consumer_id: u32, app: &str, state: &str, link_id: u32, active: bool) -> String {
     let source = AG06_SOURCE.0;
     let link_state = if active { "active" } else { "paused" };
@@ -662,12 +662,12 @@ fn coreutils_dir() -> PathBuf {
     // could activate on the session: assert it, don't just assume it.
     assert!(!dir.join("systemd-run").exists(), "coreutils dir {} also has systemd-run", dir.display());
     assert!(!dir.join("wm-set").exists(), "coreutils dir {} also has wm-set", dir.display());
-    // Nor the session's own commands the power menu runs (power spec § 5): a fake one missing
+    // Nor the session's own commands the power menu runs: a fake one missing
     // fails to start, never reaches the real one.
     for real in ["systemctl", "loginctl"] {
         assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
     }
-    // Nor Shield mode's privileged commands (shield spec § 7): the tests' `fake-shield` stands in for
+    // Nor Shield mode's privileged commands: the tests' `fake-shield` stands in for
     // the configured argv, and a `pkexec` or `usbguard` reaching the daemon would act on the machine.
     for real in ["pkexec", "usbguard"] {
         assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
@@ -1688,7 +1688,7 @@ fn rewrite_display(json: &str, percent: f64, state: u32) -> String {
     v.to_string()
 }
 
-/// power-profiles-daemon's well-known name (quick spec § 5).
+/// power-profiles-daemon's well-known name.
 pub const POWER_PROFILES_NAME: &str = "net.hadess.PowerProfiles";
 const POWER_PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
 
@@ -1768,7 +1768,7 @@ fn power_profiles_reply(active: &str) -> String {
     )
 }
 
-/// systemd's well-known name and its Manager (diagnostics spec § 6).
+/// systemd's well-known name and its Manager.
 pub const SYSTEMD_NAME: &str = "org.freedesktop.systemd1";
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
@@ -2062,7 +2062,7 @@ pub fn session_plain(
     )
 }
 
-/// NetworkManager's well-known name (quick Wi-Fi spec § 5).
+/// NetworkManager's well-known name.
 pub const NM_NAME: &str = "org.freedesktop.NetworkManager";
 /// Fictional profiles' uuids: a saved network, and the one a failed attempt makes.
 pub const UUID_HOME: &str = "11111111-2222-4333-8444-555555555555";

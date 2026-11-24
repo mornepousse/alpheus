@@ -10,7 +10,7 @@ is described on the [media page](media.md).
 
 With `notifications` in `modules`, the daemon becomes the `org.freedesktop.Notifications` server (the
 D-Bus service apps use to send "notify" messages), so apps such as Firefox, Chromium, Electron apps,
-`notify-send` and portal apps send their notifications to it. It replaces mako: the spec measured mako at
+`notify-send` and portal apps send their notifications to it. It replaces mako: mako measured
 6.7 MB PSS on one session. Without the module the name is never requested.
 
 **The server.** It asks for the name with flags 0: while another server owns it (mako, for example),
@@ -184,7 +184,7 @@ on or off changed, repaints the quick panel's row and moves the timer. A state r
   anything arms it again, and the clock's tick calls `dnd_check_clock`.
 - `the_osd_and_the_bubbles_are_created_on_the_overlay_layer`: the bubbles' surface is on `Overlay`.
 - `the_panel_marks_read_only_after_it_opened`: the panel marks the history read only once its popup opened
-  (spec § 4, "State"; a refused open leaves the count on the bell).
+  (a refused open leaves the count on the bell).
 - `on_bar_message_feeds_the_battery_alerts` and `a_new_server_gets_the_last_battery_reading`: the alerts
   are fed before the bar keeps a message, and a server that starts serving gets the last reading again.
 - `nothing_resident_while_the_launcher_is_closed`: counts the timers the daemon builds, one in

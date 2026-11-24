@@ -22,13 +22,13 @@ use std::path::Path;
 use std::time::Duration;
 
 pub const MAGIC: &[u8; 6] = b"i3-ipc";
-/// A message announcing more than this ends the session (spec § 3).
+/// A message announcing more than this ends the session.
 pub const MAX_REPLY: usize = 4 << 20;
 /// The SUBSCRIBE payload: the two event kinds the bar follows.
 pub const SUBSCRIPTION: &str = "[\"workspace\",\"window\"]";
 /// An i3-ipc window event's type (the high bit marks an event).
 const WINDOW_EVENT: u32 = 0x8000_0003;
-/// The requests' connection only (spec § 3); the event connection has none.
+/// The requests' connection only; the event connection has none.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// Events drained in one go before the state is read again: an endless stream of events still
 /// refreshes the bar.

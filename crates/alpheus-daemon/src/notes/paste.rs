@@ -1,4 +1,4 @@
-//! Paste (quick notes spec § 4): Ctrl+V reads the compositor's selection through the data device
+//! Paste: Ctrl+V reads the compositor's selection through the data device
 //! the pad creates when it opens. No process, no thread, no timer: the pipe is a source of the
 //! event loop only while a paste is pending, bounded by `CAP` (a clipboard owner that streams
 //! forever is cut at the first byte past it). The pad never owns a selection and accepts no drop.

@@ -13,7 +13,7 @@
 //! - route an answer from inside the call that sent it: the answers a flush drained are routed from
 //!   an idle callback (`tray_sync` queues it), so no callback runs inside another.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
+//! See: docs/features/tray.md, and docs/decisions.md
 //! ("A burst of tray changes is redrawn once per frame callback", "A closed session bus is never
 //! reconnected", "A failed Activate opens the menu of the icon that was pressed").
 
@@ -110,7 +110,7 @@ impl App {
         // A menu closed comes before a menu opened. Both can arrive in one batch (one message ends
         // the menu of an item, another opens the menu of a different item), and handling the open
         // first would let this close, meant for the old request, end the new one that the open
-        // just put in its place (commit 40be9a6).
+        // just put in its place.
         if out.close_menu && self.menu.target.is_some() {
             // The item is gone when the tray no longer has it (or no tray is left).
             let gone = match &self.menu.target {

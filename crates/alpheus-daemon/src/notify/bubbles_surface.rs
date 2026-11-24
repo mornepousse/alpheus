@@ -16,7 +16,7 @@
 //!   click goes through `notify_act`, which tells the notification server;
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 3, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("The bubbles are an Overlay surface, opened again once per stack",
 //! "The bubbles move to the focused output only when the stack changes", "A bubble's timeout starts
 //! when it first shows").
@@ -69,7 +69,7 @@ pub struct OpenBubbles {
 pub(crate) struct BubbleSurface {
     /// The notification bubbles while at least one shows; None at rest.
     pub(crate) open: Option<OpenBubbles>,
-    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
+    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb:
     /// armed only while there is one.
     pub(crate) timer: DeadlineTimer,
     /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
@@ -157,7 +157,7 @@ impl App {
     /// A left click on bubble (`id`, `revision`), or Enter on a live entry in the panel: the `default`
     /// action (`Center::invoke` emits `Invoked`, then closes a non-resident notification itself,
     /// `Closed(id, 2)`); without one, dismissed. A late click on a replaced or closed notification
-    /// does nothing (spec § 3).
+    /// does nothing.
     pub(crate) fn notify_activate(&mut self, id: u32, revision: u32) {
         let now = Instant::now();
         self.notify_act(|n| {
@@ -483,7 +483,7 @@ impl App {
     }
 
     /// The expiry timer follows the earliest finite expiry of a live bubble, shown or hidden by
-    /// do-not-disturb (spec § 3; constraints, Lightness): a hidden one still closes on time, and never
+    /// do-not-disturb: a hidden one still closes on time, and never
     /// shows up later past its time. None while nothing expires (sticky critical bubbles, no bubble,
     /// the name not held).
     pub(crate) fn bubble_timer_sync(&mut self) {

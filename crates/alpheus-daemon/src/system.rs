@@ -19,7 +19,7 @@
 
 pub use alpheus_common::backends::Volume;
 
-/// The default output and input (PipeWire), as the bar and the OSD read them (OSD spec § 2).
+/// The default output and input (PipeWire), as the bar and the OSD read them.
 /// `sink: None`: no output at all (the volume module hidden).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SoundState {
@@ -34,7 +34,7 @@ pub struct SoundState {
     /// Every sink, by label then id, at most `pipewire::MAX_SINKS`: only while the quick panel is
     /// open (`Scope::Panel`); None otherwise, and never kept by the bar.
     pub sinks: Option<Vec<Sink>>,
-    /// What the capture graph says is held (privacy spec § 2): `Some` exactly when the `privacy`
+    /// What the capture graph says is held: `Some` exactly when the `privacy`
     /// module is on, None otherwise.
     pub capture: Option<crate::privacy::Capture>,
     /// The default sink's Bluetooth headset, when it offers both a Hi-Fi and a call profile:
@@ -43,7 +43,7 @@ pub struct SoundState {
     pub headset: Option<Headset>,
 }
 
-// The headset (quick Bluetooth spec § 4).
+// The headset.
 
 /// A Bluetooth headset's two modes: Hi-Fi playback (A2DP) or call mode with a microphone (HSP/HFP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub struct DeviceName {
     pub label: String,
 }
 
-/// An audio output the quick panel lists (quick spec § 2): its PipeWire node id (what
+/// An audio output the quick panel lists: its PipeWire node id (what
 /// `wpctl set-default` takes), what a person reads (`pipewire::LABEL_MAX` bytes at most), and
 /// whether it is the default.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,13 +114,13 @@ pub struct BtDevice {
 pub enum BtState {
     /// No bluetoothd, or no adapter: hidden.
     Absent,
-    /// Adapter powered off: hidden (spec § 2).
+    /// Adapter powered off: hidden.
     Off,
     /// Connected devices: those reporting a battery first, then by name.
     On { devices: Vec<BtDevice> },
 }
 
-/// What the quick panel's Bluetooth reading covers (quick settings Bluetooth spec § 5): asked by the loop
+/// What the quick panel's Bluetooth reading covers: asked by the loop
 /// through `sources::dbus::bt::BtTap`, read by the D-Bus thread. `Row`: the adapter (powered,
 /// blocked); `Detail`: the Bluetooth detail is open, the paired devices and the ones seen nearby too.
 pub type BtScope = PanelScope;
@@ -214,7 +214,7 @@ pub struct PowerState {
     pub peripherals: Vec<Peripheral>,
 }
 
-/// A power profile power-profiles-daemon offers (quick spec § 2); only these three are shown or set.
+/// A power profile power-profiles-daemon offers; only these three are shown or set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
     PowerSaver,
@@ -234,7 +234,7 @@ impl Profile {
         }
     }
 
-    /// What the panel shows (spec § 2).
+    /// What the panel shows.
     pub fn label(self) -> &'static str {
         match self {
             Profile::PowerSaver => "saver",
@@ -270,7 +270,7 @@ pub enum PanelScope {
     Detail,
 }
 
-/// What the quick panel's Wi-Fi reading covers (quick Wi-Fi spec § 5), through
+/// What the quick panel's Wi-Fi reading covers, through
 /// `sources::dbus::wifi::WifiTap`. `Row`: the radio, the Wi-Fi device and the access point it is on;
 /// `Detail`: the detail is open or a connection is under way, every access point and the saved
 /// profiles too, and their signals followed.
@@ -396,7 +396,7 @@ pub struct WifiDevice {
     pub saved: Option<Vec<SavedWifi>>,
 }
 
-/// The quick panel's Wi-Fi (quick Wi-Fi spec § 5), only while the panel is open.
+/// The quick panel's Wi-Fi, only while the panel is open.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WifiState {
     /// NetworkManager's WirelessEnabled.

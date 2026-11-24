@@ -12,7 +12,7 @@
 //! - start anything (a thread, a process, a timer);
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
 //!
-//! See: docs/specs/2026-11-15-alpheus-small-features-design.md, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("The do-not-disturb file holds one of three forms", "The user's choice wins
 //! over a capture", "A timed do-not-disturb ends on the wall clock").
 

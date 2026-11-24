@@ -1,4 +1,4 @@
-//! The capture graph the privacy rules read, kept only by a model built for privacy (spec § 8).
+//! The capture graph the privacy rules read, kept only by a model built for privacy.
 
 use super::*;
 
@@ -7,7 +7,7 @@ pub(super) fn flag(v: &Option<String>) -> bool {
     v.as_deref() == Some("true")
 }
 
-/// A node as the privacy rules need it (spec § 2); `running` is the node's own state.
+/// A node as the privacy rules need it; `running` is the node's own state.
 fn graph_node(class: &str, running: bool, p: &PrivacyProps) -> GraphNode {
     let camera_device = matches!(p.device_api.as_deref(), Some("v4l2" | "libcamera")) || p.media_role.as_deref() == Some("Camera");
     // The app: the first non-empty name, as a person reads it.
@@ -29,7 +29,7 @@ fn graph_node(class: &str, running: bool, p: &PrivacyProps) -> GraphNode {
 }
 
 impl Model {
-    /// `apply` for a model built for privacy: the capture graph first (spec § 2), then the same
+    /// `apply` for a model built for privacy: the capture graph first, then the same
     /// sinks, sources and defaults as `apply`.
     pub fn apply_privacy(&mut self, batch: Vec<PrivacyObject>) {
         for o in batch {
@@ -48,7 +48,7 @@ impl Model {
         }
     }
 
-    /// Keeps what the privacy rules read of one object (spec § 2): a link, or a node of a class
+    /// Keeps what the privacy rules read of one object: a link, or a node of a class
     /// they use. A node re-dumped without its props (only its state moved) keeps the last props.
     pub(super) fn track(&mut self, id: u32, kind: Option<&str>, info: &PrivacyInfo) {
         if kind == Some("PipeWire:Interface:Link") {

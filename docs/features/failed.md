@@ -12,8 +12,8 @@ The `failed` module draws `󰀦 N` in the theme's error colour, in a block of it
 count, each when it is known.
 
 - **Nothing is drawn** when `N` is 0, or while neither count has ever been known (a count never
-  known is left out of the sum, and the bar draws nothing rather than a placeholder: decision 13 of
-  the diagnostics spec's "Decisions written down").
+  known is left out of the sum, and the bar draws nothing rather than a placeholder: see "The bar has no ignore list for failed units" in
+  [decisions.md](../decisions.md)).
 - **A count that becomes unknown keeps its last value.** The system bus going away, or the session
   link closing, neither hides the module nor changes the notice or the hook.
 - **systemd's system manager failing to answer** (a timeout, an odd reply) is not the session's

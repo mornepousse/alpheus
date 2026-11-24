@@ -7,8 +7,7 @@
 //! the tests can reach every part of it, and the two binaries are three lines each.
 //!
 //! See: docs/ARCHITECTURE.md (the codemap and the rules), docs/tour.md (one event from end to end),
-//! docs/features/README.md (one page per feature), docs/SCOPE.md (sub-project 2) and
-//! docs/specs/2026-10-04-alpheus-demon-barre-design.md (the first design, historical).
+//! docs/features/README.md (one page per feature), docs/SCOPE.md (sub-project 2).
 
 pub mod actions;
 pub mod appearance;

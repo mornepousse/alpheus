@@ -19,9 +19,8 @@
 //!   any time (`LocalTime::now` is called once per redraw, by `ui::render`);
 //! - hard-code a key in a hint: the hints are built from the keymap (`App::keymap`).
 //!
-//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md (Goals, 1: Home as a dashboard),
-//! plan 2026-11-15-alpheus-ui-refresh-plan-1 (tag `archive/design-history-2026-11`) (the 64 by 20 threshold; "The clock is
-//! injected"; "Hints come from the keymap"), docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center draws its rail from 84 by 26 cells, and its dashboard from 64 by 20").
 
 use super::digits::big_glyph;
 use super::draw::{clear, put, truncate};

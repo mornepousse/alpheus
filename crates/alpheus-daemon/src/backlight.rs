@@ -1,4 +1,4 @@
-//! The laptop's backlight, read once per `alpheus-launch --osd brightness` (OSD spec § 2), and when
+//! The laptop's backlight, read once per `alpheus-launch --osd brightness`, and when
 //! the quick panel opens (or 150 ms after its brightness command):
 //! `<backlight_dir>/<device>/brightness` and `max_brightness`, each a small number. Read only and
 //! capped (`read_capped`); never watched, never written. The brightness keys change it outside
@@ -44,7 +44,7 @@ pub fn device(dir: &Path, wanted: &str) -> Option<PathBuf> {
 }
 
 /// The device's name (what `brightnessctl --device=` takes) and its level, read once (the quick
-/// panel's row, spec § 5); None as `level`.
+/// panel's row); None as `level`.
 pub fn named_level(dir: &Path, wanted: &str) -> Option<(String, u8)> {
     let d = device(dir, wanted)?;
     let name = d.file_name()?.to_str()?.to_string();

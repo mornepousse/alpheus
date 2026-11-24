@@ -21,7 +21,7 @@ use std::path::Path;
 
 /// The only two lines ever sent to Mango, one per connection (each followed by a newline).
 pub const REQUESTS: [&str; 2] = ["watch all-monitors", "watch all-clients"];
-/// A line longer than this (its newline aside) ends the session (spec § 2).
+/// A line longer than this (its newline aside) ends the session.
 pub const MAX_LINE: usize = 1 << 20;
 /// One read at most; a snapshot is about 5 KB.
 const CHUNK: usize = 64 * 1024;
@@ -113,7 +113,7 @@ pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) 
             }
         }
         // Nothing before both first snapshots (no half-read state); then only a state that
-        // changed (spec § 2): Mango rewrites every client's geometry on a move.
+        // changed: Mango rewrites every client's geometry on a move.
         if !model.ready() {
             continue;
         }
@@ -265,7 +265,7 @@ mod tests {
         format!("{}\n", text.trim_end()).into_bytes()
     }
 
-    /// Spec § 2: two connections, one request line each, then the state.
+    /// Two connections, one request line each, then the state.
     #[test]
     fn two_watches_one_request_line_each_then_the_state() {
         let f = FakeMango::start("two", Some(MONITORS), Some(CLIENTS));
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(REQUESTS, ["watch all-monitors", "watch all-clients"]);
     }
 
-    /// Spec § 2: nothing published until both first snapshots have arrived.
+    /// Nothing published until both first snapshots have arrived.
     #[test]
     fn nothing_is_published_before_both_first_snapshots() {
         let f = FakeMango::start("half", Some(MONITORS), None);
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(DELAY).unwrap().toplevels.len(), 4);
     }
 
-    /// Spec § 2: Mango rewrites every client's geometry on a move; nothing the
+    /// Mango rewrites every client's geometry on a move; nothing the
     /// bar shows changed, nothing is published.
     #[test]
     fn a_new_snapshot_is_published_only_when_the_state_changes() {
@@ -354,7 +354,7 @@ mod tests {
         assert!(h.error().to_string().contains("unreadable mango line"));
     }
 
-    /// Spec § 2: a line of exactly 1 MiB is read; one byte more ends the session.
+    /// A line of exactly 1 MiB is read; one byte more ends the session.
     #[test]
     fn a_line_over_1_mib_ends_the_session() {
         let f = FakeMango::start("long", Some(MONITORS), Some(CLIENTS));

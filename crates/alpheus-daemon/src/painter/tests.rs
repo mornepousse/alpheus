@@ -73,7 +73,7 @@ fn every_tint_is_its_role_and_bg_the_surfaces_base() {
     }
 }
 
-/// Spec § 4: the bar on `bar_bg`; popups and the launcher on `popup_bg`, framed in `fg_dim` at
+/// The bar on `bar_bg`; popups and the launcher on `popup_bg`, framed in `fg_dim` at
 /// 40 % over it.
 #[test]
 fn a_bar_is_painted_on_bar_bg_and_a_box_on_popup_bg() {
@@ -96,7 +96,7 @@ fn a_bar_is_painted_on_bar_bg_and_a_box_on_popup_bg() {
     assert_eq!(&bpx[stroke..stroke + 4], &[ink.2, ink.1, ink.0, 0xff], "the frame: fg_dim at 40 % over popup_bg");
 }
 
-/// Notifications spec § 3: a critical bubble's frame takes `urgent`; its separator lines keep the
+/// A critical bubble's frame takes `urgent`; its separator lines keep the
 /// border, and a plain box keeps it all round.
 #[test]
 fn a_critical_box_takes_the_urgent_frame() {
@@ -920,7 +920,7 @@ fn wide_char_in_last_column_and_grid_wider_than_buffer() {
     }
 }
 
-// ---- bar shapes (shapes spec § 3) ----
+// ---- bar shapes ----
 
 /// The layout tests' bar (launcher, workspaces, title, clock), hues on.
 fn fixture_bar() -> crate::state::Bar {
@@ -939,7 +939,7 @@ fn bar_buffer(p: &mut Fonts, columns: u16, scale: i32, junk: u8) -> (u32, u32, V
     (w, h, vec![junk; (w * h * 4) as usize])
 }
 
-/// `flat` stays today's bar to the byte (shapes spec § 3): `paint_bar` under flat writes every
+/// `flat` stays today's bar to the byte: `paint_bar` under flat writes every
 /// byte `paint` writes, whatever the buffer held, the opacity, the module colours or the groups.
 #[test]
 fn paint_bar_under_flat_is_paint_to_the_byte() {
@@ -986,7 +986,7 @@ fn underline_fixture() -> (Grid, Vec<Group>) {
     (g, groups)
 }
 
-/// `underline` (shapes spec § 3): the bar on bar_bg, the blocks on pill_bg, a one logical px
+/// `underline`: the bar on bar_bg, the blocks on pill_bg, a one logical px
 /// bottom line in the border colour, two logical px of accent under the active workspace; the
 /// blocks' hues underline them under the module colours only.
 #[test]

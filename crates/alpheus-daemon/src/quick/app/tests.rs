@@ -29,7 +29,7 @@ fn closing_the_panel_keeps_the_detail_read_while_an_attempt_is_followed() {
     assert_eq!(wifi_scope(WifiScope::Row, None), WifiScope::Row);
 }
 
-/// Quick Wi-Fi spec § 5: a Wi-Fi message's state goes to the open panel; the message left for the
+/// A Wi-Fi message's state goes to the open panel; the message left for the
 /// bar carries nothing.
 #[test]
 fn a_wifi_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
@@ -340,7 +340,7 @@ fn a_bluetooth_headset() -> Option<Headset> {
     Some(Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
 }
 
-/// Quick Bluetooth spec § 4: the headset goes to the open panel, never the bar.
+/// The headset goes to the open panel, never the bar.
 #[test]
 fn the_headset_goes_to_the_panel_never_the_bar() {
     let mut bar = Bar::new(BarConfig::default());
@@ -368,7 +368,7 @@ fn the_headset_goes_to_the_panel_never_the_bar() {
 use crate::quick::bt_app::tests::{HCI0, bar_bt_on, bt_view};
 use crate::system::BtScope;
 
-/// Quick Bluetooth spec § 5: a Bluetooth view goes to the open panel; the message left for the
+/// A Bluetooth view goes to the open panel; the message left for the
 /// bar carries nothing.
 #[test]
 fn a_bt_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
@@ -469,7 +469,7 @@ fn vpn_around() -> VpnState {
     }
 }
 
-/// As for the Wi-Fi: a VPN state read for an earlier open never reaches the panel (quick VPN spec § 5).
+/// As for the Wi-Fi: a VPN state read for an earlier open never reaches the panel.
 #[test]
 fn a_vpn_state_of_an_earlier_open_is_dropped() {
     let t = Instant::now();

@@ -12,7 +12,7 @@
 //!   the target and renames it, and removes the temporary file when that fails;
 //! - replace a symlinked `theme.toml` by a regular file: the link's target is what gets replaced.
 //!
-//! See: docs/specs/2026-10-07-alpheus-themes-design.md, docs/features/control-center.md (Theme).
+//! See: docs/features/themes.md, docs/features/control-center.md (Theme).
 
 use alpheus_common::theme::presets::PRESETS;
 use alpheus_common::theme::settings::THEME_FILE;

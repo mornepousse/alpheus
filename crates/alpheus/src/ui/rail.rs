@@ -1,8 +1,8 @@
 //! The rail layout's frame: a left rail with the brand and one entry per tab, a header in the tab's
 //! hue with a one-line summary, and the shortcut hints drawn as keycaps on the last row.
 //!
-//! It is drawn when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H`; the UI refresh plan's
-//! amendment set them (84×26) after measuring a real 87×26 window. Below them `ui::render` draws the classic layout. `render`
+//! It is drawn when the terminal is at least `RAIL_MIN_W` × `RAIL_MIN_H`; 84×26 was chosen after
+//! measuring a real 87×26 window (docs/decisions.md "The control center draws its rail from 84 by 26 cells, and its dashboard from 64 by 20"). Below them `ui::render` draws the classic layout. `render`
 //! returns the body rectangle the tab draws into. The tab hues (`tab_hue`) and the tab summaries
 //! (`subtitle`) live here because the rail and the header are what show them.
 //!
@@ -11,7 +11,8 @@
 //! - write outside its rectangles (`draw::put` clips);
 //! - read anything: the summaries come from what the `App` already holds.
 //!
-//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center draws its rail from 84 by 26 cells, and its dashboard from 64 by 20").
 
 use super::draw::{self, put};
 use super::shape::{self, Ink};
@@ -25,8 +26,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// The rail's width: icon, name (the longest, "Displays") and number fit.
 pub const RAIL_W: u16 = 16;
-/// The smallest terminal that gets the rail, in columns and rows (the UI refresh plan's amendment
-/// set 84 by 26).
+/// The smallest terminal that gets the rail, in columns and rows (84 by 26, measured on a real
+/// 87×26 window).
 pub const RAIL_MIN_W: u16 = 84;
 pub const RAIL_MIN_H: u16 = 26;
 

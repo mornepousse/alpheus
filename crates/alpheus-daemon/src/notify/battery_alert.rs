@@ -12,7 +12,7 @@
 //!   back stays armed;
 //! - panic (a guardrail, `on_bar_message_feeds_the_battery_alerts`, covers this file and `battery_feed`).
 //!
-//! See: docs/specs/2026-11-15-alpheus-small-features-design.md, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("A battery alert is given only while the server serves").
 
 use crate::config::ModuleId;

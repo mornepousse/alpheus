@@ -1,4 +1,4 @@
-//! The `floating` pass (spec § 3). The surface is the bar's band plus a shadow below it
+//! The `floating` pass. The surface is the bar's band plus a shadow below it
 //! (`placement::FLOAT_SHADOW`):
 //! - the band is one rounded rectangle on `bar_bg`, radius 10 px, transparent outside its arcs;
 //! - under pills, each hued block is a rounded hue rectangle inside it, inset as an island
@@ -11,9 +11,9 @@ use super::blocks::{CLEAR, block_fill, block_x, fill_px, fitted_radius, island_r
 use crate::background::{CornerMask, MaskCache};
 use alpheus_common::theme::Roles;
 
-/// Logical px radius of the floating bar's ends (spec § 3).
+/// Logical px radius of the floating bar's ends.
 pub(crate) const FLOAT_RADIUS: u32 = 10;
-/// The shadow's alpha right below the bar (spec § 3).
+/// The shadow's alpha right below the bar.
 pub(crate) const SHADOW_ALPHA: f32 = 0.35;
 
 /// The shadow's alpha on row `k` of `rows`: 0.35 on the first, falling linearly to 0 on the last.

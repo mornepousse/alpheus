@@ -10,7 +10,7 @@ use crate::text::clean;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// Spec § 3 bounds: what is past them is dropped, never an error.
+/// Bounds: what is past them is dropped, never an error.
 pub const MAX_WORKSPACES: usize = 64;
 pub const MAX_WINDOWS: usize = 512;
 pub const MAX_DEPTH: usize = 64;
@@ -256,7 +256,7 @@ mod tests {
             .find_map(|c| node(c, app_id))
     }
 
-    /// Spec § 3: GET_WORKSPACES' order; num, or name:<name>; counts from the tree (floating
+    /// GET_WORKSPACES' order; num, or name:<name>; counts from the tree (floating
     /// included); the scratchpad never listed.
     #[test]
     fn workspaces_and_window_counts_from_the_captured_session() {
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(state(WORKSPACES, &none).unwrap().window, None, "no focused node with a pid: no window");
     }
 
-    /// Spec § 3: the `focus` arrays from the root, most recent first, the first moved
+    /// The `focus` arrays from the root, most recent first, the first moved
     /// to the end (Hyprland's order: previous first, focused last); the scratchpad's d nowhere.
     #[test]
     fn toplevels_follow_the_focus_arrays_focused_last() {
@@ -406,7 +406,7 @@ mod tests {
         assert!(e.workspaces.iter().all(|w| !w.visible || w.name.starts_with("web")), "absent flags: false");
     }
 
-    /// Spec § 3 bounds: 64 workspaces, 512 windows; labels cleaned and capped.
+    /// Bounds: 64 workspaces, 512 windows; labels cleaned and capped.
     #[test]
     fn bounds_and_labels() {
         let ws: Vec<String> = (1..=100).map(|n| format!(r#"{{"num":{n},"name":"{n}","output":"HEADLESS-1"}}"#)).collect();
@@ -437,7 +437,7 @@ mod tests {
         )
     }
 
-    /// Spec § 3: parsed on a thread with the compositor thread's 256 KiB stack:
+    /// Parsed on a thread with the compositor thread's 256 KiB stack:
     /// 43 containers deep (88 levels of JSON) still finds its window; 70 deep is past
     /// MAX_NESTING, refused before serde_json recurses (in a debug build its recursion to its own
     /// 128-level limit overflows 256 KiB); never a stack overflow.
@@ -515,7 +515,7 @@ mod tests {
         }
     }
 
-    /// Spec § 3: nodes deeper than MAX_DEPTH are ignored, never a crash.
+    /// Nodes deeper than MAX_DEPTH are ignored, never a crash.
     #[test]
     fn the_walk_stops_at_max_depth() {
         let found = |depth: usize| {

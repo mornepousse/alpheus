@@ -20,12 +20,12 @@ exception: a short `//!` saying what the file tests is enough):
 1. one plain sentence saying what the file is;
 2. a short paragraph of what it holds and how it fits with its neighbours, if that is needed;
 3. `Never:` lines, one per rule the file keeps (reads no clock, starts nothing, never panics);
-4. a last `See:` line pointing to the spec, the feature page and the entries of `docs/decisions.md`.
+4. a last `See:` line pointing to the feature page and the entries of `docs/decisions.md`.
 
 Before:
 
 ```rust
-//! The focus timer's model (timer spec): a countdown, a Pomodoro or a stopwatch, every change
+//! The focus timer's model: a countdown, a Pomodoro or a stopwatch, every change
 //! made to it, the end it comes to, the chip it draws, when the chip next changes, the state
 //! file's line and the notification an end becomes. Pure: times are wall-clock Unix milliseconds
 //! handed in by the wiring (`timer_app.rs`), nothing here reads a clock, a file or starts anything.
@@ -45,7 +45,7 @@ After:
 //! - read a clock: the caller always passes `now`, so a test can pick any time it likes;
 //! - read or write a file, or start anything (a thread, a process, a timer).
 //!
-//! See: docs/specs/2026-11-15-alpheus-timer-design.md, docs/features/timer.md, and
+//! See: docs/features/timer.md and
 //! docs/decisions.md ("The timer counts wall-clock time", "A late end is applied once").
 ```
 
@@ -98,7 +98,7 @@ After (same code, one comment above it):
 ```
 
 When the reason is a settled decision, the comment points to its entry in `docs/decisions.md`
-instead of citing a person or a plan ("ruling: ...", "plan decision 17"):
+instead of citing a person or a document ("ruling: ...", "decision 17"):
 
 Before:
 
@@ -251,7 +251,7 @@ fn minutes_clock_and_length_texts_read_as_written()
 ```
 
 Test names that other documents cite (memory and headless tests are cited with `--exact`) are
-never renamed in a tidy-up commit. This covers tests cited outside docs/specs/.
+never renamed in a tidy-up commit. This covers tests cited outside the file that holds them.
 
 ## 7. Rules the timer already followed
 
@@ -277,7 +277,7 @@ The timer already followed these, except the last one; the lines below show them
 
 One or two sentences: what is decided, and why.
 
-Date: <YYYY-MM-DD> · Source: <the spec section, plan decision or commit it comes from>
+Date: <YYYY-MM-DD> · Source: <the tests or code that pin it>
 ```
 
 Wording is neutral ("decision", never a person's name). When code depends on a decision that would

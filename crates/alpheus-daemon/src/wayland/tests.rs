@@ -41,7 +41,7 @@ fn a_failing_opaque_region_is_logged_once_per_outage() {
     assert!(first_failure(&mut failing, true), "a new outage is logged again");
 }
 
-/// Spec § 4: a bar re-placed for a new style waits for the compositor's configure before it
+/// A bar re-placed for a new style waits for the compositor's configure before it
 /// paints again (its buffer must match the new size).
 #[test]
 fn a_bar_waiting_for_its_new_placement_is_not_drawn() {

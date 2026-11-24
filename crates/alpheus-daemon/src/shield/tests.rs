@@ -381,7 +381,7 @@ fn each_notice_has_its_summary_and_body() {
     assert_eq!(notice(&NoticeKind::NothingBlocked, &c).0, "No blocked USB device");
 }
 
-// ---- the verbs' decisions (shield spec § 9) ----
+// ---- the verbs' decisions ----
 
 /// What the model knows for a verb: `state`, no command running, both commands configured.
 fn verb_context(state: Option<bool>) -> VerbCtx {

@@ -1,4 +1,4 @@
-//! The launcher's calculator (small features 1): a pure evaluator, no state, no I/O.
+//! The launcher's calculator: a pure evaluator, no state, no I/O.
 //! A hand-written lexer, a recursive-descent parser carrying a depth counter, and
 //! evaluation over exact `i128` values that fall back to `f64`.
 //! `%` is the truncated remainder, as in Rust and C: it takes the sign of the left operand

@@ -2,7 +2,7 @@
 //! the bar button and the toggle, the scan's catalog delivered by
 //! generation, the compositor's windows pushed to an open launcher, a dmenu
 //! client's hang-up — every entry point behind `guarded`: a launcher error
-//! closes the launcher, never the bar (spec § 3).
+//! closes the launcher, never the bar.
 
 use crate::compositor::Toplevel;
 use crate::launcher::config::{LauncherConfig, config_path};
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 
 /// How long after the launcher opens a Toggle is still ignored
-/// (commit 9331286): with a press bind, Hyprland fires the bind a second time on
+/// (pinned by `a_toggle_within_the_debounce_window_is_ignored_but_still_acked`): with a press bind, Hyprland fires the bind a second time on
 /// release once the launcher has grabbed the keyboard, so a second Toggle
 /// lands here a few ms to ~200 ms after the open and would otherwise close
 /// the box right back. Ignoring it is what keeps the press bind usable — a
@@ -158,13 +158,13 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Clipboard, Some(Opened::Clipboard)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Clipboard, Some(Opened::Clipboard)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Clipboard, Some(_)) => (Action::OpenClipboard, Some(Reply::Done)),
-        // Tools spec § 1: `--tools` toggles the menu (with the debounce against a re-fired press
+        // `--tools` toggles the menu (with the debounce against a re-fired press
         // bind) and replaces anything else open, as `--clipboard` does.
         (Request::Tools, None) => (Action::OpenTools, Some(Reply::Done)),
         (Request::Tools, Some(Opened::Tools)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Tools, Some(Opened::Tools)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Tools, Some(_)) => (Action::OpenTools, Some(Reply::Done)),
-        // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
+        // The socket still answers Done (alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Toggle, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
@@ -371,7 +371,7 @@ impl App {
 
     fn request_now(&mut self, qh: &QueueHandle<App>, request: Request, conn: Conn) {
         // The connection's own accepted_at, not "now": the open latency the
-        // daemon logs (spec § 3) covers request accepted → first frame, not
+        // daemon logs covers request accepted → first frame, not
         // just the part after this request was fully read.
         let requested_at = conn.accepted_at();
         let open = self.launcher.as_ref().map(|o| opened(&o.model));
@@ -505,7 +505,7 @@ impl App {
         let Some(open) = self.launcher.as_mut() else { return };
         let generation = open.generation;
         let Some(tx) = self.mail.clone() else { return };
-        // Sources (sources spec § 2): read after the apps on the same thread; no plan, no cost.
+        // Sources: read after the apps on the same thread; no plan, no cost.
         let plan = (!sources.is_empty()).then(|| SourcePlan { sources, exec: self.exec.clone() });
         let entries_tx = tx.clone();
         // How long the scan this reopen is about to wait on (if refused) has
@@ -573,7 +573,7 @@ impl App {
         });
     }
 
-    /// An open's source entries, its second delivery (sources spec § 6): adopted under
+    /// An open's source entries, its second delivery: adopted under
     /// `entries_are_current`, else dropped. One log line — how many, how long after the request —
     /// never a line.
     pub fn launcher_entries(&mut self, generation: u64, entries: Entries) {
@@ -633,7 +633,7 @@ impl App {
     /// Watches the open script menu's client: edge-triggered (a client that
     /// half-closed after sending stays readable forever: level-triggered
     /// would spin the loop). Removed when the launcher is dropped.
-    /// The Shield picker (shield spec § 9): a script menu the daemon owns, opened for `pending` (the
+    /// The Shield picker: a script menu the daemon owns, opened for `pending` (the
     /// `--shield allow` client). Another script menu open answers it Busy, as a second `--dmenu`
     /// would; an app launcher or the switcher is replaced.
     pub(crate) fn launcher_open_picker(
@@ -855,7 +855,7 @@ mod tests {
     }
 
     /// A Toggle arriving less than `TOGGLE_DEBOUNCE` after the open is the
-    /// Hyprland press-bind refire (commit 9331286): it must
+    /// Hyprland press-bind refire: it must
     /// be ignored, not close the box right back — but the socket still
     /// replies Done, so `alpheus-launch` exits 0.
     #[test]
@@ -993,7 +993,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Tools spec § 1: `--tools` toggles the menu, ignoring a press-bind refire inside the debounce,
+    /// `--tools` toggles the menu, ignoring a press-bind refire inside the debounce,
     /// and replaces any other open launcher.
     #[test]
     fn tools_toggles_with_the_debounce_and_replaces_others() {

@@ -12,7 +12,7 @@
 //! - start a thread, a process or a command;
 //! - change the timer: it only says what to change.
 //!
-//! See: docs/specs/2026-11-15-alpheus-timer-design.md (§ 3), docs/features/timer.md, and
+//! See: docs/features/timer.md, and
 //! docs/decisions.md ("The popup lists what the state allows").
 
 use crate::grid::{Grid, Style};

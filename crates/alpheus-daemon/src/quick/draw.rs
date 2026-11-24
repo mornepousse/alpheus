@@ -21,8 +21,7 @@
 //!   password row is drawn here);
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-design.md (§ 2, the rows),
-//! docs/decisions.md ("The selected slider row is banded across the whole row").
+//! See: docs/features/quick-settings.md and docs/decisions.md ("The selected slider row is banded across the whole row").
 
 use super::{FAILED_TAG, GLYPH_AT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines};
 use crate::grid::{Grid, Style, text_width};
@@ -193,7 +192,7 @@ pub(super) fn write_cell(g: &mut Grid, text: &str, style: Style) {
     g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
 }
 
-/// "G ━━━━━━━━━━━━━━────────  64%  ›" (spec § 2), the OSD's level (`osd::level`) one pad cell in:
+/// "G ━━━━━━━━━━━━━━────────  64%  ›", the OSD's level (`osd::level`) one pad cell in:
 /// the glyph dim when muted; filled in the accent, the rest dim; muted, all dim; above 100 %, the
 /// whole bar in warn. Selected: the band across the whole row, the track included; the bar
 /// keeps its own foreground on it.

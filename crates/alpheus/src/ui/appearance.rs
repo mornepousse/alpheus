@@ -13,9 +13,7 @@
 //! - draw outside `body`: every `put` is clipped to it, and a region that is clickable is clipped
 //!   to it too.
 //!
-//! See: docs/specs/2026-10-07-alpheus-themes-design.md (§ 9, module colours),
-//! docs/specs/2026-10-07-alpheus-shapes-design.md (§ 4, the preview approximated in cells),
-//! docs/features/control-center.md.
+//! See: docs/features/themes.md, docs/features/control-center.md.
 
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
@@ -209,7 +207,7 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColo
     let tx = inner.right().saturating_sub(modules + 1);
     if tx > cx + 9 {
         let icon = |hue: Rgb| if colors == ModuleColors::None { bg } else { on(hue) };
-        // Pills under flat is full (shapes spec § 1).
+        // Pills under flat is full.
         let text = |hue: Rgb| if matches!(colors, ModuleColors::Full | ModuleColors::Pills) { on(hue) } else { bg };
         let h = &p.hues;
         let mut mx = tx;
@@ -241,7 +239,7 @@ struct Run {
     visible: bool,
 }
 
-/// A block of the mini bar, as the real bar groups its modules (shapes spec § 2), and the hue
+/// A block of the mini bar, as the real bar groups its modules, and the hue
 /// `pills` fills it with (its first module's).
 struct Block {
     runs: Vec<Run>,
@@ -293,7 +291,7 @@ fn on_hue(p: &Roles, hue: Rgb) -> Rgb {
 /// A block's background under `style`; None where the bar's own background shows. `i` is the
 /// block's index over the blocks shown on both sides (0: the workspaces), for powerline's
 /// alternation: as the daemon's, `pill_bg` at an even distance from the workspaces, `raised` at an
-/// odd one (shapes spec § 3, amended 2026-10-08), so the workspaces are on `pill_bg` and neighbours differ.
+/// odd one, so the workspaces are on `pill_bg` and neighbours differ.
 fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -> Option<Rgb> {
     let pill = if colors == ModuleColors::Pills { Some(b.hue.unwrap_or(p.pill_bg)) } else { None };
     match style {
@@ -374,7 +372,7 @@ fn fit(left: &mut Vec<Block>, right: &mut Vec<Block>, width: u16, powerline: boo
     }
 }
 
-/// The mini bar under a style other than `flat`, approximated in cells (shapes spec § 4).
+/// The mini bar under a style other than `flat`, approximated in cells.
 /// - Blocks are cell backgrounds.
 /// - Rounded ends are half-blocks in the block's colour.
 /// - Powerline arrows are U+E0B0 / U+E0B2.
@@ -405,11 +403,11 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     let (lfill, rfill) = fills.split_at(left.len());
     let rounded = matches!(style, BarStyle::Islands | BarStyle::Translucent | BarStyle::Floating);
     let powerline = style == BarStyle::Powerline;
-    // Pills fills and picks the text under the block styles only; under underline it is `full`
-    // (spec § 1), which `blocks` already gives its runs.
+    // Pills fills and picks the text under the block styles only; under underline it is `full`,
+    // which `blocks` already gives its runs.
     let pills = colors == ModuleColors::Pills && style != BarStyle::Underline;
     // One block: lead cell, runs, trail cell; returns the x after it.
-    // Underline: the active workspace has no fill, its text is accent (shapes spec § 3, amended 2026-10-08).
+    // Underline: the active workspace has no fill, its text is accent.
     let underline = style == BarStyle::Underline;
     let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>| -> u16 {
         let end = |glyph: &'static str| match (rounded, f) {
@@ -457,7 +455,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
         }
     }
     // Underline: a rule on the frame's bottom row, in accent under the active workspace and, with
-    // module colours icons, full or pills, in each hued block's hue under that block (reconciliation 9).
+    // module colours icons, full or pills, in each hued block's hue under that block.
     if style == BarStyle::Underline {
         let bottom = r.bottom() - 1;
         let rule = |buf: &mut Buffer, x: u16, w: u16, c: Rgb| {

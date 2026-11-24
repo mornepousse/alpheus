@@ -15,7 +15,7 @@
 //! - panic: no `unwrap`, `expect` or `panic!` in the production code of this file or of `app.rs`
 //!   (the guardrail `the_privacy_module_has_no_panicking_path` checks both).
 //!
-//! See: docs/specs/2026-10-16-alpheus-privacy-design.md, docs/features/privacy.md, and
+//! See: docs/features/privacy.md and
 //! docs/decisions.md ("The microphone lights for a recording stream, never a meter or a filter",
 //! "A muted app stream still lights the microphone", "A running camera with no link lights it
 //! unnamed", "An indicator going off stays shown for half a second", "A compositor's screencast
@@ -33,17 +33,17 @@ use std::time::{Duration, Instant};
 pub const MIC: char = '\u{f036c}';
 pub const CAMERA: char = '\u{f0100}';
 pub const SCREEN: char = '\u{f0379}';
-/// An indicator going off stays shown this long, so that a stream that renegotiates never blinks
-/// (privacy spec § 4). See docs/decisions.md, "An indicator going off stays shown for half a
+/// An indicator going off stays shown this long, so that a stream that renegotiates
+/// never blinks. See docs/decisions.md, "An indicator going off stays shown for half a
 /// second".
 pub const OFF_DELAY: Duration = Duration::from_millis(500);
 /// A compositor's screencast release counts only after this hold: Hyprland sends a short blip for a
-/// screenshot (privacy spec § 3). See docs/decisions.md, "A compositor's screencast release counts
+/// screenshot. See docs/decisions.md, "A compositor's screencast release counts
 /// after a one-second hold".
 pub const CAST_HOLD: Duration = Duration::from_secs(1);
-/// App names kept per indicator, at most (privacy spec § 2).
+/// App names kept per indicator, at most.
 pub const MAX_NAMES: usize = 8;
-/// The model keeps no more nodes and links than this (privacy spec § 8).
+/// The model keeps no more nodes and links than this.
 pub const MAX_NODES: usize = 1024;
 pub const MAX_LINKS: usize = 4096;
 /// The popup is at most this many cells wide, a longer name being cut.
@@ -123,8 +123,7 @@ impl Capture {
         !self.mic.active() && !self.camera.active() && !self.screen.active()
     }
 
-    /// The same capture without the ignored app names, compared whole and without regard to case
-    /// (privacy spec § 7).
+    /// The same capture without the ignored app names, compared whole and without regard to case.
     pub fn without(&self, ignore: &[String]) -> Capture {
         Capture { mic: self.mic.without(ignore), camera: self.camera.without(ignore), screen: self.screen.without(ignore) }
     }
@@ -155,7 +154,7 @@ pub struct GraphLink {
     pub active: bool,
 }
 
-/// Whether the model keeps a node of this class for privacy (privacy spec § 2).
+/// Whether the model keeps a node of this class for privacy.
 pub fn kept(class: &str) -> bool {
     audio_source(class) || matches!(class, "Stream/Input/Audio" | "Stream/Input/Video" | "Stream/Output/Video") || video_source(class)
 }
@@ -190,7 +189,7 @@ fn producer(n: &GraphNode) -> Option<Kind> {
     }
 }
 
-/// Who holds the microphone, the camera and the screen (privacy spec § 2). It walks the links once,
+/// Who holds the microphone, the camera and the screen. It walks the links once,
 /// then adds the running producers that no link was seen for.
 pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>) -> Capture {
     let mut out = Capture::default();
@@ -227,7 +226,7 @@ pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>)
                 }
             }
             // A screen producer counts when its link is active or the producer itself runs: a
-            // portal's producer names no app, so the consumer's name is used (privacy spec § 2).
+            // portal's producer names no app, so the consumer's name is used.
             Some(Kind::Screen) if link.active || from.running => out.screen.hold(to.app.as_deref()),
             _ => {}
         }
@@ -249,8 +248,7 @@ pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>)
     out
 }
 
-/// The bar's merge of what PipeWire, the video devices and the compositor say (privacy spec §§ 3
-/// and 4): the ignore list, the compositor's release hold, the off-delay and the default source's
+/// The bar's merge of what PipeWire, the video devices and the compositor say: the ignore list, the compositor's release hold, the off-delay and the default source's
 /// mute. Time is passed in, never read.
 #[derive(Debug, Clone)]
 pub struct Privacy {
@@ -377,7 +375,7 @@ impl Privacy {
         self.mic_muted
     }
 
-    /// The popup (privacy spec § 5), drawn inside `list::boxed`'s ring as the power menu is. It has
+    /// The popup, drawn inside `list::boxed`'s ring as the power menu is. It has
     /// one heading per shown indicator in the module's order, with its glyph in its hue (the
     /// microphone dim while the default source is muted, as in the bar), then each app indented
     /// 4 cells, or `(unnamed)`. It is as wide as its longest row plus a blank cell on each side, at

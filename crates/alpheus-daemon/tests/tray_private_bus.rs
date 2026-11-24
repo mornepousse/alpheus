@@ -958,7 +958,7 @@ fn host_only_when_the_name_is_taken_then_takeover() {
     pump.until("takeover", |t| *t.role() == Role::Watcher);
     assert_eq!(owner(&peer), host, "the name is ours now");
     // Before either re-registers: both of the other watcher's items survive the takeover by
-    // themselves (items already known stay — spec § 1), never only once applications re-register.
+    // themselves (items already known stay; see "The tray owns the watcher when it can, and is a host of another's otherwise" in `docs/decisions.md`), never only once applications re-register.
     assert!(pump.with(|t| ready_count(2)(t)), "Nimbus and Quill still shown right after the takeover");
     nimbus.register();
     quill.register();

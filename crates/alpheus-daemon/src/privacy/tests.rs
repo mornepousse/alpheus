@@ -283,7 +283,7 @@ fn the_microphone_dims_with_the_default_source_mute() {
     assert!(!p.set_sound(Some(&mic_held_by(&["firefox"])), false, t0 + millis(20)), "nothing changed");
 }
 
-/// Privacy spec § 5: one heading per active indicator in the module's order, its glyph in its
+/// One heading per active indicator in the module's order, its glyph in its
 /// hue, then one row per app indented 4 cells, or `(unnamed)`; the box as wide as the longest
 /// row and a blank cell on each side, at most `POPUP_WIDTH`.
 #[test]

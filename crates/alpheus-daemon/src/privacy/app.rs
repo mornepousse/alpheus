@@ -13,7 +13,7 @@
 //! - start a thread, a process or a command, or panic: a guardrail checks that no `unwrap`, `expect`
 //!   or `panic!` is in this file or in `mod.rs`.
 //!
-//! See: docs/specs/2026-10-16-alpheus-privacy-design.md, docs/features/privacy.md, and
+//! See: docs/features/privacy.md and
 //! docs/decisions.md ("The privacy popup lists apps and selects nothing", "An indicator going off
 //! stays shown for half a second").
 
@@ -50,7 +50,7 @@ pub(crate) const OPS: PopupOps = PopupOps {
     kind: ModulePopup::Privacy,
     toggle: |app, qh, anchor, _| app.privacy_toggle(qh, anchor),
     key: App::privacy_key,
-    // Nothing on it reacts: a click or the wheel inside does nothing (privacy spec § 5; see
+    // Nothing on it reacts: a click or the wheel inside does nothing (see
     // docs/decisions.md, "The privacy popup lists apps and selects nothing").
     pointer: |_, _, _| {},
     flush: no_hook,
@@ -63,8 +63,7 @@ impl App {
         matches!(self.popup_body(), Some(PopupBody::Privacy))
     }
 
-    /// The popup selects nothing: Escape closes it, and every other key does nothing (privacy spec
-    /// § 5).
+    /// The popup selects nothing: Escape closes it, and every other key does nothing.
     fn privacy_key(&mut self, k: Key) {
         if k == Key::Escape {
             self.popup_close(PopupClose::Escape);
@@ -89,7 +88,7 @@ impl App {
         }
     }
 
-    /// A sound or compositor message, read before the bar keeps it (privacy spec § 4). A change
+    /// A sound or compositor message, read before the bar keeps it. A change
     /// redraws the bar and follows the popup and the off-delay's timer. A message that changes
     /// nothing shown can still start an off-delay, which moves only the deadline; the timer follows
     /// it all the same, or the glyph would stay lit until the next message.
@@ -119,7 +118,7 @@ impl App {
         self.hooks_capture();
     }
 
-    /// The timer follows the earliest pending off, and there is none without one (privacy spec § 4).
+    /// The timer follows the earliest pending off, and there is none without one.
     pub(crate) fn privacy_timer_sync(&mut self) {
         let at = self.bar.privacy.deadline();
         self.privacy_timer.sync_opt(self.loop_handle.as_ref(), at, App::privacy_tick);
@@ -142,7 +141,7 @@ mod tests {
     use super::*;
 
     /// While open, the popup follows what is shown; once nothing is shown (the off-delay passed) it
-    /// closes; closed, no change opens it (privacy spec § 5).
+    /// closes; closed, no change opens it.
     #[test]
     fn the_popup_closes_when_nothing_is_captured_after_the_delay() {
         assert_eq!(after_change(true, true), Follow::Close);

@@ -80,7 +80,7 @@ anonymised fixtures, budgets, one change per commit, English) are in `CONTRIBUTI
 - **Prior art first.** Before designing a feature, look at how other bars and shells do it (ironbar,
   ashell, waybar, i3status-rust, cosmic-applets...): reuse ideas and signal lists, not heavy
   dependencies.
-- **Consult the owner on product-visible choices** a spec or plan does not settle: stop and ask,
+- **Consult the owner on product-visible choices** a feature page or `docs/decisions.md` does not settle: stop and ask,
   with a recommendation. Purely technical choices are yours; say which you made.
 - **Lightness first.** No new dependency, thread, timer or polling without a written reason and a
   measurement.
@@ -108,5 +108,3 @@ The conversation with the owner is in French.
 - [`docs/configuration.md`](docs/configuration.md): every key and default (from `config.rs`).
 - [`docs/cli.md`](docs/cli.md), [`docs/compositors.md`](docs/compositors.md),
   [`docs/measurements.md`](docs/measurements.md), [`CHANGELOG.md`](CHANGELOG.md).
-- `docs/specs/`: historical design records; the code, `docs/ARCHITECTURE.md` and
-  `docs/decisions.md` are authoritative.

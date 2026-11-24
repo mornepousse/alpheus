@@ -235,7 +235,7 @@ impl Conn {
     }
 
     /// When this connection was accepted: the latency the daemon logs
-    /// (spec § 3, "open latency < 20 ms") starts here, not once the request
+    /// (open latency < 20 ms) starts here, not once the request
     /// has been read — a slow or large request must count against the
     /// budget too, not be hidden by starting the clock late.
     pub fn accepted_at(&self) -> Instant {
@@ -317,7 +317,7 @@ mod tests {
 
     /// `accepted_at` must be the moment the connection was
     /// taken, fixed from then on — not recomputed later (e.g. once the
-    /// request has been read). The daemon's open-latency log (spec § 3)
+    /// request has been read). The daemon's open-latency log
     /// relies on it covering "request accepted → first frame" in full,
     /// including however long the read itself then takes.
     #[test]

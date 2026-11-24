@@ -12,8 +12,7 @@
 //!   user's config passes `cell` (or `cell_mid`) first, whatever the parser already did, so nothing
 //!   a unit can name reaches the terminal as an escape sequence.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 2, the Diag tab; § 2.2, unit
-//! actions), docs/features/control-center.md.
+//! See: docs/features/control-center.md.
 
 use super::Chrome;
 use super::draw::{centered, put, truncate};

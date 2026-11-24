@@ -1,11 +1,11 @@
-//! Compiled-in themes (spec § 2): fifteen families, each a dark half and (but
+//! Compiled-in themes: fifteen families, each a dark half and (but
 //! for Nord, Dracula and Phosphor) a light half of the 16 roles, taken from the
-//! official palettes (the last six are the UI refresh's own designs). Role
+//! official palettes (the last six are alpheus's own designs). Role
 //! choices follow Catppuccin's UI style guide and map the other families by
-//! analogy (themes plan). Where an official
+//! analogy. Where an official
 //! colour failed the contrast test, the nearest passing palette colour is
 //! used and the comment says so. Each half also carries the seven named hues
-//! (spec § 9) from the same palette. About 1.9 KB of read-only data in all.
+//! from the same palette. About 1.9 KB of read-only data in all.
 //!
 //! Never:
 //! - ship a preset that cannot be read: `every_preset_is_legible_in_both_modes`,
@@ -496,7 +496,7 @@ const DRACULA_DARK: Roles = Roles {
     },
 };
 
-/// Ember dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Ember dark (an alpheus design, docs/features/themes.md).
 const EMBER_DARK: Roles = Roles {
     bar_bg: h(0x1a1412),
     pill_bg: h(0x2c221d),
@@ -525,7 +525,7 @@ const EMBER_DARK: Roles = Roles {
     },
 };
 
-/// Ember light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Ember light (an alpheus design, docs/features/themes.md).
 const EMBER_LIGHT: Roles = Roles {
     bar_bg: h(0xefe4d3),
     pill_bg: h(0xe0d0b9),
@@ -554,7 +554,7 @@ const EMBER_LIGHT: Roles = Roles {
     },
 };
 
-/// Glacier dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Glacier dark (an alpheus design, docs/features/themes.md).
 const GLACIER_DARK: Roles = Roles {
     bar_bg: h(0x0e1418),
     pill_bg: h(0x1a242b),
@@ -583,7 +583,7 @@ const GLACIER_DARK: Roles = Roles {
     },
 };
 
-/// Glacier light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Glacier light (an alpheus design, docs/features/themes.md).
 const GLACIER_LIGHT: Roles = Roles {
     bar_bg: h(0xe4eef3),
     pill_bg: h(0xd0e0e9),
@@ -612,7 +612,7 @@ const GLACIER_LIGHT: Roles = Roles {
     },
 };
 
-/// Ink dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Ink dark (an alpheus design, docs/features/themes.md).
 const INK_DARK: Roles = Roles {
     bar_bg: h(0x101010),
     pill_bg: h(0x1e1e1e),
@@ -641,7 +641,7 @@ const INK_DARK: Roles = Roles {
     },
 };
 
-/// Ink light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Ink light (an alpheus design, docs/features/themes.md).
 const INK_LIGHT: Roles = Roles {
     bar_bg: h(0xecebe6),
     pill_bg: h(0xdddbd4),
@@ -670,7 +670,7 @@ const INK_LIGHT: Roles = Roles {
     },
 };
 
-/// High contrast dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// High contrast dark (an alpheus design, docs/features/themes.md).
 const HICON_DARK: Roles = Roles {
     bar_bg: h(0x000000),
     pill_bg: h(0x1c1c1c),
@@ -699,7 +699,7 @@ const HICON_DARK: Roles = Roles {
     },
 };
 
-/// High contrast light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// High contrast light (an alpheus design, docs/features/themes.md).
 const HICON_LIGHT: Roles = Roles {
     bar_bg: h(0xffffff),
     pill_bg: h(0xe6e6e6),
@@ -728,7 +728,7 @@ const HICON_LIGHT: Roles = Roles {
     },
 };
 
-/// Sorbet dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Sorbet dark (an alpheus design, docs/features/themes.md).
 const SORBET_DARK: Roles = Roles {
     bar_bg: h(0x1f1a26),
     pill_bg: h(0x2f2839),
@@ -757,7 +757,7 @@ const SORBET_DARK: Roles = Roles {
     },
 };
 
-/// Sorbet light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Sorbet light (an alpheus design, docs/features/themes.md).
 const SORBET_LIGHT: Roles = Roles {
     bar_bg: h(0xf6eef6),
     pill_bg: h(0xe9dcea),
@@ -786,7 +786,7 @@ const SORBET_LIGHT: Roles = Roles {
     },
 };
 
-/// Phosphor dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+/// Phosphor dark (an alpheus design, docs/features/themes.md).
 const PHOSPHOR_DARK: Roles = Roles {
     bar_bg: h(0x050a05),
     pill_bg: h(0x0f1a0f),
@@ -831,7 +831,7 @@ const HICON: Preset = Preset { name: "hicon", dark: HICON_DARK, light: Some(HICO
 const SORBET: Preset = Preset { name: "sorbet", dark: SORBET_DARK, light: Some(SORBET_LIGHT) };
 const PHOSPHOR: Preset = Preset { name: "phosphor", dark: PHOSPHOR_DARK, light: None };
 
-/// Every compiled-in theme, in the order the docs (and delivery 3's tab) list them.
+/// Every compiled-in theme, in the order the docs and the Theme tab list them.
 pub static PRESETS: &[Preset] = &[
     CATPPUCCIN,
     GRUVBOX,
@@ -850,7 +850,7 @@ pub static PRESETS: &[Preset] = &[
     PHOSPHOR,
 ];
 
-/// The default theme (spec § 2), and every fallback's.
+/// The default theme, and every fallback's.
 pub(crate) const DEFAULT_PRESET: &Preset = &CATPPUCCIN;
 
 /// The preset called exactly `name` (case-sensitive), if any.
@@ -937,7 +937,7 @@ mod tests {
     }
 
     /// One known hue per half, against the official palettes (a typo guard), and the hues the
-    /// families lack (spec § 9: documented in the comments of each half).
+    /// families lack (documented in the comments of each half).
     #[test]
     fn hues_come_from_the_official_palettes() {
         let hues = |name: &str, light: bool| {
@@ -960,7 +960,7 @@ mod tests {
         assert_eq!(hues("dracula", false).cyan, Rgb(0x8b, 0xe9, 0xfd));
     }
 
-    /// One role and one hue per new half, against the design tables (a typo guard).
+    /// One role and one hue per new half, against the palette values (a typo guard).
     #[test]
     fn new_values_come_from_the_design_tables() {
         let dark = |name: &str| preset(name).unwrap().dark;
@@ -999,7 +999,7 @@ mod tests {
         assert!(size_of::<Preset>() <= 160, "{}", size_of::<Preset>());
     }
 
-    /// Spec § 7 plus the state-colour amendment: every shipped theme is
+    /// Every shipped theme is
     /// legible, in both modes (a dark-only preset is checked again as the
     /// light mode's fallback).
     #[test]
@@ -1065,7 +1065,7 @@ mod tests {
         assert!(failures.is_empty(), "{worst:?}\n{failures:#?}");
     }
 
-    /// The six presets of the UI refresh also keep secondary text and every module hue at 3:1 on
+    /// The six presets of alpheus's own design also keep secondary text and every module hue at 3:1 on
     /// the cells they sit on: `fg_dim` and the seven hues on `pill_bg`, `fg_dim` on `raised`.
     /// Every ratio is printed, the worst first in a failure.
     #[test]

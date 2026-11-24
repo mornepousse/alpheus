@@ -157,7 +157,7 @@ fn an_entry_hit_ranks_before_every_hit_that_needs_the_path() {
     );
 }
 
-/// Spec § 3: a hit that needs the path ranks below an App hit, even a weaker match.
+/// A hit that needs the path ranks below an App hit, even a weaker match.
 #[test]
 fn a_hit_that_needs_the_path_ranks_below_an_app_hit() {
     // The app matches by one of its keywords only (no name bonus), letters scattered, and the entry
@@ -706,7 +706,7 @@ fn tool_row(name: &str, path: &str) -> ToolHitRow {
     ToolHitRow { name: name.into(), path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") }, key: String::new() }
 }
 
-/// Tools spec § 1: tool rows join All on a typed query only, never the other modes.
+/// Tool rows join All on a typed query only, never the other modes.
 #[test]
 fn tool_rows_join_a_typed_all_query_only() {
     let mut l = Lists::new();

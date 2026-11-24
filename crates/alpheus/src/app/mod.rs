@@ -22,7 +22,8 @@
 //!   its caller, so a test can pick any time it likes. The one exception is the journal's wall-clock
 //!   stamp (`journal.rs`'s `wall_secs`, `SystemTime::now`).
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 3, "Refresh"), docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center reads only the visible tab, and a failed domain waits").
 
 pub mod action;
 pub mod appearance;
@@ -65,8 +66,8 @@ use worker::{Domain, Op, Request, Update};
 pub const STEP: i32 = 5;
 /// Lifetime of an ephemeral message.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
-/// A failed domain is re-read at most once per this period (spec § 3: "a failing domain is
-/// retried at most every 15 s"). Without it a failed domain would be re-read once per tab period
+/// A failed domain is re-read at most once per this period (docs/decisions.md "The control center reads only the
+/// visible tab, and a failed domain waits"). Without it a failed domain would be re-read once per tab period
 /// (1 to 5 s, `TabSpec::refresh`) instead of every 15 s.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 

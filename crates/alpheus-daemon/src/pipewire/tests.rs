@@ -157,7 +157,7 @@ fn odd_property_types_never_end_the_stream() {
     assert_eq!(end, io::ErrorKind::UnexpectedEof, "odd property types never end the stream");
 }
 
-/// The default source (OSD spec § 2): its mute, a switch to a virtual source (echo cancelling,
+/// The default source: its mute, a switch to a virtual source (echo cancelling,
 /// named by its nick), its node going. A stream recording the microphone, with the same node
 /// name, is never a source; a source node arriving that is not the default publishes nothing.
 #[test]
@@ -179,7 +179,7 @@ fn the_default_source_is_followed_like_the_sink() {
     assert!(seen.iter().all(|s| s.sink == vol(84, false)), "the sink never moved");
 }
 
-/// The label (OSD spec § 1, the name card): the description, else the nick, else the node name;
+/// The label (the OSD's name card): the description, else the nick, else the node name;
 /// blank text is absent; capped at LABEL_MAX bytes on a character boundary.
 #[test]
 fn the_label_is_the_description_then_the_nick_then_the_node_name_and_is_capped() {
@@ -331,7 +331,7 @@ fn sink(id: u32, label: &str, default: bool) -> Sink {
     Sink { id, label: label.into(), default }
 }
 
-/// Quick spec § 5: every sink with its node id (what `wpctl set-default` takes) and its label,
+/// Every sink with its node id (what `wpctl set-default` takes) and its label,
 /// the default marked; the plain state carries no list.
 #[test]
 fn every_sink_by_label_with_its_node_id_and_the_default_marked() {
@@ -343,7 +343,7 @@ fn every_sink_by_label_with_its_node_id_and_the_default_marked() {
     assert_eq!(m.state_in(Scope::Panel).sinks, Some(m.sinks()));
 }
 
-/// Spec § 6: at most 32 sinks, the first by label (case-insensitive); labels cleaned like the OSD's.
+/// At most 32 sinks, the first by label (case-insensitive); labels cleaned like the OSD's.
 #[test]
 fn the_list_is_capped_and_its_labels_cleaned() {
     let node = |id: u32, desc: &str| {
@@ -403,7 +403,7 @@ fn run_tapped(text: &str, base: Scope, tap: &SoundTap) -> Vec<SoundState> {
     seen
 }
 
-/// Spec § 5: closed, nothing is built; opening reads the sinks at once from the thread's model
+/// Closed, nothing is built; opening reads the sinks at once from the thread's model
 /// (pw-dump is silent at rest); closing goes back to the base scope.
 #[test]
 fn the_tap_reads_the_sinks_at_open_and_the_stream_carries_them_while_open() {
@@ -740,7 +740,7 @@ fn the_graph_is_bounded() {
 
 #[test]
 fn without_privacy_the_lean_objects_are_parsed() {
-    // Privacy spec § 8: nothing more is parsed without the module. The lean types hold only
+    // Nothing more is parsed without the module. The lean types hold only
     // what the sinks and sources need; the privacy twin carries the rest.
     let opt = size_of::<Option<String>>();
     let device = size_of::<Option<u32>>();

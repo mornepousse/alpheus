@@ -31,7 +31,7 @@ fn launcher_module_first_by_default_and_removable() {
     }
 }
 
-/// Power spec § 1: `power` parses, is the last of `ALL`, and the default order ends with the
+/// `power` parses, is the last of `ALL`, and the default order ends with the
 /// clock then the power button.
 #[test]
 fn the_power_module_parses_and_ends_the_default_order() {
@@ -463,7 +463,7 @@ fn osd_refused_with_reason() {
     assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("osd.width")));
 }
 
-/// Quick Wi-Fi spec § 4: `wifi_more` as given; absent, resolved at load time from the launcher's
+/// `wifi_more` as given; absent, resolved at load time from the launcher's
 /// terminal; an explicit empty list hides `More…` and is never replaced.
 #[test]
 fn wifi_more_is_read_checked_and_resolved() {
@@ -488,7 +488,7 @@ fn wifi_more_is_read_checked_and_resolved() {
     assert!(BarConfig::from_text("[quick]\nwifi_mor = []").unwrap_err().contains("wifi_mor"), "unknown key refused");
 }
 
-/// Quick VPN spec: `vpn_more` is read as `wifi_more` is, its default the launcher's terminal then
+/// `vpn_more` is read as `wifi_more` is, its default the launcher's terminal then
 /// `nmtui-edit`.
 #[test]
 fn vpn_more_is_read_checked_and_resolved() {
@@ -636,7 +636,7 @@ fn state_forms_are_read() {
     assert!(state_form("process:a\u{7}").is_err(), "no control character");
 }
 
-/// Displays spec § 1: `displays` is a module with no segment, on by default; `[displays]` turns
+/// `displays` is a module with no segment, on by default; `[displays]` turns
 /// the hotplug profiles off and says where the DRM connectors are listed (absolute).
 #[test]
 fn config_displays_defaults_and_absolute_drm_dir() {

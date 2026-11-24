@@ -362,7 +362,7 @@ fn the_lists_are_capped() {
     assert_eq!(d.saved, None, "more than MAX_SAVED: not the whole list, so unknown");
 }
 
-/// Ruling P4: one access point or one profile that fails to read (a timeout) is left out; the
+/// One access point or one profile that fails to read (a timeout) is left out; the
 /// rest of the detail stays, and the failure is logged once per open.
 #[test]
 fn one_unreadable_item_is_left_out_never_the_whole_detail() {

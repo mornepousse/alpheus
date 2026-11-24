@@ -167,7 +167,6 @@ alpheus is written with substantial help from an AI coding assistant (Claude Cod
   why it is the way it is, how to contribute, what it can do to your session.
 - [`CHANGELOG.md`](CHANGELOG.md): what each delivery brought, newest first.
 - [`docs/SCOPE.md`](docs/SCOPE.md): the original scope (historical).
-- [`docs/specs/`](docs/specs/README.md): the design history, with a status index.
 
 ## License
 

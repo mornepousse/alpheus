@@ -21,7 +21,7 @@ fn the_media_module_answers_the_middle_button_and_the_wheel() {
     use crate::media::Control;
     let media = Target::Module(ModuleId::Media);
     assert_eq!(media_control(&media, Button::Middle), Some(Control::PlayPause));
-    assert_eq!(media_control(&media, Button::WheelUp), Some(Control::Next), "spec § 1: up is next");
+    assert_eq!(media_control(&media, Button::WheelUp), Some(Control::Next), "up is next");
     assert_eq!(media_control(&media, Button::WheelDown), Some(Control::Previous));
     assert_eq!(media_control(&media, Button::Left), None, "the popup's, not a control");
     assert_eq!(media_control(&media, Button::Right), None);
@@ -219,7 +219,7 @@ fn volume_clicks_tab_mute_and_wheel() {
     assert_eq!(command(&b, "HDMI-A-1", &v, Button::Middle), None);
 }
 
-/// Privacy spec § 6: the middle click toggles the default source's mute, the quick panel's
+/// The middle click toggles the default source's mute, the quick panel's
 /// command; the left click is the popup's (no command), the other buttons nothing.
 #[test]
 fn a_middle_click_on_privacy_toggles_the_source_mute() {
@@ -243,7 +243,7 @@ fn indicators_open_their_tab() {
     }
 }
 
-/// Resources popup spec § 1: the left click opens the popup (no command), the right click runs
+/// The left click opens the popup (no command), the right click runs
 /// `[actions] resources`; the other buttons do nothing.
 #[test]
 fn resources_left_opens_the_popup_right_runs_the_monitor() {
@@ -260,7 +260,7 @@ fn resources_left_opens_the_popup_right_runs_the_monitor() {
     assert_eq!(ModulePopup::of(&r, Button::Right, false), None);
 }
 
-/// Diagnostics spec § 6: a left click on the failed count opens the Diag tab through `open_tab`;
+/// A left click on the failed count opens the Diag tab through `open_tab`;
 /// no other click does anything.
 #[test]
 fn a_left_click_opens_the_diag_tab() {
@@ -286,7 +286,7 @@ fn click_commands_configurable_in_bar_toml() {
     assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Right), argv(&["foot", "htop"]));
 }
 
-/// Quick spec § 1: with the panel, the left click is its popup's (no command), the right click
+/// With the panel, the left click is its popup's (no command), the right click
 /// takes over the TUI tab on the three modules; the wheel and the battery are unchanged.
 #[test]
 fn with_the_quick_panel_the_right_click_opens_the_tab() {

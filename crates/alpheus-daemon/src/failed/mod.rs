@@ -11,7 +11,7 @@
 //! - read a bus, a file or a clock: it only works on the counts it is handed;
 //! - start anything (a thread, a process, a timer).
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 6), docs/features/failed.md, and
+//! See: docs/features/failed.md and
 //! docs/decisions.md ("A source that is down is not a state", "The failed-units notice waits for
 //! both managers").
 
@@ -22,7 +22,7 @@ use crate::state::Failed;
 /// The system count plus the user count, each when known; None when neither is known.
 ///
 /// A count never known is left out of the sum, and nothing is drawn while neither has ever been
-/// known (decision 13 of the diagnostics spec's "Decisions written down"). See docs/decisions.md,
+/// known. See docs/decisions.md,
 /// "A source that is down is not a state".
 pub fn total(f: &Failed) -> Option<u32> {
     match (f.system, f.user) {

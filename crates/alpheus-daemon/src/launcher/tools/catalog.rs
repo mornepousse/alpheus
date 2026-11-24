@@ -1,4 +1,4 @@
-//! The Tools menu's catalog (spec §§ 2, 3): the built-in table, the `Context` of booleans that
+//! The Tools menu's catalog: the built-in table, the `Context` of booleans that
 //! decides which rows show, and the merged categories and entries (built-ins first, then the
 //! user's). Built at each open, dropped at close: nothing is cached. Pure: no thread, no
 //! command, no log (the notes go through a callback the glue logs).
@@ -10,12 +10,12 @@ use alpheus_common::launcher_ipc::QuickVerb;
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
 
-/// The built-in categories' orders (spec § 3), in `BUILTIN_CATEGORIES`' order.
+/// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
 const BUILTIN_ORDERS: [u16; 4] = [10, 20, 30, 90];
 /// Their glyphs (Nerd Font Material Design), in the same order.
 const BUILTIN_GLYPHS: [char; 4] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}'];
 
-/// What a built-in does when chosen (spec § 3). Run by `app.rs`, after the box closed.
+/// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinAction {
     /// The quick panel at that row or detail (`--quick <word>`).
@@ -68,7 +68,7 @@ const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
 const SESSION: &str = "Session";
 
-/// Spec § 3's table, in its order.
+/// The built-in table, in its order.
 pub const BUILTINS: [Builtin; 23] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
@@ -95,7 +95,7 @@ pub const BUILTINS: [Builtin; 23] = [
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
 ];
 
-/// What decides which built-ins show (spec § 3's "Shown when" column): plain booleans, so the
+/// What decides which built-ins show: plain booleans, so the
 /// rule is testable with no `App`. The glue fills it from `bar.toml`, `[tools] reload` and the
 /// three answers of `join.rs`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +124,7 @@ pub struct Context {
     pub diagnostics: bool,
 }
 
-/// Whether `b` shows under `c` (spec § 3).
+/// Whether `b` shows under `c`.
 pub fn shown(b: &Builtin, c: &Context) -> bool {
     match b.action {
         BuiltinAction::Quick(_) => c.quick,
@@ -173,7 +173,7 @@ pub struct Entry {
     pub confirm: bool,
     /// Whether a state is known for it: a built-in with a daemon-side state, a user entry with `state`.
     pub has_state: bool,
-    /// The history key (spec § 5); a fixed choice appends `/<choice>` (`Catalog::choice_key`).
+    /// The history key; a fixed choice appends `/<choice>` (`Catalog::choice_key`).
     pub key: String,
 }
 
@@ -332,7 +332,7 @@ impl Catalog {
         rows
     }
 
-    /// The history key of a fixed choice of `entry` (spec § 5).
+    /// The history key of a fixed choice of `entry`.
     pub fn choice_key(&self, entry: usize, choice: &str) -> String {
         self.entries.get(entry).map(|e| format!("{}/{choice}", e.key)).unwrap_or_default()
     }

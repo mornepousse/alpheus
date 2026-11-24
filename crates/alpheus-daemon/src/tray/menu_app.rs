@@ -12,7 +12,7 @@
 //! - open the menu before its layout has arrived, or when the first layout arrives more than 2 s
 //!   after the request.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
+//! See: docs/features/tray.md, and docs/decisions.md
 //! ("A tray menu is shown only once its layout has arrived", "A tray menu opens with its first entry
 //! selected", "A submenu opens in the same popup", "A failed Activate opens the menu of the icon
 //! that was pressed", "A tray menu is closed by the button that opened it, or by any right click",
@@ -235,7 +235,7 @@ impl App {
         // The line is logged whenever the app had a request, even if the router already dropped
         // its own session first (its stale-path check closes the session before it ever reports
         // `close_menu`). `close_menu` is harmless when nothing is left to close, but the request
-        // did end, and used to go unlogged in that case (commit 40be9a6).
+        // did end, and used to go unlogged in that case.
         let had_one = self.menu.target.take().is_some();
         self.menu.opened_by = None;
         self.menu.submenu_wanted = None;

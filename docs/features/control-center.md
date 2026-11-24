@@ -132,7 +132,7 @@ functions over the backends, called directly by tests.
 brightness, do not disturb, keep awake, the energy profiles, the network, Bluetooth, the audio
 nodes, the displays, the failed units, and the session health. Each tab names the domains it
 shows (`app/tab.rs`), and only the shown tab is read: nothing runs in the background, and nothing
-when the window is closed (spec § 3, "Refresh"). `App::on_tick` asks for the shown tab's domains
+when the window is closed (decisions: "The control center reads only the visible tab, and a failed domain waits"). `App::on_tick` asks for the shown tab's domains
 once its period has passed: Home 1 second; Sound, Network, BT and Displays 2 seconds; Diag 5
 seconds (held back while its journal view is open, which reads for itself); Power and Theme have
 no period and are never read on a tick. A tab is also read when it is entered and after an action
@@ -253,8 +253,7 @@ Two files, one per layer, and the tab's row in `app/tab.rs`.
 - `app/tab.rs`: the tab's row says it is searchable, that it is read every 2 seconds while it is
   shown, from the `Domain::Audio` domain, and that its label column is 34 cells wide.
 
-**Refresh.** Only the visible tab is read (`docs/specs/2026-10-02-alpheus-v1-design.md`, § 3:
-nothing runs in the background and nothing runs when the window is closed). `App::on_tick` asks
+**Refresh.** Only the visible tab is read (nothing runs in the background and nothing runs when the window is closed). `App::on_tick` asks
 the worker for `Domain::Audio` once the tab's period has passed; a failing read is tried again at
 most every 15 seconds (a broken tool must not be relaunched every second: a comment in
 `App::on_tick`).
@@ -289,7 +288,7 @@ most every 15 seconds (a broken tool must not be relaunched every second: a comm
 
 ### What it costs
 
-The control center is not measured tab by tab. What the specs fix for it as a whole: the first
+The control center is not measured tab by tab. What is fixed for it as a whole: the first
 render in under 100 milliseconds, and nothing read while a tab is not shown. This tab's reads are
 one `wpctl status` every 2 seconds while it is shown, and nothing otherwise. (Reason for the 2
 second period: not recorded.)
@@ -377,8 +376,7 @@ Two files, one per layer, and the tab's row in `app/tab.rs`.
 - `app/tab.rs`: the tab's row says it is searchable, that it is read every 2 seconds while it is
   shown, from the `Domain::Network` domain, and that its label column is 20 cells wide.
 
-**Refresh.** Only the visible tab is read (`docs/specs/2026-10-02-alpheus-v1-design.md`, § 3:
-nothing runs in the background and nothing runs when the window is closed). `App::on_tick` asks
+**Refresh.** Only the visible tab is read (nothing runs in the background and nothing runs when the window is closed). `App::on_tick` asks
 the worker for `Domain::Network` once the tab's period has passed; a failing read is tried again
 at most every 15 seconds (a broken tool must not be relaunched every second: a comment in
 `App::on_tick`).
@@ -416,7 +414,7 @@ at most every 15 seconds (a broken tool must not be relaunched every second: a c
 
 ### What it costs
 
-The control center is not measured tab by tab. What the specs fix for it as a whole: the first
+The control center is not measured tab by tab. What is fixed for it as a whole: the first
 render in under 100 milliseconds, and nothing read while a tab is not shown. This tab's reads are
 two `nmcli` commands every 2 seconds while it is shown (the Wi-Fi radio, and the active
 connections), and nothing otherwise. (Reason for the 2 second period: not recorded.)
@@ -576,8 +574,8 @@ the palette runs them through the same `App::run_command`: **Power off**, **Rebo
 from the palette get the same question, with the focus on Cancel.
 
 In the question the focus starts on **Cancel**, so that an Enter pressed by reflex runs nothing (a
-comment on `Confirm::yes_focused`). The spec asks for the confirmation on power off, reboot and
-log out (`docs/specs/2026-10-02-alpheus-v1-design.md`, § 2); the code says the rule is "whatever
+comment on `Confirm::yes_focused`). The confirmation is asked on power off, reboot and
+log out; the code says the rule is "whatever
 closes the session or the machine" (`PowerAction::needs_confirm`). Why Suspend does not ask: reason
 not recorded.
 
@@ -663,7 +661,7 @@ Two small files, the tab's row in `app/tab.rs`, and `SessionCommands` in alpheus
 ### What it costs
 
 Nothing while the tab is shown or not: it reads no data. The first-render budget for the control
-center as a whole is under 100 milliseconds (`docs/specs/2026-10-02-alpheus-v1-design.md`).
+center as a whole is under 100 milliseconds.
 
 ## Home
 
@@ -772,8 +770,7 @@ date, greeting and summary stacked.
 
 The first render of the dashboard is checked to take under 100 milliseconds even when the tools are
 slow (`first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, `tests/first_render.rs`;
-[measurements](../measurements.md): 218–300 µs). Home is read once a second while it is shown and never otherwise (the period:
-the spec's, § 3).
+[measurements](../measurements.md): 218–300 µs). Home is read once a second while it is shown and never otherwise (the period is one second).
 
 ## Displays
 
@@ -854,7 +851,7 @@ the daemon on hotplug when `[displays] auto = true` in `bar.toml` (the default; 
 ### How it is built
 
 The daemon, not this tab, owns the screens: it speaks the Wayland output protocol, applies a plan,
-holds the 15-second trial and rolls it back by itself (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`).
+holds the 15-second trial and rolls it back by itself.
 The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `Op::KeepDisplays`,
 `Op::RevertDisplays`, and `Domain::Displays` for the read) and runs no command.
 
@@ -901,7 +898,7 @@ The tab sends the daemon's socket verbs through the worker (`Op::TryDisplays`, `
 ### What it costs
 
 One read of the daemon's model, answered from its memory, every 2 seconds while the tab is shown, and
-nothing otherwise (`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`). The daemon's own
+nothing otherwise. The daemon's own
 costs (the trial's one timer, the hotplug debounce) are in the [component table](../measurements.md#alpheus-component-by-component).
 
 ## Theme
@@ -956,12 +953,12 @@ it; a click on a chip applies that value at once (the mode, the module colours o
 ### Configuration
 
 The tab reads and writes `theme.toml` in the config directory (`theme`, `mode`, `module_colors`,
-`style`, written by the same safe `set_keys` as the spec says; the file's other keys, such as `opacity`
+`style`, written by the same safe `set_keys`; the file's other keys, such as `opacity`
 and the `[colors]` overrides, are not part of what the tab writes, and the overrides are applied in the
 preview), and
 reads `colors.toml` for the wallpaper theme. In mode `Auto` the preview follows the mode the daemon
 publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running). The themes, their
-roles and the styles are described in [the `theme.toml` reference](../configuration.md#themetoml) ([roles](../configuration.md#roles), [`style`](../configuration.md#style)) and in the themes and shapes specs.
+roles and the styles are described in [the `theme.toml` reference](../configuration.md#themetoml) ([roles](../configuration.md#roles), [`style`](../configuration.md#style)).
 
 ### How it is built
 
@@ -1089,14 +1086,14 @@ dropped first; scrolled up, it stays where it is and counts the new entries belo
 In the **bug report**: PgUp and PgDn scroll, Enter (or a click on `[ Copy ]`) copies exactly the text
 on screen through `[diagnostics] copy`, with the text on its standard input; Esc closes and copies
 nothing. An Enter typed within 0.4 seconds of the text appearing is ignored, so one typed ahead does not
-copy a report nobody has read. Redaction is a safety net, not a promise (diagnostics spec § 5). It replaces the user name, the home directory, the host name and
+copy a report nobody has read. Redaction is a safety net, not a promise. It replaces the user name, the home directory, the host name and
 machine id, MAC and IP addresses, UUIDs and anything shaped like an e-mail address; **Wi-Fi network
 names and USB serial numbers are not touched**, so the first line of the view says `Read before
 copying: logs can name things`.
 
 ### Configuration
 
-`[diagnostics]` in `config.toml` (the control center's file, not the daemon's `bar.toml`; diagnostics spec § 7): `copy` (the clipboard program, default `["wl-copy"]`; `[]` turns Copy
+`[diagnostics]` in `config.toml` (the control center's file, not the daemon's `bar.toml`): `copy` (the clipboard program, default `["wl-copy"]`; `[]` turns Copy
 off), `system_actions` (default true), `restart_loop` (the `NRestarts` count from which a unit is
 "restarting in a loop", default 3), `journal_lines` (entries read when the journal view opens, default
 500), and up to 8 `[[diagnostics.checks]]` (`name`, `run` as an argv, `fix` shown and never run).
@@ -1164,7 +1161,6 @@ escape sequence.
 
 ### What it costs
 
-Nothing while the tab is not shown. Shown, three reads every 5 seconds (the failed units of both managers and the health, the spec's
-refresh); the once-per-showing reads run through the executor's `capture` on the
-tab's worker, with the deadlines and caps the diagnostics spec states. The tab's first render is
+Nothing while the tab is not shown. Shown, three reads every 5 seconds (the failed units of both managers and the health); the once-per-showing reads run through the executor's `capture` on the
+tab's worker, with fixed deadlines and caps. The tab's first render is
 209–491 µs ([measurements](../measurements.md)). The journal view makes no read while it is closed and no child outlives it.

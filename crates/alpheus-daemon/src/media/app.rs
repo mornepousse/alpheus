@@ -12,11 +12,11 @@
 //!
 //! Never:
 //! - arm the tick for a closed popup, or when the player is paused or at the end of its track:
-//!   nothing runs at rest (media spec § 2, Time);
+//!   nothing runs at rest;
 //! - wait for D-Bus traffic to show a pin: a pin sends none, so `media_pin` takes the bar's new view
 //!   itself.
 //!
-//! See: docs/specs/2026-10-08-alpheus-media-design.md (§ 2, § 3), docs/features/media.md, and
+//! See: docs/features/media.md, and
 //! docs/decisions.md ("The media popup computes the position, and reads it only while open").
 
 use crate::actions::Button;
@@ -198,7 +198,7 @@ impl App {
         app.panel_refresh();
     }
 
-    /// ↑ ↓ ← →, Enter, Escape (media spec § 2).
+    /// ↑ ↓ ← →, Enter, Escape.
     fn media_key(&mut self, k: Key) {
         let action = self.media_with(|p, players| media::popup::key(p, players, k));
         self.media_action(action);

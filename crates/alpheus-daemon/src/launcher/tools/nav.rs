@@ -1,4 +1,4 @@
-//! The Tools menu's levels, rows and confirmation question (spec § 2, § 5): which rows the
+//! The Tools menu's levels, rows and confirmation question: which rows the
 //! current level lists, what Enter does on each, how the question is asked and expires. Pure: no
 //! thread, no command, no log; the model (`Launcher`) owns the query and the selection and ranks
 //! the rows with its own `Ranker`, the host runs the jobs and arms the deadline.
@@ -28,7 +28,7 @@ pub struct Counts {
     pub unknown: usize,
 }
 
-/// What the reader thread is asked (tools spec § 6): the states of every entry that has one, or a
+/// What the reader thread is asked: the states of every entry that has one, or a
 /// `choices_cmd`. A choices job carries the token of the open it answers: a delivery with another
 /// token is stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +208,7 @@ impl ToolsState {
         }
     }
 
-    /// The rows of the current level, in its order (spec § 2).
+    /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
             Level::Root => self
@@ -260,7 +260,7 @@ impl ToolsState {
         }
     }
 
-    /// `Tools`, `Tools › <category>`, `Tools › <category> › <entry>` (spec § 2).
+    /// `Tools`, `Tools › <category>`, `Tools › <category> › <entry>`.
     pub fn breadcrumb(&self) -> String {
         let mut parts = vec!["Tools".to_string()];
         let entry = match self.level {

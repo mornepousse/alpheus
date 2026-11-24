@@ -13,7 +13,7 @@
 //! - count events: an event only means "look again", and what is shown comes from a scan alone;
 //! - start a thread, a process or a command.
 //!
-//! See: docs/specs/2026-10-20-alpheus-privacy-camera-design.md, docs/features/privacy.md, and
+//! See: docs/features/privacy.md and
 //! docs/decisions.md ("The camera is read from `/proc` after a trigger, never counted", "A burst of
 //! camera triggers is scanned at most one second after its first", "PipeWire's own hold on a
 //! camera adds no name", "A video node udev has not opened to the user yet is watched again when its
@@ -32,15 +32,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// A trigger is followed by one scan this long after it, so that an open and its close, or a burst,
-/// are scanned once (camera spec § 1, "The debounce").
+/// are scanned once.
 pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(300);
 /// A burst of triggers is scanned at the latest this long after its first one, however often a
 /// process keeps opening and closing a node. See docs/decisions.md, "A burst of camera triggers is
 /// scanned at most one second after its first".
 pub const SCAN_MAX_WAIT: Duration = Duration::from_secs(1);
-/// Video nodes watched at most (camera spec § 1).
+/// Video nodes watched at most.
 pub const MAX_DEVICE_WATCHES: usize = 64;
-/// Processes, and open files per process, that one scan looks at, at most (camera spec § 2).
+/// Processes, and open files per process, that one scan looks at, at most.
 pub const MAX_PIDS: usize = 4096;
 pub const MAX_FDS: usize = 4096;
 
@@ -101,7 +101,7 @@ pub fn scan_bounded(proc_dir: &Path, dev_dir: &Path, uid: u32, self_pid: u32, ma
         if pid == self_pid {
             continue;
         }
-        // Other users' `fd` directories are unreadable anyway (camera spec § 2): only the processes
+        // Other users' `fd` directories are unreadable anyway: only the processes
         // of `uid` are looked at.
         let dir = entry.path();
         match fs::symlink_metadata(&dir) {
@@ -166,12 +166,11 @@ pub enum Record {
 /// An open or a close on a watched node.
 const NODE_MASK: u32 = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
 
-/// On `dev_dir`: names appearing, going, or changing their attributes (udev giving a node its group,
-/// camera spec § 1).
+/// On `dev_dir`: names appearing, going, or changing their attributes (udev giving a node its group).
 const DIR_MASK: u32 = libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB | libc::IN_ONLYDIR;
 
 /// The meaning of one record, `dev_wd` being the watch on `dev_dir` itself. A queue overflow is a
-/// trigger like any other (camera spec § 1).
+/// trigger like any other.
 pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
     if ev.mask & libc::IN_Q_OVERFLOW != 0 {
         return Record::Trigger;
@@ -193,7 +192,7 @@ pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
 
 /// The inotify instance on `dev_dir` and on each of its `video*` nodes: an open or a close of a node
 /// is a trigger, never a count. Nothing under `dev_dir` is ever opened, only watched. It is a second
-/// instance, apart from the theme watch's, so that the two keep their own lifetimes (camera spec § 4).
+/// instance, apart from the theme watch's, so that the two keep their own lifetimes.
 pub struct CameraWatch {
     fd: Inotify,
     dev_dir: PathBuf,

@@ -57,7 +57,7 @@ pub struct Note {
     pub replaces: u32,
     pub summary: String,
     pub body: String,
-    /// (key, label) pairs, sent flattened as the spec's `as`.
+    /// (key, label) pairs, sent flattened as the freedesktop specification's `as`.
     pub actions: Vec<(String, String)>,
     pub hints: Vec<(String, Hint)>,
     pub timeout: i32,
@@ -101,7 +101,7 @@ impl Note {
         self
     }
 
-    /// `urgency` 2 as a byte, the spec's type.
+    /// `urgency` 2 as a byte, the freedesktop specification's type.
     pub fn critical(self) -> Note {
         self.hint("urgency", Hint::Byte(2))
     }
@@ -172,7 +172,7 @@ impl FakeClient {
         self.call(n.message(destination)).and_then(|r| r.read1::<u32>().map_err(|e| format!("{e:?}")))
     }
 
-    /// CloseNotification(id): the number of arguments in the reply (0: the spec's empty reply).
+    /// CloseNotification(id): the number of arguments in the reply (0: the freedesktop specification's empty reply).
     pub fn close(&self, id: u32) -> Result<usize, String> {
         self.call(method(NAME, "CloseNotification").append1(id)).map(|r| r.iter_init().count())
     }

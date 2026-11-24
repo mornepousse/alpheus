@@ -174,11 +174,11 @@ pub enum PopupClose {
     /// Its bar was re-placed for a new style (to or from floating): the popup's anchor and size no
     /// longer match.
     Restyled,
-    /// The media popup: no player left to show (spec § 2), or the connection hosting them went.
+    /// The media popup: no player left to show, or the connection hosting them went.
     PlayerGone,
     /// The quick panel: `alpheus-launch --quick` again.
     Verb,
-    /// The privacy popup: every indicator went off, the off-delay passed (privacy spec § 5).
+    /// The privacy popup: every indicator went off, the off-delay passed.
     NothingCaptured,
     Error,
 }
@@ -224,7 +224,7 @@ pub fn bar_exclusive_during_grab(on_hyprland: bool) -> bool {
     !on_hyprland
 }
 
-/// How a popup takes input (quick spec § 1).
+/// How a popup takes input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     /// A tooltip: neither a grab nor the keyboard.
@@ -248,15 +248,15 @@ pub enum PopupBody {
     Media(MediaPopup),
     /// The notifications panel under the bell (the media card, the history, DND, Clear all).
     Panel(Panel),
-    /// The quick settings panel (quick spec), boxed: it is several times the other bodies' size.
+    /// The quick settings panel, boxed: it is several times the other bodies' size.
     Quick(Box<Quick>),
-    /// The ⏻ power menu (power spec § 2).
+    /// The ⏻ power menu.
     Power(Power),
-    /// The privacy popup (privacy spec § 5): its rows are drawn from `Bar.privacy`, nothing kept here.
+    /// The privacy popup: its rows are drawn from `Bar.privacy`, nothing kept here.
     Privacy,
-    /// The resources popup (resources popup spec § 2): figures and graphs per item, `Monitor…`.
+    /// The resources popup: figures and graphs per item, `Monitor…`.
     Resources(ResourcesPopup),
-    /// The timer popup (timer spec § 3).
+    /// The timer popup.
     Timer(TimerPopup),
 }
 
@@ -273,11 +273,11 @@ pub enum ModulePopup {
     Panel,
     /// The quick settings panel: the volume, network and Bluetooth modules.
     Quick,
-    /// The ⏻ power menu: the power button (power spec § 1).
+    /// The ⏻ power menu: the power button.
     Power,
-    /// The privacy popup: the privacy module (privacy spec § 5).
+    /// The privacy popup: the privacy module.
     Privacy,
-    /// The resources popup: the resources module (resources popup spec § 1).
+    /// The resources popup: the resources module.
     Resources,
     /// The timer chip's popup.
     Timer,
@@ -954,7 +954,7 @@ impl App {
         }
         let (Some(handle), Some(seat)) = (self.loop_handle.clone(), self.seat.clone()) else { return };
         let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
-            // SCTK's own repeat: the quick panel lets only the arrows repeat (quick spec § 3).
+            // SCTK's own repeat: the quick panel lets only the arrows repeat.
             app.keyboard.repeat = true;
             app.key_event(event);
             app.keyboard.repeat = false;
@@ -1191,7 +1191,7 @@ mod tests {
         assert_eq!(body.module_popup(), Some(ModulePopup::Media), "a second press on the module only closes it");
     }
 
-    /// Quick spec § 1: with the module, a left press on the volume, the network or Bluetooth
+    /// With the module, a left press on the volume, the network or Bluetooth
     /// toggles the panel (one popup for the three); the right press is the TUI tab's;
     /// the battery keeps its click.
     #[test]
@@ -1207,7 +1207,7 @@ mod tests {
         assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Battery), Button::Left, true), None, "the battery keeps its click");
     }
 
-    /// Power spec § 1: a left press on the power button toggles its menu, with or without the quick
+    /// A left press on the power button toggles its menu, with or without the quick
     /// module; the other buttons do nothing; a second press on it only closes the menu.
     #[test]
     fn a_left_press_on_the_power_button_toggles_its_menu() {
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(body.module_popup(), Some(ModulePopup::Power), "a second press on ⏻ only closes it");
     }
 
-    /// Privacy spec § 5: a left press on the privacy module toggles its popup; the middle click
+    /// A left press on the privacy module toggles its popup; the middle click
     /// mutes the source (actions.rs), the other buttons do nothing here.
     #[test]
     fn a_left_press_on_the_privacy_module_toggles_its_popup() {
@@ -1240,7 +1240,7 @@ mod tests {
         assert_eq!(PopupBody::Privacy.module_popup(), Some(ModulePopup::Privacy), "a second press only closes it");
     }
 
-    /// Timer spec § 3: a left press on the timer chip toggles its popup, with or without the quick
+    /// A left press on the timer chip toggles its popup, with or without the quick
     /// module; the middle click is the chip's own (pause or resume), the others do nothing.
     #[test]
     fn a_left_press_on_the_timer_chip_toggles_its_popup() {

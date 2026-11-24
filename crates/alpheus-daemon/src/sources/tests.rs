@@ -6,7 +6,7 @@ fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Optio
     move |k| pairs.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
 }
 
-/// Mango and Sway spec § 1: the usual session-script order, with niri last: SWAYSOCK, then
+/// The usual session-script order, with niri last: SWAYSOCK, then
 /// HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET; an empty
 /// variable counts as unset; the first one set decides, even when its value is unusable.
 #[test]
@@ -59,7 +59,7 @@ fn mango_socket_is_the_variable_itself_absolute_only() {
     assert_eq!(mango_socket(env(&[])), None);
 }
 
-/// Spec § 1: with none of them, one line naming all four; otherwise one line naming the backend
+/// With none of them, one line naming all four; otherwise one line naming the backend
 /// and its variable, never the path.
 #[test]
 fn the_start_line_names_the_backend_or_the_four_variables() {
@@ -322,7 +322,7 @@ fn hyprland_flapper_backs_off() {
     assert_eq!(log.len(), 1, "{log:?}");
 }
 
-/// A sway that subscribes, answers, then closes, round after round (spec § 3): the delay
+/// A sway that subscribes, answers, then closes, round after round: the delay
 /// still grows and one line is logged.
 #[test]
 fn sway_flapper_backs_off() {
@@ -394,7 +394,7 @@ fn mango_flapper_backs_off() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
-/// Spec § 2: the Mango path is read again at each session; gone, the detected one.
+/// The Mango path is read again at each session; gone, the detected one.
 #[test]
 fn the_mango_path_is_read_again_at_each_session() {
     let detected = Path::new("/run/user/1000/mango-1.sock");

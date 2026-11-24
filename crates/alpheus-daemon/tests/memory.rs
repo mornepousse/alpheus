@@ -1,4 +1,4 @@
-//! Spec budget with every module of delivery 3: startup PSS < 15 MB (firm),
+//! Startup PSS < 15 MB (firm),
 //! < 30 MB at steady state and no growth, under a busy compositor and a
 //! busy PipeWire; at rest with the resources module hidden, no wake-up —
 //! none at all for the sound and D-Bus threads; with resources, the loop
@@ -115,7 +115,7 @@ fn start(
 }
 
 /// 5 KDE-style items, 2 Qt-style, 2 Chromium-style, 1 Steam-like: the
-/// population spec § 4 asks startup and rest to be measured against.
+/// population startup and rest are measured against.
 fn ten_fakes(session: &PrivateBus) -> Vec<FakeItem> {
     let mut items: Vec<FakeItem> = (1..=5).map(|n| FakeItem::start(session, Spec::kde(n))).collect();
     items.push(FakeItem::start(session, Spec::qt()));
@@ -312,7 +312,7 @@ fn entries_ms(line: &str) -> Option<u64> {
     line.rsplit_once(", ")?.1.strip_suffix(" ms after the request")?.trim().parse().ok()
 }
 
-/// Sources spec § 7: PSS with no source and with a 300-line source, open latency with it (the box
+/// PSS with no source and with a 300-line source, open latency with it (the box
 /// shows at once, the entries follow), and 0 wake-ups at rest after. Printed for docs/measurements.md; the
 /// latency keeps the launcher's 20 ms budget, the rest its <= 4 wake-ups.
 #[test]
@@ -516,7 +516,7 @@ fn startup_pss_per_source() {
     let _systemd = FakeSystemd::serve(&bus, 0);
     let mut cases = vec![
         // The case names are what docs/measurements.md cites next to its figures: keep them.
-        ("plan 1", "\"workspaces\", \"window\", \"clock\"", ""),
+        ("bar only", "\"workspaces\", \"window\", \"clock\"", ""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\"", ""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"", ""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\"", ""),
@@ -542,15 +542,15 @@ fn startup_pss_per_source() {
     for (what, kb) in &report {
         assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report it with these figures, never raise: {report:?}");
     }
-    // Privacy spec § 8: with nothing captured, the module keeps a small graph and draws nothing.
+    // With nothing captured, the module keeps a small graph and draws nothing.
     let kb = |w: &str| report.iter().find(|(what, _)| *what == w).map(|(_, kb)| *kb).unwrap();
     let (everything, privacy) = (kb("everything"), kb("+ privacy"));
     assert!(privacy <= everything + 256, "+ privacy {privacy} KB vs everything {everything} KB: more than 256 KB at rest");
-    // Diagnostics spec: the failed count is a number per manager and a listener, nothing kept.
+    // The failed count is a number per manager and a listener, nothing kept.
     if let Some((_, failed)) = report.iter().find(|(what, _)| *what == "+ failed") {
         assert!(*failed <= everything + 256, "+ failed {failed} KB vs everything {everything} KB: more than 256 KB at rest");
     }
-    // Clipboard history spec: the history on, nothing copied yet, reports a small step (report, never raise).
+    // The history on, nothing copied yet, reports a small step (report, never raise).
     let clipboard = kb("+ clipboard");
     assert!(clipboard <= everything + 256, "+ clipboard {clipboard} KB vs everything {everything} KB: more than 256 KB at rest");
 }
@@ -637,7 +637,7 @@ fn resources_tick_at_the_configured_interval() {
 
 const EVERY_ITEM: &str = "show = [\"cpu\", \"memory\", \"temperature\", \"net\", \"disk\", \"gpu\"]\n";
 
-/// Small features 2: the one-time cost of all six items over the default three (two fresh
+/// The resources items `net`, `disk`, `gpu` and the do-not-disturb duration: the one-time cost of all six items over the default three (two fresh
 /// daemons, same tick rate), then, in the six-item daemon, what ~60 more passes keep. PSS
 /// without the shm pools: the compositor maps those too, so they move on their own.
 #[test]
@@ -705,8 +705,8 @@ fn no_thread_leak_across_system_bus_restarts() {
         // generate a second publication, so the reconnected session must
         // simply stay up that long before the next restart, or its outage
         // would be silently folded into the previous "down" count instead
-        // of logging a fresh line (the brief's "5 s is plenty" undershoots
-        // STABLE_DURATION; adapted here to the real rate-limiting rule).
+        // of logging a fresh line (a wait of 5 s undershoots
+        // STABLE_DURATION: the real rate-limiting rule applies).
         std::thread::sleep(Duration::from_secs(11));
         let downs = d.log().iter().filter(|l| l.contains("D-Bus source down")).count();
         assert_eq!(downs, round, "one outage per restart, then reconnected: {:?}", d.log());
@@ -962,7 +962,7 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
     assert!(delta <= 8, "{delta} wake-ups in 10 s at rest after a reload");
 }
 
-/// Themes delivery 1: 50 reloads (two presets in turn, three bars repainted each time) leave no
+/// 50 reloads (two presets in turn, three bars repainted each time) leave no
 /// growth behind. Printed for docs/measurements.md; budget 768 KB (a leak of 64 KB per reload makes 3.2 MB).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -993,7 +993,7 @@ fn theme_reloads_no_growth() {
     assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 50 reloads");
 }
 
-/// Shapes delivery: every style, in the order the tests switch to them (`flat` last, so the
+/// Every style, in the order the tests switch to them (`flat` last, so the
 /// switch back from translucent is measured too).
 const STYLES: [&str; 6] = ["islands", "powerline", "floating", "underline", "translucent", "flat"];
 
@@ -1044,7 +1044,7 @@ fn start_styled(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: &str, them
     (sway, hypr, d)
 }
 
-/// Shapes delivery: PSS at start under each style, every module, 3 outputs. A style costs its
+/// PSS at start under each style, every module, 3 outputs. A style costs its
 /// branch, its corner masks (created on first use, a few hundred bytes) and, for floating, a
 /// buffer 4 px taller and 12 px narrower: each within 512 KB of flat, all under the firm budget.
 #[test]
@@ -1070,7 +1070,7 @@ fn startup_pss_per_style() {
     }
 }
 
-/// Shapes delivery: 48 style switches (every style 8 times; floating reconfigures every bar, the
+/// 48 style switches (every style 8 times; floating reconfigures every bar, the
 /// masks are cached) leave no growth behind. Budget 768 KB, as for theme reloads.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1295,7 +1295,7 @@ fn fifty_into_the_history(d: &Daemon, client: &Peer) {
     assert!(d.wait_for_count("bubbles surface dropped (empty)", 1, Duration::from_secs(60)), "{:?}", d.log());
 }
 
-/// Notifications delivery: the module serving with nothing, a 50-entry history, 4 bubbles shown,
+/// The module serving with nothing, a 50-entry history, 4 bubbles shown,
 /// then closed. The module off is measured on a daemon of its own; the rest in sequence on one.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1335,12 +1335,12 @@ fn notifications_pss_idle_history_and_bubbles() {
     );
     assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     assert!(module_cost <= 1024, "the server and the bell cost {module_cost} KB (≤ 1 MB)");
-    assert!(history_cost <= 512, "50 entries cost {history_cost} KB (capped strings: ≤ 512 KB; spec § 7 computes ≈ 125 KB at worst)");
+    assert!(history_cost <= 512, "50 entries cost {history_cost} KB (capped strings: ≤ 512 KB; ≈ 125 KB at worst)");
     assert!(bubbles_cost <= 2048, "4 bubbles cost {bubbles_cost} KB (their own pool, two buffers: ≤ 2 MB)");
     assert!(closed <= history + 256, "closed: {closed} KB vs {history} KB before them — the surface and its pool must go");
 }
 
-/// Notifications delivery: at rest with a sticky critical bubble shown over a 50-entry history, then
+/// At rest with a sticky critical bubble shown over a 50-entry history, then
 /// with every bubble gone — no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1378,7 +1378,7 @@ fn at_rest_no_wakeups_with_notifications() {
 const OSD_BAR: &str = "modules = [\"workspaces\", \"window\", \"volume\", \"osd\", \"clock\"]\n[osd]\ntimeout_ms = 5000\n";
 const NO_OSD_BAR: &str = "modules = [\"workspaces\", \"window\", \"volume\", \"clock\"]\n";
 
-/// The OSD delivery: the module on with nothing shown (its cost over the same bar without it), one
+/// The module on with nothing shown (its cost over the same bar without it), one
 /// pill shown, then gone. The module off runs on a daemon of its own; the rest in sequence on one.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1412,7 +1412,7 @@ fn osd_pss_idle_shown_and_gone() {
     assert!(gone <= idle + 256, "gone: {gone} KB vs {idle} KB before it — the surface and its pool must go");
 }
 
-/// The OSD delivery: once a pill went, no timer, no wake-up, no spin.
+/// Once a pill went, no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_the_osd() {
@@ -1462,7 +1462,7 @@ fn fake_backlight(name: &str) -> TempDir {
     dir
 }
 
-/// Quick spec § 7: PSS without the module, with it at rest, the panel open (by the verb), closed,
+/// PSS without the module, with it at rest, the panel open (by the verb), closed,
 /// and after 20 more open/close cycles.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1518,7 +1518,7 @@ fn quick_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
-/// Spec § 7: once the panel closed, no timer, no wake-up, no spin.
+/// Once the panel closed, no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_the_quick_panel() {
@@ -1562,7 +1562,7 @@ fn forty_networks() -> Vec<FakeAp> {
 
 /// Waits until the fake NetworkManager has listed the saved profiles twice for each of `n` opens:
 /// the `n`-th open of the detail is read (they come last). The panel's VPN row lists them too, once
-/// per open (quick VPN spec § 5), beside the Wi-Fi detail's own listing.
+/// per open, beside the Wi-Fi detail's own listing.
 fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
     let t = Instant::now();
     while t.elapsed() < DELAY {
@@ -1582,7 +1582,7 @@ fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
 const ANON_CLOSED: u64 = 256;
 const ANON_CYCLED: u64 = 128;
 
-/// Quick Wi-Fi spec § 7: PSS with the panel at rest, the Wi-Fi detail open on 40 visible access
+/// PSS with the panel at rest, the Wi-Fi detail open on 40 visible access
 /// points (32 listed), closed, and after 10 more cycles. A fake nmcli (never the real one) takes the
 /// rescans.
 #[test]
@@ -1660,7 +1660,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
 
-/// Quick Wi-Fi spec § 7: once the detail closed, no timer, no wake-up (the loop's nor the D-Bus
+/// Once the detail closed, no timer, no wake-up (the loop's nor the D-Bus
 /// thread's), no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1731,7 +1731,7 @@ fn vpn_detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
     false
 }
 
-/// Quick VPN spec § 7: PSS with the panel at rest, the VPN detail open on 10 profiles, closed, and
+/// PSS with the panel at rest, the VPN detail open on 10 profiles, closed, and
 /// after 10 more cycles. A fake nmcli (never the real one) is there; nothing is brought up.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1802,7 +1802,7 @@ fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
 
-/// Quick VPN spec § 7: once the VPN detail closed, no timer, no wake-up (the loop's nor the D-Bus
+/// Once the VPN detail closed, no timer, no wake-up (the loop's nor the D-Bus
 /// thread's), no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1890,7 +1890,7 @@ fn detail_opened(b: &FakeBluez, n: usize) -> bool {
     false
 }
 
-/// Quick Bluetooth spec § 7: PSS with the panel's module at rest, the detail open on 20 devices
+/// PSS with the panel's module at rest, the detail open on 20 devices
 /// (CasqueBT paired and 19 nearby, found while open), closed, and after 10 more cycles.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1967,7 +1967,7 @@ fn bluetooth_detail_pss_with_20_devices_and_after() {
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
 
-/// Quick Bluetooth spec § 7: the acting connection (a second system-bus connection with the
+/// The acting connection (a second system-bus connection with the
 /// pairing agent) while the detail is open, against the panel's rows open without it; no thread,
 /// and the loop asleep while it idles.
 #[test]
@@ -2021,7 +2021,7 @@ fn bluetooth_acting_connection_cost() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s with the detail open and nothing happening");
 }
 
-/// Quick Bluetooth spec § 4: the headset row's cost — the panel's rows open on a wired default
+/// The headset row's cost — the panel's rows open on a wired default
 /// sink, then on a Bluetooth headset (its bluez5 device and profiles kept, the row drawn).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2069,7 +2069,7 @@ fn bluetooth_headset_row_cost() {
     assert!(delta <= 128, "the headset row costs {delta} KB: report, never raise");
 }
 
-/// Quick Bluetooth spec § 7: once the detail closed, no timer, no wake-up (the loop's nor the
+/// Once the detail closed, no timer, no wake-up (the loop's nor the
 /// D-Bus thread's), no spin; the acting connection gone.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2145,7 +2145,7 @@ fn wait_until_read(fake: &FakeMango, d: &Daemon) {
     }
 }
 
-/// Mango and Sway spec § 6: startup PSS, every module, 3 outputs, under each backend — the fake
+/// Startup PSS, every module, 3 outputs, under each backend — the fake
 /// Hyprland (the reference, as `startup_pss_per_source`), Sway (this headless sway read through
 /// its i3 IPC), Mango (a fake socket serving the real captures). Printed for the rows of docs/measurements.md.
 #[test]
@@ -2183,7 +2183,7 @@ fn startup_pss_per_backend() {
     }
 }
 
-/// Mango and Sway spec § 6: at rest under Sway and under Mango, the compositor thread never wakes
+/// At rest under Sway and under Mango, the compositor thread never wakes
 /// (both block without a timeout), the daemon as at rest under the fake Hyprland.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2342,7 +2342,7 @@ fn power_asking(sway: &Sway, d: &Daemon) {
     assert!(sway.wait_for_screen("HEADLESS-1", asking), "the question shown in warn: {:?}", d.log());
 }
 
-/// Power spec § 5: PSS without the module, with it at rest, the menu open, closed, and after 20
+/// PSS without the module, with it at rest, the menu open, closed, and after 20
 /// more open/close cycles; each bound against this run's own baseline.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2385,7 +2385,7 @@ fn power_menu_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
-/// Power spec § 5: once the menu closed — the last time with its question pending — no timer, no
+/// Once the menu closed — the last time with its question pending — no timer, no
 /// wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2432,7 +2432,7 @@ fn resources_click(sway: &Sway, d: &Daemon, line: &str, n: usize) {
     assert!(d.wait_for_count(line, n, DELAY), "{line} x{n}: {:?}", d.log());
 }
 
-/// Resources popup spec constraints: PSS at rest, the popup open, closed, and after 20 more
+/// PSS at rest, the popup open, closed, and after 20 more
 /// cycles. The first open's file-backed warm-up (code and font pages) is in `closed`, and the shm
 /// pools move on their own (the compositor maps them too), so the closed and cycled bounds read
 /// `Pss_Anon` (smaps_rollup: heap, stacks, caches, nothing file-backed or shared); the pools get
@@ -2498,7 +2498,7 @@ fn heap_kb(d: &Daemon) -> u64 {
     kb
 }
 
-/// Resources popup spec § 3: the ring is fixed, so a full and wrapped one keeps nothing more than
+/// The ring is fixed, so a full and wrapped one keeps nothing more than
 /// one half full at 30 s (interval = 1: 60 samples after 60 s, the ring wraps after that). The bound
 /// reads `Pss_Anon` (smaps_rollup: no file pages, no shm pools, which are what moves by 0.7-0.9 MB
 /// at random on this harness); the whole own memory and the main heap are printed.
@@ -2524,7 +2524,7 @@ fn resources_history_full_keeps_nothing_more() {
     assert!(anon_late <= anon_early + 64, "a full ring grew Pss_Anon by {} KB", anon_late.saturating_sub(anon_early));
 }
 
-/// Resources popup spec constraints: once the popup closed, no timer, no wake-up. At
+/// Once the popup closed, no timer, no wake-up. At
 /// interval = 60 no tick falls in the window, so any wake-up is the popup's.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2576,7 +2576,7 @@ fn capture_cycle(sway: &Sway, d: &Daemon, n: u32) {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| !mic_shown(s)), "capture {n} never gone: {:?}", d.log());
 }
 
-/// Privacy spec § 9: PSS idle, a capture shown, ended, then after 20 more capture cycles; each
+/// PSS idle, a capture shown, ended, then after 20 more capture cycles; each
 /// bound against this run's own baseline.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2607,7 +2607,7 @@ fn privacy_pss_with_a_capture_and_after() {
     assert!(cycled <= ended + 128, "cycled {cycled} KB vs ended {ended} KB: 20 captures must keep nothing");
 }
 
-/// Privacy spec § 4, § 8: once a capture ended and its glyph went, no timer, no wake-up, no spin.
+/// Once a capture ended and its glyph went, no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_a_capture() {
@@ -2678,7 +2678,7 @@ fn camera_cycle(sway: &Sway, d: &Daemon, cam: &FakeCam, n: u32) {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| !camera_shown(s)), "camera {n} never gone: {:?}", d.log());
 }
 
-/// Privacy delivery 2 spec § 5: PSS idle (the watch on, no camera), with a fake holder shown, once
+/// PSS idle (the watch on, no camera), with a fake holder shown, once
 /// gone, and after 20 more cycles; then no wake-up at rest after the holder went.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2755,7 +2755,7 @@ fn scan_times(proc: &Path, dev: &Path) -> (Duration, Duration) {
     (times[10], times[20])
 }
 
-/// Privacy delivery 2 spec § 2: one scan of 120 processes with 30 descriptors each (one holder; the
+/// One scan of 120 processes with 30 descriptors each (one holder; the
 /// daemon scans only its own uid, 93 processes and 2,726 descriptors measured on the workstation)
 /// costs at most 10 ms, the median of 21. The scan stays on the event loop. A 500 x 20 tree is timed
 /// for the record (the worst case seen), asserted nothing.
@@ -2797,7 +2797,7 @@ fn displays_rest(d: &Daemon, rest: Duration, what: &str) {
     assert_eq!(delta, 0, "{delta} wake-ups of the daemon {what}");
 }
 
-/// Displays protocol spec § 7: the module on at start, with 1 and 3 headless outputs (their heads
+/// The module on at start, with 1 and 3 headless outputs (their heads
 /// and modes read), against the same bar without it on this build (the base has no module: its
 /// one-time cost is `startup_pss_per_source`'s `everything`, back to back); then no wake-up at rest.
 #[test]
@@ -2857,7 +2857,7 @@ fn trial(sway: &Sway, d: &Daemon, keep: bool) {
     snapshot_until(sway, d, |s| x_of(s) == x && s.trial == TrialState::None);
 }
 
-/// Displays protocol spec § 7: PSS idle, one trial open, once kept, then after 20 more trials (kept
+/// PSS idle, one trial open, once kept, then after 20 more trials (kept
 /// and reverted in turn; a timed-out one would take 15 s each); then no wake-up at rest in the
 /// 16 s after the last one, its 15 s deadline included.
 #[test]
@@ -2954,7 +2954,7 @@ fn hotplug(sway: &Sway, d: &Daemon, first: &str, n: usize) {
 const HOTPLUG_CYCLES: usize = 61;
 const HOTPLUG_STEP: usize = 20;
 
-/// Displays protocol spec § 7: PSS idle, after one hotplug cycle (a screen plugged, its profile
+/// PSS idle, after one hotplug cycle (a screen plugged, its profile
 /// applied, unplugged, the lone profile evaluated, already shown), then every 20 more, up to 60; then no wake-up at
 /// rest after the last one (its debounce and watchdog inside the window). Bounded on what the
 /// daemon keeps, the shm pools left out: 20 cycles ≤ +128 KB, and the next 20 ≤ +32 KB (levelled
@@ -3031,7 +3031,7 @@ fn displays_pss_after_hotplug_cycles() {
     assert!(own_40 <= own_20 + 32, "{own_40} KB after 40 cycles vs {own_20} KB after 20, without the pools: still growing");
 }
 
-/// `NOTIFY_BAR` plus what small features 1 adds to the configuration: 32 rules, four battery
+/// `NOTIFY_BAR` plus what the battery alerts, rules and timed do-not-disturb add to the configuration: 32 rules, four battery
 /// thresholds and `dnd_while_sharing`, with `battery` and `privacy` in `modules` for the last two.
 const SMALL_BASE_BAR: &str = "modules = [\"workspaces\", \"window\", \"notifications\", \"battery\", \"privacy\", \"clock\"]\n";
 
@@ -3040,7 +3040,7 @@ fn small_features_bar() -> String {
     format!("{SMALL_BASE_BAR}[battery]\nwarn = [30, 20, 10, 5]\n[notifications]\ndnd_while_sharing = true\n{rules}")
 }
 
-/// Small features 1: the rules, the battery thresholds and the option cost nothing at start (3
+/// The rules, the battery thresholds and the option cost nothing at start (3
 /// outputs, each bar on a daemon of its own, the server answering).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3057,7 +3057,7 @@ fn small_features_cost_nothing_at_start() {
     }
     let (base, with) = (kb[0], kb[1]);
     eprintln!(
-        "small features PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
+        "notification-rules PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
     );
     assert!(with <= base + 128, "{with} KB vs {base} KB: more than 128 KB for configuration alone — report, never raise");
 }
@@ -3078,7 +3078,7 @@ fn calc_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
     open
 }
 
-/// Small features 1: `--calc` opened with `6*7` typed, then closed (a typed Escape): the box's
+/// `--calc` opened with `6*7` typed, then closed (a typed Escape): the box's
 /// cost, and nothing kept once it is gone. The first open of any launcher box warms file-backed
 /// pages (code, fonts) and the glyph cache once (+0.4-0.7 MB, measured for a plain Toggle with the
 /// same typing too), so, as in `launcher_open_close_cycles_no_growth`, `closed` is read after one
@@ -3105,7 +3105,7 @@ fn launcher_calc_pss_open_and_closed() {
     assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
 }
 
-/// Small features 1: a do-not-disturb with an end an hour away is one armed timer and nothing
+/// A do-not-disturb with an end an hour away is one armed timer and nothing
 /// else: the loop sleeps, as it does with an untimed one.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3148,7 +3148,7 @@ fn at_rest_no_wakeups_with_a_timed_dnd() {
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
 
-/// Small features 1: after `--calc`, a typed query and an Escape: no timer, watch or repeat left.
+/// After `--calc`, a typed query and an Escape: no timer, watch or repeat left.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_a_calc_cycle() {
@@ -3507,7 +3507,7 @@ fn hooks_run(name: &str, bus: &PrivateBus, bar_toml: &str) -> ((Own, Own), (Stri
     ((start, own_memory(&d)), (split_start, smaps_breakdown(&d)), d)
 }
 
-/// Hooks spec § 7: eleven hooks set cost nothing at start (the default modules, one output, back to
+/// Eleven hooks set cost nothing at start (the default modules, one output, back to
 /// back with the same bar without `[hooks]`), and a burst of fires keeps nothing: five paced runs,
 /// then twenty back to back (some run, the rest are throttled; the count is not asserted here, the
 /// bucket's own test is the end-to-end one). Both bounds are on the anonymous memory: the PSS
@@ -3554,7 +3554,7 @@ fn hooks_pss_at_start_and_after_fires() {
     );
 }
 
-/// Hooks spec § 7: after the burst nothing is left armed (no repeating timer, no watch): no
+/// After the burst nothing is left armed (no repeating timer, no watch): no
 /// loop-thread and no whole-daemon wake-up in 5 s, the window starting within a second of the last
 /// toggle.
 #[test]
@@ -3596,7 +3596,7 @@ fn timer_popup_cycle(sway: &Sway, d: &Daemon, n: usize) {
     assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
 }
 
-/// Timer spec § 8: the idle chip costs next to nothing, a running countdown nothing more, and the
+/// The idle chip costs next to nothing, a running countdown nothing more, and the
 /// popup keeps nothing once closed (the first open's file-backed warm-up aside, which is printed).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3647,7 +3647,7 @@ fn timer_pss_idle_running_and_popup() {
     assert!(cycled_anon <= closed_anon + 64, "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 20 cycles must keep nothing");
 }
 
-/// Timer spec § 8: idle, then started and paused, the loop sleeps: no timer, no wake-up, no spin.
+/// Idle, then started and paused, the loop sleeps: no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
@@ -3675,7 +3675,7 @@ fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
     window("the timer paused");
 }
 
-/// Timer spec § 8: a running countdown wakes the loop about once a minute (the chip's change), the
+/// A running countdown wakes the loop about once a minute (the chip's change), the
 /// clock's own tick aside, never each second.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3696,7 +3696,7 @@ fn timer_running_wakes_about_once_a_minute() {
     assert!(delta <= 6, "{delta} loop-thread wake-ups in 65 s: the countdown ticks faster than the minute: {:?}", d.log());
 }
 
-/// Timer spec § 8, plan decision 4: the popup ticks each second only while open; closed (by the
+/// The popup ticks each second only while open; closed (by the
 /// verb), the loop is back to the minute at once. The windows stay within 60 s of the start, so the
 /// chip's own minute boundary (not aligned with the wall minute) never falls inside.
 #[test]
@@ -3720,7 +3720,7 @@ fn timer_popup_ticks_each_second_only_while_open() {
     let open = d.main_thread_wakeups().saturating_sub(before);
     eprintln!("loop-thread wake-ups with the popup open on a running countdown (5 s): {open}");
     // Two per repaint, traced: the one-second tick, then the compositor's release of the previous
-    // buffer on the socket; the brief's guess of one a second ignored the second.
+    // buffer on the socket (not one a second).
     assert!((8..=12).contains(&open), "open: two wake-ups per repaint (the tick and the buffer release), {open} in 5 s: {:?}", d.log());
     // Closed by a second click on the chip, not by the verb (whose own close sends the buffer
     // destroys and the keyboard release: the round trip's replies are wake-ups of their own) nor by
@@ -3741,8 +3741,8 @@ fn timer_popup_ticks_each_second_only_while_open() {
     assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 5 s: {:?}", d.log());
 }
 
-// ---- The failed-units module (diagnostics plan 1, task 10). Two private buses, each with a
-// `FakeSystemd` (the system and the user manager), as the headless tests of task 9. ----
+// ---- The failed-units module. Two private buses, each with a
+// `FakeSystemd` (the system and the user manager), as the headless tests. ----
 
 const FAILED_ON: &str = "modules = [\"workspaces\", \"window\", \"failed\", \"clock\"]\n";
 const FAILED_OFF: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
@@ -4025,7 +4025,7 @@ fn clip_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
     open
 }
 
-/// Clipboard history spec § 8: a full history (50 entries of 4,000 bytes), then 100 more copies
+/// A full history (50 entries of 4,000 bytes), then 100 more copies
 /// through it, then cleared. Bounds on `Anonymous:` (PSS moves with the page cache); both printed.
 #[test]
 #[ignore = "headless sway and wl-clipboard (nix develop)"]
@@ -4137,7 +4137,7 @@ fn at_rest_no_wakeups_after_copies() {
     assert_eq!(after_cycle, 0, "{after_cycle} loop-thread wake-ups in 5 s after a clipboard cycle: {:?}", d.log());
 }
 
-// ---- the Tools menu (tools spec § 8, plan task 9) ----
+// ---- the Tools menu ----
 
 /// An executable `<runtime>/bin/<name>` with `body` (after the shebang).
 fn tools_mem_script(sway: &Sway, name: &str, body: &str) -> PathBuf {
@@ -4352,7 +4352,7 @@ fn tools_choices_2000_lines() {
         cycled.1,
         cycled.1 as i64 - again.1 as i64
     );
-    // The plan's bound was 256 KB; a read of 2,000 capped lines leaves the allocator's high-water
+    // A read of 2,000 capped lines leaves the allocator's high-water
     // behind once (measured +152…+272 KB over 3 runs, flat after), so the bounds are 384 KB for the
     // first close and 128 KB over five more cycles (a leak per open grows with them). The
     // 384 KB is accepted: the first read grows the heap to hold the
@@ -4459,7 +4459,7 @@ fn launcher_open_latency_with_a_process_state_toggle() {
     assert!(median < 20_000, "median {median} µs >= 20 ms: report it with these figures");
 }
 
-// ---- Shield mode (shield spec § 12): the module, the row, the blocked-USB detail ----
+// ---- Shield mode: the module, the row, the blocked-USB detail ----
 
 /// A daemon with the Shield module and the quick panel (the Shield row is the panel's first: no
 /// sound, no D-Bus services, no backlight), the `fake-shield` stub of the tests on a private `PATH`
@@ -4527,8 +4527,8 @@ impl ShieldBed {
     }
 
     /// The `n`-th open of the panel by the verb, Enter on the Shield row (its detail: one listing),
-    /// then, past SCTK's key repeat (it fires once about 0.6 s after a press: older than this
-    /// delivery), the close by the verb.
+    /// then, past SCTK's key repeat (it fires once about 0.6 s after a press),
+    /// the close by the verb.
     fn detail_cycle(&self, n: usize) {
         self.toggle();
         assert!(self.d.wait_for_count("quick shown", n, DELAY), "{:?}", self.d.log());
@@ -4542,7 +4542,7 @@ impl ShieldBed {
     }
 }
 
-/// Shield spec § 12: the module at rest, unconfigured (nothing exists), configured with the mode off,
+/// The module at rest, unconfigured (nothing exists), configured with the mode off,
 /// configured with it on (the glyph drawn). Anonymous memory: configured at most 64 KB over
 /// unconfigured; the total PSS is printed (file pages and the machine's page cache move it ±200 KB).
 #[test]
@@ -4562,7 +4562,7 @@ fn shield_pss_at_rest_unconfigured_and_configured() {
     }
 }
 
-/// Shield spec § 12: the detail open on 10 blocked devices, closed, and after 10 more cycles. The leak
+/// The detail open on 10 blocked devices, closed, and after 10 more cycles. The leak
 /// bounds are on anonymous memory (the shm pools apart), as the other panels' details.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -4627,7 +4627,7 @@ fn shield_rest_window(d: &Daemon, what: &str) {
     assert_eq!(delta, 0, "{what}: {delta} wake-ups in 5 s");
 }
 
-/// Shield spec § 12: 0 loop (and whole-daemon) wake-ups at rest with the mode off, with it on, and
+/// 0 loop (and whole-daemon) wake-ups at rest with the mode off, with it on, and
 /// after a detail cycle (the window starting within a second of the close: a one-second timer left
 /// armed, or the switch's grace timer not disarmed, would fall inside it).
 #[test]
@@ -4651,7 +4651,7 @@ fn at_rest_no_wakeups_with_shield() {
     shield_rest_window(d, "after a detail cycle");
 }
 
-/// Shield spec § 12: the workers live only while a job runs: after a switch (through the panel's Space
+/// The workers live only while a job runs: after a switch (through the panel's Space
 /// key) and a listing the daemon's thread count is back to its baseline within 3 s.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]

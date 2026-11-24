@@ -10,7 +10,7 @@
 //! - write outside its clip: every write goes through `draw::put` or `draw::clear`;
 //! - read the `App` or the theme: the colours and the shape come in as arguments.
 //!
-//! See: docs/specs/2026-11-15-alpheus-ui-refresh-design.md, docs/specs/2026-10-07-alpheus-shapes-design.md.
+//! See: docs/features/control-center.md, docs/features/themes.md.
 
 use super::draw::{clear, put};
 use crate::theme::Shape;

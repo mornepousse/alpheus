@@ -1,4 +1,4 @@
-//! NetworkManager's Wi-Fi for the quick panel (quick Wi-Fi spec § 5), read only and only while the
+//! NetworkManager's Wi-Fi for the quick panel, read only and only while the
 //! panel is open: the radio, the first Wi-Fi device and the access point it is on
 //! (`WifiScope::Row`); with the detail open, every access point and the saved Wi-Fi profiles too,
 //! their signals followed through five match rules added and removed with it (`WifiScope::Detail`).
@@ -35,7 +35,7 @@ pub const MAX_DEVICES: usize = 16;
 /// An SSID's longest, in bytes (802.11).
 pub const SSID_MAX: usize = 32;
 const UUID_MAX: usize = 64;
-/// The detail reads at most this many access points and saved connections (quick Wi-Fi spec § 6).
+/// The detail reads at most this many access points and saved connections.
 pub const MAX_APS: usize = 64;
 pub const MAX_SAVED: usize = 64;
 pub const AP_ROOT: &str = "/org/freedesktop/NetworkManager/AccessPoint";
@@ -163,7 +163,7 @@ impl WifiReader {
         Ok(Some(s))
     }
 
-    /// A detail signal (quick Wi-Fi spec § 5): one access point read again (only one the device
+    /// A detail signal: one access point read again (only one the device
     /// lists), the list of access points reconciled, or the saved connections listed again.
     /// Outside the detail: nothing read, the last state as it was.
     pub fn changed(&mut self, bus: &mut dyn Bus, c: &WifiChange) -> io::Result<Option<WifiState>> {

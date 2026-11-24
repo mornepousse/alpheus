@@ -1,4 +1,4 @@
-//! systemd's failed-units count (diagnostics spec § 6): `NFailedUnits` of the Manager object, read
+//! systemd's failed-units count: `NFailedUnits` of the Manager object, read
 //! through the owner's unique name like every other domain, and nothing else. Never `GetAll` (the
 //! Manager's own carries its `Environment`, which may hold secrets), never a unit name: the daemon
 //! counts, it does not list.

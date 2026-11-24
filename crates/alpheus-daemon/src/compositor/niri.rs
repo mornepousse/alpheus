@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-/// Casts kept (privacy spec § 3); a new id past it is ignored.
+/// Casts kept; a new id past it is ignored.
 const MAX_CASTS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]

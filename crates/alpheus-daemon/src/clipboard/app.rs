@@ -1,5 +1,5 @@
-//! The clipboard history on `App` (clipboard spec): the control, the history, the read deadline
-//! and the episode flags. Logs fixed words only: never a text, a length, a type or a count.
+//! The clipboard history on `App` (docs/features/clipboard.md): the control, the history, the read
+//! deadline and the episode flags. Logs fixed words only: never a text, a length, a type or a count.
 
 use crate::clipboard::control::{self, Control, Offer, Reading, is_current, read_once};
 use crate::clipboard::history::History;

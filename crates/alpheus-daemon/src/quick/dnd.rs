@@ -14,7 +14,7 @@
 //! - read a clock or a file;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-11-15-alpheus-small-features-2-design.md (§ 2), docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/decisions.md ("The do-not-disturb detail marks and opens by the current state").
 
 use crate::actions::Button;

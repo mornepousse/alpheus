@@ -14,7 +14,8 @@
 //!   on every way out, and the guard thread ends the process after a stop signal if the loop is
 //!   stuck.
 //!
-//! See: docs/specs/2026-10-02-alpheus-v1-design.md (§ 6, "Guardrails"), docs/features/control-center.md.
+//! See: docs/features/control-center.md,
+//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read, or to restart or clear a user unit").
 
 use super::App;
 use super::action::Tab;
@@ -325,7 +326,7 @@ mod tests {
         assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Sound.domains().to_vec())]);
     }
 
-    /// The daemon decides where the tab works (displays protocol spec): under Sway as under any
+    /// The daemon decides where the tab works: under Sway as under any
     /// compositor, opening on the tab reads the displays, and what the daemon answers fills it.
     #[test]
     fn the_tab_is_available_under_sway() {

@@ -1,4 +1,4 @@
-//! Hot reload of the theme (themes spec § 3): one inotify instance on the config directory
+//! Hot reload of the theme: one inotify instance on the config directory
 //! (~/.config/alpheus), one fd in the event loop — no thread, no timer. A write, rename, creation
 //! or removal of theme.toml, colors.toml or colors-light.toml re-resolves the roles once per loop
 //! dispatch (the callback drains every queued record first), and every surface is repainted once,
@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 /// The files whose change re-resolves the theme.
 pub const THEME_FILES: [&str; 3] = [THEME_FILE, DARK_FILE, LIGHT_FILE];
 
-/// On the config directory: the spec's four events, plus the directory itself going away.
+/// On the config directory: the four events, plus the directory itself going away.
 const DIR_MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_MOVED_TO
     | libc::IN_CREATE
@@ -54,7 +54,7 @@ const DIR_MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_ONLYDIR;
 /// On its parent, while it does not exist: it being created or moved in.
 const PARENT_MASK: u32 = libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ONLYDIR;
-/// On the Shield flag's directory (shield spec § 3): the flag's name appearing, going or being
+/// On the Shield flag's directory: the flag's name appearing, going or being
 /// renamed, and the directory itself going away.
 const FLAG_DIR_MASK: u32 = libc::IN_CREATE
     | libc::IN_DELETE
@@ -187,7 +187,7 @@ struct ShieldTarget {
 }
 
 /// The one inotify instance and its watches: the config directory (the theme files) and, with
-/// `[shield]` configured, the Shield flag's directory (shield spec § 3). Each target arms and
+/// `[shield]` configured, the Shield flag's directory. Each target arms and
 /// fails on its own.
 pub(crate) struct Watches {
     fd: Inotify,
@@ -452,7 +452,7 @@ fn attach(handle: &LoopHandle<'static, App>, w: Watches) -> Option<Watches> {
 }
 
 /// A reload repaints when the roles changed or the bar's shape did (module colours, style, opacity):
-/// the roles can be equal while the bar's look is not (themes spec § 9, shapes spec § 4).
+/// the roles can be equal while the bar's look is not (see docs/features/themes.md).
 fn repaint_needed(new: &Roles, old: &Roles, shape_changed: bool) -> bool {
     shape_changed || new != old
 }
@@ -466,7 +466,7 @@ fn colours_name(mc: ModuleColors) -> &'static str {
     }
 }
 
-/// What a reload changes in the bar's shape (shapes spec § 4).
+/// What a reload changes in the bar's shape.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ShapeChange {
     /// The module colours, the style, or the opacity under `translucent` changed: re-lay out and repaint.
@@ -689,7 +689,7 @@ mod tests {
             )
         };
         std::fs::write(dir.join(DARK_FILE), legacy("#102030")).unwrap();
-        // What startup resolved: an empty file with a colors.toml is the wallpaper (spec § 2).
+        // What startup resolved: an empty file with a colors.toml is the wallpaper.
         let (startup, _) = resolve_dir(&dir, || None);
         let r = reload_settings(&dir, &startup, || None);
         assert_eq!(r.resolved.roles.bar_bg, alpheus_common::theme::Rgb(0x10, 0x20, 0x30));

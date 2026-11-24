@@ -111,7 +111,7 @@ fn only_the_sources_the_modules_need() {
     );
 }
 
-/// Diagnostics spec § 6: the failed-units count is the `Units` domain, last in reading order. Only
+/// The failed-units count is the `Units` domain, last in reading order. Only
 /// the `failed` module asks for it (both managers' counts).
 #[test]
 fn the_units_domain_follows_its_need_and_only_the_failed_module_has_it() {
@@ -130,7 +130,7 @@ fn the_units_domain_follows_its_need_and_only_the_failed_module_has_it() {
     assert_eq!(wanted_for(Needs::NONE), wanted(&[]));
 }
 
-/// Power spec § 1: the power button reads nothing: no source, no thread.
+/// The power button reads nothing: no source, no thread.
 #[test]
 fn the_power_module_wants_no_source() {
     assert_eq!(
@@ -339,7 +339,7 @@ fn settings_absent_or_invalid() {
     let (c, w) = settings(&d);
     assert_eq!(c, expected, "defaults, More… resolved all the same");
     assert!(w.iter().any(|m| m.contains("bar.toml")), "{w:?}");
-    // Quick Wi-Fi spec § 4: the launcher's terminal, read once at startup.
+    // The launcher's terminal, read once at startup.
     std::fs::write(d.join("bar.toml"), "height = 22\n").unwrap();
     std::fs::write(d.join("launcher.toml"), "terminal = [\"alacritty\", \"-e\"]\n").unwrap();
     assert_eq!(settings(&d).0.quick.wifi_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui".into()]));
@@ -428,7 +428,7 @@ fn the_osd_alone_starts_the_sound_source() {
     assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
 }
 
-/// Quick spec § 5: the panel's volume and microphone rows read pw-dump, even without the volume
+/// The panel's volume and microphone rows read pw-dump, even without the volume
 /// module; the sink list is the panel's to ask for while it is open, never the base scope.
 #[test]
 fn the_quick_panel_reads_the_sound() {

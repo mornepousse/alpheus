@@ -22,7 +22,7 @@
 //! - create a watch of its own: the flag is watched in the theme watch's inotify instance (a
 //!   guardrail, `the_shield_watch_is_the_theme_watchs_instance`).
 //!
-//! See: docs/specs/2026-11-21-alpheus-shield-design.md, docs/features/shield.md, and
+//! See: docs/features/shield.md and
 //! docs/decisions.md ("A Shield switch succeeds when the flag reaches its target", "Shield
 //! commands and reads run on a short-lived thread", "The Shield flag is watched in the theme
 //! watch's inotify instance").
@@ -354,7 +354,7 @@ impl App {
         }
     }
 
-    /// A verb from the launcher socket (`launcher/socket_glue.rs`, spec § 9). Answered at once, or the
+    /// A verb from the launcher socket (`launcher/socket_glue.rs`). Answered at once, or the
     /// connection kept while the blocked devices are read (`status`, `allow`).
     pub(crate) fn shield_verb(&mut self, request: &Request, conn: Conn) {
         let Request::Shield(verb) = request else {
@@ -540,7 +540,7 @@ impl App {
         if self.shield.is_none() || !self.quick_enabled() {
             return;
         }
-        // One detail at a time (shield spec § 14, item 17): another one open (the Bluetooth one holds
+        // One detail at a time: another one open (the Bluetooth one holds
         // orders for the acting connection) closes the whole panel through its proper path, and it
         // opens again.
         if matches!(self.popup_body(), Some(PopupBody::Quick(q)) if q.other_detail_open()) {
