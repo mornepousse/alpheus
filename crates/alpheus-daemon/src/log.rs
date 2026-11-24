@@ -54,10 +54,12 @@ pub fn kind_word(kind: io::ErrorKind) -> &'static str {
 }
 
 /// An error as a fixed word for a log line, never its text. An `io::Error` anywhere in its chain
-/// gives its kind's word (`kind_word`); anything else, "error".
+/// gives its kind's word (`kind_word`); anything else, "error". The walk is bounded: a chain that
+/// loops on itself ends at the word.
 pub fn error_word(e: &(dyn std::error::Error + 'static)) -> &'static str {
     let mut at: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(err) = at {
+    for _ in 0..32 {
+        let Some(err) = at else { break };
         if let Some(io) = err.downcast_ref::<io::Error>() {
             return kind_word(io.kind());
         }
@@ -136,6 +138,42 @@ mod tests {
         assert_eq!(exec_word(&ExecError::Io("/home/someone/secret".into())), "io");
         assert_eq!(exec_word(&ExecError::NotFound), "not found");
         assert_eq!(exec_word(&ExecError::Timeout), "timeout");
+    }
+
+    /// The chain walk is bounded: an error whose source is itself ends at the word instead of looping,
+    /// and an `io::Error` a few levels down is still found.
+    #[test]
+    fn the_error_chain_walk_is_bounded() {
+        #[derive(Debug)]
+        struct Loops;
+        impl std::fmt::Display for Loops {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("loops")
+            }
+        }
+        impl std::error::Error for Loops {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+        assert_eq!(error_word(&Loops), "error");
+        #[derive(Debug)]
+        struct Wraps(Box<dyn std::error::Error + 'static>);
+        impl std::fmt::Display for Wraps {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("wraps")
+            }
+        }
+        impl std::error::Error for Wraps {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        let mut chain: Box<dyn std::error::Error + 'static> = Box::new(io::Error::from(io::ErrorKind::NotFound));
+        for _ in 0..5 {
+            chain = Box::new(Wraps(chain));
+        }
+        assert_eq!(error_word(chain.as_ref()), "not found", "found a few levels down");
     }
 
     /// The hook's line: the thread and the place, never the payload, which can embed private text
