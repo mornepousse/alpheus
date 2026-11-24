@@ -239,6 +239,9 @@ impl App {
     /// the selector and any popup go first. A picker that cannot open fails the capture (critical);
     /// the frame goes with it.
     pub(crate) fn pick_open(&mut self, frame: Frame, generation: u64) {
+        // A picker still open (a capture reset that missed it) is an older capture's: it goes, and
+        // its answer, for that capture, is ignored by the flow.
+        self.pick_close(PickClose::Replaced);
         if self.launcher_is_open() {
             self.launcher_guarded("replaced", |app| app.launcher_close(CloseReason::Replaced));
         }
@@ -318,6 +321,16 @@ impl App {
         log(&format!("capture: picker closed ({})", reason.text()));
         crate::memory::release_memory();
         self.capture_picked(capture, reason.answer());
+    }
+
+    /// Drops an open picker and its frame without telling the capture: for the capture's own reset,
+    /// which must not re-enter the flow it is resetting.
+    pub(crate) fn pick_discard(&mut self) {
+        let Some(open) = self.pick.take() else { return };
+        drop(open);
+        self.keyboard_release();
+        log("capture: picker closed (reset)");
+        crate::memory::release_memory();
     }
 
     /// A key press or repeat while the picker is open.

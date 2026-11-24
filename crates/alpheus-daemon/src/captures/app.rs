@@ -135,9 +135,11 @@ impl App {
         r
     }
 
-    /// Back to rest: nothing of the capture is kept, the frame asked is given up, the timer disarmed.
+    /// Back to rest: nothing of the capture is kept, the frame asked is given up, the timer disarmed,
+    /// and an open picker goes with its frame (without an answer: the flow is the one resetting).
     fn capture_reset(&mut self) {
         self.capture.flow.finished();
+        self.pick_discard();
         self.capture.output = None;
         self.capture.area = None;
         if let Some(pending) = self.capture.pending.take() {

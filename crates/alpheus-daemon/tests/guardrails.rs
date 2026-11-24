@@ -6175,3 +6175,23 @@ fn a_capture_notice_is_told_its_scope() {
     assert!(function_body(&app, "fn capture_finish(").contains("notice(&finish, self.capture.flow.scope())"));
     assert_eq!(app.matches("notice(&").count(), 1, "one place makes a capture's notice");
 }
+
+/// A picker never outlives its capture, nor is replaced while open: a capture reset (a panic in the
+/// capture's glue) drops an open picker and its frame without answering the flow it is resetting,
+/// and a picker opened over another closes the old one first (its answer is the old capture's,
+/// which the flow ignores).
+#[test]
+fn a_picker_never_outlives_its_capture() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(function_body(&app, "fn capture_reset(").contains("self.pick_discard()"), "the reset drops the picker");
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let discard = function_body(&pick, "pub(crate) fn pick_discard(");
+    assert!(discard.contains("self.pick.take()") && discard.contains("release_memory()"), "{discard}");
+    for p in ["capture_picked", "capture_guarded", "flow"] {
+        assert!(!discard.contains(p), "the discard reaches {p}: the reset would re-enter the flow");
+    }
+    let open = function_body(&pick, "pub(crate) fn pick_open(");
+    let closed = open.find("self.pick_close(PickClose::Replaced)").expect("an open picker is closed first");
+    let set = open.find("self.pick = Some(").expect("the new picker is set");
+    assert!(closed < set);
+}
