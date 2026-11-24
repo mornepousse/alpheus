@@ -108,7 +108,7 @@ fn capture_output_returns_a_frame_of_the_output_size() {
     std::thread::sleep(Duration::from_millis(300));
     let (frame, mode) = Session::new(&sway).capture();
     assert_eq!((frame.width as i32, frame.height as i32), mode);
-    let whole = Rect { x: 0, y: 0, w: frame.width, h: frame.height };
+    let whole = Rect { x: 0, y: 0, width: frame.width, height: frame.height };
     let rgba = to_rgba(&frame, whole);
     assert_eq!(rgba.len(), frame.width as usize * frame.height as usize * 4);
     let centre = ((frame.height / 2 * frame.width + frame.width / 2) * 4) as usize;

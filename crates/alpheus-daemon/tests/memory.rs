@@ -19,7 +19,7 @@ mod common;
 
 use alpheus_common::displays::wire::{self, TrialState};
 use alpheus_common::displays::{Active, Step};
-use alpheus_common::launcher_ipc::{DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
+use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
 use alpheus_common::theme::presets::preset;
 use common::bluez::FakeBluez;
 use common::displays::{displays, output, outputs_snapshot, snapshot_until};
@@ -4681,4 +4681,68 @@ fn shield_threads_back_to_baseline() {
     }
     eprintln!("shield threads: baseline {baseline}, {last} {:?} after the switch and the listing", t.elapsed());
     assert_eq!(last, baseline, "threads {last} vs the baseline {baseline} 3 s after a switch and a listing");
+}
+
+/// One selection of the area selector through the socket: the verb, a drag that confirms (`n` odd)
+/// or a typed Escape (`n` even), and the n-th close of any reason.
+fn selection(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Select)), Reply::Done);
+    assert!(d.wait_for_count("capture: selector shown", n, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+    if n % 2 == 1 {
+        sway.drag((100, 100), (500, 400), false);
+    } else {
+        assert!(wtype(sway, &["-s", "300", "-k", "Escape"]).success());
+    }
+    assert!(d.wait_for_count("capture: selector closed (", n, DELAY), "{:?}", d.log());
+}
+
+/// The area selector: the daemon's own memory is back within 64 KB after 10 more selections (its
+/// two full-output frames live in an shm pool that goes with the surface), no thread is left, and
+/// nothing wakes the loop at rest afterwards. The cost while open is printed for
+/// docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_an_area_capture() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("selector-rest");
+    let (sway, _hypr, d) = start_launcher("selector-rest", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first selection warms the glyph cache and the keymap: the baseline is after it.
+    selection(&sway, &d, 1);
+    selection(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // The cost while open, a drag held down.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Select)), Reply::Done);
+    assert!(d.wait_for_count("capture: selector shown", 3, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+    sway.drag((100, 100), (500, 400), true);
+    std::thread::sleep(Duration::from_millis(500));
+    let (open, open_shm) = d.pss_and_shm_kb();
+    sway.release_drag();
+    assert!(d.wait_for_count("capture: selector closed (", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        selection(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "area selector: PSS {at_rest} KB at rest, {open} KB open (+{} KB, of which the shm pool {open_shm} KB); \
+         anonymous {baseline} KB after 2 selections, {end} KB after 10 more; threads {} (before: {threads})",
+        open.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 selections grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the selector");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after an area selection");
+    eprintln!("wake-ups at rest after an area selection (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the selector was used");
 }

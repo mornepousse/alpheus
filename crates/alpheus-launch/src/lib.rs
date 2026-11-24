@@ -20,8 +20,8 @@
 //! See: docs/cli.md (every verb, option and exit code), docs/features/launcher.md.
 
 use alpheus_common::launcher_ipc::{
-    DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
-    Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
+    CaptureVerb, DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb,
+    REPLY_TIMEOUT, Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
 };
 use alpheus_common::local_time;
 pub use alpheus_common::local_time::parse_clock;
@@ -46,7 +46,7 @@ const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
-                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --help]
+                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --capture select | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -84,12 +84,13 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --shield on|off|toggle  switch Shield mode (the commands of [shield] in bar.toml; the password prompt is theirs)
   --shield status         print the state, and the blocked USB devices while it is on
   --shield allow          pick a blocked USB device in the launcher's box and allow it
+  --capture select        run the screenshot area selector alone (drag, Enter or release to confirm, Esc to cancel); nothing is captured
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--power/--shield (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--power/--shield/--capture (restarted since the upgrade? until then, use another menu).
 
 --shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -122,6 +123,7 @@ pub enum Invocation {
     Tools,
     Power,
     Shield(ShieldVerb),
+    Capture(CaptureVerb),
     Help,
 }
 
@@ -180,6 +182,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 &mut mode,
                 Invocation::Shield(verb_arg(&mut it, "--shield", "on, off, toggle, status or allow", ShieldVerb::parse)?),
             )?,
+            "--capture" => choose(&mut mode, Invocation::Capture(verb_arg(&mut it, "--capture", "select", CaptureVerb::parse)?))?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -309,6 +312,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Tools => Request::Tools,
         Invocation::Power => Request::Power,
         Invocation::Shield(v) => Request::Shield(v),
+        Invocation::Capture(v) => Request::Capture(v),
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -408,7 +412,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --capture, --help"
                 .into(),
         );
     }
@@ -517,7 +521,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::ClipboardClear
             | Invocation::Tools
             | Invocation::Power
-            | Invocation::Shield(_)),
+            | Invocation::Shield(_)
+            | Invocation::Capture(_)),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -582,7 +587,8 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert
-            | Request::Shield(_),
+            | Request::Shield(_)
+            | Request::Capture(_),
             Reply::Done,
         ) => EXIT_OK,
         // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
@@ -624,6 +630,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
         Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
         Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
+        Request::Capture(_) if error == "malformed request: unknown request \"capture\"" => Some("--capture"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
@@ -793,11 +800,11 @@ mod tests {
             (&["--quick", "--close"], "only one of"),
             (
                 &["--calc", "--toggle"],
-                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help",
+                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --capture, --help",
             ),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
-            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
+            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --capture, --help"),
             (&["--tools", "--power"], "only one of"),
             (&["--tools", "--toggle"], "--tools"),
             (&["--power", "--clipboard"], "only one of"),

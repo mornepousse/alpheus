@@ -397,7 +397,8 @@ impl App {
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert
-            | Request::Shield(_) => {}
+            | Request::Shield(_)
+            | Request::Capture(_) => {}
         }
         Reply::Done
     }

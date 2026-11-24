@@ -569,7 +569,12 @@ fn shutting_down_closes_and_saves_the_pad() {
 #[test]
 fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
-    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
+    for (name, create) in [
+        ("osd/surface.rs", "fn osd_create("),
+        ("notify/bubbles_surface.rs", "fn bubbles_create("),
+        // The capture selector: on Overlay too, or a fullscreen game on Hyprland would hide it.
+        ("captures/select_app.rs", "fn select_open("),
+    ] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code_without_comments(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
@@ -915,7 +920,7 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_common::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -940,6 +945,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
             Request::Shield(_) => "shield",
+            Request::Capture(_) => "capture",
         }
     }
     let all = [
@@ -965,6 +971,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsKeep,
         Request::OutputsRevert,
         Request::Shield(ShieldVerb::Status),
+        Request::Capture(CaptureVerb::Select),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -990,7 +997,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs-try",
             "outputs-keep",
             "outputs-revert",
-            "shield"
+            "shield",
+            "capture"
         ]
     );
 }
@@ -4583,6 +4591,64 @@ fn the_notes_spawn_only_the_copy_command() {
         }
     }
     assert!(seen >= 8, "the notes files were found: {seen}");
+}
+
+/// The capture selector's model is pure: no log, no panicking path, no slicing by range (a
+/// selection is arithmetic on coordinates the pointer hands in). Production code only.
+#[test]
+fn the_selector_model_is_pure_and_cannot_panic() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select.rs").expect("captures/select.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "Instant", "SystemTime"] {
+        assert!(!production.contains(p), "{p} in captures/select.rs's production code");
+    }
+    for code in production_code_without_comments(t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in captures/select.rs's production code");
+        }
+    }
+}
+
+/// The selector's surface logs fixed words only: never the rectangle, an output's name or a key.
+/// The two variable parts are a close reason's word and the guard's `what`, themselves fixed.
+fn selector_unfixed_log(code: &str) -> Option<String> {
+    for call in log_calls(code) {
+        let mut text = call.to_string();
+        // The one placeholder filled by a variable: the close reason's word.
+        if text.contains(", reason.text()") {
+            text = text.replace(", reason.text()", "").replacen("{}", "", 1);
+        }
+        text = text.replace("{what}", "");
+        let arg = call["log(".len()..call.len().saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        if !arg.starts_with('"') || text.contains('{') {
+            return Some(call.to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn the_selector_logs_fixed_words_only() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select_app.rs").expect("select_app.rs").1;
+    let code = production_code_without_comments(t);
+    assert_eq!(selector_unfixed_log(&code), None);
+    assert!(code.matches("log(").count() >= 6, "the log calls were found");
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production_code(t).contains(p), "{p} in captures/select_app.rs's production code");
+    }
+}
+
+#[test]
+fn the_selector_log_guardrail_helper_bites() {
+    assert_eq!(selector_unfixed_log("log(\"capture: selector shown\");"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture: selector closed ({})\", reason.text()));"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture error in {what}\"));"), None);
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {rect:?}\"));").is_some(), "a geometry");
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {}x{}\", r.width, r.height));").is_some(), "a bare placeholder");
+    assert!(selector_unfixed_log("log(&label);").is_some(), "a variable");
 }
 
 /// The pad's glue never panics on its own either: no unwrap, expect, panic or

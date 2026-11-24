@@ -102,8 +102,8 @@ pub struct Frame {
 pub fn to_rgba(frame: &Frame, area: Rect) -> Vec<u8> {
     let x0 = i64::from(area.x).clamp(0, i64::from(frame.width));
     let y0 = i64::from(area.y).clamp(0, i64::from(frame.height));
-    let x1 = (i64::from(area.x) + i64::from(area.w)).clamp(x0, i64::from(frame.width));
-    let y1 = (i64::from(area.y) + i64::from(area.h)).clamp(y0, i64::from(frame.height));
+    let x1 = (i64::from(area.x) + i64::from(area.width)).clamp(x0, i64::from(frame.width));
+    let y1 = (i64::from(area.y) + i64::from(area.height)).clamp(y0, i64::from(frame.height));
     let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
     let mut out = Vec::with_capacity(w * h * 4);
     for row in y0..y1 {
@@ -142,12 +142,12 @@ pub fn map_area(logical: Rect, scale: f64, transform: Transform, logical_size: (
     };
     let (x, y) = (f64::from(logical.x), f64::from(logical.y));
     let a = corner(x, y);
-    let b = corner(x + f64::from(logical.w), y + f64::from(logical.h));
+    let b = corner(x + f64::from(logical.width), y + f64::from(logical.height));
     let (left, right) = (a.0.min(b.0) * scale, a.0.max(b.0) * scale);
     let (top, bottom) = (a.1.min(b.1) * scale, a.1.max(b.1) * scale);
     // The edges round, not the size: two areas side by side stay side by side.
     let (left, right, top, bottom) = (left.round(), right.round(), top.round(), bottom.round());
-    Rect { x: left as i32, y: top as i32, w: (right - left) as u32, h: (bottom - top) as u32 }
+    Rect { x: left as i32, y: top as i32, width: (right - left) as u32, height: (bottom - top) as u32 }
 }
 
 /// Why a capture gave no frame. Never carries text: the glue logs a fixed word.
@@ -315,7 +315,7 @@ mod tests {
     }
 
     fn whole(f: &Frame) -> Rect {
-        Rect { x: 0, y: 0, w: f.width, h: f.height }
+        Rect { x: 0, y: 0, width: f.width, height: f.height }
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         let inverted = frame(Format::Xbgr8888, 1, 2, 4, true, data);
         assert_eq!(to_rgba(&inverted, whole(&inverted)), [2, 2, 2, 255, 1, 1, 1, 255]);
         // A crop of the top row of the image is the last stored row.
-        assert_eq!(to_rgba(&inverted, Rect { x: 0, y: 0, w: 1, h: 1 }), [2, 2, 2, 255]);
+        assert_eq!(to_rgba(&inverted, Rect { x: 0, y: 0, width: 1, height: 1 }), [2, 2, 2, 255]);
     }
 
     #[test]
@@ -351,11 +351,11 @@ mod tests {
             data[i * 4..i * 4 + 3].copy_from_slice(&[p, p, p]);
         }
         let f = frame(Format::Xbgr8888, 3, 2, 16, false, data);
-        assert_eq!(to_rgba(&f, Rect { x: 1, y: 1, w: 2, h: 1 }), [4, 4, 4, 255, 5, 5, 5, 255]);
+        assert_eq!(to_rgba(&f, Rect { x: 1, y: 1, width: 2, height: 1 }), [4, 4, 4, 255, 5, 5, 5, 255]);
         // Past the right and bottom edges, and with a negative origin: cut to what is inside.
-        assert_eq!(to_rgba(&f, Rect { x: 2, y: 1, w: 9, h: 9 }), [5, 5, 5, 255]);
-        assert_eq!(to_rgba(&f, Rect { x: -5, y: 0, w: 6, h: 1 }), [0, 0, 0, 255]);
-        assert!(to_rgba(&f, Rect { x: 9, y: 9, w: 2, h: 2 }).is_empty());
+        assert_eq!(to_rgba(&f, Rect { x: 2, y: 1, width: 9, height: 9 }), [5, 5, 5, 255]);
+        assert_eq!(to_rgba(&f, Rect { x: -5, y: 0, width: 6, height: 1 }), [0, 0, 0, 255]);
+        assert!(to_rgba(&f, Rect { x: 9, y: 9, width: 2, height: 2 }).is_empty());
     }
 
     #[test]
@@ -366,31 +366,34 @@ mod tests {
 
     #[test]
     fn a_scaled_or_rotated_output_maps_the_area() {
-        let area = Rect { x: 10, y: 20, w: 30, h: 40 };
+        let area = Rect { x: 10, y: 20, width: 30, height: 40 };
         // Scale 2, no transform: everything doubles.
-        assert_eq!(map_area(area, 2.0, Transform::Normal, (100, 200)), Rect { x: 20, y: 40, w: 60, h: 80 });
+        assert_eq!(map_area(area, 2.0, Transform::Normal, (100, 200)), Rect { x: 20, y: 40, width: 60, height: 80 });
         // 90 degrees on a 100 by 200 logical output (buffer 200 by 100): x = 200 - (y + h), y = x.
-        assert_eq!(map_area(area, 1.0, Transform::_90, (100, 200)), Rect { x: 140, y: 10, w: 40, h: 30 });
+        assert_eq!(map_area(area, 1.0, Transform::_90, (100, 200)), Rect { x: 140, y: 10, width: 40, height: 30 });
         // Both at once.
-        assert_eq!(map_area(area, 2.0, Transform::_90, (100, 200)), Rect { x: 280, y: 20, w: 80, h: 60 });
+        assert_eq!(map_area(area, 2.0, Transform::_90, (100, 200)), Rect { x: 280, y: 20, width: 80, height: 60 });
         // 180 degrees: the area mirrors through the centre.
-        assert_eq!(map_area(area, 1.0, Transform::_180, (100, 200)), Rect { x: 60, y: 140, w: 30, h: 40 });
+        assert_eq!(map_area(area, 1.0, Transform::_180, (100, 200)), Rect { x: 60, y: 140, width: 30, height: 40 });
         // 270 degrees: x = y, y = 100 - (x + w).
-        assert_eq!(map_area(area, 1.0, Transform::_270, (100, 200)), Rect { x: 20, y: 60, w: 40, h: 30 });
+        assert_eq!(map_area(area, 1.0, Transform::_270, (100, 200)), Rect { x: 20, y: 60, width: 40, height: 30 });
         // Flipped: mirrored left to right.
-        assert_eq!(map_area(area, 1.0, Transform::Flipped, (100, 200)), Rect { x: 60, y: 20, w: 30, h: 40 });
+        assert_eq!(map_area(area, 1.0, Transform::Flipped, (100, 200)), Rect { x: 60, y: 20, width: 30, height: 40 });
         // A fractional scale rounds the edges, not the size.
-        assert_eq!(map_area(Rect { x: 1, y: 1, w: 1, h: 1 }, 1.5, Transform::Normal, (10, 10)), Rect { x: 2, y: 2, w: 1, h: 1 });
+        assert_eq!(
+            map_area(Rect { x: 1, y: 1, width: 1, height: 1 }, 1.5, Transform::Normal, (10, 10)),
+            Rect { x: 2, y: 2, width: 1, height: 1 }
+        );
     }
 
     #[test]
     fn the_whole_output_maps_to_the_whole_buffer_under_every_transform() {
-        let whole_logical = Rect { x: 0, y: 0, w: 100, h: 200 };
+        let whole_logical = Rect { x: 0, y: 0, width: 100, height: 200 };
         for t in [Transform::Normal, Transform::_180, Transform::Flipped, Transform::Flipped180] {
-            assert_eq!(map_area(whole_logical, 2.0, t, (100, 200)), Rect { x: 0, y: 0, w: 200, h: 400 }, "{t:?}");
+            assert_eq!(map_area(whole_logical, 2.0, t, (100, 200)), Rect { x: 0, y: 0, width: 200, height: 400 }, "{t:?}");
         }
         for t in [Transform::_90, Transform::_270, Transform::Flipped90, Transform::Flipped270] {
-            assert_eq!(map_area(whole_logical, 2.0, t, (100, 200)), Rect { x: 0, y: 0, w: 400, h: 200 }, "{t:?}");
+            assert_eq!(map_area(whole_logical, 2.0, t, (100, 200)), Rect { x: 0, y: 0, width: 400, height: 200 }, "{t:?}");
         }
     }
 }

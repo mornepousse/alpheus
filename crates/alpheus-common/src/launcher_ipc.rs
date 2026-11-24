@@ -103,6 +103,27 @@ impl OsdVerb {
     }
 }
 
+/// `--capture`'s word. `select` runs the area selector alone and asks nothing of it: the
+/// captures' own verbs join it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureVerb {
+    Select,
+}
+
+impl CaptureVerb {
+    pub const ALL: [CaptureVerb; 1] = [CaptureVerb::Select];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            CaptureVerb::Select => "select",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<CaptureVerb> {
+        CaptureVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
 /// `--shield`'s word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldVerb {
@@ -295,6 +316,9 @@ pub enum Request {
     /// Shield mode: answered Done, `Reply::Shield` for `status`, Cancelled for an
     /// escaped picker. An older daemon refuses it as an unknown request.
     Shield(ShieldVerb),
+    /// The captures: answered Done, also when the selector could not open. An older daemon
+    /// refuses it as an unknown request.
+    Capture(CaptureVerb),
 }
 
 impl Request {
@@ -413,6 +437,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Timer(TimerVerb::Start(secs)) => format!("{MAGIC} timer start {secs}\n").into_bytes(),
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
+        Request::Capture(v) => format!("{MAGIC} capture {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -461,6 +486,7 @@ enum Header {
     OutputsKeep,
     OutputsRevert,
     Shield(ShieldVerb),
+    Capture(CaptureVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -616,6 +642,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::OutputsKeep => Some(Request::OutputsKeep),
         Header::OutputsRevert => Some(Request::OutputsRevert),
         Header::Shield(v) => Some(Request::Shield(v)),
+        Header::Capture(v) => Some(Request::Capture(v)),
         Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
@@ -668,6 +695,9 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["shield", word] => {
             ShieldVerb::parse(word).map(Header::Shield).ok_or_else(|| IpcError::Malformed(format!("unknown shield word {:?}", cut(word))))
         }
+        ["capture", word] => CaptureVerb::parse(word)
+            .map(Header::Capture)
+            .ok_or_else(|| IpcError::Malformed(format!("unknown capture word {:?}", cut(word)))),
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),
         ["outputs-revert"] => Ok(Header::OutputsRevert),
