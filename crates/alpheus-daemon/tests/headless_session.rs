@@ -8794,3 +8794,23 @@ fn the_unbuilt_capture_verbs_exit_2_with_a_fixed_message() {
     }
     assert_eq!(d.count("capture: busy"), 0);
 }
+
+/// A daemon killed between writing the copy's private file and removing it leaves `capture.png`
+/// (or the writer's `.capture.png.<pid>`) in `$XDG_RUNTIME_DIR/alpheus`: the next start clears
+/// those, and leaves every other file of the folder alone.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_start_clears_the_capture_files_a_killed_daemon_left() {
+    let sway = Sway::start("capture-stale", 1);
+    let private = sway.runtime.join("alpheus");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for name in ["capture.png", ".capture.png.4242", "kept.png"] {
+        std::fs::write(private.join(name), b"stale").unwrap();
+    }
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(!private.join("capture.png").exists(), "{:?}", d.log());
+    assert!(!private.join(".capture.png.4242").exists());
+    assert!(private.join("kept.png").exists(), "only the capture's own files are cleared");
+}
