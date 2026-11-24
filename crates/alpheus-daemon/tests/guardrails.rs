@@ -6166,3 +6166,12 @@ fn the_picker_frame_is_kept_only_while_the_picker_is_open() {
     }
     assert!(function_body(&app, "fn capture_frame(").contains("Step::Pick => self.pick_open(frame, generation)"));
 }
+
+/// The notice of an ending is told the scope of the capture that ended, so a pick's failure says
+/// "Colour picker", not "Screenshot".
+#[test]
+fn a_capture_notice_is_told_its_scope() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(function_body(&app, "fn capture_finish(").contains("notice(&finish, self.capture.flow.scope())"));
+    assert_eq!(app.matches("notice(&").count(), 1, "one place makes a capture's notice");
+}

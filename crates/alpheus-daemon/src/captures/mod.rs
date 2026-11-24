@@ -67,8 +67,9 @@ pub enum PickAnswer {
 }
 
 /// What is captured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
+    #[default]
     /// The whole focused output.
     Screen,
     /// An area picked with the selector.
@@ -164,7 +165,7 @@ impl Finish {
     }
 }
 
-/// A notice to show: app `alpheus`, the summary `Screenshot`, or `Colour picker` for a picked value.
+/// A notice to show: app `alpheus`, the summary `Screenshot`, or `Colour picker` for a pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub summary: &'static str,
@@ -172,23 +173,23 @@ pub struct Notice {
     pub critical: bool,
 }
 
-/// The notice an ending gives: none for a cancel, a calm one for a success, a critical one for
-/// each failure (docs/decisions.md, "A capture never touches the clipboard unless it succeeded").
-pub fn notice(finish: &Finish) -> Option<Notice> {
+/// The notice an ending of a capture of `scope` gives: none for a cancel, a calm one for a success,
+/// a critical one for each failure (docs/decisions.md, "A capture never touches the clipboard unless
+/// it succeeded"). Its summary is `Colour picker` for a pick, failures included, else `Screenshot`.
+pub fn notice(finish: &Finish, scope: Scope) -> Option<Notice> {
     let (body, critical) = match finish {
         Finish::Cancelled => return None,
-        Finish::Copied(Scope::Screen) => ("Screen copied".to_string(), false),
         Finish::Copied(Scope::Area) => ("Area copied".to_string(), false),
-        Finish::Copied(Scope::Pick) => ("Colour copied".to_string(), false),
-        Finish::Picked(value) => {
-            return Some(Notice { summary: "Colour picker", body: format!("Copied: {value}"), critical: false });
-        }
+        // A pick ends as `Picked`, with its value: a copied image is the screen's or an area's.
+        Finish::Copied(_) => ("Screen copied".to_string(), false),
+        Finish::Picked(value) => (format!("Copied: {value}"), false),
         Finish::Saved(name) => (format!("Saved: {name}"), false),
         Finish::CaptureFailed => ("Capture failed".to_string(), true),
         Finish::CopyFailed => ("Not copied: the copy command failed".to_string(), true),
         Finish::SaveFailed => ("Not saved: the file could not be written".to_string(), true),
     };
-    Some(Notice { summary: "Screenshot", body, critical })
+    let summary = if scope == Scope::Pick { "Colour picker" } else { "Screenshot" };
+    Some(Notice { summary, body, critical })
 }
 
 /// Where a capture stands.
@@ -239,6 +240,8 @@ pub enum Step {
 pub struct Flow {
     stage: Stage,
     job: Option<Job>,
+    /// The scope of the capture in progress, or of the last one once it ended: what its notice says.
+    scope: Scope,
     /// Counts the captures begun: an answer carries the one it was asked for, so a late answer of a
     /// capture that has ended is never taken for the next one's.
     generation: u64,
@@ -252,6 +255,11 @@ impl Flow {
     /// Whether a frame has been asked and is awaited.
     pub fn waits_for_frame(&self) -> bool {
         self.stage == Stage::Grabbing
+    }
+
+    /// The scope of the capture in progress, or of the last one, kept once it ended.
+    pub fn scope(&self) -> Scope {
+        self.scope
     }
 
     /// The capture in progress.
@@ -272,6 +280,7 @@ impl Flow {
             return None;
         }
         self.job = Some(job);
+        self.scope = job.scope;
         self.generation += 1;
         Some(match job.scope {
             Scope::Area => {

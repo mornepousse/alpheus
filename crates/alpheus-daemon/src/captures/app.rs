@@ -373,7 +373,7 @@ impl App {
             Finish::CopyFailed => log("capture: copy failed"),
             Finish::SaveFailed => log("capture: save failed"),
         }
-        if let Some(n) = notice(&finish) {
+        if let Some(n) = notice(&finish, self.capture.flow.scope()) {
             self.capture_notify(n);
         }
         crate::memory::release_memory();

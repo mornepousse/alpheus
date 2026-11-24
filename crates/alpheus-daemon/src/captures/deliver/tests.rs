@@ -56,7 +56,7 @@ fn a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure() {
         fake.respond("wl-copy --type image/png", answer);
         let finish = deliver(&fake, PNG, &delivery(copy_job(Scope::Area), &copy, &run, &dir));
         assert_eq!(finish, Finish::CopyFailed, "{what}");
-        assert!(!finish.touches_the_clipboard() && notice(&finish).unwrap().critical, "{what}");
+        assert!(!finish.touches_the_clipboard() && notice(&finish, Scope::Area).unwrap().critical, "{what}");
         assert_eq!(std::fs::read_dir(&run).unwrap().count(), 0, "{what}: the file is removed");
     }
 }
@@ -231,7 +231,7 @@ fn an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied() {
     let finish = run(&fake, Work::Image { frame: frame(), area: off }, &delivery(copy_job(Scope::Area), &copy, &dir.join("run"), &dir));
     assert_eq!(finish, Finish::CaptureFailed);
     assert!(fake.calls().is_empty(), "a failed capture never reaches the clipboard");
-    assert!(notice(&finish).unwrap().critical);
+    assert!(notice(&finish, Scope::Area).unwrap().critical);
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn a_picked_value_the_copy_command_refuses_is_a_copy_failure() {
         }
         let finish = run(&fake, Work::Text("#000000".into()), &delivery(pick_job(), &copy, &run_dir, &dir));
         assert_eq!(finish, Finish::CopyFailed, "{what}");
-        assert!(!finish.touches_the_clipboard() && notice(&finish).unwrap().critical, "{what}");
+        assert!(!finish.touches_the_clipboard() && notice(&finish, Scope::Pick).unwrap().critical, "{what}");
         assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "{what}: the file is removed");
     }
     // No copy command at all.

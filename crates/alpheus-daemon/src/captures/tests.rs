@@ -83,7 +83,7 @@ fn a_cancel_is_silent_and_never_copies() {
     let mut flow = Flow::default();
     flow.begin(job(Scope::Area, Goal::Copy));
     assert_eq!(flow.selected(flow.generation(), SelectorAnswer::Cancelled), Step::Finish(Finish::Cancelled));
-    assert_eq!(notice(&Finish::Cancelled), None, "no notice");
+    assert_eq!(notice(&Finish::Cancelled, Scope::Area), None, "no notice");
     assert!(!Finish::Cancelled.touches_the_clipboard());
     // The selector asked for nothing (the debug verb): its answer is not a capture's.
     let mut idle = Flow::default();
@@ -152,7 +152,7 @@ fn a_late_frame_from_an_old_generation_is_ignored() {
 
 #[test]
 fn the_notices_say_what_happened_and_only_a_success_is_a_calm_one() {
-    let n = |f: Finish| notice(&f).unwrap();
+    let n = |f: Finish| notice(&f, Scope::Screen).unwrap();
     let copied = n(Finish::Copied(Scope::Screen));
     assert_eq!((copied.summary, copied.body.as_str(), copied.critical), ("Screenshot", "Screen copied", false));
     assert_eq!(n(Finish::Copied(Scope::Area)).body, "Area copied");
@@ -163,7 +163,7 @@ fn the_notices_say_what_happened_and_only_a_success_is_a_calm_one() {
         assert!(f.critical, "{failure:?} is critical");
         assert!(!failure.touches_the_clipboard(), "{failure:?} leaves the clipboard alone");
     }
-    assert_eq!(notice(&Finish::Cancelled), None);
+    assert_eq!(notice(&Finish::Cancelled, Scope::Area), None);
     assert!(Finish::Copied(Scope::Area).touches_the_clipboard());
     assert!(!Finish::Saved("x.png".into()).touches_the_clipboard());
 }
@@ -193,7 +193,7 @@ fn a_selector_that_fails_ends_the_capture_as_a_critical_failure() {
     let step = flow.selected(flow.generation(), SelectorAnswer::Failed);
     assert_eq!(step, Step::Finish(Finish::CaptureFailed));
     assert!(!flow.is_busy());
-    assert!(notice(&Finish::CaptureFailed).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
+    assert!(notice(&Finish::CaptureFailed, Scope::Area).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
 }
 
 /// A selector left open by a capture that was reset (a panic in the glue) answers with that
@@ -234,7 +234,7 @@ fn a_pick_settles_grabs_the_screen_then_opens_the_picker() {
     assert_eq!(flow.delivered(g, copied.clone()), Step::Finish(copied.clone()));
     assert!(!flow.is_busy());
     assert!(copied.touches_the_clipboard());
-    let n = notice(&copied).unwrap();
+    let n = notice(&copied, Scope::Pick).unwrap();
     assert_eq!((n.summary, n.body.as_str(), n.critical), ("Colour picker", "Copied: #1A2BFC", false), "the notice gives the value");
 }
 
@@ -259,7 +259,7 @@ fn a_picker_that_fails_ends_the_pick_as_a_critical_failure() {
     flow.grabbed(g, true);
     assert_eq!(flow.picked(g, PickAnswer::Failed), Step::Finish(Finish::CaptureFailed));
     assert!(!flow.is_busy());
-    assert!(notice(&Finish::CaptureFailed).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
+    assert!(notice(&Finish::CaptureFailed, Scope::Pick).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
 }
 
 /// An answer of an earlier capture's picker never ends the current one.
@@ -277,4 +277,25 @@ fn a_picker_answer_of_an_earlier_capture_is_ignored() {
     assert_eq!(flow.picked(stale, PickAnswer::Colour(Rgb(0, 0, 0))), Step::Nothing);
     assert!(flow.is_busy());
     assert_eq!(flow.picked(g, PickAnswer::Cancelled), Step::Finish(Finish::Cancelled));
+}
+
+/// A pick's notices are the colour picker's, its failures included; the screenshots' stay
+/// `Screenshot`. The flow keeps the scope of the capture that ended, which the glue reads for the
+/// notice once the flow is at rest.
+#[test]
+fn a_picks_failure_notice_is_the_colour_pickers() {
+    for failure in [Finish::CaptureFailed, Finish::CopyFailed] {
+        let pick = notice(&failure, Scope::Pick).unwrap();
+        assert_eq!((pick.summary, pick.critical), ("Colour picker", true), "{failure:?}");
+        assert_eq!(notice(&failure, Scope::Screen).unwrap().summary, "Screenshot");
+        assert_eq!(notice(&failure, Scope::Area).unwrap().summary, "Screenshot");
+    }
+    let mut flow = Flow::default();
+    flow.begin(job(Scope::Pick, Goal::Copy));
+    let g = flow.generation();
+    assert_eq!(flow.settled(g), Step::Grab(None));
+    assert_eq!(flow.grabbed(g, false), Step::Finish(Finish::CaptureFailed));
+    assert_eq!(flow.scope(), Scope::Pick, "the ended capture's scope");
+    flow.begin(job(Scope::Area, Goal::Save));
+    assert_eq!(flow.scope(), Scope::Area);
 }
