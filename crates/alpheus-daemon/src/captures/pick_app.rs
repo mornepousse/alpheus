@@ -108,8 +108,8 @@ pub(crate) struct OpenPick {
     picker: Picker,
     /// The frame the capture took at open.
     shot: Shot,
-    /// What the last draw showed (the pointer's logical pixel); an unchanged frame is not repainted.
-    last: Option<Option<(i32, i32)>>,
+    /// What the last draw showed (`draw_key`); an unchanged frame is not repainted.
+    last: Option<Option<DrawKey>>,
     /// A draw found both buffers held: drawn again after the release (`pick_after_dispatch`).
     waiting: bool,
     shown_logged: bool,
@@ -199,6 +199,17 @@ pub(crate) fn damage(before: Option<Option<Area>>, committed: Option<Area>, draw
         None => Some(whole),
         Some(wiped) => union(union(wiped, committed), drawn),
     }
+}
+
+/// What a draw shows for a pointer: the frame's pixel under it (what a click copies) and the logical
+/// pixel the lens is placed by.
+type DrawKey = ((i64, i64), (i32, i32));
+
+/// The draw key of `pointer` (None before the pointer came): a redraw is skipped only while it stays
+/// the same, so the lens always shows the pixel a click would copy, whatever the scale.
+pub(crate) fn draw_key(shot: &Shot, pointer: Option<(f64, f64)>) -> Option<DrawKey> {
+    let (x, y) = pointer?;
+    Some((shot.under((x, y)), (x.floor() as i32, y.floor() as i32)))
 }
 
 /// The model's input for a key; None for any key the picker does not answer to.
@@ -410,7 +421,7 @@ impl App {
             return;
         }
         let pointer = open.picker.pointer();
-        let shown = pointer.map(|(x, y)| (x.floor() as i32, y.floor() as i32));
+        let shown = draw_key(&open.shot, pointer);
         if open.last == Some(shown) {
             open.waiting = false;
             return;
@@ -443,7 +454,7 @@ impl App {
             Some(None) => {}
         }
         let mut drawn = None;
-        if let (Some(at), Some((px_x, px_y))) = (pointer, shown) {
+        if let (Some(at), Some((_, (px_x, px_y)))) = (pointer, shown) {
             let colour = shot.colour_at(at);
             let cells = shot.lens(at);
             // The card: the launcher's frame and colours around the `#RRGGBB` text, painted aside.

@@ -64,7 +64,7 @@ impl Shot {
     }
 
     /// The shown pixel under a logical position.
-    fn under(&self, (x, y): (f64, f64)) -> (i64, i64) {
+    pub fn under(&self, (x, y): (f64, f64)) -> (i64, i64) {
         ((x * self.scale).floor() as i64, (y * self.scale).floor() as i64)
     }
 

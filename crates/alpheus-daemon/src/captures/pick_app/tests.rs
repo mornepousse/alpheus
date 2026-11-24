@@ -134,3 +134,16 @@ fn a_draw_damages_what_it_wipes_what_the_screen_shows_and_what_it_draws() {
     assert_eq!(damage(Some(None), Some(p2), None, whole), Some(p2), "the lens on screen goes, even with none drawn");
     assert_eq!(damage(Some(None), None, None, whole), None);
 }
+
+/// A redraw is skipped only while the frame's pixel under the pointer stays the same: at scale 2 a
+/// motion from 10.2 to 10.7 stays on logical pixel 10 but moves from the frame's pixel 20 to 21,
+/// which a click would copy, so the lens must show it.
+#[test]
+fn the_lens_follows_the_frames_pixel_not_the_logical_one() {
+    use crate::captures::screencopy::{Format, Frame};
+    let frame = Frame { width: 40, height: 40, stride: 160, format: Format::Xrgb8888, y_invert: false, data: vec![0; 40 * 160] };
+    let shot = Shot::new(frame, Some((20, 20)), 2, Transform::Normal);
+    assert_ne!(draw_key(&shot, Some((10.2, 5.0))), draw_key(&shot, Some((10.7, 5.0))), "pixel 20, then 21");
+    assert_eq!(draw_key(&shot, Some((10.6, 5.0))), draw_key(&shot, Some((10.7, 5.0))), "both on pixel 21: no redraw");
+    assert_eq!(draw_key(&shot, None), None);
+}
