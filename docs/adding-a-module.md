@@ -240,7 +240,7 @@ anything.
   list in [`features/README.md`](features/README.md).
 - `docs/decisions.md`: one entry per choice that someone might later reverse (title, a few
   sentences, `Date`, `Source`). The timer's run from "The timer is drawn at rest" to the logging
-  rules. Code comments point to these entries by title instead of citing a person or a plan.
+  rules. Code comments point to these entries by title instead of citing a person or a document.
 - `docs/comparison.md`: the row of the feature table, with its status.
 - `docs/configuration.md`: the keys (step 5).
 - `docs/cli.md`: the exit codes, if the verb adds one; the verb's own words go in the feature page

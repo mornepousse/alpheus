@@ -10,7 +10,7 @@ and `join.rs`); the other files of the folder are summarised in "How it is built
 `alpheus-launch --tools` opens the launcher in a Tools mode: categories to browse, and a search that
 looks at every entry of every category at once. Typing `/` as the whole query in Mod+Space jumps into it
 too, so typing a path that starts with `/` does as well, from its first character (`[prefixes] tools = ""`
-gives the key back; tools spec decision 21). Nothing is resident while it is closed: no thread, no timer, no catalog.
+gives the key back). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
   disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, Lock,

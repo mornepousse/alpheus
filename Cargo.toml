@@ -28,9 +28,9 @@ nucleo-matcher = "0.3"
 # Keysym names for the launcher's keys (same version smithay-client-toolkit already compiles).
 xkeysym = "0.2"
 # System D-Bus (NetworkManager, UPower, BlueZ) through dbus-rs over libdbus, blocking,
-# on the D-Bus thread and no thread of its own (tray plan 1, 2026-10-05). Daemon only.
+# on the D-Bus thread and no thread of its own (2026-10-05). Daemon only.
 dbus = "0.9"
-# The tray's own StatusNotifierWatcher object (tray plan 2, 2026-10-05): dbus-rs's own object
+# The tray's own StatusNotifierWatcher object (2026-10-05): dbus-rs's own object
 # server, no further dependency. Daemon only, in src/session_bus/watcher.rs.
 dbus-crossroads = "0.5"
 
@@ -39,7 +39,7 @@ lto = true
 codegen-units = 1
 strip = true
 
-# Readability lints (open-source plan 5). Warnings here, errors in CI (-D warnings).
+# Readability lints. Warnings here, errors in CI (-D warnings).
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 unused_qualifications = "warn"

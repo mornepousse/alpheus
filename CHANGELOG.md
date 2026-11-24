@@ -2,8 +2,8 @@
 
 All notable changes to alpheus, in the layout of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 There are no version numbers yet: every delivery is listed under *Unreleased*, by the month it was
-merged, newest first. Each entry links to its feature page (or, when there is none, to its design
-spec). Costs are measured in release builds, back to back with the build before; the method and the
+merged, newest first. Each entry links to its feature page (or, when there is none, to the
+code it touches). Costs are measured in release builds, back to back with the build before; the method and the
 tables are in [docs/measurements.md](docs/measurements.md). The number in parentheses after a title is the day of the month the delivery merged.
 
 ## Unreleased

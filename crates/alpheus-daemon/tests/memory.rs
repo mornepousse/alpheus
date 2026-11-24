@@ -516,7 +516,7 @@ fn startup_pss_per_source() {
     let _systemd = FakeSystemd::serve(&bus, 0);
     let mut cases = vec![
         // The case names are what docs/measurements.md cites next to its figures: keep them.
-        ("plan 1", "\"workspaces\", \"window\", \"clock\"", ""),
+        ("bar only", "\"workspaces\", \"window\", \"clock\"", ""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\"", ""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"", ""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\"", ""),

@@ -114,11 +114,10 @@ displays.
   [`docs/comparison.md`](docs/comparison.md), and
   [`docs/measurements.md`](docs/measurements.md) when it costs anything.
 - A new module follows [`docs/adding-a-module.md`](docs/adding-a-module.md).
-- A design of a delivery's size lands as a spec in `docs/specs/` before the code
-  ([`docs/specs/README.md`](docs/specs/README.md)). The specs already there are the records of
-  past deliveries, not the authority on what ships today: that is the code,
-  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-  [`docs/decisions.md`](docs/decisions.md).
+- The design of a delivery's size is discussed in an issue (or the pull request) before the
+  code. Settled choices go to [`docs/decisions.md`](docs/decisions.md) with the tests that pin
+  them, and the feature page documents the result. The authority on what ships today is the
+  code, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and that file.
 - Each module's `//!` header says what it is and what it never does; keep it
   true.
 

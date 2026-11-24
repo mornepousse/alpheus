@@ -3,9 +3,6 @@
 
 [files]
 extend-exclude = [
-    # The design history is kept as written.
-    "docs/specs/",
-    "docs/plans/",
     # Fixtures and snapshots are captured or hand-made data (French labels,
     # device names, driver names such as skl_hda_dsp_generic).
     "**/tests/fixtures/",

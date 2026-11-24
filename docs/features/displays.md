@@ -15,7 +15,7 @@ describes the code as it is today.
   its modes, at most 256 per screen), updated only when the manager says `done`.
 - **Changes them** only through one configuration at a time, sent whole. A change that would leave no
   screen enabled is refused. A change that changes nothing is not sent, and the request succeeds at
-  once (displays spec § 1).
+  once.
 - **Applies a profile on hotplug.** With `[displays] auto = true` (the default), when the identities of
   the connected screens change, the profile of `displays.toml` whose screens are exactly the connected
   ones is applied once the screens have been still for 500 ms. No matching profile: nothing happens.

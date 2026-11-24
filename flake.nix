@@ -32,7 +32,7 @@
       }}";
       # crate: the Cargo package to build when its name differs from the package's (the daemon).
       # nativeBuildInputs / buildInputs: system libraries a package links
-      # (the daemon's libxkbcommon, launcher plan task 12); empty by default.
+      # (the daemon's libxkbcommon); empty by default.
       # thirdParty: the package embeds third-party data (the daemon's emoji
       # table, Unicode License v3): its licence joins MIT and NOTICE is installed.
       paquet = pkgs: { pname, crate ? pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ], thirdParty ? false }:

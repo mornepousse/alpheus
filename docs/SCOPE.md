@@ -4,8 +4,8 @@
 > overtaken (four compositors instead of two, the daemon is far lighter than
 > the 30-50 MB first aimed at, sub-project 3's integration lives outside this
 > repository). For what alpheus is today, read the [README](../README.md); for
-> how it is built, [ARCHITECTURE](ARCHITECTURE.md); for the per-feature design
-> record, [`specs/`](specs/README.md).
+> how it is built, [ARCHITECTURE](ARCHITECTURE.md); for the per-feature
+> record, [`features/`](features/README.md).
 
 # alpheus — overall scope
 
@@ -62,7 +62,7 @@ floor); the lightweight alternatives aren't polished enough.
 - **Never write to the compositor directly**: everything goes through
   a configurable command (the author's `wm-set`), which routes to Hyprland (Lua or hyprlang
   config) and niri. In Lua config, `hyprctl dispatch`/`keyword` no longer
-  have hyprlang syntax. *Amended 2026-10-30 (displays spec § 2): the one
+  have hyprlang syntax. *Amended 2026-10-30: the one
   exception is `zwlr_output_configuration_v1` in the daemon's
   `outputs/wlr.rs`, which changes the screens' layout (apply, trial,
   profiles on hotplug); no `dpms`, no power state, no command.*
@@ -71,10 +71,10 @@ floor); the lightweight alternatives aren't polished enough.
 
 ## Breakdown into sub-projects
 
-Each has its own full cycle: spec → plan → implementation.
+Each is designed, then implemented, on its own.
 
-1. **TUI control center** (ratatui) — *v1 spec:*
-   [`specs/2026-10-02-alpheus-v1-design.md`](specs/2026-10-02-alpheus-v1-design.md).
+1. **TUI control center** (ratatui) — see
+   [`features/control-center.md`](features/control-center.md).
    Useful right away with the current stack (classic or dms), with no risk
    to the session. Sets the style and keybindings reused afterward.
 2. **Resident daemon** (a single Rust process): bar + notification toasts
