@@ -254,9 +254,11 @@ impl Flow {
     }
 
     /// The selector answered. A cancel is silent; a selector that failed ends the capture as a
-    /// failure. A selector nobody here asked for (the debug verb) is none of this flow's business.
-    pub fn selected(&mut self, answer: SelectorAnswer) -> Step {
-        if self.stage != Stage::Selecting {
+    /// failure. `generation` is the capture that opened the selector: the answer of an earlier
+    /// capture's selector (one left open when the glue reset its capture, then replaced by the
+    /// next capture's) is none of this one's business.
+    pub fn selected(&mut self, generation: u64, answer: SelectorAnswer) -> Step {
+        if self.stage != Stage::Selecting || generation != self.generation {
             return Step::Nothing;
         }
         match answer {

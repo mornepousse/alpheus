@@ -178,7 +178,7 @@ impl App {
         match step {
             Step::Select => {
                 let qh = self.qh.clone();
-                self.select_open(&qh, true);
+                self.select_open(&qh, Some(self.capture.flow.generation()));
             }
             Step::Settle => self.capture_settle(),
             Step::Grab(area) => self.capture_grab(area),
@@ -189,9 +189,10 @@ impl App {
     }
 
     /// The selector answered (`select_app.rs`, once its surface is destroyed): the flow decides what
-    /// that means, and a selector nobody here asked for (the debug verb) means nothing to it.
-    pub(crate) fn capture_selected(&mut self, output: Option<WlOutput>, answer: SelectorAnswer) {
-        if self.capture.flow.is_busy() {
+    /// that means for capture `generation`, the one that opened the selector: an earlier capture's
+    /// selector (left open by a reset) sets nothing here, and the flow ignores it.
+    pub(crate) fn capture_selected(&mut self, output: Option<WlOutput>, generation: u64, answer: SelectorAnswer) {
+        if self.capture.flow.is_busy() && generation == self.capture.flow.generation() {
             self.capture.output = output;
             self.capture.area = match answer {
                 SelectorAnswer::Area(area) => Some(area),
@@ -199,7 +200,7 @@ impl App {
             };
         }
         self.capture_guarded("selected", |app| {
-            let step = app.capture.flow.selected(answer);
+            let step = app.capture.flow.selected(generation, answer);
             app.capture_step(step);
         });
     }

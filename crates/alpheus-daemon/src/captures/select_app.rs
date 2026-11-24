@@ -99,9 +99,10 @@ pub(crate) struct OpenSelect {
     /// A draw found both buffers held: drawn again after the release (`select_after_dispatch`).
     waiting: bool,
     shown_logged: bool,
-    /// Opened by a capture (`Step::Select`), not by the debug verb: only then is its answer the
-    /// capture's.
-    for_capture: bool,
+    /// The generation of the capture that opened it (`Step::Select`); None for the debug verb's.
+    /// Its answer goes to that capture only: a selector left open by a capture that was reset is
+    /// never taken for the next one's.
+    capture: Option<u64>,
     /// The label's card, painted aside then laid over the frame; kept to be reused.
     card: Vec<u8>,
 }
@@ -216,9 +217,9 @@ pub(super) fn guarded<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
 impl App {
     /// Opens the selector on the focused output (by name among the bar's outputs; unknown → the
     /// compositor's choice). Another selector, the launcher, the pad and any popup go first.
-    /// `for_capture`: a capture asked for it, so its answer goes to the capture flow; the debug
-    /// verb's selector answers nobody.
-    pub(crate) fn select_open(&mut self, qh: &QueueHandle<App>, for_capture: bool) {
+    /// `capture`: the generation of the capture that asked for it, whose flow gets its answer; the
+    /// debug verb's selector (None) answers nobody.
+    pub(crate) fn select_open(&mut self, qh: &QueueHandle<App>, capture: Option<u64>) {
         if self.select.is_some() {
             self.select_close(SelectClose::Replaced);
         }
@@ -239,7 +240,7 @@ impl App {
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let Ok(pool) = SlotPool::new(pool_size(bytes, 0).max(4096), &self.shm) else {
             log("capture: no shared buffer, selector not opened");
-            self.select_finished(None, SelectorAnswer::Failed, for_capture);
+            self.select_finished(None, SelectorAnswer::Failed, capture);
             return;
         };
         let surface = self.compositor.create_surface(qh);
@@ -263,7 +264,7 @@ impl App {
             last: None,
             waiting: false,
             shown_logged: false,
-            for_capture,
+            capture,
             card: Vec::new(),
         });
         self.keyboard_acquire(qh);
@@ -292,7 +293,7 @@ impl App {
             if app.select_is_open() {
                 app.select_close(SelectClose::Cancelled);
             } else {
-                app.select_open(&qh, false);
+                app.select_open(&qh, None);
             }
         });
     }
@@ -315,24 +316,25 @@ impl App {
     pub(crate) fn select_close(&mut self, reason: SelectClose) {
         let Some(open) = self.select.take() else { return };
         let output = open.output.clone();
-        let for_capture = open.for_capture;
+        let capture = open.capture;
         drop(open);
         self.keyboard_release();
         log(&format!("capture: selector closed ({})", reason.text()));
         crate::memory::release_memory();
-        self.select_finished(output, reason.answer(), for_capture);
+        self.select_finished(output, reason.answer(), capture);
     }
 
-    /// The selector's answer, said in fixed words, then handed to the capture flow when a capture
-    /// opened it. The debug verb's selector, even one a capture's replaces, answers nobody: its
-    /// close is never taken for the new capture's cancel.
-    fn select_finished(&mut self, output: Option<wl_output::WlOutput>, answer: SelectorAnswer, for_capture: bool) {
+    /// The selector's answer, said in fixed words, then handed to the capture flow with the
+    /// generation of the capture that opened it. The debug verb's selector, even one a capture's
+    /// replaces, answers nobody; an earlier capture's, left open by a reset, carries its own
+    /// generation, so its close is never taken for the new capture's cancel.
+    fn select_finished(&mut self, output: Option<wl_output::WlOutput>, answer: SelectorAnswer, capture: Option<u64>) {
         match answer {
             SelectorAnswer::Area(_) => log("capture: area selected"),
             SelectorAnswer::Cancelled | SelectorAnswer::Failed => log("capture: nothing selected"),
         }
-        if for_capture {
-            self.capture_selected(output, answer);
+        if let Some(generation) = capture {
+            self.capture_selected(output, generation, answer);
         }
     }
 

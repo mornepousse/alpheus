@@ -44,7 +44,7 @@ fn grabbing(scope: Scope) -> (Flow, u64) {
     flow.begin(job(scope, Goal::Copy));
     let g = flow.generation();
     if scope == Scope::Area {
-        flow.selected(SelectorAnswer::Area(rect(1, 2, 3, 4)));
+        flow.selected(g, SelectorAnswer::Area(rect(1, 2, 3, 4)));
     }
     flow.settled(g);
     (flow, g)
@@ -81,13 +81,13 @@ fn every_scope_waits_for_the_compositor_before_its_frame() {
 fn a_cancel_is_silent_and_never_copies() {
     let mut flow = Flow::default();
     flow.begin(job(Scope::Area, Goal::Copy));
-    assert_eq!(flow.selected(SelectorAnswer::Cancelled), Step::Finish(Finish::Cancelled));
+    assert_eq!(flow.selected(flow.generation(), SelectorAnswer::Cancelled), Step::Finish(Finish::Cancelled));
     assert_eq!(notice(&Finish::Cancelled), None, "no notice");
     assert!(!Finish::Cancelled.touches_the_clipboard());
     // The selector asked for nothing (the debug verb): its answer is not a capture's.
     let mut idle = Flow::default();
-    assert_eq!(idle.selected(SelectorAnswer::Area(rect(0, 0, 1, 1))), Step::Nothing);
-    assert_eq!(idle.selected(SelectorAnswer::Cancelled), Step::Nothing);
+    assert_eq!(idle.selected(0, SelectorAnswer::Area(rect(0, 0, 1, 1))), Step::Nothing);
+    assert_eq!(idle.selected(0, SelectorAnswer::Cancelled), Step::Nothing);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn a_selection_waits_for_the_compositor_before_the_frame_is_asked() {
     flow.begin(job(Scope::Area, Goal::Copy));
     let g = flow.generation();
     // The selector's surface was just destroyed: the frame is not asked in the same turn.
-    assert_eq!(flow.selected(SelectorAnswer::Area(rect(10, 20, 30, 40))), Step::Settle);
+    assert_eq!(flow.selected(g, SelectorAnswer::Area(rect(10, 20, 30, 40))), Step::Settle);
     assert!(flow.is_busy());
     // A frame answer, or a second settle, out of turn does nothing.
     assert_eq!(flow.grabbed(g, true), Step::Nothing);
@@ -189,8 +189,25 @@ fn a_late_ending_from_an_old_generation_is_ignored() {
 fn a_selector_that_fails_ends_the_capture_as_a_critical_failure() {
     let mut flow = Flow::default();
     flow.begin(job(Scope::Area, Goal::Copy));
-    let step = flow.selected(SelectorAnswer::Failed);
+    let step = flow.selected(flow.generation(), SelectorAnswer::Failed);
     assert_eq!(step, Step::Finish(Finish::CaptureFailed));
     assert!(!flow.is_busy());
     assert!(notice(&Finish::CaptureFailed).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
+}
+
+/// A selector left open by a capture that was reset (a panic in the glue) answers with that
+/// capture's generation: when the next capture's selector replaces it, its cancel is not taken for
+/// the new capture's, which still waits for its own selection.
+#[test]
+fn a_selector_answer_of_an_earlier_capture_does_not_end_the_current_one() {
+    let mut flow = Flow::default();
+    flow.begin(job(Scope::Area, Goal::Copy));
+    let stale = flow.generation();
+    flow.finished();
+    assert_eq!(flow.begin(job(Scope::Area, Goal::Copy)), Some(Step::Select));
+    let current = flow.generation();
+    assert_eq!(flow.selected(stale, SelectorAnswer::Cancelled), Step::Nothing, "the old selector's close");
+    assert_eq!(flow.selected(stale, SelectorAnswer::Area(rect(1, 2, 3, 4))), Step::Nothing);
+    assert!(flow.is_busy(), "the new capture still runs");
+    assert_eq!(flow.selected(current, SelectorAnswer::Area(rect(5, 6, 7, 8))), Step::Settle, "its own selector answers");
 }
