@@ -34,13 +34,11 @@ use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
 use alpheus_common::theme::settings::{BarStyle, ModuleColors};
 
-/// Order of disappearance when space runs short: the spec's (resources, media, title), then the
-/// system indicators (their own order is not recorded); the tray goes right after resources (tray
-/// spec), and the launcher button after the system indicators (2026-10-05: `Mod+Space` still opens
-/// the launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb),
-/// then the failed-units count (diagnostics spec § 6), then the Shield glyph (shield spec § 4),
-/// then the privacy indicators (privacy spec § 1), then the power button, the last of all (power
-/// spec § 1).
+/// Order of disappearance when space runs short: resources, media, title, then the
+/// system indicators (their own order is not recorded); the tray goes right after resources, and
+/// the launcher button after the system indicators (`Mod+Space` still opens the launcher), then the
+/// timer chip (its popup is also reachable from a verb), then the failed-units count, then the
+/// Shield glyph, then the privacy indicators, then the power button, the last of all.
 /// Workspaces, the clock and the bell always stay.
 const REMOVAL: [ModuleId; 14] = [
     ModuleId::Resources,

@@ -121,7 +121,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The bar's modules (spec § 2), left to right by default: `[bar] modules` both orders the bar and
+/// The bar's modules, left to right by default: `[bar] modules` both orders the bar and
 /// says which daemon features run at all, so the OSD, the quick panel and the screens are named
 /// here although they draw no segment. An unknown name is an error when the file is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -132,12 +132,12 @@ pub enum ModuleId {
     Workspaces,
     Window,
     Media,
-    /// The privacy indicators (privacy spec § 1): who holds the microphone, the camera or the screen.
+    /// The privacy indicators: who holds the microphone, the camera or the screen.
     Privacy,
-    /// Shield mode (shield spec § 4): a green glyph drawn only while the mode is on; its row and
+    /// Shield mode: a green glyph drawn only while the mode is on; its row and
     /// detail live in the quick panel.
     Shield,
-    /// The failed-units count (diagnostics spec § 6): `󰀦 N` when a unit of the system or the user
+    /// The failed-units count: `󰀦 N` when a unit of the system or the user
     /// manager is in the failed state; nothing at 0. A left click opens the control center's Diag tab.
     Failed,
     Volume,
@@ -147,20 +147,20 @@ pub enum ModuleId {
     Resources,
     Tray,
     Notifications,
-    /// The on-screen display (OSD spec): volume, microphone and brightness in a pill at the bottom
+    /// The on-screen display: volume, microphone and brightness in a pill at the bottom
     /// of the focused output. No segment in the bar.
     Osd,
-    /// The quick settings panel (quick spec): opened by a left click on the volume, network or
+    /// The quick settings panel: opened by a left click on the volume, network or
     /// Bluetooth module, or `alpheus-launch --quick`. No segment in the bar.
     Quick,
-    /// The screens (displays spec § 1): read and changed through the output management protocol, the
+    /// The screens: read and changed through the output management protocol, the
     /// matching profile applied on hotplug. No segment in the bar.
     Displays,
-    /// The focus timer (timer spec): a chip with a countdown, a Pomodoro or a stopwatch, a popup
+    /// The focus timer: a chip with a countdown, a Pomodoro or a stopwatch, a popup
     /// under it and `alpheus-launch --timer`. One dim glyph at rest unless `[timer] idle = "hidden"`.
     Timer,
     Clock,
-    /// The power button (power spec § 1): ⏻ at the bar's end, a left click opens its menu with
+    /// The power button: ⏻ at the bar's end, a left click opens its menu with
     /// `[quick]`'s lock, logout, reboot and poweroff. No segment when all four are empty.
     Power,
 }
@@ -427,7 +427,7 @@ impl Default for BatteryConfig {
 pub const TITLE_MAX_MIN: u16 = 8;
 pub const TITLE_MAX_MAX: u16 = 80;
 
-/// `[media]` (media spec § 4): the title's width in the bar, and the players never shown.
+/// `[media]`: the title's width in the bar, and the players never shown.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
@@ -444,7 +444,7 @@ impl Default for MediaConfig {
     }
 }
 
-/// `[privacy]` (privacy spec § 7): the apps never shown (`ignore`) and, for the camera scan, where
+/// `[privacy]`: the apps never shown (`ignore`) and, for the camera scan, where
 /// devices and processes are listed (`dev_dir`, `proc_dir`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -463,7 +463,7 @@ impl Default for PrivacyConfig {
     }
 }
 
-/// `[failed]` (diagnostics spec § 7): how the failed-units count is followed.
+/// `[failed]`: how the failed-units count is followed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FailedConfig {
@@ -488,7 +488,7 @@ impl Default for FailedConfig {
 /// The longest `[shield] on_text` or `off_text`, in bytes.
 pub const SHIELD_TEXT_MAX: usize = 256;
 
-/// `[shield]` (shield spec § 2): empty by default, no Shield anywhere.
+/// `[shield]`: empty by default, no Shield anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShieldConfig {
@@ -574,7 +574,7 @@ fn format_char(c: char) -> bool {
     matches!(c, '\u{ad}' | '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
 }
 
-/// `[displays]` (displays spec § 1).
+/// `[displays]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DisplaysConfig {
@@ -590,7 +590,7 @@ impl Default for DisplaysConfig {
     }
 }
 
-/// `[hooks]` (hooks spec § 1): one argv per event, empty for none.
+/// `[hooks]`: one argv per event, empty for none.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HooksConfig {
@@ -654,7 +654,7 @@ pub const NOTIFY_WIDTH_MIN: u16 = 24;
 pub const NOTIFY_WIDTH_MAX: u16 = 80;
 pub const NOTIFY_HISTORY_MAX: u16 = 200;
 
-/// `[notifications]` (notifications spec § 6): the bubbles' timeouts, count and width, and the
+/// `[notifications]`: the bubbles' timeouts, count and width, and the
 /// history's length.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -733,7 +733,7 @@ pub const OSD_WIDTH_MIN: u16 = 24;
 pub const OSD_WIDTH_MAX: u16 = 60;
 pub const OSD_MARGIN_MAX: u32 = 400;
 
-/// `[osd]` (OSD spec § 4).
+/// `[osd]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OsdConfig {
@@ -776,7 +776,7 @@ pub const QUICK_STEP_MAX: u8 = 25;
 /// The longest process name `/proc/<pid>/comm` holds (TASK_COMM_LEN − 1).
 pub const COMM_MAX: usize = 15;
 
-/// One configured toggle of the panel (quick spec § 4): the command its row runs, and where its
+/// One configured toggle of the panel: the command its row runs, and where its
 /// state is read from.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -787,7 +787,7 @@ pub struct ToggleConfig {
     pub state: String,
 }
 
-/// `[quick]` (quick spec § 4).
+/// `[quick]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QuickConfig {
@@ -801,11 +801,11 @@ pub struct QuickConfig {
     pub logout: Vec<String>,
     pub reboot: Vec<String>,
     pub poweroff: Vec<String>,
-    /// The Wi-Fi detail's `More…` (quick Wi-Fi spec § 4), run as given: enterprise Wi-Fi, hidden
+    /// The Wi-Fi detail's `More…`, run as given: enterprise Wi-Fi, hidden
     /// networks, VPN, hotspot. None: absent from bar.toml, resolved at load time
     /// (`resolve_wifi_more`); an empty list hides the row.
     pub wifi_more: Option<Vec<String>>,
-    /// The VPN detail's `More…` (quick VPN spec), run as given: editing a profile, a secret. None:
+    /// The VPN detail's `More…`, run as given: editing a profile, a secret. None:
     /// absent from bar.toml, resolved at load time (`resolve_vpn_more`); an empty list hides the row.
     pub vpn_more: Option<Vec<String>>,
     /// The `Mixer…` row, run as given. None: absent from bar.toml, resolved at load time
@@ -824,7 +824,7 @@ impl QuickConfig {
 }
 
 impl Default for QuickConfig {
-    /// Neutral defaults (spec § 4): the session's lock through logind (hypridle or swayidle run the
+    /// Neutral defaults: the session's lock through logind (hypridle or swayidle run the
     /// lock command), reboot and power off through systemd, no logout and no toggle.
     fn default() -> Self {
         // The session commands are alpheus-common's: the control center's Power tab runs the same.
@@ -846,7 +846,7 @@ impl Default for QuickConfig {
 }
 
 /// `[quick] wifi_more` absent from bar.toml: the launcher's terminal (launcher.toml's `terminal`),
-/// then "nmtui" (quick Wi-Fi spec § 4). Given (even empty): kept as is.
+/// then "nmtui". Given (even empty): kept as is.
 pub fn resolve_wifi_more(q: &mut QuickConfig, terminal: &[String]) {
     if q.wifi_more.is_none() {
         q.wifi_more = Some(in_terminal(terminal, "nmtui"));
@@ -874,7 +874,7 @@ fn in_terminal(terminal: &[String], program: &str) -> Vec<String> {
     terminal.iter().cloned().chain(std::iter::once(program.to_string())).collect()
 }
 
-/// A toggle's `state`, read (quick spec § 4).
+/// A toggle's `state`, read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateForm {
     /// "": the row shows `·`.
@@ -956,7 +956,7 @@ pub const TIMER_MINUTES_MAX: u32 = 180;
 /// The most `[timer] rounds`.
 pub const TIMER_ROUNDS_MAX: u8 = 12;
 
-/// The chip when nothing runs (timer spec § 7).
+/// The chip when nothing runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TimerIdle {
@@ -967,14 +967,14 @@ pub enum TimerIdle {
     Hidden,
 }
 
-/// `[clipboard]` (clipboard spec): off by default, read at start.
+/// `[clipboard]`: off by default, read at start.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClipboardConfig {
     pub enabled: bool,
 }
 
-/// `[timer]` (timer spec § 7). Lengths are minutes.
+/// `[timer]`. Lengths are minutes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TimerConfig {

@@ -106,8 +106,8 @@ pub fn padded(content: &[Grid]) -> Boxed {
 /// One list row's content.
 pub struct Row<'a> {
     pub icon: Option<char>,
-    /// The icon's style when not selected: ACCENT for the launcher, ACCENT2 for a menu's toggles
-    /// (spec § 4), MUTED for a menu's back arrow.
+    /// The icon's style when not selected: ACCENT for the launcher, ACCENT2 for a menu's toggles,
+    /// MUTED for a menu's back arrow.
     pub icon_style: Style,
     pub text: &'a str,
     /// Right-aligned, MUTED (launcher kinds; menu submenu marker "▸").
@@ -338,7 +338,7 @@ mod tests {
         assert_eq!(boxed(&rows[..1], &[], None).cells(), (0, 0));
     }
 
-    /// The menu's toggles (spec § 4: checks and radios in accent2) and the launcher's icons each keep
+    /// The menu's toggles (checks and radios in accent2) and the launcher's icons each keep
     /// their own style; on the selected row, everything is the selection.
     #[test]
     fn the_icon_has_its_own_style_until_selected() {

@@ -63,7 +63,7 @@ pub struct Ink {
 }
 
 /// The colour of a boxed surface's frame: the border (popups, the launcher, a bubble), or `urgent`
-/// for a critical notification's bubble (notifications spec § 3). Separators and the divider always
+/// for a critical notification's bubble. Separators and the divider always
 /// keep the border.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameInk {
@@ -192,7 +192,7 @@ pub struct Fonts {
     /// physical offsets are only valid for the metrics they were measured
     /// at.
     shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
-    /// The bar shapes' corner masks (shapes spec § 3), made on first use per radius and scale.
+    /// The bar shapes' corner masks, made on first use per radius and scale.
     masks: MaskCache,
 }
 
@@ -593,7 +593,7 @@ impl Fonts {
         self.advance
     }
 
-    /// A bar in its style (shapes spec § 3):
+    /// A bar in its style:
     /// - the style's background pass;
     /// - the cell backgrounds (under the block styles, clipped to their block: its x span, and
     ///   under islands, translucent and floating's pills its inset rows);
@@ -847,7 +847,7 @@ impl Fonts {
                 }
             }
         }
-        let ink = roles.border_over(base); // spec § 1: fg_dim at 40 % over the surface
+        let ink = roles.border_over(base); // fg_dim at 40 % over the surface
         let (w, h, s) = (width, height, frame.stroke);
         for &r in &b.separators {
             let y = frame.top + r as u32 * row_height + row_height.saturating_sub(s) / 2;

@@ -1,4 +1,4 @@
-//! Pixel tests of the bar shapes (themes spec § 6 "Painter"), at scales 1 and 2.
+//! Pixel tests of the bar shapes, at scales 1 and 2.
 //! Each test paints a 12-column bar with hand-made groups through `Fonts::paint_bar` into a buffer
 //! pre-filled with 0x11, so an unpainted pixel shows. Pixels are read back as (r, g, b, a),
 //! premultiplied as stored.
@@ -72,7 +72,7 @@ impl Painted {
     }
 }
 
-/// Spec § 3, islands: the bar transparent around and between the blocks (the wallpaper shows),
+/// The bar transparent around and between the blocks (the wallpaper shows),
 /// each block opaque `pill_bg`.
 #[test]
 fn islands_gaps_are_transparent_and_blocks_pill_bg() {
@@ -93,7 +93,7 @@ fn islands_gaps_are_transparent_and_blocks_pill_bg() {
     }
 }
 
-/// Spec § 3, islands:
+/// Islands:
 /// - each block inset 2 logical px from the bar's top and bottom, the bands transparent;
 /// - rounded corners: the very corner pixel transparent, an anti-aliased arc, the inside opaque;
 /// - radius min(22 / 2 − 2, 8) = 8 logical px: the straight left edge starts right below it;
@@ -230,7 +230,7 @@ fn no_glyph_pixel_is_erased_by_underline() {
     }
 }
 
-/// Spec § 3, translucent: the bar is `bar_bg` at `opacity`, premultiplied; the blocks stay solid,
+/// The bar is `bar_bg` at `opacity`, premultiplied; the blocks stay solid,
 /// inset, rounded and bordered as in islands.
 #[test]
 fn translucent_bar_is_bar_bg_at_opacity_premultiplied_and_blocks_opaque() {
@@ -255,7 +255,7 @@ fn translucent_bar_is_bar_bg_at_opacity_premultiplied_and_blocks_opaque() {
     assert_eq!(s.at(s.mid(5), s.h / 2), opaque(roles.bar_bg), "opacity 1.0: an opaque bar");
 }
 
-/// Spec § 1, pills:
+/// Pills:
 /// - a hued block is filled with its hue, its text in the higher-contrast of bar_bg and fg;
 /// - states win;
 /// - a block without a hue stays pill_bg.
@@ -321,7 +321,7 @@ fn light_themes_keep_the_block_border_and_pick_the_pills_text_against_the_block(
     }
 }
 
-/// Spec § 1: under flat and underline, pills paints nothing a pill would; the layout gives it
+/// Under flat and underline, pills paints nothing a pill would; the layout gives it
 /// `full`'s look, so the painter output equals `full`'s.
 #[test]
 fn pills_paint_nothing_extra_under_flat_and_underline() {
@@ -363,7 +363,7 @@ fn a_glyph_over_a_transparent_pixel_stays_premultiplied() {
     }
 }
 
-/// Spec § 5: a zero-width block draws nothing, a block past the bar's end is clipped, and neither
+/// A zero-width block draws nothing, a block past the bar's end is clipped, and neither
 /// panics nor wraps its corners onto the next row.
 #[test]
 fn degenerate_blocks_draw_nothing_and_never_wrap() {
@@ -403,7 +403,7 @@ fn split_grid(split: u16) -> Grid {
     g
 }
 
-/// Spec § 3, powerline (amended 2026-10-08): full-height blocks on an opaque bar, alternating
+/// Powerline: full-height blocks on an opaque bar, alternating
 /// `pill_bg` and `raised` from the workspaces, which are on `pill_bg`.
 #[test]
 fn powerline_blocks_are_full_height_on_an_opaque_bar() {
@@ -425,7 +425,7 @@ fn powerline_blocks_are_full_height_on_an_opaque_bar() {
     }
 }
 
-/// Spec § 3, powerline arrows:
+/// Powerline arrows:
 /// - one cell wide, in the colour of the block they come from;
 /// - the base against the block, the tip partly covered, symmetric about the axis;
 /// - an anti-aliased edge;
@@ -504,7 +504,7 @@ fn powerline_a_shared_free_cell_holds_the_left_blocks_arrow_only() {
     }
 }
 
-/// Spec § 1 and § 3: under pills a hued block and its arrow take the hue, its text the picked ink,
+/// Under pills a hued block and its arrow take the hue, its text the picked ink,
 /// and a state still wins.
 #[test]
 fn powerline_pills_blocks_and_arrows_take_the_hue() {
@@ -527,7 +527,7 @@ fn powerline_pills_blocks_and_arrows_take_the_hue() {
     }
 }
 
-/// Spec § 1 under powerline: pills text reads on its block for every hue, in a dark and a light
+/// Under powerline, pills text reads on its block for every hue, in a dark and a light
 /// theme. The glyph is painted in the higher-contrast of bar_bg and fg against the block's own
 /// fill, never against flat's bar_bg (which would hide it on a hue close to the bar).
 #[test]
@@ -637,7 +637,7 @@ use crate::placement::FLOAT_SHADOW;
 /// A floating bar's surface: the default bar plus its shadow, logical px.
 const FLOATING: u32 = DEFAULT_HEIGHT + FLOAT_SHADOW;
 
-/// Spec § 3, floating:
+/// Floating:
 /// - one rounded rectangle on bar_bg, radius 10 px, the corners transparent;
 /// - no blocks without pills.
 #[test]
@@ -664,7 +664,7 @@ fn floating_bar_is_one_rounded_rectangle_on_bar_bg() {
     }
 }
 
-/// Spec § 3: the shadow is 4 px below the bar, black, its alpha falling from 0.35 to 0, and
+/// The shadow is 4 px below the bar, black, its alpha falling from 0.35 to 0, and
 /// absent under the rounded ends' outermost columns.
 #[test]
 fn floating_shadow_falls_from_0_35_to_0_below_the_bar() {
@@ -703,7 +703,7 @@ fn floating_text_and_cell_backgrounds_stay_in_the_bar_band() {
     }
 }
 
-/// Spec § 1: under floating, pills draws each hued block as a rounded hue rectangle inside the bar.
+/// Under floating, pills draws each hued block as a rounded hue rectangle inside the bar.
 #[test]
 fn floating_pills_blocks_are_rounded_hue_blocks_inside_the_bar() {
     let roles = Roles::default();
@@ -721,7 +721,7 @@ fn floating_pills_blocks_are_rounded_hue_blocks_inside_the_bar() {
     }
 }
 
-/// Spec § 1 under floating: pills text reads on its block for every hue, in a dark and a light
+/// Under floating, pills text reads on its block for every hue, in a dark and a light
 /// theme. The ink is chosen against the hue block floating paints, never against the bar.
 #[test]
 fn floating_pills_text_contrasts_with_its_block() {
@@ -900,7 +900,7 @@ fn raised_differs_from_pill_bg_in_every_theme() {
     }
 }
 
-/// Spec § 3, buffers: the opaque region a style claims (`opaque_rects`) is painted opaque. Every
+/// The opaque region a style claims (`opaque_rects`) is painted opaque. Every
 /// physical pixel of every claimed logical px has alpha 255, for each style, with and without
 /// pills, at scales 1 and 2: a compositor that skips blending there never shows a half-painted
 /// pixel.
@@ -936,7 +936,7 @@ fn every_claimed_opaque_px_is_painted_opaque() {
     }
 }
 
-/// Spec § 5, degenerate sizes: scale 3, a bar 1 logical px tall, and a floating surface shorter
+/// Degenerate sizes: scale 3, a bar 1 logical px tall, and a floating surface shorter
 /// than its shadow (no band left) paint without a panic, every pixel valid premultiplied ARGB
 /// (no channel above its alpha), for every style, with and without pills.
 #[test]

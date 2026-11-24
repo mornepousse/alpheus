@@ -386,8 +386,8 @@ pub(crate) struct Surface {
     /// Where this bar's layer surface is placed (margin, size, exclusive zone, input region): the
     /// style's `Placement` it was last given.
     pub(crate) placement: Placement,
-    /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile
-    /// (spec § 4), since a buffer of the old size would not match.
+    /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile,
+    /// since a buffer of the old size would not match.
     pub(crate) placing: bool,
     /// The surface height of the placement before the latest one: a configure of that height
     /// answers an earlier request, and keeps the hold (`still_placing`).
@@ -427,7 +427,7 @@ pub struct App {
     pub(crate) pointer: Option<ThemedPointer>,
     pub(crate) wheel: Wheel,
     pub bar: Bar,
-    /// The 16 colour roles every surface paints with (themes spec § 1).
+    /// The 16 colour roles every surface paints with (see docs/features/themes.md).
     pub(crate) roles: Roles,
     /// theme.toml's settings, the portal's word, the config watch and the mode file (appearance.rs).
     pub(crate) theme: crate::appearance::ThemeState,
@@ -459,7 +459,7 @@ pub struct App {
     /// The screens through the output management protocol (outputs/app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
-    /// The clipboard history (clipboard spec); None with `[clipboard] enabled` off (nothing bound) or
+    /// The clipboard history; None with `[clipboard] enabled` off (nothing bound) or
     /// without a data-control protocol.
     pub(crate) clipboard: Option<crate::clipboard::app::ClipboardApp>,
     /// The event loop's handle (startup.rs sets it): keyboard repeat, socket
@@ -516,7 +516,7 @@ pub struct App {
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
     pub(crate) hover: Hover,
     pub(crate) hover_timer: DeadlineTimer,
-    /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
+    /// The media popup's redraw tick: armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
     /// The notification bubbles' surface, expiry timer and close memory (notify/bubbles_surface.rs).
@@ -536,10 +536,10 @@ pub struct App {
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (`quick/app.rs`).
     pub(crate) quick: crate::quick::app::QuickApp,
-    /// The failed-units count's word to the D-Bus thread (diagnostics spec § 6); None without the
+    /// The failed-units count's word to the D-Bus thread; None without the
     /// `Units` domain.
     pub(crate) units_tap: Option<Arc<crate::sources::dbus::UnitsTap>>,
-    /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
+    /// The power menu's timer: armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
     /// The Tools menu's question timer and reader schedule (launcher/tools/app.rs); nothing armed or
@@ -550,7 +550,7 @@ pub struct App {
     /// The focus timer's model, lengths and deadline (timer/app.rs); the deadline is armed only
     /// while a timer runs.
     pub(crate) timer: crate::timer::app::TimerApp,
-    /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
+    /// The privacy indicators' off-delay: the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
     /// The camera devices' watch and scan state (privacy/camera_app.rs).
@@ -836,7 +836,7 @@ impl App {
         self.redraw_all();
     }
 
-    /// Re-places every bar for the bar's current `style` (themes spec § 4). Called after
+    /// Re-places every bar for the bar's current `style`. Called after
     /// a theme reload. A bar whose `Placement` changes (a switch to or from floating) gets
     /// its new margin, size, exclusive zone and input region, and paints again only on the
     /// compositor's configure (its size always changes, so that configure always comes). A no-op for
@@ -867,7 +867,7 @@ impl App {
         }
     }
 
-    /// A reload changed the bar's shape (shapes spec § 4).
+    /// A reload changed the bar's shape.
     /// - To or from `floating`, every bar is re-placed first (`apply_bar_placement`): margin,
     ///   size, exclusive zone, input region, an open popup on a moved bar closed; each moved bar
     ///   holds its paint until its configure (`Surface.placing`).
@@ -916,7 +916,7 @@ impl App {
         };
         fonts.paint_bar(&grid, roles, &bar_background(bar, &theme.settings, &grid), pixels, w, h, e);
         let surface = s.layer.wl_surface();
-        // The compositor skips blending what the style paints opaque (shapes spec § 3): told again only
+        // The compositor skips blending what the style paints opaque: told again only
         // when it changes (a new width, style or block layout).
         let geometry = BarGeometry { width: s.width, height: bar.config.height, advance: fonts.advance(e), scale: e };
         painter::opaque_rects(bar.style, grid.groups(), &geometry, opaque_scratch);
@@ -979,19 +979,18 @@ impl App {
                 target.is_some_and(|t| actions::timer_middle(t, b)),
             )
         };
-        // The bell's middle button: do-not-disturb flips inside the daemon (notifications spec § 4),
+        // The bell's middle button: do-not-disturb flips inside the daemon,
         // through the one path that persists it.
         if dnd {
             self.set_dnd(!self.dnd);
             return;
         }
-        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec § 2, and
-        // docs/decisions.md, "`done` is cleared by looking, and is never saved").
+        // The timer chip's middle button: pause or resume, or dismiss `done` (see docs/decisions.md, "`done` is cleared by looking, and is never saved").
         if timer {
             self.timer_middle_click();
             return;
         }
-        // The media module's middle button and wheel: D-Bus, never a command (spec § 1).
+        // The media module's middle button and wheel: D-Bus, never a command.
         if let Some(c) = media {
             self.mpris_do(move |m, out| m.control(out, c));
             return;
@@ -1334,7 +1333,7 @@ impl PointerHandler for App {
                 continue;
             }
             if self.osd_owns(&ev.surface) {
-                // Its input region is empty (OSD spec § 3): an event here is a bug, never the bar's.
+                // Its input region is empty: an event here is a bug, never the bar's.
                 log("osd: a pointer event reached the pill");
                 continue;
             }

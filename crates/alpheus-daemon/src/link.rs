@@ -1,5 +1,4 @@
-//! The bar's own session-bus connection, for when the tray module is off (media spec § 4, amended
-//! 2026-10-08).
+//! The bar's own session-bus connection, for when the tray module is off.
 //!
 //! It is ONE connection. It hosts the portal's follower (`mode = "auto"`), the media module and the
 //! notifications server, in any combination. Whichever needs it first opens it, and the others join:

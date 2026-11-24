@@ -23,7 +23,8 @@ use std::str::Chars;
 use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
 
-/// A colour role (themes spec § 1), resolved per surface when painting (`painter::color`).
+/// A colour role, resolved per surface when painting (`painter::color`); see
+/// docs/decisions.md ("The theme has 16 colour roles and 7 hues, and the frame colour is derived").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tint {
     /// The surface's own background: `bar_bg` on a bar, `popup_bg` on a popup or the launcher.
@@ -40,7 +41,7 @@ pub enum Tint {
     Warn,
     Error,
     Urgent,
-    /// One of the theme's seven hues (themes spec § 9), for a module's icon or text.
+    /// One of the theme's seven hues, for a module's icon or text.
     Hue(Hue),
 }
 
@@ -67,9 +68,9 @@ impl Style {
     pub const NORMAL: Style = Style { fg: Tint::Fg, bg: Tint::Bg, bold: false };
     /// Secondary text, inactive items.
     pub const MUTED: Style = Style { fg: Tint::FgDim, bg: Tint::Bg, bold: false };
-    /// The active item (spec § 4): the focused workspace, today, the launcher's mode and cursor.
+    /// The active item: the focused workspace, today, the launcher's mode and cursor.
     pub const ACTIVE: Style = Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false };
-    /// The selected row of a menu or of the launcher (spec § 4).
+    /// The selected row of a menu or of the launcher.
     pub const SELECTED: Style = Style { fg: Tint::Fg, bg: Tint::Selection, bold: false };
     pub const SURFACE: Style = Style { fg: Tint::Fg, bg: Tint::Pill, bold: false };
     pub const ERROR: Style = Style { fg: Tint::Error, bg: Tint::Bg, bold: false };
@@ -82,7 +83,7 @@ impl Style {
     pub const ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: false };
     /// The second accent: checks and radios in menus.
     pub const ACCENT2: Style = Style { fg: Tint::Accent2, bg: Tint::Bg, bold: false };
-    /// Bold text in the foreground colour: a notification's summary (notifications spec § 3).
+    /// Bold text in the foreground colour: a notification's summary.
     pub const BOLD: Style = Style { fg: Tint::Fg, bg: Tint::Bg, bold: true };
 
     /// A module's icon or text in one of the theme's hues, on the surface's background.
@@ -149,7 +150,7 @@ pub struct Zone {
     pub target: Target,
 }
 
-/// A block of the bar (shapes spec § 2): the modules one style draws as one shape.
+/// A block of the bar: the modules one style draws as one shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupKind {
     Workspaces,
@@ -161,17 +162,17 @@ pub enum GroupKind {
     Tray,
     Clock,
     Launcher,
-    /// The media module: a block of its own (media spec § 1).
+    /// The media module: a block of its own.
     Media,
-    /// The privacy indicators: a block of its own (privacy spec § 1).
+    /// The privacy indicators: a block of its own.
     Privacy,
-    /// The Shield glyph: a block of its own (shield spec § 4).
+    /// The Shield glyph: a block of its own.
     Shield,
-    /// The failed-units count: a block of its own (diagnostics spec § 6).
+    /// The failed-units count: a block of its own.
     Failed,
-    /// The power button: a block of its own (power spec § 1).
+    /// The power button: a block of its own.
     Power,
-    /// The focus timer's chip: a block of its own (timer spec § 2).
+    /// The focus timer's chip: a block of its own.
     Timer,
 }
 
@@ -464,8 +465,8 @@ mod tests {
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), all.len(), "two styles share a letter");
-        assert_eq!(Style::ACTIVE, Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false }, "spec § 4: the active workspace");
-        assert_eq!(Style::SELECTED, Style { fg: Tint::Fg, bg: Tint::Selection, bold: false }, "spec § 4: the selection row");
+        assert_eq!(Style::ACTIVE, Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false }, "the active workspace");
+        assert_eq!(Style::SELECTED, Style { fg: Tint::Fg, bg: Tint::Selection, bold: false }, "the selection row");
     }
 
     #[test]

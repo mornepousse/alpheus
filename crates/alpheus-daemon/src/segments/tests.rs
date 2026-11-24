@@ -235,7 +235,7 @@ fn bar_styles(b: &mut Bar, mc: ModuleColors, glyphs: &str) -> String {
     text.chars().enumerate().filter(|(_, c)| glyphs.contains(*c)).map(|(i, _)| styles[i]).collect()
 }
 
-/// Privacy spec § 1: each active glyph in its fixed hue, whatever `module_colors` says.
+/// Each active glyph in its fixed hue, whatever `module_colors` says.
 #[test]
 fn the_privacy_segment_shows_each_active_glyph_in_its_hue() {
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
@@ -273,7 +273,7 @@ fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
     assert!(privacy(&shown(false, false, false)).is_none());
 }
 
-/// Diagnostics spec § 6: `󰀦 N` in the error role whatever `module_colors` says; nothing at 0 or
+/// `󰀦 N` in the error role whatever `module_colors` says; nothing at 0 or
 /// when neither manager's count is known.
 #[test]
 fn failed_two() {
@@ -490,8 +490,7 @@ fn peripherals_after_the_battery_hidden_without_anything_to_show() {
 
 #[test]
 fn peripherals_visibility_always_low_never() {
-    // `[battery] peripherals` on a real-percentage peripheral (spec,
-    // 2026-10-05): "always" (default) shows it whatever the level,
+    // `[battery] peripherals` on a real-percentage peripheral: "always" (default) shows it whatever the level,
     // "low" only below 20 %, "never" hides it outright.
     let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
     let s = |percent| Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(percent)] });
@@ -512,8 +511,7 @@ fn peripherals_visibility_always_low_never() {
 
 #[test]
 fn coarse_visibility_always_low_never() {
-    // `[battery] coarse` on a peripheral with only a coarse `BatteryLevel`
-    // (spec, 2026-10-05): "always" shows the bare icon whatever the
+    // `[battery] coarse` on a peripheral with only a coarse `BatteryLevel` ("always" shows the bare icon whatever the
     // level (warn tint only when low), "low" (default) only when Low or
     // Critical, "never" hides it outright.
     let device = |low| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low };
@@ -585,7 +583,7 @@ fn full_bar() -> Bar {
     b
 }
 
-// ---- module colours (themes spec § 9) ----
+// ---- module colours ----
 
 const ICONS: ModuleColors = ModuleColors::Icons;
 const FULL: ModuleColors = ModuleColors::Full;
@@ -894,7 +892,7 @@ fn a_full_bar_with_a_tray_on_the_hdmi_screen() {
     insta::assert_snapshot!("full_tray_160", snapshot(&g));
 }
 
-/// Spec § 4: low battery is warn, critical (below CRITICAL, 10 %) is error — the laptop, a
+/// Low battery is warn, critical (below CRITICAL, 10 %) is error — the laptop, a
 /// peripheral with a percentage, a Bluetooth device alike. Charging still wins.
 #[test]
 fn battery_low_is_warn_and_critical_is_error() {
@@ -993,7 +991,7 @@ fn chip(glyph: char, text: Option<&str>, look: ChipLook) -> TimerChip {
     TimerChip { glyph, text: text.map(str::to_string), look }
 }
 
-/// Timer spec § 2: a running chip in the yellow (icon, then text under `full`), a paused one dim,
+/// A running chip in the yellow (icon, then text under `full`), a paused one dim,
 /// `done` in warn, the idle glyph dim, nothing without a chip.
 #[test]
 fn the_timer_chip_by_look() {
@@ -1024,7 +1022,7 @@ fn the_timer_chip_by_look() {
     }
 }
 
-/// Shield spec § 4: the glyph only while on, always green whatever `module_colors` says.
+/// The glyph only while on, always green whatever `module_colors` says.
 #[test]
 fn the_shield_glyph_shows_only_while_on() {
     for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {

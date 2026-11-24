@@ -181,7 +181,7 @@ fn launcher_button_on_every_output_and_dropped_last() {
     assert!(!b.grid("HDMI-A-1", 60).text().contains(segments::LAUNCHER), "removed from bar.toml: gone");
 }
 
-/// Power spec § 1: the power button is its own block with no hue, the last module removed, and
+/// The power button is its own block with no hue, the last module removed, and
 /// absent when `[quick]`'s four session commands are all empty.
 #[test]
 fn the_power_button_is_its_own_block_with_no_hue_removed_last_and_hidden_without_commands() {
@@ -383,7 +383,7 @@ fn narrow_screen_keeps_the_gap_at_the_window_slot_as_modules_are_removed() {
     );
 }
 
-// ---- groups and per-style spacing (shapes spec § 2) ----
+// ---- groups and per-style spacing ----
 
 const BLOCK_STYLES: [BarStyle; 4] = [BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Translucent];
 
@@ -556,7 +556,7 @@ fn blocks_sit_on_one_side_of_the_split_even_with_a_truncated_title() {
     }
 }
 
-// ---- the privacy module (privacy spec § 1) ----
+// ---- the privacy module ----
 
 fn with_mic(mut b: Bar) -> Bar {
     let held = Indicator { names: vec!["firefox".into()], unnamed: false };
@@ -574,7 +574,7 @@ fn privacy_is_its_own_block_with_no_hue_removed_just_before_power() {
     assert_eq!(REMOVAL[REMOVAL.len() - 2..], [ModuleId::Privacy, ModuleId::Power]);
 }
 
-/// Shield spec § 4: its own block, always green, dropped on a narrow bar just before privacy.
+/// Its own block, always green, dropped on a narrow bar just before privacy.
 #[test]
 fn shield_is_its_own_block_dropped_just_before_privacy() {
     assert_eq!(ModuleId::Shield.spec().group, GroupKind::Shield);
@@ -624,7 +624,7 @@ fn privacy_stays_on_a_narrow_bar_while_the_title_goes() {
     assert!(seen_without_title, "a width where the title is gone and privacy stays");
 }
 
-/// Diagnostics spec § 6: the failed count has a block of its own and leaves after the timer, before
+/// The failed count has a block of its own and leaves after the timer, before
 /// the Shield glyph and the privacy indicators.
 #[test]
 fn failed_is_its_own_block_removed_after_the_timer_and_before_shield() {
@@ -634,7 +634,7 @@ fn failed_is_its_own_block_removed_after_the_timer_and_before_shield() {
     assert_eq!(at(ModuleId::Failed) + 1, at(ModuleId::Shield));
 }
 
-// ---- the media module (media spec § 1) ----
+// ---- the media module ----
 
 /// The media module between the title and the volume (its place in `ModuleId::ALL`).
 fn bar_with_media(playing: bool) -> Bar {
@@ -712,7 +712,7 @@ fn media_leaves_after_the_tray_and_before_the_title() {
     }
 }
 
-// ---- the bell (notifications spec § 4) ----
+// ---- the bell ----
 
 const THREE: NotifyView = NotifyView { unread: 3, dnd: false, serving: true };
 
@@ -801,7 +801,7 @@ fn no_block_holds_only_blanks_at_any_width() {
     }
 }
 
-/// The OSD is a module without a segment (OSD spec § 4): the bar is exactly the same without it.
+/// The OSD is a module without a segment: the bar is exactly the same without it.
 #[test]
 fn the_osd_module_draws_nothing_in_the_bar() {
     let mut with = bar();
@@ -822,7 +822,7 @@ fn the_osd_module_draws_nothing_in_the_bar() {
     }
 }
 
-/// The quick panel is a popup of its own (quick spec § 1): its module draws nothing in the bar.
+/// The quick panel is a popup of its own: its module draws nothing in the bar.
 #[test]
 fn the_quick_module_draws_nothing_in_the_bar() {
     let mut with = bar();
@@ -839,7 +839,7 @@ fn the_quick_module_draws_nothing_in_the_bar() {
     assert_eq!(ModuleId::Quick.spec().hue, None);
 }
 
-/// Displays spec § 1: the module reads and changes the screens; it draws nothing in the bar, has
+/// The module reads and changes the screens; it draws nothing in the bar, has
 /// no popup, no hue, no tab, and starts no source.
 #[test]
 fn the_displays_row_draws_nothing() {
@@ -874,7 +874,7 @@ fn flat_and_underline_separate_with_a_dim_dot() {
     assert!(!t.contains("  \u{b7}  "), "no separator under islands: {t}");
 }
 
-// ---- the timer chip (timer spec § 2) ----
+// ---- the timer chip ----
 
 fn with_timer(mut b: Bar) -> Bar {
     let chip = crate::timer::TimerChip { glyph: crate::timer::TIMER, text: Some("25m".into()), look: crate::timer::ChipLook::Running };

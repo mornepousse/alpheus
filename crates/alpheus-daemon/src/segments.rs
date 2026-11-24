@@ -52,24 +52,24 @@ pub const BLUETOOTH: char = '\u{f00af}'; // md-bluetooth
 pub const BLUETOOTH_CONNECTED: char = '\u{f00b1}'; // md-bluetooth_connect
 /// The launcher's button, left of the workspaces.
 pub const LAUNCHER: char = '\u{f0349}'; // md-magnify
-/// The media module (media spec § 1, § 2): the bar's mark, the popup's buttons.
+/// The media module: the bar's mark, the popup's buttons.
 pub const PLAY: char = '\u{f040a}'; // md-play
 pub const PAUSE: char = '\u{f03e4}'; // md-pause
 pub const SKIP_PREVIOUS: char = '\u{f04ae}'; // md-skip_previous
 pub const SKIP_NEXT: char = '\u{f04ad}'; // md-skip_next
-/// The Shield module's glyph (shield spec § 4): on while the mode is on, nothing drawn off.
+/// The Shield module's glyph: on while the mode is on, nothing drawn off.
 pub const SHIELD: char = '\u{f0498}'; // md-shield
-/// The notifications bell (notifications spec § 4), checked in the 3.4.0 post table.
+/// The notifications bell, checked in the 3.4.0 post table.
 pub const BELL: char = '\u{f009a}'; // md-bell
 pub const BELL_OFF: char = '\u{f009b}'; // md-bell_off (crossed)
-/// The failed-units count (diagnostics spec § 6).
+/// The failed-units count.
 pub const FAILED: char = '\u{f0026}'; // md-alert
 /// The most unread notifications the bell counts; beyond, "99+".
 pub const UNREAD_MAX: u16 = 99;
 
 /// Below this, a battery is low (warn tint).
 pub const LOW: u8 = 20;
-/// Below this a battery is critical (themes spec § 4: error), below LOW only low (warn).
+/// Below this a battery is critical (error), below LOW only low (warn).
 pub const CRITICAL: u8 = 10;
 
 /// A battery's state tint by its charge: error when critical, warn when low, None otherwise.
@@ -90,7 +90,7 @@ fn charge_style(percent: u8, normal: Style) -> Style {
 /// Longest Bluetooth device name, in cells (then "…").
 pub const DEVICE_MAX: u16 = 16;
 
-/// A module's icon: its fixed hue (themes spec § 9) when `module_colors` is `icons` or `full`,
+/// A module's icon: its fixed hue when `module_colors` is `icons` or `full`,
 /// `base` otherwise. Only for a module in its normal state: warn, error and the dimmed states
 /// never go through here.
 pub(crate) fn icon_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
@@ -99,7 +99,7 @@ pub(crate) fn icon_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
 
 /// A module's text: its hue only under `module_colors = "full"` or `"pills"`, `base` otherwise. The
 /// grid of `pills` is the grid of `full`: the block styles' painter puts the hue behind the text and
-/// picks the text's colour by contrast (shapes spec § 1); `flat` and `underline` show it as `full`.
+/// picks the text's colour by contrast; `flat` and `underline` show it as `full`.
 pub(crate) fn text_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
     if matches!(mc, ModuleColors::Full | ModuleColors::Pills) { Style::hue(hue) } else { base }
 }
@@ -108,7 +108,7 @@ fn module_segment(module: ModuleId, pieces: Vec<Piece>) -> Segment {
     Segment { module, pieces, elastic: false, target: Some(Target::Module(module)), withhold_hue: false }
 }
 
-/// A source that is down: its icon then "–", dimmed (spec § 3).
+/// A source that is down: its icon then "–", dimmed.
 fn down(module: ModuleId, icon: char) -> Segment {
     module_segment(module, vec![piece(format!("{icon} –"), Style::MUTED)])
 }
@@ -127,18 +127,18 @@ fn trim_name(name: &str) -> &str {
     name.trim_matches(|c: char| c.is_whitespace() || c.is_control() || is_zero_width(c))
 }
 
-/// The launcher's button: always shown, one click zone (spec § 2).
+/// The launcher's button: always shown, one click zone.
 pub(crate) fn launcher() -> Segment {
     module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
 }
 
-/// The power button (power spec § 1): ⏻ alone, one click zone; none when `[quick]`'s lock, logout,
+/// The power button: ⏻ alone, one click zone; none when `[quick]`'s lock, logout,
 /// reboot and poweroff are all empty (its menu would have no entry).
 pub(crate) fn power(c: &QuickConfig) -> Option<Segment> {
     session::any_configured(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
 }
 
-/// The privacy indicators (privacy spec § 1): a glyph per held device, joined by one space, each in
+/// The privacy indicators: a glyph per held device, joined by one space, each in
 /// its own hue (orange, green, red) whatever `module_colors` says; the microphone dim while the
 /// default source is muted. None when nothing is shown. One click zone, no block hue.
 pub(crate) fn privacy(p: &Privacy) -> Option<Segment> {
@@ -163,14 +163,14 @@ pub(crate) fn privacy(p: &Privacy) -> Option<Segment> {
     Some(segment)
 }
 
-/// The failed units (diagnostics spec § 6): `󰀦 N` in the error role, whatever `module_colors` says,
+/// The failed units: `󰀦 N` in the error role, whatever `module_colors` says,
 /// one click zone, no block hue. None at 0 and while neither manager's count is known.
 pub(crate) fn failed(f: &Failed) -> Option<Segment> {
     let n = crate::failed::total(f).filter(|n| *n > 0)?;
     Some(module_segment(ModuleId::Failed, vec![piece(format!("{FAILED} {n}"), Style::ERROR)]))
 }
 
-/// The Shield glyph (shield spec § 4): only while the mode is on, always green (the one fixed hue
+/// The Shield glyph: only while the mode is on, always green (the one fixed hue
 /// of its block, whatever `module_colors` says), a mode that must not be forgotten. One click zone.
 pub(crate) fn shield(state: Option<bool>) -> Option<Segment> {
     (state == Some(true)).then(|| {
@@ -180,7 +180,7 @@ pub(crate) fn shield(state: Option<bool>) -> Option<Segment> {
     })
 }
 
-/// The timer's chip (timer spec § 2): the glyph then the text, in the yellow (the glyph under
+/// The timer's chip: the glyph then the text, in the yellow (the glyph under
 /// `icons`, both under `full`) while it runs; dim while paused or at rest; `done` in warn. One click
 /// zone. None without a chip.
 pub(crate) fn timer(chip: Option<&TimerChip>, mc: ModuleColors) -> Option<Segment> {
@@ -342,7 +342,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
 }
 
 /// Whether a peripheral is shown under `visibility`, given whether it
-/// counts as low (spec `[battery]`, 2026-10-05).
+/// counts as low.
 fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     match visibility {
         BatteryVisibility::Always => true,
@@ -482,7 +482,7 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
     Some(module_segment(ModuleId::Resources, pieces))
 }
 
-/// The media module (media spec § 1): `▶ Title` while playing, in the purple as `module_colors`
+/// The media module: `▶ Title` while playing, in the purple as `module_colors`
 /// says; `⏸ Title` while paused, dimmed whatever it says (a state wins over the hue); None without
 /// a player playing or paused. The whole segment is one click zone.
 pub(crate) fn media(view: Option<&MediaView>, mc: ModuleColors) -> Option<Segment> {
@@ -502,7 +502,7 @@ pub(crate) fn media(view: Option<&MediaView>, mc: ModuleColors) -> Option<Segmen
     Some(segment)
 }
 
-/// The bell (notifications spec § 4, amended): `󰂚`, then ` N` in the accent with N unread; the
+/// The bell: `󰂚`, then ` N` in the accent with N unread; the
 /// crossed `󰂛` under do-not-disturb; all dimmed under do-not-disturb or while another server holds
 /// the name. Never a hue, whatever `module_colors` says. None before the server has said anything.
 /// The whole segment is one click zone.
@@ -524,7 +524,7 @@ pub(crate) fn notifications(view: Option<&NotifyView>) -> Option<Segment> {
     Some(module_segment(ModuleId::Notifications, pieces))
 }
 
-/// One tray icon (spec § 1 Icons): a glyph NORMAL, a letter BOLD_ACCENT (the
+/// One tray icon: a glyph NORMAL, a letter BOLD_ACCENT (the
 /// clock's style: "bold accent colour, no background"); NeedsAttention ERROR
 /// whatever it is; Passive MUTED (`dim`), as Active (`show`) or not drawn
 /// (`hide`). Its own zone: the gestures go to that item.

@@ -22,13 +22,13 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-/// Do-not-disturb's file under the state directory (notifications spec § 5): any file means on to
+/// Do-not-disturb's file under the state directory: any file means on to
 /// other readers (a session script reading the state); its text says whether it ends
 /// (`until <unix>`) or came from a screen share (`sharing`). See docs/decisions.md, "The
 /// do-not-disturb file holds one of three forms".
 pub const DND_FILE: &str = "dnd";
 
-/// The focus timer's file: one line of the timer spec § 6, removed while the timer is idle.
+/// The focus timer's file: one line, removed while the timer is idle.
 pub const TIMER_FILE: &str = "timer";
 
 fn euid() -> u32 {
@@ -324,7 +324,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // ---- do-not-disturb (notifications spec § 5) ----
+    // ---- do-not-disturb ----
 
     #[test]
     fn do_not_disturb_is_an_empty_file_saved_and_removed() {
