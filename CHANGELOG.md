@@ -46,6 +46,9 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Changed
 
+- **cosmic-text 0.19** (24): the bar's text library moves from 0.12 to 0.19, so the
+  `rustybuzz` "unmaintained" advisory leaves the tree (`ttf-parser`'s stays, through `fontdb`); the
+  daemon starts about 0.6 MB lighter and its binary grows by 280 KiB. [Measurements](docs/measurements.md).
 - **Failed units, instant icon** (24): `[failed] subscribe` now defaults to `true`, so a failed unit
   shows at once; the cost lands on systemd and dbus-daemon, a signal per unit change. Set it to
   `false` to read the count on triggers only. [Page](docs/features/failed.md).
