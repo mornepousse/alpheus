@@ -112,9 +112,9 @@ Measured in release, back to back with the version before it (the full table is 
   PSS over three pairings; the default bar's anonymous memory +12…+72 KB); the stripped daemon grew
   by 44 KiB.
 - **Module on, both managers at 0** (`failed_module_pss_at_start`): +28…+36 KB of anonymous memory
-  with the default `subscribe = false`, +12…+16 KB with `true`.
-- **A count shown, then 20 more changes** (`failed_module_shown_pss`): with `subscribe = true`,
-  `Pss_Anon` +20…+24 KB shown and +32 KB after 20 changes; with the default, 0…+28 KB (bound
-  64 KB).
+  with `subscribe = false`, +12…+16 KB with `true` (the default); a later run read +32 KB with either.
+- **A count shown, then 20 more changes** (`failed_module_shown_pss`): with `subscribe = true`
+  (the default), `Pss_Anon` +20…+24 KB shown and +32 KB after 20 changes; with `false`, 0…+28 KB
+  (bound 64 KB).
 - **Wake-ups:** none at rest, with `subscribe` true or false, and none after a read added to
   another domain's wake-up (`at_rest_no_wakeups_with_failed_units`, `piggyback_costs_no_wakeup`).
