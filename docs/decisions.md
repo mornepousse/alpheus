@@ -1718,9 +1718,13 @@ A cancelled selection is silent and leaves the clipboard as it was; a capture th
 critical notice and leaves it too; the success notice follows a capture that happened. The clipboard is
 only reached by the worker with PNG bytes in hand, and a copy command that cannot start is a failure,
 not a success. A custom `copy` command must accept a PNG on its standard input: the default `wl-copy`
-alone is told `--type image/png`.
+alone is told `--type image/png`. The external tools keep the rule: alpheus copies what an
+annotation tool wrote back or the text a recognizer printed, only after the tool exited 0 with a
+result; the default satty flags turn its own copy into a save (`--copy-command true
+--save-after-copy --early-exit`, checked against satty 0.20.1), so it never reaches the clipboard by
+itself.
 
-Date: 2026-11-24 · Source: tests `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one` (`captures/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
+Date: 2026-11-24, tools 2026-11-25 · Source: tests `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one`, `a_tool_closed_without_output_is_silent_and_a_failed_one_is_critical` (`captures/tests.rs`), `a_tool_failure_is_critical_and_never_copies`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel` (`captures/tools/tests.rs`), `captures_default_to_the_external_tools_and_no_folder` (`config/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
 
 ### A capture waits for the selector's removal
 
@@ -1771,6 +1775,53 @@ surface away, or no buffer to open it, is a critical failure; the clipboard is t
 
 Date: 2026-11-24 · Source: tests `a_pick_settles_grabs_the_screen_then_opens_the_picker`, `a_picker_that_fails_ends_the_pick_as_a_critical_failure` (`captures/tests.rs`), `esc_picks_nothing_and_copies_nothing`, `the_value_is_uppercase_hex_by_default`, `pick_format_fills_r_g_b_hex` (`captures/pick/tests.rs`), `a_picked_value_reaches_the_copy_command_as_text`, `a_picked_value_the_copy_command_refuses_is_a_copy_failure` (`captures/deliver/tests.rs`), `the_picker_frame_is_kept_only_while_the_picker_is_open`, `a_picker_that_cannot_open_fails_its_capture` (`tests/guardrails.rs`), `colour_picker_copies_the_pixel_under_the_pointer` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_colour_pick` (`tests/memory.rs`)
 
+### Only screencopy.rs names the capture protocol
+
+`zwlr_screencopy_manager_v1` is named in one file, `captures/screencopy.rs`, which captures one
+output into its own short-lived shm pool and answers ready or failed; everything else of the
+captures sees a `Frame`. The external recorder speaks the protocol itself, in its own process: alpheus
+never records through it. A later move to `ext-image-copy-capture` then touches one file.
+
+Date: 2026-11-25 · Source: test `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)
+
+### An external capture tool runs as a watched child of the daemon
+
+An annotation editor stays open as long as the user works in it, so it cannot run on the
+`alpheus-capture` worker, whose waits are bounded in seconds. The daemon starts the tool as its own
+child (`Executor::spawn_watched`: its own process group, standard input `/dev/null`, SIGINT if the
+daemon dies) and puts the child's pidfd on the event loop: the descriptor turns readable only when the
+process ends, so nothing polls, no thread waits and no timer is armed while it runs, and the watch is
+removed with the end. The image is a private `capture-<n>.png` in `$XDG_RUNTIME_DIR/alpheus` (owner
+only); the tool's output is a private file made by alpheus before the tool starts (`capture-<n>-out.png`
+for the editor to write into, `capture-<n>.txt` as the recognizer's standard output), so it stays
+owner-only whatever the tool's umask; `{file}` and `{out}` are whole arguments, never inside a longer
+one (`[captures]` is refused otherwise). Exit 0 with an image or a text is the result, exit 0 with
+nothing is a silent cancel, anything else (another code, a signal, a tool that cannot start, more
+than 256 KiB of text) is a critical failure. Every file goes on every path, and a start clears what a
+killed daemon left. One capture at a time includes the tool's run: a screenshot asked while the
+editor is open is ignored, as during any capture. A kernel without pidfds (before Linux 5.3) cannot
+run the tools: the child is killed at once and the capture fails.
+
+Date: 2026-11-25 · Source: tests `a_watched_program_signals_its_end_on_its_descriptor_and_gives_its_code`, `a_watched_program_writes_its_output_to_the_file_given`, `a_watched_program_is_interrupted_when_its_thread_ends` (`alpheus-common/src/exec/tests.rs`), `annotate_passes_whole_file_and_out_and_copies_the_result`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel`, `a_tool_failure_is_critical_and_never_copies`, `temp_files_are_0600_and_removed` (`captures/tools/tests.rs`), `an_annotation_runs_the_tool_then_copies_what_it_wrote` (`captures/tests.rs`), `the_tool_placeholders_are_whole_arguments_where_each_tool_needs_them` (`config/tests.rs`), the `Generic::new` entry of `nothing_resident_while_the_launcher_is_closed` and `a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it` (`tests/guardrails.rs`), `annotate_copies_what_the_tool_wrote`, `ocr_copies_the_text_the_tool_printed` (`tests/headless_session.rs`)
+
+### Recording is the external tool's, driven and stopped by alpheus
+
+alpheus encodes no video: `[captures] record` (wf-recorder by default) records, as a watched child
+of the daemon. alpheus chooses what and where: the whole focused output or a selected area, given as
+`{geometry}` (`x,y wxh` in the compositor's logical pixels, as slurp prints it; the whole output is
+its own geometry, since wf-recorder asks on its standard input which output to record when there are
+several and it has neither `-g` nor `-o`), and a free `screenrecord-%Y%m%d-%H%M%S.mp4` in
+`$XDG_VIDEOS_DIR` (else the videos entry of `user-dirs.dirs`, else `~/Videos`), never over a file.
+`--capture stop` or the Stop row sends SIGINT to the recorder's own process group, and to nothing
+else: no pattern, no other group, only the child alpheus is still the parent of. The recording ends
+when the recorder does: exit 0 with a non-empty file is "Recording saved" (the file's name in the
+notice, never in a log), anything else is critical. One recording at a time; captures may run while it
+records. The privacy module's screen glyph shows `alpheus` while it runs (a recorder that bypasses
+PipeWire is seen by no other source on Sway or Mango). At the daemon's shutdown the recorder gets
+SIGINT and at most 2 s to finish its file before it is killed, and the signal guard leaves that time;
+then the notice. Nothing is persisted: a recording is never adopted after a restart.
+
+Date: 2026-11-25 · Source: tests `record_spawns_with_the_geometry_and_stop_sends_sigint_to_it_only`, `the_daemon_stop_ends_the_recording_with_sigint`, `a_recording_never_writes_over_a_file`, `a_recording_that_fails_or_leaves_nothing_is_a_failure` (`captures/record/tests.rs`), `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`), `the_shutdown_grace_covers_the_recorders_stop_while_recording` (`startup/tests.rs`), `the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording` (`launcher/tools/catalog/tests.rs`), `interrupt_reaches_the_watched_program_only`, `an_interrupt_is_never_sent_to_a_reaped_pid` (`alpheus-common/src/exec/tests.rs`), `the_recording_signal_reaches_only_the_recorder_alpheus_started`, `the_shutdown_ends_the_recording_before_anything_goes` (`tests/guardrails.rs`), `record_then_stop_notifies_saved`, `recording_lights_the_privacy_screen_glyph_on_the_bar`, `a_recording_running_at_the_daemon_stop_is_finished` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_recording` (`tests/memory.rs`)
 
 ### Large blocks are always mapped on their own
 

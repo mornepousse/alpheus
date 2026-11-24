@@ -14,9 +14,11 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
   disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, the
-  captures (Screenshot, Area, Area (save)), Schedule shutdown, Kill a process, Lock, the Power menu, an
-  optional "Reload the bar", and the Diagnostics entries (network scan, USB events and reset, the
-  journal presets). The table has 45; the six captures not built yet stay hidden.
+  captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
+  picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
+  Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a
+  process, Lock, the Power menu, an optional "Reload the bar", and the Diagnostics entries (network
+  scan, USB events and reset, the journal presets). The table has 45.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
   with a confirmation, an on/off state, or choices.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.

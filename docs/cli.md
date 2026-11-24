@@ -50,7 +50,8 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
   `alpheus-launch` talks to.
 - **Signals.** SIGTERM, SIGHUP and SIGINT stop it: the loop ends normally
   (a waiting `--dmenu` gets "cancelled"), and if it does not finish within a
-  grace period (1 second) the process exits with 128 + the signal number.
+  grace period (1 second; 3 seconds while alpheus records, so the recorder gets SIGINT and up to
+  2 s to finish its file) the process exits with 128 + the signal number.
 - **Logs.** One line per event on standard error, prefixed `alpheus-demon:`
   (under systemd: `journalctl --user -u <your unit>`). Configuration
   warnings and the detected compositor are logged at start.
@@ -106,7 +107,9 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--shield on\|off\|toggle\|status\|allow` | drive [Shield mode](features/shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run |
 | `--capture full\|area\|area-save` | take a screenshot: `full` copies the focused output, `area` lets you drag an area (release or Enter confirms; Esc, a right click or a click without a drag cancels, silently) and copies it, `area-save` saves it as `%Y%m%d-%H%M%S.png` in `[captures] dir`. The copy goes through `launcher.toml`'s `copy` (PNG on its standard input; the default `wl-copy` is given `--type image/png`). One notice per capture; a failure is critical and leaves the clipboard untouched. A copy counts only when the copy command exits 0 within 5 s. A verb sent while a capture runs is ignored. Exit 2 when the compositor has no screencopy |
 | `--capture pick` | the colour picker: the focused output is frozen under a zoom lens; a left click or Enter copies the pixel's colour as text (`#RRGGBB`, or `[captures] pick_format`) through `launcher.toml`'s `copy`, run as written, and one notice gives the value; Esc or a right click cancels, silently. Exit 2 when the compositor has no screencopy |
-| `--capture annotate\|ocr\|record\|record-area\|stop` | not available yet: exit 2 with a fixed message (their Tools rows are hidden until they are built) |
+| `--capture annotate\|ocr` | drag an area (as `area`), then hand its PNG to `[captures] annotate` or `ocr`: alpheus copies the image the annotation tool wrote back, or the text the recognizer printed, through `launcher.toml`'s `copy`, and says so. A tool closed with nothing is a silent cancel; a tool that fails is critical; neither touches the clipboard. One capture at a time: while the tool is open, other captures are ignored. Exit 2 when the tool is `[]` or the compositor has no screencopy |
+| `--capture record\|record-area` | start `[captures] record` on the focused output, or on a dragged area, into `screenrecord-%Y%m%d-%H%M%S.mp4` in the videos folder; the privacy screen glyph shows while it records. One recording at a time (a second is ignored); screenshots may be taken meanwhile. Exit 2 when the tool is `[]` or the compositor has no screencopy |
+| `--capture stop` | end the recording: SIGINT to the recorder alpheus started, and once it finished its file a notice `Recording saved: <file name>` (a failure is critical). Exit 2 when nothing records |
 | `--capture select` | debug: run the area selector alone, nothing is captured; a second call cancels it |
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |

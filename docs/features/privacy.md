@@ -30,7 +30,12 @@ hears nothing. On a narrow bar the module is removed just before the power butto
   niri's screen casts are.
 - The compositors add to the screen: niri's cast events, and Hyprland's `screencast` events (a
   release counts only after a hold of 1 s, so a screenshot's blip never shows). Sway and Mango say
-  nothing, so a recorder that bypasses PipeWire (wf-recorder) is not seen there.
+  nothing, so a recorder that bypasses PipeWire (wf-recorder) is not seen there, unless alpheus
+  started it (next point).
+- alpheus's own recording (`alpheus-launch --capture record` or `record-area`, see
+  [captures.md](captures.md)) lights the screen while it runs, named `alpheus`: the recorder it starts
+  (wf-recorder) bypasses PipeWire, so on Sway and Mango nothing else would show it. It goes off one
+  delay after the recording ends, as any holder does; `[privacy] ignore` applies to the name.
 - A camera opened outside PipeWire (`/dev/video*` held by a process that does not go through
   PipeWire: most V4L2 programs, Chromium without its PipeWire camera flag) also lights the camera,
   and the popup names the process by its `comm`. A camera held by another user's process is not seen.
@@ -79,7 +84,8 @@ Five files in `crates/alpheus-daemon/src/privacy/`, and the graph in
 
 - `mod.rs`: the model, pure. `GraphNode` and `GraphLink` are the graph, `capture` turns it into a
   `Capture` (`Indicator`s for the microphone, camera and screen), and `Privacy` merges it with the
-  video devices and the compositor, applies the ignore list, the 0.5 s off-delay and the hold of a
+  video devices, the compositor and alpheus's own recording (`set_recording`, fed by
+  `captures/app.rs`), applies the ignore list, the 0.5 s off-delay and the hold of a
   compositor's release, and draws the popup (`render`). Time is passed in, never read.
 - `app.rs`: the wiring on `App`. `privacy_feed` reads each sound or compositor message before the bar
   keeps it; `privacy_changed` redraws the bar, follows the popup and syncs the timer;
@@ -125,6 +131,11 @@ repainted by each change and closed when nothing is left.
 - `the_privacy_timer_is_bar_level_and_fired_before_due`: the off-delay's timer is the bar's and not
   the popup's, it follows every change, and a message that changes nothing shown still syncs it.
 - `privacy_changed_follows_sharing_for_dnd`: do-not-disturb is told after the timer is synced.
+- `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`) and the headless
+  `recording_lights_the_privacy_screen_glyph_on_the_bar`: alpheus's own recording lights the screen,
+  named `alpheus`, and it goes one delay after the recording; the guardrail
+  `a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it` pins where the
+  captures turn it on and off.
 - The unit tests of `privacy/tests.rs` and the camera tests pin the rules and the scan, with fake
   `/proc` and `/dev` trees and a temporary directory for inotify; the headless tests (names starting
   `privacy_`) run the daemon against a fake `pw-dump` and fake trees. No privacy test reads the real
@@ -140,6 +151,9 @@ repainted by each change and closed when nothing is left.
   event loop", "The camera watch is a second inotify instance".
 
 ## What it costs
+
+The recording source is one boolean in `Privacy`: nothing is read, watched or armed for it, and
+nothing at all happens while alpheus does not record.
 
 Measured in release, back to back, 3 runs (the [memory tables](../measurements.md) have the figures and the method):
 
