@@ -15,6 +15,7 @@ const ME: u32 = 1000;
 struct Fake<'a> {
     pid: i32,
     comm: &'a str,
+    ppid: i32,
     uid: u32,
     ticks: u64,
     start: u64,
@@ -24,7 +25,7 @@ struct Fake<'a> {
 
 impl Fake<'_> {
     fn new(pid: i32, comm: &str) -> Fake<'_> {
-        Fake { pid, comm, uid: ME, ticks: 0, start: 500, pages: 100, cmdline: b"" }
+        Fake { pid, comm, ppid: 1, uid: ME, ticks: 0, start: 500, pages: 100, cmdline: b"" }
     }
 }
 
@@ -34,7 +35,8 @@ fn write(root: &Path, f: &Fake) {
     fs::create_dir_all(&dir).unwrap();
     // Fields 4 to 22 after the comm: parent, group, session, tty, tty group, flags, four fault
     // counts, utime, stime, two child times, priority, nice, threads, timer, start time.
-    let stat = format!("{} ({}) S 1 {} {} 0 -1 0 0 0 0 0 {} 0 0 0 20 0 1 0 {} 0 0\n", f.pid, f.comm, f.pid, f.pid, f.ticks, f.start);
+    let stat =
+        format!("{} ({}) S {} {} {} 0 -1 0 0 0 0 0 {} 0 0 0 20 0 1 0 {} 0 0\n", f.pid, f.comm, f.ppid, f.pid, f.pid, f.ticks, f.start);
     fs::write(dir.join("stat"), stat).unwrap();
     fs::write(dir.join("status"), format!("Name:\t{}\nUid:\t{}\t{}\t{}\t{}\n", f.comm, f.uid, f.uid, f.uid, f.uid)).unwrap();
     fs::write(dir.join("statm"), format!("1000 {} 10 1 0 5 0\n", f.pages)).unwrap();
@@ -212,21 +214,21 @@ impl Signaller for Recording {
 #[test]
 fn a_matching_start_time_sends_the_signal() {
     let fake = Recording::new(Some(500));
-    assert_eq!(send(&fake, 200, 500, Sig::Term), Ok(()));
+    assert_eq!(send(&fake, 200, 500, Sig::Term, &none()), Ok(()));
     assert_eq!(fake.sent.borrow().as_slice(), [(200, Sig::Term)]);
 }
 
 #[test]
 fn a_reused_pid_is_never_signalled() {
     let fake = Recording::new(Some(900));
-    assert_eq!(send(&fake, 200, 500, Sig::Kill), Err(SignalError::Reused));
+    assert_eq!(send(&fake, 200, 500, Sig::Kill, &none()), Err(SignalError::Reused));
     assert!(fake.sent.borrow().is_empty(), "nothing was sent to the new process");
 }
 
 #[test]
 fn a_pid_that_is_gone_is_never_signalled() {
     let fake = Recording::new(None);
-    assert_eq!(send(&fake, 200, 500, Sig::Term), Err(SignalError::Gone));
+    assert_eq!(send(&fake, 200, 500, Sig::Term, &none()), Err(SignalError::Gone));
     assert!(fake.sent.borrow().is_empty());
 }
 
@@ -235,16 +237,25 @@ fn a_pid_that_could_reach_a_group_or_init_is_refused() {
     // kill(0), kill(-1) and kill(-pid) signal groups, never one program: refused before anything.
     let fake = Recording::new(Some(500));
     for pid in [i32::MIN, -200, -1, 0, 1] {
-        assert_eq!(send(&fake, pid, 500, Sig::Kill), Err(SignalError::Other), "pid {pid}");
+        assert_eq!(send(&fake, pid, 500, Sig::Kill, &none()), Err(SignalError::Other), "pid {pid}");
     }
     assert!(fake.sent.borrow().is_empty());
+}
+
+#[test]
+fn an_excluded_pid_is_refused_even_when_asked_for() {
+    let fake = Recording::new(Some(500));
+    let excluded = Excluded { pids: vec![200], comms: Vec::new() };
+    assert_eq!(send(&fake, 200, 500, Sig::Kill, &excluded), Err(SignalError::Denied));
+    assert!(fake.sent.borrow().is_empty(), "nothing was sent to an excluded process");
+    assert_eq!(send(&fake, 201, 500, Sig::Kill, &excluded), Ok(()), "another pid is not affected");
 }
 
 #[test]
 fn the_signals_failure_is_passed_on() {
     let mut fake = Recording::new(Some(500));
     fake.result = Err(SignalError::Denied);
-    assert_eq!(send(&fake, 200, 500, Sig::Term), Err(SignalError::Denied));
+    assert_eq!(send(&fake, 200, 500, Sig::Term, &none()), Err(SignalError::Denied));
 }
 
 #[test]
@@ -262,4 +273,35 @@ fn search_matches_the_name_and_the_full_command_line() {
     assert_eq!(found(&mut ranker, "fire"), [Source::Proc(0)], "by name");
     assert_eq!(found(&mut ranker, "8080"), [Source::Proc(2)], "by the command line only");
     assert!(found(&mut ranker, "zzzz").is_empty());
+}
+
+#[test]
+fn a_process_name_is_cleaned_of_control_characters_like_the_command_line() {
+    let root = tree("proc-name-clean");
+    // prctl(PR_SET_NAME) can put an escape sequence or a newline in a name.
+    write(&root, &Fake::new(800, "bad\u{1b}[31mname\nline"));
+    let samples = snapshot(&root, ME, MAX_PROCESSES);
+    assert_eq!(samples[0].name, "bad[31mnameline");
+}
+
+#[test]
+fn the_ancestors_are_walked_up_to_init_whoever_owns_them() {
+    let root = tree("proc-ancestors");
+    // 10 (the maintainer's launcher script) <- 15 (another user's wrapper) <- 20 (the compositor).
+    write(&root, &Fake { ppid: 1, ..Fake::new(10, "bash") });
+    write(&root, &Fake { ppid: 10, uid: 0, ..Fake::new(15, "wrapper") });
+    write(&root, &Fake { ppid: 15, ..Fake::new(20, "mango") });
+    assert_eq!(ancestors(&root, 20), [15, 10]);
+    assert_eq!(ancestors(&root, 10), Vec::<i32>::new(), "init's child has none");
+    assert_eq!(ancestors(&root, 999), Vec::<i32>::new(), "an unknown pid has none");
+}
+
+#[test]
+fn the_ancestor_walk_ends_on_a_loop_or_a_missing_parent() {
+    let root = tree("proc-ancestors-loop");
+    write(&root, &Fake { ppid: 31, ..Fake::new(30, "a") });
+    write(&root, &Fake { ppid: 30, ..Fake::new(31, "b") });
+    assert_eq!(ancestors(&root, 30), [31]);
+    write(&root, &Fake { ppid: 77, ..Fake::new(40, "orphan") });
+    assert_eq!(ancestors(&root, 40), [77], "the missing parent is itself listed, the walk stops there");
 }

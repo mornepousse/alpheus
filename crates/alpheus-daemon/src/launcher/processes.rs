@@ -138,6 +138,7 @@ fn owner(status: &str) -> Option<u32> {
 /// What the list needs of a `stat` line.
 struct Stat {
     name: String,
+    ppid: i32,
     ticks: u64,
     start: u64,
 }
@@ -154,7 +155,10 @@ fn parse_stat(bytes: &[u8]) -> Option<Stat> {
     // `after[0]` is the state (field 3), so field `n` is `after[n - 3]`.
     let after: Vec<&str> = text[close + 1..].split_whitespace().collect();
     let field = |n: usize| -> Option<u64> { after.get(n - 3)?.parse().ok() };
-    Some(Stat { name: text[open + 1..close].to_string(), ticks: field(14)?.saturating_add(field(15)?), start: field(22)? })
+    // A name is cleaned like a command line: `prctl(PR_SET_NAME)` can put an escape or a newline in it.
+    let name = text[open + 1..close].chars().filter(|c| !c.is_control()).collect();
+    let ppid = i32::try_from(field(4)?).ok()?;
+    Some(Stat { name, ppid, ticks: field(14)?.saturating_add(field(15)?), start: field(22)? })
 }
 
 /// A command line: its arguments joined by spaces, at most `CMDLINE_MAX` bytes read, with the
@@ -237,17 +241,42 @@ pub trait Signaller {
     fn start_time(&self, pid: i32) -> Option<u64>;
 }
 
-/// Sends `sig` to `pid` only if it still started at `start`, the time it was listed with.
-pub fn send(signaller: &dyn Signaller, pid: i32, start: u64, sig: Sig) -> Result<(), SignalError> {
+/// Sends `sig` to `pid` only if it still started at `start`, the time it was listed with, and it is
+/// not one of `excluded` (the list never offers those, and a refusal here is the second line).
+pub fn send(signaller: &dyn Signaller, pid: i32, start: u64, sig: Sig, excluded: &Excluded) -> Result<(), SignalError> {
     // kill(2) with 0, -1 or a negative pid reaches a group or everything; 1 is init.
     if pid <= 1 {
         return Err(SignalError::Other);
+    }
+    if excluded.pids.contains(&pid) {
+        return Err(SignalError::Denied);
     }
     match signaller.start_time(pid) {
         None => Err(SignalError::Gone),
         Some(now) if now != start => Err(SignalError::Reused),
         Some(_) => signaller.signal(pid, sig),
     }
+}
+
+/// Most parents `ancestors` follows: far more than a session is deep.
+const ANCESTORS_MAX: usize = 64;
+
+/// The parents of `pid` under `root` (`/proc`), nearest first, up to init (not included): whoever
+/// owns them. The kill list never offers them: ending the compositor's launcher script, or the
+/// shell that started alpheus, may end the session. The walk ends on a loop, a parent whose `stat`
+/// cannot be read (that parent is still listed), or `ANCESTORS_MAX` steps.
+pub fn ancestors(root: &Path, pid: i32) -> Vec<i32> {
+    let mut found = Vec::new();
+    let mut at = pid;
+    for _ in 0..ANCESTORS_MAX {
+        let Some(stat) = fs::read(root.join(at.to_string()).join("stat")).ok().and_then(|b| parse_stat(&b)) else { break };
+        if stat.ppid <= 1 || stat.ppid == pid || found.contains(&stat.ppid) {
+            break;
+        }
+        found.push(stat.ppid);
+        at = stat.ppid;
+    }
+    found
 }
 
 /// The start time of `pid` under `root` (`/proc`), from `stat`; None when it is gone or odd.

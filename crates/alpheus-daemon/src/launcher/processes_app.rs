@@ -28,7 +28,7 @@ use crate::wayland::App;
 use alpheus_common::compositor::Compositor;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// How long after the list opens the second sample is read (it fills in the CPU).
@@ -83,13 +83,24 @@ fn compositor_comm(c: &Compositor) -> &'static str {
 
 /// What the list never offers: alpheus itself (`own`), the session leader (`leader`), the
 /// compositor by its socket's peer (`compositor`) and by its name (`compositor_name`, for when the
-/// socket did not tell), and the user's service manager, whose name is `systemd`.
-pub fn excluded(own: i32, leader: i32, compositor: Option<i32>, compositor_name: Option<&str>) -> Excluded {
+/// socket did not tell), their `ancestors` (the script that started the compositor, the shell that
+/// started alpheus), and the user's service manager, whose name is `systemd`.
+pub fn excluded(own: i32, leader: i32, compositor: Option<i32>, compositor_name: Option<&str>, ancestors: &[i32]) -> Excluded {
     let mut pids = vec![own, leader];
     pids.extend(compositor);
+    pids.extend_from_slice(ancestors);
     let mut comms = vec!["systemd".to_string()];
     comms.extend(compositor_name.map(str::to_string));
     Excluded { pids, comms }
+}
+
+/// `excluded`, with the ancestors of `own` and of the compositor read from `root` (`/proc`).
+pub fn excluded_in(root: &Path, own: i32, leader: i32, compositor: Option<i32>, compositor_name: Option<&str>) -> Excluded {
+    let mut parents = processes::ancestors(root, own);
+    if let Some(pid) = compositor {
+        parents.extend(processes::ancestors(root, pid));
+    }
+    excluded(own, leader, compositor, compositor_name, &parents)
 }
 
 /// The next moment the kill list needs the loop: its second sample (`sample_due`) or the end of a
@@ -103,8 +114,8 @@ pub fn wanted(model: Option<&Launcher>, sample_due: Option<Instant>) -> Option<I
 }
 
 /// Sends `sig` to `pid` (if it still started at `start`) and says what happened in `model`'s box.
-pub fn apply_signal(model: &mut Launcher, signaller: &dyn Signaller, pid: i32, start: u64, sig: Sig) {
-    let result = processes::send(signaller, pid, start, sig);
+pub fn apply_signal(model: &mut Launcher, signaller: &dyn Signaller, excluded: &Excluded, pid: i32, start: u64, sig: Sig) {
+    let result = processes::send(signaller, pid, start, sig, excluded);
     model.signal_result(pid, sig, result);
 }
 
@@ -116,6 +127,8 @@ pub struct ProcessesApp {
     /// When the second read is due; None once taken (or with no list open).
     sample_due: Option<Instant>,
     signaller: Box<dyn Signaller>,
+    /// What this open must not offer or signal, read once at the open.
+    excluded: Excluded,
     /// `/proc`, or a test's tree.
     root: PathBuf,
 }
@@ -128,6 +141,7 @@ impl ProcessesApp {
             first: None,
             sample_due: None,
             signaller: Box::new(RealSignaller::new(root.clone())),
+            excluded: Excluded { pids: Vec::new(), comms: Vec::new() },
             root,
         }
     }
@@ -140,13 +154,14 @@ impl Default for ProcessesApp {
 }
 
 impl App {
-    /// What this open of the list must not offer.
+    /// What this open of the list must not offer, worked out once per open (the compositor's pid
+    /// asks its socket, and the second sample and every signal reuse the answer).
     fn processes_excluded(&self) -> Excluded {
         // SAFETY: getsid(2) with 0 asks for our own session and takes no pointer.
         let leader = unsafe { libc::getsid(0) };
         let compositor = alpheus_common::compositor::detect(|k| std::env::var_os(k));
         let pid = compositor.as_ref().and_then(|c| crate::sources::peer::peer_pid(&c.ipc_socket()));
-        excluded(std::process::id() as i32, leader, pid, compositor.as_ref().map(compositor_comm))
+        excluded_in(&self.processes.root, std::process::id() as i32, leader, pid, compositor.as_ref().map(compositor_comm))
     }
 
     /// `alpheus-launch --kill`: the user's processes, sorted by memory now and by CPU 300 ms later.
@@ -156,7 +171,8 @@ impl App {
         // SAFETY: getuid(2) takes nothing and cannot fail.
         let uid = unsafe { libc::getuid() };
         let samples = processes::snapshot(&self.processes.root, uid, MAX_PROCESSES);
-        let rows = processes::rows(None, &samples, &self.processes_excluded());
+        self.processes.excluded = self.processes_excluded();
+        let rows = processes::rows(None, &samples, &self.processes.excluded);
         let model = Launcher::for_processes(config, rows);
         // Opened first: opening replaces any other box, whose close clears this state.
         self.launcher_open(qh, model, None, requested_at);
@@ -205,7 +221,7 @@ impl App {
         // SAFETY: getuid(2) takes nothing and cannot fail.
         let uid = unsafe { libc::getuid() };
         let samples = processes::snapshot(&self.processes.root, uid, MAX_PROCESSES);
-        let rows = processes::rows(Some(&first), &samples, &self.processes_excluded());
+        let rows = processes::rows(Some(&first), &samples, &self.processes.excluded);
         let Some(open) = self.launcher.as_mut().filter(|o| o.model.mode == crate::launcher::matching::Mode::Processes) else {
             return false;
         };
@@ -218,7 +234,7 @@ impl App {
     pub(crate) fn processes_signal(&mut self, pid: i32, start: u64, sig: Sig) {
         let App { launcher, processes, .. } = self;
         let Some(open) = launcher.as_mut() else { return };
-        apply_signal(&mut open.model, processes.signaller.as_ref(), pid, start, sig);
+        apply_signal(&mut open.model, processes.signaller.as_ref(), &processes.excluded, pid, start, sig);
         log("kill list: signal");
         self.launcher_redraw();
     }

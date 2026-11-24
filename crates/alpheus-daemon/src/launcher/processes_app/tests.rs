@@ -7,6 +7,7 @@ use crate::launcher::config::LauncherConfig;
 use crate::launcher::matching::Mode;
 use crate::launcher::model::Outcome;
 use crate::launcher::processes::ProcRow;
+use crate::launcher::testing::TempDir;
 use std::cell::RefCell;
 
 /// A `Signaller` that records each signal and answers as told.
@@ -48,7 +49,9 @@ fn list() -> Launcher {
 /// Performs what the key returned, as the surface does for `Outcome::Signal`.
 fn perform(l: &mut Launcher, signaller: &Fake, outcome: Outcome) {
     match outcome {
-        Outcome::Signal { pid, start, sig } => apply_signal(l, signaller, pid, start, sig),
+        Outcome::Signal { pid, start, sig } => {
+            apply_signal(l, signaller, &Excluded { pids: Vec::new(), comms: Vec::new() }, pid, start, sig)
+        }
         other => panic!("expected a signal, got {other:?}"),
     }
 }
@@ -150,10 +153,56 @@ fn the_timer_follows_the_earlier_of_the_sample_and_the_question() {
 
 #[test]
 fn alpheus_the_leader_the_compositor_and_the_manager_are_excluded() {
-    let e = excluded(10, 20, Some(30), Some("sway"));
+    let e = excluded(10, 20, Some(30), Some("sway"), &[]);
     assert_eq!(e.pids, [10, 20, 30]);
     assert_eq!(e.comms, ["systemd", "sway"]);
-    let e = excluded(10, 20, None, None);
+    let e = excluded(10, 20, None, None, &[]);
     assert_eq!(e.pids, [10, 20]);
     assert_eq!(e.comms, ["systemd"]);
+}
+
+/// A fake `/proc` with just the `stat` files the ancestor walk reads: pid, parent.
+fn stat_tree(name: &str, pairs: &[(i32, i32)]) -> TempDir {
+    let root = TempDir::new(name);
+    for (pid, ppid) in pairs {
+        let dir = root.join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stat"), format!("{pid} (x) S {ppid} {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0\n")).unwrap();
+    }
+    root
+}
+
+#[test]
+fn every_ancestor_of_the_compositor_and_of_alpheus_is_excluded() {
+    // 10 `bash mango-launcher.sh` <- 20 the compositor <- 30 alpheus; 5 a terminal <- 6 a shell <- 30 is not (one parent).
+    let root = stat_tree("kill-excluded-ancestors", &[(10, 1), (20, 10), (30, 20), (50, 1), (60, 50), (70, 60)]);
+    // The compositor (20) and the daemon (70, in another branch here): both branches' ancestors.
+    let e = excluded_in(&root, 70, 70, Some(20), Some("mango"));
+    for pid in [70, 60, 50, 20, 10] {
+        assert!(e.pids.contains(&pid), "{pid} must never be offered: {:?}", e.pids);
+    }
+    assert!(!e.pids.contains(&30), "a sibling is not an ancestor");
+    assert!(!e.pids.contains(&1), "init is dropped by `rows` anyway");
+}
+
+#[test]
+fn the_real_signaller_signals_a_child_by_pid_and_start_time_only() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = child.id() as i32;
+    let signaller = RealSignaller::new(PathBuf::from("/proc"));
+    let start = signaller.start_time(pid).expect("a running child has a start time");
+    // Another start time: a pid reused since the listing, nothing is sent.
+    assert_eq!(
+        processes::send(&signaller, pid, start + 1, Sig::Term, &Excluded { pids: Vec::new(), comms: Vec::new() }),
+        Err(SignalError::Reused)
+    );
+    assert!(child.try_wait().unwrap().is_none(), "still running");
+    assert_eq!(processes::send(&signaller, pid, start, Sig::Term, &Excluded { pids: Vec::new(), comms: Vec::new() }), Ok(()));
+    assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
+    // Gone now (reaped): the same pid and start time give Gone, not a signal to a stranger.
+    assert_eq!(
+        processes::send(&signaller, pid, start, Sig::Kill, &Excluded { pids: Vec::new(), comms: Vec::new() }),
+        Err(SignalError::Gone)
+    );
 }
