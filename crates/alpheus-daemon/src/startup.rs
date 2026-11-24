@@ -862,6 +862,14 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
     }
 }
 
+/// The time the guard leaves the loop after a signal before it forces the exit: `GRACE`, and the
+/// recorder's `STOP_LIMIT` more while alpheus records, so the shutdown can wait for the recorder to
+/// finish its file (docs/decisions.md, "Recording is the external tool's, driven and stopped by
+/// alpheus").
+fn shutdown_grace(recording: bool) -> Duration {
+    if recording { GRACE + crate::captures::record::STOP_LIMIT } else { GRACE }
+}
+
 /// Guard thread: waits for a signal without running, asks the loop to
 /// stop, forces an exit if it doesn't finish within the grace period.
 /// False: it could not start (logged).
@@ -870,7 +878,8 @@ fn start_guard(signals: libc::sigset_t, tx: channel::Sender<Mail>) -> bool {
         let sig = shutdown::wait_signal(&signals);
         STOP.store(true, Ordering::SeqCst);
         let _ = tx.send(Mail::Stop);
-        shutdown::watch(&STOP, &FINISHED, GRACE, Duration::from_millis(20), || std::process::exit(128 + sig));
+        let grace = shutdown_grace(crate::captures::record::LIVE.load(Ordering::SeqCst));
+        shutdown::watch(&STOP, &FINISHED, grace, Duration::from_millis(20), || std::process::exit(128 + sig));
     });
     if guard.is_err() {
         log("guard thread failed");
@@ -923,6 +932,9 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     core.state.select_guarded("shutdown", |app| app.select_close(crate::captures::select_app::SelectClose::Cancelled));
     // A pick in progress likewise: nothing is copied.
     core.state.pick_guarded("shutdown", |app| app.pick_close(crate::captures::pick_app::PickClose::Cancelled));
+    // A tool still open is closed; a recording gets SIGINT and at most two seconds to finish its file,
+    // then its notice: before the executor kills its commands, and before the app goes.
+    core.state.capture_shutdown();
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());

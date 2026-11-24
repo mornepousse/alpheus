@@ -7,7 +7,7 @@ mod common;
 
 use alpheus_common::displays::wire::{self, Snapshot, Status, TrialEnd, TrialState};
 use alpheus_common::displays::{Active, Mode, Scale, Step};
-use alpheus_common::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
+use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_common::theme::Rgb;
 use alpheus_common::theme::presets::preset;
 use alpheus_daemon::quick::{BAR, BAR_START};
@@ -8821,11 +8821,25 @@ const CAPTURE_BG: [u8; 4] = [0x33, 0x66, 0x99, 0xFF];
 /// standard input (`fake-copy`), the captures' folder `<runtime>/shots`, and the notifications module
 /// when `bus` is given. Returns the sway, the daemon and the folder.
 fn capture_session(name: &str, bus: Option<&PrivateBus>) -> (Sway, Daemon, PathBuf) {
+    capture_session_with(name, bus, false, "", |_| {})
+}
+
+/// `capture_session`, with the `privacy` module when `privacy`, `captures` (lines of `[captures]`) in
+/// bar.toml, and `before` run once sway is up, before the daemon starts (to write the fake tools).
+fn capture_session_with(
+    name: &str,
+    bus: Option<&PrivateBus>,
+    privacy: bool,
+    captures: &str,
+    before: impl FnOnce(&Sway),
+) -> (Sway, Daemon, PathBuf) {
     let sway = Sway::start(name, 1);
     sway.command("output * bg #336699 solid_color");
     fake_stdin_recorder(&sway, "fake-copy");
+    before(&sway);
     let shots = sway.runtime.join("shots");
-    let bar = format!("modules = [\"notifications\", \"clock\"]\n[captures]\ndir = \"{}\"\n", shots.display());
+    let modules = if privacy { "\"notifications\", \"clock\", \"privacy\"" } else { "\"notifications\", \"clock\"" };
+    let bar = format!("modules = [{modules}]\n[captures]\ndir = \"{}\"\n{captures}", shots.display());
     let d = start_daemon_with(
         &sway,
         &DaemonOptions {
@@ -8985,17 +8999,215 @@ fn a_second_capture_while_one_runs_is_ignored() {
     assert!(d.wait_for_count("capture: copied", 2, DELAY), "{:?}", d.log());
 }
 
-/// The verbs not built yet answer with a fixed message and exit 2.
+/// A tool set to `[]` refuses its verbs with a fixed message and exit 2, and `stop` with nothing
+/// recording does too; nothing starts.
 #[test]
 #[ignore = "headless sway (nix develop)"]
-fn the_unbuilt_capture_verbs_exit_2_with_a_fixed_message() {
-    let (sway, d, _shots) = capture_session("capture-notyet", None);
-    for verb in ["annotate", "ocr", "record", "record-area", "stop"] {
+fn a_capture_tool_set_to_nothing_and_a_stop_with_nothing_recording_exit_2() {
+    let (sway, d, _shots) = capture_session_with("capture-notool", None, false, "annotate = []\nocr = []\nrecord = []\n", |_| {});
+    for verb in ["annotate", "ocr", "record", "record-area"] {
         let (code, out, err) = script(&sway, &["--capture", verb], "").join().unwrap();
         assert_eq!((code, out.as_str()), (2, ""), "{verb}");
-        assert!(err.contains("not available yet"), "{verb}: {err}");
+        assert!(err.contains("no tool configured"), "{verb}: {err}");
     }
-    assert_eq!(d.count("capture: busy"), 0);
+    let (code, _, err) = script(&sway, &["--capture", "stop"], "").join().unwrap();
+    assert_eq!(code, 2);
+    assert!(err.contains("no recording is running"), "{err}");
+    assert_eq!(d.count("capture: busy") + d.count("capture: selector shown"), 0, "{:?}", d.log());
+}
+
+/// A fake external tool `<runtime>/bin/<name>`: records its arguments to `<runtime>/calls-<name>`,
+/// then runs `body` (sh). Never a real tool: the daemon's PATH is the runtime's `bin` and coreutils.
+fn fake_capture_tool(sway: &Sway, name: &str, body: &str) {
+    let bin = sway.runtime.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the capture tests: records its arguments, then plays the tool.\nprintf '%s\\n' \"{name} $*\" >> '{}'\n{body}\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The names in the daemon's private folder.
+fn private_files(sway: &Sway) -> Vec<String> {
+    std::fs::read_dir(sway.runtime.join("alpheus"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// An annotation: the selected area goes to the tool as a private PNG (`{file}`), the tool writes its
+/// result to `{out}` (here a copy of what it got), and alpheus copies that image through `copy` and
+/// says so; the private files are gone afterwards.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn annotate_copies_what_the_tool_wrote() {
+    let bus = PrivateBus::start("capture-annotate");
+    let tool = "annotate = [\"fake-annotate\", \"--in\", \"{file}\", \"--out\", \"{out}\"]\n";
+    let (sway, d, shots) = capture_session_with("capture-annotate", Some(&bus), false, tool, |sway| {
+        fake_capture_tool(sway, "fake-annotate", "cp \"$2\" \"$4\"");
+    });
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "annotate", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: annotated image copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the notice: {:?}", d.log());
+    let calls = recorded(&sway, "fake-annotate");
+    let private = sway.runtime.join("alpheus");
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let input = private.join("capture-1.png");
+    let output = private.join("capture-1-out.png");
+    assert_eq!(calls[0], format!("fake-annotate --in {} --out {}", input.display(), output.display()));
+    assert_eq!(recorded(&sway, "fake-copy"), ["fake-copy "], "the custom copy, as written");
+    let (w, h, rgba) = decode_png(&recorded_stdin(&sway, "fake-copy"));
+    assert_eq!((w, h), (400, 300), "the tool's image: the selected area");
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| *p == CAPTURE_BG));
+    assert!(private_files(&sway).iter().all(|n| !n.starts_with("capture")), "{:?}", private_files(&sway));
+    assert!(!shots.exists(), "nothing saved");
+    assert!(d.log().iter().all(|l| !l.contains("capture-1")), "no path in the log: {:?}", d.log());
+}
+
+/// A text recognition: the tool's standard output, trimmed, is copied as text; the text is never in
+/// the log. A tool that prints nothing is a silent cancel, and one that fails is critical; neither
+/// copies.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn ocr_copies_the_text_the_tool_printed() {
+    let bus = PrivateBus::start("capture-ocr");
+    let tool = "ocr = [\"fake-ocr\", \"{file}\"]\n";
+    let (sway, d, _shots) = capture_session_with("capture-ocr", Some(&bus), false, tool, |sway| {
+        // The first run prints a text, the second nothing, the third fails.
+        let count = sway.runtime.join("ocr-runs");
+        fake_capture_tool(
+            sway,
+            "fake-ocr",
+            &format!(
+                "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '{0}'\ncase $n in 1) printf '  Hello from the area\\n' ;; 2) ;; *) exit 3 ;; esac",
+                count.display()
+            ),
+        );
+    });
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "ocr", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: text copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(recorded_stdin(&sway, "fake-copy"), b"Hello from the area", "trimmed, as text");
+    assert_eq!(recorded(&sway, "fake-ocr")[0], format!("fake-ocr {}", sway.runtime.join("alpheus/capture-1.png").display()));
+    open_capture_selector(&sway, &d, "ocr", 2);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    open_capture_selector(&sway, &d, "ocr", 3);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: tool failed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 2", DELAY), "the failure's critical notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy").len(), 1, "only the text was copied: {:?}", d.log());
+    assert!(private_files(&sway).iter().all(|n| !n.starts_with("capture") && n != "ocr.txt"), "{:?}", private_files(&sway));
+    assert!(d.log().iter().all(|l| !l.contains("Hello")), "the text is never logged: {:?}", d.log());
+}
+
+/// The fake recorder: writes its pid next to its calls, records until SIGINT, then writes the file
+/// given after `-f` and exits 0, as wf-recorder finishes its file.
+const FAKE_RECORD: &str = "out=''; prev=''\nfor a in \"$@\"; do [ \"$prev\" = -f ] && out=$a; prev=$a; done\n\
+trap 'printf frames > \"$out\"; exit 0' INT\necho $$ > \"$0.pid\"\nwhile :; do sleep 0.1; done";
+
+/// A recording of the screen: the recorder gets the whole output's geometry and a dated file in the
+/// videos folder; `stop` interrupts it, and once it finished its file the notice says it is saved,
+/// naming the file (the log never does). One recording at a time; a second stop has nothing to stop.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn record_then_stop_notifies_saved() {
+    let bus = PrivateBus::start("capture-record");
+    let tool = "record = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, d, _shots) = capture_session_with("capture-record", Some(&bus), false, tool, |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    wait_for_the_server(&bus);
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    let calls = recorded(&sway, "fake-record");
+    let videos = sway.runtime.join("Videos");
+    let (w, h) = OUTPUT_SIZE;
+    let prefix = format!("fake-record -g 0,0 {w}x{h} -f {}/screenrecord-", videos.display());
+    assert!(calls.len() == 1 && calls[0].starts_with(&prefix) && calls[0].ends_with(".mp4"), "{calls:?}");
+    // One at a time: a second recording is ignored; a screenshot is not.
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: already recording", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: copied", DELAY), "a screenshot while it records: {:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "stop"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: recording saved", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 2", DELAY), "the screenshot's and the recording's notices: {:?}", d.log());
+    let file = the_one_file(&videos);
+    assert_eq!(std::fs::read(&file).unwrap(), b"frames", "the recorder finished its file");
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(d.log().iter().all(|l| !l.contains(&name) && !l.contains("Videos")), "no file in the log: {:?}", d.log());
+    let (code, _, err) = script(&sway, &["--capture", "stop"], "").join().unwrap();
+    assert!(code == 2 && err.contains("no recording is running"), "{code} {err}");
+    // An area recording gets the area, in the layout's logical pixels.
+    open_capture_selector(&sway, &d, "record-area", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for_count("capture: recording started", 2, DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "fake-record")[1].starts_with("fake-record -g 100,100 400x300 -f "), "{:?}", recorded(&sway, "fake-record"));
+    assert_eq!(script(&sway, &["--capture", "stop"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: recording saved", 2, DELAY), "{:?}", d.log());
+    assert_eq!(std::fs::read_dir(&videos).unwrap().count(), 2, "a second file, never over the first");
+}
+
+/// While alpheus records, the privacy module's screen glyph is lit in red; it goes once the recording
+/// ends.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn recording_lights_the_privacy_screen_glyph_on_the_bar() {
+    let tool = "[captures]\nrecord = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, _hypr, d) = privacy_daemon_before("capture-record-privacy", PRIVACY_REST_BAR, tool, &[privacy_red()], |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    let stopped = Instant::now();
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for("capture: recording saved", DELAY), "{:?}", d.log());
+    assert!(glyph_gone_after(&sway, privacy_red(), stopped).is_some(), "the glyph goes with the recording: {:?}", d.log());
+}
+
+/// The daemon asked to stop while it records: the recorder gets SIGINT and finishes its file before
+/// the daemon exits (well within its grace), and the recording ends as saved.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_recording_running_at_the_daemon_stop_is_finished() {
+    let tool = "record = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, mut d, _shots) = capture_session_with("capture-record-stop", None, false, tool, |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    let pid: i32 = {
+        let pid_file = sway.runtime.join("bin/fake-record.pid");
+        let t = Instant::now();
+        loop {
+            if let Some(p) = std::fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+                break p;
+            }
+            assert!(t.elapsed() < DELAY, "the recorder never wrote its pid");
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(Duration::from_secs(5)), Some(0), "a clean stop: {:?}", d.log());
+    let log = d.log();
+    let saved = log.iter().position(|l| l.contains("capture: recording saved")).expect("the recording ended as saved");
+    let down = log.iter().position(|l| l.contains("shutdown")).expect("then the shutdown");
+    assert!(saved < down, "{log:?}");
+    let file = the_one_file(&sway.runtime.join("Videos"));
+    assert_eq!(std::fs::read(&file).unwrap(), b"frames", "the recorder finished its file");
+    assert!(!Path::new(&format!("/proc/{pid}")).exists(), "the recorder is gone");
 }
 
 /// A daemon killed between writing the copy's private file and removing it leaves `capture.png`

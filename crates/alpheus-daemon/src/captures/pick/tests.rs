@@ -103,7 +103,7 @@ fn esc_picks_nothing_and_copies_nothing() {
     assert_eq!(flow.grabbed(g, true), Step::Pick);
     let step = flow.picked(g, PickAnswer::Cancelled);
     assert_eq!(step, Step::Finish(Finish::Cancelled), "no copy step");
-    assert_eq!(notice(&Finish::Cancelled, Scope::Pick), None, "no notice");
+    assert_eq!(notice(&Finish::Cancelled, Job { scope: Scope::Pick, goal: Goal::Copy }), None, "no notice");
     assert!(!Finish::Cancelled.touches_the_clipboard());
     assert!(!flow.is_busy());
 }

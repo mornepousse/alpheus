@@ -8,8 +8,12 @@
 //! of the focused output (`screencopy.rs`), hand the frame to the short-lived `alpheus-capture`
 //! thread (`deliver.rs`), and show the notice of its ending. For the colour picker the frame opens
 //! the picker instead (`pick_app.rs`), and its answer's value, in `[captures] pick_format`, is what
-//! the worker copies. The frame and the worker's result come back through the loop's mail
-//! (`Mail::Capture`), so the flow only ever moves on the loop's thread.
+//! the worker copies. An annotation or a recognition starts its external tool once the worker has
+//! written the image (`tools.rs`); a recording starts the recorder instead of asking a frame
+//! (`record.rs`), lights the privacy screen glyph, and is stopped by `stop` or the daemon's shutdown.
+//! The frame and the worker's result come back through the loop's mail (`Mail::Capture`), the end
+//! of a tool or of the recorder through its pidfd on the loop (`capture_child_ready`), so the flow
+//! only ever moves on the loop's thread.
 //!
 //! Never:
 //! - ask for a frame in the turn the selector was destroyed: the compositor must first have dealt
@@ -21,18 +25,26 @@
 //!   `the_capture_logs_fixed_words_only`);
 //! - poll, or keep a timer armed when no frame is awaited: every step is an event of the compositor,
 //!   the mail or the verb, and the one deadline (`GRAB_LIMIT`) runs only from the frame request to
-//!   its answer (`the_frame_deadline_is_armed_only_while_a_frame_is_awaited`).
+//!   its answer (`the_frame_deadline_is_armed_only_while_a_frame_is_awaited`); a tool or the
+//!   recorder is heard through its pidfd, readable only when it ends;
+//! - signal anything but the recorder it started, through `Recording::stop` (a guardrail,
+//!   `the_recording_signal_reaches_only_the_recorder_alpheus_started`).
 //!
 //! See: docs/features/captures.md, docs/decisions.md ("A capture never touches the clipboard unless
 //! it succeeded", "A capture waits for the selector's removal", "The capture's PNG is encoded on a
-//! short-lived thread").
+//! short-lived thread", "An external capture tool runs as a watched child of the daemon", "Recording
+//! is the external tool's, driven and stopped by alpheus").
 
 use super::deliver::{Delivery, Work, run};
-use super::paths::{file_name, save_dir, user_dir};
+use super::paths::{file_name, geometry, save_dir, user_dir, video_name, videos_dir};
 use super::pick::value_text;
+use super::record::{LIVE, Recording, STOP_LIMIT};
 use super::screencopy::{CaptureDone, CaptureError, Frame, PendingFrame, buffer_area};
 use super::select_app::guarded;
-use super::{Finish, Flow, GRAB_LIMIT, Job, PickAnswer, Plan, Rect, SelectorAnswer, Step, notice, plan};
+use super::tools::{Tool, ToolFiles, judge, start as start_tool};
+use super::{
+    Finish, Flow, GRAB_LIMIT, Goal, Job, PickAnswer, Plan, Rect, Refusal, Scope, SelectorAnswer, Step, ToolEnd, Tools, notice, plan,
+};
 use crate::clock::LocalTime;
 use crate::deadline::DeadlineTimer;
 use crate::launcher::host::read_config;
@@ -41,15 +53,20 @@ use crate::notify::{Incoming, Urgency};
 use crate::session_bus::notifications::minute_now;
 use crate::startup::Mail;
 use crate::wayland::App;
+use alpheus_common::exec::Watched;
 use alpheus_common::launcher_ipc::{Reply, Request};
 use alpheus_common::paths;
 use alpheus_common::theme::Rgb;
 use smithay_client_toolkit::dispatch2::Dispatch2;
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken};
 use smithay_client_toolkit::reexports::client::protocol::wl_callback::{self, WlCallback};
 use smithay_client_toolkit::reexports::client::protocol::wl_output::{Transform, WlOutput};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 /// What reaches the loop from a capture: the compositor's frame, then the worker's ending.
@@ -72,11 +89,65 @@ pub(crate) struct CaptureApp {
     /// When the frame is due, while one is awaited; the timer is armed for it and nothing else.
     due: Option<Instant>,
     timer: DeadlineTimer,
+    /// The external tool of the capture in progress, while it runs.
+    tool: Option<ToolRun>,
+    /// The recording, while it runs: beside the captures, never in their slot.
+    recording: Option<RecordRun>,
 }
+
+/// An external tool running for capture `generation`: the child, its files, and the loop's watch on
+/// its pidfd.
+struct ToolRun {
+    child: Box<dyn Watched>,
+    files: ToolFiles,
+    tool: Tool,
+    generation: u64,
+    watch: Option<RegistrationToken>,
+}
+
+/// The recorder running, and the loop's watch on its pidfd.
+struct RecordRun {
+    recording: Recording,
+    watch: Option<RegistrationToken>,
+}
+
+/// Which watched child a pidfd's readiness is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Child {
+    /// The external tool of capture number `.0`.
+    Tool(u64),
+    Recorder,
+}
+
+/// The external tool a goal hands its image to, if any.
+fn tool_of(goal: Goal) -> Option<Tool> {
+    match goal {
+        Goal::Annotate => Some(Tool::Annotate),
+        Goal::Ocr => Some(Tool::Ocr),
+        Goal::Copy | Goal::Save | Goal::Record => None,
+    }
+}
+
+/// What a recording's notice is about, whatever capture ran since it started.
+const RECORD_JOB: Job = Job { scope: Scope::Screen, goal: Goal::Record };
 
 impl CaptureApp {
     pub(crate) fn new() -> CaptureApp {
-        CaptureApp { flow: Flow::default(), output: None, area: None, pending: None, due: None, timer: DeadlineTimer::new() }
+        CaptureApp {
+            flow: Flow::default(),
+            output: None,
+            area: None,
+            pending: None,
+            due: None,
+            timer: DeadlineTimer::new(),
+            tool: None,
+            recording: None,
+        }
+    }
+
+    /// Whether alpheus records the screen: the Tools menu then shows "Stop recording".
+    pub(crate) fn is_recording(&self) -> bool {
+        self.recording.is_some()
     }
 
     /// The number of the capture in progress (or the last one), for an answer of the picker.
@@ -110,10 +181,23 @@ impl App {
     /// why (the reply is an error, exit 2); one asked while another runs is ignored, with a log word.
     pub(crate) fn capture_verb(&mut self, request: &Request) -> Reply {
         let Request::Capture(verb) = request else { return Reply::Done };
-        match plan(*verb, self.screencopy.is_some()) {
+        match plan(*verb, self.screencopy.is_some(), self.capture_tools()) {
             Plan::Refuse(why) => {
                 log("capture: refused");
                 Reply::Error(why.text().into())
+            }
+            Plan::Stop => {
+                if self.capture_stop() {
+                    Reply::Done
+                } else {
+                    log("capture: not recording");
+                    Reply::Error(Refusal::NotRecording.text().into())
+                }
+            }
+            // One recording at a time: a second one is ignored, as a second capture is.
+            Plan::Capture(job) if job.goal == Goal::Record && self.capture.recording.is_some() => {
+                log("capture: already recording");
+                Reply::Done
             }
             Plan::Select => {
                 // The debug selector is not a capture's: while one runs, its selector is not ours to toggle.
@@ -140,10 +224,23 @@ impl App {
         r
     }
 
+    /// Which external tools `[captures]` names (a key set to `[]` names none).
+    fn capture_tools(&self) -> Tools {
+        let c = &self.bar.config.captures;
+        Tools { annotate: !c.annotate.is_empty(), ocr: !c.ocr.is_empty(), record: !c.record.is_empty() }
+    }
+
     /// Back to rest: nothing of the capture is kept, the frame asked is given up, the timer disarmed,
-    /// and an open picker goes with its frame (without an answer: the flow is the one resetting).
+    /// an open picker goes with its frame (without an answer: the flow is the one resetting), and a
+    /// tool still running is stopped with its files. A recording is not the capture's: it goes on.
     fn capture_reset(&mut self) {
         self.capture.flow.finished();
+        if let Some(run) = self.capture.tool.take() {
+            self.capture_unwatch(run.watch);
+            // Dropping the child kills it with its group, then the files go.
+            drop(run.child);
+            run.files.remove();
+        }
         self.pick_discard();
         self.capture.output = None;
         self.capture.area = None;
@@ -199,8 +296,12 @@ impl App {
             Step::Settle => self.capture_settle(),
             Step::Grab(area) => self.capture_grab(area),
             Step::Copy(colour) => self.capture_copy_value(colour),
-            // The frame is in hand where these come (`capture_frame`): handled there.
-            Step::Encode | Step::Pick | Step::Nothing => {}
+            Step::RunTool => self.capture_run_tool(),
+            Step::CopyText(text) => self.capture_deliver(Work::Recognised(text)),
+            Step::Record(area) => self.capture_record(area),
+            // The frame is in hand where the first two come (`capture_frame`), the tool's file where
+            // the third does (`capture_tool_ended`): handled there.
+            Step::Encode | Step::Pick | Step::CopyAnnotated | Step::Nothing => {}
             Step::Finish(finish) => self.capture_finish(finish),
         }
         self.capture_timer_sync();
@@ -353,12 +454,21 @@ impl App {
         // before the job whose panic is caught, and the ending might never be mailed.
         let launcher = read_config(&paths::config_dir(), &mut |_| {});
         let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
-        let dir = save_dir(&self.bar.config.captures.dir, pictures_dir().as_deref(), home.as_deref());
+        let dir = save_dir(&self.bar.config.captures.dir, user_folder("XDG_PICTURES_DIR").as_deref(), home.as_deref());
         let name = file_name(&LocalTime::now().0);
         let temp_dir = paths::runtime_dir().join("alpheus");
+        // An annotation or a recognition: the name of the image its tool will open.
+        let tool_input = tool_of(job.goal).map(|tool| ToolFiles::new(&temp_dir, generation, tool).input);
         let exec = self.exec.clone();
         let started = std::thread::Builder::new().name("alpheus-capture".into()).spawn(move || {
-            let delivery = Delivery { job, copy: &launcher.copy, save_dir: dir.as_deref(), file_name: name, temp_dir: &temp_dir };
+            let delivery = Delivery {
+                job,
+                copy: &launcher.copy,
+                save_dir: dir.as_deref(),
+                file_name: name,
+                temp_dir: &temp_dir,
+                tool_input: tool_input.as_deref(),
+            };
             let finish = run(exec.as_ref(), work, &delivery);
             // The frame and the image went with `run`: the loop frees what the thread's arena kept.
             let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));
@@ -379,11 +489,214 @@ impl App {
             Finish::CaptureFailed => log("capture: failed"),
             Finish::CopyFailed => log("capture: copy failed"),
             Finish::SaveFailed => log("capture: save failed"),
+            Finish::Annotated => log("capture: annotated image copied"),
+            Finish::TextCopied => log("capture: text copied"),
+            Finish::ToolFailed => log("capture: tool failed"),
+            // A recording's ending goes through `capture_recording_end`, a preparation through the
+            // flow: neither reaches here, each still gets its word.
+            Finish::Prepared => log("capture: prepared"),
+            Finish::Recorded(_) => log("capture: recording saved"),
+            Finish::RecordFailed => log("capture: recording failed"),
         }
-        if let Some(n) = notice(&finish, self.capture.flow.scope()) {
+        if let Some(n) = notice(&finish, self.capture.flow.last_job()) {
             self.capture_notify(n);
         }
         crate::memory::release_memory();
+    }
+
+    /// Starts the external tool of the capture in progress on the image the worker wrote, and
+    /// watches its pidfd: its end comes back through `capture_child_ready`, however long the user
+    /// keeps it open, with no thread and no timer. A tool that cannot start, or cannot be watched,
+    /// fails the capture.
+    fn capture_run_tool(&mut self) {
+        let generation = self.capture.flow.generation();
+        let Some(tool) = self.capture.flow.job().and_then(|job| tool_of(job.goal)) else {
+            let step = self.capture.flow.tool_ended(generation, ToolEnd::Failed);
+            return self.capture_step(step);
+        };
+        let files = ToolFiles::new(&paths::runtime_dir().join("alpheus"), generation, tool);
+        let template = match tool {
+            Tool::Annotate => self.bar.config.captures.annotate.clone(),
+            Tool::Ocr => self.bar.config.captures.ocr.clone(),
+        };
+        let Some(child) = start_tool(self.exec.as_ref(), tool, &template, &files) else {
+            log("capture: tool could not start");
+            let step = self.capture.flow.tool_ended(generation, ToolEnd::Failed);
+            return self.capture_step(step);
+        };
+        let Some(watch) = self.capture_watch(child.exit_fd(), Child::Tool(generation)) else {
+            log("capture: tool could not be watched");
+            drop(child);
+            files.remove();
+            let step = self.capture.flow.tool_ended(generation, ToolEnd::Failed);
+            return self.capture_step(step);
+        };
+        self.capture.tool = Some(ToolRun { child, files, tool, generation, watch: Some(watch) });
+        log("capture: tool started");
+    }
+
+    /// Puts a watched child's pidfd on the event loop: readable once the child has ended, and quiet
+    /// until then (it never wakes the loop while the tool or the recorder runs). None without a loop
+    /// or a descriptor.
+    fn capture_watch(&mut self, fd: Option<OwnedFd>, child: Child) -> Option<RegistrationToken> {
+        let (Some(handle), Some(fd)) = (self.loop_handle.clone(), fd) else { return None };
+        let source = Generic::new(fd, Interest::READ, Mode::Level);
+        handle.insert_source(source, move |_, _, app: &mut App| Ok(app.capture_child_ready(child))).ok()
+    }
+
+    /// Takes a child's watch off the loop (a run given up from outside its own callback).
+    fn capture_unwatch(&mut self, watch: Option<RegistrationToken>) {
+        if let (Some(handle), Some(token)) = (self.loop_handle.as_ref(), watch) {
+            handle.remove(token);
+        }
+    }
+
+    /// A watched pidfd turned readable: the child it is for has ended (its end is read, which reaps
+    /// it), and its watch goes with this answer. A pidfd of a child no longer kept is dropped too.
+    fn capture_child_ready(&mut self, child: Child) -> PostAction {
+        let ended = self.capture_guarded("child", |app| match child {
+            Child::Tool(generation) => {
+                let Some(run) = app.capture.tool.as_mut().filter(|run| run.generation == generation) else { return true };
+                let Some(exit) = run.child.try_exit() else { return false };
+                // The loop removes this watch on our answer: it must not be removed again.
+                run.watch = None;
+                app.capture_tool_ended(exit);
+                true
+            }
+            Child::Recorder => {
+                let Some(run) = app.capture.recording.as_mut() else { return true };
+                let Some(exit) = run.recording.try_exit() else { return false };
+                run.watch = None;
+                app.capture_recording_end(exit);
+                true
+            }
+        });
+        // A panic was caught and the capture reset: the watch goes, whatever it was for.
+        if ended.unwrap_or(true) { PostAction::Remove } else { PostAction::Continue }
+    }
+
+    /// The external tool ended with `exit`: what it left decides (`tools::judge`), and the flow says
+    /// what follows; the annotated image goes to the worker, which copies it and removes the file.
+    fn capture_tool_ended(&mut self, exit: Option<i32>) {
+        let Some(run) = self.capture.tool.take() else { return };
+        let end = judge(run.tool, exit, &run.files);
+        match &end {
+            ToolEnd::Annotated => log("capture: tool wrote an image"),
+            ToolEnd::Text(_) => log("capture: tool printed text"),
+            ToolEnd::Cancelled => log("capture: tool closed with nothing"),
+            ToolEnd::Failed => log("capture: tool failed"),
+        }
+        match self.capture.flow.tool_ended(run.generation, end) {
+            Step::CopyAnnotated => self.capture_deliver(Work::Annotated(run.files.output.clone())),
+            step => {
+                // Whatever is left of the run (an image nobody will copy) goes.
+                run.files.remove();
+                self.capture_step(step);
+            }
+        }
+    }
+
+    /// Starts the recorder on the capture's output: the area (logical pixels), or the whole output,
+    /// as `x,y wxh` in the compositor's layout, into a free dated name of the videos folder. The
+    /// recorder is a watched child: `stop` interrupts it, its pidfd says when it ended. While it
+    /// runs the privacy screen glyph is lit and the shutdown waits for it.
+    fn capture_record(&mut self, area: Option<Rect>) {
+        let output = self.capture.output.take();
+        self.capture.area = None;
+        let info = output.as_ref().and_then(|o| self.outputs.info(o));
+        let origin = info.as_ref().and_then(|i| i.logical_position);
+        let size = info.as_ref().and_then(|i| i.logical_size);
+        let (Some(origin), Some((width, height))) = (origin, size) else {
+            log("capture: recording could not start (no output)");
+            return self.capture_recording_notify(Finish::RecordFailed);
+        };
+        let whole = Rect { x: 0, y: 0, width: width.max(0) as u32, height: height.max(0) as u32 };
+        let geometry = geometry(origin, area.unwrap_or(whole));
+        let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+        let Some(dir) = videos_dir(user_folder("XDG_VIDEOS_DIR").as_deref(), home.as_deref()) else {
+            log("capture: recording could not start (no folder)");
+            return self.capture_recording_notify(Finish::RecordFailed);
+        };
+        let name = video_name(&LocalTime::now().0);
+        let template = self.bar.config.captures.record.clone();
+        let Some(recording) = Recording::start(self.exec.as_ref(), &template, &geometry, &dir, &name) else {
+            log("capture: recording could not start");
+            return self.capture_recording_notify(Finish::RecordFailed);
+        };
+        let Some(watch) = self.capture_watch(recording.exit_fd(), Child::Recorder) else {
+            log("capture: recording could not be watched");
+            // Dropped, the recorder is killed: what it wrote so far is judged as any ending.
+            let finish = recording.finish(None);
+            return self.capture_recording_notify(finish);
+        };
+        self.capture.recording = Some(RecordRun { recording, watch: Some(watch) });
+        LIVE.store(true, Ordering::SeqCst);
+        self.capture_privacy(true);
+        log("capture: recording started");
+    }
+
+    /// `--capture stop` or the Stop row: SIGINT to the recorder alone; its end comes back through its
+    /// pidfd. False when nothing records.
+    fn capture_stop(&mut self) -> bool {
+        let Some(run) = self.capture.recording.as_mut() else { return false };
+        run.recording.stop();
+        log("capture: stopping the recording");
+        true
+    }
+
+    /// The recorder ended with `exit`: the recording is judged by its file, the privacy glyph goes
+    /// off, the notice says how it ended.
+    fn capture_recording_end(&mut self, exit: Option<i32>) {
+        let Some(run) = self.capture.recording.take() else { return };
+        let finish = run.recording.finish(exit);
+        self.capture_recording_notify(finish);
+    }
+
+    /// The recording is over (or never started): not live any more, one log word, the notice.
+    fn capture_recording_notify(&mut self, finish: Finish) {
+        LIVE.store(false, Ordering::SeqCst);
+        self.capture_privacy(false);
+        match &finish {
+            Finish::Recorded(_) => log("capture: recording saved"),
+            _ => log("capture: recording failed"),
+        }
+        if let Some(n) = notice(&finish, RECORD_JOB) {
+            self.capture_notify(n);
+        }
+    }
+
+    /// The privacy indicator's screen glyph follows alpheus's own recording. Its end changes nothing
+    /// shown at once (the glyph stays for the off-delay) but sets a pending off: the timer follows it
+    /// all the same, or the glyph would stay lit until the next message.
+    fn capture_privacy(&mut self, recording: bool) {
+        if self.bar.privacy.set_recording(recording, Instant::now()) {
+            self.privacy_changed();
+        } else {
+            self.privacy_timer_sync();
+        }
+    }
+
+    /// The daemon stops (`startup.rs`, before the executor's commands are killed): a tool still open
+    /// is closed with its files; a recording gets SIGINT and at most `STOP_LIMIT` to finish its
+    /// file, then its notice (docs/decisions.md, "Recording is the external tool's, driven and
+    /// stopped by alpheus").
+    pub(crate) fn capture_shutdown(&mut self) {
+        self.capture_guarded("shutdown", App::capture_end_all);
+    }
+
+    /// `capture_shutdown`'s work, guarded there: a panic in it must not turn a stop into a crash.
+    fn capture_end_all(&mut self) {
+        if let Some(run) = self.capture.tool.take() {
+            self.capture_unwatch(run.watch);
+            drop(run.child);
+            run.files.remove();
+            log("capture: tool closed (shutdown)");
+        }
+        if let Some(run) = self.capture.recording.take() {
+            self.capture_unwatch(run.watch);
+            let finish = run.recording.end_at_shutdown(STOP_LIMIT);
+            self.capture_recording_notify(finish);
+        }
     }
 
     /// The notice, through alpheus's own server only while it serves: app `alpheus`, critical for a
@@ -416,16 +729,16 @@ impl App {
     }
 }
 
-/// The user's pictures folder: `$XDG_PICTURES_DIR` when absolute, else the entry of
-/// `user-dirs.dirs` (read, at most 64 KiB, at each save: nothing is kept).
-fn pictures_dir() -> Option<PathBuf> {
+/// One of the user's folders, `key` (`XDG_PICTURES_DIR`, `XDG_VIDEOS_DIR`): the variable when
+/// absolute, else its entry of `user-dirs.dirs` (read, at most 64 KiB, at each use: nothing is kept).
+fn user_folder(key: &str) -> Option<PathBuf> {
     let absolute = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
-    if let Some(p) = absolute("XDG_PICTURES_DIR") {
+    if let Some(p) = absolute(key) {
         return Some(p);
     }
     let home = absolute("HOME")?;
     let config = absolute("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
     let mut text = String::new();
     std::fs::File::open(config.join("user-dirs.dirs")).ok()?.take(64 * 1024).read_to_string(&mut text).ok()?;
-    user_dir(&text, "XDG_PICTURES_DIR", &home)
+    user_dir(&text, key, &home)
 }

@@ -4,11 +4,13 @@
 //! screencopy protocol and turns one output into a `Frame`; `select.rs` and `select_app.rs` are the
 //! area selector (a pure model and its layer surface); `pick.rs` and `pick_app.rs` are the colour
 //! picker (its lens and value, and its layer surface over the frozen frame); `encode.rs` writes a
-//! PNG, `deliver.rs` copies it or saves it, `paths.rs` says where; `app.rs` wires all of it to the
-//! daemon.
+//! PNG, `deliver.rs` copies it or saves it, `paths.rs` says where; `tools.rs` runs the external
+//! annotation and text recognition tools and `record.rs` the recorder; `app.rs` wires all of it to
+//! the daemon.
 //!
 //! This file is the pure flow: which verb asks for what (`plan`), where a capture stands
-//! (`Flow`, one at a time), how it ended (`Finish`) and the notice that follows (`notice`).
+//! (`Flow`, one at a time, an external tool's run included), how it ended (`Finish`) and the notice
+//! that follows (`notice`). A recording leaves the flow once it starts: it runs beside the captures.
 //!
 //! Never:
 //! - hold anything at rest: a frame, a buffer or the selector's surface lives only while its
@@ -27,9 +29,11 @@ pub mod encode;
 pub mod paths;
 pub mod pick;
 pub mod pick_app;
+pub mod record;
 pub mod screencopy;
 pub mod select;
 pub mod select_app;
+pub mod tools;
 
 use alpheus_common::theme::Rgb;
 
@@ -79,16 +83,23 @@ pub enum Scope {
 }
 
 /// What becomes of the capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Goal {
     /// On the clipboard, through `launcher.toml`'s `copy`: the image, or the colour picker's value.
+    #[default]
     Copy,
     /// In the pictures folder.
     Save,
+    /// Handed to `[captures] annotate`; the image it writes back is copied.
+    Annotate,
+    /// Handed to `[captures] ocr`; the text it prints is copied.
+    Ocr,
+    /// Recorded by `[captures] record`, which alpheus starts and stops.
+    Record,
 }
 
 /// One capture: a scope and a goal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Job {
     pub scope: Scope,
     pub goal: Goal,
@@ -99,8 +110,10 @@ pub struct Job {
 pub enum Refusal {
     /// The compositor has no screencopy protocol: the captures are off.
     NoScreencopy,
-    /// The verb is not built yet.
-    NotYet,
+    /// The verb's external tool is `[]` in `[captures]`.
+    NoTool,
+    /// `stop` while nothing records.
+    NotRecording,
 }
 
 impl Refusal {
@@ -108,7 +121,8 @@ impl Refusal {
     pub fn text(self) -> &'static str {
         match self {
             Refusal::NoScreencopy => "captures are off: the compositor offers no screencopy",
-            Refusal::NotYet => "this capture is not available yet",
+            Refusal::NoTool => "this capture has no tool configured in [captures]",
+            Refusal::NotRecording => "no recording is running",
         }
     }
 }
@@ -119,26 +133,61 @@ pub enum Plan {
     Capture(Job),
     /// The debug verb: the selector alone, nothing captured.
     Select,
+    /// End the recording.
+    Stop,
     Refuse(Refusal),
 }
 
-/// The plan of `verb`. Without screencopy every capture is refused, and only the debug selector,
-/// which captures nothing, still runs.
-pub fn plan(verb: alpheus_common::launcher_ipc::CaptureVerb, has_screencopy: bool) -> Plan {
+/// Which external tools `[captures]` names (a key set to `[]` names none): a verb whose tool is
+/// missing is refused.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tools {
+    pub annotate: bool,
+    pub ocr: bool,
+    pub record: bool,
+}
+
+/// The plan of `verb`. Without screencopy every capture is refused; only the debug selector, which
+/// captures nothing, and `stop`, which ends what runs, still go on. A verb whose tool `tools` does
+/// not name is refused.
+pub fn plan(verb: alpheus_common::launcher_ipc::CaptureVerb, has_screencopy: bool, tools: Tools) -> Plan {
     use alpheus_common::launcher_ipc::CaptureVerb as V;
-    if verb == V::Select {
-        return Plan::Select;
-    }
-    if !has_screencopy {
-        return Plan::Refuse(Refusal::NoScreencopy);
-    }
     match verb {
-        V::Full => Plan::Capture(Job { scope: Scope::Screen, goal: Goal::Copy }),
-        V::Area => Plan::Capture(Job { scope: Scope::Area, goal: Goal::Copy }),
-        V::AreaSave => Plan::Capture(Job { scope: Scope::Area, goal: Goal::Save }),
-        V::Pick => Plan::Capture(Job { scope: Scope::Pick, goal: Goal::Copy }),
-        V::Annotate | V::Ocr | V::Record | V::RecordArea | V::Stop | V::Select => Plan::Refuse(Refusal::NotYet),
+        V::Select => return Plan::Select,
+        V::Stop => return Plan::Stop,
+        _ if !has_screencopy => return Plan::Refuse(Refusal::NoScreencopy),
+        _ => {}
     }
+    let (scope, goal, named) = match verb {
+        V::Full => (Scope::Screen, Goal::Copy, true),
+        V::Area => (Scope::Area, Goal::Copy, true),
+        V::AreaSave => (Scope::Area, Goal::Save, true),
+        V::Pick => (Scope::Pick, Goal::Copy, true),
+        V::Annotate => (Scope::Area, Goal::Annotate, tools.annotate),
+        V::Ocr => (Scope::Area, Goal::Ocr, tools.ocr),
+        V::Record => (Scope::Screen, Goal::Record, tools.record),
+        V::RecordArea => (Scope::Area, Goal::Record, tools.record),
+        // Answered above.
+        V::Select => return Plan::Select,
+        V::Stop => return Plan::Stop,
+    };
+    if !named {
+        return Plan::Refuse(Refusal::NoTool);
+    }
+    Plan::Capture(Job { scope, goal })
+}
+
+/// What the external tool of an annotation or a text recognition came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolEnd {
+    /// The annotation tool exited 0 and wrote an image: it is copied.
+    Annotated,
+    /// The recognition tool exited 0 and printed this text (trimmed, not empty): it is copied.
+    Text(String),
+    /// Exited 0 with no output: the user closed it, silent.
+    Cancelled,
+    /// It could not start, exited with another code, was killed, or printed too much.
+    Failed,
 }
 
 /// How a capture ended.
@@ -156,16 +205,29 @@ pub enum Finish {
     /// The frame was fine but the copy command did not take it.
     CopyFailed,
     SaveFailed,
+    /// Not an ending: the image is written for the external tool, which runs next.
+    Prepared,
+    /// The annotation tool's image copied.
+    Annotated,
+    /// The recognised text copied (the notice never gives it, the log neither).
+    TextCopied,
+    /// The external tool could not start, failed, was killed or printed too much.
+    ToolFailed,
+    /// A recording ended and its file is there; the file's name, never its path.
+    Recorded(String),
+    /// The recorder could not start, failed, was killed, or left no file.
+    RecordFailed,
 }
 
 impl Finish {
     /// Whether the clipboard now holds this capture: only a copy that succeeded.
     pub fn touches_the_clipboard(&self) -> bool {
-        matches!(self, Finish::Copied(_) | Finish::Picked(_))
+        matches!(self, Finish::Copied(_) | Finish::Picked(_) | Finish::Annotated | Finish::TextCopied)
     }
 }
 
-/// A notice to show: app `alpheus`, the summary `Screenshot`, or `Colour picker` for a pick.
+/// A notice to show: app `alpheus`, the summary `Screenshot`, `Colour picker`, `Text from area` or
+/// `Screen recording`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub summary: &'static str,
@@ -173,22 +235,36 @@ pub struct Notice {
     pub critical: bool,
 }
 
-/// The notice an ending of a capture of `scope` gives: none for a cancel, a calm one for a success,
-/// a critical one for each failure (docs/decisions.md, "A capture never touches the clipboard unless
-/// it succeeded"). Its summary is `Colour picker` for a pick, failures included, else `Screenshot`.
-pub fn notice(finish: &Finish, scope: Scope) -> Option<Notice> {
+/// The notice an ending of capture `job` gives: none for a cancel, a calm one for a success, a
+/// critical one for each failure (docs/decisions.md, "A capture never touches the clipboard unless
+/// it succeeded"). Its summary is `Colour picker` for a pick, `Text from area` for a text
+/// recognition and `Screen recording` for a recording, failures included, else `Screenshot`. The
+/// recognised text is never in it.
+pub fn notice(finish: &Finish, job: Job) -> Option<Notice> {
     let (body, critical) = match finish {
-        Finish::Cancelled => return None,
+        // `Prepared` is a step, not an ending: it never reaches the user.
+        Finish::Cancelled | Finish::Prepared => return None,
         Finish::Copied(Scope::Area) => ("Area copied".to_string(), false),
         // A pick ends as `Picked`, with its value: a copied image is the screen's or an area's.
         Finish::Copied(_) => ("Screen copied".to_string(), false),
         Finish::Picked(value) => (format!("Copied: {value}"), false),
         Finish::Saved(name) => (format!("Saved: {name}"), false),
+        Finish::Annotated => ("Annotated image copied".to_string(), false),
+        Finish::TextCopied => ("Text copied".to_string(), false),
+        Finish::Recorded(name) => (format!("Recording saved: {name}"), false),
         Finish::CaptureFailed => ("Capture failed".to_string(), true),
         Finish::CopyFailed => ("Not copied: the copy command failed".to_string(), true),
         Finish::SaveFailed => ("Not saved: the file could not be written".to_string(), true),
+        Finish::ToolFailed if job.goal == Goal::Ocr => ("Text recognition failed".to_string(), true),
+        Finish::ToolFailed => ("Annotation failed".to_string(), true),
+        Finish::RecordFailed => ("Recording failed".to_string(), true),
     };
-    let summary = if scope == Scope::Pick { "Colour picker" } else { "Screenshot" };
+    let summary = match (job.scope, job.goal) {
+        (Scope::Pick, _) => "Colour picker",
+        (_, Goal::Ocr) => "Text from area",
+        (_, Goal::Record) => "Screen recording",
+        _ => "Screenshot",
+    };
     Some(Notice { summary, body, critical })
 }
 
@@ -206,8 +282,10 @@ enum Stage {
     Grabbing,
     /// The colour picker is open over the frozen frame.
     Picking,
-    /// The worker encodes and delivers (or copies the picked value).
+    /// The worker encodes and delivers (or copies the picked value, or the tool's result).
     Encoding,
+    /// The external tool (annotation, text recognition) runs: as long as the user keeps it open.
+    Tool,
 }
 
 /// How long a frame may take: past it the capture fails and the slot is free again.
@@ -229,6 +307,15 @@ pub enum Step {
     Pick,
     /// Hand the picked colour to the worker, which copies its value.
     Copy(Rgb),
+    /// Start the external tool on the image the worker wrote.
+    RunTool,
+    /// Hand the annotation tool's image to the worker, which copies it.
+    CopyAnnotated,
+    /// Hand the recognised text to the worker, which copies it.
+    CopyText(String),
+    /// Start the recorder on the output, or on this area of it (logical pixels); the flow is at rest
+    /// again (a recording runs beside the captures, never in their slot).
+    Record(Option<Rect>),
     /// It is over: show `notice(finish)`.
     Finish(Finish),
     /// Not for this flow (out of turn, or no capture asked): do nothing.
@@ -240,8 +327,8 @@ pub enum Step {
 pub struct Flow {
     stage: Stage,
     job: Option<Job>,
-    /// The scope of the capture in progress, or of the last one once it ended: what its notice says.
-    scope: Scope,
+    /// The capture in progress, or the last one once it ended: what its notice says.
+    last: Job,
     /// Counts the captures begun: an answer carries the one it was asked for, so a late answer of a
     /// capture that has ended is never taken for the next one's.
     generation: u64,
@@ -257,9 +344,19 @@ impl Flow {
         self.stage == Stage::Grabbing
     }
 
+    /// Whether the external tool runs and its end is awaited.
+    pub fn waits_for_tool(&self) -> bool {
+        self.stage == Stage::Tool
+    }
+
     /// The scope of the capture in progress, or of the last one, kept once it ended.
     pub fn scope(&self) -> Scope {
-        self.scope
+        self.last.scope
+    }
+
+    /// The capture in progress, or the last one, kept once it ended: what its notice says.
+    pub fn last_job(&self) -> Job {
+        self.last
     }
 
     /// The capture in progress.
@@ -280,7 +377,7 @@ impl Flow {
             return None;
         }
         self.job = Some(job);
-        self.scope = job.scope;
+        self.last = job;
         self.generation += 1;
         Some(match job.scope {
             Scope::Area => {
@@ -314,15 +411,19 @@ impl Flow {
     }
 
     /// The compositor confirmed it has dealt with the removal: the frame may be asked, so the dim
-    /// (or a closing menu) is never in it. `generation` is the capture the round trip was for.
+    /// (or a closing menu) is never in it. A recording starts instead, and leaves the slot free: it
+    /// runs beside the captures. `generation` is the capture the round trip was for.
     pub fn settled(&mut self, generation: u64) -> Step {
-        match self.stage {
-            Stage::Settling(area) if generation == self.generation => {
-                self.stage = Stage::Grabbing;
-                Step::Grab(area)
-            }
-            _ => Step::Nothing,
+        let Stage::Settling(area) = self.stage else { return Step::Nothing };
+        if generation != self.generation {
+            return Step::Nothing;
         }
+        if self.job.is_some_and(|j| j.goal == Goal::Record) {
+            self.finished();
+            return Step::Record(area);
+        }
+        self.stage = Stage::Grabbing;
+        Step::Grab(area)
     }
 
     /// The frame of capture `generation` came (`true`) or did not. An answer of another capture is
@@ -369,13 +470,45 @@ impl Flow {
         self.end(Finish::CaptureFailed)
     }
 
-    /// The worker's result for capture `generation`: the capture is over. An ending of another capture
-    /// (a worker left running when the glue reset its capture) is none of this one's.
+    /// The worker's result for capture `generation`: the capture is over, unless the worker only
+    /// wrote the image an external tool now opens (`Prepared`). An ending of another capture (a
+    /// worker left running when the glue reset its capture) is none of this one's.
     pub fn delivered(&mut self, generation: u64, finish: Finish) -> Step {
         if self.stage != Stage::Encoding || generation != self.generation {
             return Step::Nothing;
         }
-        self.end(finish)
+        if finish != Finish::Prepared {
+            return self.end(finish);
+        }
+        match self.job.map(|j| j.goal) {
+            Some(Goal::Annotate | Goal::Ocr) => {
+                self.stage = Stage::Tool;
+                Step::RunTool
+            }
+            // A worker that prepared an image no tool asked for: nothing can follow it.
+            _ => self.end(Finish::CaptureFailed),
+        }
+    }
+
+    /// The external tool of capture `generation` ended: its image or its text goes to the worker to
+    /// be copied, an exit with no output is a silent cancel, a failure is critical. An end of
+    /// another capture's tool is none of this one's.
+    pub fn tool_ended(&mut self, generation: u64, end: ToolEnd) -> Step {
+        if self.stage != Stage::Tool || generation != self.generation {
+            return Step::Nothing;
+        }
+        match end {
+            ToolEnd::Annotated => {
+                self.stage = Stage::Encoding;
+                Step::CopyAnnotated
+            }
+            ToolEnd::Text(text) => {
+                self.stage = Stage::Encoding;
+                Step::CopyText(text)
+            }
+            ToolEnd::Cancelled => self.end(Finish::Cancelled),
+            ToolEnd::Failed => self.end(Finish::ToolFailed),
+        }
     }
 
     /// Back to rest, whatever the stage.

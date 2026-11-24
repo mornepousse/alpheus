@@ -5004,3 +5004,80 @@ fn at_rest_no_wakeups_after_a_screen_capture() {
     eprintln!("wake-ups at rest after a capture (5 s): {delta}");
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after captures were taken");
 }
+
+/// The fake recorder of the recording tests: records until SIGINT, then writes the file given after
+/// `-f` and exits 0, as wf-recorder finishes its file. Its own wake-ups (a sleep loop) are not the
+/// daemon's.
+fn fake_recorder_script(runtime: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = runtime.join("bin/fake-record");
+    std::fs::create_dir_all(runtime.join("bin")).unwrap();
+    let body = "#!/bin/sh\n# Fake recorder of the memory tests.\nout=''; prev=''\nfor a in \"$@\"; do [ \"$prev\" = -f ] && out=$a; prev=$a; done\n\
+trap 'printf frames > \"$out\"; exit 0' INT\nwhile :; do sleep 0.1; done\n";
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// One recording through the socket, the n-th: started, then stopped once it runs; returns once its
+/// n-th saved ending is logged.
+fn recording_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording started", n, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording saved", n, DELAY), "{:?}", d.log());
+}
+
+/// The recording: while the recorder runs nothing wakes the daemon (its end is a pidfd on the loop,
+/// readable only when it exits: no thread, no timer, no poll); afterwards the daemon's anonymous
+/// memory is back within 64 KB after 10 more recordings, no thread is left, and nothing wakes it at
+/// rest. The figures are printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_recording() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("record-rest");
+    let bar = format!("{AT_REST}[captures]\nrecord = [\"fake-record\", \"-g\", \"{{geometry}}\", \"-f\", \"{{out}}\"]\n");
+    let (sway, _hypr, d) = start_launcher("record-rest", &bus, Some(&bar), &[], None);
+    fake_recorder_script(&sway.runtime);
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first recordings warm the allocator: the baseline is after two.
+    recording_cycle(&sway, &d, 1);
+    recording_cycle(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // While it records: the cost, and what wakes the daemon.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording started", 3, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    let recording = d.pss_kb();
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let while_recording = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon while it records");
+    assert_eq!(d.threads(), threads, "no thread while it records");
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording saved", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        recording_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "recording: PSS {at_rest} KB at rest, {recording} KB while recording (+{} KB); wake-ups while recording (5 s): \
+         {while_recording}; anonymous {baseline} KB after 2 recordings, {end} KB after 10 more; threads {} (before: {threads})",
+        recording.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(while_recording <= 4, "{while_recording} wake-ups in 5 s while the recorder ran");
+    assert!(end <= baseline + 64, "10 recordings grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the recordings");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a recording");
+    eprintln!("wake-ups at rest after a recording (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after recordings");
+}

@@ -1761,6 +1761,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // awaited, disarmed by every way a capture ends; a compositor that never answers cannot hold
         // the one capture slot for ever.
         ("captures/app.rs", "Timer::", 1),
+        // A watched child's pidfd: the external tool of a capture (annotation, text recognition) while
+        // it runs, and the recorder while it records, each removed with the child's end. A pidfd turns
+        // readable only when its process ends, so it never wakes the loop before.
+        ("captures/app.rs", "Generic::new", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -4781,7 +4785,9 @@ fn captures_file(name: &str) -> String {
 /// (the notice carries the file's name, the log never does).
 #[test]
 fn the_capture_logs_fixed_words_only() {
-    for name in ["captures/app.rs", "captures/deliver.rs", "captures/mod.rs", "captures/paths.rs"] {
+    for name in
+        ["captures/app.rs", "captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/tools.rs", "captures/record.rs"]
+    {
         let t = captures_file(name);
         let code = production_code_without_comments(&t);
         assert_eq!(selector_unfixed_log(&code), None, "{name}");
@@ -4793,9 +4799,16 @@ fn the_capture_logs_fixed_words_only() {
     assert!(app.matches("log(").count() >= 10, "the log calls were found");
     // The worker, the protocol, the encoder and the pure files never log at all: the glue says one
     // word per ending, and a frame or a buffer never reaches a log line.
-    for name in
-        ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/screencopy.rs", "captures/encode.rs", "captures/pick.rs"]
-    {
+    for name in [
+        "captures/deliver.rs",
+        "captures/mod.rs",
+        "captures/paths.rs",
+        "captures/screencopy.rs",
+        "captures/encode.rs",
+        "captures/pick.rs",
+        "captures/tools.rs",
+        "captures/record.rs",
+    ] {
         let code = production_code_without_comments(&captures_file(name));
         for p in ["log(", "log::", "eprintln!", "println!", "eprint!", "dbg!("] {
             assert!(!code.contains(p), "{p} in {name}");
@@ -4898,8 +4911,10 @@ fn the_capture_worker_always_mails_its_ending() {
         deliver_fn.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
     assert!(after_run <= send, "after the job");
     assert_eq!(deliver_fn[after_run..send].trim(), "", "the next statement, under no condition");
-    // The one place that starts the worker serves the frames and the picked values alike.
-    assert_eq!(app.matches("capture_deliver(").count(), 3, "defined once, called by the frame and by the value");
+    // The one place that starts the worker serves the frames, the picked values and the tools' results.
+    assert_eq!(app.matches("capture_deliver(").count(), 5, "defined once, called by the frame, the value, the image and the text");
+    assert!(function_body(&app, "fn capture_step(").contains("Step::CopyText(text) => self.capture_deliver(Work::Recognised(text))"));
+    assert!(function_body(&app, "fn capture_tool_ended(").contains("self.capture_deliver(Work::Annotated("));
     assert!(function_body(&app, "fn capture_encode(").contains("self.capture_deliver(Work::Image {"));
     assert!(function_body(&app, "fn capture_copy_value(").contains("self.capture_deliver(Work::Text("));
     let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
@@ -6167,13 +6182,15 @@ fn the_picker_frame_is_kept_only_while_the_picker_is_open() {
     assert!(function_body(&app, "fn capture_frame(").contains("Step::Pick => self.pick_open(frame, generation)"));
 }
 
-/// The notice of an ending is told the scope of the capture that ended, so a pick's failure says
-/// "Colour picker", not "Screenshot".
+/// The notice of an ending is told the capture that ended (its scope and its goal), so a pick's failure
+/// says "Colour picker" and a recognition's "Text from area", not "Screenshot"; a recording's notice
+/// is always the recording's, whatever capture ran while it recorded.
 #[test]
 fn a_capture_notice_is_told_its_scope() {
     let app = production_code_without_comments(&captures_file("captures/app.rs"));
-    assert!(function_body(&app, "fn capture_finish(").contains("notice(&finish, self.capture.flow.scope())"));
-    assert_eq!(app.matches("notice(&").count(), 1, "one place makes a capture's notice");
+    assert!(function_body(&app, "fn capture_finish(").contains("notice(&finish, self.capture.flow.last_job())"));
+    assert!(function_body(&app, "fn capture_recording_notify(").contains("notice(&finish, RECORD_JOB)"));
+    assert_eq!(app.matches("notice(&").count(), 2, "one place makes a capture's notice, one a recording's");
 }
 
 /// A picker never outlives its capture, nor is replaced while open: a capture reset (a panic in the
@@ -6226,4 +6243,83 @@ fn a_picker_buffer_is_recorded_before_its_attach() {
     assert!(recorded < attach, "recorded before the attach");
     let committed = paint.find("*committed = drawn").expect("the screen's overlay is recorded");
     assert!(paint.find("layer.commit()").is_some_and(|c| c < committed), "only once committed");
+}
+
+/// alpheus signals only the external program it started itself: the recorder's stop and the
+/// shutdown go through `Watched::interrupt` (the program's own process group, by the pid alpheus is
+/// still the parent of), in `record.rs` only. No capture file sends a signal of its own, names a
+/// process by a pattern or reads another process; only the tools and the recorder start a watched
+/// child.
+#[test]
+fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        if code.contains(".interrupt()") {
+            assert_eq!(name, "captures/record.rs", "a watched child interrupted outside the recorder");
+        }
+        if code.contains("spawn_watched(") {
+            assert!(["captures/tools.rs", "captures/record.rs", "nonblocking.rs"].contains(&name.as_str()), "a watched child in {name}");
+        }
+        if name.starts_with("captures/") {
+            for p in ["kill(", "SIGINT", "SIGTERM", "SIGKILL", "pkill", "killall", "pgrep", "pidof", "/proc/"] {
+                assert!(!code.contains(p), "{p} in {name}");
+            }
+        }
+    }
+    let record = production_code_without_comments(&captures_file("captures/record.rs"));
+    assert_eq!(record.matches(".interrupt()").count(), 2, "the stop and the shutdown");
+    assert!(function_body(&record, "pub fn stop(").contains("self.child.interrupt()"));
+    let end = function_body(&record, "pub fn end_at_shutdown(");
+    let interrupt = end.find("self.child.interrupt()").expect("the shutdown interrupts the recorder");
+    let wait = end.find("self.child.wait_exit(limit)").expect("then waits for it, at most the limit");
+    assert!(interrupt < wait);
+}
+
+/// The daemon's stop ends a recording before anything else goes: the tool or the recorder is ended
+/// (SIGINT and at most `STOP_LIMIT` for the recorder) before the executor's commands are killed and
+/// before the app is dropped, and the signal guard leaves that time while a recording runs.
+#[test]
+fn the_shutdown_ends_the_recording_before_anything_goes() {
+    let startup = production_code_without_comments(&captures_file("startup.rs"));
+    let shut = function_body(&startup, "fn shut_down(");
+    let captures = shut.find("core.state.capture_shutdown();").expect("the shutdown ends the captures' children");
+    for later in ["stop_running()", "drop(core.state)"] {
+        assert!(captures < shut.find(later).expect(later), "the recording ends before {later}");
+    }
+    assert!(function_body(&startup, "fn start_guard(").contains("shutdown_grace(crate::captures::record::LIVE.load("));
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(
+        function_body(&app, "pub(crate) fn capture_shutdown(").contains("capture_guarded(\"shutdown\""),
+        "a panic never turns a stop into a crash"
+    );
+    assert!(function_body(&app, "fn capture_end_all(").contains("end_at_shutdown(STOP_LIMIT)"));
+}
+
+/// While alpheus records, the privacy screen glyph is lit and the guard knows it; both go when the
+/// recording ends, however it ends. A child's pidfd is watched only while the child runs.
+#[test]
+fn a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let record = function_body(&app, "fn capture_record(");
+    let stored = record.find("self.capture.recording = Some(").expect("the recording is kept");
+    assert!(record[stored..].contains("LIVE.store(true") && record[stored..].contains("self.capture_privacy(true)"));
+    let over = function_body(&app, "fn capture_recording_notify(");
+    assert!(over.contains("LIVE.store(false") && over.contains("self.capture_privacy(false)"));
+    assert_eq!(app.matches("LIVE.store(true").count(), 1, "lit in one place, once the recorder runs");
+    // The end only sets a pending off: the off-delay's timer must follow it, as `privacy_feed` does.
+    let privacy = function_body(&app, "fn capture_privacy(");
+    assert!(privacy.contains("self.privacy_changed()") && privacy.contains("self.privacy_timer_sync()"), "{privacy}");
+    assert!(function_body(&app, "fn capture_watch(").contains("Generic::new(fd, Interest::READ, Mode::Level)"));
+    let ready = function_body(&app, "fn capture_child_ready(");
+    assert!(ready.contains("PostAction::Remove"), "the watch goes with the child's end");
+    // Every way a tool run ends outside its own callback takes its watch off the loop.
+    for f in ["fn capture_reset(", "fn capture_end_all("] {
+        assert!(function_body(&app, f).contains("self.capture_unwatch(run.watch)"), "{f}");
+    }
+    let tools = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
+    assert!(
+        function_body(&tools, "fn tools_context(").contains("recording: self.capture.is_recording()"),
+        "Stop shows from the real state"
+    );
 }

@@ -10,6 +10,11 @@
 //! value goes the same way, as text (`pick.txt`), to the copy command as written, so that its exit
 //! says whether it was copied. A save writes a new file in the pictures folder, never over one.
 //!
+//! For an annotation or a text recognition the worker runs twice. First it writes the PNG where the
+//! external tool will open it (`capture-<n>.png`, owner only: `Prepared`); once the tool has ended,
+//! it copies what the tool gave: the annotated image straight from the tool's file, as a PNG, or the
+//! text through `ocr.txt`, as written; then the file goes.
+//!
 //! Never:
 //! - copy a capture that failed, or save it: the clipboard is only reached with PNG bytes in hand
 //!   (docs/decisions.md, "A capture never touches the clipboard unless it succeeded");
@@ -23,6 +28,7 @@
 use super::encode::{EncodeError, encode_png};
 use super::paths::numbered;
 use super::screencopy::{Frame, cut_size, to_rgba};
+use super::tools::is_tool_file;
 use super::{Finish, Goal, Job, Rect};
 use crate::state_file::{dir_is_ours, remove_private, write_private};
 use alpheus_common::exec::Executor;
@@ -44,12 +50,17 @@ pub struct Delivery<'a> {
     pub file_name: String,
     /// The private folder of the copy's file (`$XDG_RUNTIME_DIR/alpheus`).
     pub temp_dir: &'a Path,
+    /// For an annotation or a recognition: the name, in `temp_dir`, of the image the tool opens
+    /// (`tools::ToolFiles::input`).
+    pub tool_input: Option<&'a str>,
 }
 
 /// The name of the private file the copy command reads: one capture at a time, so one name.
 const COPY_FILE: &str = "capture.png";
 /// The colour picker's: its value's text.
 const PICK_FILE: &str = "pick.txt";
+/// A text recognition's: the text to copy.
+const OCR_FILE: &str = "ocr.txt";
 
 /// The longest the copy command's foreground may take to read the image and exit.
 pub const COPY_LIMIT: Duration = Duration::from_secs(5);
@@ -57,8 +68,9 @@ pub const COPY_LIMIT: Duration = Duration::from_secs(5);
 /// The most numbered tries for a save name taken already: past it the save fails.
 const MAX_TRIES: u32 = 99;
 
-/// Clears what a daemon killed mid-copy left in `dir` (the private folder): `capture.png`, `pick.txt`
-/// and the writer's `.capture.png.<pid>` and `.pick.txt.<pid>`, best effort, never anything else,
+/// Clears what a daemon killed mid-copy or mid-tool left in `dir` (the private folder):
+/// `capture.png`, `pick.txt`, `ocr.txt`, a tool run's `capture-<n>.png`, `capture-<n>-out.png` and
+/// `capture-<n>.txt`, and the writer's `.<name>.<pid>` of each, best effort, never anything else,
 /// never a folder that is not ours.
 pub fn remove_stale(dir: &Path) {
     if dir_is_ours(dir).is_err() {
@@ -69,7 +81,7 @@ pub fn remove_stale(dir: &Path) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let ours = |file: &str| name == file || name.starts_with(&format!(".{file}."));
-        if ours(COPY_FILE) || ours(PICK_FILE) {
+        if ours(COPY_FILE) || ours(PICK_FILE) || ours(OCR_FILE) || is_tool_file(&name) {
             let _ = remove_private(dir, &name);
         }
     }
@@ -89,6 +101,11 @@ pub enum Work {
     Image { frame: Frame, area: Option<Rect> },
     /// The colour picker's value, to copy as text.
     Text(String),
+    /// The annotation tool's image, the file of this name in `temp_dir`: copied as a PNG, then
+    /// removed.
+    Annotated(String),
+    /// The text a recognition printed, to copy as text.
+    Recognised(String),
 }
 
 /// The whole job: render, then deliver; or copy the picked value. A frame that renders to nothing
@@ -115,10 +132,22 @@ pub fn run(exec: &dyn Executor, work: Work, d: &Delivery) -> Finish {
                 Finish::CopyFailed
             }
         }
+        Work::Annotated(name) => copy_file(exec, d, &name),
+        Work::Recognised(text) => {
+            if copy_through(exec, d.copy, text.as_bytes(), d.temp_dir, OCR_FILE) {
+                Finish::TextCopied
+            } else {
+                Finish::CopyFailed
+            }
+        }
     }));
     done.unwrap_or_else(|_| {
         let _ = remove_private(d.temp_dir, COPY_FILE);
         let _ = remove_private(d.temp_dir, PICK_FILE);
+        let _ = remove_private(d.temp_dir, OCR_FILE);
+        if let Some(input) = d.tool_input {
+            let _ = remove_private(d.temp_dir, input);
+        }
         Finish::CaptureFailed
     })
 }
@@ -139,7 +168,37 @@ pub fn deliver(exec: &dyn Executor, png: &[u8], d: &Delivery) -> Finish {
     match d.job.goal {
         Goal::Copy => copy(exec, png, d),
         Goal::Save => save(png, d),
+        Goal::Annotate | Goal::Ocr => prepare(png, d),
+        // A recording never reaches the worker: nothing to deliver.
+        Goal::Record => Finish::CaptureFailed,
     }
+}
+
+/// The PNG written, owner only, where the external tool will open it: `Prepared`, the tool runs next.
+fn prepare(png: &[u8], d: &Delivery) -> Finish {
+    let Some(input) = d.tool_input else { return Finish::CaptureFailed };
+    match write_private(d.temp_dir, input, png) {
+        Ok(()) => Finish::Prepared,
+        Err(_) => {
+            let _ = remove_private(d.temp_dir, input);
+            Finish::CaptureFailed
+        }
+    }
+}
+
+/// The annotated image `name` (in `d.temp_dir`, written by the tool) copied as a PNG, through the
+/// file itself on the copy command's standard input, then removed whatever came of it.
+fn copy_file(exec: &dyn Executor, d: &Delivery, name: &str) -> Finish {
+    let argv = copy_argv(d.copy);
+    let copied = match argv.split_first() {
+        Some((prog, args)) => {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            matches!(exec.run_with_stdin_file(prog, &args, &d.temp_dir.join(name), COPY_LIMIT), Ok(Some(0)))
+        }
+        None => false,
+    };
+    let _ = remove_private(d.temp_dir, name);
+    if copied { Finish::Annotated } else { Finish::CopyFailed }
 }
 
 fn copy(exec: &dyn Executor, png: &[u8], d: &Delivery) -> Finish {

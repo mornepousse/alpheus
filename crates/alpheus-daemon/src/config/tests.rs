@@ -935,7 +935,24 @@ fn captures_default_to_the_external_tools_and_no_folder() {
     let c = BarConfig::from_text("").unwrap().captures;
     assert_eq!(c, CapturesConfig::default());
     assert_eq!(c.dir, "", "empty: $XDG_PICTURES_DIR/screenshots");
-    assert_eq!(c.annotate, ["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]);
+    // satty 0.20: `--early-exit` ends it at the first copy or save; `--copy-command true` and
+    // `--save-after-copy` turn its own copy into a save to `{out}` (alpheus copies that file), and
+    // `--disable-notifications` leaves the notice to alpheus.
+    assert_eq!(
+        c.annotate,
+        [
+            "satty",
+            "--filename",
+            "{file}",
+            "--output-filename",
+            "{out}",
+            "--early-exit",
+            "--copy-command",
+            "true",
+            "--save-after-copy",
+            "--disable-notifications"
+        ]
+    );
     assert_eq!(c.ocr, ["tesseract", "{file}", "-", "-l", "eng"]);
     assert_eq!(c.record, ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]);
     assert_eq!(c.pick_format, "{hex}");
@@ -975,5 +992,48 @@ fn pick_format_is_checked() {
     for bad in ["", "colour", "{red}", "{hex", "{hex} {x}", "{hex}\\n", "{hex}\\u0000", long.as_str()] {
         let e = BarConfig::from_text(&format!("[captures]\npick_format = \"{bad}\"")).unwrap_err();
         assert!(e.contains("captures.pick_format"), "{bad}: {e}");
+    }
+}
+
+/// `{file}`, `{out}` and `{geometry}` are whole arguments, each where its tool needs it: the
+/// annotation tool both `{file}` and `{out}` once, the recognizer `{file}` once, the recorder `{out}`
+/// once and `{geometry}` at most once; never inside a longer argument, never as the program, never a
+/// placeholder another tool's.
+#[test]
+fn the_tool_placeholders_are_whole_arguments_where_each_tool_needs_them() {
+    let read = |key: &str, argv: &str| BarConfig::from_text(&format!("[captures]\n{key} = {argv}"));
+    for (key, argv) in [
+        ("annotate", r#"["swappy", "-f", "{file}", "-o", "{out}"]"#),
+        ("ocr", r#"["tesseract", "{file}", "stdout"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["gpu-screen-recorder", "-o", "{out}"]"#),
+        ("annotate", "[]"),
+        ("ocr", "[]"),
+        ("record", "[]"),
+    ] {
+        assert!(read(key, argv).is_ok(), "{key} = {argv}: {:?}", read(key, argv));
+    }
+    for (key, argv) in [
+        ("annotate", r#"["satty", "--filename", "{file}"]"#),
+        ("annotate", r#"["satty", "--output-filename", "{out}"]"#),
+        ("annotate", r#"["satty", "{file}", "{file}", "{out}"]"#),
+        ("annotate", r#"["satty", "--filename={file}", "{file}", "{out}"]"#),
+        ("annotate", r#"["satty", "{file}", "{out}", "{geometry}"]"#),
+        ("annotate", r#"["{file}", "{out}"]"#),
+        ("ocr", r#"["tesseract", "-"]"#),
+        ("ocr", r#"["tesseract", "{file}", "{out}"]"#),
+        ("ocr", r#"["tesseract", "in={file}"]"#),
+        ("ocr", r#"["tesseract", "{file}", "{file}"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}"]"#),
+        ("record", r#"["wf-recorder", "-f", "{out}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}", "-g", "{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "--file={out}"]"#),
+        ("record", r#"["wf-recorder", "-g", "x{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "{file}", "-f", "{out}"]"#),
+        ("record", r#"["{out}", "-f", "{out}"]"#),
+    ] {
+        let e = read(key, argv).unwrap_err();
+        assert!(e.contains(&format!("captures.{key}")), "{key} = {argv}: {e}");
+        assert!(!e.contains("satty") && !e.contains("tesseract") && !e.contains("wf-recorder"), "no command in the message: {e}");
     }
 }

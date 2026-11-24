@@ -491,11 +491,12 @@ impl Default for FailedConfig {
 pub struct CapturesConfig {
     /// Absolute or `~/…`; empty: `$XDG_PICTURES_DIR/screenshots`, else `~/Pictures/screenshots`.
     pub dir: String,
-    /// `{file}` and `{out}` are whole elements; empty: no annotation.
+    /// `{file}` and `{out}` are whole elements, once each; empty: no annotation.
     pub annotate: Vec<String>,
-    /// The text on its standard output is what is copied; empty: no OCR.
+    /// `{file}` once; the text on its standard output is what is copied; empty: no OCR.
     pub ocr: Vec<String>,
-    /// `{geometry}` and `{out}` are whole elements; the screen variant has no `-g`; empty: no recording.
+    /// `{out}` once and `{geometry}` at most once, whole elements; `{geometry}` is the area, or the
+    /// whole focused output for `record`; empty: no recording.
     pub record: Vec<String>,
     /// The colour picker's text, with `{r}`, `{g}`, `{b}` and `{hex}`.
     pub pick_format: String,
@@ -506,7 +507,24 @@ impl Default for CapturesConfig {
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
         CapturesConfig {
             dir: String::new(),
-            annotate: argv(&["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]),
+            // satty 0.20.1, flags read in its `--help` and its source: `--early-exit` ends it at the
+            // first copy or save; its own copy runs `--copy-command` (here `true`, which copies
+            // nothing) and then saves to `{out}` (`--save-after-copy`), so whatever the user does
+            // the image comes back to alpheus, which copies it; the notice is alpheus's
+            // (`--disable-notifications`). See docs/decisions.md, "A capture never touches the
+            // clipboard unless it succeeded".
+            annotate: argv(&[
+                "satty",
+                "--filename",
+                "{file}",
+                "--output-filename",
+                "{out}",
+                "--early-exit",
+                "--copy-command",
+                "true",
+                "--save-after-copy",
+                "--disable-notifications",
+            ]),
             ocr: argv(&["tesseract", "{file}", "-", "-l", "eng"]),
             record: argv(&["wf-recorder", "-g", "{geometry}", "-f", "{out}"]),
             pick_format: "{hex}".into(),
@@ -527,7 +545,41 @@ fn check_captures(c: &CapturesConfig) -> Result<(), String> {
             return Err(format!("{key}: an argument holds a NUL"));
         }
     }
+    // How many times each tool must name each placeholder, as (at least, at most).
+    let rules = [
+        ("captures.annotate", &c.annotate, [("{file}", 1, 1), ("{out}", 1, 1), ("{geometry}", 0, 0)]),
+        ("captures.ocr", &c.ocr, [("{file}", 1, 1), ("{out}", 0, 0), ("{geometry}", 0, 0)]),
+        ("captures.record", &c.record, [("{file}", 0, 0), ("{out}", 1, 1), ("{geometry}", 0, 1)]),
+    ];
+    for (key, command, placeholders) in rules {
+        check_placeholders(key, command, &placeholders)?;
+    }
     check_pick_format(&c.pick_format)
+}
+
+/// A tool's placeholders: each a whole argument, never the program, never inside a longer argument,
+/// and named between its `(least, most)` times. An empty command (the tool off) has none to check.
+/// The message names the key and the placeholder, never the command.
+fn check_placeholders(key: &str, command: &[String], placeholders: &[(&str, usize, usize)]) -> Result<(), String> {
+    let Some(program) = command.first() else { return Ok(()) };
+    for (placeholder, least, most) in placeholders {
+        if program == placeholder {
+            return Err(format!("{key}: the program must not be \"{placeholder}\""));
+        }
+        if command.iter().any(|a| a.contains(placeholder) && a != placeholder) {
+            return Err(format!("{key}: \"{placeholder}\" must be a whole argument"));
+        }
+        let count = command.iter().filter(|a| a == placeholder).count();
+        if count < *least || count > *most {
+            let wanted = match (least, most) {
+                (0, 0) => "not at all".to_string(),
+                (1, 1) => "exactly once".to_string(),
+                _ => format!("at most {most} time"),
+            };
+            return Err(format!("{key}: \"{placeholder}\" must be there {wanted}"));
+        }
+    }
+    Ok(())
 }
 
 /// The longest `[captures] pick_format`, in bytes: one short line on the clipboard.

@@ -173,14 +173,29 @@ pub struct Context {
     pub shutdown_left: Option<u64>,
     /// The compositor offers screencopy: the Captures entries show.
     pub captures: bool,
-    /// A recording runs: "Stop recording" shows.
+    /// A recording runs: "Stop recording" shows, and the two "Record" rows hide.
     pub recording: bool,
+    /// `[captures] annotate` is set and its program is on the `$PATH`.
+    pub annotate: bool,
+    /// `[captures] ocr` is set and its program is on the `$PATH`.
+    pub ocr: bool,
+    /// `[captures] record` is set and its program is on the `$PATH`.
+    pub record: bool,
 }
 
-/// Whether a capture verb is built: the others answer "not available yet", and their rows stay
-/// hidden (in the table, with their ids) until their tasks land.
-const fn built(verb: CaptureVerb) -> bool {
-    matches!(verb, CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave | CaptureVerb::Pick)
+/// Whether the row of capture `verb` shows, the compositor having screencopy: a row whose external
+/// tool is off or missing hides, the two "Record" rows hide while a recording runs (one at a time),
+/// and "Stop recording" shows only then.
+const fn capture_shown(verb: CaptureVerb, c: &Context) -> bool {
+    match verb {
+        CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave | CaptureVerb::Pick => true,
+        CaptureVerb::Annotate => c.annotate,
+        CaptureVerb::Ocr => c.ocr,
+        CaptureVerb::Record | CaptureVerb::RecordArea => c.record && !c.recording,
+        CaptureVerb::Stop => c.recording,
+        // The debug selector has no row.
+        CaptureVerb::Select => false,
+    }
 }
 
 /// Whether `b` shows under `c`.
@@ -203,7 +218,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Scan => c.nmap,
         BuiltinAction::UsbReset => c.usb_reset,
         BuiltinAction::Preset(_) => c.diagnostics,
-        BuiltinAction::Capture(verb) => c.captures && built(verb) && (verb != CaptureVerb::Stop || c.recording),
+        BuiltinAction::Capture(verb) => c.captures && capture_shown(verb, c),
     }
 }
 

@@ -26,6 +26,9 @@ fn all() -> Context {
         shutdown_left: None,
         captures: true,
         recording: true,
+        annotate: true,
+        ocr: true,
+        record: true,
     }
 }
 
@@ -257,9 +260,11 @@ fn shown_follows_the_context() {
         (
             |c| {
                 c.captures = true;
+                c.annotate = true;
+                c.ocr = true;
                 c.recording = true;
             },
-            &["capture.full", "capture.area", "capture.area_save", "capture.pick"],
+            &["capture.full", "capture.area", "capture.area_save", "capture.annotate", "capture.stop", "capture.pick", "capture.ocr"],
         ),
     ];
     for (flip, rows) in flips {
@@ -273,7 +278,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 40, "the table's 45, less the five captures not built yet");
+    assert_eq!(ids_shown(&all()).len(), 43, "the table's 45, less the two Record rows hidden while recording");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -311,11 +316,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 40);
+    assert_eq!(builtin_ids(&cat).len(), 43);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 38);
+    assert_eq!(ids.len(), 41);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -618,25 +623,51 @@ fn no_screencopy_hides_the_captures() {
     assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Captures]".to_string()), "no empty category");
     let (cat, _) = build("", &all());
     let at = cat.categories.iter().position(|k| k.name == "Captures").unwrap();
-    assert_eq!(names(&cat, &cat.category_rows(at)), ["Screenshot", "Area", "Area (save)", "Colour picker"]);
+    assert_eq!(
+        names(&cat, &cat.category_rows(at)),
+        ["Screenshot", "Area", "Area (save)", "Annotate", "Stop recording", "Colour picker", "Text from area (OCR)"]
+    );
     // The category sits between Utilities and Session.
     let root = category_names(&cat, &cat.root_rows());
     let place = |n: &str| root.iter().position(|r| r == n).unwrap();
     assert!(place("[Utilities]") < place("[Captures]") && place("[Captures]") < place("[Session]"), "{root:?}");
 }
 
-/// The entries whose verb is not built yet stay in the table (ids, labels, order) and are hidden,
-/// whatever the context says, until their tasks land: no row that answers "not available yet".
+/// Every capture verb is built. A row shows when its external tool is set and found on the `$PATH`
+/// (`annotate`, `ocr`, `record`), the two Record rows only while nothing records (one recording at a
+/// time), and "Stop recording" only while a recording runs: `Context::recording`, which the glue
+/// fills from the daemon's own recording (`tools_context`).
 #[test]
-fn the_unbuilt_captures_are_hidden_until_their_tasks_land() {
-    let shown = ids_shown(&all());
-    for id in ["capture.annotate", "capture.record", "capture.record_area", "capture.stop", "capture.ocr"] {
-        assert!(BUILTINS.iter().any(|b| b.id == id), "{id} stays in the table");
-        assert!(!shown.contains(&id), "{id} is hidden");
-    }
-    for id in ["capture.full", "capture.area", "capture.area_save", "capture.pick"] {
-        assert!(shown.contains(&id), "{id} shows");
-    }
+fn the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording() {
+    let base = Context { captures: true, ..Context::default() };
+    let captures = |c: &Context| ids_shown(c).into_iter().filter(|i| i.starts_with("capture.")).collect::<Vec<_>>();
+    assert_eq!(captures(&base), ["capture.full", "capture.area", "capture.area_save", "capture.pick"], "no tool: the native ones");
+    assert_eq!(captures(&Context { annotate: true, ..base })[3], "capture.annotate");
+    assert_eq!(captures(&Context { ocr: true, ..base })[4], "capture.ocr");
+    assert_eq!(captures(&Context { record: true, ..base })[3..5], ["capture.record", "capture.record_area"]);
+    let idle = Context { annotate: true, ocr: true, record: true, recording: false, ..base };
+    assert_eq!(
+        captures(&idle),
+        [
+            "capture.full",
+            "capture.area",
+            "capture.area_save",
+            "capture.annotate",
+            "capture.record",
+            "capture.record_area",
+            "capture.pick",
+            "capture.ocr"
+        ],
+        "nothing records: no Stop"
+    );
+    let recording = Context { recording: true, ..idle };
+    assert_eq!(
+        captures(&recording),
+        ["capture.full", "capture.area", "capture.area_save", "capture.annotate", "capture.stop", "capture.pick", "capture.ocr"],
+        "while it records: Stop, and no second recording"
+    );
+    assert!(captures(&Context { record: false, ..recording }).contains(&"capture.stop"), "a running recording can always be stopped");
+    assert!(captures(&Context { captures: false, ..recording }).is_empty(), "without screencopy nothing shows");
 }
 
 /// The capture rows each have a glyph of their own, the two recordings included.

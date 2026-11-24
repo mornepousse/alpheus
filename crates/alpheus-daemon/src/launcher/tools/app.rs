@@ -88,6 +88,9 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         // The captures' own answers are the daemon's, added by `tools_context`.
         captures: false,
         recording: false,
+        annotate: false,
+        ocr: false,
+        record: false,
     }
 }
 
@@ -373,13 +376,22 @@ impl Default for ToolsApp {
 impl App {
     /// The catalog's `Context` from this app's configs.
     fn tools_context(&self, launcher: &LauncherConfig) -> Context {
+        let path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
         let join = Join {
             shield: tools::join::shield_available(self),
             clipboard: tools::join::clipboard_available(self),
             diagnostics: tools::join::DIAGNOSTICS_TAB.is_some(),
-            nmap: has_program(&ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs, "nmap"),
+            nmap: has_program(&path_dirs, "nmap"),
         };
-        let mut c = Context { captures: self.screencopy.is_some(), ..context(&self.bar.config, launcher, self.timer.enabled, join) };
+        let tools = &self.bar.config.captures;
+        let mut c = Context {
+            captures: self.screencopy.is_some(),
+            recording: self.capture.is_recording(),
+            annotate: program_is_present(&tools.annotate, &path_dirs),
+            ocr: program_is_present(&tools.ocr, &path_dirs),
+            record: program_is_present(&tools.record, &path_dirs),
+            ..context(&self.bar.config, launcher, self.timer.enabled, join)
+        };
         // A shutdown pending: the entry's first choice cancels it, with the time left.
         c.shutdown_left = self.timer.shutdown.map(|s| s.left(crate::timer::app::unix_ms()));
         c

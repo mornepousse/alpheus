@@ -1,9 +1,12 @@
-//! Where a screenshot is saved and what it is called: pure arithmetic on strings and paths.
+//! Where a screenshot or a recording is saved and what it is called, and the recorder's geometry:
+//! pure arithmetic on strings and paths.
 //!
 //! The folder is `[captures] dir`, else `$XDG_PICTURES_DIR/screenshots`, else
-//! `~/Pictures/screenshots`; the file is `%Y%m%d-%H%M%S.png` in local time. `user_dir` reads one
-//! entry of `~/.config/user-dirs.dirs`, since a session often sets no `XDG_PICTURES_DIR`
-//! variable. The caller reads the environment, the file and the clock and hands them in.
+//! `~/Pictures/screenshots`; the file is `%Y%m%d-%H%M%S.png` in local time. A recording goes to
+//! `$XDG_VIDEOS_DIR`, else `~/Videos`, as `screenrecord-%Y%m%d-%H%M%S.mp4`. `user_dir` reads one
+//! entry of `~/.config/user-dirs.dirs`, since a session often sets no `XDG_PICTURES_DIR` or
+//! `XDG_VIDEOS_DIR` variable. The caller reads the environment, the file and the clock and hands
+//! them in.
 //!
 //! Never:
 //! - read the environment, a file or the clock: the glue (`app.rs`) does, so a test picks any value;
@@ -11,6 +14,7 @@
 //!
 //! See: docs/features/captures.md and docs/configuration.md (`[captures] dir`).
 
+use super::Rect;
 use crate::clock::LocalTime;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +48,29 @@ pub fn user_dir(text: &str, key: &str, home: &Path) -> Option<PathBuf> {
 /// `%Y%m%d-%H%M%S.png` of `t`.
 pub fn file_name(t: &LocalTime) -> String {
     format!("{:04}{:02}{:02}-{:02}{:02}{:02}.png", t.year, t.month, t.day, t.hour, t.minute, t.second)
+}
+
+/// The folder a recording goes to: `videos` (`$XDG_VIDEOS_DIR`, or the videos entry of
+/// `user-dirs.dirs`) itself, else `home/Videos`. None without a home: never a relative path.
+pub fn videos_dir(videos: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    match videos {
+        Some(v) => Some(v.to_path_buf()),
+        None => home.map(|h| h.join("Videos")),
+    }
+}
+
+/// `screenrecord-%Y%m%d-%H%M%S.mp4` of `t`, the recording's start.
+pub fn video_name(t: &LocalTime) -> String {
+    format!("screenrecord-{:04}{:02}{:02}-{:02}{:02}{:02}.mp4", t.year, t.month, t.day, t.hour, t.minute, t.second)
+}
+
+/// The recorder's geometry, `x,y wxh` as slurp prints it: `area` (an output's logical pixels) moved
+/// by `origin`, that output's place in the compositor's layout.
+pub fn geometry(origin: (i32, i32), area: Rect) -> String {
+    // `saturating_add` stops at the limit instead of wrapping round: a layout that far out is not
+    // a real one, and the recorder refuses the geometry.
+    let (x, y) = (origin.0.saturating_add(area.x), origin.1.saturating_add(area.y));
+    format!("{x},{y} {}x{}", area.width, area.height)
 }
 
 /// `name` for the `n`-th try: itself at 0, else `-n` before the extension.
