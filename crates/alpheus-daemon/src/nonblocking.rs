@@ -21,7 +21,7 @@
 //! docs/features/launcher.md (the scan thread), docs/features/shield.md (the worker).
 
 use crate::log::write as log;
-use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
+use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream, Watched};
 
 pub const REFUSED: &str = "Executor::run refused: it blocks, and the daemon must never block its event loop";
 
@@ -69,6 +69,11 @@ impl<E: Executor> Executor for NonBlocking<E> {
 
     fn stop_running(&self) {
         self.0.stop_running();
+    }
+
+    // Starts and returns at once: its end is watched by the loop, never waited for.
+    fn spawn_watched(&self, prog: &str, args: &[&str], stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
+        self.0.spawn_watched(prog, args, stdout)
     }
 }
 

@@ -8,9 +8,13 @@
 //!   (`the_only_system_executor_is_wrapped_in_non_blocking`, in the daemon's guardrails);
 //! - write more than one page to a program's standard input (`MAX_INPUT`), so a write never waits
 //!   for the program to read (a payload that needs more goes through a file: `run_with_stdin_file`).
+//! - signal a program it did not start, or one already reaped: a watched program (`spawn_watched`) is
+//!   interrupted through its own process group only while it is still our unreaped child
+//!   (`an_interrupt_is_never_sent_to_a_reaped_pid`).
 //!
 //! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/shield.md and
-//! docs/features/quick-settings.md (what runs through it).
+//! docs/features/quick-settings.md (what runs through it), docs/decisions.md ("An external capture tool
+//! runs as a watched child of the daemon").
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -169,6 +173,39 @@ pub trait Executor: Send + Sync {
     /// ones (the daemon at shutdown). A privileged command that cannot be signalled is left to end.
     /// The fakes do nothing.
     fn stop_running(&self) {}
+
+    /// Launches `prog args…` as our own child, for as long as it chooses to run (an annotation
+    /// editor, a screen recorder), and returns it without waiting: its end is told by a descriptor
+    /// the caller's event loop watches (`Watched::exit_fd`), so no thread and no timer wait for it.
+    /// Standard input `/dev/null`; standard output to the file `stdout` (created owner-only when
+    /// missing, emptied first) or `/dev/null`; standard error `/dev/null`; the caller's environment
+    /// as is (a program with a window needs the user's locale); its own process group; SIGINT when
+    /// the launching thread dies (PDEATHSIG), so a recorder finishes its file rather than run on
+    /// with nobody to stop it. Not registered in `Running`: `stop_running` does not reach it, its
+    /// owner ends it (a recorder deserves SIGINT and time to finish its file, not SIGKILL). Refused
+    /// once `stop_running` was called. Not supported by default.
+    fn spawn_watched(&self, _prog: &str, _args: &[&str], _stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
+        Err(ExecError::Io("watched programs are not supported".into()))
+    }
+}
+
+/// A program started by `spawn_watched`. It is our child until it is reaped here, so its pid, which
+/// is also its process group's, cannot be reused while this lives: a signal sent through it never
+/// reaches a stranger. Dropping it while the program runs kills the program's group (SIGKILL) and
+/// reaps it.
+pub trait Watched: Send {
+    /// A descriptor that turns readable once the program has ended (a duplicate of its pidfd), for an
+    /// event loop to watch; None where there is none (the fakes).
+    fn exit_fd(&self) -> Option<std::os::fd::OwnedFd>;
+    /// Its end once it has ended: `Some(code)`, the code None when a signal ended it; None while it
+    /// runs. The first call that sees the end reaps it; the later ones give the same answer.
+    fn try_exit(&mut self) -> Option<Option<i32>>;
+    /// Sends SIGINT to the program's own process group (the program and what it started, never
+    /// another group). False when it has already ended: nothing is sent.
+    fn interrupt(&mut self) -> bool;
+    /// Waits at most `limit` for the program's end (on its descriptor: no busy loop), then answers
+    /// as `try_exit`. Blocks: only where blocking is the point (the daemon's shutdown).
+    fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>>;
 }
 
 /// PIDs of the commands in progress — `run`s, and `stream`s not yet dropped —
@@ -843,6 +880,124 @@ impl Executor for SystemExecutor {
 
     fn stop_running(&self) {
         self.kill_running();
+    }
+
+    fn spawn_watched(&self, prog: &str, args: &[&str], stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
+        if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
+            return Err(ExecError::Io("alpheus is shutting down".into()));
+        }
+        let out = match stdout {
+            Some(path) => {
+                use std::os::unix::fs::OpenOptionsExt;
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(path)
+                    .map_err(|e| ExecError::Io(e.to_string()))?;
+                Stdio::from(file)
+            }
+            None => Stdio::null(),
+        };
+        let parent = std::process::id();
+        let mut command = Command::new(prog);
+        command.args(args).stdin(Stdio::null()).stdout(out).stderr(Stdio::null()).process_group(0);
+        // SAFETY: as in `capture`: only async-signal-safe calls between fork and exec (sigprocmask,
+        // prctl, getppid, _exit).
+        unsafe {
+            command.pre_exec(move || {
+                unblock_signals()?;
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGINT) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() as u32 != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().map_err(io_err)?;
+        let pid = child.id();
+        // Without a pidfd nobody could hear the end without a thread or a timer: the program is
+        // given up at once rather than left unwatched.
+        let Some(pidfd) = pidfd_open(pid) else {
+            kill_group(pid);
+            let _ = child.wait();
+            return Err(ExecError::Io("no pidfd for the program".into()));
+        };
+        Ok(Box::new(WatchedChild { child, pidfd, ended: None }))
+    }
+}
+
+/// A pidfd for our child `pid` (Linux 5.3 or later), None when the kernel cannot give one.
+fn pidfd_open(pid: u32) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: pidfd_open(2) takes a pid and flags, no pointer; a result of 0 or more is a new
+    // descriptor that nobody else owns, so `OwnedFd` may take it.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let fd = libc::c_int::try_from(fd).ok().filter(|fd| *fd >= 0)?;
+    // SAFETY: `fd` was just returned by the kernel to us alone (see above).
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+/// `spawn_watched`'s program: the child, its pidfd, and its end once reaped.
+struct WatchedChild {
+    child: Child,
+    pidfd: std::os::fd::OwnedFd,
+    ended: Option<Option<i32>>,
+}
+
+impl Watched for WatchedChild {
+    fn exit_fd(&self) -> Option<std::os::fd::OwnedFd> {
+        self.pidfd.try_clone().ok()
+    }
+
+    fn try_exit(&mut self) -> Option<Option<i32>> {
+        if self.ended.is_none() {
+            // An error of waitpid on our own child cannot leave it running: it is counted as gone.
+            match self.child.try_wait() {
+                Ok(Some(status)) => self.ended = Some(status.code()),
+                Ok(None) => {}
+                Err(_) => self.ended = Some(None),
+            }
+        }
+        self.ended
+    }
+
+    fn interrupt(&mut self) -> bool {
+        if self.try_exit().is_some() {
+            return false;
+        }
+        // Not reaped (try_exit just saw it running): its pid, its group's, is still ours.
+        let Some(target) = group_target(self.child.id()) else { return false };
+        // SAFETY: kill(2) towards the program's own group, created at its launch; no pointer.
+        unsafe { libc::kill(target, libc::SIGINT) == 0 }
+    }
+
+    fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>> {
+        use std::os::fd::AsRawFd;
+        let start = Instant::now();
+        while self.try_exit().is_none() {
+            let Some(left) = limit.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) else { break };
+            let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
+            // Readable means ended; quiet means the limit passed; an error is read as an end below.
+            if readable(self.pidfd.as_raw_fd(), ms).is_err() {
+                break;
+            }
+        }
+        self.try_exit()
+    }
+}
+
+impl Drop for WatchedChild {
+    fn drop(&mut self) {
+        if self.try_exit().is_none() {
+            // Not reaped: the group is still the program's own.
+            kill_group(self.child.id());
+            let _ = self.child.wait();
+        }
     }
 }
 
