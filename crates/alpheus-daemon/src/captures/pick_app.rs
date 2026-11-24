@@ -201,6 +201,15 @@ pub(crate) fn damage(before: Option<Option<Area>>, committed: Option<Area>, draw
     }
 }
 
+/// How a draw went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Painted {
+    /// Drawn, or nothing to draw (unchanged, not configured, waiting for a buffer).
+    Done,
+    /// No buffer could be made.
+    Failed,
+}
+
 /// What a draw shows for a pointer: the frame's pixel under it (what a click copies) and the logical
 /// pixel the lens is placed by.
 type DrawKey = ((i64, i64), (i32, i32));
@@ -307,6 +316,10 @@ impl App {
         let r = guarded(what, || f(self));
         if r.is_none() {
             let _ = guarded("close", || self.pick_close(PickClose::Error));
+            // The close may itself have failed after taking the picker: the flow is answered anyway
+            // (it ignores the answer once the capture has ended), so a pick never waits for ever.
+            let generation = self.capture.generation();
+            self.capture_picked(generation, PickAnswer::Failed);
         }
         r
     }
@@ -426,18 +439,28 @@ impl App {
         self.pick_draw();
     }
 
+    /// Draws the picker; one that cannot get a buffer is closed as a failure, so its capture ends
+    /// rather than wait for a draw that never comes.
     fn pick_draw(&mut self) {
+        if self.pick_paint() == Painted::Failed {
+            log("capture: picker could not draw");
+            self.pick_close(PickClose::Error);
+        }
+    }
+
+    /// Paints and commits the next frame of the picker; `Failed` when no buffer could be made.
+    fn pick_paint(&mut self) -> Painted {
         let height = self.bar.config.height;
         let App { pick, fonts, roles, .. } = self;
-        let Some(open) = pick.as_mut() else { return };
+        let Some(open) = pick.as_mut() else { return Painted::Done };
         if !open.configured {
-            return;
+            return Painted::Done;
         }
         let pointer = open.picker.pointer();
         let shown = draw_key(&open.shot, pointer);
         if open.last == Some(shown) {
             open.waiting = false;
-            return;
+            return Painted::Done;
         }
         let e = open.scale.max(1) as u32;
         let (w, h) = (open.size.0 * e, open.size.1 * e);
@@ -446,17 +469,17 @@ impl App {
             Pick::Buffer(i) => i,
             Pick::Wait => {
                 *waiting = true;
-                return;
+                return Painted::Done;
             }
-            Pick::Failed => return,
+            Pick::Failed => return Painted::Failed,
         };
         *waiting = false;
         // The overlays of buffers gone (a resize, a third one dropped) are forgotten with them.
         overlays.retain(|(b, _)| buffers.iter().any(|(kept, _, _)| kept.wl_buffer() == b));
-        let Some((buffer, _, _)) = buffers.get(used) else { return };
+        let Some((buffer, _, _)) = buffers.get(used) else { return Painted::Done };
         let Some(px) = buffer.canvas(pool) else {
             log("capture: picker buffer unexpectedly busy");
-            return;
+            return Painted::Done;
         };
         let whole = (0, 0, w as i32, h as i32);
         // What this buffer showed before: the frame and an overlay to wipe, or nothing yet.
@@ -505,7 +528,7 @@ impl App {
         }
         let mark = buffer.wl_buffer().clone();
         if buffer.attach_to(surface).is_err() {
-            return;
+            return Painted::Done;
         }
         layer.commit();
         *committed = drawn;
@@ -516,6 +539,7 @@ impl App {
             open.shown_logged = true;
             log("capture: picker shown");
         }
+        Painted::Done
     }
 }
 

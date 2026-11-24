@@ -6195,3 +6195,21 @@ fn a_picker_never_outlives_its_capture() {
     let set = open.find("self.pick = Some(").expect("the new picker is set");
     assert!(closed < set);
 }
+
+/// A pick always ends: a picker that cannot get a buffer to draw into closes as a failure (else the
+/// flow would wait for it for ever, the slot taken), and a panic in a picker entry point, even one
+/// in the close after the picker was taken, still answers the flow with a failure (an answer the
+/// flow ignores once the capture has ended).
+#[test]
+fn a_pick_always_ends() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let draw = function_body(&pick, "fn pick_draw(");
+    assert!(draw.contains("self.pick_close(PickClose::Error)"), "{draw}");
+    let paint = function_body(&pick, "fn pick_paint(");
+    let failed = paint.find("Pick::Failed =>").expect("the buffer failure is handled");
+    assert!(paint[failed..].trim_start_matches("Pick::Failed =>").trim_start().starts_with("return Painted::Failed"), "{paint}");
+    let guard = function_body(&pick, "pub(crate) fn pick_guarded<R>(");
+    let close = guard.find("self.pick_close(PickClose::Error)").expect("a panic closes the picker");
+    let answer = guard.find("self.capture_picked(generation, PickAnswer::Failed)").expect("and answers the flow");
+    assert!(close < answer, "{guard}");
+}

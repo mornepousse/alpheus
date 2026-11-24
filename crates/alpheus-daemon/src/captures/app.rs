@@ -79,6 +79,11 @@ impl CaptureApp {
         CaptureApp { flow: Flow::default(), output: None, area: None, pending: None, due: None, timer: DeadlineTimer::new() }
     }
 
+    /// The number of the capture in progress (or the last one), for an answer of the picker.
+    pub(super) fn generation(&self) -> u64 {
+        self.flow.generation()
+    }
+
     /// The output being captured, for the picker that opens over it.
     pub(super) fn output(&self) -> Option<WlOutput> {
         self.output.clone()
