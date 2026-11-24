@@ -131,3 +131,17 @@ fn a_position_left_of_the_surface_floors_below_zero() {
     // The model clamps; the input keeps the sign, so a press left of the edge is pulled to it.
     assert_eq!(pointer_input(&PointerEventKind::Motion { time: 0 }, (-0.5, -3.2)), Some(SelInput::Motion(-1, -4)));
 }
+
+/// Only the user's own gestures end a selector silently (Esc, a click without a drag, focus taken
+/// elsewhere, another surface opened over it); the compositor taking it away is a failure.
+#[test]
+fn only_the_users_gestures_are_a_silent_cancel() {
+    let r = Rect { x: 1, y: 2, width: 3, height: 4 };
+    assert_eq!(SelectClose::Done(r).answer(), SelectorAnswer::Area(r));
+    for gesture in [SelectClose::Cancelled, SelectClose::FocusLost, SelectClose::Replaced] {
+        assert_eq!(gesture.answer(), SelectorAnswer::Cancelled, "{gesture:?}");
+    }
+    for taken in [SelectClose::OutputGone, SelectClose::Error] {
+        assert_eq!(taken.answer(), SelectorAnswer::Failed, "{taken:?}");
+    }
+}

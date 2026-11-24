@@ -29,7 +29,7 @@ use super::deliver::{Delivery, run};
 use super::paths::{file_name, save_dir, user_dir};
 use super::screencopy::{CaptureDone, CaptureError, Frame, PendingFrame, buffer_area};
 use super::select_app::guarded;
-use super::{Finish, Flow, GRAB_LIMIT, Job, Plan, Rect, Step, notice, plan};
+use super::{Finish, Flow, GRAB_LIMIT, Job, Plan, Rect, SelectorAnswer, Step, notice, plan};
 use crate::clock::LocalTime;
 use crate::deadline::DeadlineTimer;
 use crate::launcher::host::read_config;
@@ -190,13 +190,16 @@ impl App {
 
     /// The selector answered (`select_app.rs`, once its surface is destroyed): the flow decides what
     /// that means, and a selector nobody here asked for (the debug verb) means nothing to it.
-    pub(crate) fn capture_selected(&mut self, output: Option<WlOutput>, area: Option<Rect>) {
+    pub(crate) fn capture_selected(&mut self, output: Option<WlOutput>, answer: SelectorAnswer) {
         if self.capture.flow.is_busy() {
             self.capture.output = output;
-            self.capture.area = area;
+            self.capture.area = match answer {
+                SelectorAnswer::Area(area) => Some(area),
+                SelectorAnswer::Cancelled | SelectorAnswer::Failed => None,
+            };
         }
         self.capture_guarded("selected", |app| {
-            let step = app.capture.flow.selected(area);
+            let step = app.capture.flow.selected(answer);
             app.capture_step(step);
         });
     }

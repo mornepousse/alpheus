@@ -38,6 +38,17 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// What the area selector answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectorAnswer {
+    /// An area, in the output's logical pixels.
+    Area(Rect),
+    /// The user ended it (Esc, a click without a drag, focus taken, another surface opened): silent.
+    Cancelled,
+    /// It could not open, or the compositor took it away (its layer closed, its output gone).
+    Failed,
+}
+
 /// What is captured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -242,18 +253,19 @@ impl Flow {
         })
     }
 
-    /// The selector answered, with an area or none. A selector nobody here asked for (the debug
-    /// verb) is none of this flow's business.
-    pub fn selected(&mut self, area: Option<Rect>) -> Step {
+    /// The selector answered. A cancel is silent; a selector that failed ends the capture as a
+    /// failure. A selector nobody here asked for (the debug verb) is none of this flow's business.
+    pub fn selected(&mut self, answer: SelectorAnswer) -> Step {
         if self.stage != Stage::Selecting {
             return Step::Nothing;
         }
-        match area {
-            Some(area) => {
+        match answer {
+            SelectorAnswer::Area(area) => {
                 self.stage = Stage::Settling(Some(area));
                 Step::Settle
             }
-            None => self.end(Finish::Cancelled),
+            SelectorAnswer::Cancelled => self.end(Finish::Cancelled),
+            SelectorAnswer::Failed => self.end(Finish::CaptureFailed),
         }
     }
 

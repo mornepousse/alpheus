@@ -19,8 +19,8 @@
 //! See: docs/features/captures.md and docs/decisions.md ("A capture never touches the clipboard
 //! unless it succeeded").
 
-use super::Rect;
 use super::select::{SelInput, SelKey, SelState, Selection, label_origin};
+use super::{Rect, SelectorAnswer};
 use crate::actions::{self, Button};
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Mods;
@@ -68,6 +68,15 @@ impl SelectClose {
             SelectClose::OutputGone => "output gone",
             SelectClose::Replaced => "replaced",
             SelectClose::Error => "error",
+        }
+    }
+
+    /// What this close tells a capture: only the user's gestures are a silent cancel.
+    pub(crate) fn answer(self) -> SelectorAnswer {
+        match self {
+            SelectClose::Done(rect) => SelectorAnswer::Area(rect),
+            SelectClose::Cancelled | SelectClose::FocusLost | SelectClose::Replaced => SelectorAnswer::Cancelled,
+            SelectClose::OutputGone | SelectClose::Error => SelectorAnswer::Failed,
         }
     }
 }
@@ -230,7 +239,7 @@ impl App {
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let Ok(pool) = SlotPool::new(pool_size(bytes, 0).max(4096), &self.shm) else {
             log("capture: no shared buffer, selector not opened");
-            self.select_finished(None, None, for_capture);
+            self.select_finished(None, SelectorAnswer::Failed, for_capture);
             return;
         };
         let surface = self.compositor.create_surface(qh);
@@ -302,32 +311,28 @@ impl App {
     }
 
     /// Drops the surface, gives the keyboard back and the memory the frames held, then tells
-    /// `select_finished` what came of it: the rectangle on `Done`, none otherwise.
+    /// `select_finished` what came of it (`SelectClose::answer`): an area, a cancel or a failure.
     pub(crate) fn select_close(&mut self, reason: SelectClose) {
         let Some(open) = self.select.take() else { return };
-        let area = match reason {
-            SelectClose::Done(rect) => Some(rect),
-            _ => None,
-        };
         let output = open.output.clone();
         let for_capture = open.for_capture;
         drop(open);
         self.keyboard_release();
         log(&format!("capture: selector closed ({})", reason.text()));
         crate::memory::release_memory();
-        self.select_finished(output, area, for_capture);
+        self.select_finished(output, reason.answer(), for_capture);
     }
 
     /// The selector's answer, said in fixed words, then handed to the capture flow when a capture
     /// opened it. The debug verb's selector, even one a capture's replaces, answers nobody: its
     /// close is never taken for the new capture's cancel.
-    fn select_finished(&mut self, output: Option<wl_output::WlOutput>, area: Option<Rect>, for_capture: bool) {
-        match area {
-            Some(_) => log("capture: area selected"),
-            None => log("capture: nothing selected"),
+    fn select_finished(&mut self, output: Option<wl_output::WlOutput>, answer: SelectorAnswer, for_capture: bool) {
+        match answer {
+            SelectorAnswer::Area(_) => log("capture: area selected"),
+            SelectorAnswer::Cancelled | SelectorAnswer::Failed => log("capture: nothing selected"),
         }
         if for_capture {
-            self.capture_selected(output, area);
+            self.capture_selected(output, answer);
         }
     }
 

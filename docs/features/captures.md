@@ -13,8 +13,9 @@ hidden.
 - `--capture area-save` does the same and saves it as `%Y%m%d-%H%M%S.png` in the pictures folder.
 
 A notice says what happened: `Screen copied`, `Area copied` or `Saved: <file name>` (the name only),
-or, in the critical colour, `Capture failed`, `Not copied: …` or `Not saved: …`. A cancel is silent.
-Nothing is resident between captures.
+or, in the critical colour, `Capture failed`, `Not copied: …` or `Not saved: …`. A cancel (Esc, a
+right click, a click without a drag, focus taken elsewhere) is silent; a selector that could not
+open, or that the compositor took away, is a `Capture failed`. Nothing is resident between captures.
 
 ## Using it
 
@@ -80,7 +81,11 @@ A whole screen goes through the same `Settle`, since a menu may be closing.
   `the_notices_say_what_happened_and_only_a_success_is_a_calm_one` (`captures/tests.rs`),
   `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`,
   `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays` (`captures/deliver/tests.rs`),
-  `a_cancelled_capture_is_silent_and_copies_nothing` (headless).
+  `a_cancelled_capture_is_silent_and_copies_nothing` (headless); a selector that fails is a failure,
+  not a cancel: `a_selector_that_fails_ends_the_capture_as_a_critical_failure`,
+  `only_the_users_gestures_are_a_silent_cancel`, `a_selector_that_cannot_open_fails_its_capture`;
+  the debug selector never answers a capture:
+  `an_area_capture_replaces_the_debug_selector_and_still_copies` (headless).
 - "Copied" means the copy command exited 0: `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`.
 - One capture at a time, an answer is for its own capture, a frame that never comes fails:
   `one_capture_at_a_time`, `a_late_frame_from_an_old_generation_is_ignored`,

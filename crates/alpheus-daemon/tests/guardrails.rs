@@ -4697,6 +4697,17 @@ fn the_capture_flow_and_paths_are_pure() {
     }
 }
 
+/// A selector that cannot open (no shared buffer) fails its capture, critical: it is never answered
+/// as the user's silent cancel.
+#[test]
+fn a_selector_that_cannot_open_fails_its_capture() {
+    let select = production_code_without_comments(&captures_file("captures/select_app.rs"));
+    let open = function_body(&select, "pub(crate) fn select_open(");
+    let refused = open.find("SlotPool::new(").expect("the pool is made at open");
+    let answer = open[refused..].find("select_finished(").map(|i| &open[refused + i..]).expect("a refused pool is answered");
+    assert!(answer.starts_with("select_finished(None, SelectorAnswer::Failed,"), "{}", &answer[..60.min(answer.len())]);
+}
+
 /// A capture's frame is asked of the compositor in one place, after the round trip that waits for
 /// the selector's removal: the selector's answer never asks for it itself, or the dim could be in
 /// the capture (docs/decisions.md, "A capture waits for the selector's removal").
