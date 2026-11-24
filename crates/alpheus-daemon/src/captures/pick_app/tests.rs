@@ -121,3 +121,16 @@ fn the_union_of_two_areas_holds_both() {
     assert_eq!(union(None, Some((3, 4, 10, 6))), Some((3, 4, 10, 6)));
     assert_eq!(union(None, None), None);
 }
+
+/// What a draw damages: a buffer not painted yet, all of it; else the overlay it wipes, the overlay
+/// the screen shows now (the last committed buffer's, another buffer when two alternate) and the new
+/// one. Lenses at P1 (buffer A), P2 (B), then P3 (A again): P2 is on the screen and must be damaged.
+#[test]
+fn a_draw_damages_what_it_wipes_what_the_screen_shows_and_what_it_draws() {
+    let whole = (0, 0, 1000, 800);
+    let (p1, p2, p3) = ((10, 10, 50, 50), (500, 10, 540, 50), (10, 500, 50, 540));
+    assert_eq!(damage(None, Some(p1), Some(p2), whole), Some(whole), "a fresh buffer is damaged whole");
+    assert_eq!(damage(Some(Some(p1)), Some(p2), Some(p3), whole), Some((10, 10, 540, 540)));
+    assert_eq!(damage(Some(None), Some(p2), None, whole), Some(p2), "the lens on screen goes, even with none drawn");
+    assert_eq!(damage(Some(None), None, None, whole), None);
+}

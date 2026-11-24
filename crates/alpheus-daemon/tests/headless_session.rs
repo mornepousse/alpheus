@@ -9103,3 +9103,32 @@ fn a_cancelled_pick_is_silent_and_copies_nothing() {
     assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
     assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
 }
+
+/// The picker's two buffers alternate: what the screen shows is the last committed one, so each
+/// draw damages the lens it wipes in the buffer it draws into, the lens on screen now (drawn in the
+/// other buffer) and the new one. With only the first and the last, the middle lens stayed on the
+/// screen of a compositor that uploads only the damaged region of a buffer.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_picker_leaves_no_old_lens_on_the_screen() {
+    let (sway, d, _shots) = capture_session("capture-pick-damage", None);
+    open_picker(&sway, &d, 1);
+    let bg = [0x33, 0x66, 0x99];
+    let white = Some([255, 255, 255]);
+    // The centre cell's white outline sits 24 + 40 px right and below the pointer.
+    let mark = |(x, y): (u32, u32)| (x + 64, y + 69);
+    let points = [(200, 200), (700, 200), (200, 450), (700, 450), (400, 300)];
+    for p in points {
+        sway.hover(p.0, p.1);
+        let (mx, my) = mark(p);
+        assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(mx, my) == white), "the lens at {p:?}: {:?}", d.log());
+    }
+    // Every lens but the last is gone from the screen.
+    let screen = sway.screenshot("HEADLESS-1").expect("a screenshot");
+    for p in &points[..points.len() - 1] {
+        let (mx, my) = mark(*p);
+        assert_eq!(screen.at(mx, my), Some(bg), "the lens at {p:?} is still on the screen");
+    }
+    assert!(wtype(&sway, &["-k", "Escape"]).success());
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+}

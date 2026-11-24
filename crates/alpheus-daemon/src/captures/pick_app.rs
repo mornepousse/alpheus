@@ -97,6 +97,8 @@ pub(crate) struct OpenPick {
     /// For each buffer drawn into, the area its overlay covers (None: none yet); a buffer not listed
     /// holds no frame yet and is painted whole.
     overlays: Vec<(wl_buffer::WlBuffer, Option<Area>)>,
+    /// The overlay of the buffer committed last, the one on screen: every draw damages it too.
+    committed: Option<Area>,
     /// The output it covers: the one the frame was taken of.
     output: Option<wl_output::WlOutput>,
     /// Logical size of the surface: the output's, then the configure's.
@@ -187,6 +189,18 @@ pub(crate) fn union(a: Option<Area>, b: Option<Area>) -> Option<Area> {
     }
 }
 
+/// The area a draw damages, in buffer px. Damage is counted from the buffer the compositor shows
+/// now, the last one committed, which is the other buffer when two alternate: a buffer not painted
+/// yet (`before` None) is damaged whole; else the overlay it wipes (`before`), the overlay on screen
+/// (`committed`) and the one drawn. Without `committed`, a compositor that uploads only the damaged
+/// region would keep the lens of the buffer in between on screen.
+pub(crate) fn damage(before: Option<Option<Area>>, committed: Option<Area>, drawn: Option<Area>, whole: Area) -> Option<Area> {
+    match before {
+        None => Some(whole),
+        Some(wiped) => union(union(wiped, committed), drawn),
+    }
+}
+
 /// The model's input for a key; None for any key the picker does not answer to.
 pub(crate) fn pick_key(sym: Keysym) -> Option<PickInput> {
     match sym.raw() {
@@ -253,6 +267,7 @@ impl App {
             pool,
             buffers: Vec::new(),
             overlays: Vec::new(),
+            committed: None,
             output,
             size,
             scale,
@@ -402,7 +417,7 @@ impl App {
         }
         let e = open.scale.max(1) as u32;
         let (w, h) = (open.size.0 * e, open.size.1 * e);
-        let OpenPick { buffers, pool, layer, waiting, card, shot, size, overlays, .. } = open;
+        let OpenPick { buffers, pool, layer, waiting, card, shot, size, overlays, committed, .. } = open;
         let used = match pick_buffer_or_wait(buffers, pool, w, h) {
             Pick::Buffer(i) => i,
             Pick::Wait => {
@@ -458,13 +473,10 @@ impl App {
             let card_area = (card_at.0, card_at.1, card_at.0 + cw as i32, card_at.1 + ch as i32);
             drawn = union(union(Some(lens_area), Some(swatch)), Some(card_area));
         }
-        let damage = match before {
-            None => Some(whole),
-            Some(area) => union(area, drawn),
-        };
+        let damaged = damage(before, *committed, drawn, whole);
         let surface = layer.wl_surface();
         surface.set_buffer_scale(e as i32);
-        if let Some((x0, y0, x1, y1)) = damage {
+        if let Some((x0, y0, x1, y1)) = damaged {
             surface.damage_buffer(x0, y0, x1 - x0, y1 - y0);
         }
         let mark = buffer.wl_buffer().clone();
@@ -472,6 +484,7 @@ impl App {
             return;
         }
         layer.commit();
+        *committed = drawn;
         overlays.retain(|(b, _)| b != &mark);
         overlays.push((mark, drawn));
         open.last = Some(shown);
