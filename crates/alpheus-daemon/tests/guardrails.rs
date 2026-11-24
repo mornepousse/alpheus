@@ -4742,6 +4742,37 @@ fn a_capture_that_ends_gives_up_its_frame_and_its_deadline() {
     assert!(function_body(&screencopy, "pub fn cancel(self)").contains(".destroy()"), "the frame object is destroyed");
 }
 
+/// The frame's deadline is armed only while a frame is awaited: it is set in one place, right
+/// after the frame was asked, and its expiry goes through the flow (`grab_expired`, which ignores
+/// a capture that no longer waits) and gives the asked frame up.
+#[test]
+fn the_frame_deadline_is_armed_only_while_a_frame_is_awaited() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("due = Some(").count(), 1, "one place arms the deadline");
+    let grab = function_body(&app, "fn capture_grab(");
+    let asked = grab.find("Some(pending) =>").expect("the frame was asked");
+    assert!(grab[asked..].contains("due = Some(Instant::now() + GRAB_LIMIT)"), "armed only once a frame request exists");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("due = None"), "an answer disarms it");
+    let tick = function_body(&app, "fn capture_tick(");
+    assert!(tick.contains("flow.grab_expired(") && tick.contains("pending.cancel()") && tick.contains("due = None"));
+}
+
+/// The worker always mails its ending: `run` returns a `Finish` whatever happens in it (a panic is
+/// caught there), and the closure sends it after `run`, unconditionally.
+#[test]
+fn the_capture_worker_always_mails_its_ending() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let encode = function_body(&app, "fn capture_encode(");
+    let run = encode.find("let finish = run(").expect("the worker runs the job");
+    let after_run = run + encode[run..].find(';').expect("the job is one statement") + 1;
+    let send = encode.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(finish)));").expect("the ending is mailed");
+    assert!(after_run <= send, "after the job");
+    assert_eq!(encode[after_run..send].trim(), "", "the next statement, under no condition");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(function_body(&deliver, "pub fn run(").contains("catch_unwind("), "a panic in the job is caught");
+}
+
 /// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
 /// standard input (a PNG does not fit the page of `spawn_with_input`).
 #[test]
