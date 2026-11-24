@@ -161,21 +161,25 @@ enum Stage {
     Idle,
     /// The selector is open.
     Selecting,
-    /// The selector is gone with this area; the compositor has not yet confirmed it.
-    Settling(Rect),
+    /// The selector (or nothing, for a whole screen) is gone; the compositor has not yet confirmed
+    /// it. The area, none for the whole screen.
+    Settling(Option<Rect>),
     /// A frame was asked.
     Grabbing,
     /// The worker encodes and delivers.
     Encoding,
 }
 
+/// How long a frame may take: past it the capture fails and the slot is free again.
+pub const GRAB_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What the glue does next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// Open the selector.
     Select,
-    /// Wait for the compositor to have removed the selector's surface (a round trip), then
-    /// `Flow::settled`.
+    /// Wait for the compositor to have dealt with what just closed (the selector's surface, a menu
+    /// the verb came from: a round trip), then `Flow::settled`.
     Settle,
     /// Ask for a frame of the output; the area (logical pixels) is None for the whole screen.
     Grab(Option<Rect>),
@@ -192,6 +196,9 @@ pub enum Step {
 pub struct Flow {
     stage: Stage,
     job: Option<Job>,
+    /// Counts the captures begun: an answer carries the one it was asked for, so a late answer of a
+    /// capture that has ended is never taken for the next one's.
+    generation: u64,
 }
 
 impl Flow {
@@ -199,25 +206,38 @@ impl Flow {
         self.stage != Stage::Idle
     }
 
+    /// Whether a frame has been asked and is awaited.
+    pub fn waits_for_frame(&self) -> bool {
+        self.stage == Stage::Grabbing
+    }
+
     /// The capture in progress.
     pub fn job(&self) -> Option<Job> {
         self.job
     }
 
-    /// A capture is asked for: None while another runs (the second is ignored).
+    /// The number of the capture in progress (or the last one): what each answer must carry.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A capture is asked for: None while another runs (the second is ignored). Every scope waits
+    /// for the compositor before its frame (`Step::Settle`): a whole screen may be asked right as a
+    /// menu closes.
     pub fn begin(&mut self, job: Job) -> Option<Step> {
         if self.is_busy() {
             return None;
         }
         self.job = Some(job);
+        self.generation += 1;
         Some(match job.scope {
             Scope::Area => {
                 self.stage = Stage::Selecting;
                 Step::Select
             }
             Scope::Screen => {
-                self.stage = Stage::Grabbing;
-                Step::Grab(None)
+                self.stage = Stage::Settling(None);
+                Step::Settle
             }
         })
     }
@@ -230,28 +250,29 @@ impl Flow {
         }
         match area {
             Some(area) => {
-                self.stage = Stage::Settling(area);
+                self.stage = Stage::Settling(Some(area));
                 Step::Settle
             }
             None => self.end(Finish::Cancelled),
         }
     }
 
-    /// The compositor confirmed it has dealt with the selector's removal: the frame may be asked,
-    /// so the dim is never in it.
-    pub fn settled(&mut self) -> Step {
+    /// The compositor confirmed it has dealt with the removal: the frame may be asked, so the dim
+    /// (or a closing menu) is never in it. `generation` is the capture the round trip was for.
+    pub fn settled(&mut self, generation: u64) -> Step {
         match self.stage {
-            Stage::Settling(area) => {
+            Stage::Settling(area) if generation == self.generation => {
                 self.stage = Stage::Grabbing;
-                Step::Grab(Some(area))
+                Step::Grab(area)
             }
             _ => Step::Nothing,
         }
     }
 
-    /// The frame came (`true`) or did not.
-    pub fn grabbed(&mut self, ok: bool) -> Step {
-        if self.stage != Stage::Grabbing {
+    /// The frame of capture `generation` came (`true`) or did not. An answer of another capture is
+    /// none of this one's.
+    pub fn grabbed(&mut self, generation: u64, ok: bool) -> Step {
+        if self.stage != Stage::Grabbing || generation != self.generation {
             return Step::Nothing;
         }
         if ok {
@@ -260,6 +281,15 @@ impl Flow {
         } else {
             self.end(Finish::CaptureFailed)
         }
+    }
+
+    /// The frame of capture `generation` did not come within `GRAB_LIMIT`: it fails, if it still
+    /// waits for it.
+    pub fn grab_expired(&mut self, generation: u64) -> Step {
+        if self.stage != Stage::Grabbing || generation != self.generation {
+            return Step::Nothing;
+        }
+        self.end(Finish::CaptureFailed)
     }
 
     /// The worker's result: the capture is over.

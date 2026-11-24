@@ -56,7 +56,7 @@ impl FakeExecutor {
     }
 
     /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only); a
-    /// `spawn_with_stdin_file`'s too, with the file's content.
+    /// `run_with_stdin_file`'s too, with the file's content.
     pub fn inputs(&self) -> Vec<(String, Vec<u8>)> {
         self.inputs.lock().unwrap().clone()
     }
@@ -142,13 +142,13 @@ impl Executor for FakeExecutor {
         }
     }
 
-    fn spawn_with_stdin_file(&self, prog: &str, args: &[&str], file: &std::path::Path) -> Result<(), ExecError> {
+    fn run_with_stdin_file(&self, prog: &str, args: &[&str], file: &std::path::Path, _limit: Duration) -> Result<Option<i32>, ExecError> {
         let bytes = std::fs::read(file).map_err(|e| ExecError::Io(e.to_string()))?;
         let l = line(prog, args);
         self.calls.lock().unwrap().push(l.clone());
         self.inputs.lock().unwrap().push((l.clone(), bytes));
         match self.responses.lock().unwrap().get(&l).cloned() {
-            Some(Ok(_)) => Ok(()),
+            Some(Ok(output)) => Ok(output.code),
             Some(Err(e)) => Err(e),
             None => Err(ExecError::NotFound),
         }
@@ -327,18 +327,19 @@ mod tests {
     }
 
     #[test]
-    fn spawn_with_stdin_file_records_the_line_and_the_file_content() {
+    fn run_with_stdin_file_records_the_line_and_the_file_content_and_answers_the_exit() {
         let f = FakeExecutor::new();
         let path = std::env::temp_dir().join(format!("alpheus-fake-stdin-{}", std::process::id()));
         std::fs::write(&path, b"\x89PNG fake").unwrap();
+        let limit = Duration::from_secs(5);
         f.ok("wl-copy --type image/png", "");
-        assert_eq!(f.spawn_with_stdin_file("wl-copy", &["--type", "image/png"], &path), Ok(()));
-        assert_eq!(f.spawn_with_stdin_file("wl-copy", &["x"], &path), Err(ExecError::NotFound), "never a real tool");
-        assert_eq!(
-            f.inputs(),
-            [("wl-copy --type image/png".to_string(), b"\x89PNG fake".to_vec()), ("wl-copy x".to_string(), b"\x89PNG fake".to_vec())]
-        );
+        f.respond("wl-copy bad", Ok(Output { code: Some(1), stdout: String::new(), stderr: String::new() }));
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["--type", "image/png"], &path, limit), Ok(Some(0)));
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["bad"], &path, limit), Ok(Some(1)), "the programmed exit code");
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["x"], &path, limit), Err(ExecError::NotFound), "never a real tool");
+        assert_eq!(f.inputs().len(), 3);
+        assert_eq!(f.inputs()[0], ("wl-copy --type image/png".to_string(), b"\x89PNG fake".to_vec()));
         let _ = std::fs::remove_file(&path);
-        assert!(matches!(f.spawn_with_stdin_file("wl-copy", &[], &path), Err(ExecError::Io(_))), "a missing file is an error");
+        assert!(matches!(f.run_with_stdin_file("wl-copy", &[], &path, limit), Err(ExecError::Io(_))), "a missing file is an error");
     }
 }

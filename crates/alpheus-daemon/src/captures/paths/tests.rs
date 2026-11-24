@@ -9,15 +9,19 @@ fn home() -> Option<&'static Path> {
 
 #[test]
 fn the_folder_is_the_configured_one_then_pictures_then_home() {
+    let some = |p: &str| Some(PathBuf::from(p));
     // The key wins, `~/` is the home.
-    assert_eq!(save_dir("/srv/shots", Some(Path::new("/p")), home()), Path::new("/srv/shots"));
-    assert_eq!(save_dir("~/Shots", Some(Path::new("/p")), home()), Path::new("/home/test/Shots"));
+    assert_eq!(save_dir("/srv/shots", Some(Path::new("/p")), home()), some("/srv/shots"));
+    assert_eq!(save_dir("~/Shots", Some(Path::new("/p")), home()), some("/home/test/Shots"));
     // No key: the pictures folder's `screenshots`, else the home's `Pictures/screenshots`.
-    assert_eq!(save_dir("", Some(Path::new("/data/Pictures")), home()), Path::new("/data/Pictures/screenshots"));
-    assert_eq!(save_dir("", None, home()), Path::new("/home/test/Pictures/screenshots"));
-    // No home either: a relative path, never the working directory's parent or a guess.
-    assert_eq!(save_dir("", None, None), Path::new("Pictures/screenshots"));
-    assert_eq!(save_dir("~/Shots", None, None), Path::new("Shots"));
+    assert_eq!(save_dir("", Some(Path::new("/data/Pictures")), home()), some("/data/Pictures/screenshots"));
+    assert_eq!(save_dir("", None, home()), some("/home/test/Pictures/screenshots"));
+    // A folder that needs a home nobody gave is no folder: never a relative path under the working
+    // directory.
+    assert_eq!(save_dir("", None, None), None);
+    assert_eq!(save_dir("~/Shots", None, None), None);
+    assert_eq!(save_dir("/srv/shots", None, None), some("/srv/shots"), "an absolute key needs no home");
+    assert_eq!(save_dir("", Some(Path::new("/data/Pictures")), None), some("/data/Pictures/screenshots"));
 }
 
 #[test]

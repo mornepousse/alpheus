@@ -1746,6 +1746,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // copies or saves one frame, started when the frame arrives and ending with its report
         // (one capture at a time, so one thread at most).
         ("captures/app.rs", "thread::Builder", 1),
+        // The awaited frame's deadline (5 s), built in `CaptureApp::new`: armed only while a frame is
+        // awaited, disarmed by every way a capture ends; a compositor that never answers cannot hold
+        // the one capture slot for ever.
+        ("captures/app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -4708,10 +4712,13 @@ fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
     assert!(function_body(&app, "fn capture_settle(").contains(".sync("), "the settle is a round trip");
     // The step that follows the round trip is the only other way to a grab.
     let settled = function_body(&app, "fn event(");
-    assert!(settled.contains("flow.settled()"), "the round trip's answer is what lets the flow go on");
+    assert!(settled.contains("flow.settled("), "the round trip's answer is what lets the flow go on");
     let flow = production_code_without_comments(&captures_file("captures/mod.rs"));
     assert!(function_body(&flow, "pub fn selected(").contains("Step::Settle"), "a selection waits");
     assert!(!function_body(&flow, "pub fn selected(").contains("Step::Grab"), "and never grabs in the same turn");
+    // A whole screen waits too: it is asked as a menu may be closing.
+    assert!(function_body(&flow, "pub fn begin(").contains("Step::Settle"), "a whole screen waits");
+    assert!(!function_body(&flow, "pub fn begin(").contains("Step::Grab"), "and never grabs at the verb");
 }
 
 /// The Tools menu shows the Captures entries only when the compositor has screencopy.
@@ -4719,6 +4726,20 @@ fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
 fn the_tools_menu_hides_the_captures_without_screencopy() {
     let app = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
     assert!(function_body(&app, "fn tools_context(").contains("captures: self.screencopy.is_some()"));
+}
+
+/// A capture that ends gives its frame up and disarms the deadline, and an answer carries the
+/// capture it is for.
+#[test]
+fn a_capture_that_ends_gives_up_its_frame_and_its_deadline() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let reset = function_body(&app, "fn capture_reset(");
+    assert!(reset.contains("pending.cancel()") && reset.contains("due = None") && reset.contains("capture_timer_sync"));
+    assert!(function_body(&app, "fn capture_finish(").contains("capture_reset()"), "every ending resets");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("generation != self.capture.flow.generation()"), "a late frame is told by its generation");
+    let screencopy = production_code_without_comments(&captures_file("captures/screencopy.rs"));
+    assert!(function_body(&screencopy, "pub fn cancel(self)").contains(".destroy()"), "the frame object is destroyed");
 }
 
 /// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
@@ -4736,7 +4757,8 @@ fn the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file() {
     assert!(app.contains(".name(\"alpheus-capture\".into())"), "the worker is named");
     assert!(app.contains("run(exec.as_ref(), frame"), "the frame is encoded in the worker's closure");
     let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
-    assert!(deliver.contains("spawn_with_stdin_file("));
+    assert!(deliver.contains("run_with_stdin_file("));
+    assert!(deliver.contains("catch_unwind("), "a panic in the worker ends the capture as a failure");
     for p in ["spawn_with_input(", ".spawn(", "Command::new", ".run(", ".capture("] {
         assert!(!deliver.contains(p), "{p} in deliver.rs");
     }

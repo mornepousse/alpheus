@@ -775,6 +775,8 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     // and its deadline; with the loop handle made, whatever `notifications` is.
     state.timer_load(crate::timer::app::unix_ms());
     state.start_notifications(want.notifications);
+    // A capture's private file left by a daemon that was killed mid-copy.
+    crate::captures::deliver::remove_stale(&paths::runtime_dir().join("alpheus"));
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.theme.mode_runtime = alpheus_common::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media

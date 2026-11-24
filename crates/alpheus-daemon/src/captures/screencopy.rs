@@ -164,14 +164,28 @@ pub fn map_area(logical: Rect, scale: f64, transform: Transform, logical_size: (
 
 /// `logical_area` of an output as pixels of its captured `frame` (width, height): `map_area` with the
 /// scale read off the frame (its width over the output's logical width, the height when the output
-/// is turned a quarter), so a fractional scale maps exactly. A logical size of zero keeps the area.
-pub fn buffer_area(frame: (u32, u32), logical_area: Rect, logical_size: (u32, u32), transform: Transform) -> Rect {
-    if logical_size.0 == 0 || logical_size.1 == 0 {
-        return logical_area;
-    }
+/// is turned a quarter), so a fractional scale maps exactly. Without a `logical_size` (the compositor
+/// gave no xdg-output) the output's integer `scale_factor` (below 1 read as 1) is the scale and the
+/// logical size follows from the frame.
+pub fn buffer_area(
+    frame: (u32, u32),
+    logical_area: Rect,
+    logical_size: Option<(u32, u32)>,
+    scale_factor: i32,
+    transform: Transform,
+) -> Rect {
     let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
-    let across = if quarter { frame.1 } else { frame.0 };
-    map_area(logical_area, f64::from(across) / f64::from(logical_size.0), transform, logical_size)
+    match logical_size.filter(|(w, h)| *w > 0 && *h > 0) {
+        Some(size) => {
+            let across = if quarter { frame.1 } else { frame.0 };
+            map_area(logical_area, f64::from(across) / f64::from(size.0), transform, size)
+        }
+        None => {
+            let scale = scale_factor.max(1) as u32;
+            let (w, h) = if quarter { (frame.1, frame.0) } else { frame };
+            map_area(logical_area, f64::from(scale), transform, (w / scale, h / scale))
+        }
+    }
 }
 
 /// Why a capture gave no frame. Never carries text: the glue logs a fixed word.
@@ -205,27 +219,37 @@ impl Screencopy {
     }
 
     /// Asks for one frame of `output`, cursor not drawn. `done` is called once with the frame or
-    /// the error; `shm` only lends its `wl_shm` to the frame's own pool.
-    pub fn request<D>(&self, output: &WlOutput, shm: &Shm, qh: &QueueHandle<D>, done: CaptureDone)
+    /// the error, unless the returned `PendingFrame` is cancelled first; `shm` only lends its
+    /// `wl_shm` to the frame's own pool.
+    pub fn request<D>(&self, output: &WlOutput, shm: &Shm, qh: &QueueHandle<D>, done: CaptureDone) -> PendingFrame
     where
         D: Dispatch<ZwlrScreencopyFrameV1, FrameData> + 'static,
     {
         let grab = Grab { shm: Shm::from(shm.wl_shm().clone()), done: Some(done), shape: None, held: None, y_invert: false };
-        self.manager.capture_output(0, output, qh, FrameData(Mutex::new(grab)));
+        PendingFrame(self.manager.capture_output(0, output, qh, FrameData(Mutex::new(grab))))
+    }
+}
+
+/// A frame asked for and not yet answered. Cancelling it (a capture that gave up waiting) destroys the
+/// frame object and drops its answer and its buffer, so a late `ready` is never delivered; dropping
+/// it without cancelling leaves the request to answer as usual.
+pub struct PendingFrame(ZwlrScreencopyFrameV1);
+
+impl PendingFrame {
+    /// Gives the frame up: no answer will be delivered and the buffer goes with it.
+    pub fn cancel(self) {
+        if let Some(data) = self.0.data::<FrameData>() {
+            data.cancel();
+        }
+        self.0.destroy();
     }
 }
 
 impl App {
-    /// Asks for one frame of `output`; `false` (and `done` never called) when the compositor has
-    /// no screencopy. The one capture at a time rule is the caller's.
-    pub fn capture_output(&self, output: &WlOutput, qh: &QueueHandle<App>, done: CaptureDone) -> bool {
-        match &self.screencopy {
-            Some(s) => {
-                s.request(output, &self.shm, qh, done);
-                true
-            }
-            None => false,
-        }
+    /// Asks for one frame of `output`; None (and `done` never called) when the compositor has no
+    /// screencopy. The one capture at a time rule is the caller's.
+    pub fn capture_output(&self, output: &WlOutput, qh: &QueueHandle<App>, done: CaptureDone) -> Option<PendingFrame> {
+        self.screencopy.as_ref().map(|s| s.request(output, &self.shm, qh, done))
     }
 }
 
@@ -288,9 +312,20 @@ impl Grab {
 }
 
 impl FrameData {
+    /// The capture gave up: its answer and its buffer are dropped, the frame will answer nobody.
+    fn cancel(&self) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.done = None;
+        g.held = None;
+    }
+
     /// One event of the frame. Every path ends in one `done` call and the frame's destruction.
     pub fn handle(&self, frame: &ZwlrScreencopyFrameV1, event: Event) {
         let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Cancelled (or already answered): an event that still arrives is for nobody.
+        if g.done.is_none() {
+            return;
+        }
         let answer = match event {
             Event::Buffer { format, width, height, stride } => {
                 // Version 3 announces several buffers: the first shm one we read is kept.
@@ -425,10 +460,20 @@ mod tests {
     fn the_scale_is_read_off_the_frame_so_a_fractional_scale_maps_exactly() {
         let area = Rect { x: 10, y: 20, width: 30, height: 40 };
         // 150 by 90 pixels under a 100 by 60 logical output: scale 1.5 (the integer scale says 2).
-        assert_eq!(buffer_area((150, 90), area, (100, 60), Transform::Normal), Rect { x: 15, y: 30, width: 45, height: 60 });
+        let got = buffer_area((150, 90), area, Some((100, 60)), 2, Transform::Normal);
+        assert_eq!(got, Rect { x: 15, y: 30, width: 45, height: 60 });
         // A rotated output: the frame is 400 by 200 (native), shown 100 by 200 logical at scale 2.
-        assert_eq!(buffer_area((400, 200), area, (100, 200), Transform::_90), map_area(area, 2.0, Transform::_90, (100, 200)));
-        // A logical size of zero is no scale to read: the area is kept as it is.
-        assert_eq!(buffer_area((150, 90), area, (0, 0), Transform::Normal), area);
+        let got = buffer_area((400, 200), area, Some((100, 200)), 2, Transform::_90);
+        assert_eq!(got, map_area(area, 2.0, Transform::_90, (100, 200)));
+    }
+
+    /// Without the output's logical size (no xdg-output) the output's own scale factor stands in,
+    /// and the logical size is the frame's over it (turned a quarter for a rotated output).
+    #[test]
+    fn without_a_logical_size_the_output_scale_factor_stands_in() {
+        let area = Rect { x: 10, y: 20, width: 30, height: 40 };
+        assert_eq!(buffer_area((200, 100), area, None, 2, Transform::Normal), Rect { x: 20, y: 40, width: 60, height: 80 });
+        assert_eq!(buffer_area((400, 200), area, None, 2, Transform::_90), map_area(area, 2.0, Transform::_90, (100, 200)));
+        assert_eq!(buffer_area((200, 100), area, None, 0, Transform::Normal), area, "a scale of zero is read as 1");
     }
 }

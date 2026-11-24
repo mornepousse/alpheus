@@ -15,17 +15,18 @@ use crate::clock::LocalTime;
 use std::path::{Path, PathBuf};
 
 /// The folder a screenshot is saved in: `configured` (`[captures] dir`: absolute or `~/…`) when set,
-/// else `pictures/screenshots`, else `home/Pictures/screenshots`; with no home, a relative path.
-pub fn save_dir(configured: &str, pictures: Option<&Path>, home: Option<&Path>) -> PathBuf {
+/// else `pictures/screenshots`, else `home/Pictures/screenshots`. None when it needs a home that
+/// there is not: a screenshot never lands in a relative path.
+pub fn save_dir(configured: &str, pictures: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
     if !configured.is_empty() {
         return match configured.strip_prefix("~/") {
-            Some(rest) => home.map_or_else(|| PathBuf::from(rest), |h| h.join(rest)),
-            None => PathBuf::from(configured),
+            Some(rest) => home.map(|h| h.join(rest)),
+            None => Some(PathBuf::from(configured)),
         };
     }
     match pictures {
-        Some(p) => p.join("screenshots"),
-        None => home.map_or_else(PathBuf::new, Path::to_path_buf).join("Pictures/screenshots"),
+        Some(p) => Some(p.join("screenshots")),
+        None => home.map(|h| h.join("Pictures/screenshots")),
     }
 }
 

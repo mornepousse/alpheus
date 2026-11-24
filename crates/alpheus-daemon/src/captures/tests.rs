@@ -37,6 +37,19 @@ fn no_screencopy_refuses_every_capture_but_not_the_debug_selector() {
     assert_ne!(Refusal::NoScreencopy.text(), Refusal::NotYet.text());
 }
 
+/// A flow at the point of waiting for its frame: begun, selected when it is an area, settled.
+/// Returns it with its generation.
+fn grabbing(scope: Scope) -> (Flow, u64) {
+    let mut flow = Flow::default();
+    flow.begin(job(scope, Goal::Copy));
+    let g = flow.generation();
+    if scope == Scope::Area {
+        flow.selected(Some(rect(1, 2, 3, 4)));
+    }
+    flow.settled(g);
+    (flow, g)
+}
+
 #[test]
 fn one_capture_at_a_time() {
     let mut flow = Flow::default();
@@ -48,8 +61,20 @@ fn one_capture_at_a_time() {
     assert_eq!(flow.begin(job(Scope::Area, Goal::Save)), None);
     flow.finished();
     assert!(!flow.is_busy());
-    assert_eq!(flow.begin(job(Scope::Screen, Goal::Copy)), Some(Step::Grab(None)));
+    assert_eq!(flow.begin(job(Scope::Screen, Goal::Copy)), Some(Step::Settle));
     assert_eq!(flow.begin(job(Scope::Area, Goal::Copy)), None, "a full screen in flight holds the slot too");
+}
+
+#[test]
+fn every_scope_waits_for_the_compositor_before_its_frame() {
+    // A whole screen is taken right after a menu may have closed (Tools, Screenshot): its frame
+    // waits for the same round trip as an area's, so a closing surface is not in it.
+    let mut flow = Flow::default();
+    assert_eq!(flow.begin(job(Scope::Screen, Goal::Copy)), Some(Step::Settle));
+    let g = flow.generation();
+    assert_eq!(flow.grabbed(g, true), Step::Nothing, "no frame was asked yet");
+    assert_eq!(flow.settled(g), Step::Grab(None), "the whole screen: no area");
+    assert_eq!(flow.settled(g), Step::Nothing, "once");
 }
 
 #[test]
@@ -69,24 +94,59 @@ fn a_cancel_is_silent_and_never_copies() {
 fn a_selection_waits_for_the_compositor_before_the_frame_is_asked() {
     let mut flow = Flow::default();
     flow.begin(job(Scope::Area, Goal::Copy));
+    let g = flow.generation();
     // The selector's surface was just destroyed: the frame is not asked in the same turn.
     assert_eq!(flow.selected(Some(rect(10, 20, 30, 40))), Step::Settle);
     assert!(flow.is_busy());
     // A frame answer, or a second settle, out of turn does nothing.
-    assert_eq!(flow.grabbed(true), Step::Nothing);
-    assert_eq!(flow.settled(), Step::Grab(Some(rect(10, 20, 30, 40))));
-    assert_eq!(flow.settled(), Step::Nothing, "once");
-    assert_eq!(flow.grabbed(true), Step::Encode);
-    assert_eq!(flow.grabbed(true), Step::Nothing, "once");
+    assert_eq!(flow.grabbed(g, true), Step::Nothing);
+    assert_eq!(flow.settled(g), Step::Grab(Some(rect(10, 20, 30, 40))));
+    assert_eq!(flow.settled(g), Step::Nothing, "once");
+    assert_eq!(flow.grabbed(g, true), Step::Encode);
+    assert_eq!(flow.grabbed(g, true), Step::Nothing, "once");
 }
 
 #[test]
 fn a_failed_frame_is_a_failure() {
-    let mut flow = Flow::default();
-    flow.begin(job(Scope::Screen, Goal::Copy));
-    assert_eq!(flow.grabbed(false), Step::Finish(Finish::CaptureFailed));
+    let (mut flow, g) = grabbing(Scope::Screen);
+    assert_eq!(flow.grabbed(g, false), Step::Finish(Finish::CaptureFailed));
     flow.finished();
     assert!(!flow.is_busy());
+}
+
+/// A frame that never comes (a compositor that drops the request) must not hold the slot for ever:
+/// the deadline fails the capture, once, and only the capture that was waiting.
+#[test]
+fn a_frame_that_never_comes_fails_the_capture() {
+    assert_eq!(GRAB_LIMIT, std::time::Duration::from_secs(5));
+    let (mut flow, g) = grabbing(Scope::Screen);
+    assert_eq!(flow.grab_expired(g), Step::Finish(Finish::CaptureFailed));
+    assert!(!flow.is_busy(), "the slot is free");
+    assert_eq!(flow.grab_expired(g), Step::Nothing, "once");
+    // A deadline of an earlier capture, fired late, never fails the next one.
+    flow.begin(job(Scope::Screen, Goal::Copy));
+    let g2 = flow.generation();
+    flow.settled(g2);
+    assert_eq!(flow.grab_expired(g), Step::Nothing);
+    assert_eq!(flow.grabbed(g2, true), Step::Encode, "the new capture goes on");
+    // And a deadline that fires once the frame is in does nothing.
+    assert_eq!(flow.grab_expired(g2), Step::Nothing);
+}
+
+/// A late frame of capture N, answered after N timed out and N+1 began, is never taken for N+1's.
+#[test]
+fn a_late_frame_from_an_old_generation_is_ignored() {
+    let (mut flow, old) = grabbing(Scope::Screen);
+    flow.grab_expired(old);
+    flow.begin(job(Scope::Screen, Goal::Save));
+    let new = flow.generation();
+    assert_ne!(old, new);
+    assert_eq!(flow.settled(old), Step::Nothing, "a late round trip of N does not release N+1");
+    assert_eq!(flow.settled(new), Step::Grab(None));
+    assert_eq!(flow.grabbed(old, true), Step::Nothing, "N's frame is not N+1's");
+    assert_eq!(flow.grabbed(old, false), Step::Nothing, "nor N's failure");
+    assert!(flow.is_busy(), "N+1 still waits for its own");
+    assert_eq!(flow.grabbed(new, true), Step::Encode);
 }
 
 #[test]

@@ -19,7 +19,7 @@ fn save_job() -> Job {
 
 /// A delivery into `dir` (saves go to `dir/shots`, the private copy file to `dir/run`).
 fn delivery<'a>(job: Job, copy: &'a [String], dir: &'a Path, shots: &'a Path) -> Delivery<'a> {
-    Delivery { job, copy, save_dir: shots, file_name: "20261104-090507.png".into(), temp_dir: dir }
+    Delivery { job, copy, save_dir: Some(shots), file_name: "20261104-090507.png".into(), temp_dir: dir }
 }
 
 fn wl_copy() -> Vec<String> {
@@ -38,6 +38,69 @@ fn the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin() {
     assert_eq!(fake.inputs(), [("wl-copy --type image/png".to_string(), PNG.to_vec())], "the type is named for the default copy");
     assert_eq!(std::fs::read_dir(&run).unwrap().count(), 0, "the private file is gone once the copy took it");
     assert!(!dir.join("shots").exists(), "a copy saves nothing");
+}
+
+/// "Copied" means the copy command took the image: its exit is checked, as `screenshot.sh` checks
+/// `wl-copy`'s. A non-zero exit, a signal and a timeout are all a copy failure, the file is removed.
+#[test]
+fn a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure() {
+    let dir = TempPath::dir("deliver-badexit");
+    let run = dir.join("run");
+    let copy = wl_copy();
+    for (what, answer) in [
+        ("non-zero", Ok(alpheus_common::exec::Output { code: Some(1), stdout: String::new(), stderr: String::new() })),
+        ("signal", Ok(alpheus_common::exec::Output { code: None, stdout: String::new(), stderr: String::new() })),
+        ("timeout", Err(alpheus_common::exec::ExecError::Timeout)),
+    ] {
+        let fake = FakeExecutor::new();
+        fake.respond("wl-copy --type image/png", answer);
+        let finish = deliver(&fake, PNG, &delivery(copy_job(Scope::Area), &copy, &run, &dir));
+        assert_eq!(finish, Finish::CopyFailed, "{what}");
+        assert!(!finish.touches_the_clipboard() && notice(&finish).unwrap().critical, "{what}");
+        assert_eq!(std::fs::read_dir(&run).unwrap().count(), 0, "{what}: the file is removed");
+    }
+}
+
+/// An executor that panics must not strand the capture: the worker still ends it, as a failure,
+/// and the private file is not left behind.
+#[test]
+fn a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file() {
+    use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Output};
+    struct Panicking;
+    impl Executor for Panicking {
+        fn run(&self, _: &str, _: &[&str]) -> Result<Output, ExecError> {
+            unreachable!()
+        }
+        fn spawn(&self, _: &str, _: &[&str]) -> Result<(), ExecError> {
+            unreachable!()
+        }
+        fn spawn_with_input(&self, _: &str, _: &[&str], _: &[&[u8]]) -> Result<(), ExecError> {
+            unreachable!()
+        }
+        fn spawn_with_env(&self, _: &str, _: &[&str], _: &[(&str, &str)], _: &[&str]) -> Result<(), ExecError> {
+            unreachable!()
+        }
+        fn stream(&self, _: &str, _: &[&str]) -> Result<alpheus_common::exec::Stream, ExecError> {
+            unreachable!()
+        }
+        fn capture(&self, _: &str, _: &[&str], _: CaptureLimits) -> Result<Captured, ExecError> {
+            unreachable!()
+        }
+        fn run_silent(&self, _: &str, _: &[&str]) -> Result<Option<i32>, ExecError> {
+            unreachable!()
+        }
+        fn run_with_stdin_file(&self, _: &str, _: &[&str], file: &Path, _: Duration) -> Result<Option<i32>, ExecError> {
+            assert!(file.exists(), "the file is there when the command is started");
+            panic!("a bug in the executor")
+        }
+    }
+    let dir = TempPath::dir("deliver-panic");
+    let run_dir = dir.join("run");
+    let copy = wl_copy();
+    let area = Some(Rect { x: 0, y: 0, width: 2, height: 2 });
+    let finish = run(&Panicking, frame(), area, &delivery(copy_job(Scope::Area), &copy, &run_dir, &dir));
+    assert_eq!(finish, Finish::CaptureFailed);
+    assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "no capture.png left");
 }
 
 #[test]
@@ -93,6 +156,34 @@ fn a_folder_that_cannot_be_made_is_a_save_failure() {
     let copy = wl_copy();
     let finish = deliver(&fake, PNG, &delivery(save_job(), &copy, &dir, &dir.join("a-file/shots")));
     assert_eq!(finish, Finish::SaveFailed);
+}
+
+/// A daemon killed between writing the private file and removing it leaves `capture.png` (or the
+/// writer's `.capture.png.<pid>`) behind: the start clears those, and only those.
+#[test]
+fn stale_private_files_are_removed_at_start_and_nothing_else() {
+    let dir = TempPath::dir("deliver-stale");
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(&run, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    for name in ["capture.png", ".capture.png.123", "mode", "capture.png.keep", "other.png"] {
+        std::fs::write(run.join(name), "x").unwrap();
+    }
+    remove_stale(&run);
+    let mut left: Vec<String> = std::fs::read_dir(&run).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    left.sort();
+    assert_eq!(left, ["capture.png.keep", "mode", "other.png"]);
+    remove_stale(&dir.join("absent")); // no folder: nothing to do, no panic
+}
+
+/// No folder to save in (no home to anchor the default): a save failure, never a relative path.
+#[test]
+fn no_folder_is_a_save_failure() {
+    let fake = FakeExecutor::new();
+    let copy = wl_copy();
+    let dir = TempPath::dir("deliver-nodir");
+    let d = Delivery { save_dir: None, ..delivery(save_job(), &copy, &dir, &dir) };
+    assert_eq!(deliver(&fake, PNG, &d), Finish::SaveFailed);
 }
 
 /// A 4 × 2 frame of XRGB pixels, pixel (x, y) being (10x, 20y, 30) as R, G, B.

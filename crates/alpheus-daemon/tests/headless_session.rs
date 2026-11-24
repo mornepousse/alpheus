@@ -8770,7 +8770,9 @@ fn a_second_capture_while_one_runs_is_ignored() {
     open_capture_selector(&sway, &d, "area", 1);
     assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0, "ignored, not an error");
     assert_eq!(script(&sway, &["--capture", "area-save"], "").join().unwrap().0, 0);
-    assert!(d.wait_for_count("capture: busy", 2, DELAY), "{:?}", d.log());
+    // The debug selector is not toggled under a capture's selector either.
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: busy", 3, DELAY), "{:?}", d.log());
     assert_eq!(d.count(SELECTOR_SHOWN), 1, "no second selector: {:?}", d.log());
     sway.drag((100, 100), (300, 250), false);
     assert!(d.wait_for("capture: copied", DELAY), "the first capture goes on as asked: {:?}", d.log());

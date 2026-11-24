@@ -709,7 +709,7 @@ impl App {
             launcher_generation: 0,
             notes: crate::notes::app::NotesApp::new(),
             select: None,
-            capture: Default::default(),
+            capture: crate::captures::app::CaptureApp::new(),
             mail: None,
             xdg,
             popup: None,
