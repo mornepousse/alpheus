@@ -1111,15 +1111,15 @@ fn blanked(text: &str) -> String {
             ('r', _) if raw_string_opens(&chars, i) => {
                 let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
                 let quote = i + 1 + hashes;
-                for j in i..=quote {
-                    blank(&mut out, chars[j]);
+                for &ch in &chars[i..=quote] {
+                    blank(&mut out, ch);
                 }
                 i = quote + 1;
                 while i < chars.len() {
                     let closes = chars[i] == '"' && chars.len() > i + hashes && chars[i + 1..=i + hashes].iter().all(|&c| c == '#');
                     if closes {
-                        for j in i..=i + hashes {
-                            blank(&mut out, chars[j]);
+                        for &ch in &chars[i..=i + hashes] {
+                            blank(&mut out, ch);
                         }
                         i += hashes + 1;
                         break;
@@ -1144,13 +1144,13 @@ fn blanked(text: &str) -> String {
             }
             ('\'', _) => {
                 let len = match (next, chars.get(i + 2).copied()) {
-                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some('\\'), _) => chars.get(i + 3..).and_then(|rest| rest.iter().position(|&q| q == '\'')).map(|p| p + 4),
                     (Some(_), Some('\'')) => Some(3),
                     _ => None,
                 };
                 let len = len.unwrap_or(1);
-                for j in i..i + len {
-                    blank(&mut out, chars[j]);
+                for &ch in &chars[i..i + len] {
+                    blank(&mut out, ch);
                 }
                 i += len;
             }
@@ -1265,7 +1265,7 @@ fn without_comments(text: &str) -> String {
             // A char literal (`'"'`, `'\\n'`, `'x'`) is copied whole; a lifetime has no closing quote.
             ('\'', _) => {
                 let len = match (next, chars.get(i + 2).copied()) {
-                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some('\\'), _) => chars.get(i + 3..).and_then(|rest| rest.iter().position(|&q| q == '\'')).map(|p| p + 4),
                     (Some(_), Some('\'')) => Some(3),
                     _ => None,
                 };
@@ -1411,7 +1411,7 @@ fn a_raw_string_in_a_test_item_leaves_the_production_code_after_it_alone() {
 /// written after it.
 #[test]
 fn a_brace_in_a_string_of_a_test_item_leaves_the_production_code_alone() {
-    for literal in ["r#\"{\"#", "\"{\"", "'{'", "\"}\"", "r##\"a \"# {\"##"] {
+    for literal in ["r#\"{\"#", "\"{\"", "'{'", "\"}\"", "r##\"a \"# {\"##", "['\\'','{']"] {
         let text = format!("#[cfg(test)]\nmod tests {{\n    let j = {literal};\n}}\nfn real() {{}}\n");
         let code = production_code_without_comments(&text);
         assert!(code.contains("fn real()"), "{literal}: the production code after the test item: {code}");
@@ -3894,7 +3894,6 @@ fn nothing_under_clipboard_prints() {
             continue;
         }
         seen += 1;
-        let production = production_code(&t);
         for code in production_code_without_comments(&t).lines() {
             if let Some(m) = clipboard_print_macro(code) {
                 panic!("{m} in {name}'s production code");
