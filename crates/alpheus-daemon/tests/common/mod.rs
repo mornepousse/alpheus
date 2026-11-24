@@ -165,6 +165,15 @@ impl Sway {
         }
     }
 
+    /// Whether THIS sway advertises the global `interface` (`ext_data_control_manager_v1`...): an
+    /// older compositor has fewer of them, and a test that names one asks first.
+    pub fn offers(&self, interface: &str) -> bool {
+        let stream = UnixStream::connect(self.runtime.join(&self.wayland)).unwrap();
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, _queue) = registry_queue_init::<NoEvents>(&connection).unwrap();
+        globals.contents().with_list(|list| list.iter().any(|g| g.interface == interface))
+    }
+
     /// Command to THIS test's headless sway (its own IPC socket).
     pub fn command(&self, cmd: &str) {
         let ok = Command::new("swaymsg").arg("-s").arg(&self.ipc).arg(cmd).stdout(Stdio::null()).status().unwrap().success();
@@ -823,6 +832,18 @@ pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>, sensitive: bool) -> 
     WlCopyChild(Some(child))
 }
 
+/// A test that cannot run in this environment says so, where a reader looks: on stderr and, in
+/// GitHub Actions, in the run's summary. It is a visible skip, never a silent pass.
+pub fn skip(test: &str, reason: &str) {
+    let line = format!("SKIPPED {test}: {reason}");
+    eprintln!("{line}");
+    if let Some(summary) = env::var_os("GITHUB_STEP_SUMMARY")
+        && let Ok(mut file) = fs::OpenOptions::new().append(true).open(summary)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 /// The text of THIS sway's clipboard (`wl-paste --no-newline --type text/plain`), None when there
 /// is no selection or it is no text (a non-zero exit). Same guard as `wl_copy`: the socket must
 /// exist, the environment is cleared, the runtime directory and display are this sway's, stdin is
@@ -865,6 +886,14 @@ pub fn wl_paste(sway: &Sway) -> Option<String> {
 /// The `wl-copy` serving a selection: killed and waited on drop, so a failed assertion never
 /// leaves it serving.
 pub struct WlCopyChild(Option<Child>);
+
+impl WlCopyChild {
+    /// The child has exited with a failure: it never served. `wl-copy` older than 2.3.0 does so at
+    /// once for `--sensitive` (unrecognised option), which is how a test learns the option is missing.
+    pub fn failed(&mut self) -> bool {
+        self.0.as_mut().and_then(|c| c.try_wait().ok().flatten()).is_some_and(|status| !status.success())
+    }
+}
 
 impl Drop for WlCopyChild {
     fn drop(&mut self) {

@@ -5439,7 +5439,7 @@ fn a_hung_source_is_killed_and_nothing_stays_awake() {
 /// session. Two outputs; on workspace 1, two windows (a then b, a focused last); on the named
 /// workspace "music", a floating c (urgent) and d moved to the scratchpad. With
 /// ALPHEUS_CAPTURE_SWAY=<directory>, writes the three replies there (once, to make them); always checks
-/// that the live replies give the state the committed fixtures give, ids aside.
+/// that the live replies give the state the committed fixtures give, ids and output names aside.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn sway_fixtures_match_a_live_headless_sway() {
@@ -5469,7 +5469,18 @@ fn sway_fixtures_match_a_live_headless_sway() {
     let fixture = alpheus_daemon::compositor::sway::state(&read("sway-workspaces.json"), &read("sway-tree.json")).unwrap();
     let shape = |e: &alpheus_daemon::compositor::CompositorState| {
         let tops: Vec<_> = e.toplevels.iter().map(|t| (t.class.clone(), t.title.clone(), t.workspace.clone(), t.focused)).collect();
-        (e.workspaces.clone(), e.window.clone(), tops)
+        // Which of the two headless outputs sway calls HEADLESS-1 is its own (1.12 and 1.9 differ):
+        // the outputs compare by first appearance, the grouping of workspaces is what the fixtures pin.
+        let mut seen: Vec<String> = Vec::new();
+        let mut workspaces = e.workspaces.clone();
+        for w in &mut workspaces {
+            let at = seen.iter().position(|o| *o == w.output).unwrap_or_else(|| {
+                seen.push(w.output.clone());
+                seen.len() - 1
+            });
+            w.output = format!("output-{at}");
+        }
+        (workspaces, e.window.clone(), tops)
     };
     assert_eq!(shape(&live), shape(&fixture), "the committed fixtures still describe what this sway sends");
     assert!(con_id(&tree, "fixture-a").is_some());
@@ -7751,14 +7762,22 @@ fn clip_daemon(name: &str, bar_toml: Option<&str>) -> (Sway, Daemon) {
 /// One copy by an app: it lasts as long as the child lives. Waits (bounded) until the selection
 /// is this text, then a short settle lets the daemon read it.
 fn clip_copy(sway: &Sway, text: &str, sensitive: bool) -> common::WlCopyChild {
-    let child = wl_copy(sway, text, None, sensitive);
+    clip_copy_or_refused(sway, text, sensitive).expect("the copy helper exited before it served the text")
+}
+
+/// `clip_copy`, or None when `wl-copy` itself exits with a failure (an option it does not know).
+fn clip_copy_or_refused(sway: &Sway, text: &str, sensitive: bool) -> Option<common::WlCopyChild> {
+    let mut child = wl_copy(sway, text, None, sensitive);
     let start = Instant::now();
     while wl_paste(sway).as_deref() != Some(text) {
+        if child.failed() {
+            return None;
+        }
         assert!(start.elapsed() < Duration::from_secs(5), "the selection never became the copied text");
         thread::sleep(Duration::from_millis(20));
     }
     thread::sleep(Duration::from_millis(200));
-    child
+    Some(child)
 }
 
 /// `--clipboard`, the `n`th box of the test shown, then `keys` typed (wtype arguments).
@@ -7813,8 +7832,15 @@ fn clip_probe(sway: &Sway, d: &Daemon, expected: &[&str], shown: &mut usize, act
 #[test]
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
 fn clipboard_start_line_names_the_protocol() {
-    let (_sway, d) = clip_daemon("clip-start", Some(CLIP_ON));
-    assert!(d.wait_for("clipboard: ext-data-control-v1", DELAY), "{:?}", d.log());
+    let (sway, d) = clip_daemon("clip-start", Some(CLIP_ON));
+    // The line names the protocol this compositor offers: ext where it exists (sway 1.10 and up),
+    // else the wlr fallback (sway 1.9 on Ubuntu 24.04).
+    let line = if sway.offers("ext_data_control_manager_v1") {
+        "clipboard: ext-data-control-v1"
+    } else {
+        "clipboard: wlr-data-control-unstable-v1"
+    };
+    assert!(d.wait_for(line, DELAY), "{:?}", d.log());
     let (_off_sway, off) = clip_daemon("clip-start-off", None);
     thread::sleep(Duration::from_millis(500));
     assert!(off.log().iter().all(|l| !l.starts_with("clipboard:")), "{:?}", off.log());
@@ -7850,7 +7876,10 @@ fn clipboard_enter_copies_back_without_a_new_entry() {
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
 fn clipboard_skips_sensitive_copies() {
     let (sway, d) = clip_daemon("clip-sensitive", Some(CLIP_ON));
-    let (first, second) = (clip_copy(&sway, "token 1234", true), clip_copy(&sway, "buy milk", false));
+    let Some(first) = clip_copy_or_refused(&sway, "token 1234", true) else {
+        return common::skip("clipboard_skips_sensitive_copies", "the copy helper has no --sensitive (wl-clipboard < 2.3.0)");
+    };
+    let (first, second) = (first, clip_copy(&sway, "buy milk", false));
     drop((first, second));
     thread::sleep(Duration::from_millis(300));
     let (mut shown, mut activated) = (0, 0);
