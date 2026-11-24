@@ -162,6 +162,40 @@ pub fn map_area(logical: Rect, scale: f64, transform: Transform, logical_size: (
     Rect { x: left as i32, y: top as i32, width: (right - left) as u32, height: (bottom - top) as u32 }
 }
 
+/// Whether `transform` turns the output a quarter: its buffer's width is then its shown height.
+pub fn turned_a_quarter(transform: Transform) -> bool {
+    matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
+}
+
+/// The buffer pixel of the pixel (x, y) as the output shows it, `shown` (width, height) being the
+/// output's size in shown pixels: `map_area` of a 1 × 1 area at scale 1, without the floats, for the
+/// colour picker, which reads one pixel at a time.
+pub fn buffer_pixel(transform: Transform, (x, y): (i64, i64), shown: (u32, u32)) -> (i64, i64) {
+    let (w, h) = (i64::from(shown.0), i64::from(shown.1));
+    match transform {
+        Transform::_90 => (h - y - 1, x),
+        Transform::_180 => (w - x - 1, h - y - 1),
+        Transform::_270 => (y, w - x - 1),
+        Transform::Flipped => (w - x - 1, y),
+        Transform::Flipped90 => (y, x),
+        Transform::Flipped180 => (x, h - y - 1),
+        Transform::Flipped270 => (h - y - 1, w - x - 1),
+        _ => (x, y),
+    }
+}
+
+/// The pixel (x, y) of `frame`, in buffer pixels with the top row first, as RGBA; None outside the
+/// frame or past a `data` too short for it.
+pub fn pixel(frame: &Frame, x: i64, y: i64) -> Option<[u8; 4]> {
+    if x < 0 || y < 0 || x >= i64::from(frame.width) || y >= i64::from(frame.height) {
+        return None;
+    }
+    let row = if frame.y_invert { i64::from(frame.height) - 1 - y } else { y } as usize;
+    let start = row * frame.stride as usize + x as usize * 4;
+    let p: [u8; 4] = frame.data.get(start..start + 4)?.try_into().ok()?;
+    Some(frame.format.rgba(p))
+}
+
 /// `logical_area` of an output as pixels of its captured `frame` (width, height): `map_area` with the
 /// scale read off the frame (its width over the output's logical width, the height when the output
 /// is turned a quarter), so a fractional scale maps exactly. Without a `logical_size` (the compositor
@@ -174,7 +208,7 @@ pub fn buffer_area(
     scale_factor: i32,
     transform: Transform,
 ) -> Rect {
-    let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
+    let quarter = turned_a_quarter(transform);
     match logical_size.filter(|(w, h)| *w > 0 && *h > 0) {
         Some(size) => {
             let across = if quarter { frame.1 } else { frame.0 };
@@ -465,6 +499,44 @@ mod tests {
         // A rotated output: the frame is 400 by 200 (native), shown 100 by 200 logical at scale 2.
         let got = buffer_area((400, 200), area, Some((100, 200)), 2, Transform::_90);
         assert_eq!(got, map_area(area, 2.0, Transform::_90, (100, 200)));
+    }
+
+    /// `buffer_pixel` is `map_area` for one pixel at scale 1: the picker reads the very pixel an area
+    /// of 1 × 1 would cut, under every transform.
+    #[test]
+    fn one_pixel_maps_as_map_area_maps_it_under_every_transform() {
+        let all = [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ];
+        for t in all {
+            for (x, y) in [(0, 0), (3, 1), (9, 19), (5, 7)] {
+                let r = map_area(Rect { x, y, width: 1, height: 1 }, 1.0, t, (10, 20));
+                let got = buffer_pixel(t, (i64::from(x), i64::from(y)), (10, 20));
+                assert_eq!(got, (i64::from(r.x), i64::from(r.y)), "{t:?} ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn one_pixel_is_read_through_the_stride_the_format_and_the_flip() {
+        // 2 by 2, stride 12 (4 padding bytes a row), XRGB: bytes B, G, R, X.
+        let data = vec![1, 2, 3, 0, 4, 5, 6, 0, 0xEE, 0xEE, 0xEE, 0xEE, 7, 8, 9, 0, 10, 11, 12, 0, 0xEE, 0xEE, 0xEE, 0xEE];
+        let f = frame(Format::Xrgb8888, 2, 2, 12, false, data.clone());
+        assert_eq!(pixel(&f, 1, 0), Some([6, 5, 4, 255]));
+        assert_eq!(pixel(&f, 0, 1), Some([9, 8, 7, 255]));
+        assert_eq!(pixel(&f, 2, 0), None, "past the right edge");
+        assert_eq!(pixel(&f, 0, -1), None, "above the top");
+        let flipped = frame(Format::Xrgb8888, 2, 2, 12, true, data);
+        assert_eq!(pixel(&flipped, 0, 0), Some([9, 8, 7, 255]), "the top row is the last stored");
+        let short = frame(Format::Xrgb8888, 2, 2, 12, false, vec![0; 4]);
+        assert_eq!(pixel(&short, 1, 1), None, "a short buffer gives nothing, never a panic");
     }
 
     /// Without the output's logical size (no xdg-output) the output's own scale factor stands in,

@@ -508,6 +508,8 @@ pub struct App {
     pub(crate) notes: crate::notes::app::NotesApp,
     /// The capture area selector while open; None at rest (nothing of it resident).
     pub(crate) select: Option<crate::captures::select_app::OpenSelect>,
+    /// The colour picker while open, with its frozen frame; None at rest (nothing of it resident).
+    pub(crate) pick: Option<crate::captures::pick_app::OpenPick>,
     /// The capture flow: idle at rest, one capture at a time (nothing else of it resident).
     pub(crate) capture: crate::captures::app::CaptureApp,
     /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
@@ -712,6 +714,7 @@ impl App {
             launcher_generation: 0,
             notes: crate::notes::app::NotesApp::new(),
             select: None,
+            pick: None,
             capture: crate::captures::app::CaptureApp::new(),
             mail: None,
             xdg,
@@ -1097,6 +1100,10 @@ impl CompositorHandler for App {
             self.select_guarded("scale", |app| app.select_scale(f));
             return;
         }
+        if self.pick_owns_surface(surface) {
+            self.pick_guarded("scale", |app| app.pick_scale(f));
+            return;
+        }
         if self.bubbles_scale(surface, f) {
             return;
         }
@@ -1158,6 +1165,7 @@ impl OutputHandler for App {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
         self.notes_guarded("output", |app| app.notes_output_gone(&output));
         self.select_guarded("output", |app| app.select_output_gone(&output));
+        self.pick_guarded("output", |app| app.pick_output_gone(&output));
         self.bubbles_output_gone(&output);
         self.osd_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
@@ -1192,6 +1200,10 @@ impl LayerShellHandler for App {
         if self.select_owns_surface(layer.wl_surface()) {
             self.select_guarded("closed", |app| app.select_layer_closed());
             return; // the selector's surface: the bar's restore logic is not involved
+        }
+        if self.pick_owns_surface(layer.wl_surface()) {
+            self.pick_guarded("closed", |app| app.pick_layer_closed());
+            return; // the picker's surface: the bar's restore logic is not involved
         }
         if self.bubbles_owns(layer.wl_surface()) {
             self.bubbles_layer_closed();
@@ -1248,6 +1260,10 @@ impl LayerShellHandler for App {
         }
         if self.select_owns_surface(layer.wl_surface()) {
             self.select_guarded("configure", |app| app.select_configured(c.new_size));
+            return;
+        }
+        if self.pick_owns_surface(layer.wl_surface()) {
+            self.pick_guarded("configure", |app| app.pick_configured(c.new_size));
             return;
         }
         if self.bubbles_owns(layer.wl_surface()) {
@@ -1357,6 +1373,9 @@ impl PointerHandler for App {
                 continue;
             }
             if self.select_guarded("pointer", |app| app.select_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.pick_guarded("pointer", |app| app.pick_pointer(conn, ev)).unwrap_or(true) {
                 continue;
             }
             if self.bubbles_pointer(conn, ev) {

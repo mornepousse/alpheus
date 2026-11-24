@@ -963,3 +963,17 @@ fn the_captures_table_is_read_and_checked() {
     }
     assert!(BarConfig::from_text("[captures]\nannotate = []").unwrap().captures.annotate.is_empty(), "[] turns the tool off");
 }
+
+/// `pick_format` is the colour picker's text: one line of at most 256 bytes, with at least one of
+/// `{r}`, `{g}`, `{b}`, `{hex}`, and no other `{…}` (a mistyped placeholder would be copied as is).
+#[test]
+fn pick_format_is_checked() {
+    for good in ["{hex}", "rgb({r}, {g}, {b})", "{r} {g} {b} {hex}", "#{hex} }"] {
+        assert_eq!(BarConfig::from_text(&format!("[captures]\npick_format = \"{good}\"")).unwrap().captures.pick_format, good);
+    }
+    let long = format!("{{hex}}{}", "x".repeat(252));
+    for bad in ["", "colour", "{red}", "{hex", "{hex} {x}", "{hex}\\n", "{hex}\\u0000", long.as_str()] {
+        let e = BarConfig::from_text(&format!("[captures]\npick_format = \"{bad}\"")).unwrap_err();
+        assert!(e.contains("captures.pick_format"), "{bad}: {e}");
+    }
+}

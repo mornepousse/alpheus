@@ -180,7 +180,7 @@ pub struct Context {
 /// Whether a capture verb is built: the others answer "not available yet", and their rows stay
 /// hidden (in the table, with their ids) until their tasks land.
 const fn built(verb: CaptureVerb) -> bool {
-    matches!(verb, CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave)
+    matches!(verb, CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave | CaptureVerb::Pick)
 }
 
 /// Whether `b` shows under `c`.

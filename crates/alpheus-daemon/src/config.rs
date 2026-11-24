@@ -527,6 +527,38 @@ fn check_captures(c: &CapturesConfig) -> Result<(), String> {
             return Err(format!("{key}: an argument holds a NUL"));
         }
     }
+    check_pick_format(&c.pick_format)
+}
+
+/// The longest `[captures] pick_format`, in bytes: one short line on the clipboard.
+pub const PICK_FORMAT_MAX: usize = 256;
+
+/// `pick_format`: one line of at most `PICK_FORMAT_MAX` bytes holding at least one placeholder, and
+/// only `{r}`, `{g}`, `{b}` and `{hex}` between braces, so a mistyped one is said, never copied as is.
+fn check_pick_format(format: &str) -> Result<(), String> {
+    const KEY: &str = "captures.pick_format";
+    if format.len() > PICK_FORMAT_MAX {
+        return Err(format!("{KEY}: longer than {PICK_FORMAT_MAX} bytes"));
+    }
+    if format.chars().any(char::is_control) {
+        return Err(format!("{KEY}: holds a control character"));
+    }
+    let mut rest = format;
+    let mut placeholders = 0;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return Err(format!("{KEY}: a '{{' is never closed"));
+        };
+        if !matches!(&after[..close], "r" | "g" | "b" | "hex") {
+            return Err(format!("{KEY}: unknown placeholder (expected {{r}}, {{g}}, {{b}} or {{hex}})"));
+        }
+        placeholders += 1;
+        rest = &after[close + 1..];
+    }
+    if placeholders == 0 {
+        return Err(format!("{KEY}: no placeholder (expected {{r}}, {{g}}, {{b}} or {{hex}})"));
+    }
     Ok(())
 }
 

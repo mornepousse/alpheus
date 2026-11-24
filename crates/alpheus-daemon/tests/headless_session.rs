@@ -8990,7 +8990,7 @@ fn a_second_capture_while_one_runs_is_ignored() {
 #[ignore = "headless sway (nix develop)"]
 fn the_unbuilt_capture_verbs_exit_2_with_a_fixed_message() {
     let (sway, d, _shots) = capture_session("capture-notyet", None);
-    for verb in ["pick", "annotate", "ocr", "record", "record-area", "stop"] {
+    for verb in ["annotate", "ocr", "record", "record-area", "stop"] {
         let (code, out, err) = script(&sway, &["--capture", verb], "").join().unwrap();
         assert_eq!((code, out.as_str()), (2, ""), "{verb}");
         assert!(err.contains("not available yet"), "{verb}: {err}");
@@ -9030,4 +9030,76 @@ fn an_area_capture_replaces_the_debug_selector_and_still_copies() {
     sway.drag((100, 100), (300, 250), false);
     assert!(d.wait_for("capture: copied", DELAY), "the capture's own selector answers: {:?}", d.log());
     assert_eq!(d.count("capture: cancelled"), 0, "{:?}", d.log());
+}
+
+const PICKER_SHOWN: &str = "capture: picker shown";
+
+/// Sends `--capture pick` and waits for the picker to be drawn over the frozen output.
+fn open_picker(sway: &Sway, d: &Daemon, nth: usize) {
+    assert_eq!(script(sway, &["--capture", "pick"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(PICKER_SHOWN, nth, DELAY), "{:?}", d.log());
+}
+
+/// The colour picker copies the pixel under the pointer as `#RRGGBB`: the output's background is a
+/// known colour, the copy command (a fake that records its standard input) gets that value as text,
+/// with no image type, and one notice says it; no private file is left.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn colour_picker_copies_the_pixel_under_the_pointer() {
+    let bus = PrivateBus::start("capture-pick");
+    let (sway, d, shots) = capture_session("capture-pick", Some(&bus));
+    wait_for_the_server(&bus);
+    // A background with letters in its value, so the case of the hex is seen.
+    let bg = [0x2B, 0x4C, 0x9E];
+    sway.command("output * bg #2b4c9e solid_color");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(100, 600) == Some(bg)), "the new background: {:?}", d.log());
+    open_picker(&sway, &d, 1);
+    sway.hover(400, 300);
+    // The frozen output shows, and the lens beside the pointer: past the 24 px gap, its centre cell
+    // (cells of 10 px) holds the background, outlined in white since the background is dark.
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(100, 600) == Some(bg)), "the frame is shown: {:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| s.at(469, 369) == Some(bg) && s.at(464, 369) == Some([255, 255, 255])),
+        "the lens: {:?}",
+        d.log()
+    );
+    sway.click(400, 300, "button1");
+    assert!(d.wait_for("capture: colour copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy"), ["fake-copy "], "the copy command as written: no image type");
+    assert_eq!(recorded_stdin(&sway, "fake-copy"), b"#2B4C9E", "the background's value, as text, in upper case");
+    assert!(d.wait_for("capture: picker closed (picked)", DELAY), "{:?}", d.log());
+    assert!(!shots.exists(), "a pick saves nothing");
+    let left: Vec<_> = std::fs::read_dir(sway.runtime.join("alpheus")).into_iter().flatten().flatten().map(|e| e.file_name()).collect();
+    assert!(left.iter().all(|n| !n.to_string_lossy().contains("pick.txt")), "{left:?}");
+    assert_eq!(d.count("capture: failed") + d.count("capture: copy failed"), 0, "{:?}", d.log());
+    // The value is the notice's alone: never in the log.
+    assert!(d.log().iter().all(|l| !l.to_ascii_uppercase().contains("2B4C9E")), "{:?}", d.log());
+}
+
+/// Escape ends the picker with nothing picked: nothing is copied, no notice, and the slot is free
+/// for the next capture.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_cancelled_pick_is_silent_and_copies_nothing() {
+    let bus = PrivateBus::start("capture-pick-cancel");
+    let (sway, d, _shots) = capture_session("capture-pick-cancel", Some(&bus));
+    wait_for_the_server(&bus);
+    open_picker(&sway, &d, 1);
+    sway.hover(300, 300);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-copy").is_empty(), "no copy: {:?}", d.log());
+    assert_eq!(d.count("bubbles shown"), 0, "no notice: {:?}", d.log());
+    // A right click cancels too, and one capture at a time holds while the picker is open.
+    open_picker(&sway, &d, 2);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0, "ignored, not an error");
+    assert!(d.wait_for("capture: busy", DELAY), "{:?}", d.log());
+    sway.click(300, 300, "button3");
+    assert!(d.wait_for_count("capture: cancelled", 2, DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "fake-copy").is_empty(), "{:?}", d.log());
+    // Free again.
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
 }

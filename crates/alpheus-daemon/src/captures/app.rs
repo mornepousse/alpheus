@@ -6,8 +6,10 @@
 //! The steps the flow answers with are carried out here: open the selector (`select_app.rs`), wait
 //! for the compositor to have removed it (a `wl_display.sync`, answered by `Settled`), ask one frame
 //! of the focused output (`screencopy.rs`), hand the frame to the short-lived `alpheus-capture`
-//! thread (`deliver.rs`), and show the notice of its ending. The frame and the worker's result come
-//! back through the loop's mail (`Mail::Capture`), so the flow only ever moves on the loop's thread.
+//! thread (`deliver.rs`), and show the notice of its ending. For the colour picker the frame opens
+//! the picker instead (`pick_app.rs`), and its answer's value, in `[captures] pick_format`, is what
+//! the worker copies. The frame and the worker's result come back through the loop's mail
+//! (`Mail::Capture`), so the flow only ever moves on the loop's thread.
 //!
 //! Never:
 //! - ask for a frame in the turn the selector was destroyed: the compositor must first have dealt
@@ -25,11 +27,12 @@
 //! it succeeded", "A capture waits for the selector's removal", "The capture's PNG is encoded on a
 //! short-lived thread").
 
-use super::deliver::{Delivery, run};
+use super::deliver::{Delivery, Work, run};
 use super::paths::{file_name, save_dir, user_dir};
+use super::pick::value_text;
 use super::screencopy::{CaptureDone, CaptureError, Frame, PendingFrame, buffer_area};
 use super::select_app::guarded;
-use super::{Finish, Flow, GRAB_LIMIT, Job, Plan, Rect, SelectorAnswer, Step, notice, plan};
+use super::{Finish, Flow, GRAB_LIMIT, Job, PickAnswer, Plan, Rect, SelectorAnswer, Step, notice, plan};
 use crate::clock::LocalTime;
 use crate::deadline::DeadlineTimer;
 use crate::launcher::host::read_config;
@@ -40,6 +43,7 @@ use crate::startup::Mail;
 use crate::wayland::App;
 use alpheus_common::launcher_ipc::{Reply, Request};
 use alpheus_common::paths;
+use alpheus_common::theme::Rgb;
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::reexports::client::protocol::wl_callback::{self, WlCallback};
 use smithay_client_toolkit::reexports::client::protocol::wl_output::{Transform, WlOutput};
@@ -73,6 +77,11 @@ pub(crate) struct CaptureApp {
 impl CaptureApp {
     pub(crate) fn new() -> CaptureApp {
         CaptureApp { flow: Flow::default(), output: None, area: None, pending: None, due: None, timer: DeadlineTimer::new() }
+    }
+
+    /// The output being captured, for the picker that opens over it.
+    pub(super) fn output(&self) -> Option<WlOutput> {
+        self.output.clone()
     }
 }
 
@@ -182,7 +191,9 @@ impl App {
             }
             Step::Settle => self.capture_settle(),
             Step::Grab(area) => self.capture_grab(area),
-            Step::Encode | Step::Nothing => {}
+            Step::Copy(colour) => self.capture_copy_value(colour),
+            // The frame is in hand where these come (`capture_frame`): handled there.
+            Step::Encode | Step::Pick | Step::Nothing => {}
             Step::Finish(finish) => self.capture_finish(finish),
         }
         self.capture_timer_sync();
@@ -275,6 +286,7 @@ impl App {
         match result {
             Ok(frame) => match self.capture.flow.grabbed(generation, true) {
                 Step::Encode => self.capture_encode(frame),
+                Step::Pick => self.pick_open(frame, generation),
                 step => {
                     drop(frame);
                     crate::memory::release_memory();
@@ -294,13 +306,23 @@ impl App {
         self.capture_timer_sync();
     }
 
-    /// Hands the frame to the short-lived `alpheus-capture` thread, which cuts, encodes, copies or
-    /// saves it and mails its ending back. A thread that cannot start ends the capture as failed.
+    /// The picker answered (`pick_app.rs`, once its surface and its frame are gone): the flow decides
+    /// what that means for capture `generation`, the one that opened it.
+    pub(crate) fn capture_picked(&mut self, generation: u64, answer: PickAnswer) {
+        self.capture_guarded("picked", |app| {
+            let step = app.capture.flow.picked(generation, answer);
+            app.capture_step(step);
+        });
+    }
+
+    /// The picked colour's value (`[captures] pick_format`) goes to the worker, which copies it.
+    fn capture_copy_value(&mut self, colour: Rgb) {
+        let value = value_text(colour, &self.bar.config.captures.pick_format);
+        self.capture_deliver(Work::Text(value));
+    }
+
+    /// The frame, cut to the capture's area mapped to its pixels, goes to the worker.
     fn capture_encode(&mut self, frame: Frame) {
-        let (Some(job), Some(tx)) = (self.capture.flow.job(), self.mail.clone()) else {
-            return self.capture_finish(Finish::CaptureFailed);
-        };
-        let generation = self.capture.flow.generation();
         let info = self.capture.output.as_ref().and_then(|o| self.outputs.info(o));
         let area = self.capture.area.take().map(|logical| {
             let size = info.as_ref().and_then(|i| i.logical_size).map(|(w, h)| (w.max(0) as u32, h.max(0) as u32));
@@ -308,6 +330,17 @@ impl App {
             let transform = info.as_ref().map_or(Transform::Normal, |i| i.transform);
             buffer_area((frame.width, frame.height), logical, size, scale, transform)
         });
+        self.capture_deliver(Work::Image { frame, area });
+    }
+
+    /// Hands the work to the short-lived `alpheus-capture` thread, which cuts, encodes, copies or
+    /// saves a frame, or copies a value, and mails its ending back. A thread that cannot start ends
+    /// the capture as failed.
+    fn capture_deliver(&mut self, work: Work) {
+        let (Some(job), Some(tx)) = (self.capture.flow.job(), self.mail.clone()) else {
+            return self.capture_finish(Finish::CaptureFailed);
+        };
+        let generation = self.capture.flow.generation();
         // The two small files (launcher.toml, user-dirs.dirs) are read here, on the loop, as the
         // launcher reads launcher.toml at each open: read in the worker, a fault in them would come
         // before the job whose panic is caught, and the ending might never be mailed.
@@ -319,7 +352,7 @@ impl App {
         let exec = self.exec.clone();
         let started = std::thread::Builder::new().name("alpheus-capture".into()).spawn(move || {
             let delivery = Delivery { job, copy: &launcher.copy, save_dir: dir.as_deref(), file_name: name, temp_dir: &temp_dir };
-            let finish = run(exec.as_ref(), frame, area, &delivery);
+            let finish = run(exec.as_ref(), work, &delivery);
             // The frame and the image went with `run`: the loop frees what the thread's arena kept.
             let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));
         });
@@ -334,6 +367,7 @@ impl App {
         match &finish {
             Finish::Cancelled => log("capture: cancelled"),
             Finish::Copied(_) => log("capture: copied"),
+            Finish::Picked(_) => log("capture: colour copied"),
             Finish::Saved(_) => log("capture: saved"),
             Finish::CaptureFailed => log("capture: failed"),
             Finish::CopyFailed => log("capture: copy failed"),

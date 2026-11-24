@@ -574,6 +574,8 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
         ("notify/bubbles_surface.rs", "fn bubbles_create("),
         // The capture selector: on Overlay too, or a fullscreen game on Hyprland would hide it.
         ("captures/select_app.rs", "fn select_open("),
+        // The colour picker: the same, over the frozen output.
+        ("captures/pick_app.rs", "fn pick_open("),
     ] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code_without_comments(text);
@@ -4791,7 +4793,9 @@ fn the_capture_logs_fixed_words_only() {
     assert!(app.matches("log(").count() >= 10, "the log calls were found");
     // The worker, the protocol, the encoder and the pure files never log at all: the glue says one
     // word per ending, and a frame or a buffer never reaches a log line.
-    for name in ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/screencopy.rs", "captures/encode.rs"] {
+    for name in
+        ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/screencopy.rs", "captures/encode.rs", "captures/pick.rs"]
+    {
         let code = production_code_without_comments(&captures_file(name));
         for p in ["log(", "log::", "eprintln!", "println!", "eprint!", "dbg!("] {
             assert!(!code.contains(p), "{p} in {name}");
@@ -4887,12 +4891,17 @@ fn the_frame_deadline_is_armed_only_while_a_frame_is_awaited() {
 #[test]
 fn the_capture_worker_always_mails_its_ending() {
     let app = production_code_without_comments(&captures_file("captures/app.rs"));
-    let encode = function_body(&app, "fn capture_encode(");
-    let run = encode.find("let finish = run(").expect("the worker runs the job");
-    let after_run = run + encode[run..].find(';').expect("the job is one statement") + 1;
-    let send = encode.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
+    let deliver_fn = function_body(&app, "fn capture_deliver(");
+    let run = deliver_fn.find("let finish = run(").expect("the worker runs the job");
+    let after_run = run + deliver_fn[run..].find(';').expect("the job is one statement") + 1;
+    let send =
+        deliver_fn.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
     assert!(after_run <= send, "after the job");
-    assert_eq!(encode[after_run..send].trim(), "", "the next statement, under no condition");
+    assert_eq!(deliver_fn[after_run..send].trim(), "", "the next statement, under no condition");
+    // The one place that starts the worker serves the frames and the picked values alike.
+    assert_eq!(app.matches("capture_deliver(").count(), 3, "defined once, called by the frame and by the value");
+    assert!(function_body(&app, "fn capture_encode(").contains("self.capture_deliver(Work::Image {"));
+    assert!(function_body(&app, "fn capture_copy_value(").contains("self.capture_deliver(Work::Text("));
     let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
     assert!(function_body(&deliver, "pub fn run(").contains("catch_unwind("), "a panic in the job is caught");
 }
@@ -4910,7 +4919,8 @@ fn the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file() {
     }
     let app = production_code_without_comments(&captures_file("captures/app.rs"));
     assert!(app.contains(".name(\"alpheus-capture\".into())"), "the worker is named");
-    assert!(app.contains("run(exec.as_ref(), frame"), "the frame is encoded in the worker's closure");
+    assert!(app.contains("run(exec.as_ref(), work"), "the frame is encoded in the worker's closure");
+    assert_eq!(app.matches("Work::Image {").count(), 1, "the frame becomes the worker's work in one place");
     let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
     assert!(deliver.contains("run_with_stdin_file("));
     assert!(deliver.contains("catch_unwind("), "a panic in the worker ends the capture as a failure");
@@ -6082,4 +6092,77 @@ fn the_quick_panels_timer_follows_the_view_from_the_open() {
     for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
         assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
     }
+}
+
+/// The colour picker's model is pure: no log, no clock, no panicking path, no slicing by range (the
+/// frame is read through `screencopy::pixel`, which answers None past its end). Production code only.
+#[test]
+fn the_picker_model_is_pure_and_cannot_panic() {
+    let t = captures_file("captures/pick.rs");
+    let production = production_code(&t);
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "Instant", "SystemTime", "std::fs", "std::env"] {
+        assert!(!production.contains(p), "{p} in captures/pick.rs's production code");
+    }
+    for code in production_code_without_comments(&t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in captures/pick.rs's production code");
+        }
+    }
+}
+
+/// The picker's surface logs fixed words only: never a colour, a position, an output's name or a
+/// key. The two variable parts are a close reason's word and the guard's `what`, themselves fixed.
+#[test]
+fn the_picker_logs_fixed_words_only() {
+    let t = captures_file("captures/pick_app.rs");
+    let code = production_code_without_comments(&t);
+    assert_eq!(selector_unfixed_log(&code), None);
+    assert!(code.matches("log(").count() >= 5, "the log calls were found");
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production_code(&t).contains(p), "{p} in captures/pick_app.rs's production code");
+    }
+    // The value's text is the notice's, never a log's: the glue's ending word is fixed.
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.contains("Finish::Picked(_) => log(\"capture: colour copied\")"));
+}
+
+/// A picker that cannot open (no shared buffer) fails its capture, critical: it is never answered as
+/// the user's silent cancel.
+#[test]
+fn a_picker_that_cannot_open_fails_its_capture() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let open = function_body(&pick, "pub(crate) fn pick_open(");
+    let refused = open.find("SlotPool::new(").expect("the pool is made at open");
+    let answer = open[refused..].find("capture_picked(").map(|i| &open[refused + i..]).expect("a refused pool is answered");
+    assert!(answer.starts_with("capture_picked(generation, PickAnswer::Failed)"), "{}", &answer[..60.min(answer.len())]);
+}
+
+/// The frozen frame lives in the open picker only: it is made into a `Shot` in one place, the
+/// picker's open, and goes with the picker at its close, which gives the pages back. The picker's
+/// answer never asks for a frame.
+#[test]
+fn the_picker_frame_is_kept_only_while_the_picker_is_open() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        let n = code.matches("Shot::new(").count();
+        if name == "captures/pick_app.rs" {
+            assert_eq!(n, 1, "one Shot, made at the picker's open");
+            assert!(function_body(&code, "pub(crate) fn pick_open(").contains("Shot::new("));
+        } else if name != "captures/pick.rs" {
+            assert_eq!(n, 0, "a Shot made in {name}");
+        }
+    }
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let close = function_body(&pick, "pub(crate) fn pick_close(");
+    let dropped = close.find("drop(open)").expect("the picker, its frame with it, is dropped");
+    let released = close.find("release_memory()").expect("the pages are given back");
+    let answered = close.find("capture_picked(").expect("the capture is told");
+    assert!(dropped < released && released < answered, "dropped, given back, then answered");
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let picked = function_body(&app, "pub(crate) fn capture_picked(");
+    for p in ["capture_grab", "capture_output", "Step::Grab"] {
+        assert!(!picked.contains(p), "the picker's answer reaches {p}");
+    }
+    assert!(function_body(&app, "fn capture_frame(").contains("Step::Pick => self.pick_open(frame, generation)"));
 }

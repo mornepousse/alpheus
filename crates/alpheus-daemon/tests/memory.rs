@@ -4892,6 +4892,64 @@ fn at_rest_no_wakeups_after_an_area_capture() {
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the selector was used");
 }
 
+/// One colour pick through the socket, the n-th: the picker opens over the frozen output, a click
+/// picks, and its value goes to the copy command (`cat`, its output discarded).
+fn colour_pick(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Pick)), Reply::Done);
+    assert!(d.wait_for_count("capture: picker shown", n, DELAY), "{:?}", d.log());
+    sway.hover(300 + n as u32, 300);
+    sway.click(300 + n as u32, 300, "button1");
+    assert!(d.wait_for_count("capture: colour copied", n, DELAY), "{:?}", d.log());
+}
+
+/// The colour picker: the daemon's own anonymous memory is back within 64 KB after 10 more picks
+/// (the frozen frame, the surface's pool and the worker go with each), no thread is left, and nothing
+/// wakes the loop at rest afterwards. The cost while open is printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_colour_pick() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("pick-rest");
+    let (sway, _hypr, d) = start_launcher("pick-rest", &bus, Some(AT_REST), &[], Some(&|_| "copy = [\"cat\"]\n".to_string()));
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first picks warm the allocator, the glyph cache and the keymap: the baseline is after two.
+    colour_pick(&sway, &d, 1);
+    colour_pick(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // The cost while open, the lens drawn.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Pick)), Reply::Done);
+    assert!(d.wait_for_count("capture: picker shown", 3, DELAY), "{:?}", d.log());
+    sway.hover(400, 300);
+    std::thread::sleep(Duration::from_millis(500));
+    let (open, open_shm) = d.pss_and_shm_kb();
+    sway.click(400, 300, "button1");
+    assert!(d.wait_for_count("capture: colour copied", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        colour_pick(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "colour picker: PSS {at_rest} KB at rest, {open} KB open (+{} KB, of which shm {open_shm} KB); \
+         anonymous {baseline} KB after 2 picks, {end} KB after 10 more; threads {} (before: {threads})",
+        open.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 picks grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the picker");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a colour pick");
+    eprintln!("wake-ups at rest after a colour pick (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the picker was used");
+}
+
 /// One capture through the socket, the n-th: a whole screen when `n` is odd, an area picked with a
 /// drag when it is even; returns once its n-th ending is logged. The copy command is `cat` (its
 /// output is discarded): nothing reaches a clipboard.

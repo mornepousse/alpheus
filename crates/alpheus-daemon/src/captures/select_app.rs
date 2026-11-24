@@ -131,7 +131,7 @@ pub(crate) fn paint_dim(px: &mut [u8], width: u32, height: u32, area: Option<(i3
 }
 
 /// `value` over the pixels of the rectangle (x0, y0, x1, y1), clipped to the buffer.
-fn fill_rect(px: &mut [u8], width: u32, height: u32, (x0, y0, x1, y1): (i32, i32, i32, i32), value: [u8; 4]) {
+pub(crate) fn fill_rect(px: &mut [u8], width: u32, height: u32, (x0, y0, x1, y1): (i32, i32, i32, i32), value: [u8; 4]) {
     let (x0, x1) = (x0.clamp(0, width as i32) as usize, x1.clamp(0, width as i32) as usize);
     let (y0, y1) = (y0.clamp(0, height as i32) as usize, y1.clamp(0, height as i32) as usize);
     if x0 >= x1 {

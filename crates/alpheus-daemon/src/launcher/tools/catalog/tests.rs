@@ -259,7 +259,7 @@ fn shown_follows_the_context() {
                 c.captures = true;
                 c.recording = true;
             },
-            &["capture.full", "capture.area", "capture.area_save"],
+            &["capture.full", "capture.area", "capture.area_save", "capture.pick"],
         ),
     ];
     for (flip, rows) in flips {
@@ -273,7 +273,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 39, "the table's 45, less the six captures not built yet");
+    assert_eq!(ids_shown(&all()).len(), 40, "the table's 45, less the five captures not built yet");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -311,11 +311,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 39);
+    assert_eq!(builtin_ids(&cat).len(), 40);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 37);
+    assert_eq!(ids.len(), 38);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -618,7 +618,7 @@ fn no_screencopy_hides_the_captures() {
     assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Captures]".to_string()), "no empty category");
     let (cat, _) = build("", &all());
     let at = cat.categories.iter().position(|k| k.name == "Captures").unwrap();
-    assert_eq!(names(&cat, &cat.category_rows(at)), ["Screenshot", "Area", "Area (save)"]);
+    assert_eq!(names(&cat, &cat.category_rows(at)), ["Screenshot", "Area", "Area (save)", "Colour picker"]);
     // The category sits between Utilities and Session.
     let root = category_names(&cat, &cat.root_rows());
     let place = |n: &str| root.iter().position(|r| r == n).unwrap();
@@ -630,11 +630,11 @@ fn no_screencopy_hides_the_captures() {
 #[test]
 fn the_unbuilt_captures_are_hidden_until_their_tasks_land() {
     let shown = ids_shown(&all());
-    for id in ["capture.annotate", "capture.record", "capture.record_area", "capture.stop", "capture.pick", "capture.ocr"] {
+    for id in ["capture.annotate", "capture.record", "capture.record_area", "capture.stop", "capture.ocr"] {
         assert!(BUILTINS.iter().any(|b| b.id == id), "{id} stays in the table");
         assert!(!shown.contains(&id), "{id} is hidden");
     }
-    for id in ["capture.full", "capture.area", "capture.area_save"] {
+    for id in ["capture.full", "capture.area", "capture.area_save", "capture.pick"] {
         assert!(shown.contains(&id), "{id} shows");
     }
 }

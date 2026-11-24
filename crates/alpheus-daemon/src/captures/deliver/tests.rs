@@ -98,9 +98,13 @@ fn a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file() {
     let run_dir = dir.join("run");
     let copy = wl_copy();
     let area = Some(Rect { x: 0, y: 0, width: 2, height: 2 });
-    let finish = run(&Panicking, frame(), area, &delivery(copy_job(Scope::Area), &copy, &run_dir, &dir));
+    let finish = run(&Panicking, Work::Image { frame: frame(), area }, &delivery(copy_job(Scope::Area), &copy, &run_dir, &dir));
     assert_eq!(finish, Finish::CaptureFailed);
     assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "no capture.png left");
+    // The same for a picked value: a failure, and no file left.
+    let finish = run(&Panicking, Work::Text("#000000".into()), &delivery(pick_job(), &copy, &run_dir, &dir));
+    assert_eq!(finish, Finish::CaptureFailed);
+    assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "no pick.txt left");
 }
 
 #[test]
@@ -166,13 +170,13 @@ fn stale_private_files_are_removed_at_start_and_nothing_else() {
     let run = dir.join("run");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    for name in ["capture.png", ".capture.png.123", "mode", "capture.png.keep", "other.png"] {
+    for name in ["capture.png", ".capture.png.123", "pick.txt", ".pick.txt.77", "mode", "capture.png.keep", "pick.txt.keep", "other.png"] {
         std::fs::write(run.join(name), "x").unwrap();
     }
     remove_stale(&run);
     let mut left: Vec<String> = std::fs::read_dir(&run).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     left.sort();
-    assert_eq!(left, ["capture.png.keep", "mode", "other.png"]);
+    assert_eq!(left, ["capture.png.keep", "mode", "other.png", "pick.txt.keep"]);
     remove_stale(&dir.join("absent")); // no folder: nothing to do, no panic
 }
 
@@ -224,7 +228,7 @@ fn an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied() {
     fake.ok("wl-copy --type image/png", "");
     let copy = wl_copy();
     let off = Some(Rect { x: 50, y: 50, width: 10, height: 10 });
-    let finish = run(&fake, frame(), off, &delivery(copy_job(Scope::Area), &copy, &dir.join("run"), &dir));
+    let finish = run(&fake, Work::Image { frame: frame(), area: off }, &delivery(copy_job(Scope::Area), &copy, &dir.join("run"), &dir));
     assert_eq!(finish, Finish::CaptureFailed);
     assert!(fake.calls().is_empty(), "a failed capture never reaches the clipboard");
     assert!(notice(&finish).unwrap().critical);
@@ -237,8 +241,56 @@ fn a_whole_run_copies_a_png_of_the_area() {
     fake.ok("wl-copy --type image/png", "");
     let copy = wl_copy();
     let area = Some(Rect { x: 0, y: 0, width: 2, height: 2 });
-    let finish = run(&fake, frame(), area, &delivery(copy_job(Scope::Area), &copy, &dir.join("run"), &dir));
+    let finish = run(&fake, Work::Image { frame: frame(), area }, &delivery(copy_job(Scope::Area), &copy, &dir.join("run"), &dir));
     assert_eq!(finish, Finish::Copied(Scope::Area));
     let inputs = fake.inputs();
     assert_eq!(decode(&inputs[0].1).0, 2, "what the clipboard got is the cut area");
+}
+
+fn pick_job() -> Job {
+    Job { scope: Scope::Pick, goal: Goal::Copy }
+}
+
+/// The picked value reaches the copy command as text on its standard input, the command as written
+/// (the default `wl-copy` is not told `image/png`), and "copied" is its exit 0; the notice gives
+/// the value, and the private file is gone.
+#[test]
+fn a_picked_value_reaches_the_copy_command_as_text() {
+    let dir = TempPath::dir("deliver-pick");
+    let run_dir = dir.join("run");
+    let fake = FakeExecutor::new();
+    fake.ok("wl-copy", "");
+    let copy = wl_copy();
+    let finish = run(&fake, Work::Text("#1A2BFC".into()), &delivery(pick_job(), &copy, &run_dir, &dir.join("shots")));
+    assert_eq!(finish, Finish::Picked("#1A2BFC".into()));
+    assert_eq!(fake.inputs(), [("wl-copy".to_string(), b"#1A2BFC".to_vec())], "the text alone, no type, no newline");
+    assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "the private file is gone");
+    assert!(!dir.join("shots").exists(), "a pick saves nothing");
+}
+
+/// A copy command that fails, exits badly or is missing: a copy failure, critical, and the clipboard
+/// was never said to hold the value.
+#[test]
+fn a_picked_value_the_copy_command_refuses_is_a_copy_failure() {
+    let dir = TempPath::dir("deliver-pick-bad");
+    let run_dir = dir.join("run");
+    let copy = wl_copy();
+    for (what, answer) in [
+        ("non-zero", Some(Ok(alpheus_common::exec::Output { code: Some(1), stdout: String::new(), stderr: String::new() }))),
+        ("timeout", Some(Err(alpheus_common::exec::ExecError::Timeout))),
+        ("missing", None),
+    ] {
+        let fake = FakeExecutor::new();
+        if let Some(answer) = answer {
+            fake.respond("wl-copy", answer);
+        }
+        let finish = run(&fake, Work::Text("#000000".into()), &delivery(pick_job(), &copy, &run_dir, &dir));
+        assert_eq!(finish, Finish::CopyFailed, "{what}");
+        assert!(!finish.touches_the_clipboard() && notice(&finish).unwrap().critical, "{what}");
+        assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "{what}: the file is removed");
+    }
+    // No copy command at all.
+    let fake = FakeExecutor::new();
+    assert_eq!(run(&fake, Work::Text("#000000".into()), &delivery(pick_job(), &[], &run_dir, &dir)), Finish::CopyFailed);
+    assert!(fake.calls().is_empty());
 }

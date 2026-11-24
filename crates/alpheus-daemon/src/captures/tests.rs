@@ -4,6 +4,7 @@
 
 use super::*;
 use alpheus_common::launcher_ipc::CaptureVerb;
+use alpheus_common::theme::Rgb;
 
 fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
     Rect { x, y, width, height }
@@ -22,7 +23,7 @@ fn each_verb_is_planned_and_the_unbuilt_ones_say_so() {
     assert_eq!(plan(CaptureVerb::Area, true), area);
     assert_eq!(plan(CaptureVerb::AreaSave, true), area_save);
     assert_eq!(plan(CaptureVerb::Select, true), Plan::Select);
-    for v in [CaptureVerb::Pick, CaptureVerb::Annotate, CaptureVerb::Ocr, CaptureVerb::Record, CaptureVerb::RecordArea, CaptureVerb::Stop] {
+    for v in [CaptureVerb::Annotate, CaptureVerb::Ocr, CaptureVerb::Record, CaptureVerb::RecordArea, CaptureVerb::Stop] {
         assert_eq!(plan(v, true), Plan::Refuse(Refusal::NotYet), "{v:?}");
     }
 }
@@ -210,4 +211,70 @@ fn a_selector_answer_of_an_earlier_capture_does_not_end_the_current_one() {
     assert_eq!(flow.selected(stale, SelectorAnswer::Area(rect(1, 2, 3, 4))), Step::Nothing);
     assert!(flow.is_busy(), "the new capture still runs");
     assert_eq!(flow.selected(current, SelectorAnswer::Area(rect(5, 6, 7, 8))), Step::Settle, "its own selector answers");
+}
+
+/// The colour picker is a capture of the whole focused output, settled like the others (a menu may
+/// be closing), whose frame opens the picker instead of going to the worker.
+#[test]
+fn a_pick_settles_grabs_the_screen_then_opens_the_picker() {
+    let pick = job(Scope::Pick, Goal::Copy);
+    assert_eq!(plan(CaptureVerb::Pick, true), Plan::Capture(pick));
+    let mut flow = Flow::default();
+    assert_eq!(flow.begin(pick), Some(Step::Settle));
+    let g = flow.generation();
+    assert_eq!(flow.picked(g, PickAnswer::Colour(Rgb(1, 2, 3))), Step::Nothing, "no picker is open yet");
+    assert_eq!(flow.settled(g), Step::Grab(None), "the whole output");
+    assert_eq!(flow.grabbed(g, true), Step::Pick, "the frame opens the picker, never the encoder");
+    assert!(!flow.waits_for_frame(), "the deadline is the frame's only: the picker waits for the user");
+    assert_eq!(flow.grabbed(g, true), Step::Nothing, "once");
+    assert_eq!(flow.begin(job(Scope::Screen, Goal::Copy)), None, "one capture at a time, the picker included");
+    assert_eq!(flow.picked(g, PickAnswer::Colour(Rgb(0x1A, 0x2B, 0xFC))), Step::Copy(Rgb(0x1A, 0x2B, 0xFC)));
+    assert_eq!(flow.picked(g, PickAnswer::Cancelled), Step::Nothing, "the answer is taken once");
+    let copied = Finish::Picked("#1A2BFC".into());
+    assert_eq!(flow.delivered(g, copied.clone()), Step::Finish(copied.clone()));
+    assert!(!flow.is_busy());
+    assert!(copied.touches_the_clipboard());
+    let n = notice(&copied).unwrap();
+    assert_eq!((n.summary, n.body.as_str(), n.critical), ("Colour picker", "Copied: #1A2BFC", false), "the notice gives the value");
+}
+
+/// A frame that does not come fails the pick before any picker opens.
+#[test]
+fn a_pick_without_its_frame_is_a_failure() {
+    let mut flow = Flow::default();
+    flow.begin(job(Scope::Pick, Goal::Copy));
+    let g = flow.generation();
+    flow.settled(g);
+    assert_eq!(flow.grabbed(g, false), Step::Finish(Finish::CaptureFailed));
+}
+
+/// A picker that could not open, or that the compositor took away (its layer closed, its output
+/// gone), fails the pick as the area selector does: critical, nothing copied.
+#[test]
+fn a_picker_that_fails_ends_the_pick_as_a_critical_failure() {
+    let mut flow = Flow::default();
+    flow.begin(job(Scope::Pick, Goal::Copy));
+    let g = flow.generation();
+    flow.settled(g);
+    flow.grabbed(g, true);
+    assert_eq!(flow.picked(g, PickAnswer::Failed), Step::Finish(Finish::CaptureFailed));
+    assert!(!flow.is_busy());
+    assert!(notice(&Finish::CaptureFailed).unwrap().critical && !Finish::CaptureFailed.touches_the_clipboard());
+}
+
+/// An answer of an earlier capture's picker never ends the current one.
+#[test]
+fn a_picker_answer_of_an_earlier_capture_is_ignored() {
+    let mut flow = Flow::default();
+    flow.begin(job(Scope::Pick, Goal::Copy));
+    let stale = flow.generation();
+    flow.finished();
+    flow.begin(job(Scope::Pick, Goal::Copy));
+    let g = flow.generation();
+    flow.settled(g);
+    flow.grabbed(g, true);
+    assert_eq!(flow.picked(stale, PickAnswer::Cancelled), Step::Nothing);
+    assert_eq!(flow.picked(stale, PickAnswer::Colour(Rgb(0, 0, 0))), Step::Nothing);
+    assert!(flow.is_busy());
+    assert_eq!(flow.picked(g, PickAnswer::Cancelled), Step::Finish(Finish::Cancelled));
 }

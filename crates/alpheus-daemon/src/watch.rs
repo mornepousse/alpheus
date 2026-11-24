@@ -596,6 +596,7 @@ impl App {
         let _ = self.launcher_guarded("theme", App::launcher_repaint);
         let _ = self.notes_guarded("theme", App::notes_repaint);
         let _ = self.select_guarded("theme", App::select_repaint);
+        let _ = self.pick_guarded("theme", App::pick_repaint);
     }
 }
 

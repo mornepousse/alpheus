@@ -402,8 +402,9 @@ impl App {
         if self.notes_is_open() {
             self.notes_guarded("replaced", |app| app.notes_close(CloseReason::Replaced));
         }
-        // Never open together with the capture selector: it cancels and goes.
+        // Never open together with the capture selector or the colour picker: they cancel and go.
         self.select_close(crate::captures::select_app::SelectClose::Replaced);
+        self.pick_close(crate::captures::pick_app::PickClose::Replaced);
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
         // A failed Activate answered after the launcher opened must not open a menu over it.

@@ -898,6 +898,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         state.launcher_guarded("deferred draw", |app| app.launcher_after_dispatch());
         state.notes_guarded("deferred draw", |app| app.notes_after_dispatch());
         state.select_guarded("deferred draw", |app| app.select_after_dispatch());
+        state.pick_guarded("deferred draw", |app| app.pick_after_dispatch());
         // Outside the dispatch: a released keyboard's last reference (`retired`).
         state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a
@@ -920,6 +921,8 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     core.state.notes_guarded("shutdown", |app| app.notes_close(CloseReason::Close));
     // A selection in progress is cancelled: the daemon is stopping.
     core.state.select_guarded("shutdown", |app| app.select_close(crate::captures::select_app::SelectClose::Cancelled));
+    // A pick in progress likewise: nothing is copied.
+    core.state.pick_guarded("shutdown", |app| app.pick_close(crate::captures::pick_app::PickClose::Cancelled));
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());

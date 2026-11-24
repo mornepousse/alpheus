@@ -939,7 +939,11 @@ impl App {
 
     /// Whether the keyboard is needed: the launcher, the quick notepad, or a grabbing popup.
     pub(crate) fn keyboard_wanted(&self) -> bool {
-        self.launcher_is_open() || self.notes_is_open() || self.select_is_open() || self.popup.as_ref().is_some_and(|p| p.grab)
+        self.launcher_is_open()
+            || self.notes_is_open()
+            || self.select_is_open()
+            || self.pick_is_open()
+            || self.popup.as_ref().is_some_and(|p| p.grab)
     }
 
     /// Binds the keyboard (with repeat on the event loop) on the seat if none: the launcher is open, or a
@@ -1035,6 +1039,11 @@ impl App {
             self.select_guarded("key", move |app| app.select_key(event));
             return;
         }
+        // The colour picker likewise.
+        if self.pick_is_open() {
+            self.pick_guarded("key", move |app| app.pick_key(event));
+            return;
+        }
         match key_to(self.launcher_is_open(), self.notes_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
             KeyTo::Launcher => {
                 self.launcher_guarded("key", move |app| app.launcher_key(event));
@@ -1081,6 +1090,9 @@ impl KeyboardHandler for App {
         }
         if self.select_owns_surface(surface) {
             self.select_guarded("focus", |app| app.select_focus_lost());
+        }
+        if self.pick_owns_surface(surface) {
+            self.pick_guarded("focus", |app| app.pick_focus_lost());
         }
         self.keyboard_release_deferred();
     }

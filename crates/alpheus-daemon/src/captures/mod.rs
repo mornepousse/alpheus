@@ -2,8 +2,10 @@
 //!
 //! This folder holds the capture pipeline. `screencopy.rs` is the only file that speaks the
 //! screencopy protocol and turns one output into a `Frame`; `select.rs` and `select_app.rs` are the
-//! area selector (a pure model and its layer surface); `encode.rs` writes a PNG, `deliver.rs` copies
-//! it or saves it, `paths.rs` says where; `app.rs` wires all of it to the daemon.
+//! area selector (a pure model and its layer surface); `pick.rs` and `pick_app.rs` are the colour
+//! picker (its lens and value, and its layer surface over the frozen frame); `encode.rs` writes a
+//! PNG, `deliver.rs` copies it or saves it, `paths.rs` says where; `app.rs` wires all of it to the
+//! daemon.
 //!
 //! This file is the pure flow: which verb asks for what (`plan`), where a capture stands
 //! (`Flow`, one at a time), how it ended (`Finish`) and the notice that follows (`notice`).
@@ -23,9 +25,13 @@ pub mod app;
 pub mod deliver;
 pub mod encode;
 pub mod paths;
+pub mod pick;
+pub mod pick_app;
 pub mod screencopy;
 pub mod select;
 pub mod select_app;
+
+use alpheus_common::theme::Rgb;
 
 /// A rectangle of whole pixels, `x` and `y` of its top-left corner. A logical area (origin at the
 /// output's top left, never negative, never empty) when it comes from the selector, a buffer area
@@ -49,6 +55,17 @@ pub enum SelectorAnswer {
     Failed,
 }
 
+/// What the colour picker answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickAnswer {
+    /// The colour of the pixel under the pointer, in the frozen frame.
+    Colour(Rgb),
+    /// The user ended it (Esc, a right click, focus taken, another surface opened): silent.
+    Cancelled,
+    /// It could not open, or the compositor took it away (its layer closed, its output gone).
+    Failed,
+}
+
 /// What is captured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -56,12 +73,14 @@ pub enum Scope {
     Screen,
     /// An area picked with the selector.
     Area,
+    /// One pixel's colour, picked on the frozen output.
+    Pick,
 }
 
 /// What becomes of the capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Goal {
-    /// On the clipboard, through `launcher.toml`'s `copy`.
+    /// On the clipboard, through `launcher.toml`'s `copy`: the image, or the colour picker's value.
     Copy,
     /// In the pictures folder.
     Save,
@@ -116,7 +135,8 @@ pub fn plan(verb: alpheus_common::launcher_ipc::CaptureVerb, has_screencopy: boo
         V::Full => Plan::Capture(Job { scope: Scope::Screen, goal: Goal::Copy }),
         V::Area => Plan::Capture(Job { scope: Scope::Area, goal: Goal::Copy }),
         V::AreaSave => Plan::Capture(Job { scope: Scope::Area, goal: Goal::Save }),
-        V::Pick | V::Annotate | V::Ocr | V::Record | V::RecordArea | V::Stop | V::Select => Plan::Refuse(Refusal::NotYet),
+        V::Pick => Plan::Capture(Job { scope: Scope::Pick, goal: Goal::Copy }),
+        V::Annotate | V::Ocr | V::Record | V::RecordArea | V::Stop | V::Select => Plan::Refuse(Refusal::NotYet),
     }
 }
 
@@ -126,6 +146,8 @@ pub enum Finish {
     /// The selector was cancelled: silent.
     Cancelled,
     Copied(Scope),
+    /// The colour picker's value copied; its text (the notice gives it, the log never does).
+    Picked(String),
     /// Saved; the file's name, never its path.
     Saved(String),
     /// The compositor gave no frame, or the area held no pixel.
@@ -138,11 +160,11 @@ pub enum Finish {
 impl Finish {
     /// Whether the clipboard now holds this capture: only a copy that succeeded.
     pub fn touches_the_clipboard(&self) -> bool {
-        matches!(self, Finish::Copied(_))
+        matches!(self, Finish::Copied(_) | Finish::Picked(_))
     }
 }
 
-/// A notice to show: app `alpheus`, the summary always `Screenshot`.
+/// A notice to show: app `alpheus`, the summary `Screenshot`, or `Colour picker` for a picked value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub summary: &'static str,
@@ -157,6 +179,10 @@ pub fn notice(finish: &Finish) -> Option<Notice> {
         Finish::Cancelled => return None,
         Finish::Copied(Scope::Screen) => ("Screen copied".to_string(), false),
         Finish::Copied(Scope::Area) => ("Area copied".to_string(), false),
+        Finish::Copied(Scope::Pick) => ("Colour copied".to_string(), false),
+        Finish::Picked(value) => {
+            return Some(Notice { summary: "Colour picker", body: format!("Copied: {value}"), critical: false });
+        }
         Finish::Saved(name) => (format!("Saved: {name}"), false),
         Finish::CaptureFailed => ("Capture failed".to_string(), true),
         Finish::CopyFailed => ("Not copied: the copy command failed".to_string(), true),
@@ -177,7 +203,9 @@ enum Stage {
     Settling(Option<Rect>),
     /// A frame was asked.
     Grabbing,
-    /// The worker encodes and delivers.
+    /// The colour picker is open over the frozen frame.
+    Picking,
+    /// The worker encodes and delivers (or copies the picked value).
     Encoding,
 }
 
@@ -196,6 +224,10 @@ pub enum Step {
     Grab(Option<Rect>),
     /// Hand the frame to the worker.
     Encode,
+    /// Open the colour picker over the frame.
+    Pick,
+    /// Hand the picked colour to the worker, which copies its value.
+    Copy(Rgb),
     /// It is over: show `notice(finish)`.
     Finish(Finish),
     /// Not for this flow (out of turn, or no capture asked): do nothing.
@@ -246,7 +278,8 @@ impl Flow {
                 self.stage = Stage::Selecting;
                 Step::Select
             }
-            Scope::Screen => {
+            // The picker shows the whole output, frozen: its frame is the whole screen's.
+            Scope::Screen | Scope::Pick => {
                 self.stage = Stage::Settling(None);
                 Step::Settle
             }
@@ -289,11 +322,32 @@ impl Flow {
         if self.stage != Stage::Grabbing || generation != self.generation {
             return Step::Nothing;
         }
-        if ok {
+        if !ok {
+            return self.end(Finish::CaptureFailed);
+        }
+        if self.job.is_some_and(|j| j.scope == Scope::Pick) {
+            self.stage = Stage::Picking;
+            Step::Pick
+        } else {
             self.stage = Stage::Encoding;
             Step::Encode
-        } else {
-            self.end(Finish::CaptureFailed)
+        }
+    }
+
+    /// The colour picker answered for capture `generation`: a colour goes to the worker to be copied,
+    /// a cancel is silent, a picker that failed ends the capture as a failure. An answer of another
+    /// capture's picker is none of this one's.
+    pub fn picked(&mut self, generation: u64, answer: PickAnswer) -> Step {
+        if self.stage != Stage::Picking || generation != self.generation {
+            return Step::Nothing;
+        }
+        match answer {
+            PickAnswer::Colour(rgb) => {
+                self.stage = Stage::Encoding;
+                Step::Copy(rgb)
+            }
+            PickAnswer::Cancelled => self.end(Finish::Cancelled),
+            PickAnswer::Failed => self.end(Finish::CaptureFailed),
         }
     }
 
