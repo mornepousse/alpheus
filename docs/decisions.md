@@ -1769,6 +1769,7 @@ arena (`M_ARENA_MAX` is 2), where a freed block at the heap's top is never retur
 turns the dynamic adjustment off, so every block of 128 KiB or more has its own mapping and is
 unmapped when freed. The cost is one `mmap` and one `munmap` per such block: a few per capture,
 and elsewhere only where a block that large is allocated. The memory suite is the check that no
-other figure rose with it: `startup_pss_per_source` reads the same on both sides, 3 runs each.
+other figure rose with it: `startup_pss_per_source` reads the same on both sides, 3 runs each. A
+user's `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=…` is overridden by this call.
 
 Date: 2026-11-24 · Source: `limit_malloc_arenas` (`startup.rs`), test `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
