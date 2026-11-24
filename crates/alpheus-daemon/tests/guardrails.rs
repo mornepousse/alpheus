@@ -3714,6 +3714,16 @@ fn the_kill_list_has_no_panicking_path_and_logs_fixed_words() {
     // The signal goes through a pidfd, kill(2) being the fallback only; the compositor's pid is asked once per open.
     assert!(glue.contains("SYS_pidfd_open") && glue.contains("SYS_pidfd_send_signal"), "the signal is pinned by a pidfd");
     assert_eq!(glue.matches("peer_pid(").count(), 1, "the compositor's socket is asked in one place");
+    // `proc_dir` only narrows the list: start times and ancestors always come from the real `/proc`.
+    assert!(glue.contains("RealSignaller::new(PathBuf::from(REAL_PROC))"), "the signaller reads the real /proc");
+    assert!(
+        !glue.contains("RealSignaller::new(config") && !glue.contains("signaller = Box::new"),
+        "a configured folder never reaches the signaller"
+    );
+    assert!(glue.contains("excluded_in(Path::new(REAL_PROC)"), "the ancestors are walked in the real /proc");
+    // kill(2) by pid only where the kernel has no pidfd_open; any other failure to pin sends nothing.
+    assert!(glue.contains("Err(libc::ENOSYS) => PidfdOpen::Unsupported"), "ENOSYS is the one fallback");
+    assert!(glue.contains("Pin::Fallback(pinned_pid) if pinned_pid == pid => unsafe { libc::kill("), "kill(2) only in the fallback arm");
     assert!(!glue.contains("Command::new") && !glue.contains("thread::"), "no process, no thread");
 }
 

@@ -252,7 +252,7 @@ fn memory_text(kb: u64) -> String {
 fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
     let Some(p) = l.procs.get(i) else { return };
     let end = b.pane_end();
-    if l.proc_question_pid() == Some(p.pid) {
+    if l.proc_question_key() == Some((p.pid, p.start)) {
         let text = format!("Force kill {}? Enter again", p.name);
         list::row(g, 1, end, &Row { icon: None, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
         return;

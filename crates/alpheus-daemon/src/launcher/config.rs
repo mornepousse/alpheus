@@ -13,7 +13,7 @@
 //! search = "https://duckduckgo.com/?q={query}"     # the `?` prefix's URL, {query} percent-encoded; "" disables `?`
 //! open = ["xdg-open"]                              # opens that URL (the URL is appended); [] disables `?`
 //! rows = 10                                        # result rows, 3 to 30
-//! proc_dir = "/proc"                               # where the kill list reads processes (an absolute path; tests point it elsewhere)
+//! proc_dir = "/proc"                               # a testing seam: only narrows which pids the kill list shows (an absolute path)
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
 //! [[sources]]                                      # menu scripts whose lines are searchable (at most 8)
@@ -94,8 +94,9 @@ pub struct LauncherConfig {
     /// Opens the search URL: the URL is appended as the last argument; empty disables the prefix.
     pub open: Vec<String>,
     pub rows: u16,
-    /// Where the kill list reads processes and start times: `/proc`, or an absolute folder shaped like
-    /// it (a test's own, holding only its children).
+    /// Which pids the kill list lists: `/proc`, or an absolute folder shaped like it (a test's own,
+    /// holding links to only its children). Only the list is narrowed: start times, ancestors and
+    /// signals always use the real `/proc`.
     pub proc_dir: PathBuf,
     /// Entries kept; 0 disables the history (never read, never written).
     pub history: usize,

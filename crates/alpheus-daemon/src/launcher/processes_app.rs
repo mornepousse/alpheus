@@ -33,24 +33,42 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The real `/proc`: where start times and ancestors are always read. `proc_dir` only decides which
+/// pids are listed, so a `proc_dir` that lies can never change what a signal is checked against.
+pub const REAL_PROC: &str = "/proc";
+
 /// How long after the list opens the second sample is read (it fills in the CPU).
 pub const SAMPLE_AFTER: Duration = Duration::from_millis(300);
 
 /// The kill list's `Signaller`: the start time from `stat` under `root`, and the signal through a
-/// pidfd when the kernel has them (`kill(2)` otherwise).
+/// pidfd.
 ///
 /// `start_time` opens the pidfd first and reads the start time second, and `signal` sends through
 /// that descriptor: a pidfd names the process it was opened on for ever, so a pid reused after the
 /// check can no longer receive the signal (the start-time check alone leaves that window open).
+/// `kill(2)` by pid is the fallback for a kernel without `pidfd_open` (ENOSYS) and for nothing else:
+/// any other failure to pin the process sends nothing.
 pub struct RealSignaller {
     root: PathBuf,
-    /// The pidfd `start_time` opened last, with the pid it was opened for; `signal` takes it.
-    pinned: RefCell<Option<(i32, OwnedFd)>>,
+    /// What `start_time` pinned last; `signal` takes it.
+    pinned: RefCell<Pin>,
+}
+
+/// What `start_time` left for `signal`.
+enum Pin {
+    /// Nothing: `signal` without a `start_time` first sends nothing.
+    None,
+    /// A pidfd opened on this pid before its start time was read.
+    Fd(i32, OwnedFd),
+    /// A kernel without `pidfd_open`: the pid itself is all there is.
+    Fallback(i32),
+    /// The pidfd could not be opened for a reason that is not a missing kernel feature: nothing is sent.
+    Failed,
 }
 
 impl RealSignaller {
     pub fn new(root: PathBuf) -> RealSignaller {
-        RealSignaller { root, pinned: RefCell::new(None) }
+        RealSignaller { root, pinned: RefCell::new(Pin::None) }
     }
 }
 
@@ -63,16 +81,37 @@ pub fn signal_error_of(errno: i32) -> SignalError {
     }
 }
 
-/// A pidfd for `pid`, or None (the process is gone, or the kernel has no `pidfd_open`).
-fn pidfd_open(pid: i32) -> Option<OwnedFd> {
+/// What opening a pidfd came to.
+enum PidfdOpen<T> {
+    Pinned(T),
+    /// ENOSYS: this kernel has no `pidfd_open`.
+    Unsupported,
+    /// ESRCH: the process is gone.
+    Gone,
+    /// Any other error: the process cannot be pinned, so it is not signalled.
+    Failed,
+}
+
+/// `pidfd_open`'s result, or its errno, as one of the four outcomes: only ENOSYS allows `kill(2)`.
+fn classify_pidfd_open<T>(result: Result<T, i32>) -> PidfdOpen<T> {
+    match result {
+        Ok(fd) => PidfdOpen::Pinned(fd),
+        Err(libc::ENOSYS) => PidfdOpen::Unsupported,
+        Err(libc::ESRCH) => PidfdOpen::Gone,
+        Err(_) => PidfdOpen::Failed,
+    }
+}
+
+/// A pidfd for `pid`, or the errno `pidfd_open(2)` failed with.
+fn pidfd_open(pid: i32) -> Result<OwnedFd, i32> {
     // SAFETY: pidfd_open(2) takes two integers and no pointer; a result of 0 or more is a new
     // descriptor that nothing else owns, wrapped at once.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     if fd < 0 {
-        return None;
+        return Err(io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
     // SAFETY: `fd` is the descriptor just returned and owned by nothing else.
-    Some(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
 impl Signaller for RealSignaller {
@@ -81,28 +120,35 @@ impl Signaller for RealSignaller {
             Sig::Term => libc::SIGTERM,
             Sig::Kill => libc::SIGKILL,
         };
-        let pinned = self.pinned.borrow_mut().take();
+        let pinned = std::mem::replace(&mut *self.pinned.borrow_mut(), Pin::None);
         let r = match pinned {
-            Some((pinned_pid, fd)) if pinned_pid == pid => {
+            Pin::Fd(pinned_pid, fd) if pinned_pid == pid => {
                 // SAFETY: pidfd_send_signal(2) takes the descriptor, a signal number, a null
                 // `siginfo` (the default) and no flags; `fd` is open for the whole call.
                 let r =
                     unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), number, std::ptr::null::<libc::siginfo_t>(), 0) };
                 i32::try_from(r).unwrap_or(-1)
             }
-            // No pidfd (an old kernel, or `signal` without `start_time`): the pid itself.
+            // No pidfd on this kernel: the pid itself, the one case `kill(2)` is used.
             // SAFETY: kill(2) takes two integers and no pointer; `processes::send` has already
             // refused a pid of 1 or below, so this never names init or a process group.
-            _ => unsafe { libc::kill(pid, number) },
+            Pin::Fallback(pinned_pid) if pinned_pid == pid => unsafe { libc::kill(pid, number) },
+            // Not pinned, pinned for another pid, or not pinnable: nothing is sent.
+            _ => return Err(SignalError::Other),
         };
         if r == 0 { Ok(()) } else { Err(signal_error_of(io::Error::last_os_error().raw_os_error().unwrap_or(0))) }
     }
 
     fn start_time(&self, pid: i32) -> Option<u64> {
         // Pinned before the start time is read: the process read is the one signalled.
-        let pidfd = pidfd_open(pid);
+        let pin = match classify_pidfd_open(pidfd_open(pid)) {
+            PidfdOpen::Pinned(fd) => Pin::Fd(pid, fd),
+            PidfdOpen::Unsupported => Pin::Fallback(pid),
+            PidfdOpen::Gone => return None,
+            PidfdOpen::Failed => Pin::Failed,
+        };
         let start = processes::start_time_in(&self.root, pid)?;
-        *self.pinned.borrow_mut() = pidfd.map(|fd| (pid, fd));
+        *self.pinned.borrow_mut() = pin;
         Some(start)
     }
 }
@@ -130,7 +176,7 @@ pub fn excluded(own: i32, leader: i32, compositor: Option<i32>, compositor_name:
     Excluded { pids, comms }
 }
 
-/// `excluded`, with the ancestors of `own` and of the compositor read from `root` (`/proc`).
+/// `excluded`, with the ancestors of `own` and of the compositor read from `root` (the real `/proc`, but in a test).
 pub fn excluded_in(root: &Path, own: i32, leader: i32, compositor: Option<i32>, compositor_name: Option<&str>) -> Excluded {
     let mut parents = processes::ancestors(root, own);
     if let Some(pid) = compositor {
@@ -165,20 +211,19 @@ pub struct ProcessesApp {
     signaller: Box<dyn Signaller>,
     /// What this open must not offer or signal, read once at the open.
     excluded: Excluded,
-    /// `/proc`, or a test's tree.
+    /// Which pids the list shows: `/proc`, or a test's folder of links to some of its entries (`proc_dir`).
     root: PathBuf,
 }
 
 impl ProcessesApp {
     pub fn new() -> ProcessesApp {
-        let root = PathBuf::from("/proc");
         ProcessesApp {
             timer: DeadlineTimer::new(),
             first: None,
             sample_due: None,
-            signaller: Box::new(RealSignaller::new(root.clone())),
+            signaller: Box::new(RealSignaller::new(PathBuf::from(REAL_PROC))),
             excluded: Excluded { pids: Vec::new(), comms: Vec::new() },
-            root,
+            root: PathBuf::from(REAL_PROC),
         }
     }
 }
@@ -197,16 +242,15 @@ impl App {
         let leader = unsafe { libc::getsid(0) };
         let compositor = alpheus_common::compositor::detect(|k| std::env::var_os(k));
         let pid = compositor.as_ref().and_then(|c| crate::sources::peer::peer_pid(&c.ipc_socket()));
-        excluded_in(&self.processes.root, std::process::id() as i32, leader, pid, compositor.as_ref().map(compositor_comm))
+        excluded_in(Path::new(REAL_PROC), std::process::id() as i32, leader, pid, compositor.as_ref().map(compositor_comm))
     }
 
     /// `alpheus-launch --kill`: the user's processes, sorted by memory now and by CPU 300 ms later.
     pub(crate) fn launcher_open_processes(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         // The configuration's warnings are said by the opens that use more of it (the apps and the Tools menu).
         let config = crate::launcher::host::read_config(&alpheus_common::paths::config_dir(), &mut |_| {});
-        // `proc_dir` is `/proc` but for a test's own folder: the signaller reads start times from the same place.
+        // `proc_dir` narrows the list and does nothing else: start times and ancestors come from the real `/proc`.
         self.processes.root = config.proc_dir.clone();
-        self.processes.signaller = Box::new(RealSignaller::new(config.proc_dir.clone()));
         // SAFETY: getuid(2) takes nothing and cannot fail.
         let uid = unsafe { libc::getuid() };
         let samples = processes::snapshot(&self.processes.root, uid, MAX_PROCESSES);

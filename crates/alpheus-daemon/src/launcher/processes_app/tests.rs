@@ -199,3 +199,35 @@ fn the_real_signaller_reads_start_times_and_finds_a_missing_process_gone() {
     // A start time that is not ours: Reused, for this very process, and nothing is sent to it.
     assert_eq!(processes::send(&signaller, own, first + 1, Sig::Kill, &nobody), Err(SignalError::Reused));
 }
+
+#[test]
+fn only_a_kernel_without_pidfd_falls_back_to_kill() {
+    // ENOSYS: no pidfd_open on this kernel: the pid itself is the only way.
+    assert!(matches!(classify_pidfd_open::<()>(Err(libc::ENOSYS)), PidfdOpen::Unsupported));
+    // ESRCH: the process is gone.
+    assert!(matches!(classify_pidfd_open::<()>(Err(libc::ESRCH)), PidfdOpen::Gone));
+    // Anything else (no descriptors left, a permission): nothing may be sent by pid.
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EPERM, libc::EINVAL, libc::ENOMEM, 0] {
+        assert!(matches!(classify_pidfd_open::<()>(Err(errno)), PidfdOpen::Failed), "errno {errno}");
+    }
+    assert!(matches!(classify_pidfd_open(Ok(7)), PidfdOpen::Pinned(7)));
+}
+
+#[test]
+fn a_signal_without_a_pinned_process_sends_nothing() {
+    // A pid that cannot exist: a stray kill(2) would answer Gone (ESRCH), so Other proves none was made.
+    let signaller = RealSignaller::new(PathBuf::from("/proc"));
+    assert_eq!(signaller.signal(i32::MAX, Sig::Kill), Err(SignalError::Other), "no start_time first, nothing sent");
+    *signaller.pinned.borrow_mut() = Pin::Failed;
+    assert_eq!(signaller.signal(i32::MAX, Sig::Kill), Err(SignalError::Other), "the pidfd could not be opened, nothing sent");
+    *signaller.pinned.borrow_mut() = Pin::Fallback(1234);
+    assert_eq!(signaller.signal(i32::MAX, Sig::Kill), Err(SignalError::Other), "a pin made for another pid is not this one's");
+}
+
+#[test]
+fn a_pidfd_failure_other_than_enosys_is_not_a_start_time() {
+    // start_time of a pid that is gone: ESRCH from pidfd_open, so Gone (None), never a fallback.
+    let signaller = RealSignaller::new(PathBuf::from("/proc"));
+    assert_eq!(signaller.start_time(i32::MAX), None);
+    assert!(matches!(*signaller.pinned.borrow(), Pin::None));
+}

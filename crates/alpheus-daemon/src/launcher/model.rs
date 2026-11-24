@@ -141,8 +141,9 @@ enum Identity {
     Clip(u64),
     /// A tool row by its identity in the catalog.
     Tool(RowId),
-    /// A kill-list row by its pid: the sort moves rows, the pid stays.
-    Proc(i32),
+    /// A kill-list row by its pid and start time: the sort moves rows, the pair stays, and a pid
+    /// reused since the last read is another process.
+    Proc(i32, u64),
 }
 
 pub struct Launcher {
@@ -192,7 +193,7 @@ pub struct Launcher {
     /// The kill list's rows, in the order shown (`Mode::Processes` only; empty elsewhere).
     pub procs: Vec<ProcRow>,
     /// The kill list's question: the pid whose force kill was asked, until when it may be confirmed.
-    proc_ask: Option<(i32, Instant)>,
+    proc_ask: Option<((i32, u64), Instant)>,
     /// The kill list: no row is selected, because the selected process went from the list. Enter
     /// does nothing until a key moves the selection (the neighbour that slid into its place was
     /// never chosen).
@@ -458,8 +459,8 @@ impl Launcher {
             None => self.selected = 0,
         }
         // A question about a process that is no longer listed is over.
-        if let Some((pid, _)) = self.proc_ask
-            && !self.procs.iter().any(|p| p.pid == pid)
+        if let Some(((pid, start), _)) = self.proc_ask
+            && !self.procs.iter().any(|p| p.pid == pid && p.start == start)
         {
             self.proc_ask = None;
         }
@@ -481,9 +482,9 @@ impl Launcher {
         self.proc_ask.is_some()
     }
 
-    /// The pid the force-kill question is about.
-    pub fn proc_question_pid(&self) -> Option<i32> {
-        self.proc_ask.map(|(pid, _)| pid)
+    /// The process (pid and start time) the force-kill question is about.
+    pub fn proc_question_key(&self) -> Option<(i32, u64)> {
+        self.proc_ask.map(|(key, _)| key)
     }
 
     /// When the question stops being one: None without a question.
@@ -531,7 +532,7 @@ impl Launcher {
             }
             Err(SignalError::Denied | SignalError::Other) => {}
         }
-        if self.proc_ask.is_some_and(|(asked, _)| asked == pid) {
+        if self.proc_ask.is_some_and(|((asked, _), _)| asked == pid) {
             self.proc_ask = None;
         }
     }
@@ -609,7 +610,10 @@ impl Launcher {
             Source::Shell => Identity::Shell,
             Source::Clip(i) => Identity::Clip(self.clips.get(i)?.id),
             Source::ClipClear => return None,
-            Source::Proc(i) => Identity::Proc(self.procs.get(i)?.pid),
+            Source::Proc(i) => {
+                let row = self.procs.get(i)?;
+                Identity::Proc(row.pid, row.start)
+            }
             Source::Tool(i) => Identity::Tool(self.tool_rows().get(i)?.id),
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
@@ -1212,9 +1216,9 @@ impl Launcher {
         Some((row.pid, row.start))
     }
 
-    /// Whether `pid`'s force-kill question is pending at `now`.
-    fn proc_pending(&self, pid: i32, now: Instant) -> bool {
-        matches!(self.proc_ask, Some((asked, until)) if asked == pid && now < until)
+    /// Whether the force-kill question for this process (pid and start time) is pending at `now`.
+    fn proc_pending(&self, key: (i32, u64), now: Instant) -> bool {
+        matches!(self.proc_ask, Some((asked, until)) if asked == key && now < until)
     }
 
     /// Whether a key at `now` falls inside `CONFIRM_AFTER` of the last signal sent.
@@ -1232,8 +1236,8 @@ impl Launcher {
         if self.proc_just_signalled(now) {
             return Outcome::Nothing;
         }
-        if self.proc_pending(pid, now) {
-            return match session::ask(&mut self.proc_ask, pid, now) {
+        if self.proc_pending((pid, start), now) {
+            return match session::ask(&mut self.proc_ask, (pid, start), now) {
                 session::Activation::Run => {
                     self.proc_signalled_at = Some(now);
                     Outcome::Signal { pid, start, sig: Sig::Kill }
@@ -1252,12 +1256,12 @@ impl Launcher {
     /// The kill list's Ctrl+Enter: asks "Enter again to force kill"; it never confirms (a second
     /// Ctrl+Enter leaves the question as it is, it neither confirms nor restarts it).
     fn proc_force_ask(&mut self) -> Outcome {
-        let Some((pid, _)) = self.selected_proc() else { return Outcome::Nothing };
+        let Some(key) = self.selected_proc() else { return Outcome::Nothing };
         let now = self.at.unwrap_or_else(Instant::now);
-        if self.proc_just_signalled(now) || self.proc_pending(pid, now) {
+        if self.proc_just_signalled(now) || self.proc_pending(key, now) {
             return Outcome::Nothing;
         }
-        let _ = session::ask(&mut self.proc_ask, pid, now);
+        let _ = session::ask(&mut self.proc_ask, key, now);
         Outcome::Asked
     }
 

@@ -1721,10 +1721,10 @@ fn enter_on_another_process_while_a_question_pends_does_nothing() {
     let mut l = kill_list();
     let t = Instant::now();
     set_at(&mut l, t, 0);
-    l.proc_ask = Some((999, t + Duration::from_secs(3)));
+    l.proc_ask = Some(((999, 9990), t + Duration::from_secs(3)));
     set_at(&mut l, t, 600);
     assert_eq!(l.key(Key::Enter), Outcome::Nothing);
-    assert_eq!(l.proc_ask.map(|(p, _)| p), Some(999), "left as it was");
+    assert_eq!(l.proc_ask.map(|(k, _)| k), Some((999, 9990)), "left as it was");
 }
 
 #[test]
@@ -1773,4 +1773,33 @@ fn a_row_that_is_gone_leaves_and_nothing_is_selected_after_it() {
     l.signal_result(200, Sig::Term, Err(SignalError::Gone));
     assert_eq!(l.procs.len(), 2);
     assert_eq!(selected_pid(&l), None, "the neighbour must not slide under the highlight");
+}
+
+#[test]
+fn a_pid_reused_between_samples_counts_as_gone() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    l.key(Key::Down);
+    assert_eq!(selected_pid(&l), Some(201));
+    set_at(&mut l, t, 0);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Asked);
+    // The second sample has pid 201 again, with another start time: another process.
+    let mut reused = proc_row(201, "stranger", 500);
+    reused.start = 99_999;
+    l.set_procs(vec![proc_row(200, "firefox", 900), reused, proc_row(202, "sleep", 100)]);
+    assert!(!l.proc_question(), "the question was about the old process");
+    assert!(l.selection_lost(), "the highlighted process is gone, the stranger is not it");
+    set_at(&mut l, t, 600);
+    let o = l.key(Key::Enter);
+    assert!(!matches!(o, Outcome::Signal { .. }), "Enter must not reach the stranger: {o:?}");
+}
+
+#[test]
+fn a_question_is_about_a_pid_and_its_start_time() {
+    let mut l = kill_list();
+    let t = Instant::now();
+    set_at(&mut l, t, 0);
+    l.key(Key::CtrlEnter);
+    let (key, _) = l.proc_ask.expect("asked");
+    assert_eq!(key, (200, 2000));
 }
