@@ -63,9 +63,8 @@ pub(crate) fn adapter_seen(q: &Quick) -> bool {
 /// nothing to undo.
 pub(crate) fn opens_for(orders: &[BtOrder], adapter_seen: bool) -> bool {
     let opening = |o: &BtOrder| match o {
-        BtOrder::Call(ActCall::StopDiscovery { .. } | ActCall::CancelPairing { .. }) => false,
+        BtOrder::Call(ActCall::StopDiscovery { .. } | ActCall::CancelPairing { .. }) | BtOrder::Reply(..) | BtOrder::Forget(_) => false,
         BtOrder::Call(_) => true,
-        BtOrder::Reply(..) | BtOrder::Forget(_) => false,
     };
     adapter_seen && orders.iter().any(opening)
 }

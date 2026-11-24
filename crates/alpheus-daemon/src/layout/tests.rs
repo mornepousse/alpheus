@@ -167,18 +167,18 @@ fn launcher_button_on_every_output_and_dropped_last() {
     for output in ["eDP-1", "HDMI-A-1", "DVI-I-1", "HEADLESS-1"] {
         for w in [70u16, 100] {
             let g = b.grid(output, w);
-            assert_eq!(g.cells()[1].ch, crate::segments::LAUNCHER, "{output} at {w}: {}", g.text());
+            assert_eq!(g.cells()[1].ch, segments::LAUNCHER, "{output} at {w}: {}", g.text());
             assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "{output} at {w}");
         }
     }
     let g = b.grid("HDMI-A-1", 50);
     assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "50 columns: title gone, the button kept");
     let g = b.grid("HDMI-A-1", 49);
-    assert!(!g.text().contains(crate::segments::LAUNCHER), "49 columns: the button dropped, after every module but ⏻: {}", g.text());
+    assert!(!g.text().contains(segments::LAUNCHER), "49 columns: the button dropped, after every module but ⏻: {}", g.text());
     assert!((0..49).all(|x| g.target_at(x) != Some(&Target::Module(ModuleId::Launcher))), "and its click zone");
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock];
-    assert!(!b.grid("HDMI-A-1", 60).text().contains(crate::segments::LAUNCHER), "removed from bar.toml: gone");
+    assert!(!b.grid("HDMI-A-1", 60).text().contains(segments::LAUNCHER), "removed from bar.toml: gone");
 }
 
 /// Power spec § 1: the power button is its own block with no hue, the last module removed, and
@@ -221,7 +221,7 @@ fn hostile_title() {
 }
 
 /// The window module's icon is purple under icons and full; the title only under full; a bar
-/// that has not heard from the theme yet (`Bar::new`) is delivery 1's look.
+/// that has not heard from the theme yet (`Bar::new`) takes no hue at all.
 #[test]
 fn the_window_title_takes_the_purple_by_module_colours() {
     let styles = |mc| {
@@ -241,7 +241,7 @@ fn the_window_title_takes_the_purple_by_module_colours() {
 }
 
 #[test]
-fn modules_not_yet_delivered_are_invisible() {
+fn a_module_that_draws_nothing_takes_no_separator() {
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Volume, ModuleId::Tray, ModuleId::Clock];
     let t = b.grid("HDMI-A-1", 60).text();
@@ -351,7 +351,7 @@ fn narrow_screen_keeps_the_gap_at_the_window_slot_as_modules_are_removed() {
         .rev()
         .find(|&w| {
             let t = b.grid("HDMI-A-1", w).text();
-            !t.contains(crate::segments::WIFI) && t.contains('%')
+            !t.contains(segments::WIFI) && t.contains('%')
         })
         .expect("no width drops exactly the network module while keeping volume and battery");
     let got = b.grid("HDMI-A-1", narrow);
@@ -702,7 +702,7 @@ fn media_leaves_after_the_tray_and_before_the_title() {
     let b = bar_with_media(true);
     let shown = |w: u16| {
         let t = b.grid("HDMI-A-1", w).text();
-        (t.contains(crate::segments::PLAY), t.contains("Web"))
+        (t.contains(segments::PLAY), t.contains("Web"))
     };
     let gone = (20u16..=100).rev().find(|&w| !shown(w).0).expect("narrow enough, the media leaves");
     assert_eq!(shown(gone), (false, true), "the title is still there at {gone} columns");

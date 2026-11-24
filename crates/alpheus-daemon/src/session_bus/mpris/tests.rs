@@ -758,10 +758,7 @@ fn an_artist_only_change_while_open_rereads_the_position() {
     let (mut m, mut out) = discovered("Playing");
     m.popup_opened(&mut out);
     serve(&mut m, &mut out, "Playing", 50_000_000);
-    let mut entries = match meta("Paper Lanterns", 245_000_000) {
-        Value::Map(e) => e,
-        _ => unreachable!(),
-    };
+    let Value::Map(mut entries) = meta("Paper Lanterns", 245_000_000) else { unreachable!() };
     entries.push(("xesam:artist".to_string(), Value::StrList(vec!["Someone Else".to_string()])));
     let artist = Signal::PlayerProps {
         sender: UNIQUE.to_string(),

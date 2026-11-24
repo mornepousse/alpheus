@@ -16,11 +16,11 @@ pub(crate) enum Dimension {
 impl Dimension {
     fn name(self) -> &'static str {
         match self {
-            Dimension::Length => "length",
-            Dimension::Mass => "mass",
-            Dimension::Temperature => "temperature",
-            Dimension::Data => "data size",
-            Dimension::Time => "time",
+            Length => "length",
+            Mass => "mass",
+            Temperature => "temperature",
+            Data => "data size",
+            Time => "time",
         }
     }
 }

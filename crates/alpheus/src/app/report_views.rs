@@ -193,10 +193,11 @@ impl App {
                         Some(shown_at) => now.saturating_duration_since(shown_at) >= COPY_GRACE,
                         None => false,
                     };
-                    if can_copy && read {
-                        if let Some(text) = r.text.clone() {
-                            self.send_op(Op::Copy { argv, text });
-                        }
+                    if can_copy
+                        && read
+                        && let Some(text) = r.text.clone()
+                    {
+                        self.send_op(Op::Copy { argv, text });
                     }
                     return true;
                 }
@@ -215,11 +216,11 @@ impl App {
         match &mut self.diag.view {
             View::Boot(b) => {
                 let (n, page) = (b.lines(), b.page.get());
-                step(&mut b.scroll, by, n, page)
+                step(&mut b.scroll, by, n, page);
             }
             View::Report(r) => {
                 let (n, page) = (r.lines(), r.page.get());
-                step(&mut r.scroll, by, n, page)
+                step(&mut r.scroll, by, n, page);
             }
             _ => return false,
         }
@@ -234,10 +235,10 @@ impl App {
         if argv.is_empty() {
             return;
         }
-        if let View::Report(r) = &self.diag.view {
-            if let Some(text) = r.text.clone() {
-                self.send_op(Op::Copy { argv, text });
-            }
+        if let View::Report(r) = &self.diag.view
+            && let Some(text) = r.text.clone()
+        {
+            self.send_op(Op::Copy { argv, text });
         }
     }
 }

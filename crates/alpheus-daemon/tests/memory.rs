@@ -626,7 +626,7 @@ fn resources_tick_at_the_configured_interval() {
     // 5 ticks: each wakes the loop once for its timer, and a reading that
     // changes the bar adds further round trips (redraw commit, buffer
     // release, frame callback) — measured steadily at ~3 context switches
-    // per tick with 1 output (2026-10-05, release, this machine: 15, 15,
+    // per tick with 1 output (2026-10-05, release, one machine: 15, 15,
     // 17, 15 over 4 runs). ≥ 4: it really ticks every second; ≤ 20: never
     // faster — halving the period (the `ToDuration(period / 2)` mutation)
     // measured 27, comfortably outside this range. The old 4..=12 could
@@ -973,7 +973,7 @@ fn theme_reloads_no_growth() {
     let (sway, _hypr, d) = start("theme-reloads", 3, &bus, None, Some(toml), PwDump::Silent);
     let config = sway.runtime.join("config/alpheus");
     let reload = |n: usize| {
-        let theme = if n % 2 == 0 { "tokyo-night" } else { "gruvbox" };
+        let theme = if n.is_multiple_of(2) { "tokyo-night" } else { "gruvbox" };
         write_atomically(&config, "theme.toml", &format!("theme = \"{theme}\"\nmode = \"dark\"\n"));
         assert!(d.wait_for_count("theme reloaded:", n + 1, DELAY), "reload {n}: {:?}", d.log());
     };
@@ -2723,7 +2723,7 @@ fn privacy_camera_pss_and_rest() {
 
 /// A fake `/proc` of `pids` processes with `fds` descriptors each, the holder of `video0` in
 /// `dev` being pid 1000 + `pids` / 2 on its last descriptor. Returns the proc directory.
-fn fake_proc(root: &Path, dev: &Path, pids: u32, fds: u32) -> std::path::PathBuf {
+fn fake_proc(root: &Path, dev: &Path, pids: u32, fds: u32) -> PathBuf {
     let proc = root.join(format!("proc-{pids}x{fds}"));
     for pid in 1000..1000 + pids {
         let (fd_dir, comm) = (proc.join(pid.to_string()).join("fd"), proc.join(pid.to_string()).join("comm"));
@@ -4000,7 +4000,7 @@ fn clip_copies(sway: &Sway, first: usize, n: usize) {
     for i in first..first + n {
         let text = clip_text(i);
         let child = common::wl_copy(sway, &text, None, false);
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while common::wl_paste(sway).as_deref() != Some(text.as_str()) {
             assert!(start.elapsed() < Duration::from_secs(5), "the selection never became copy {i}");
             std::thread::sleep(Duration::from_millis(20));
@@ -4140,7 +4140,7 @@ fn at_rest_no_wakeups_after_copies() {
 // ---- the Tools menu (tools spec § 8, plan task 9) ----
 
 /// An executable `<runtime>/bin/<name>` with `body` (after the shebang).
-fn tools_mem_script(sway: &Sway, name: &str, body: &str) -> std::path::PathBuf {
+fn tools_mem_script(sway: &Sway, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = sway.runtime.join("bin");
     std::fs::create_dir_all(&bin).unwrap();

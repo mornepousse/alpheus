@@ -1,7 +1,39 @@
-//! Assembling the daemon: signals, lock, settings, fonts, Wayland, the event
-//! loop (calloop), the sources the modules need (compositor, sound, D-Bus,
-//! resources timer). Covered by tests/headless_session.rs (headless sway)
-//! and the real-world trial; its pure decisions have their own tests.
+//! Assembling the daemon, and taking it down again.
+//!
+//! In order: the panic hook, the signals, the instance lock, the configuration, the fonts, the
+//! Wayland connection, the event loop (calloop), then only the sources the configured modules need
+//! (`wanted`: the compositor, the sound child, the D-Bus domains, the resources timer, the
+//! watches). `main_loop` dispatches, and `on_bar_message` is where a source's message reaches the
+//! bar, the hooks and the features that listen before it. `shut_down` is the mirror image: it
+//! saves the notepad, restores a displays trial, stops the commands it still owns, and lets the
+//! lock go.
+//!
+//! Never:
+//! - start a source a module did not ask for: a module that is not in `modules` costs nothing, and
+//!   the memory suite's `startup_pss_per_source` measures each one;
+//! - install the panic hook late: `the_panic_hook_is_installed_before_anything_else` pins it as the
+//!   first call of `run`, before any thread exists;
+//! - feed the listeners out of order: `on_bar_message_feeds_the_battery_alerts`,
+//!   `hooks_read_a_message_before_the_privacy_feed` and
+//!   `a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading` pin who reads a
+//!   message before the bar keeps it;
+//! - arm the displays timer before the loop exists, or drop the app before a trial is restored
+//!   (`the_displays_timer_is_synced_once_the_loop_exists`,
+//!   `the_displays_are_restored_before_the_app_is_dropped`);
+//! - resolve the theme before the watch and the portal are up
+//!   (`the_startup_theme_is_resolved_again_after_the_watch_and_the_portal`), or start the hooks
+//!   before the launcher's socket is watched (`hooks_start_after_the_launcher_socket_watch`);
+//! - lose what was typed, or leave a command running, at shutdown
+//!   (`shutting_down_closes_and_saves_the_pad`,
+//!   `a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands`);
+//! - drop a released keyboard inside the dispatch
+//!   (`a_released_keyboard_is_retired_then_dropped_after_the_dispatch`, and `retired.rs` for why).
+//!
+//! The headless suite (`tests/headless_session.rs`) runs this file against a disposable Sway; its
+//! pure decisions (`wanted`, the tick's arithmetic) have tests of their own.
+//!
+//! See: docs/ARCHITECTURE.md ("Entry points", "Threads"), docs/tour.md, docs/cli.md (the exit
+//! codes and the lock), docs/measurements.md (the per-source figures).
 
 use crate::clock;
 use crate::clock::LocalTime;
@@ -53,12 +85,11 @@ const GRACE: Duration = Duration::from_secs(1);
 #[allow(clippy::large_enum_variant)]
 pub enum Mail {
     Bar(Msg),
-    /// A finished scan: adopted by the open launcher if `generation` is its
-    /// own, OR if it has no catalog of its own yet — a reopen racing a
-    /// still-running scan (`scan::catalog_is_current`); otherwise a stale
-    /// scan from a launcher already closed or already fed, ignored (review
-    /// This used to say "ignored unless
-    /// generation is the open launcher's", true only for the common case).
+    /// A finished scan: adopted by the open launcher if `generation` is its own, OR if it has no
+    /// catalog of its own yet — a reopen racing a still-running scan
+    /// (`scan::catalog_is_current`); otherwise it is a stale scan, from a launcher already closed
+    /// or already fed, and is ignored. The generation alone is not the rule: it decides the common
+    /// case only.
     Catalog {
         generation: u64,
         catalog: Catalog,
@@ -110,10 +141,11 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     (config, warnings)
 }
 
-/// `[shield]` once the config directory is known (shield plan, decisions 8 and 9): a partial table
-/// or a flag whose watch would share a descriptor with the theme's turns Shield mode off, with the
-/// warning to log. The flag's directory and its parent may equal neither the config directory nor
-/// its parent (compared as written: an alias the paths do not show is caught when the watch arms).
+/// `[shield]` once the config directory is known: a partial table, or a flag whose watch would
+/// share a descriptor with the theme's, turns Shield mode off, with the warning to log. The flag's
+/// directory and its parent may equal neither the config directory nor its parent (compared as
+/// written: an alias the paths do not show is caught when the watch arms). See docs/decisions.md,
+/// "The Shield flag may not share a directory with alpheus's configuration".
 pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &Path) -> Option<String> {
     if *s == crate::config::ShieldConfig::default() {
         return None;
@@ -137,9 +169,9 @@ pub(crate) fn resolve_shield(s: &mut crate::config::ShieldConfig, config_dir: &P
 
 /// `path` with its `.` and `..` components resolved lexically (no file system access; a `..` at
 /// the root stays at the root).
-fn normalise(path: &Path) -> std::path::PathBuf {
+fn normalise(path: &Path) -> PathBuf {
     use std::path::Component;
-    let mut out = std::path::PathBuf::new();
+    let mut out = PathBuf::new();
     for c in path.components() {
         match c {
             Component::CurDir => {}
@@ -177,17 +209,16 @@ pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
     format!("{source}, {mode}{auto}")
 }
 
-/// Applies a message to the bar. Any compositor event, or a resources tick,
-/// also refreshes the clock: coming out of sleep, the timer (a monotonic
-/// clock, stopped during sleep) can lag by a minute; the first focus change
-/// puts the clock right again — and so does the next resources reading,
-/// which needs no user interaction with the compositor at all (the clock could otherwise stay stale for up to a minute after
-/// resume if nothing compositor-related happens meanwhile). Cheapest
-/// correct option: resources already ticks on its own already-scheduled
-/// timer whenever the module is shown, so this reuses an existing wakeup
-/// instead of adding one (e.g. threading a dedicated wake flag through the
-/// D-Bus session/publish plumbing, `PrepareForSleep(false)`, into every
-/// call site and test there).
+/// Applies a message to the bar. Any compositor event, or a resources tick, also refreshes the
+/// clock: coming out of sleep, the timer (a monotonic clock, stopped during sleep) can lag by a
+/// minute; the first focus change puts the clock right again — and so does the next resources
+/// reading, which needs no interaction with the compositor at all, so the clock cannot stay stale
+/// for up to a minute after a resume in which nothing compositor-related happens.
+///
+/// This is the cheapest correct option: the resources module, when shown, already ticks on a timer
+/// of its own, so the clock rides a wake-up that exists anyway rather than a new one (the
+/// alternative was a wake flag threaded through the D-Bus session and publish plumbing, from
+/// `PrepareForSleep(false)` into every call site and test there).
 pub fn dispatch_msg(bar: &mut Bar, m: Msg, now: impl Fn() -> LocalTime) -> bool {
     let refreshes_clock = matches!(m, Msg::Compositor(_) | Msg::Resources(_));
     let mut changed = bar.apply(m);
@@ -372,9 +403,8 @@ fn no_session_bus(e: impl std::fmt::Display) -> String {
 }
 
 /// The connection succeeded, but duplicating its fd for the event loop
-/// failed: a different step than `no_session_bus` (2026-10-06 —
-/// the two used to share the same wording, hiding which one actually
-/// failed).
+/// failed: a different step than `no_session_bus`, and a line of its own, so
+/// the log says which of the two failed (2026-10-06).
 fn watch_fd_failed(e: impl std::fmt::Display) -> String {
     format!("tray: connected, but could not watch the session bus's fd ({e})")
 }
@@ -426,17 +456,16 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
 /// way, as an ordinary end of session, keeps an external supervisor from
 /// reading an ordinary restart or logout as a sign of failure.
 ///
-/// `calloop` sometimes nests a source's error inside another (observed on
-/// this machine: an `OtherError` wrapping the original `IoError`): the real
-/// system error is thus not always first in the chain. We look for it by
-/// following `source()` all the way, rather than only looking at the top.
+/// `calloop` sometimes nests a source's error inside another (seen in practice: an `OtherError`
+/// wrapping the original `IoError`), so the real system error is not always first in the chain. It
+/// is looked for by following `source()` all the way down, not only at the top.
 fn end_of_session(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(e);
     while let Some(error) = current {
-        if let Some(io) = error.downcast_ref::<io::Error>() {
-            if matches!(io.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
-                return true;
-            }
+        if let Some(io) = error.downcast_ref::<io::Error>()
+            && matches!(io.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+        {
+            return true;
         }
         current = error.source();
     }
@@ -669,7 +698,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         channel::Event::Msg(Mail::ToolState { generation, entry, state: read }) => state.tools_state(generation, entry, read),
         channel::Event::Msg(Mail::ToolStatesDone { generation, unread, counts }) => state.tools_states_done(generation, unread, counts),
         channel::Event::Msg(Mail::ToolChoices { generation, token, entry, lines, failed }) => {
-            state.tools_choices(generation, token, entry, lines, failed)
+            state.tools_choices(generation, token, entry, lines, failed);
         }
         channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
@@ -719,7 +748,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     let want = &plan.want;
     // Hot reload of the theme: one inotify fd, no thread, no timer.
     crate::watch::start(state, handle);
-    // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
+    // The camera devices: an inotify fd and one scan, only with `privacy`.
     if plan.privacy {
         crate::privacy::camera_app::start(state, handle, &plan.camera_roots.0, &plan.camera_roots.1);
     }
@@ -776,21 +805,21 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
         // The quick panel's Wi-Fi (quick Wi-Fi spec § 5): the loop asks the D-Bus thread through this
         // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
-            match crate::sources::dbus::wifi::WifiTap::new() {
+            match sources::dbus::wifi::WifiTap::new() {
                 Ok(t) => state.quick.wifi_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
-        // The Bluetooth row and detail, the same way (quick settings delivery 3).
+        // The Bluetooth row and detail, the same way as the Wi-Fi tap above.
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
-            match crate::sources::dbus::bt::BtTap::new() {
+            match sources::dbus::bt::BtTap::new() {
                 Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
             }
         }
         // The VPN row and detail (quick VPN spec § 5): read on the network domain, with the Wi-Fi's.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
-            match crate::sources::dbus::vpn::VpnTap::new() {
+            match sources::dbus::vpn::VpnTap::new() {
                 Ok(t) => state.quick.vpn_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no VPN tap ({e})")),
             }

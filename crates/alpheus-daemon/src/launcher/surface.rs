@@ -78,7 +78,7 @@ impl CloseReason {
 pub fn output_cells(width: u32, height: u32, advance_phys: f32, row_height: u32, scale: i32) -> (u16, u16) {
     let e = scale.max(1) as u32;
     let columns = painter::columns(width * e, advance_phys);
-    let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     (columns, rows)
 }
 
@@ -183,7 +183,7 @@ pub(crate) fn layout_within(
     let e = scale.max(1) as u32;
     let (extra_w, extra_h) = frame.extra();
     let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance_phys);
-    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     open_layout(columns.saturating_add(4), rows.saturating_add(2), model)
 }
 
@@ -973,7 +973,7 @@ mod tests {
     }
 
     fn apps() -> Launcher {
-        Launcher::for_apps(LauncherConfig::default(), Vec::new(), crate::launcher::history::History::empty(200), 0)
+        Launcher::for_apps(LauncherConfig::default(), Vec::new(), history::History::empty(200), 0)
     }
 
     fn script() -> Launcher {
@@ -1160,7 +1160,7 @@ mod tests {
     fn the_history_path_is_none_when_the_history_is_off() {
         let state = Path::new("/state/alpheus");
         let on = LauncherConfig::default();
-        assert_eq!(history_path_for(&on, state), Some(crate::launcher::history::history_path(state)));
+        assert_eq!(history_path_for(&on, state), Some(history::history_path(state)));
         let off = LauncherConfig { history: 0, ..LauncherConfig::default() };
         assert_eq!(history_path_for(&off, state), None, "history = 0: never read, never written");
     }

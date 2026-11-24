@@ -1,6 +1,20 @@
-//! One calloop `Timer` at a deadline while there is one, none otherwise:
-//! the tray's 2 s call timeouts and the tooltip's hover delay cost
-//! nothing at rest — no source, no wake-up — instead of a periodic tick.
+//! One calloop timer at a deadline while something is pending, and none otherwise.
+//!
+//! A `DeadlineTimer` is how a feature of the daemon waits for a moment to come: the tray's 2 s call
+//! timeouts, the tooltip's hover delay, the timer chip's next minute, a `failed` tag's four
+//! seconds. `sync` arms it, moves it, or removes it when the deadline is None; a deadline it
+//! already holds is left alone, so a repeated sync does not churn the loop. The callback marks it
+//! fired before anything arms it again. A periodic tick would cost a wake-up a second for ever:
+//! this costs nothing at rest.
+//!
+//! Never:
+//! - stay armed with nothing pending: `nothing_resident_while_the_launcher_is_closed` holds every
+//!   timer the daemon builds with the reason it does not run at rest, and each feature's
+//!   `at_rest_no_wakeups_*` test measures that nothing wakes;
+//! - fire twice for one deadline: the callback drops its own timer (`fired`).
+//!
+//! See: docs/ARCHITECTURE.md ("The core", "Threads"), docs/decisions.md ("One deadline, armed only
+//! while a timer runs"), docs/measurements.md (the wake-up counts at rest).
 
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
 use smithay_client_toolkit::reexports::calloop::RegistrationToken;
@@ -13,10 +27,12 @@ pub struct DeadlineTimer {
     token: Option<RegistrationToken>,
     at: Option<Instant>,
     /// How many times `sync` actually registered a new timer: used by `armed_count` (a test-only
-    /// getter below) to prove the no-op guard above — a repeated, unchanged deadline — really skips
-    /// re-arming, not just that firing still happens once regardless, which it would even without
-    /// the guard. A plain field here, not test-gated: gating a struct field that way reads oddly to
-    /// the simple brace-counting some text-based tests use on whole items.
+    /// getter below) to prove that `sync`'s first guard — a repeated, unchanged deadline — really
+    /// skips re-arming, not just that firing still happens once regardless, which it would even
+    /// without the guard. A plain field here, gated to tests nowhere: the attribute that would gate
+    /// it is the very marker the guardrail tests look for to tell a file's production code from its
+    /// test module, and inside the struct it would hide the rest of the file from them
+    /// (`production_code`, tests/guardrails.rs).
     #[allow(dead_code)]
     armed: u32,
 }

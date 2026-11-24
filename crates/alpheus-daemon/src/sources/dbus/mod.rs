@@ -14,6 +14,19 @@
 //! to the bus driver (never retried; a reconnection asks once more), after the session's first successful publish;
 //! the name appearing then brings the battery in through `NameOwnerChanged`. No other
 //! service is ever activated: `dbusrs_bus::message` refuses any other name.
+//!
+//! Never:
+//! - call a method that changes anything on the machine: `d_bus_is_confined_to_sources_and_read_only`
+//!   allows the `dbus` crate in six files and no acting method in the readers, and
+//!   `no_acting_systemd1_method_in_the_daemon` keeps systemd's own out;
+//! - start a service: every call has auto-start off, with one exception, UPower, asked for once per
+//!   session start when the battery is wanted (docs/decisions.md, "UPower is the one service the
+//!   daemon may start");
+//! - poll: the thread blocks on the bus, so a quiet session costs no wake-up.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop", "Threads"), docs/features/bar.md
+//! ("What the bar reads, and what it writes"), docs/features/failed.md (the one acting call that
+//! changes nothing).
 
 pub mod bluez;
 pub mod bt;
@@ -92,7 +105,8 @@ pub trait Bus {
     /// gone, the call fails with NotFound.
     fn owner(&mut self, service: &str) -> io::Result<Option<String>>;
     /// `StartServiceByName("org.freedesktop.UPower", 0)` on the bus driver: the one activation
-    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the activation fails; blocks at most `TIMEOUT`.
+    /// (module doc), with no name to give. The bus driver answers once UPower has its name, or the
+    /// activation fails; blocks at most `TIMEOUT`.
     fn start_upower(&mut self) -> io::Result<()>;
     /// `org.freedesktop.DBus.Properties.GetAll`, to `destination` (a unique name).
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props>;
@@ -191,7 +205,7 @@ pub struct SystemState {
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
     /// earlier open.
     pub wifi_open: u64,
-    /// The quick panel's Bluetooth, only while it is open (quick settings delivery 3); None
+    /// The quick panel's Bluetooth, only while it is open; None
     /// otherwise. The bar's `bluetooth` is separate and unchanged.
     pub bt: Option<BtView>,
     /// The open `bt` was read for (`BtTap::snapshot`), as `wifi_open`.
@@ -233,8 +247,8 @@ pub fn start(
     }
     let result = std::thread::Builder::new().name("D-Bus".into()).spawn(move || {
         let _guard = SourceGuard { name: "D-Bus", send: &send, value: PhantomData };
-        // Owned here, across every `run_supervised` round (follow-up,
-        // re-review): a domain stuck down must log once, not once per round.
+        // Owned here, across every `run_supervised` round:
+        // a domain stuck down must log once, not once per round.
         let mut log_state = DomainLog::default();
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();

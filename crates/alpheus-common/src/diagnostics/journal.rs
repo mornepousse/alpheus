@@ -1,6 +1,15 @@
 //! `journalctl -o json`: one JSON object per line. Only the fields the view shows are kept;
 //! everything else journald adds (hostname, machine and boot ids, the command line…) is dropped
 //! at the parse.
+//!
+//! Never:
+//! - launch a tool or open a file: the backend does that, and these only read what it printed;
+//! - keep a field the view does not show: what journald or `coredumpctl` adds is dropped at the
+//!   parse, so a secret in the environment or a command line is never carried;
+//! - trust a text: everything from outside passes `text::clean_line` before it is kept.
+//!
+//! See: docs/features/control-center.md ("Diag"), docs/decisions.md (the Diag entries),
+//! AGENTS.md ("No private data in fixtures or logs").
 
 use super::names::valid_cursor;
 use crate::text::clean_line;

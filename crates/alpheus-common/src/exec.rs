@@ -1,5 +1,16 @@
 //! Injectable command executor: the ONLY point through which alpheus
 //! launches a system tool. Tests inject `fake::FakeExecutor`, never the real one.
+//!
+//! Never:
+//! - launch a tool anywhere else: this is the one point, so a test can replace it and no code path
+//!   can reach a real program by accident (CONTRIBUTING.md's list of session tools);
+//! - block in the daemon: `run` waits, and the daemon's wrapper refuses it outright
+//!   (`the_only_system_executor_is_wrapped_in_non_blocking`, in the daemon's guardrails);
+//! - write more than one page to a program's standard input (`MAX_INPUT`), so a write never waits
+//!   for the program to read.
+//!
+//! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/shield.md and
+//! docs/features/quick-settings.md (what runs through it).
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -281,12 +292,15 @@ fn detach() -> std::io::Result<()> {
         -1 => Err(std::io::Error::last_os_error()),
         0 => {
             // Grandchild: its own session, then proceed to exec `prog`.
+            // SAFETY: setsid(2) takes no argument; the grandchild is not a group leader.
             if unsafe { libc::setsid() } == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         }
-        _ => unsafe { libc::_exit(0) }, // intermediate: nothing left to do.
+        // intermediate: nothing left to do.
+        // SAFETY: _exit(2) ends the process at once, running no destructor or handler.
+        _ => unsafe { libc::_exit(0) },
     }
 }
 

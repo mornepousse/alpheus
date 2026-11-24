@@ -5,6 +5,15 @@
 //! place while it is open — their match rule exists only that long; a
 //! choice is `Event(id, "clicked")` with no reply expected; any call left
 //! unanswered 2 s closes the menu. Drawing and keys live elsewhere.
+//!
+//! Never:
+//! - show a menu before its layout arrived (docs/decisions.md, "A tray menu is shown only once its
+//!   layout has arrived");
+//! - fetch more than one level at a time: a submenu is read when it opens, which is what keeps a
+//!   deep menu cheap;
+//! - touch the bus: pure over `Outbox`, like the host.
+//!
+//! See: docs/features/tray.md ("Menus"), docs/measurements.md (what a menu costs).
 
 use super::bus::{Call, CallError, CallId, Outbox};
 use super::codec::{Layout, MenuNode, Reply, Signal};
@@ -193,8 +202,8 @@ impl MenuSession {
                     l.patch(updated, removed);
                     MenuUpdate::Changed
                 }
-                Some(_) => MenuUpdate::Nothing,
-                None => MenuUpdate::Nothing,
+                // No layout read yet, or none of these entries is in it.
+                _ => MenuUpdate::Nothing,
             },
             _ => MenuUpdate::Nothing,
         }

@@ -58,10 +58,7 @@ fn sliders_are_bounded() {
     a.set_slider(SliderId::Brightness, -20);
     assert_eq!(
         a.take_requests(),
-        vec![
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),
-            Request::Do(Op::SetBrightness(crate::backends::brightness::MIN_PERCENT)),
-        ]
+        vec![Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)), Request::Do(Op::SetBrightness(brightness::MIN_PERCENT))]
     );
 }
 

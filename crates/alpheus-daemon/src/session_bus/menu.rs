@@ -5,6 +5,16 @@
 //! docs/decisions.md, "A submenu opens in the same popup"). Pure: it reads the session's `Layout` and answers with a
 //! `MenuAction`; the D-Bus calls and the popup are the wiring's.
 //! Never selects a separator, a disabled or a hidden entry.
+//!
+//! Never:
+//! - run anything itself: choosing an entry sends the application a `clicked` event, and the bar
+//!   runs no command of its own (docs/features/tray.md);
+//! - draw an item's icon, or let a label's mnemonic or a control character into a cell
+//!   (`crate::list` writes every row through `Grid::write`);
+//! - graft a late submenu once the selection has moved (docs/decisions.md, "A late submenu graft is
+//!   refused once the selection has moved").
+//!
+//! See: docs/features/tray.md ("Menus"), docs/decisions.md ("A submenu opens in the same popup").
 
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
@@ -46,7 +56,7 @@ struct Level {
 
 const ROOT_LEVEL: Level = Level { parent: ROOT, selected: None, top: 0 };
 
-/// The open menu's view state: a stack of levels (drill-down, question 2), each with its selection.
+/// The open menu's view state: a stack of levels (drill-down), each with its selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
     levels: Vec<Level>,
@@ -223,8 +233,8 @@ impl Menu {
         }
     }
 
-    /// Left press on content row `row`: Click, Submenu, back a level (the header row; there is none at the root, so row 0 there is the first entry), or Nothing
-    /// (separator, disabled).
+    /// Left press on content row `row`: Click, Submenu, back a level (the header row; there is none
+    /// at the root, so row 0 there is the first entry), or Nothing (separator, disabled).
     pub fn press(&mut self, row: u16, layout: &Layout) -> MenuAction {
         if row == 0 && self.header() == 1 {
             return self.back();

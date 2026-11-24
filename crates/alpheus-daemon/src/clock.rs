@@ -1,6 +1,23 @@
-//! Local time (system timezone, `localtime_r`) and strftime-style
-//! formatting, in English, with no dependency. Directives: %a %A %e %d %b
-//! %B %m %Y %H %M %S %%. `%e` = day without leading zero or space ("4").
+//! The local time and the strftime-style formatting the bar uses, with no dependency.
+//!
+//! `LocalTime::now` reads the system's timezone through `localtime_r` (and declares `tzset`
+//! itself, the `libc` crate of this repository declaring it for Windows only), and `format` takes
+//! the directives `%a %A %e %d %b %B %m %Y %H %M %S %%`, where `%e` is the day without a leading
+//! zero or space. The clock module draws it, the calendar reads the same month from it, and the
+//! clock's minute tick is what re-checks a wall-clock deadline (the timer's end, a timed
+//! do-not-disturb) after a suspend, which a monotonic timer would be late for.
+//!
+//! Never:
+//! - add a dependency for it: the names are a table here, which is also why they are English and
+//!   not the locale's (docs/decisions.md, "The calendar is written in English, like the clock");
+//! - panic on what the clock says: a time before 1970 or an unreadable zone falls back rather than
+//!   fails;
+//! - keep a timer: the tick belongs to the clock module (`startup.rs`), which arms one deadline per
+//!   minute and nothing at rest.
+//!
+//! See: docs/features/calendar.md (the first day of the week, from the locale), docs/decisions.md
+//! ("The clock's minute tick re-checks the timer", "A timed do-not-disturb ends on the wall
+//! clock"), docs/configuration.md (`[clock] format`, `date`).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -138,14 +155,13 @@ pub fn format(fmt: &str, h: &LocalTime) -> String {
             Some('H') => s.push_str(&format!("{:02}", h.hour)),
             Some('M') => s.push_str(&format!("{:02}", h.minute)),
             Some('S') => s.push_str(&format!("{:02}", h.second)),
-            Some('%') => s.push('%'),
+            Some('%') | None => s.push('%'),
             // Validated at load time: an unknown directive should not reach
             // here; it is copied as-is instead of panicking.
             Some(d) => {
                 s.push('%');
                 s.push(d);
             }
-            None => s.push('%'),
         }
     }
     s
@@ -203,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn english_format() {
+    fn the_day_and_month_names_are_english() {
         assert_eq!(format("%a %e %b", &SUN), "Sun 4 Oct");
         assert_eq!(format("%A %d %B %Y", &SUN), "Sunday 04 October 2026");
         assert_eq!(format("%H:%M:%S", &SUN), "14:05:09");
@@ -216,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn format_validation() {
+    fn an_unknown_directive_makes_the_format_invalid() {
         assert_eq!(validate("%H:%M"), Ok(()));
         assert_eq!(validate("%a %e %b"), Ok(()));
         assert_eq!(validate(""), Ok(()));
@@ -252,6 +268,7 @@ mod tests {
         match before {
             // SAFETY: same.
             Some(v) => unsafe { std::env::set_var("TZ", v) },
+            // SAFETY: same.
             None => unsafe { std::env::remove_var("TZ") },
         }
     }

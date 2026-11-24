@@ -607,7 +607,7 @@ fn perform_runs_through_the_scope_and_records() {
     let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
     assert_eq!(ids, ["tool:user:Nix/Update", "tool:user:Nix/Gen/50%", "tool:user:/Hold"], "no dynamic line, no typed text");
     // A built-in is recorded and handed back for the glue.
-    let notes = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "notes").unwrap();
+    let notes = BUILTINS.iter().position(|b| b.id == "notes").unwrap();
     assert_eq!(perform(&mut l, Activation::Tool(ToolAction::Builtin(notes)), &c), Ok(Done::Builtin(notes)));
     assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:notes"));
     assert!(std::fs::read_to_string(&h).unwrap().contains("tool:builtin:notes"), "saved");

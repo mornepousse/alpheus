@@ -1,8 +1,32 @@
-//! Wayland: one layer-shell surface (Top layer, anchored at the top,
-//! exclusive zone) per screen, tracked live; a pointer for clicks and the
-//! wheel. Nothing else is asked of the compositor. Redraw only when a
-//! screen's grid changes. The tray's session-bus callbacks (`tray_output`) live in
-//! `tray/bridge.rs`.
+//! The Wayland side of the bar: one layer-shell surface per screen, and the pointer.
+//!
+//! A surface on the `Top` layer, anchored at the top with an exclusive zone, is created for each
+//! output the compositor announces and dropped when it goes, so screens plugged and unplugged are
+//! tracked live. Nothing else is asked of the compositor. A screen is repainted only when its grid
+//! changes; the pointer's presses and the wheel become a click on a module's zone, which
+//! `actions` turns into a command or a popup. The tray's own session-bus callbacks live in
+//! `tray/bridge.rs`, and the popups in `popup.rs`.
+//!
+//! Never:
+//! - write to the compositor: the only writes in the daemon are the workspace command, an output
+//!   configuration and the clipboard's own selection (`the_daemon_only_reads_from_the_compositor`);
+//!   a screen is never turned off from here, and the words for that are forbidden in every source,
+//!   by a guardrail whose own name cannot be written here either;
+//! - run anything but an allowed command on a click
+//!   (`every_click_on_a_full_bar_stays_on_the_allowlist`,
+//!   `every_click_only_runs_the_workspace_command`);
+//! - reach the launcher or a popup outside its guard: every seat and keyboard entry point goes
+//!   through it (`seat_and_keyboard_handlers_guard_their_launcher_calls`,
+//!   `keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call`,
+//!   `a_bar_press_swallows_only_a_launcher_it_closed`);
+//! - find a surface by an output's name: a hover and a popup find their bar by the surface's
+//!   identity (`hover_fire_finds_its_bar_by_surface_identity_never_by_name`);
+//! - bind a protocol a configuration did not ask for (`the_manager_is_bound_only_when_enabled`
+//!   for the clipboard's data control), or keep a timer or a keyboard at rest
+//!   (`nothing_resident_while_the_launcher_is_closed`).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (a click from the pointer to the command),
+//! docs/features/bar.md, docs/compositors.md (what each compositor gives).
 
 use crate::actions::{self, Button, Wheel};
 use crate::config::ModuleId;
@@ -529,7 +553,7 @@ pub struct App {
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
-    /// The camera devices' watch and scan state (privacy delivery 2, privacy/camera_app.rs).
+    /// The camera devices' watch and scan state (privacy/camera_app.rs).
     pub(crate) camera: crate::privacy::camera_app::Camera,
     /// The tray menus' and tooltip's state (tray/menu_app.rs).
     pub(crate) menu: crate::tray::menu_app::TrayMenu,
@@ -811,7 +835,7 @@ impl App {
         self.redraw_all();
     }
 
-    /// Re-places every bar for the bar's current `style` (themes delivery 2, spec § 4). Called after
+    /// Re-places every bar for the bar's current `style` (themes spec § 4). Called after
     /// a theme reload. A bar whose `Placement` changes (a switch to or from floating) gets
     /// its new margin, size, exclusive zone and input region, and paints again only on the
     /// compositor's configure (its size always changes, so that configure always comes). A no-op for
@@ -960,7 +984,8 @@ impl App {
             self.set_dnd(!self.dnd);
             return;
         }
-        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec decision 16).
+        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec § 2, and
+        // docs/decisions.md, "`done` is cleared by looking, and is never saved").
         if timer {
             self.timer_middle_click();
             return;
@@ -1004,12 +1029,13 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
     }
 }
 
-/// 2026-10-05, generalised 2026-10-06 (docs/decisions.md, "A tray menu is closed by the button that opened it, or by any right click"): a click on the icon whose menu is shown, with the
-/// button that opened it, only closes that menu and does nothing else; a right click always
-/// closes it, whatever opened it — the press that closed it never reopens it (like `decide_click`
+/// 2026-10-05, generalised 2026-10-06: a click on the icon whose menu is shown, with the button
+/// that opened it, only closes that menu and does nothing else; a right click always closes it,
+/// whatever opened it — the press that closed it never reopens it (like `decide_click`
 /// for the launcher). Steam's menu, opened by a left click (a failed Activate, no `Menu` of its
 /// own on the press), is closed the same way: the same left click again, no new Activate, no
-/// flicker.
+/// flicker. See docs/decisions.md, "A tray menu is closed by the button that opened it, or by any
+/// right click".
 fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemKey>, b: Option<Button>, opened_by: Option<Button>) -> bool {
     menu_shown_for.is_some() && menu_shown_for == pressed_icon && b.is_some() && (b == Some(Button::Right) || b == opened_by)
 }
@@ -1062,12 +1088,12 @@ impl CompositorHandler for App {
         if self.popup_scale(surface, f) {
             return;
         }
-        if let Some(i) = self.index(surface) {
-            if self.surfaces[i].scale != f {
-                self.surfaces[i].scale = f;
-                self.surfaces[i].last = None;
-                self.draw(i);
-            }
+        if let Some(i) = self.index(surface)
+            && self.surfaces[i].scale != f
+        {
+            self.surfaces[i].scale = f;
+            self.surfaces[i].last = None;
+            self.draw(i);
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
@@ -1101,12 +1127,12 @@ impl OutputHandler for App {
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         // Name announced or changed afterwards: the shown workspaces depend on it.
         let name = self.outputs.info(&output).and_then(|i| i.name);
-        if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
-            if let Some(n) = name.filter(|n| *n != self.surfaces[i].name) {
-                self.surfaces[i].name = n;
-                self.surfaces[i].last = None;
-                self.draw(i);
-            }
+        if let Some(i) = self.surfaces.iter().position(|s| s.output == output)
+            && let Some(n) = name.filter(|n| *n != self.surfaces[i].name)
+        {
+            self.surfaces[i].name = n;
+            self.surfaces[i].last = None;
+            self.draw(i);
         }
     }
 
@@ -1400,17 +1426,17 @@ impl PointerHandler for App {
                     if only_closes || popup_only_closes {
                         continue; // the menu's own icon: closed, never reopened (docs/decisions.md)
                     }
-                    if let Some(b) = b {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, launcher_was_open);
-                        }
+                    if let Some(b) = b
+                        && !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b)
+                    {
+                        self.click(qh, i, ev.position.0, b, launcher_was_open);
                     }
                 }
                 PointerEventKind::Axis { horizontal, vertical, .. } => {
-                    if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, false);
-                        }
+                    if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120)
+                        && !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b)
+                    {
+                        self.click(qh, i, ev.position.0, b, false);
                     }
                     // The horizontal axis only scrolls tray icons.
                     let h = self.hwheel.add(horizontal.absolute, horizontal.discrete, horizontal.value120);
@@ -1581,7 +1607,7 @@ impl App {
         let columns = s.last.as_ref().map_or(0, Grid::width);
         let height = self.bar.config.height.max(1);
         let output_height = self.outputs.info(&s.output).and_then(|o| o.logical_size).map_or(720, |(_, h)| h.max(1) as u32);
-        let rows = (output_height / height).saturating_sub(1).min(u16::MAX as u32) as u16;
+        let rows = (output_height / height).saturating_sub(1).min(u32::from(u16::MAX)) as u16;
         (columns, rows)
     }
 }

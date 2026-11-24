@@ -118,10 +118,12 @@ fn is_bare_word(tokens: &[Token], index: usize, word: &str) -> bool {
 /// Text inside another attribute's quoted value is one token of its own, so it is never found here.
 fn name_value(tokens: &[Token]) -> &str {
     for pair in tokens.windows(2) {
-        if let [key, value] = pair {
-            if !key.quoted && key.text == "name" && value.quoted {
-                return value.text.as_str();
-            }
+        if let [key, value] = pair
+            && !key.quoted
+            && key.text == "name"
+            && value.quoted
+        {
+            return value.text.as_str();
         }
     }
     ""

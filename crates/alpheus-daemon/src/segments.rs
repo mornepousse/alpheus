@@ -1,8 +1,24 @@
-//! Segments of the system modules (spec § 2): volume, network, Bluetooth,
-//! battery, resources, the tray. Each returns None when it has nothing to
-//! show — waiting for its first reading, or nothing to report; a source that
-//! is down shows its icon then "–". The whole segment is one click zone,
-//! except the tray's: one zone per icon.
+//! The cells of each system module: volume, network, Bluetooth, battery, the resources, the tray,
+//! and the small blocks beside them (the bell, the privacy indicators, the Shield glyph, the
+//! failed-units count, the timer chip, the power button).
+//!
+//! One function per module, each answering None when it has nothing to show — waiting for its first
+//! reading, or nothing to report. A source that is down shows its icon and then `–`, so a module
+//! never disappears because a service went away. The whole segment is one click zone, except the
+//! tray's, which has one per icon. The hue a module wears comes from `modules::MODULES`, and how
+//! much of it is worn from `module_colors`; a state (a low battery, a hot sensor, a muted sink)
+//! wins over the hue.
+//!
+//! Never:
+//! - draw a figure the state does not hold: every number comes from `state::Bar`, never from a
+//!   reading made here;
+//! - lose a state to a hue: the `withhold_hue` segments (the Shield's green, the failed count's
+//!   error colour) and the state colours are pinned by the themes tests
+//!   (`every_preset_is_legible_in_both_modes` keeps every one of them legible);
+//! - name a colour: a piece carries a role or a hue of the theme.
+//!
+//! See: docs/features/bar.md (what each module draws), docs/features/themes.md (the hues and what
+//! `module_colors` does), docs/decisions.md ("A source that is down is not a state").
 
 use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
@@ -213,7 +229,7 @@ pub(crate) fn network(feed: &Feed<NetState>, mc: ModuleColors) -> Option<Segment
         Feed::Waiting | Feed::Ready(NetState::Absent) => return None,
         Feed::Down => return Some(down(ModuleId::Network, NETWORK_DOWN)),
         Feed::Ready(NetState::Offline) => vec![piece(OFFLINE.to_string(), Style::MUTED)],
-        // Icons only (Q1): the primary link's, then the VPN count.
+        // Icons only, never a network's name: the primary link's, then the VPN count.
         Feed::Ready(NetState::Online { link, vpns, limited }) => {
             let icon = match link {
                 Link::Wifi => WIFI,
@@ -326,7 +342,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
 }
 
 /// Whether a peripheral is shown under `visibility`, given whether it
-/// currently counts as low (spec `[battery]`, 2026-10-05).
+/// counts as low (spec `[battery]`, 2026-10-05).
 fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     match visibility {
         BatteryVisibility::Always => true,
@@ -343,7 +359,7 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        // A charging battery never alarms: the accent without hues (the old look), green with them,
+        // A charging battery never alarms: the accent when no module takes a hue, green when they do,
         // at any level (2026-10-07). Warn and error apply only while discharging.
         let state = match b.charge {
             Charge::Charging if mc == ModuleColors::None => Some(Style::ACCENT),
@@ -368,12 +384,12 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
                 ));
                 pieces.push(piece(format!("{percent}%"), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
             }
-            Some(_) => {}
             None if shown(config.coarse, p.low) => {
                 let style = if p.low { Style::WARN } else { icon_style(mc, Hue::Green, Style::NORMAL) };
                 pieces.push(piece(format!("{space}{}", peripheral_icon(p.kind)), style));
             }
-            None => {}
+            // Hidden by its setting (a percentage not shown, a coarse level not shown).
+            Some(_) | None => {}
         }
     }
     if pieces.is_empty() {
@@ -431,7 +447,7 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
                 pieces.push(piece(format!("{gap}{CPU} "), icon_style(mc, Hue::Orange, Style::NORMAL)));
                 pieces.push(piece(text, text_style(mc, Hue::Orange, Style::NORMAL)));
             }
-            // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
+            // Tenths of GiB, one decimal (the decimal part is always ".D").
             ResourceItem::Memory => {
                 if let Some(m) = s.memory {
                     figure(&mut pieces, gap, MEMORY, Hue::Yellow, format!("{}.{}G", m / 10, m % 10), mc);
@@ -527,7 +543,7 @@ fn tray_piece(i: &TrayIcon, passive: Passive) -> Option<Piece> {
 }
 
 /// None when nothing is drawn (no icon, or all passive and hidden). One
-/// piece per icon, separated by one blank cell (question 9), each its own
+/// piece per icon, separated by one blank cell, each its own
 /// zone (Target::TrayItem); no zone over the whole segment.
 pub(crate) fn tray(icons: &[TrayIcon], config: &TrayConfig) -> Option<Segment> {
     let mut pieces = Vec::new();

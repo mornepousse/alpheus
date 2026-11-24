@@ -1,19 +1,41 @@
-//! The bar's popups (spec § 1 Menus and Calendar, § 2): an `xdg_popup`
-//! attached to the bar's own layer surface on one output
-//! (`zwlr_layer_surface_v1.get_popup`, issued before the popup's first
-//! commit), placed by an `xdg_positioner` under the cells it hangs from,
-//! drawn as rows of cells into a pool of its own. One at a time; everything
-//! lives in `OpenPopup` and is dropped whole on close (nothing kept). What a
-//! popup shows (`PopupBody`) and how it reacts is filled by the tooltip, the
-//! menu and the calendar; this module is the Wayland side.
+//! The bar's popups: an `xdg_popup` on the bar's own layer surface, drawn as rows of cells.
 //!
-//! The keyboard is shared with the launcher: bound while the launcher or a
-//! grabbing popup needs it, released once neither does. Headless sway 1.12
-//! gives no keyboard focus to a grabbing popup whose parent
-//! layer surface has `KeyboardInteractivity::None`: the bar's layer surface
-//! on that output is made `Exclusive` (committed before the popup is
-//! created) while a grabbing popup is open, and keys arrive on the bar's
-//! surface — so they are routed by "which popup is open", never by surface.
+//! One popup at a time, attached to the bar's layer surface on one output
+//! (`zwlr_layer_surface_v1.get_popup`, issued before the popup's first commit), placed by an
+//! `xdg_positioner` under the cells it hangs from, painted into a pool of its own. Everything
+//! lives in `OpenPopup` and is dropped whole on close, so nothing of a popup stays. What a popup
+//! shows (`PopupBody`) and how it answers a key or a press is each feature's (the tooltip, the
+//! menus, the calendar, the panels, the chips); the table `POPUPS` is how this file reaches them.
+//! This half is the Wayland side.
+//!
+//! The keyboard is shared with the launcher: bound while the launcher or a grabbing popup needs
+//! it, released once neither does. Headless sway 1.12 gives no keyboard focus to a grabbing popup
+//! whose parent layer surface has `KeyboardInteractivity::None`, so the bar's surface on that
+//! output is made `Exclusive` (committed before the popup is created) while a grabbing popup is
+//! open, and the keys arrive on the bar's surface — which is why they are routed by "which popup is
+//! open", never by surface. On Hyprland it is the other way round, and the bar stays `None`
+//! (`bar_exclusive_during_grab`).
+//!
+//! Never:
+//! - find a parent by an output's name: `popup_close` and `popup_output_gone` use the surface's
+//!   identity (`popup_close_and_output_gone_find_their_parent_by_identity_never_by_name`);
+//! - let a key in by another door: every entry point goes through `key_event`, and none of them
+//!   binds a launcher call of its own
+//!   (`keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call`,
+//!   `seat_and_keyboard_handlers_guard_their_launcher_calls`);
+//! - take a repeat for a press: `the_keyboards_own_repeat_is_told_from_a_press` pins the one place
+//!   that tells them apart, so a held key repeats only what may repeat;
+//! - drop a released keyboard inside the dispatch: it is retired instead (`retired.rs`,
+//!   `a_released_keyboard_is_retired_then_dropped_after_the_dispatch`);
+//! - leave a tooltip's item behind after its popup closed
+//!   (`popup_close_resets_tooltip_item_for_a_closed_tooltip`);
+//! - keep a timer, a keyboard or a surface at rest: every one is in the table of
+//!   `nothing_resident_while_the_launcher_is_closed`.
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/bar.md (the clicks and the Hyprland
+//! limit), docs/features/tray.md and docs/features/calendar.md (two popups in use),
+//! docs/decisions.md ("A tray menu is shown only once its layout has arrived", "A submenu opens in
+//! the same popup").
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
@@ -52,21 +74,21 @@ const REPOSITION_VERSION: u32 = 3;
 pub fn box_size(columns: u16, rows: u16, advance_phys: f32, row_height: u32, scale: i32, frame: &Frame) -> (u32, u32) {
     let e = scale.max(1) as u32;
     let (extra_w, extra_h) = frame.extra();
-    let width_phys = (columns as f32 * advance_phys).ceil() as u32 + extra_w;
-    (width_phys.div_ceil(e), (rows as u32 * row_height + extra_h).div_ceil(e))
+    let width_phys = (f32::from(columns) * advance_phys).ceil() as u32 + extra_w;
+    (width_phys.div_ceil(e), (u32::from(rows) * row_height + extra_h).div_ceil(e))
 }
 
 /// Pointer position (logical px) → the (column, row) of the `cells` box's cells under it; None in
 /// the frame's margin (and past the last cell), where no cell is.
 pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32, frame: &Frame, cells: (u16, u16)) -> Option<(u16, u16)> {
-    let e = scale.max(1) as f64;
-    let (px, py) = (x * e - frame.side as f64, y * e - frame.top as f64);
+    let e = f64::from(scale.max(1));
+    let (px, py) = (x * e - f64::from(frame.side), y * e - f64::from(frame.top));
     if px < 0.0 || py < 0.0 || advance_phys <= 0.0 || row_height == 0 {
         return None;
     }
-    let column = (px / advance_phys as f64).floor();
-    let row = (py / row_height as f64).floor();
-    (column < cells.0 as f64 && row < cells.1 as f64).then_some((column as u16, row as u16))
+    let column = (px / f64::from(advance_phys)).floor();
+    let row = (py / f64::from(row_height)).floor();
+    (column < f64::from(cells.0) && row < f64::from(cells.1)).then_some((column as u16, row as u16))
 }
 
 /// `cell_under` on the frame as it is PAINTED: `paint_boxed` refits `frame` inside the surface
@@ -114,8 +136,8 @@ pub struct Placement {
 /// anchor rect's height. The anchor rect stays the icon's cells even near an edge: sliding the popup
 /// is the compositor's.
 pub fn placement(anchor: &Anchor, size: (u32, u32), advance_logical: f32, bar_height: u32) -> Placement {
-    let left = (anchor.start as f32 * advance_logical).floor() as i32;
-    let right = (anchor.end.max(anchor.start + 1) as f32 * advance_logical).ceil() as i32;
+    let left = (f32::from(anchor.start) * advance_logical).floor() as i32;
+    let right = (f32::from(anchor.end.max(anchor.start + 1)) * advance_logical).ceil() as i32;
     Placement {
         anchor_x: left,
         anchor_width: (right - left).max(1),
@@ -509,8 +531,8 @@ pub(crate) fn calendar_month(c: &Calendar) -> String {
 }
 
 impl App {
-    /// Closes any open popup (Replaced) and the launcher (it closes with ClickOutside first, decision of
-    /// the launcher plan), then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
+    /// Closes any open popup (Replaced) and the launcher (which closes with ClickOutside first),
+    /// then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
     /// comes on top: `Fonts::frame`). `input`: `Grab` takes the keyboard and closes on an outside
     /// click (uses `last_press`'s serial); `Keys` takes the keyboard without a grab (the quick verb);
     /// `Tooltip` neither. false when the output's bar is not configured.
@@ -570,7 +592,7 @@ impl App {
         let layer = self.surfaces[i].layer.clone();
         let parent = layer.wl_surface().clone();
         if grab && (self.exclusive_during_grab || keyed) {
-            // Fact check 5: committed before the popup exists, so the bar's surface holds the
+            // Committed before the popup exists, so the bar's surface holds the
             // keyboard focus while the grab lasts (back to None on close). A keyed popup has no
             // grab to hand it the keyboard: the bar goes Exclusive on every compositor.
             layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
@@ -656,19 +678,19 @@ impl App {
         let size = box_size(cells.0, cells.1, advance, height * e as u32, e, &fonts.frame(e));
         let p = placement(&open.anchor, size, logical_advance(advance, e), height);
         open.size = (p.width as u32, p.height as u32);
-        if let (true, Some(xdg)) = (reposition, xdg.as_ref()) {
-            if let Ok(positioner) = XdgPositioner::new(xdg) {
-                positioner.set_size(p.width, p.height);
-                positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
-                positioner.set_anchor(Edge::BottomLeft);
-                positioner.set_gravity(Gravity::BottomRight);
-                positioner
-                    .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
-                open.token += 1;
-                open.popup.reposition(&positioner, open.token);
-                open.configured = false; // its configure paints
-                return true;
-            }
+        if let (true, Some(xdg)) = (reposition, xdg.as_ref())
+            && let Ok(positioner) = XdgPositioner::new(xdg)
+        {
+            positioner.set_size(p.width, p.height);
+            positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
+            positioner.set_anchor(Edge::BottomLeft);
+            positioner.set_gravity(Gravity::BottomRight);
+            positioner
+                .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
+            open.token += 1;
+            open.popup.reposition(&positioner, open.token);
+            open.configured = false; // its configure paints
+            return true;
         }
         // xdg_wm_base < 3, or the positioner failed: a buffer of the new size, drawn now.
         false
@@ -718,10 +740,11 @@ impl App {
         // record of what just closed, by whom it was opened, and when, lets that next press still
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
-        if menu && why == PopupClose::Dismissed {
-            if let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by) {
-                self.menu.recently_closed = Some((key, button, Instant::now()));
-            }
+        if menu
+            && why == PopupClose::Dismissed
+            && let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by)
+        {
+            self.menu.recently_closed = Some((key, button, Instant::now()));
         }
         // The same race for a module's popup (the calendar; the media popup): a left press on
         // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).
@@ -1348,11 +1371,11 @@ mod tests {
         let painted = f.fitted(cells, advance, row, (size.0 * 3, size.1 * 3));
         assert!(painted.side > f.side && painted.top > f.top, "the surface leaves room over: {painted:?}");
         // Half a physical pixel into the painted first cell: cell (0, 0).
-        let (x, y) = ((painted.side as f64 + 0.5) / 3.0, (painted.top as f64 + 0.5) / 3.0);
+        let (x, y) = ((f64::from(painted.side) + 0.5) / 3.0, (f64::from(painted.top) + 0.5) / 3.0);
         assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), Some((0, 0)));
         // Half a pixel into the RAW frame's first cell: the painted margin, so no cell; the raw
         // `cell_under` would answer (0, 0), which is the drift this guards.
-        let (x, y) = ((f.side as f64 + 0.5) / 3.0, (f.top as f64 + 0.5) / 3.0);
+        let (x, y) = ((f64::from(f.side) + 0.5) / 3.0, (f64::from(f.top) + 0.5) / 3.0);
         assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), None, "still in the painted margin");
         assert_eq!(cell_under(x, y, 3, advance, row, &f, cells), Some((0, 0)), "the raw frame disagrees");
     }

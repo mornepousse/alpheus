@@ -1,3 +1,6 @@
+//! The `alpheus-launch` binary: the arguments parsed, one request sent, its answer the exit code.
+//!
+//! See: docs/cli.md (the verbs and the exit codes).
 //! `alpheus-launch`: see lib.rs.
 
 use alpheus_common::launcher_ipc::socket_path;

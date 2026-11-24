@@ -7,7 +7,8 @@ use crate::notes::lines::{lines, locate, offset_at};
 use crate::notes::text::{Fit, Pad, TAB};
 use alpheus_common::exec::MAX_INPUT;
 
-/// Why a notes file is shown read only and never written (decision 12).
+/// Why a notes file is shown read only and never written: a file alpheus cannot take over safely is
+/// never truncated by the pad's first save (quick notes spec § 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     TooLarge,
@@ -15,7 +16,7 @@ pub enum Refusal {
     NotOurs,
     Unreadable,
     /// Text `clean` would change (CRLF, a tab, a control: edited outside the pad): shown cleaned,
-    /// never silently rewritten (M3).
+    /// never silently rewritten.
     NotClean,
 }
 

@@ -150,10 +150,10 @@ impl App {
             Some(Action::Left | Action::Decrease) => self.panel_step(-1),
             Some(Action::Right | Action::Increase) => self.panel_step(1),
             Some(Action::Search) => {
-                if let Overlay::Panel(p) = &mut self.overlay {
-                    if p.field == PanelField::Mode {
-                        p.query = Some(String::new());
-                    }
+                if let Overlay::Panel(p) = &mut self.overlay
+                    && p.field == PanelField::Mode
+                {
+                    p.query = Some(String::new());
                 }
             }
             Some(Action::Activate) => self.panel_enter(now),

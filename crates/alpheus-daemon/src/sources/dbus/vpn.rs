@@ -1,5 +1,15 @@
 //! VPN profiles as the quick panel reads them from NetworkManager's `GetSettings`: name, uuid,
 //! kind, last use and whether a secret is asked at connection time. No secret is ever decoded.
+//!
+//! Never:
+//! - decode a secret: alpheus never handles a VPN secret, and `GetSecrets` is not called
+//!   (docs/decisions.md, "alpheus never handles a VPN secret");
+//! - name a profile in a log line (`the_vpn_logs_name_no_profile`), or panic on its settings
+//!   (`the_panel_readers_have_no_panicking_path`);
+//! - act: `nmcli connection up|down uuid` does that, from the panel.
+//!
+//! See: docs/features/quick-settings.md ("VPN"), docs/decisions.md ("Space on the VPN row takes
+//! the active profile down, else brings the last used one up").
 
 use super::props::Props;
 pub use super::tap::VpnTap;

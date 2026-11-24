@@ -1,5 +1,20 @@
-//! The one inotify wrapper: the theme watch (watch.rs) and the camera watch (privacy/camera.rs) each own an
-//! instance of it. Non-blocking and close-on-exec; read-only to the file system (it only watches).
+//! The one inotify wrapper: a watch instance, its descriptor, and the records read from it.
+//!
+//! Two features watch files, and each owns one instance of this: the theme's watch (`watch.rs`,
+//! which carries the Shield's flag too) and the camera's (`privacy/camera.rs`). The descriptor is
+//! non-blocking and close-on-exec, it sits on the event loop, and `drain` reads it until the queue
+//! is empty, so the loop is not woken again for records already read. A truncated tail is dropped
+//! rather than read past.
+//!
+//! Never:
+//! - write to the file system: this only watches (`the_theme_and_camera_watches_only_read` checks
+//!   this file, `watch.rs` and `privacy/camera.rs`, and that no other file of the daemon names
+//!   inotify);
+//! - panic on a malformed record: every field is read through a checked slice.
+//!
+//! See: docs/features/themes.md (the hot reload), docs/features/privacy.md (the camera watch),
+//! docs/decisions.md ("The camera watch is a second inotify instance", "The Shield flag is watched
+//! in the theme watch's inotify instance").
 
 use std::ffi::CString;
 use std::io;

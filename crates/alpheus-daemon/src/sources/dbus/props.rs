@@ -1,6 +1,15 @@
 //! D-Bus property values, reduced to what the bar reads. The D-Bus layer
 //! (`dbusrs_bus.rs`) converts into this; the tests build it from busctl's
 //! JSON (`busctl --json=short`), the replies recorded on the workstation.
+//!
+//! Never:
+//! - keep a value no module reads: the type holds what the bar draws, which is what makes a reply
+//!   cheap to decode and impossible to leak;
+//! - panic on a reply: a service may answer anything, and the readers that use this are on the
+//!   no-panic lists (`the_panel_readers_have_no_panicking_path`).
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/measurements.md (what a
+//! recorded reply costs to decode).
 
 use std::collections::BTreeMap;
 

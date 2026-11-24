@@ -134,24 +134,26 @@ pub fn opened(model: &Launcher) -> Opened {
 /// on this connection: Toggle/Close/Calc → Done (Toggle and Calc close an open script launcher: its own client gets
 /// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
 /// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
+// one row per (request, state): the toggles repeat their bodies on purpose, each row kept beside its comment.
+#[allow(clippy::match_same_arms)]
 pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (Action, Option<Reply>) {
     match (request, open) {
         (Request::Toggle, None) => (Action::OpenApps, Some(Reply::Done)),
-        // Small features, decision 1: a second `--calc` closes the calculator, as a Toggle does,
-        // with the same debounce against a re-fired press bind.
+        // A second `--calc` closes the calculator, as a Toggle does, with the same debounce
+        // against a re-fired press bind.
         (Request::Calc, None) => (Action::OpenCalc, Some(Reply::Done)),
         (Request::Calc, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Calc, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
-        // Launcher 2, decision 12: a repeated `--windows` (Alt+Tab
-        // held, or pressed again) steps to the next window, except within the debounce of the
-        // switcher's own open — Hyprland's press-bind refire, which would move the selection off
-        // the previous window. Past it, no debounce: a repeat is the point.
+        // A repeated `--windows` (Alt+Tab held, or pressed again) steps to the next window, except
+        // within the debounce of the switcher's own open — Hyprland's press-bind refire, which
+        // would move the selection off the previous window. Past it, no debounce: a repeat is the
+        // point.
         (Request::Windows, Some(Opened::Switcher)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Windows, Some(Opened::Switcher)) => (Action::StepWindows, Some(Reply::Done)),
         // From nothing, an app launcher or a script menu: the switcher replaces it, as a script does.
         (Request::Windows, _) => (Action::OpenWindows, Some(Reply::Done)),
-        // Clipboard spec, decision 17: `--clipboard` toggles the history (with the same debounce
-        // against a re-fired press bind) and replaces anything else open, as `--windows` does.
+        // `--clipboard` toggles the history (with the same debounce against a re-fired press bind)
+        // and replaces anything else open, as `--windows` does.
         (Request::Clipboard, None) => (Action::OpenClipboard, Some(Reply::Done)),
         (Request::Clipboard, Some(Opened::Clipboard)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Clipboard, Some(Opened::Clipboard)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
@@ -262,8 +264,8 @@ pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> Launc
 }
 
 /// Whether a scan's deliveries (catalog, entries) are for this model: by how the open began, not
-/// by its current mode, so a `/` jump into the Tools menu and back keeps them (tools plan,
-/// decision 2); a `--tools` open, a script menu, the calculator or the switcher take none.
+/// by its current mode (`Origin`), so a `/` jump into the Tools menu and back keeps them; a
+/// `--tools` open, a script menu, the calculator or the switcher take none.
 pub(crate) fn takes_scan_deliveries(model: &Launcher) -> bool {
     model.origin == Origin::Apps
 }
@@ -375,11 +377,11 @@ impl App {
         let open = self.launcher.as_ref().map(|o| opened(&o.model));
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
         // The history off or unbound: said before `decide`, so nothing else open is replaced.
-        if request == Request::Clipboard {
-            if let Err(why) = self.clipboard_availability() {
-                conn.reply(&Reply::Error(why.into()));
-                return;
-            }
+        if request == Request::Clipboard
+            && let Err(why) = self.clipboard_availability()
+        {
+            conn.reply(&Reply::Error(why.into()));
+            return;
         }
         let is_tools = request == Request::Tools;
         match decide(request, open, since_open) {
@@ -771,10 +773,10 @@ mod tests {
         }
     }
 
-    /// Launcher 2, decision 12: a `--windows` within `TOGGLE_DEBOUNCE` of the
-    /// switcher's own open is Hyprland's press-bind refire and is ignored (still answered Done),
-    /// so the previous window stays selected; past it every repeat steps, however close to the
-    /// last one (the time counts from the open, not from the last step).
+    /// A `--windows` within `TOGGLE_DEBOUNCE` of the switcher's own open is Hyprland's press-bind
+    /// refire and is ignored (still answered Done), so the previous window stays selected; past it
+    /// every repeat steps, however close to the last one (the time counts from the open, not from
+    /// the last step).
     #[test]
     fn a_repeated_windows_steps_past_the_debounce_only() {
         let switcher = Some(Opened::Switcher);
@@ -789,8 +791,8 @@ mod tests {
         );
     }
 
-    /// Clipboard spec, decision 17: `--clipboard` toggles the history, ignoring a press-bind refire
-    /// inside the debounce, and replaces any other open launcher (the state becomes the history).
+    /// `--clipboard` toggles the history, ignoring a press-bind refire inside the debounce, and
+    /// replaces any other open launcher (the state becomes the history).
     #[test]
     fn clipboard_toggles_with_the_debounce_and_replaces_others() {
         let open = Some(Opened::Clipboard);
@@ -828,9 +830,9 @@ mod tests {
         assert_eq!(opened(&Launcher::for_calc(LauncherConfig::default())), Opened::Apps, "the calculator counts as Apps");
     }
 
-    /// Small features, decision 1: `--calc` opens the calculator; a second one closes it, unless it
-    /// is the press-bind refire inside the debounce window (ignored, still answered Done). A plain
-    /// Toggle closes an open calculator, which the app launcher's open state stands for.
+    /// `--calc` opens the calculator; a second one closes it, unless it is the press-bind refire
+    /// inside the debounce window (ignored, still answered Done). A plain Toggle closes an open
+    /// calculator, which the app launcher's open state stands for.
     #[test]
     fn a_second_calc_closes_the_calculator_unless_debounced() {
         let (action, reply) = decide(Request::Calc, None, Duration::ZERO);
@@ -871,12 +873,9 @@ mod tests {
         assert_eq!(reply, Some(Reply::Done));
     }
 
-    /// Was `toggle_twice_quickly_leaves_it_closed`: before this fix, two
-    /// Toggles in a row (the exact shape of the Hyprland press-bind refire)
-    /// opened then immediately closed the box again. That is the bug this
-    /// fix removes — adapted here to assert the new, intended behaviour: a
-    /// quick second Toggle is swallowed and the box stays open; only once
-    /// `TOGGLE_DEBOUNCE` has elapsed does a Toggle close it.
+    /// Two Toggles in a row are the exact shape of the Hyprland press-bind refire, which would
+    /// otherwise open the box and close it again at once: the quick second Toggle is swallowed and
+    /// the box stays open; only once `TOGGLE_DEBOUNCE` has elapsed does a Toggle close it.
     #[test]
     fn toggle_twice_quickly_is_debounced_and_leaves_it_open() {
         let (action, reply) = decide(Request::Toggle, None, Duration::ZERO);
@@ -1035,9 +1034,9 @@ mod tests {
         Launcher::for_script(LauncherConfig::default(), None, vec!["a".into()])
     }
 
-    /// Tools plan, decision 2: deliveries follow how the open began, not its mode. A Mod+Space
-    /// open that jumped into the Tools menu keeps the catalog, the source entries and the windows
-    /// for the way back; a `--tools` open takes none.
+    /// Deliveries follow how the open began, not its mode. A Mod+Space open that jumped into the
+    /// Tools menu keeps the catalog, the source entries and the windows for the way back; a
+    /// `--tools` open takes none.
     #[test]
     fn an_apps_open_keeps_its_deliveries_in_tools() {
         use crate::launcher::tools::catalog::{Catalog, Context};

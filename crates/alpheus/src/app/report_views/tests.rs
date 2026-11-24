@@ -72,7 +72,7 @@ fn the_report_is_shown_before_copy() {
     let shown = Instant::now();
     a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report(text.clone())), shown);
     assert!(a.take_requests().is_empty(), "showing it copies nothing");
-    key_at(&mut a, KeyCode::Enter, shown + std::time::Duration::from_secs(1));
+    key_at(&mut a, KeyCode::Enter, shown + Duration::from_secs(1));
     let argv = vec![Config::default().diagnostics.copy[0].clone()];
     assert_eq!(a.take_requests(), vec![Request::Do(Op::Copy { argv, text })], "exactly the text that is on screen, and only on Enter");
     // Esc closes: nothing was copied by it.
@@ -115,7 +115,7 @@ fn enter_after_the_delay_copies_nothing_when_there_is_no_copy_program() {
     a.take_requests();
     let t = Instant::now();
     a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report("text\n".into())), t);
-    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(500));
+    key_at(&mut a, KeyCode::Enter, t + Duration::from_millis(500));
     assert!(a.take_requests().is_empty(), "the delay has passed, but there is no program to copy with");
 }
 
@@ -228,8 +228,8 @@ fn enter_just_after_the_text_arrives_copies_nothing() {
     let t = Instant::now();
     a.on_update(Update::Diag(DiagRead::Report { compositor: String::new(), restart_loop: 3 }, DiagResult::Report("text\n".into())), t);
     // An Enter typed ahead, before the person could read the warning.
-    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(100));
+    key_at(&mut a, KeyCode::Enter, t + Duration::from_millis(100));
     assert!(a.take_requests().is_empty(), "too soon");
-    key_at(&mut a, KeyCode::Enter, t + std::time::Duration::from_millis(500));
+    key_at(&mut a, KeyCode::Enter, t + Duration::from_millis(500));
     assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::Copy { .. })]), "after the delay it copies");
 }

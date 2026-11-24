@@ -23,7 +23,7 @@ fn rgb(c: Rgb) -> Color {
 }
 
 /// The rendered buffer, 100×24.
-fn buffer(app: &crate::app::App) -> ratatui::buffer::Buffer {
+fn buffer(app: &App) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
     t.draw(|f| {
         super::super::render(f, app);
@@ -33,12 +33,12 @@ fn buffer(app: &crate::app::App) -> ratatui::buffer::Buffer {
 }
 
 /// (fg, bg) of the first cell showing `sym` in row `y`, in the preview column (from x = 33).
-fn cell(b: &ratatui::buffer::Buffer, y: u16, sym: &str) -> (Color, Color) {
+fn cell(b: &Buffer, y: u16, sym: &str) -> (Color, Color) {
     let x = (33..100).find(|x| b[(*x, y)].symbol() == sym).unwrap_or_else(|| panic!("{sym:?} not in row {y}"));
     (b[(x, y)].fg, b[(x, y)].bg)
 }
 
-fn goto(a: &mut crate::app::App, key: &str) {
+fn goto(a: &mut App, key: &str) {
     for _ in 0..12 {
         if a.appearance.cursor_entry().is_some_and(|e| e.key == key) {
             return;
@@ -154,7 +154,7 @@ fn the_module_colours_row_is_drawn_with_its_four_values_and_regions() {
 #[test]
 fn the_footer_no_longer_sends_tab_inside_the_tab() {
     let (mut a, _dir) = open("footer", &[]);
-    let last = |a: &crate::app::App| draw(a, 100, 24).0[23].clone();
+    let last = |a: &App| draw(a, 100, 24).0[23].clone();
     assert!(last(&a).contains("Enter Apply") && !last(&a).contains("Tab Mode"), "{:?}", last(&a));
     crate::app::appearance::tests::to_row(&mut a, 1);
     assert!(last(&a).contains("Choose") && !last(&a).contains("Tab Colours"), "{:?}", last(&a));
@@ -269,14 +269,14 @@ fn the_style_row_is_drawn_under_the_colours_with_six_values_and_regions() {
 }
 
 /// x of the first cell showing `sym` in row `y` of the preview column (from x = 33).
-fn find(b: &ratatui::buffer::Buffer, y: u16, sym: &str) -> u16 {
+fn find(b: &Buffer, y: u16, sym: &str) -> u16 {
     (33..100).find(|x| b[(*x, y)].symbol() == sym).unwrap_or_else(|| panic!("{sym:?} not in row {y}"))
 }
 
 /// The Appearance tab with catppuccin APPLIED (the tab's own background) and Tokyo Night under
 /// the cursor (the previewed roles), in `style` and `colors`: the two backgrounds differ, so a
 /// transparent cell is told apart from the bar's.
-fn styled(name: &str, style: &str, colors: &str) -> crate::app::App {
+fn styled(name: &str, style: &str, colors: &str) -> App {
     let toml = format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\nmodule_colors = \"{colors}\"\n");
     let (mut a, _dir) = open(name, &[("theme.toml", toml.as_str())]);
     goto(&mut a, "tokyo-night");
@@ -454,7 +454,7 @@ fn every_style_preview_matches_its_snapshot() {
 }
 
 /// The rendered buffer, `w`×24.
-fn buffer_w(app: &crate::app::App, w: u16) -> ratatui::buffer::Buffer {
+fn buffer_w(app: &App, w: u16) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
     t.draw(|f| {
         super::super::render(f, app);
@@ -542,7 +542,7 @@ fn every_block_style_preview_at_80_columns_matches_its_snapshot() {
 #[test]
 fn the_theme_tab_fits_an_87_by_26_window() {
     let (a, _dir) = open("window-87x26", &[("theme.toml", "theme = \"nord\"\nstyle = \"islands\"\n")]);
-    let (rows, hits) = crate::ui::testing::draw(&a, 87, 26);
+    let (rows, hits) = draw(&a, 87, 26);
     let all = rows.join("\n");
     // Every entry is on screen, with its tags (the wallpaper and the fifteen presets).
     assert_eq!(a.appearance.entries.len(), 16);
@@ -554,8 +554,8 @@ fn the_theme_tab_fits_an_87_by_26_window() {
     assert!(all.contains("Preview — Nord, dark") && all.contains("└────────────┘"), "{all}");
     assert!(rows.iter().any(|r| r.contains('│') && r.contains("▐") && r.trim_end().ends_with('│')), "the mini bar's right edge:\n{all}");
     // All six style names are whole and each hit rect is exactly its chip.
-    for s in crate::app::appearance::STYLES {
-        let label = crate::app::appearance::style_label(s);
+    for s in STYLES {
+        let label = style_label(s);
         let r = hits.find(Target::AppearanceStyle(s)).unwrap_or_else(|| panic!("{label} has no region"));
         assert_eq!(r.width, label.len() as u16 + 2, "{label}: the region is the whole chip");
         let text: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();

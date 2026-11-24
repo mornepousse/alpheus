@@ -1,6 +1,20 @@
-//! Text from outside (applications on D-Bus, PipeWire's device names) made safe to draw: shared
-//! by the tray, the media module, the notifications and the sound model, so that none of them
-//! depends on another for it.
+//! Text from outside made safe to draw, in one place.
+//!
+//! The tray, the media module, the notifications and the sound model all pass what an application
+//! or PipeWire gives them through `clean`, so that none of them depends on another for it:
+//! separators become a space, every other control character and the invisible formatting
+//! characters go, and what is left is cut to `MAX_TEXT` characters.
+//!
+//! Never:
+//! - keep a control or bidirectional formatting character: a title from an application is hostile
+//!   input, and the bar draws one line (no guardrail checks this file; the callers' own tests pin
+//!   what they draw);
+//! - remove ZWNJ (U+200C) or ZWJ (U+200D): they shape ordinary text, and the tag characters that
+//!   make a subdivision flag stay for the same reason;
+//! - allocate per character beyond the one `String` that comes back.
+//!
+//! See: `alpheus_common::text::invisible` (the one list, and why those two stay),
+//! docs/features/tray.md, docs/features/media.md, docs/features/notifications.md.
 
 /// The longest text kept from outside, in characters.
 pub const MAX_TEXT: usize = 256;

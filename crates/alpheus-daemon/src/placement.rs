@@ -1,6 +1,17 @@
-//! Where a bar's layer surface sits, per style (themes delivery 2, spec § 3). `floating` moves it
-//! 6 px off the output's top, left and right edges, makes the surface taller by its shadow, and
-//! keeps input to the bar. Every other style keeps today's placement.
+//! Where a bar's layer surface sits, per style.
+//!
+//! `floating` moves the surface 6 px off the output's top, left and right edges, makes it taller by
+//! its shadow and keeps input to the bar, so windows start right under the floating bar and not
+//! under its margin. Every other style keeps the plain placement, anchored at the top with an
+//! exclusive zone the bar's height.
+//!
+//! Never:
+//! - claim more of the screen than the style draws: the exclusive zone follows the bar's own
+//!   height, which is what the `at_rest_no_wakeups_under_each_style` and `startup_pss_per_style`
+//!   tests exercise for each of the six;
+//! - read anything: the style and the output's geometry are handed in.
+//!
+//! See: docs/features/themes.md ("Bar styles"), docs/measurements.md (the per-style figures).
 
 use alpheus_common::theme::settings::BarStyle;
 

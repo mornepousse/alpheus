@@ -100,9 +100,11 @@ Build and runtime dependencies, a flake input, and key binds for Hyprland, Sway,
 
 ## Configure
 
-Four small TOML files, all optional, no message when one is missing: `bar.toml` (the daemon: modules,
-font, per-module keys, hooks), `launcher.toml`, `theme.toml` (colours, mode, bar style) and `config.toml`
-(the control center). The daemon reads `bar.toml` once at start and picks up a new `theme.toml` by itself.
+Four small TOML files you write, all optional, no message when one is missing: `bar.toml` (the
+daemon: modules, font, per-module keys, hooks), `launcher.toml`, `theme.toml` (colours, mode, bar
+style) and `config.toml` (the control center); a fifth, `displays.toml`, is written by the control
+center's Displays tab. The daemon reads `bar.toml` once at start and picks up a new `theme.toml`
+by itself.
 A taste, a whole `theme.toml`:
 
 ```toml

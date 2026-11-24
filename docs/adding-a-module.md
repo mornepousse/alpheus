@@ -197,9 +197,11 @@ A module popup is three small additions (then fill in the row's `popup` field):
   the test clicks it. The timer's clicks start no command (`timer_middle` is the daemon's own), so
   it is not there.
 
-Do not write the forbidden tokens in a comment of a file these tests cover: they read comments too
-(STYLE, rule 1). Some guardrails read your file's text for words that must not appear (`dpms`,
-`hyprctl`...) as well.
+Some guardrails read your file's text for words that must not appear (`dpms`, `hyprctl`...), and
+they read the comments too: do not write a forbidden token in a comment of a file they cover, say it
+in words (STYLE, rule 1). The guardrails that read code instead — "this state changes in one
+place", "this call comes first" — are given the file with its comments stripped, so a comment naming
+a call proves nothing to them either way.
 
 ## 10. A headless test
 
@@ -252,8 +254,8 @@ anything.
 - Tests never call a real `wpctl`, `nmcli`, `systemctl`...: use the injectable
   [executor](GLOSSARY.md#executor) and its fake (the timer's sound goes through it:
   `the_sound_spawns_its_argv_and_logs_no_command`).
-- The test, format and lint commands are in [`CONTRIBUTING.md`](../CONTRIBUTING.md) ("Building and
-  testing"); run all of them.
+- The test, format and lint commands are in [`CONTRIBUTING.md`](../CONTRIBUTING.md) ("Commands");
+  run all of them.
 - The release memory suite for anything resident, run against a base commit back to back.
 - Links: from the repository root, `nix run nixpkgs#lychee -- --offline --include-fragments
   '**/*.md'`.

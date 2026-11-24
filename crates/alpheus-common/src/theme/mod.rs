@@ -2,6 +2,14 @@
 //! read from a colour file holding either the 16 roles or the legacy 7 keys
 //! (derived per mode). Independent of any display: the TUI converts to
 //! ratatui colours (alpheus::theme), the daemon to pixels.
+//!
+//! Never:
+//! - name a display library: the roles are plain values, which the control center turns into
+//!   ratatui colours and the daemon into pixels (`the_foundation_carries_no_display_dependency`);
+//! - fail on a colour file: a missing or malformed key falls back with one log line
+//!   (docs/features/themes.md).
+//!
+//! See: docs/features/themes.md, docs/configuration.md ("Roles", "Presets").
 
 pub mod contrast;
 pub mod mode_file;
@@ -128,14 +136,14 @@ const HUE_MIX: u16 = 30;
 /// `c` mixed `HUE_MIX` % toward `toward`: per 8-bit channel, linear in the
 /// sRGB values (not in linear light), rounded to nearest.
 fn mix_toward(c: Rgb, toward: Rgb) -> Rgb {
-    let m = |a: u8, b: u8| ((a as u16 * (100 - HUE_MIX) + b as u16 * HUE_MIX + 50) / 100) as u8;
+    let m = |a: u8, b: u8| ((u16::from(a) * (100 - HUE_MIX) + u16::from(b) * HUE_MIX + 50) / 100) as u8;
     Rgb(m(c.0, toward.0), m(c.1, toward.1), m(c.2, toward.2))
 }
 
 impl Roles {
     /// fg_dim at 40 % over `bg`, rounded: frames and borders (spec § 1).
     pub fn border_over(&self, bg: Rgb) -> Rgb {
-        let mix = |f: u8, b: u8| ((f as u16 * BORDER_ALPHA + b as u16 * (255 - BORDER_ALPHA) + 127) / 255) as u8;
+        let mix = |f: u8, b: u8| ((u16::from(f) * BORDER_ALPHA + u16::from(b) * (255 - BORDER_ALPHA) + 127) / 255) as u8;
         Rgb(mix(self.fg_dim.0, bg.0), mix(self.fg_dim.1, bg.1), mix(self.fg_dim.2, bg.2))
     }
 

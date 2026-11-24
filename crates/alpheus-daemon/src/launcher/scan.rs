@@ -298,7 +298,7 @@ fn read_sources_after(plan: &SourcePlan, run_sources: fn(&SourcePlan) -> Entries
     deliver(entries);
 }
 
-/// Runs `scan` on a thread named SCAN_THREAD: `deliver` gets the catalog first, exactly as before
+/// Runs `scan` on a thread named SCAN_THREAD: `deliver` gets the catalog first, as it did before
 /// the sources; then, with a `plan`, the same thread reads the sources (`read_sources_after`) and
 /// `deliver_entries` gets them — never with no plan. A panic in the scan delivers an empty
 /// Catalog. One apps scan at a time: while a previous one runs, Err(WouldBlock) and no thread (no

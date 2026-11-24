@@ -2,6 +2,17 @@
 //! § 4): lock, log out, reboot and power off — their glyph, their words and their `[quick]` command
 //! — and the reboot and power-off question: asked by a first activation, confirmed by a second
 //! within CONFIRM, never before CONFIRM_AFTER. Pure: nothing here runs a command or arms a timer.
+//!
+//! Never:
+//! - run a command or arm a timer: the panel and the menu do that, each with its own
+//!   (`the_quick_panel_has_no_panicking_path` covers this file, and
+//!   `every_power_menu_activation_is_a_configured_session` pins what may be run);
+//! - confirm too early or too late: a second activation counts only from `CONFIRM_AFTER` and until
+//!   `CONFIRM`, so a double click and a held Enter never reboot (docs/decisions.md, "Reboot and
+//!   power off ask first, and a second activation confirms from 0.4 s to 3 s").
+//!
+//! See: docs/features/power.md, docs/features/quick-settings.md ("Reboot and power off"),
+//! docs/configuration.md (`[quick]`'s four commands).
 
 use crate::config::QuickConfig;
 use std::time::{Duration, Instant};

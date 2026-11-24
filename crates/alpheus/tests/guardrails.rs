@@ -140,7 +140,7 @@ fn every_launched_command_is_on_the_allowlist() {
                     ["systemd-analyze time --no-pager", "systemd-analyze blame --no-pager", "systemd-analyze critical-chain --no-pager"]
                         .contains(&c.as_str()),
                     "{c}"
-                )
+                );
             }
             p if p == copy_program() => assert_eq!(c, p, "the report goes on its standard input, never an argument"),
             _ => {}

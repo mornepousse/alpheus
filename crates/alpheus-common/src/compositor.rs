@@ -1,5 +1,13 @@
 //! Which compositor the session runs, from its environment variables: shared by the daemon (which
 //! opens its IPC read-only) and the TUI (which never writes to it). Nothing here opens a socket.
+//!
+//! Never:
+//! - open a socket or run a command: this only reads the session's environment variables, which is
+//!   why both programs can share it;
+//! - guess: an unknown session answers "unknown", and the features that need a compositor say so
+//!   rather than assume one.
+//!
+//! See: docs/compositors.md, docs/features/bar.md ("What the bar reads, and what it writes").
 
 use std::ffi::OsString;
 use std::path::PathBuf;

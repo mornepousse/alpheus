@@ -145,8 +145,7 @@ fn a_critical_demoted_by_a_flood_is_signalled_closed() {
     let mut n = held();
     let ids: Vec<u32> = (0..9)
         .map(|i| {
-            let reply =
-                n.handle(&crate::session_bus::bus::testing::critical_notify_call(&format!("alert {i}")), Instant::now(), || 600).unwrap();
+            let reply = n.handle(&bus::testing::critical_notify_call(&format!("alert {i}")), Instant::now(), || 600).unwrap();
             reply.read1::<u32>().unwrap()
         })
         .collect();
@@ -161,7 +160,7 @@ fn a_critical_demoted_by_a_flood_is_signalled_closed() {
 #[test]
 fn the_minute_is_read_only_for_a_served_notify() {
     let never = || -> u32 { panic!("the clock read for a call that needs no time") };
-    let notify = || crate::session_bus::bus::testing::notify_call("hello");
+    let notify = || bus::testing::notify_call("hello");
     let (_, mut queued) = started(false);
     assert!(queued.handle(&notify(), Instant::now(), never).is_some(), "refused while not held, no clock read");
     let mut n = held();

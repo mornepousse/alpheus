@@ -86,7 +86,7 @@ anonymised fixtures, budgets, one change per commit, English) are in `CONTRIBUTI
 
 ## Commits
 
-- One logical change per commit, subject `type(scope): what` in the imperative, a body that says
+- One logical change per commit, subject `type(scope):` then a short statement of what the change does, a body that says
   why (`CONTRIBUTING.md`).
 - End the message with the attribution lines the session gives you, as separate trailers
   (`Co-Authored-By: Claude <model> <noreply@anthropic.com>`, then the session line).

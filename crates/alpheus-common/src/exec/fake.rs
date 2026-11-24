@@ -1,5 +1,12 @@
 //! Fake executor for tests: programmed responses, logged calls. An
 //! unprogrammed command replies "not found": a test can NEVER reach a real tool.
+//!
+//! Never:
+//! - reach a real tool: an unprogrammed command answers "not found", so a test that forgets one
+//!   fails instead of touching the machine (AGENTS.md: never call a session tool for real);
+//! - forget a call: every one is recorded, which is how the tests assert what would have run.
+//!
+//! See: CONTRIBUTING.md (fakes), AGENTS.md ("Rules for agents"), docs/ARCHITECTURE.md ("Tests").
 
 use super::{CaptureEnd, CaptureLimits, Captured, ExecError, Executor, Output, Stream};
 use std::collections::HashMap;

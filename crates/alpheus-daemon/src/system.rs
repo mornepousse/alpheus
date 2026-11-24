@@ -1,6 +1,21 @@
-//! What the system sources say, normalized for the bar: sound, network,
-//! Bluetooth, power, resources. Pure data: the sources fill it, `state`
-//! keeps it, `segments` draws it.
+//! What the system sources say, normalised for the bar: the sound, the network, Bluetooth, the
+//! power and the resources.
+//!
+//! Pure data. A source fills one of these (`sources/`), `state::Bar` keeps it, `segments` draws it.
+//! `Feed` is how a module tells "no reading yet" from "the service is down", so a module that has
+//! lost its service keeps its last figure rather than disappearing. `Resources` also holds the
+//! `History` of the last 60 samples, a fixed ring written in place, which is what the resources
+//! popup's graphs read.
+//!
+//! Never:
+//! - read anything: no file, no socket, no clock — the sources do that and hand the result in;
+//! - grow with time: the history is a fixed ring of about 3 KB (`the_history_stays_small`), and
+//!   nothing else here keeps a list that a session can lengthen;
+//! - read a source that is down as a state (docs/decisions.md, "A source that is down is not a
+//!   state").
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/features/bar.md (what each
+//! module shows), docs/features/resources.md (the ring and the graphs).
 
 pub use alpheus_common::backends::Volume;
 
@@ -80,8 +95,8 @@ pub enum NetState {
     /// NetworkManager is not on the bus: hidden.
     Absent,
     Offline,
-    /// The primary connection's kind (the bar shows icons only, Q1);
-    /// `vpns`: how many other VPNs are active (Q2).
+    /// The primary connection's kind (the bar shows icons only);
+    /// `vpns`: how many other VPNs are active.
     Online {
         link: Link,
         vpns: usize,
@@ -101,11 +116,11 @@ pub enum BtState {
     Absent,
     /// Adapter powered off: hidden (spec § 2).
     Off,
-    /// Connected devices: those reporting a battery first, then by name (Q8).
+    /// Connected devices: those reporting a battery first, then by name.
     On { devices: Vec<BtDevice> },
 }
 
-/// What the quick panel's Bluetooth reading covers (quick settings delivery 3): asked by the loop
+/// What the quick panel's Bluetooth reading covers (quick settings Bluetooth spec § 5): asked by the loop
 /// through `sources::dbus::bt::BtTap`, read by the D-Bus thread. `Row`: the adapter (powered,
 /// blocked); `Detail`: the Bluetooth detail is open, the paired devices and the ones seen nearby too.
 pub type BtScope = PanelScope;
@@ -184,7 +199,7 @@ pub enum PeripheralKind {
 pub struct Peripheral {
     pub kind: PeripheralKind,
     pub name: String,
-    /// A real, numeric reading: shown always, red below `LOW` (Q7).
+    /// A real, numeric reading: shown always, red below `LOW`.
     /// `None`: only a coarse level is known — hidden unless `low`.
     pub percent: Option<u8>,
     /// The coarse level is Low or Critical: shown as the bare icon in the
@@ -406,7 +421,7 @@ pub struct Sample {
     /// Percent, since the previous reading.
     pub cpu: Option<u8>,
     /// Memory in use like htop (caches left out, shared memory kept; see
-    /// `sources::resources::parse_meminfo`), in tenths of GiB: 61 = 6.1G (Q5).
+    /// `sources::resources::parse_meminfo`), in tenths of GiB: 61 = 6.1G.
     pub memory: Option<u16>,
     /// °C.
     pub temperature: Option<i16>,
@@ -518,6 +533,6 @@ mod tests {
 
     #[test]
     fn the_history_stays_small() {
-        assert!(std::mem::size_of::<History>() <= 3 * 1024, "{}", std::mem::size_of::<History>());
+        assert!(size_of::<History>() <= 3 * 1024, "{}", size_of::<History>());
     }
 }

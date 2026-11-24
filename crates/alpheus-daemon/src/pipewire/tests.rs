@@ -714,7 +714,7 @@ fn the_graph_is_bounded() {
     nodes.push(']');
     let mut m = Model::new(true);
     m.apply_privacy(serde_json::from_str(&nodes).unwrap());
-    assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
+    assert_eq!(m.kept().0, privacy::MAX_NODES);
     assert_eq!(m.bound_line(false), None, "already told once for this model");
     let mut links = String::from("[");
     for i in 0..4200u32 {
@@ -728,14 +728,14 @@ fn the_graph_is_bounded() {
     }
     links.push(']');
     m.apply_privacy(serde_json::from_str(&links).unwrap());
-    assert_eq!(m.kept().1, crate::privacy::MAX_LINKS);
+    assert_eq!(m.kept().1, privacy::MAX_LINKS);
     assert_eq!(m.bound_line(true), None, "once");
     // An id already kept is still updated at the bound.
     m.apply_privacy(serde_json::from_str(r#"[{"id":1000,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#).unwrap());
-    assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
+    assert_eq!(m.kept().0, privacy::MAX_NODES);
     // A removal frees a place.
     m.apply_privacy(serde_json::from_str(r#"[{"id":1000,"info":null}]"#).unwrap());
-    assert_eq!(m.kept().0, crate::privacy::MAX_NODES - 1);
+    assert_eq!(m.kept().0, privacy::MAX_NODES - 1);
 }
 
 #[test]
@@ -778,7 +778,7 @@ fn a_new_stream_starts_a_new_graph_and_forgets_it_at_the_end() {
     let tap = SoundTap::new(true);
     let text = format!("{SOURCE}{}{}", stream(200, "running"), link(300, 123, 200, "active"));
     let _ = run_tapped(&text, Scope::Bar, &tap);
-    assert_eq!(tap.open().capture, Some(crate::privacy::Capture::default()), "the dead stream's graph went; privacy stays on");
+    assert_eq!(tap.open().capture, Some(privacy::Capture::default()), "the dead stream's graph went; privacy stays on");
     tap.close();
     let seen = run_tapped(&text, Scope::Bar, &tap);
     assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "and a second stream builds it again");

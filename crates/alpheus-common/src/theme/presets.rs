@@ -6,6 +6,16 @@
 //! colour failed the contrast test, the nearest passing palette colour is
 //! used and the comment says so. Each half also carries the seven named hues
 //! (spec § 9) from the same palette. About 1.9 KB of read-only data in all.
+//!
+//! Never:
+//! - ship a preset that cannot be read: `every_preset_is_legible_in_both_modes`,
+//!   `fg_is_legible_on_raised_and_pill_bg`, `the_new_presets_pass_the_extra_ratios` and
+//!   `on_accent_is_legible_on_every_hue` check every pair, in both modes;
+//! - grow: a `Roles` is 69 bytes and a `Preset` at most 160 (`a_preset_is_a_few_hundred_bytes`),
+//!   so an unused preset is read-only data and nothing more.
+//!
+//! See: docs/features/themes.md ("Rules it keeps", "What it costs"), docs/configuration.md
+//! ("Presets").
 
 use super::{Hues, Rgb, Roles};
 
@@ -985,8 +995,8 @@ mod tests {
 
     #[test]
     fn a_preset_is_a_few_hundred_bytes() {
-        assert_eq!(std::mem::size_of::<Roles>(), 69);
-        assert!(std::mem::size_of::<Preset>() <= 160, "{}", std::mem::size_of::<Preset>());
+        assert_eq!(size_of::<Roles>(), 69);
+        assert!(size_of::<Preset>() <= 160, "{}", size_of::<Preset>());
     }
 
     /// Spec § 7 plus the state-colour amendment: every shipped theme is

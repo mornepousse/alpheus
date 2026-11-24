@@ -1,9 +1,14 @@
-//! Guardrails from the framing document for the daemon, checked
+//! The daemon's guardrails (CONTRIBUTING.md, "The rules"), checked
 //! mechanically: it only ever runs the workspace command (`wm-set
 //! workspace …` by default), only ever reads the compositor (four fixed
 //! Hyprland requests, the niri stream), only opens the compositor's
 //! sockets in `src/sources/`, never spawns a process directly, and the
 //! forbidden words appear nowhere in its sources.
+//!
+//! Two views of a source file are read: `production_code_without_comments` for the scans that read
+//! code (what calls what, which function owns a line, how many times a call appears, and what a log
+//! line carries), and `production_code`, comments and all, for the lists that forbid a token
+//! outright.
 
 use alpheus_common::exec::fake::FakeExecutor;
 use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
@@ -509,14 +514,14 @@ fn compositor_sockets_opened_only_in_sources() {
 #[test]
 fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs");
-    let prod = production_code(&text);
+    let prod = production_code_without_comments(&text);
     let body = function_body(&prod, "pub fn launcher_open(");
     let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
     assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
     // Quick notes: the pad's box follows the same rule, its scrims under their own namespace.
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs");
-    let prod = production_code(&text);
+    let prod = production_code_without_comments(&text);
     let body = function_body(&prod, "pub(crate) fn notes_open(");
     let scrims_at = body.find("self.notes_scrims(qh)").expect("the scrims are created in notes_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in notes_open");
@@ -529,7 +534,7 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
 #[test]
 fn shutting_down_closes_and_saves_the_pad() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs");
-    let prod = production_code(&text);
+    let prod = production_code_without_comments(&text);
     let body = function_body(&prod, "fn shut_down(");
     let close = body.find("notes_guarded(\"shutdown\", |app| app.notes_close(").expect("shut_down closes the pad, guarded");
     let drop_at = body.find("drop(core.state)").expect("shut_down drops the app");
@@ -546,7 +551,7 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
     for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let prod = production_code(text);
+        let prod = production_code_without_comments(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
         let body = function_body(&prod, create);
         let call =
@@ -578,7 +583,7 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
 fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
-    let wayland_prod = production_code(wayland);
+    let wayland_prod = production_code_without_comments(wayland);
     for (func, call) in
         [("fn new_capability(", "keyboard_acquire"), ("fn remove_capability(", "keyboard_lost"), ("fn remove_seat(", "keyboard_lost")]
     {
@@ -586,7 +591,7 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
         assert!(body.contains(call), "{func} must still call {call}: {body}");
     }
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = production_code_without_comments(popup);
     let key_event = function_body(&popup_prod, "fn key_event(");
     assert!(key_event.contains("launcher_guarded("), "key_event must guard its launcher call: {key_event}");
     let leave = function_body(&popup_prod, "fn leave(");
@@ -609,7 +614,7 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
 fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = production_code_without_comments(popup);
     for func in ["fn press_key(", "fn repeat_key("] {
         let body = function_body(&popup_prod, func);
         assert!(body.contains("key_event("), "{func} must go through key_event: {body}");
@@ -638,7 +643,7 @@ fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
 fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let prod = production_code(popup);
+    let prod = production_code_without_comments(popup);
     let popup_close = function_body(&prod, "pub fn popup_close(");
     assert!(!popup_close.contains(".name =="), "popup_close must not look up its parent by name: {popup_close}");
     assert!(popup_close.contains("position_by"), "popup_close must look up its parent by identity: {popup_close}");
@@ -661,7 +666,7 @@ fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
 fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
-    let prod = production_code(wayland);
+    let prod = production_code_without_comments(wayland);
     let hover_fire = function_body(&prod, "pub(crate) fn hover_fire(");
     assert!(!hover_fire.contains(".name =="), "hover_fire must not look up its bar by name: {hover_fire}");
     assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
@@ -680,7 +685,7 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
 fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_early() {
     let files = source_files();
     let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
-    let prod = production_code(host);
+    let prod = production_code_without_comments(host);
     let body = function_body(&prod, "fn launcher_fail(");
     let take_at = body.find("self.launcher.take()").expect("launcher_fail must take the launcher");
     let close_at = body.find("guarded(\"close\"").expect("launcher_fail must drop the box in a guarded close");
@@ -700,7 +705,9 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
 #[test]
 fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (popup, startup) = (src("popup.rs"), src("startup.rs"));
     for f in ["pub(crate) fn keyboard_release(", "pub(crate) fn keyboard_lost("] {
         let body = function_body(&popup, f);
@@ -720,7 +727,9 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
 #[test]
 fn the_panel_marks_read_only_after_it_opened() {
     let files = source_files();
-    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/panel_app.rs").expect("notify/panel_app.rs").1);
+    let panel_app = production_code_without_comments(
+        &files.iter().find(|(p, _)| relative_path(p) == "notify/panel_app.rs").expect("notify/panel_app.rs").1,
+    );
     let body = function_body(&panel_app, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
@@ -739,7 +748,9 @@ fn the_panel_marks_read_only_after_it_opened() {
 #[test]
 fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (link, bridge) = (src("link.rs"), src("tray/bridge.rs"));
     for (body, ready, read) in [
         (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
@@ -761,7 +772,9 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 #[test]
 fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (menu_app, popup, surface) = (src("tray/menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
     let repaint = function_body(&menu_app, "fn menu_repaint(");
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
@@ -791,11 +804,11 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
 fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let popup_prod = production_code(popup);
+    let popup_prod = production_code_without_comments(popup);
     let popup_output_gone = function_body(&popup_prod, "pub(crate) fn popup_output_gone(");
     assert!(popup_output_gone.contains("hover.cancel()"), "popup_output_gone must also cancel a stale hover: {popup_output_gone}");
     let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("launcher/surface.rs").1;
-    let surface_prod = production_code(surface);
+    let surface_prod = production_code_without_comments(surface);
     let launcher_open = function_body(&surface_prod, "pub fn launcher_open(");
     assert!(launcher_open.contains("hover.cancel()"), "launcher_open must also cancel a stale hover: {launcher_open}");
 }
@@ -810,7 +823,7 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
 fn popup_close_resets_tooltip_item_for_a_closed_tooltip() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
-    let prod = production_code(popup);
+    let prod = production_code_without_comments(popup);
     let popup_close = function_body(&prod, "pub fn popup_close(");
     assert!(popup_close.contains("tooltip_item = None"), "popup_close must reset tooltip_item on a closed tooltip: {popup_close}");
 }
@@ -973,12 +986,18 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
 /// braces (correct even nested), not by cutting at the first `#[cfg(test)]`
 /// found (that would also, wrongly, have erased everything after it in the
 /// file, test or not).
+///
+/// The marker, the braces and the semicolon are looked for in `blanked(text)`, where every comment
+/// and every literal is spaces: only the code's own braces count, and the offsets found index
+/// `text` itself, which is what is sliced.
 fn production_code(text: &str) -> String {
+    let view = blanked(text);
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find("#[cfg(test)]") {
-        out.push_str(&rest[..i]);
-        let after_marker = &rest["#[cfg(test)]".len() + i..];
+    let mut done = 0;
+    while let Some(i) = view[done..].find("#[cfg(test)]").map(|i| done + i) {
+        out.push_str(&text[done..i]);
+        let marker_end = i + "#[cfg(test)]".len();
+        let after_marker = &view[marker_end..];
         let open = after_marker.find('{');
         let semi = after_marker.find(';');
         // A brace-less item (`pub mod fake;`, a `use`, a unit struct…) ends
@@ -991,11 +1010,11 @@ fn production_code(text: &str) -> String {
             (None, _) => true,
         };
         if ends_at_semicolon {
-            rest = match semi {
-                Some(s) => &after_marker[s + 1..],
+            done = match semi {
+                Some(s) => marker_end + s + 1,
                 // No `;` and no `{` anywhere after the marker (end of
                 // file): nothing left to strip.
-                None => "",
+                None => text.len(),
             };
             continue;
         }
@@ -1016,19 +1035,162 @@ fn production_code(text: &str) -> String {
             }
         }
         // Brace never closed: should not happen in Rust that compiles, but
-        // an empty string rather than a panic on a malformed file remains
-        // the safest choice for a guardrail.
-        rest = relative_end.map(|f| &after_marker[f..]).unwrap_or("");
+        // stripping to the end of the file rather than panicking on a
+        // malformed one remains the safest choice for a guardrail.
+        done = relative_end.map_or(text.len(), |f| marker_end + f);
     }
-    out.push_str(rest);
+    out.push_str(&text[done..]);
     out
+}
+
+/// Blanks `out` for one character of a comment or a literal: a space per byte, so the copy keeps
+/// `text`'s byte offsets, and a newline as it is, so line numbers keep their meaning.
+fn blank(out: &mut String, c: char) {
+    if c == '\n' {
+        out.push('\n');
+    } else {
+        for _ in 0..c.len_utf8() {
+            out.push(' ');
+        }
+    }
+}
+
+/// `text` with every comment and every literal blanked out, byte for byte: the copy `production_code`
+/// searches, while it slices `text` itself at the offsets found. Same length, and the two agree
+/// byte for byte everywhere a search can land (inside a blanked run there is nothing but spaces and
+/// newlines), so an offset of one is an offset of the other.
+///
+/// Why not search the text itself: a `{`, a `;` or the test marker written inside a string, a char
+/// literal or a comment is not the code's, and counting it moved the end of a test item — far
+/// enough, when it was unbalanced, to take every real item after it out of the production view.
+/// `compositor/mango.rs`'s fixture (`r#"{"monitors":["#`) is such a string, and a comment that
+/// spells the test-configuration attribute out is such a comment.
+///
+/// The literal shapes are `without_comments`', which this follows: a raw string (`r"…"`, `r#"…"#`,
+/// and the byte and C forms) has no escape rule and ends at the quote followed by as many `#` as
+/// opened it; a plain string ends at its first unescaped quote; a char literal is one character, an
+/// escape, or neither (a lifetime, which has no closing quote).
+fn blanked(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (c, next) {
+            ('/', Some('/')) => {
+                while i < chars.len() && chars[i] != '\n' {
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match (chars[i], chars.get(i + 1).copied()) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            out.push_str("  ");
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            out.push_str("  ");
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        (n, _) => {
+                            blank(&mut out, n);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            ('r', _) if raw_string_opens(&chars, i) => {
+                let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+                let quote = i + 1 + hashes;
+                for &ch in &chars[i..=quote] {
+                    blank(&mut out, ch);
+                }
+                i = quote + 1;
+                while i < chars.len() {
+                    let closes = chars[i] == '"' && chars.len() > i + hashes && chars[i + 1..=i + hashes].iter().all(|&c| c == '#');
+                    if closes {
+                        for &ch in &chars[i..=i + hashes] {
+                            blank(&mut out, ch);
+                        }
+                        i += hashes + 1;
+                        break;
+                    }
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                }
+            }
+            ('"', _) => {
+                blank(&mut out, c);
+                i += 1;
+                while i < chars.len() {
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                    if chars[i - 1] == '\\' && i < chars.len() {
+                        blank(&mut out, chars[i]);
+                        i += 1;
+                    } else if chars[i - 1] == '"' {
+                        break;
+                    }
+                }
+            }
+            ('\'', _) => {
+                let len = match (next, chars.get(i + 2).copied()) {
+                    (Some('\\'), _) => chars.get(i + 3..).and_then(|rest| rest.iter().position(|&q| q == '\'')).map(|p| p + 4),
+                    (Some(_), Some('\'')) => Some(3),
+                    _ => None,
+                };
+                let len = len.unwrap_or(1);
+                for &ch in &chars[i..i + len] {
+                    blank(&mut out, ch);
+                }
+                i += len;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether the `r` at `i` opens a raw string: `r`, then any number of `#`, then a quote, and
+/// nothing before it that would make it the last letter of an identifier — `b` is allowed, since
+/// `br"…"` is the byte form and `cr"…"` the C one, as long as that letter itself starts a token.
+fn raw_string_opens(chars: &[char], i: usize) -> bool {
+    let mut j = i + 1;
+    while chars.get(j) == Some(&'#') {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'"') {
+        return false;
+    }
+    let part_of_a_name = |k: Option<usize>| k.and_then(|k| chars.get(k)).is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    match i.checked_sub(1) {
+        None => true,
+        Some(p) if matches!(chars.get(p), Some('b' | 'c')) => !part_of_a_name(i.checked_sub(2)),
+        Some(p) => !part_of_a_name(Some(p)),
+    }
 }
 
 /// `text` without its comments (`//`, `///`, `//!` to the end of the line, and `/* … */` blocks),
 /// for the guardrails that read code: a comment naming a call must not satisfy them, nor a
 /// comment holding `fn ` or a brace move the function a line belongs to. Newlines stay, so line
 /// numbers keep their meaning. String and char literals are skipped over, so a `//` inside a URL
-/// string is not a comment; raw strings are not recognised (none in the files read this way).
+/// string is not a comment. A raw string (`r"…"`, `r#"…"#`, and the byte and C forms `br`, `cr`) is
+/// copied whole, with no escape rule, so neither a `//` nor a quote inside one is read as anything
+/// else. Braces inside a literal are kept, and harmless: `production_code` counts braces in
+/// `blanked`, where a literal is spaces, so an unbalanced one inside a test item cannot move the
+/// end of that item (`a_brace_in_a_string_of_a_test_item_leaves_the_production_code_alone`).
 fn without_comments(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -1066,6 +1228,26 @@ fn without_comments(text: &str) -> String {
                     }
                 }
             }
+            // A raw string (`r"…"`, `r#"…"#`, and the byte forms `br"…"`): copied whole. It has no
+            // escape rule, so a backslash before its closing quote does not escape it, and a `//`
+            // or a `/*` inside one is text, not a comment. It ends at the first quote followed by
+            // as many `#` as opened it.
+            ('r', _) if raw_string_opens(&chars, i) => {
+                let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+                let quote = i + 1 + hashes;
+                out.extend(&chars[i..=quote]);
+                i = quote + 1;
+                while i < chars.len() {
+                    let closes = chars[i] == '"' && chars.len() > i + hashes && chars[i + 1..=i + hashes].iter().all(|&c| c == '#');
+                    if closes {
+                        out.extend(&chars[i..=i + hashes]);
+                        i += hashes + 1;
+                        break;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
             ('"', _) => {
                 out.push(c);
                 i += 1;
@@ -1083,7 +1265,7 @@ fn without_comments(text: &str) -> String {
             // A char literal (`'"'`, `'\\n'`, `'x'`) is copied whole; a lifetime has no closing quote.
             ('\'', _) => {
                 let len = match (next, chars.get(i + 2).copied()) {
-                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some('\\'), _) => chars.get(i + 3..).and_then(|rest| rest.iter().position(|&q| q == '\'')).map(|p| p + 4),
                     (Some(_), Some('\'')) => Some(3),
                     _ => None,
                 };
@@ -1100,16 +1282,185 @@ fn without_comments(text: &str) -> String {
     out
 }
 
+/// A file's production code with its comments gone: the view every scan that reads code is given —
+/// what calls what, which function owns a line, how many times a call appears, and what a log line
+/// carries. `production_code` keeps the comments, so without this a call named in a comment would
+/// satisfy such a scan, and a `fn ` or a brace inside one would move the boundaries `function_body`
+/// and `popup_ops_row` find.
+///
+/// Not for the scans that forbid a token outright (`.unwrap()`, `thread::`, `spawn(`, a leak form
+/// such as `{key:?}`): those are given `production_code`, comments and all, so the token appears in
+/// neither the code nor a comment (docs/STYLE.md, rule 1, which tells a comment to say it in words
+/// instead). A test that does both keeps both views, and `both_bodies` is the shorthand when the
+/// second view is one function's body.
+///
+/// The log guardrails (the Shield's, the VPN's, the camera's, Bluetooth's, the clipboard's, the
+/// notepad's, the hooks' and the Tools menu's) read this view: what a line really carries is a
+/// question about the code, and a comment that shows a line which would leak — the very thing a
+/// page or a header may need to explain — is not one.
+///
+/// The comments go first, and `production_code` blanks whatever is left of a comment or a literal
+/// before it counts a brace, so neither view can be fooled by a test marker, a brace or a
+/// semicolon that is not the code's
+/// (`a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone`,
+/// `a_cfg_test_marker_inside_a_literal_or_a_comment_strips_nothing`).
+fn production_code_without_comments(text: &str) -> String {
+    production_code(&without_comments(text))
+}
+
 #[test]
 fn without_comments_drops_comments_and_keeps_code_and_lines() {
     let text = "a(); // self.x(\n/// fn doc(\nb(\"//not\"); /* c { */ d('\"'); e('\\'');\n/* one\ntwo */f<'a>();\n";
     assert_eq!(without_comments(text), "a(); \n\nb(\"//not\");  d('\"'); e('\\'');\n\nf<'a>();\n");
 }
 
+#[test]
+fn without_comments_keeps_a_raw_string_whole() {
+    // `r"…"`, `r#"…"#` and `br"…"`: a `//` or a `/*` inside one is text, its own quote does not end
+    // it, and a trailing backslash escapes nothing. An identifier ending in `r` is not one.
+    let text = "a(r\"//not a comment\");\nb(r#\"a \" and /* x */\"#);\nc(br\"\\\\\");\nlet bar = \"x\"; // gone\nd();\n";
+    assert_eq!(without_comments(text), "a(r\"//not a comment\");\nb(r#\"a \" and /* x */\"#);\nc(br\"\\\\\");\nlet bar = \"x\"; \nd();\n");
+}
+
+#[test]
+fn without_comments_reads_every_raw_string_shape() {
+    // Two hashes, with a lone `"#` inside the body: only `"##` ends it, so the `//` between them is text.
+    let two = "a(r##\"body \"# // not a comment\"##); // gone\n";
+    assert_eq!(without_comments(two), "a(r##\"body \"# // not a comment\"##); \n");
+    // Three hashes, and a `#` right after a zero-hash close: the trailing `#` is code, not a delimiter.
+    assert_eq!(without_comments("a(r###\"x\"###); // gone\n"), "a(r###\"x\"###); \n");
+    assert_eq!(without_comments("m!(r\"a\"#); // gone\n"), "m!(r\"a\"#); \n");
+    // Empty bodies of both shapes: the quote right after the opening delimiter does not end them early.
+    assert_eq!(without_comments("a(r\"\", r#\"\"#); // gone\n"), "a(r\"\", r#\"\"#); \n");
+    // A `#` inside the body of a zero-hash raw string.
+    assert_eq!(without_comments("a(r\"# /* x */\"); // gone\n"), "a(r\"# /* x */\"); \n");
+    // Multi-line: every line kept, nothing inside stripped, the comment after it still goes.
+    let lines = "a(r#\"one // two\n/* three */\nfour\"#); // gone\nb();\n";
+    assert_eq!(without_comments(lines), "a(r#\"one // two\n/* three */\nfour\"#); \nb();\n");
+    // The byte form with hashes, a brace inside, whole.
+    assert_eq!(without_comments("a(br#\"{\"k\": 1}\"#); // gone\n"), "a(br#\"{\"k\": 1}\"#); \n");
+}
+
+/// A raw string that never closes (a half-written file, a bad paste) must not panic and must not
+/// read past the end of the text: it is copied as it stands.
+#[test]
+fn without_comments_survives_an_unterminated_raw_string() {
+    assert_eq!(without_comments("a(r\""), "a(r\"");
+    assert_eq!(without_comments("a(r#\""), "a(r#\"");
+    assert_eq!(without_comments("a(r##\"x\"#"), "a(r##\"x\"#");
+    assert_eq!(without_comments("a(r\"x // y\n"), "a(r\"x // y\n");
+}
+
+#[test]
+fn raw_string_opens_only_on_a_real_opening_delimiter() {
+    let opens = |text: &str, i: usize| {
+        let chars: Vec<char> = text.chars().collect();
+        assert_eq!(chars[i], 'r', "{text}: index {i} is not the r");
+        raw_string_opens(&chars, i)
+    };
+    assert!(opens("r\"x\"", 0), "the first character of the file");
+    assert!(opens("(r\"x\")", 1));
+    assert!(opens("(r#\"x\"#)", 1));
+    assert!(opens("(r###\"x\"###)", 1));
+    assert!(opens("(br\"x\")", 2), "the byte form");
+    assert!(opens("(cr\"x\")", 2), "the C form (Rust 1.77, and this workspace is newer)");
+    assert!(opens("[cr#\"x\"#]", 2));
+    assert!(!opens("for r in v {}", 4), "a binding named r");
+    assert!(!opens("let r = \"x\";", 4));
+    assert!(!opens("foo(bar\"x\")", 6), "an identifier ending in r, quote right after");
+    assert!(!opens("foo_br\"x\"", 5), "br at the end of a name is not the byte form");
+    assert!(!opens("let r#type = 1;", 4), "a raw identifier");
+    assert!(!opens("fn f<'r>(x: &'r str) {}", 6), "a lifetime");
+    assert!(!opens("char::from('r')", 12), "a char literal");
+    assert!(!opens("r", 0), "an r at the very end of the file");
+    assert!(!opens("r#", 0), "hashes with no quote");
+}
+
+/// The composition's own pins. `production_code` is tested alone above; with the comments stripped
+/// first, a comment between the marker and its item, or one holding the `;` of a brace-less item,
+/// decides nothing. Read the other way round, each of these strips real production code.
+#[test]
+fn a_comment_between_the_cfg_test_marker_and_its_item_keeps_the_production_code() {
+    let doc = "#[cfg(test)]\n/// a { in the doc of the test mod\nmod tests {\n    fn t() {}\n}\nfn real() {}\n";
+    let code = production_code_without_comments(doc);
+    assert!(code.contains("fn real()") && !code.contains("fn t()"), "{code}");
+    let semi = "#[cfg(test)] /* a ; in a comment */ mod tests {\n    fn t() {}\n}\nfn real() {}\n";
+    let code = production_code_without_comments(semi);
+    assert!(code.contains("fn real()") && !code.contains("fn t()"), "the test item does not leak: {code}");
+    let brace_less = "#[cfg(test)]\n// a { in a comment\npub mod fake;\nfn real_code() {}\n";
+    let code = production_code_without_comments(brace_less);
+    assert!(code.contains("fn real_code()") && !code.contains("mod fake"), "a brace-less item ends at its `;`: {code}");
+}
+
+/// A raw string inside a test item is now parsed before the item is stripped (the comments go
+/// first), so its quotes must not reach the production code that follows it in the same file.
+#[test]
+fn a_raw_string_in_a_test_item_leaves_the_production_code_after_it_alone() {
+    let text = "#[cfg(test)]\nmod tests {\n    const T: &str = r#\"a \" quote\"#;\n}\n\
+                fn real() { self.x(); } // self.from_a_comment()\n";
+    let code = production_code_without_comments(text);
+    assert!(code.contains("self.x()"), "{code}");
+    assert!(!code.contains("from_a_comment"), "the comment after the test item's raw string still goes: {code}");
+}
+
+/// A brace inside a string of a test item is the string's, not the code's: the item ends at its own
+/// closing brace, and the production code after it stays. Two real files hold an unbalanced one —
+/// `compositor/sway.rs`'s test region counts 140 `{` against 139 `}`, and `compositor/mod.rs`'s is
+/// the same — so the old counting never closed their test module and read to the end of the file.
+/// Harmless there, because that module is each file's last item; it would have hidden anything
+/// written after it.
+#[test]
+fn a_brace_in_a_string_of_a_test_item_leaves_the_production_code_alone() {
+    for literal in ["r#\"{\"#", "\"{\"", "'{'", "\"}\"", "r##\"a \"# {\"##", "['\\'','{']"] {
+        let text = format!("#[cfg(test)]\nmod tests {{\n    let j = {literal};\n}}\nfn real() {{}}\n");
+        let code = production_code_without_comments(&text);
+        assert!(code.contains("fn real()"), "{literal}: the production code after the test item: {code}");
+        assert!(!code.contains("let j"), "{literal}: the test item goes: {code}");
+    }
+}
+
+/// The marker itself, written inside a string or a comment, is not the code's either: nothing is
+/// stripped for it. A comment that spells the test-configuration attribute out is the real case —
+/// one in `deadline.rs` hid the rest of that file from every word list until this was fixed.
+#[test]
+fn a_cfg_test_marker_inside_a_literal_or_a_comment_strips_nothing() {
+    let in_string = "const M: &str = \"#[cfg(test)]\";\nfn real() {}\n";
+    assert!(production_code(in_string).contains("fn real()"), "a marker inside a string literal");
+    let in_comment = "/// The attribute #[cfg(test)] would gate it.\nfn real() {}\n";
+    assert!(production_code(in_comment).contains("fn real()"), "a marker inside a comment");
+    let both = "#[cfg(test)]\nmod tests {\n    const M: &str = \"#[cfg(test)]\";\n}\nfn real() {}\n";
+    let code = production_code(both);
+    assert!(code.contains("fn real()") && !code.contains("const M"), "the real marker still strips its item: {code}");
+}
+
+/// A `{` inside a string does not open the block of a brace-less test item: the item ends at its own
+/// semicolon, and the real items after it stay.
+#[test]
+fn a_semicolon_inside_a_string_does_not_end_a_brace_less_test_item() {
+    let text = "#[cfg(test)]\nconst S: &str = \"a { b\";\nfn real() {}\n";
+    let code = production_code(text);
+    assert!(code.contains("fn real()"), "{code}");
+    assert!(!code.contains("const S"), "the brace-less test item goes: {code}");
+}
+
+#[test]
+fn production_code_without_comments_drops_the_tests_and_the_comments_and_keeps_the_calls() {
+    let text = "fn open() {\n    // self.from_a_comment() and a stray } brace\n    self.show();\n}\n\
+                #[cfg(test)]\nmod tests {\n    fn t() {\n        self.from_a_test();\n    }\n}\n";
+    let code = production_code_without_comments(text);
+    assert!(code.contains("self.show()"), "the code stays: {code}");
+    assert!(!code.contains("self.from_a_comment()"), "the comment goes: {code}");
+    assert!(!code.contains("self.from_a_test()"), "the test item goes: {code}");
+    // The comment's brace does not end `open`'s body either: the scans read the code's own braces.
+    assert_eq!(function_body(&code, "fn open("), "{\n    \n    self.show();\n}");
+}
+
 /// The brace-matched body of the first function in `text` whose signature
 /// starts with `signature` (e.g. `"fn new_capability("`): same brace-counting
 /// approach as `production_code`, reused here to pull out one function's own
-/// text instead of stripping every test item.
+/// text instead of stripping every test item. `text` must be comment-free
+/// (`production_code_without_comments`): a `fn ` or a brace in a comment would otherwise move both
+/// boundaries. `both_bodies` is the exception, and says why.
 fn function_body<'a>(text: &'a str, signature: &str) -> &'a str {
     let at = text.find(signature).unwrap_or_else(|| panic!("{signature} not found"));
     let open = text[at..].find('{').map(|o| at + o).expect("a function has a body");
@@ -1129,7 +1480,18 @@ fn function_body<'a>(text: &'a str, signature: &str) -> &'a str {
     panic!("{signature}: body never closes");
 }
 
-/// A `*_app.rs`'s row of `popup::POPUPS`: its `OPS` const, up to its closing `};`.
+/// One function's body in both views: the code's own (comments gone, so the braces that bound it
+/// are the code's) and the one `production_code` leaves, comments and all. A word list asserted on
+/// both is caught either way — by a token written in a comment, and by a comment's brace that would
+/// otherwise end the body early and hide the line that follows from the scan.
+fn both_bodies(text: &str, signature: &str) -> [String; 2] {
+    [
+        function_body(&production_code_without_comments(text), signature).to_string(),
+        function_body(&production_code(text), signature).to_string(),
+    ]
+}
+/// A `*_app.rs`'s row of `popup::POPUPS`: its `OPS` const, up to its closing `};`. Comment-free
+/// text too: a commented-out row would be found first.
 fn popup_ops_row(text: &str) -> &str {
     let at = text.find("pub(crate) const OPS: PopupOps = PopupOps {").expect("a popup row");
     let end = text[at..].find("\n};").expect("a row ends");
@@ -1163,6 +1525,20 @@ fn production_code_ends_a_brace_less_item_at_its_semicolon() {
     );
 }
 
+#[test]
+fn a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone() {
+    let text = "fn a() {}\n#[cfg(test)]\nmod tests {\n    // an unmatched { in a comment\n}\nfn b() {}\n";
+    let code = production_code_without_comments(text);
+    assert!(code.contains("fn a()") && code.contains("fn b()"), "both production items stay: {code}");
+    assert!(!code.contains("mod tests"), "the test item goes: {code}");
+    // And the same of `production_code` alone, the view the word lists are given: it reads the
+    // comments, but it no longer counts their braces, so the test item still ends where its own
+    // brace closes.
+    let with_comments = production_code(text);
+    assert!(with_comments.contains("fn a()") && with_comments.contains("fn b()"), "both production items stay: {with_comments}");
+    assert!(!with_comments.contains("mod tests"), "the test item goes: {with_comments}");
+}
+
 /// `Executor::run` blocks (up to 2 s): it must never be reachable from the
 /// daemon, whose event loop would freeze every bar. The only system
 /// executor is built inside `NonBlocking(…)`, which refuses `run`.
@@ -1170,7 +1546,8 @@ fn production_code_ends_a_brace_less_item_at_its_semicolon() {
 fn the_only_system_executor_is_wrapped_in_non_blocking() {
     let mut found = 0;
     for (p, t) in source_files() {
-        let prod = production_code(&t);
+        // Where the executor is built and what wraps it: read from the code alone.
+        let prod = production_code_without_comments(&t);
         for (i, _) in prod.match_indices("SystemExecutor::new(") {
             found += 1;
             assert!(prod[..i].ends_with("NonBlocking("), "SystemExecutor not wrapped in NonBlocking in {}", relative_path(&p));
@@ -1368,11 +1745,14 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         ]
     );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
+    // The counts are of calls, so they are read from the code alone; the forbidden names below keep
+    // the comments, as every word list does.
+    let code = production_code_without_comments(&file);
     let prod = production_code(&file);
-    assert_eq!(prod.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
-    assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `message`, from a `Method`");
-    assert_eq!(prod.matches(".send(").count(), 1, "the only other message sent: the refusal of a call to the bar");
-    assert_eq!(prod.matches(".error(").count(), 1, "that refusal is an error reply");
+    assert_eq!(code.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
+    assert_eq!(code.matches("Message::new_method_call(").count(), 1, "every call is built by `message`, from a `Method`");
+    assert_eq!(code.matches(".send(").count(), 1, "the only other message sent: the refusal of a call to the bar");
+    assert_eq!(code.matches(".error(").count(), 1, "that refusal is an error reply");
     for never in [
         "new_signal(",
         "method_return(",
@@ -1443,12 +1823,15 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
         ]
     );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
+    // The counts are of calls, so they are read from the code alone; the forbidden names below keep
+    // the comments, as every word list does.
+    let code = production_code_without_comments(&file);
     let prod = production_code(&file);
-    assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
-    assert_eq!(prod.matches(".send(").count(), 1, "every message leaves through `post`");
-    assert_eq!(prod.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
-    assert_eq!(prod.matches("method_return(").count(), 1, "in `answer`: the only reply it builds");
-    assert_eq!(prod.matches(".error(").count(), 1, "in `answer`: the only error it builds");
+    assert_eq!(code.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
+    assert_eq!(code.matches(".send(").count(), 1, "every message leaves through `post`");
+    assert_eq!(code.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
+    assert_eq!(code.matches("method_return(").count(), 1, "in `answer`: the only reply it builds");
+    assert_eq!(code.matches(".error(").count(), 1, "in `answer`: the only error it builds");
     for never in [
         "send_with_reply_and_block",
         "RequestName",
@@ -1491,7 +1874,7 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
 fn the_bluetooth_connection_serves_only_the_agent() {
     assert_eq!((AGENT_PATH, CAPABILITY), ("/org/alpheus/bluetooth/agent", "KeyboardDisplay"));
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
-    let prod = production_code(&file);
+    let prod = production_code_without_comments(&file);
     assert_eq!(prod.matches("method_return(").count(), 1);
     assert_eq!(prod.matches(".error(").count(), 1);
     let answer = function_body(&prod, "fn answer(");
@@ -2330,7 +2713,7 @@ fn the_theme_and_camera_watches_only_read() {
 #[test]
 fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
-    let prod = production_code(&text);
+    let prod = production_code_without_comments(&text);
     let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in startup.rs"));
     let last = at("state.theme_changed();");
     assert_eq!(prod.matches("state.theme_changed();").count(), 1);
@@ -2367,7 +2750,7 @@ fn the_clock_rechecks_a_timed_dnd() {
 fn every_dnd_change_goes_through_dnd_apply() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        let prod = without_comments(&production_code(&t));
+        let prod = production_code_without_comments(&t);
         assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
         // notify/mod.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
         if name == "notify/app.rs" || name == "notify/mod.rs" {
@@ -2376,7 +2759,7 @@ fn every_dnd_change_goes_through_dnd_apply() {
         assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
     }
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap();
-    let prod = without_comments(&production_code(&text));
+    let prod = production_code_without_comments(&text);
     let mut owner = String::new();
     let mut allowed = true;
     for line in prod.lines() {
@@ -2669,7 +3052,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         // The password field, then a failure with the profile nmcli made: `--ask`, then the cleanup.
         const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
         let mut q = opened.clone();
-        q.wifi.pick = alpheus_daemon::quick::wifi::Pick::Network(b"Bureau-Test".to_vec());
+        q.wifi.pick = quick::wifi::Pick::Network(b"Bureau-Test".to_vec());
         record(q.key(&live, Key::Enter, false, t));
         for ch in "fake-pass".chars() {
             record(q.key(&live, Key::Char(ch), false, t));
@@ -2685,7 +3068,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             d.state = 30;
         }
         record(q.set_wifi(Some(failing), t).action);
-        record(q.due(t + alpheus_daemon::quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
+        record(q.due(t + quick::wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
     // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
     // key on every pick (twice), every press of every cell with every button (twice).
@@ -2787,6 +3170,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "fake-mixer",
     ];
     for c in &calls {
+        // one row per allowed command.
+        #[allow(clippy::match_same_arms)]
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
@@ -2876,7 +3261,9 @@ fn the_quick_panel_has_no_panicking_path() {
 #[test]
 fn the_bluetooth_connection_goes_with_the_panel() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (quick_app, bt_app) = (src("quick/app.rs"), src("quick/bt_app.rs"));
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("BtScope::Closed") && closed.contains("self.bt_close()"), "{closed}");
@@ -2946,13 +3333,15 @@ fn only_bt_app_and_bt_act_name_btact() {
 
 /// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
 /// the glue formats nothing with Debug but an `io::ErrorKind` (an `ActCall`, an `AgentRequest` or a
-/// `BtEvent` carries an object path).
+/// `BtEvent` carries an object path). The code alone, so a commented example of a line that would
+/// leak is not read as one.
 #[test]
 fn the_bluetooth_logs_name_no_device() {
     let files = source_files();
     let mut lines = 0;
     for name in ["quick/bt.rs", "quick/bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
-        let prod = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        let prod =
+            production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
         for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
             lines += 1;
             for word in ["path", "device", "label", "alias", "name", "address"] {
@@ -2963,7 +3352,8 @@ fn the_bluetooth_logs_name_no_device() {
         }
     }
     assert!(lines >= 3, "the log lines were not found: the check is hollow");
-    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt_app.rs").expect("quick/bt_app.rs").1);
+    let bt_app =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/bt_app.rs").expect("quick/bt_app.rs").1);
     for line in bt_app.lines().filter(|l| l.contains(":?") || l.contains(":#?")) {
         assert!(line.contains(".kind()"), "bt_app.rs: Debug of anything but an io::ErrorKind: {line}");
     }
@@ -2975,15 +3365,17 @@ fn the_bluetooth_logs_name_no_device() {
 #[test]
 fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let quick_app = src("quick/app.rs");
+    let raw = |name: &str| &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    // The order of the calls is read from the code alone; the leak forms below are a word list, so
+    // they keep the comments and the form appears in neither.
+    let quick_app = production_code_without_comments(raw("quick/app.rs"));
     let body = function_body(&quick_app, "fn quick_spawn_secret(");
     let (input, sent) = (body.find("spawn_with_input("), body.find("password_sent()"));
     assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
     assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
     assert!(!body.contains(".spawn("), "never an argument: {body}");
     for name in ["quick/mod.rs", "quick/wifi.rs", "quick/secret.rs", "quick/app.rs", "quick/draw.rs", "popup.rs"] {
-        let prod = src(name);
+        let prod = production_code(raw(name));
         for leak in
             ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
         {
@@ -3000,7 +3392,7 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
             }
         }
     }
-    let secret = src("quick/secret.rs");
+    let secret = production_code_without_comments(raw("quick/secret.rs"));
     assert_eq!(secret.matches("unsafe").count(), 1, "one unsafe block: the volatile write");
     assert!(secret.contains("write_volatile") && secret.contains("compiler_fence"));
     assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
@@ -3027,7 +3419,9 @@ fn the_panel_readers_have_no_panicking_path() {
 #[test]
 fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick/app.rs"), src("notify/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     // A slider level still waiting for its window is sent before the panel's body goes:
@@ -3178,7 +3572,9 @@ fn the_power_menu_has_no_panicking_path() {
 /// `timer_do`, `timer_check_clock` and `timer_load` only.
 #[test]
 fn the_timer_is_wired_through_one_path() {
-    let src = |f: &str| without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap());
+    let src = |f: &str| {
+        production_code_without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap())
+    };
     let app = src("timer/app.rs");
     let tick = function_body(&app, "fn timer_tick(");
     let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
@@ -3195,7 +3591,7 @@ fn the_timer_is_wired_through_one_path() {
     // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
     for (path, text) in source_files() {
         let name = relative_path(&path);
-        let prod = without_comments(&production_code(&text));
+        let prod = production_code_without_comments(&text);
         let mut owner = String::new();
         for line in prod.lines() {
             if let Some(i) = line.find("fn ") {
@@ -3288,10 +3684,10 @@ fn panicking_index(line: &str) -> Option<String> {
                 open.push(i);
             }
             b']' => {
-                if let Some(start) = open.pop() {
-                    if line.get(start..i).is_some_and(|inner| inner.contains("..")) {
-                        return Some(format!("range inside brackets in `{}`", line.trim()));
-                    }
+                if let Some(start) = open.pop()
+                    && line.get(start..i).is_some_and(|inner| inner.contains(".."))
+                {
+                    return Some(format!("range inside brackets in `{}`", line.trim()));
                 }
             }
             _ => {}
@@ -3321,8 +3717,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3330,7 +3725,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
         // The `String` methods that panic off a scalar boundary (M2). One exemption: `Pad::splice`'s
         // `replace_range`, after it checked both ends with `is_char_boundary`.
         for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
-            let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(&production) } else { 0 };
+            let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(t) } else { 0 };
             assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
         }
     }
@@ -3350,8 +3745,7 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3387,10 +3781,12 @@ fn the_parallel_branches_are_named_only_in_tools_join() {
 #[test]
 fn the_join_hooks_are_filled_in() {
     let files = source_files();
-    let join = &files.iter().find(|(p, _)| relative_path(p) == "launcher/tools/join.rs").expect("launcher/tools/join.rs").1;
-    let available = function_body(join, "pub fn shield_available");
+    let join = production_code_without_comments(
+        &files.iter().find(|(p, _)| relative_path(p) == "launcher/tools/join.rs").expect("launcher/tools/join.rs").1,
+    );
+    let available = function_body(&join, "pub fn shield_available");
     assert!(available.contains("shield.is_some()") && available.contains("quick_enabled()"), "shield_available: {available}");
-    assert!(function_body(join, "pub fn open_shield").contains("shield_open_detail()"), "open_shield goes through the Shield feature");
+    assert!(function_body(&join, "pub fn open_shield").contains("shield_open_detail()"), "open_shield goes through the Shield feature");
     assert!(join.contains("pub const DIAGNOSTICS_TAB: Option<&str> = Some(\"diagnostics\");"), "DIAGNOSTICS_TAB");
     let tab = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../alpheus/src/app/tab.rs")).expect("the TUI's tab.rs");
     assert!(tab.contains("slug: \"diagnostics\""), "the control center has no tab with the slug alpheus-launch passes");
@@ -3410,8 +3806,7 @@ fn clipboard_no_panic_no_log_files_have_no_panicking_path_and_log_nothing() {
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -3479,13 +3874,14 @@ fn clipboard_app_never_panics_and_logs_fixed_words() {
     for p in [".expect(", ".unwrap()", "panic!("] {
         assert!(!production.contains(p), "{p} in {name}'s production code");
     }
-    for line in production.lines() {
-        let code = line.split("//").next().unwrap_or("");
+    for code in production_code_without_comments(t).lines() {
         if let Some(why) = panicking_index(code) {
             panic!("{why} in {name}'s production code");
         }
     }
-    let code: String = production.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    // The log scan reads the code alone: a commented example of a line that would leak is not read
+    // as a log call, and a trailing comment is no longer part of the call.
+    let code = production_code_without_comments(t);
     assert_eq!(clipboard_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
 }
 
@@ -3498,9 +3894,7 @@ fn nothing_under_clipboard_prints() {
             continue;
         }
         seen += 1;
-        let production = production_code(&t);
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(&t).lines() {
             if let Some(m) = clipboard_print_macro(code) {
                 panic!("{m} in {name}'s production code");
             }
@@ -3553,9 +3947,11 @@ fn the_clipboard_sensitive_hint_type_is_never_received() {
 }
 
 /// 1 when `text.rs`'s only `replace_range` is the one in `fn splice`, after both ends are checked
-/// with `is_char_boundary`; else 0 (so the count check fails).
-fn checked_replace_range(production: &str) -> usize {
-    let splice = function_body(production, "fn splice(");
+/// with `is_char_boundary`; else 0 (so the count check fails). The body is read from the code alone,
+/// so a comment naming either check cannot grant the exemption.
+fn checked_replace_range(text: &str) -> usize {
+    let code = production_code_without_comments(text);
+    let splice = function_body(&code, "fn splice(");
     let call = splice.find(".replace_range(");
     let checks = splice.find("is_char_boundary(range.start)").zip(splice.find("is_char_boundary(range.end)"));
     match (call, checks) {
@@ -3609,7 +4005,9 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
 #[test]
 fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (popup, power_app) = (src("popup.rs"), src("power/app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("(p.ops().closed)(self)"), "popup_close must let a module popup's hooks run: {close}");
@@ -3642,7 +4040,7 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
 fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
     let files = source_files();
     let src = |name: &str| {
-        without_comments(&production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1))
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
     };
     let app = src("timer/app.rs");
     let row = popup_ops_row(&app);
@@ -3658,7 +4056,7 @@ fn the_timer_popup_closing_drops_its_tick_and_sees_the_end() {
 #[test]
 fn the_keyboards_own_repeat_is_told_from_a_press() {
     let files = source_files();
-    let popup = production_code(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
+    let popup = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
     for f in ["pub(crate) fn keyboard_acquire(", "fn repeat_key("] {
         let body = function_body(&popup, f);
         let (raised, lowered) = (body.find("keyboard.repeat = true"), body.find("keyboard.repeat = false"));
@@ -3668,15 +4066,18 @@ fn the_keyboards_own_repeat_is_told_from_a_press() {
 }
 
 /// Privacy spec § 8: no panic in the privacy module's production code, nor in the sound model's
-/// privacy functions.
+/// privacy functions. The bodies pulled out of `pipewire/graph.rs` are scanned in both views, so a
+/// panicking call hides from this neither behind a comment that names it nor behind a comment's
+/// brace that would end a body early.
 #[test]
 fn the_privacy_module_has_no_panicking_path() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let pipewire = src("pipewire/graph.rs");
-    let mut texts = vec![src("privacy/mod.rs"), src("privacy/app.rs")];
+    let raw = |name: &str| &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let mut texts = vec![production_code(raw("privacy/mod.rs")), production_code(raw("privacy/app.rs"))];
+    // The graph's privacy functions only: each body in both views, so neither a token in a comment
+    // nor a comment's brace ending a body early can hide a line from the scan.
     for f in ["fn flag(", "fn graph_node(", "pub fn apply_privacy(", "fn track(", "fn bound(", "fn bound_line(", "fn held("] {
-        texts.push(function_body(&pipewire, f).to_string());
+        texts.extend(both_bodies(raw("pipewire/graph.rs"), f));
     }
     for (i, text) in texts.iter().enumerate() {
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -3691,7 +4092,8 @@ fn the_privacy_module_has_no_panicking_path() {
 #[test]
 fn privacy_changed_follows_sharing_for_dnd() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy/app.rs").expect("privacy/app.rs").1);
+    let app =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "privacy/app.rs").expect("privacy/app.rs").1);
     let changed = function_body(&app, "pub(crate) fn privacy_changed(");
     let (sync, follow) = (changed.find("self.privacy_timer_sync()"), changed.find("self.dnd_sharing_follow()"));
     assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
@@ -3703,7 +4105,9 @@ fn privacy_changed_follows_sharing_for_dnd() {
 #[test]
 fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let (app, popup) = (src("privacy/app.rs"), src("popup.rs"));
     let tick = function_body(&app, "pub(crate) fn privacy_tick(");
     let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
@@ -3742,7 +4146,9 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
 #[test]
 fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let app = src("resources/app.rs");
     let tick = function_body(&app, "pub(crate) fn resources_tick(");
     let (applied, shown, painted) = (tick.find("on_message("), tick.find("self.resources_shown()"), tick.find("self.resources_refresh()"));
@@ -3762,6 +4168,19 @@ fn camera_sources() -> Vec<(&'static str, String)> {
     ["privacy/camera.rs", "privacy/camera_app.rs"]
         .into_iter()
         .map(|name| (name, production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)))
+        .collect()
+}
+
+/// The same two files read from the code alone, for the scans that read what calls what: no comment
+/// can satisfy one of those checks, nor move a body's boundaries.
+fn camera_code() -> Vec<(&'static str, String)> {
+    let files = source_files();
+    ["privacy/camera.rs", "privacy/camera_app.rs"]
+        .into_iter()
+        .map(|name| {
+            let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+            (name, production_code_without_comments(t))
+        })
         .collect()
 }
 
@@ -3797,7 +4216,7 @@ fn the_camera_watch_opens_nothing_under_dev() {
 /// changes nothing still syncs the off-delay's timer (a pending off arms it).
 #[test]
 fn the_camera_tick_fires_before_scanning() {
-    let sources = camera_sources();
+    let sources = camera_code();
     let app = &sources[1].1;
     let tick = function_body(app, "pub(crate) fn camera_tick(");
     let (fired, scan) = (tick.find(".fired()"), tick.find("camera_scan"));
@@ -3806,16 +4225,17 @@ fn the_camera_tick_fires_before_scanning() {
 
 #[test]
 fn the_camera_scan_syncs_the_off_delay() {
-    let sources = camera_sources();
+    let sources = camera_code();
     let scan = function_body(&sources[1].1, "fn camera_scan(");
     assert!(scan.contains("privacy_timer_sync()"), "an unchanged scan must still sync the off-delay: {scan}");
 }
 
-/// Privacy delivery 2: a log line never names a process or a pid.
+/// A log line of the camera watch never names a process or a pid. The code alone, so a commented
+/// example of a line that would leak is not read as one.
 #[test]
 fn the_camera_logs_name_no_process() {
     let mut logs = 0;
-    for (name, production) in camera_sources() {
+    for (name, production) in camera_code() {
         for line in production.lines().filter(|l| l.contains("log(")) {
             logs += 1;
             assert!(!line.contains("process::id"), "{name}: a log line carries a pid: {line}");
@@ -3846,13 +4266,16 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
 #[test]
 fn on_bar_message_feeds_the_battery_alerts() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let startup = src("startup.rs");
+    let raw = |name: &str| &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    // The order is read from the code alone; the no-panic scan below reads both views, as every word
+    // list does.
+    let startup = production_code_without_comments(raw("startup.rs"));
     let body = function_body(&startup, "pub(crate) fn on_bar_message(");
     let (fed, kept) = (body.find("self.battery_feed(&m)"), body.find("on_message("));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "battery_feed, then on_message: {body}");
-    let feed = function_body(&src("notify/app.rs"), "pub(crate) fn battery_feed(").to_string();
-    for text in [src("notify/battery_alert.rs"), feed] {
+    let mut texts = vec![production_code(raw("notify/battery_alert.rs"))];
+    texts.extend(both_bodies(raw("notify/app.rs"), "pub(crate) fn battery_feed("));
+    for text in texts {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!text.contains(p), "{p} in the battery alerts");
         }
@@ -3864,7 +4287,7 @@ fn on_bar_message_feeds_the_battery_alerts() {
 #[test]
 fn a_new_server_gets_the_last_battery_reading() {
     let files = source_files();
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify/app.rs").expect("notify/app.rs").1);
+    let app = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "notify/app.rs").expect("notify/app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }
@@ -3892,7 +4315,7 @@ fn spawn_with_env_only_runs_hooks() {
 #[test]
 fn hooks_read_a_message_before_the_privacy_feed() {
     let files = source_files();
-    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let t = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
     let body = function_body(&t, "pub(crate) fn on_bar_message(");
     let hooks = body.find("self.hooks_msg(&m)").expect("hooks_msg");
     let privacy = body.find("self.privacy_feed(&m)").expect("privacy_feed");
@@ -3941,12 +4364,13 @@ fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
 }
 
 /// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
-/// Whole statements, so a `format!` split over several lines is read as one.
+/// Whole statements, so a `format!` split over several lines is read as one, and the code alone, so
+/// a commented example of a line that would leak is not read as one.
 #[test]
 fn hook_logs_carry_fixed_words_only() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks/app.rs").expect("hooks/app.rs").1;
-    let production = production_code(t);
+    let production = production_code_without_comments(t);
     let statements = log_statements(&production);
     assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
     for s in statements {
@@ -3965,8 +4389,8 @@ fn hook_logs_carry_fixed_words_only() {
 #[test]
 fn hooks_start_after_the_launcher_socket_watch() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
-    let body = function_body(t, "pub fn run(");
+    let t = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let body = function_body(&t, "pub fn run(");
     let watch = body.find("watch_launcher_socket(").expect("the socket watch in run");
     let started = body.find("hooks_started(").expect("hooks_started in run");
     assert!(watch < started, "hooks_started() must come after the launcher socket watch");
@@ -3977,7 +4401,9 @@ fn hooks_start_after_the_launcher_socket_watch() {
 #[test]
 fn the_hooks_are_fed_where_state_changes() {
     let files = source_files();
-    let text = |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone();
+    let text = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     for (file, signature, call) in [
         ("startup.rs", "fn on_bar_message(", "hooks_msg("),
         ("notify/app.rs", "fn dnd_apply(", "hooks_dnd("),
@@ -3989,7 +4415,7 @@ fn the_hooks_are_fed_where_state_changes() {
         let t = text(file);
         assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
     }
-    let app = production_code(&text("hooks/app.rs"));
+    let app = text("hooks/app.rs");
     let mut checked = 0;
     for (at, _) in app.match_indices("pub(crate) fn hooks_") {
         let body = function_body(&app[at..], "pub(crate) fn hooks_");
@@ -4007,7 +4433,7 @@ fn the_hooks_are_fed_where_state_changes() {
 fn the_notes_timer_and_pipe_live_only_while_open() {
     let files = source_files();
     let app = &files.iter().find(|(p, _)| relative_path(p) == "notes/app.rs").expect("notes/app.rs").1;
-    let prod = production_code(app);
+    let prod = production_code_without_comments(app);
     let close = function_body(&prod, "pub(crate) fn notes_close(");
     let take = close.find("self.notes.open.take()").expect("notes_close takes the pad out");
     for later in ["notes_timer_sync()", "keyboard_release()"] {
@@ -4051,13 +4477,14 @@ fn log_calls_take_the_whole_statement() {
 }
 
 /// Quick notes: the pad's glue never logs the note: no `log(` line names its text, its selection
-/// or its buffer.
+/// or its buffer. The code alone, so a commented example of a line that would leak is not read as
+/// one.
 #[test]
 fn the_notes_glue_never_logs_the_text() {
     let files = source_files();
     for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let prod = production_code(t);
+        let prod = production_code_without_comments(t);
         for call in log_calls(&prod) {
             // A close reason's log word (`CloseReason::text`) is the one `text` allowed.
             let call = call.replace("reason.text()", "reason");
@@ -4079,10 +4506,13 @@ fn the_notes_spawn_only_the_copy_command() {
             continue;
         }
         seen += 1;
-        let prod = production_code(&t);
+        // The forbidden calls are a word list: the comments stay, so the token appears in neither.
+        let with_comments = production_code(&t);
         for never in [".spawn(", ".capture(", ".stream(", ".run(", ".run_silent("] {
-            assert!(!prod.contains(never), "{never} in {name}");
+            assert!(!with_comments.contains(never), "{never} in {name}");
         }
+        // The count and the body are read from the code alone.
+        let prod = production_code_without_comments(&t);
         let n = prod.matches("spawn_with_input(").count();
         if name == "notes/app.rs" {
             assert_eq!(n, 1, "one spawn_with_input in notes/app.rs");
@@ -4106,8 +4536,7 @@ fn the_notes_glue_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -4121,7 +4550,7 @@ fn the_notes_glue_has_no_panicking_path() {
 #[test]
 fn a_bar_press_swallows_only_a_launcher_it_closed() {
     let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs");
-    let prod = production_code(&text);
+    let prod = production_code_without_comments(&text);
     let body = function_body(&prod, "fn pointer_frame(");
     assert!(body.contains("self.click(qh, i, ev.position.0, b, launcher_was_open)"), "click gets the launcher's own state: {body}");
     assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
@@ -4134,6 +4563,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let mut seen = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
+        // Word lists over every file: the comments stay, so none of these names appears in one either.
         let prod = production_code(&t);
         if name.starts_with("notes/") {
             seen += 1;
@@ -4153,7 +4583,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     assert!(seen >= 9, "the notes files were found: {seen}");
     let files = source_files();
     let surface = &files.iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs").1;
-    let prod = production_code(surface);
+    let prod = production_code_without_comments(surface);
     let drop = function_body(&prod, "fn drop(&mut self)");
     assert!(drop.contains("stop_paste()"), "OpenNotes's Drop removes the paste source: {drop}");
     assert!(
@@ -4163,7 +4593,7 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let stop = function_body(&prod, "fn stop_paste(");
     assert!(stop.contains("paste.take()") && stop.contains(".remove("), "stop_paste takes the token and removes the source: {stop}");
     let paste = &files.iter().find(|(p, _)| relative_path(p) == "notes/paste.rs").expect("notes/paste.rs").1;
-    let paste = production_code(paste);
+    let paste = production_code_without_comments(paste);
     assert_eq!(paste.matches("insert_source(").count(), 1, "one source, the pipe");
     let notes_paste = function_body(&paste, "fn notes_paste(");
     let (ro, rx) = (notes_paste.find("read_only"), notes_paste.find(".receive("));
@@ -4178,16 +4608,18 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
     let files = source_files();
     for (p, t) in &files {
         let name = relative_path(p);
-        let prod = production_code(t);
-        assert!(!prod.contains("set_primary_selection"), "the primary selection is never set: {name}");
+        // Word lists over every file: the comments stay, so neither name appears in one either.
+        let with_comments = production_code(t);
+        assert!(!with_comments.contains("set_primary_selection"), "the primary selection is never set: {name}");
         if name != "clipboard/control.rs" {
-            assert!(!prod.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
+            assert!(!with_comments.contains("set_selection("), "set_selection outside clipboard/control.rs: {name}");
         }
     }
     let control = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/control.rs").expect("control.rs").1;
-    let prod = production_code(control);
+    assert!(!production_code(control).contains("set_selection(None"), "the selection is never cleared");
+    // The counts and the body are read from the code alone.
+    let prod = production_code_without_comments(control);
     assert_eq!(prod.matches("set_selection(").count(), 2, "one call per protocol, in the macro-free own_selection: {prod}");
-    assert!(!prod.contains("set_selection(None"), "the selection is never cleared");
     let body = function_body(&prod, "fn own_selection(");
     assert_eq!(body.matches("set_selection(").count(), 2, "both calls sit inside own_selection: {body}");
     assert_eq!(body.matches("own_offer_types()").count(), 2, "each source offers the one list, marker included: {body}");
@@ -4200,7 +4632,7 @@ fn the_clipboard_selection_is_set_only_by_the_own_source() {
 fn the_clipboard_offer_is_wrapped_in_destroy_on_drop() {
     let files = source_files();
     let app = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("clipboard/app.rs").1;
-    let prod = production_code(app);
+    let prod = production_code_without_comments(app);
     let body = function_body(&prod, "fn clipboard_selection_inner(");
     let take = body.find("slot.take()").expect("the offer is taken out of its slot");
     let guard = body.find("DestroyOnDrop::new(offer)").expect("the offer is wrapped in DestroyOnDrop");
@@ -4223,7 +4655,9 @@ fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
         if name == THIS_FILE {
             continue;
         }
-        let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        // The comments go, so a name written in one (this file's own doc comments, a note in a test)
+        // is not a call; a raw string keeps its text, so a fixture naming the program still counts.
+        let mut code = without_comments(text);
         if name == HARNESS {
             for helper in ["pub fn wl_copy(", "pub fn wl_paste("] {
                 let body = function_body(&code, helper).to_string();
@@ -4268,6 +4702,16 @@ fn stray_clipboard_spawns_are_found() {
             "alpheus/tests/guardrails.rs names wl-paste"
         ]
     );
+}
+
+/// What the helper changed: a trailing comment is no longer read as a call (the old per-line filter
+/// kept it), and a line inside a raw string is no longer read as a comment (the old filter deleted
+/// it out of a fixture).
+#[test]
+fn stray_clipboard_spawns_reads_the_code_not_the_comments() {
+    let one = |text: &str| stray_clipboard_spawns(&[("a.rs".to_string(), text.to_string())]);
+    assert!(one("fn t() {} // wl-copy serves it\n").is_empty(), "a trailing comment is not a spawn");
+    assert_eq!(one("fn t() { let s = r#\"\n// wl-paste --no-newline\n\"#; }\n"), ["a.rs names wl-paste"]);
 }
 
 /// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which checks
@@ -4326,44 +4770,53 @@ fn no_test_spawns_wl_copy_outside_the_harness_helper() {
 #[test]
 fn the_panic_hook_is_installed_before_anything_else() {
     let files = source_files();
-    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
-    let run = function_body(startup, "pub fn run() -> i32 {");
-    let first_call = run.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("//") && l != &"{");
+    let startup = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let run = function_body(&startup, "pub fn run() -> i32 {");
+    // A comment line is blank in this view, so the first line with anything on it is the first call.
+    let first_call = run.lines().map(str::trim).find(|l| !l.is_empty() && l != &"{");
     assert_eq!(first_call, Some("crate::log::install_panic_hook();"), "{run}");
     let log = &files.iter().find(|(p, _)| relative_path(p) == "log.rs").expect("log.rs").1;
-    let hook = function_body(log, "pub fn install_panic_hook(");
-    for leak in ["payload", "info.to_string", "{info}", "{info:", "message()"] {
-        assert!(!hook.contains(leak), "the hook must never print the panic's message ({leak}): {hook}");
+    for hook in both_bodies(log, "pub fn install_panic_hook(") {
+        for leak in ["payload", "info.to_string", "{info}", "{info:", "message()"] {
+            assert!(!hook.contains(leak), "the hook must never print the panic's message ({leak}): {hook}");
+        }
     }
 }
 
 /// The launcher's guard logs the place only (as the pad's): a panic message can quote the query, a
-/// menu line or a password, which are never logged.
+/// menu line or a password, which are never logged. The guard's body is read in both views, and the
+/// whole-file lists keep their comments, so a leak form appears in neither.
 #[test]
 fn the_launcher_guard_never_logs_a_panic_payload() {
+    const LEAKS: [&str; 4] = ["panic_text", "downcast", "Err(p)", "Err(payload)"];
     let files = source_files();
     let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
-    let prod = production_code(host);
-    let guard = function_body(&prod, "fn guarded_with<R>(");
-    assert!(guard.contains("Err(_) =>"), "the payload is not even bound: {guard}");
-    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)"] {
-        assert!(!guard.contains(leak), "the launcher's guard must never read the panic's message ({leak}): {guard}");
+    assert!(
+        function_body(&production_code_without_comments(host), "fn guarded_with<R>(").contains("Err(_) =>"),
+        "the payload is not even bound"
+    );
+    for guard in both_bodies(host, "fn guarded_with<R>(") {
+        for leak in LEAKS {
+            assert!(!guard.contains(leak), "the launcher's guard must never read the panic's message ({leak}): {guard}");
+        }
     }
-    assert!(!prod.contains("panic_text"), "launcher/host.rs formats no panic payload");
+    assert!(!production_code(host).contains("panic_text"), "launcher/host.rs formats no panic payload");
     // The scan threads read .desktop files and source lines: a payload there can quote them.
-    let scan = &files.iter().find(|(p, _)| relative_path(p) == "launcher/scan.rs").expect("launcher/scan.rs").1;
-    let scan = production_code(scan);
-    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)", "|p|"] {
+    let scan = production_code(&files.iter().find(|(p, _)| relative_path(p) == "launcher/scan.rs").expect("launcher/scan.rs").1);
+    for leak in LEAKS.iter().chain(["|p|"].iter()) {
         assert!(!scan.contains(leak), "launcher/scan.rs must never read a panic's message ({leak})");
     }
 }
 
 /// Quick VPN spec § 2: a log line never names a profile (its name, label, uuid or object path): the
-/// VPN's own files, and the VPN lines of the glue.
+/// VPN's own files, and the VPN lines of the glue. The code alone, so a commented example of a line
+/// that would leak is not read as one.
 #[test]
 fn the_vpn_logs_name_no_profile() {
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let mut statements = 0;
     for name in ["quick/vpn.rs", "sources/dbus/vpn.rs", "quick/app.rs"] {
         let prod = src(name);
@@ -4405,7 +4858,8 @@ fn vpn_log_statements(text: &str) -> Vec<&str> {
 #[test]
 fn the_vpn_tap_follows_the_panel() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
+    let quick_app =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains("VpnScope::Closed"), "{closed}");
     for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
@@ -4440,7 +4894,7 @@ fn data_control_only_in_control_rs() {
 fn the_manager_is_bound_only_when_enabled() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
-    let prod = production_code(wayland);
+    let prod = production_code_without_comments(wayland);
     let at = prod.find("let clipboard =").expect("the clipboard binding in App::new");
     let stmt = &prod[at..at + prod[at..].find(';').expect("end of the statement")];
     let (gate, bind) = (stmt.find("clipboard.enabled"), stmt.find("ClipboardApp::bind("));
@@ -4453,7 +4907,7 @@ fn every_clipboard_read_start_and_end_syncs_the_timer() {
     let files = source_files();
     let body = |file: &str, sig: &str| {
         let t = &files.iter().find(|(p, _)| relative_path(p) == file).unwrap_or_else(|| panic!("{file}")).1;
-        function_body(&production_code(t), sig).to_string()
+        function_body(&production_code_without_comments(t), sig).to_string()
     };
     for (file, sig) in [
         ("clipboard/control.rs", "fn start_read("),
@@ -4520,7 +4974,7 @@ fn clipboard_logs_only_fixed_words() {
 fn a_cleared_selection_does_not_drop_a_read() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
-    let prod = production_code(t);
+    let prod = production_code_without_comments(t);
     let body = function_body(&prod, "fn clipboard_selection_inner(");
     let (take, stop) = (body.find("let Some(offer) = slot.take() else { return }"), body.find("clipboard_stop_read()"));
     assert!(take.is_some() && take < stop, "returns on None before any read is stopped: {body}");
@@ -4531,7 +4985,7 @@ fn a_cleared_selection_does_not_drop_a_read() {
 fn the_clipboard_shutdown_wipes_pins_too() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
-    let prod = production_code(t);
+    let prod = production_code_without_comments(t);
     let body = function_body(&prod, "fn clipboard_shutdown(");
     assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }
@@ -4713,15 +5167,22 @@ fn the_tools_logs_are_fixed_words() {
     let mut seen = 0;
     for name in ["launcher/tools/read.rs", "launcher/tools/app.rs", "launcher/tools/join.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-        let code: String = production_code(t).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        // The code alone: a commented example of a line that would leak is not read as a log call,
+        // and a trailing comment is no longer part of the call the helper reads.
+        let code = production_code_without_comments(t);
         assert_eq!(tools_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
         seen += code.matches("log(").count() + code.matches("note(").count();
     }
     let run = &files.iter().find(|(p, _)| relative_path(p) == "launcher/run.rs").expect("run.rs").1;
-    let run_production = production_code(run);
-    let perform_tool = function_body(&run_production, "fn perform_tool");
-    assert_eq!(tools_unfixed_log(perform_tool), None, "a log call in perform_tool names more than fixed words");
-    assert!(seen >= 8 && perform_tool.contains("log("), "the log calls were found: {seen}");
+    // `perform_tool`'s body in the code view: a comment can neither end it early nor pass for a log
+    // call.
+    let mut found = false;
+    {
+        let perform_tool = function_body(&production_code_without_comments(run), "fn perform_tool").to_string();
+        assert_eq!(tools_unfixed_log(&perform_tool), None, "a log call in perform_tool names more than fixed words");
+        found |= perform_tool.contains("log(");
+    }
+    assert!(seen >= 8 && found, "the log calls were found: {seen}");
 }
 
 #[test]
@@ -4742,7 +5203,9 @@ fn the_tools_log_guardrail_helper_bites() {
 #[test]
 fn the_tools_timer_is_disarmed_by_close_and_by_a_panic() {
     let files = source_files();
-    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let text = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let surface = text("launcher/surface.rs");
     assert!(function_body(&surface, "pub fn launcher_close(").contains("tools_timer_sync()"), "launcher_close");
     assert!(function_body(&surface, "fn launcher_outcome(").contains("tools_timer_sync()"), "launcher_outcome");
@@ -4790,7 +5253,7 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
     let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
     let mut spawned = 0;
-    for b in BUILTINS.iter() {
+    for b in &BUILTINS {
         let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
         let expected: Option<Vec<String>> = match b.action {
             BuiltinAction::Lock => Some(quick.lock.clone()),
@@ -4815,7 +5278,9 @@ fn every_builtin_argv_stays_on_the_allowlist() {
 #[test]
 fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
     let files = source_files();
-    let text = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let text = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     let host = text("launcher/host.rs");
     let apps = function_body(&host, "pub(crate) fn launcher_open_apps(");
     for word in ["tools_builtin_states", "tools_adopt_builtin_states", "tools_known_states"] {
@@ -4844,7 +5309,7 @@ fn the_tools_reads_belong_to_the_tools_mode_and_stop_with_the_box() {
 
 /// The string literals of `call` (escapes skipped) and what is left of it once they are removed.
 fn literals_and_rest(call: &str) -> (Vec<String>, String) {
-    let (mut lits, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
+    let (mut quoted, mut rest, mut cur, mut inside, mut escaped) = (Vec::new(), String::new(), String::new(), false, false);
     for c in call.chars() {
         if inside {
             if escaped {
@@ -4855,7 +5320,7 @@ fn literals_and_rest(call: &str) -> (Vec<String>, String) {
                 escaped = true;
             } else if c == '"' {
                 inside = false;
-                lits.push(std::mem::take(&mut cur));
+                quoted.push(std::mem::take(&mut cur));
                 rest.push('"');
             } else {
                 cur.push(c);
@@ -4867,7 +5332,7 @@ fn literals_and_rest(call: &str) -> (Vec<String>, String) {
             rest.push(c);
         }
     }
-    (lits, rest)
+    (quoted, rest)
 }
 
 /// Shield spec § 11: a log line is one of the closed list's fixed words. No device name, id, `vid:pid`,
@@ -4899,7 +5364,11 @@ fn the_shield_logs_name_nothing() {
     ];
     const FORBIDDEN: [&str; 8] = ["name", "vid_pid", "id", "argv", "flag", "path", "config", "device"];
     let files = source_files();
-    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    // The code alone, as in every other log guardrail of the repository: a commented example of a
+    // line that would leak is not read as a log call.
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
     // Every log call of the Shield's own files, and the Shield's lines of the others.
     let mut calls: Vec<(String, String)> = Vec::new();
     for name in ["shield/app.rs", "shield/mod.rs", "shield/run.rs", "shield/usb.rs", "quick/shield.rs"] {
@@ -4912,7 +5381,9 @@ fn the_shield_logs_name_nothing() {
             log_calls(&src(name)).into_iter().filter(|c| c.to_lowercase().contains("shield")).map(|c| (name.to_string(), c.to_string())),
         );
     }
-    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same way.
+    // The watch's one line built apart (`shield_unwatched_line`): its `format!` is read the same
+    // way, from its body in the code view, so a comment can neither end it early nor pass for a log
+    // call.
     let watch = src("watch.rs");
     calls.push(("watch.rs".into(), function_body(&watch, "fn shield_unwatched_line(").to_string()));
     // The theme watch's own line for the flag's rearm.
@@ -4922,8 +5393,8 @@ fn the_shield_logs_name_nothing() {
     calls.dedup();
     assert!(calls.len() >= 10, "the Shield's log calls were found: {}", calls.len());
     for (name, call) in &calls {
-        let (lits, rest) = literals_and_rest(call);
-        for l in &lits {
+        let (quoted, rest) = literals_and_rest(call);
+        for l in &quoted {
             assert!(CLOSED.contains(&l.as_str()), "a literal outside the closed list in {name}: {l:?} in {call}");
         }
         for word in rest.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
@@ -4957,12 +5428,12 @@ fn the_shield_watch_is_the_theme_watchs_instance() {
 fn the_shield_files_have_no_panicking_path() {
     let files = source_files();
     for name in ["shield/mod.rs", "shield/usb.rs", "shield/run.rs", "quick/shield.rs"] {
-        let production = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!(", "unreachable!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
-        for line in production.lines() {
-            let code = line.split("//").next().unwrap_or("");
+        for code in production_code_without_comments(t).lines() {
             if let Some(why) = panicking_index(code) {
                 panic!("{why} in {name}'s production code");
             }
@@ -4977,14 +5448,14 @@ fn the_shield_files_have_no_panicking_path() {
 #[test]
 fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
     let files = source_files();
-    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/run.rs").expect("shield/run.rs").1);
+    let t = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "shield/run.rs").expect("shield/run.rs").1);
     let body = function_body(&t, "pub fn run_job(");
     let list_at = body.find("exec.capture(").expect("the listing's capture");
     let silent_at = body.find("exec.run_silent(").expect("the actions' run_silent");
     assert!(silent_at < list_at, "the actions' branch comes first and returns before the listing's capture");
     assert_eq!(body.matches("exec.capture(").count(), 1);
     // A failed switch and a deadline are judged after one look at the flag.
-    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
+    let app = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "shield/app.rs").expect("shield/app.rs").1);
     let mail = function_body(&app, "fn shield_mail(");
     assert!(
         mail.find("self.shield_readable()").expect("a read in shield_mail") < mail.find("model.done(").expect("model.done"),
@@ -4996,8 +5467,8 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
         "shield_tick reads the flag before it judges the deadline, watched or not"
     );
     assert!(!tick.contains("shield_watched"), "the deadline's read does not depend on the watch");
-    let startup = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
-    assert!(function_body(startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
+    let startup = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    assert!(function_body(&startup, "fn shut_down(").contains("exec.stop_running()"), "shut_down must stop the running commands");
 }
 
 /// Shield spec § 5: the panel's timer follows its view from the open, so a
@@ -5006,7 +5477,8 @@ fn a_shield_action_is_never_a_capture_and_shutdown_stops_the_commands() {
 #[test]
 fn the_quick_panels_timer_follows_the_view_from_the_open() {
     let files = source_files();
-    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
+    let quick_app =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "quick/app.rs").expect("quick/app.rs").1);
     for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
         assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
     }

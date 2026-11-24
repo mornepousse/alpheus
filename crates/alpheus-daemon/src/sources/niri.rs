@@ -1,6 +1,14 @@
 //! niri, READ ONLY: a connection to `$NIRI_SOCKET`, the `"EventStream"`
 //! request, then the event stream until it closes. No other request.
 //! Blocking read with no delay: no wakeup for nothing.
+//!
+//! Never:
+//! - send a second request: `REQUEST` is the only text, pinned by
+//!   `compositor_requests_are_read_only`;
+//! - poll or wake at rest: the read blocks until niri writes.
+//!
+//! See: docs/compositors.md ("niri"), docs/features/privacy.md (niri's cast events, which this
+//! stream carries).
 
 use crate::compositor::CompositorState;
 use crate::compositor::niri::Model;

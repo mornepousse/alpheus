@@ -1,6 +1,14 @@
 //! power-profiles-daemon (quick spec § 5): the active profile and the profiles it offers, read from
 //! `net.hadess.PowerProfiles`'s one object through its owner's unique name, as every reader here
 //! does. Read only: the quick panel sets a profile with `powerprofilesctl`.
+//!
+//! Never:
+//! - set a profile: `powerprofilesctl` does that, from the quick panel;
+//! - start the service: the read goes to its owner's unique name, so a machine without
+//!   power-profiles-daemon simply has no row.
+//!
+//! See: docs/features/quick-settings.md ("Power profile"), docs/features/hooks.md
+//! (`power_profile`).
 
 use super::{Bus, POWER_PROFILES};
 use crate::system::{Profile, ProfileState};

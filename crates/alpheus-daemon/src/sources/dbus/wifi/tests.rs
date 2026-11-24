@@ -71,7 +71,7 @@ fn no_networkmanager_no_wifi_device_or_the_radio_off() {
     bus.props_mut(WIFI_DEVICE, DEVICE).0.insert("DeviceType".into(), Prop::Int(1));
     assert_eq!(row(&mut bus).device, None, "a wired device only: no Wi-Fi row");
     let mut bus = wifi_bus();
-    bus.props_mut(super::super::network::PATH, super::super::network::INTERFACE).0.insert("WirelessEnabled".into(), Prop::Bool(false));
+    bus.props_mut(network::PATH, network::INTERFACE).0.insert("WirelessEnabled".into(), Prop::Bool(false));
     assert!(!row(&mut bus).enabled, "the radio off");
 }
 

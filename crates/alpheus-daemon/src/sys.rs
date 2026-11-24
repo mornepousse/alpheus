@@ -1,5 +1,19 @@
-//! The one `poll(2)` wrapper: the compositor sockets, the D-Bus thread and the launcher's
-//! hang-up check all wait through it, so the `unsafe` and the interrupted-call retry live once.
+//! The daemon's raw system calls, each wrapped once: `poll(2)`, the non-blocking flag of
+//! `fcntl(2)`, and `statvfs(2)`.
+//!
+//! The compositor's sockets, the D-Bus thread and the launcher's hang-up check all wait through
+//! `poll`, so the `unsafe` and the retry after a signal live in one place. `set_nonblocking` is
+//! what keeps a write to a full pipe or socket from stopping the loop, and `statvfs` is the disk
+//! item of the resources module, read on the event loop.
+//!
+//! Never:
+//! - leave a raw call unexplained: every `unsafe` block says why it is sound (CONTRIBUTING.md);
+//! - wait for ever: the timeout is the caller's, and a signal that interrupts the wait is retried
+//!   rather than reported as an error;
+//! - panic: each call answers with `io::Result` or `None`.
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/resources.md (the disk item and what it
+//! costs on the loop).
 
 use std::ffi::CString;
 use std::io;
@@ -106,7 +120,7 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let mut fds = [watching(&a)];
         assert_eq!(poll(&mut fds, 0).unwrap(), 0, "nothing to read yet");
-        std::io::Write::write_all(&mut &b, b"x").unwrap();
+        io::Write::write_all(&mut &b, b"x").unwrap();
         assert_eq!(poll(&mut fds, 0).unwrap(), 1);
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "the events are left in the slice");
     }
@@ -132,7 +146,7 @@ mod tests {
                 // SAFETY: the waiting thread is alive until it has read the word written below.
                 unsafe { libc::pthread_kill(me, libc::SIGUSR1) };
             }
-            std::io::Write::write_all(&mut &b, b"x").unwrap();
+            io::Write::write_all(&mut &b, b"x").unwrap();
         });
         let mut fds = [watching(&a)];
         assert_eq!(poll(&mut fds, 5000).unwrap(), 1, "the signal did not end the wait");

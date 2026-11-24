@@ -757,8 +757,7 @@ impl Wifi {
     pub fn is_selected(&self, line: Line, nets: &[Network]) -> bool {
         match (line, &self.pick) {
             (Line::Network(i), Pick::Network(s)) => nets.get(i).is_some_and(|n| n.ssid == *s),
-            (Line::WifiMore, Pick::More) => true,
-            (Line::Password, Pick::Password) => true,
+            (Line::WifiMore, Pick::More) | (Line::Password, Pick::Password) => true,
             _ => false,
         }
     }
@@ -853,6 +852,8 @@ impl Wifi {
     /// Enter on `n` (quick Wi-Fi spec § 2): the exact nmcli command for its kind, the attempt it
     /// starts followed; the password field for a new secured one; `More…` chosen for one the panel
     /// does not handle. One attempt at a time: only `More…` goes on meanwhile.
+    // one row per kind of network: each case reads on its own.
+    #[allow(clippy::match_same_arms)]
     fn enter(&mut self, config: &QuickConfig, n: &Network, now: Instant) -> QuickAction {
         let kind = self.kind(n);
         if self.attempt.is_some() && kind != Kind::Unsupported {

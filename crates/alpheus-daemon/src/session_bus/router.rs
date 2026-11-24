@@ -6,6 +6,16 @@
 //! (spec § 1): try to own `org.kde.StatusNotifierWatcher` without replacing
 //! anyone; if another watcher has it, be a host only and follow its list;
 //! when it leaves, take the name.
+//!
+//! Never:
+//! - route by anything but the serial a call was sent with, so a late answer reaches the asker and
+//!   no one else;
+//! - take the watcher's name from another host: alpheus queues and takes over only when it is
+//!   released (docs/features/tray.md);
+//! - add a thread or a timer of its own (`the_tray_spawns_no_thread`,
+//!   `nothing_resident_while_the_launcher_is_closed`).
+//!
+//! See: docs/features/tray.md, docs/ARCHITECTURE.md ("Sources: what feeds the loop").
 
 use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus, refusal};
 use super::codec::{self, Reply, Signal};
@@ -195,8 +205,8 @@ impl Tray {
         self.media.as_ref()
     }
 
-    /// Follows the user manager's failed-units count on this connection: two rules, then the
-    /// owner asked for (pending, on the tray's timer). Once: a second call is a no-op.
+    /// Follows the user manager's failed-units count on this connection: two match rules, then the
+    /// question for the owner (pending, on the tray's timer). Once: a second call is a no-op.
     pub fn start_failed(&mut self, subscribe: bool) {
         if self.failed.is_none() {
             self.failed = Some(UserUnits::start(&mut self.bus, subscribe));
@@ -499,7 +509,7 @@ impl Tray {
                     Ok(Reply::RequestName(1 | 4)) => self.become_watcher(),
                     // 3: exists (DO_NOT_QUEUE never queues us): host only.
                     Ok(Reply::RequestName(_)) => {
-                        self.call(Call::GetNameOwner { name: WATCHER_NAME.into() }, Own::WatcherOwner { retry: true })
+                        self.call(Call::GetNameOwner { name: WATCHER_NAME.into() }, Own::WatcherOwner { retry: true });
                     }
                     // Refused or unanswered: still follow a watcher if there is one.
                     Err(e) => {
@@ -553,6 +563,8 @@ impl Tray {
         self.role = Role::HostOnly { watcher };
     }
 
+    // one row per role: the state machine keeps its idle states spelled out.
+    #[allow(clippy::match_same_arms)]
     fn signal(&mut self, m: &Message) -> TrayOutput {
         let s = codec::signal(m);
         let sender = m.sender().map(|s| s.to_string()).unwrap_or_default();
@@ -594,10 +606,10 @@ impl Tray {
             },
             Signal::NameOwnerChanged { .. } | Signal::ItemChanged { .. } | Signal::ItemStatus { .. } => self.host.signal(&s, &mut self.bus),
             Signal::ItemRegistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
-                self.host.register(service, "", &mut self.bus)
+                self.host.register(service, "", &mut self.bus);
             }
             Signal::ItemUnregistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
-                self.host.unregister(service, &mut self.bus)
+                self.host.unregister(service, &mut self.bus);
             }
             Signal::ColorScheme(value) => {
                 if let Some(a) = self.appearance.as_mut() {

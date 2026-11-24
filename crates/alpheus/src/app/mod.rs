@@ -416,15 +416,15 @@ impl App {
 
     /// Applies one answer from the worker: stores a read, or finishes an action.
     pub fn on_update(&mut self, u: Update, now: Instant) {
-        if let Some(d) = update_domain(&u) {
-            if self.is_pending(d) {
-                // Stale read: an action on this domain is in progress. A displays trial's end
-                // is reported once, so it is still told; only the outputs are dropped.
-                if let Update::Displays(Ok(s)) = u {
-                    self.trial_read(s.trial, now);
-                }
-                return;
+        if let Some(d) = update_domain(&u)
+            && self.is_pending(d)
+        {
+            // Stale read: an action on this domain is in progress. A displays trial's end
+            // is reported once, so it is still told; only the outputs are dropped.
+            if let Update::Displays(Ok(s)) = u {
+                self.trial_read(s.trial, now);
             }
+            return;
         }
         // On the Diag overview a read can add or drop rows above the cursor: a selected unit stays
         // selected (`r` and `c` act on it), never whatever slid into its place. The other rows keep
@@ -458,10 +458,10 @@ impl App {
             }
             Update::Superseded(op) => self.op_answered(&op),
         }
-        if let Some(kept) = keep {
-            if let Some(i) = self.items().iter().position(|i| *i == kept) {
-                self.focus = i;
-            }
+        if let Some(kept) = keep
+            && let Some(i) = self.items().iter().position(|i| *i == kept)
+        {
+            self.focus = i;
         }
         self.clamp_focus();
     }
@@ -504,7 +504,9 @@ impl App {
     fn success_message(&self, op: &Op) -> Option<String> {
         let onoff = |id: ToggleId, b: bool| format!("{}: {}", toggle_label(id), if b { "on" } else { "off" });
         Some(match op {
-            Op::SetVolume(..) | Op::SetBrightness(_) => return None,
+            Op::SetVolume(..) | Op::SetBrightness(_) | Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays | Op::FailedRefresh => {
+                return None;
+            }
             Op::SetDefault(id) => {
                 let a = self.data.audio.ready()?;
                 match a.sinks.iter().find(|n| n.id == *id) {
@@ -518,10 +520,8 @@ impl App {
             Op::ToggleKeepAwake { now_on } => onoff(ToggleId::KeepAwake, *now_on),
             Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
-            Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => return None,
             Op::UnitUser(UnitAction::Restart, unit) => format!("Restart queued: {unit}"),
             Op::UnitUser(UnitAction::ResetFailed, unit) => format!("Cleared: {unit}"),
-            Op::FailedRefresh => return None,
             Op::Copy { .. } => "Copied to the clipboard".to_string(),
         })
     }

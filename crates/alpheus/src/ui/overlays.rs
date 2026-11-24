@@ -34,7 +34,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         Overlay::Panel(p) => displays::panel(buf, area, app, p, hits),
         Overlay::SaveProfile(d) => displays::save(buf, area, app, d, hits),
         Overlay::UnitConfirm { scope, unit, action, yes_focused } => {
-            diagnostics::unit_confirm(buf, area, app, *scope, unit, *action, *yes_focused, hits)
+            diagnostics::unit_confirm(buf, area, app, *scope, unit, *action, *yes_focused, hits);
         }
     }
 }
@@ -85,10 +85,10 @@ fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         }
     }
     // No tab line when every tab key is unbound.
-    if let Some(i) = tab_line {
-        if !tab_keys.is_empty() {
-            lines.insert(i, line(&format!("Tabs 1 to {}", Tab::ALL.len()), &tab_keys));
-        }
+    if let Some(i) = tab_line
+        && !tab_keys.is_empty()
+    {
+        lines.insert(i, line(&format!("Tabs 1 to {}", Tab::ALL.len()), &tab_keys));
     }
     lines.push(line("Mouse", &["click, drag, scroll".to_string()]));
     let r = centered(area, 64, lines.len() as u16 + 2);

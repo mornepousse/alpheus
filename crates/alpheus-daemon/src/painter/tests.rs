@@ -141,7 +141,7 @@ fn glyph_reshaped_every_time(p: &mut Fonts, ch: char, bold: bool, x0: f32, ink: 
     let Rgb(r, g, b) = ink;
     let base = Color::rgb(r, g, b);
     for run in p.buffer.layout_runs() {
-        for gl in run.glyphs.iter() {
+        for gl in run.glyphs {
             if gl.glyph_id == 0 {
                 continue;
             }
@@ -213,7 +213,7 @@ fn glyph_shaping_memo_speeds_up_paint() {
     let cols = text.chars().count() as u16;
     let mut g = Grid::empty(cols);
     g.write(0, cols, text, Style::NORMAL);
-    let (w, h) = ((av * cols as f32).ceil() as u32, DEFAULT_HEIGHT);
+    let (w, h) = ((av * f32::from(cols)).ceil() as u32, DEFAULT_HEIGHT);
     let mut px = vec![0u8; (w * h * 4) as usize];
     const ITERATIONS: u32 = 300;
     let t0 = std::time::Instant::now();
@@ -354,7 +354,7 @@ impl Surface {
         let (advance, frame) = (p.advance(scale), p.frame(scale));
         let (cols, rows) = b.cells();
         let rh = DEFAULT_HEIGHT * scale as u32;
-        let (w, h) = ((cols as f32 * advance).ceil() as u32 + frame.extra().0, rows as u32 * rh + frame.extra().1);
+        let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
         let mut px = vec![0x11u8; (w * h * 4) as usize];
         p.paint_boxed(b, &pal, &mut px, w, h, rh, scale, FrameInk::Border);
         Surface { px, w, h, rh, frame, advance }
@@ -827,17 +827,16 @@ fn ttc_collection_one_face_per_chosen_weight() {
     assert_eq!(p.loaded_faces(), 2, "faces loaded from the collection: {}", p.loaded_faces());
     // Not enough on its own: "2 faces" could also come from a
     // same-named system font (JetBrainsMono Nerd Font Mono is installed
-    // on this machine) if the built collection had in fact not been
+    // on the development machine) if the built collection had in fact not been
     // read. Check that it really is THAT one: every loaded face has
     // `path` as its source, and both of the collection's indices (0 and
     // 1) are there, with no duplicate or extra face.
     let mut index: Vec<u32> = Vec::new();
     for f in p.fs.db().faces() {
         let source = match &f.source {
-            fontdb::Source::File(c) => c,
             // `fontdb` memory-maps files (the "memmap" feature): the
             // path stays reachable, right next to the mapped bytes.
-            fontdb::Source::SharedFile(c, _) => c,
+            fontdb::Source::File(c) | fontdb::Source::SharedFile(c, _) => c,
             other => panic!("unexpected source (not a file): {other:?}"),
         };
         assert_eq!(source, &path, "unexpected source (not the built collection): {}", source.display());
@@ -858,7 +857,7 @@ fn fake_face(family: &str, path: &str, style: fontdb::Style) -> fontdb::FaceInfo
         families: vec![(family.to_string(), fontdb::Language::English_UnitedStates)],
         post_script_name: String::new(),
         style,
-        weight: fontdb::Weight::NORMAL,
+        weight: Weight::NORMAL,
         stretch: fontdb::Stretch::Normal,
         monospaced: true,
     }
@@ -889,7 +888,7 @@ fn deterministic_replacement_by_name_then_path() {
         families: vec![(family.to_string(), fontdb::Language::English_UnitedStates)],
         post_script_name: String::new(),
         style: fontdb::Style::Normal,
-        weight: fontdb::Weight::NORMAL,
+        weight: Weight::NORMAL,
         stretch: fontdb::Stretch::Normal,
         monospaced: true,
     };
@@ -976,7 +975,7 @@ fn opaque(c: Rgb) -> [u8; 4] {
 
 /// A 20-cell grid: an active workspace on cells 1..4, blanks elsewhere; one status block on
 /// cells 6..12 (hue blue) and one clock block on 14..19 (no hue).
-fn underline_fixture() -> (Grid, Vec<crate::grid::Group>) {
+fn underline_fixture() -> (Grid, Vec<Group>) {
     use crate::grid::{Group, GroupKind};
     let mut g = Grid::empty(20);
     g.write(1, 20, "   ", Style::ACTIVE);

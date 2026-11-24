@@ -241,7 +241,7 @@ fn rollback_sent(a: &mut App) -> bool {
 
 /// A fresh read of the daemon's snapshot.
 fn reread(a: &mut App) {
-    let snapshot = crate::app::testing::ready(crate::displays::testing::machine());
+    let snapshot = ready(crate::displays::testing::machine());
     a.on_update(super::super::worker::Update::Displays(Ok(snapshot)), Instant::now());
     a.take_requests();
 }

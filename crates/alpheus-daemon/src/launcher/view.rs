@@ -318,10 +318,10 @@ fn capped_wrap(text: &str, width: u16, budget: usize) -> Vec<String> {
     let mut lines = wrap(text, width);
     if lines.len() > budget {
         lines.truncate(budget);
-        if let Some(last) = lines.last_mut() {
-            if !last.ends_with('…') {
-                last.push('…');
-            }
+        if let Some(last) = lines.last_mut()
+            && !last.ends_with('…')
+        {
+            last.push('…');
         }
     }
     lines
@@ -494,6 +494,8 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 /// The box's rows (ring dropped, the preview divider as a line). Selected row SELECTED; generic name/kind MUTED right-aligned
 /// ("Web browser", "window · 2", "command"); empty results → "no match" (or "scanning…" while the
 /// catalog is None and nothing matched); message on the help line in Style::ERROR.
+// the empty-state texts: one row per mode, so a mode keeps its own line.
+#[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
@@ -587,10 +589,11 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         let index = l.top + usize::from(row - b.list_top);
         return Some(if index < l.results.len() { Click::Result(index) } else { Click::Inside });
     }
-    if l.has_modes() && row == 1 {
-        if let Some((m, _, _)) = mode_spans().into_iter().find(|(_, s, e)| (*s..*e).contains(&column) && *e <= b.pane_end()) {
-            return Some(Click::Mode(m));
-        }
+    if l.has_modes()
+        && row == 1
+        && let Some((m, _, _)) = mode_spans().into_iter().find(|(_, s, e)| (*s..*e).contains(&column) && *e <= b.pane_end())
+    {
+        return Some(Click::Mode(m));
     }
     Some(Click::Inside)
 }

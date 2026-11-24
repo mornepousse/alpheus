@@ -1,6 +1,12 @@
 //! alpheus's directories, shared by the TUI and the daemon: configuration
 //! (~/.config/alpheus), runtime ($XDG_RUNTIME_DIR) and state
 //! ($XDG_STATE_HOME/alpheus: the launcher's history).
+//!
+//! Never:
+//! - spell a directory out twice: both programs ask here, so a path cannot drift between them;
+//! - write outside them: the state files go through the daemon's hardened writer.
+//!
+//! See: docs/configuration.md ("Where the files are and when they are read"), docs/cli.md.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -16,7 +22,7 @@ pub(crate) fn xdg_abs(var: impl Fn(&str) -> Option<OsString>, name: &str) -> Opt
 /// Unlike `state_dir` and `runtime_dir`, this does NOT go through `xdg_abs`: a relative (or empty)
 /// $XDG_CONFIG_HOME is honoured as is today, and the TUI and the daemon both rely on finding the
 /// same directory. Applying the spec's "absolute only" rule here would be a behaviour change for
-/// anyone who sets one; that is the owner's decision, not a cleanup's.
+/// anyone who sets one.
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

@@ -448,10 +448,10 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
         };
         let sy = if r.height >= 5 { r.y + 3 } else { r.y + 2 };
         // The subtitle is drawn only if its row is not below the last row text may use.
-        if let Some(sub) = sub {
-            if sy <= last {
-                put(buf, r, x + 2, sy, &truncate(&sub, usize::from(r.width.saturating_sub(6))), dim_style);
-            }
+        if let Some(sub) = sub
+            && sy <= last
+        {
+            put(buf, r, x + 2, sy, &truncate(&sub, usize::from(r.width.saturating_sub(6))), dim_style);
         }
         if r.height >= 6 {
             let (sw, sstyle) = if on { ("━━━━━●", label_style) } else { ("○┄┄┄┄┄", dim_style) };

@@ -1,7 +1,18 @@
-//! Icon for an application from its class (Hyprland) or app_id (niri): a
-//! Nerd Font glyph, one cell wide like text (Q5). The real icons from the
-//! theme will arrive with the tray (delivery 4). Codes checked in
-//! JetBrainsMonoNerdFontMono-Regular.ttf.
+//! The glyph that stands for an application, from the name the compositor gives it.
+//!
+//! A built-in table maps a class (Hyprland), an app id (niri, Sway, Mango) or a process name to a
+//! Nerd Font glyph, one cell wide like the rest of the bar; an application the table does not know
+//! falls back to a letter. The window module, the launcher's rows, the tray's icons and the
+//! notifications' glyphs all come through here, so one application looks the same everywhere. The
+//! codes are checked against JetBrainsMonoNerdFontMono-Regular.ttf.
+//!
+//! Never:
+//! - ask an application for a picture: the tray never requests an image icon, so no application
+//!   sends the bar one (docs/features/tray.md);
+//! - grow per application: the table is read-only data, and an unknown name costs a letter.
+//!
+//! See: docs/features/tray.md ("Icons"), docs/features/bar.md (the window module),
+//! docs/install.md (the font the glyphs need).
 
 /// (pattern looked up in the lowercased class, glyph), first match wins. A pattern starting with
 /// `=` is a whole label: it matches a part of the class between `.`, `-`, `_` or a space, never a
@@ -74,7 +85,7 @@ mod tests {
     use crate::grid::text_width;
 
     #[test]
-    fn glyphs_by_class() {
+    fn a_class_or_app_id_finds_its_glyph() {
         assert_eq!(glyph("firefox"), '\u{f0239}');
         assert_eq!(glyph("com.mitchellh.ghostty"), '\u{f018d}');
         assert_eq!(glyph("Alacritty"), '\u{f018d}');

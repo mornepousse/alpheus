@@ -1,11 +1,22 @@
-//! Every per-module fact of the bar, one row of `MODULES` per `ModuleId`, in `ModuleId`'s
-//! declaration order (a test pins each row's `id` to its index). Adding a module: a `ModuleId` variant
-//! (config.rs), one row here, and, if it can be dropped on a narrow bar, its place in
-//! `layout::REMOVAL`; its segment function lives with the others (`segments.rs`). A module with a
-//! popup also needs a row of `popup::POPUPS`; one with a new source, a `Needs` flag (`startup::wanted`).
+//! Every per-module fact of the bar, one row of `MODULES` per `ModuleId`.
 //!
-//! Left as `match`es because their arms hold logic, not data: `actions::module_command` (the
-//! clicks, which read the configuration), `actions::media_control` (a button to a player call).
+//! The rows are in `ModuleId`'s declaration order, which is the default bar left to right (a test
+//! pins each row's `id` to its index). A row says which block the module belongs to, its fixed hue,
+//! the control center tab a click opens, the function that builds its segment, the popup a left
+//! press toggles, whether that popup needs the quick panel, and the sources the module asks for
+//! (`Needs`, read by `startup::wanted`). Adding a module: a `ModuleId` variant (`config.rs`), one
+//! row here, its place in `layout::REMOVAL` if a narrow bar may drop it, a segment in
+//! `segments.rs`, a row of `popup::POPUPS` if it has a popup, and a `Needs` flag if it brings a
+//! source. The clicks stay `match`es in `actions.rs`, because their arms hold logic, not data.
+//!
+//! Never:
+//! - let a module cost anything while it is not in `modules`: `Needs` is what keeps its source
+//!   unstarted, and `startup_pss_per_source` measures every one;
+//! - let the table drift from the enum: the row's `id` must equal its index (this file's own
+//!   test), so a new variant without a row cannot compile away unnoticed.
+//!
+//! See: docs/adding-a-module.md (the recipe, step by step), docs/features/bar.md (the table of
+//! modules a reader sees), docs/ARCHITECTURE.md ("The core").
 
 use crate::config::ModuleId;
 use crate::grid::{GroupKind, Hue};

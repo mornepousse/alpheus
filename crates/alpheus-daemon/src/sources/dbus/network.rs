@@ -1,5 +1,13 @@
 //! NetworkManager: the kind of the primary connection, how many other VPNs
-//! are active, connectivity. No name is read: the bar shows icons only (Q1).
+//! are active, connectivity. No name is read: the bar shows icons only.
+//!
+//! Never:
+//! - read a connection's name, uuid or address: the module draws icons and a count, so nothing
+//!   that names a network is kept here (the Wi-Fi detail reads SSIDs, in `wifi.rs`, only while the
+//!   panel is open);
+//! - act: `nmcli` does that, from the quick panel, through the executor.
+//!
+//! See: docs/features/bar.md (the network module), docs/features/quick-settings.md.
 
 use super::{Bus, NM, optional};
 use crate::system::{Link, NetState};
@@ -78,7 +86,7 @@ mod tests {
         let mut bus = FakeBus::workstation();
         primary(&mut bus, 9);
         assert_eq!(read(&mut bus).unwrap(), NetState::Online { link: Link::Wifi, vpns: 2, limited: false });
-        assert!(bus.calls.iter().all(|c| !c.contains("AccessPoint")), "icons only (Q1): the access point is never read: {:?}", bus.calls);
+        assert!(bus.calls.iter().all(|c| !c.contains("AccessPoint")), "icons only: the access point is never read: {:?}", bus.calls);
     }
 
     #[test]
@@ -111,13 +119,9 @@ mod tests {
     fn an_outage_is_an_error() {
         let mut bus = FakeBus::workstation();
         bus.failing.insert(PATH.into());
-        assert_eq!(read(&mut bus).unwrap_err().kind(), std::io::ErrorKind::Other, "the root object");
+        assert_eq!(read(&mut bus).unwrap_err().kind(), io::ErrorKind::Other, "the root object");
         let mut bus = FakeBus::workstation();
         bus.failing.insert(format!("{AC}/2"));
-        assert_eq!(
-            read(&mut bus).unwrap_err().kind(),
-            std::io::ErrorKind::Other,
-            "an active connection: a timeout is not a connection gone"
-        );
+        assert_eq!(read(&mut bus).unwrap_err().kind(), io::ErrorKind::Other, "an active connection: a timeout is not a connection gone");
     }
 }

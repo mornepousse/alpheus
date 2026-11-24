@@ -1,5 +1,14 @@
 //! Outages: why a session ended (`Outage`, tagged on the `io::Error`), a service gone, and the
 //! per-domain log rate limit.
+//!
+//! Never:
+//! - say more than a fixed word: a log line names the domain and the reason, never a service's
+//!   message, an object path or a profile (each feature's log guardrail checks its own files);
+//! - log a repeated outage: the rate limit is what keeps a service that flaps from filling the
+//!   journal.
+//!
+//! See: docs/decisions.md ("A source that is down is not a state", "Logs carry fixed words and
+//! numbers only"), docs/features/failed.md (a manager that fails to answer).
 
 use super::*;
 
@@ -99,7 +108,7 @@ fn domain_index(d: Domain) -> usize {
     }
 }
 
-/// Per-domain log rate limiting (follow-up, re-review): `read` runs again,
+/// Per-domain log rate limiting: `read` runs again,
 /// fresh, on every backoff round — a new `session`, a new `SystemState` —
 /// so without state that outlives one round, a domain stuck down would
 /// repeat the same log line every round, forever. One `DomainLog` lives for

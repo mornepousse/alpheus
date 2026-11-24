@@ -1,8 +1,23 @@
-//! The daemon's log: a single function, used everywhere instead of
-//! `eprintln!`. `eprintln!` panics if the other end of standard error is
-//! closed (EPIPE — an interrupted `journalctl -f`, e.g.): a resident daemon
-//! must never die over something this small. `writeln!` returns a plain
-//! error that we ignore (nothing else could act on it anyway).
+//! The daemon's one log line: `log::write`, used everywhere instead of `eprintln!`, and the panic
+//! hook beside it.
+//!
+//! `eprintln!` panics when the other end of standard error is closed (EPIPE, after an interrupted
+//! `journalctl -f` for instance): a resident daemon must never die over something that small, so
+//! the line goes out through `writeln!` and a failed write is ignored, nothing else being able to
+//! act on it. `install_panic_hook` replaces the default hook, which prints a panic's message: a
+//! message can quote private text (the notepad's note, a launcher query, a password), so this one
+//! prints the thread and the place only.
+//!
+//! Never:
+//! - use `eprintln!` or `eprint!` in the daemon's production code
+//!   (`eprint_forbidden_outside_tests` fails the build on one);
+//! - print a panic's message: `the_panic_hook_is_installed_before_anything_else` pins both the
+//!   hook's forbidden forms and its place, first in `startup::run`;
+//! - carry anything but fixed words and numbers in a line: each feature has its own log guardrail
+//!   (`the_shield_logs_name_nothing`, `the_vpn_logs_name_no_profile`, and the rest).
+//!
+//! See: docs/decisions.md ("Logs carry fixed words and numbers only"), docs/cli.md ("Logs"),
+//! AGENTS.md ("No private data in fixtures or logs").
 
 use std::io::{self, Write};
 

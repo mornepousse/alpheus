@@ -88,12 +88,11 @@ impl App {
                 }
                 // The profile at position `j`, unless it is the one already active.
                 let mut choice = None;
-                if let Some(p) = self.data.profiles.ready() {
-                    if let Some(name) = p.available.get(j) {
-                        if *name != p.active {
-                            choice = Some(name.clone());
-                        }
-                    }
+                if let Some(p) = self.data.profiles.ready()
+                    && let Some(name) = p.available.get(j)
+                    && *name != p.active
+                {
+                    choice = Some(name.clone());
                 }
                 if let Some(name) = choice {
                     self.run_command(Command::SetProfile(name), now);
@@ -241,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn wheel() {
+    fn the_wheel_moves_the_selection() {
         let mut a = ready_app();
         let (x, y) = center(&a, Target::Slider { item: 1 });
         send(&mut a, MouseEventKind::ScrollUp, x, y);

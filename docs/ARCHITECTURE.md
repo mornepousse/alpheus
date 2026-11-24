@@ -46,8 +46,10 @@ source thread --Mail::Bar(Msg)--> event loop --on_bar_message--> state::Bar
 ## Rules
 
 The guardrails of [`SCOPE.md`](SCOPE.md), checked mechanically by
-`crates/alpheus-daemon/tests/guardrails.rs`, which reads the source files (comments stripped by
-`without_comments` where a comment could fool a check) and fails on a forbidden pattern.
+`crates/alpheus-daemon/tests/guardrails.rs`, which reads the source files — the scans that read code
+are given `production_code_without_comments`, so no comment can satisfy one or move its boundaries,
+and so are the log guardrails, which ask what a line really carries; the rules that forbid a word
+outright read the comments too — and fails on a forbidden pattern.
 
 1. **No sleep or `dpms` handling.** Locking and blanking are left to a separate idle manager
    (hypridle, swayidle); alpheus never turns a screen off or suspends.

@@ -1,6 +1,12 @@
 //! Optional configuration: ~/.config/alpheus/config.toml. Safe defaults
 //! without a file; invalid file = defaults + a warning on the status line
 //! (never a stop).
+//!
+//! Never:
+//! - stop on a bad file: the defaults apply with a warning on the status line;
+//! - read it again: it is read when the control center starts.
+//!
+//! See: docs/configuration.md (`config.toml`), docs/features/control-center.md.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;

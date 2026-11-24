@@ -19,8 +19,8 @@ answers `shield is not configured in bar.toml`.
 - **The state.** The mode is on while the `flag` file exists. A change made anywhere (a terminal, the
   boot, another session) shows at once, because the flag's directory is watched. When the file cannot
   be tested (any error but "not found") the state is unknown, never off.
-- **The bar.** The `shield` module draws `󰒘` in the green, only while the mode is on. A left click
-  opens the quick panel on the Shield row.
+- **The bar.** The `shield` module draws `󰒘`, always green whatever `module_colors` says, in a block
+  of its own, only while the mode is on. A left click opens the quick panel on the Shield row.
 - **The quick panel.** A Shield row under the VPN row, with a switch. Space runs `off` or `on` and the
   switch reads `…` until the flag follows; a refused or failed command reads `failed` for 4 s. Enter
   or → opens the blocked USB devices; Enter on one runs `allow` with its id.
@@ -78,7 +78,7 @@ takes effect when `alpheus-demon` restarts (bar.toml is read once at start).
 Shield is configured when `flag`, `on` and `off` are all set. A table with only some of them is a
 warning at start and counts as unconfigured. A relative flag or one with no file name, a blank program or
 a NUL in any argument list, `{id}` in the wrong place, and an over-long text or one holding a newline are
-errors of the file (shield plan 1, decision 8). Unknown keys are refused.
+errors of the file. Unknown keys are refused.
 
 ```toml
 [shield]

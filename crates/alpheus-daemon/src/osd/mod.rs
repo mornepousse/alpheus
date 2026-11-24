@@ -139,19 +139,19 @@ fn side(
         // node was the one whose card waited for its volume.
         (Some(_), Some(b)) => {
             let mut waited = None;
-            if let Some(p) = pending.as_deref_mut() {
-                if p.as_deref() == Some(b.node.as_str()) {
-                    waited = p.take();
-                }
+            if let Some(p) = pending.as_deref_mut()
+                && p.as_deref() == Some(b.node.as_str())
+            {
+                waited = p.take();
             }
             match (old.1, new.1) {
                 (None, Some(v)) if waited.is_some() && inside => Change::Card(v),
                 (None, None) => {
                     // Still waiting for it: put the name back.
-                    if let Some(p) = pending {
-                        if let Some(n) = waited {
-                            *p = Some(n);
-                        }
+                    if let Some(p) = pending
+                        && let Some(n) = waited
+                    {
+                        *p = Some(n);
                     }
                     Change::Nothing
                 }

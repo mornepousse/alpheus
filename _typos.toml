@@ -1,0 +1,71 @@
+# Checked by `typos` (the CI `policy` job). Words below are intended; a real
+# misspelling is fixed in the source, never listed here.
+
+[files]
+extend-exclude = [
+    # The design history is kept as written.
+    "docs/specs/",
+    "docs/plans/",
+    # Fixtures and snapshots are captured or hand-made data (French labels,
+    # device names, driver names such as skl_hda_dsp_generic).
+    "**/tests/fixtures/",
+    "**/snapshots/",
+    "flake.lock",
+]
+
+[default.extend-words]
+# MPRIS `Seeked` signal and the `seeked` handlers that follow it.
+seeked = "seeked"
+# English "ratatui", the TUI crate.
+ratatui = "ratatui"
+# Maintainer's surname (LICENSE, README).
+pugin = "pugin"
+# French test data in the displays and launcher tests (serial numbers, an
+# "Apparence" settings page, "projets" directories, "commandes", "complet").
+serie = "serie"
+apparence = "apparence"
+appar = "appar"
+projets = "projets"
+commandes = "commandes"
+complet = "complet"
+# Informal plural used in the notification tests ("two criticals").
+criticals = "criticals"
+# Test function names spelling "the entry's" without the apostrophe.
+entrys = "entrys"
+# The standard spellings are both fine; the code uses this one.
+unparseable = "unparseable"
+# Deliberate misspellings, typed to check an unknown-key or did-you-mean path.
+cpoy = "cpoy"
+enabeld = "enabeld"
+
+# Short or truncated words that real typos could hide behind are not listed as
+# words (that would allow them in every file): each is matched in the context
+# the tests and notes use it in, and nowhere else.
+[default]
+extend-ignore-re = [
+    # `ue`: the scale in the bubbles' and the pill's pixel code.
+    "let ue\\b|\\* ue\\b",
+    # `fo`: the focused flag of the workspace test builders; `fo"o`, a key
+    # with a quote in the tray-icon config tests.
+    "\\bfo: bool|, fo\\)|[Ff]o\\\\+\"o",
+    # `mor`: unknown keys the config tests type on purpose.
+    "(?:vpn|wifi)_mor\\b",
+    # `caf`: "café" cut by lossy decoding, or typed as a prefix query.
+    "(?:\\\\?\"|app:)[Cc]af\\b",
+    # `hel`: the `h`, `he`, `hel`, `help` prefixes of nmcli's refusal rule.
+    "\\bhe[`\", ]+hel\\b",
+    # `fre`: the frecency closure of the ranking tests.
+    "\\bfre(?: =|\\()",
+    # `gam`: a prefix query typed in the launcher tests.
+    "\"gam\"",
+    # `Claus`: Santa, Mrs. and Mx Claus in the emoji table.
+    "(?:Santa|Mrs\\.|Mx) Claus",
+    # `BA`: the start of `BATn` (battery names) in the D-Bus tests and notes.
+    "\\bBATn\\b",
+    # A commit hash starting with a digit (`55ba754` in the measurements).
+    "\\b\\d[0-9a-f]{6,39}\\b",
+    # `hda`: the sound card's driver in a recorded node name.
+    "skl_hda_dsp_generic",
+    # `inh`: a temporary directory's name.
+    "alpheus-env-inh-",
+]

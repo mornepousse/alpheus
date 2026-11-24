@@ -192,7 +192,7 @@ impl App {
         }
     }
 
-    /// Runs a pad entry point; a panic saves what was typed and closes the pad (decision 17), the
+    /// Runs a pad entry point; a panic saves what was typed and closes the pad, the
     /// bar goes on.
     pub(crate) fn notes_guarded<R>(&mut self, what: &str, f: impl FnOnce(&mut App) -> R) -> Option<R> {
         let r = guarded_with(what, || f(self), &mut |m| log(m));
@@ -212,11 +212,11 @@ impl App {
                 "close",
                 move || {
                     let mut kept = None;
-                    if wants_save(&open.model) {
-                        if let Err(e) = store::save(&paths::state_dir(), open.model.pad.text()) {
-                            log(&format!("notes: not saved ({:?})", e.kind()));
-                            kept = kept_after_close(&open.model, open.seen);
-                        }
+                    if wants_save(&open.model)
+                        && let Err(e) = store::save(&paths::state_dir(), open.model.pad.text())
+                    {
+                        log(&format!("notes: not saved ({:?})", e.kind()));
+                        kept = kept_after_close(&open.model, open.seen);
                     }
                     drop(open);
                     kept

@@ -8,6 +8,17 @@
 //! Every call goes to a unique name (from `GetNameOwner` or `NameOwnerChanged`), never to a
 //! well-known name, so a call cannot reach a new owner by surprise. Never name a function
 //! `method_call` here: the guardrails count that substring.
+//!
+//! Never:
+//! - open a connection of its own: it rides the tray's or the bar's link, and never a second one;
+//! - poll a player: the players are listed at start and followed through `NameOwnerChanged` and
+//!   `PropertiesChanged`, and the position is read only while the popup is open
+//!   (docs/decisions.md, "The media popup computes the position, and reads it only while open");
+//! - send anything but the three controls: no seek, no volume, no raise
+//!   (docs/features/media.md).
+//!
+//! See: docs/features/media.md ("How it is built"), docs/features/notifications.md (the panel's
+//! card).
 
 use super::bus::{Call, CallError, CallId, Outbox};
 use super::codec::{Reply, Signal};
@@ -285,12 +296,12 @@ impl Mpris {
                 }
             }
             (Ask::Position(u), Ok(Reply::Position(us))) => {
-                self.players.set_position(&u, PositionSync { at: Instant::now(), us: u64::try_from(us).unwrap_or(0) })
+                self.players.set_position(&u, PositionSync { at: Instant::now(), us: u64::try_from(us).unwrap_or(0) });
             }
             (Ask::State(u) | Ask::Identity(u) | Ask::Metadata(u) | Ask::Position(u), Err(CallError::Remote(e)))
                 if GONE.contains(&e.as_str()) =>
             {
-                self.leave(&u)
+                self.leave(&u);
             }
             // A timeout, a malformed answer, a missing Identity: the player stays as it is.
             _ => {}

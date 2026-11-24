@@ -423,19 +423,19 @@ impl App {
             TrialState::Open { .. } => self.displays.trial.is_none(),
             TrialState::None => false,
         };
-        if let Overlay::Panel(p) = &self.overlay {
-            if !outs.iter().any(|o| o.name == p.output) {
-                let msg = format!("Displays: {} unplugged, setting abandoned", p.output);
-                self.overlay = Overlay::None;
-                self.toast(msg, true, now);
-            }
+        if let Overlay::Panel(p) = &self.overlay
+            && !outs.iter().any(|o| o.name == p.output)
+        {
+            let msg = format!("Displays: {} unplugged, setting abandoned", p.output);
+            self.overlay = Overlay::None;
+            self.toast(msg, true, now);
         }
         self.displays.profile_sel = self.displays.profile_sel.min(self.displays.profiles.len());
         // A queued profile waits for the unlock.
-        if !self.displays.awaiting_read {
-            if let Some(name) = self.displays.queued_profile.take() {
-                self.apply_display_profile(&name, now);
-            }
+        if !self.displays.awaiting_read
+            && let Some(name) = self.displays.queued_profile.take()
+        {
+            self.apply_display_profile(&name, now);
         }
     }
 
@@ -448,12 +448,12 @@ impl App {
             // A configuration with the compositor: an end, if any, comes after it.
             TrialState::Busy => {}
             TrialState::Open { seconds_left } => {
-                if let Some(t) = &mut self.displays.trial {
-                    if let Some(deadline) = t.deadline {
-                        let theirs = now + Duration::from_secs(seconds_left.into());
-                        t.deadline = Some(deadline.min(theirs));
-                        t.remaining = remaining(deadline.min(theirs), now);
-                    }
+                if let Some(t) = &mut self.displays.trial
+                    && let Some(deadline) = t.deadline
+                {
+                    let theirs = now + Duration::from_secs(seconds_left.into());
+                    t.deadline = Some(deadline.min(theirs));
+                    t.remaining = remaining(deadline.min(theirs), now);
                 }
             }
             TrialState::Ended(end) => {
@@ -515,11 +515,12 @@ impl App {
         self.displays.awaiting_read = true;
         match (op, r) {
             (Op::TryDisplays(plan), Ok(())) => {
-                if let Some(t) = &mut self.displays.trial {
-                    if t.plan == plan && t.deadline.is_none() {
-                        t.deadline = Some(now + KEEP_DELAY);
-                        t.remaining = KEEP_DELAY.as_secs();
-                    }
+                if let Some(t) = &mut self.displays.trial
+                    && t.plan == plan
+                    && t.deadline.is_none()
+                {
+                    t.deadline = Some(now + KEEP_DELAY);
+                    t.remaining = KEEP_DELAY.as_secs();
                 }
             }
             (Op::TryDisplays(plan), Err(e)) => {
@@ -906,10 +907,10 @@ impl App {
         edit(&mut q);
         p.query = Some(q);
         let modes = self.panel_modes(&p);
-        if !modes.contains(&p.mode) {
-            if let Some(m) = modes.first() {
-                p.mode = *m;
-            }
+        if !modes.contains(&p.mode)
+            && let Some(m) = modes.first()
+        {
+            p.mode = *m;
         }
         self.overlay = Overlay::Panel(p);
     }

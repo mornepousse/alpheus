@@ -70,7 +70,7 @@ pub(crate) struct QuickApp {
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
     /// Shared with the D-Bus thread (`sources::dbus::wifi::WifiTap`): what the open quick panel
     /// shows of the Wi-Fi. None without the quick module or the network domain.
-    pub(crate) wifi_tap: Option<Arc<crate::sources::dbus::wifi::WifiTap>>,
+    pub(crate) wifi_tap: Option<Arc<WifiTap>>,
     /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
     /// of Bluetooth. None without the quick module or the Bluetooth domain.
     pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,

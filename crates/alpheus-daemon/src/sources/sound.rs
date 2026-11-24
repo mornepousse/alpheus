@@ -3,6 +3,18 @@
 //! compositor: "–" then a restart with a growing delay when it exits; killed
 //! with the thread that launched it (PDEATHSIG) and at the end of every
 //! session (its stream dropped).
+//!
+//! Never:
+//! - start a second command: this child is the only one the daemon keeps running
+//!   (`the_only_stream_is_pw_dump_monitor`), and it is killed with the thread that started it and
+//!   at the end of the session;
+//! - write to PipeWire: the panel's and the bar's changes go through `wpctl`, from the executor;
+//! - keep what no module needs: the graph is built for the privacy indicators only, and the sink
+//!   list is published while the quick panel is open (docs/decisions.md, "The quick panel reads the
+//!   sink list through a shared tap").
+//!
+//! See: docs/features/bar.md (the sound module), docs/features/privacy.md (the graph),
+//! docs/features/quick-settings.md (the sinks and the headset row), docs/features/osd.md.
 
 use crate::log::write as log;
 use crate::memory::release_memory;

@@ -161,6 +161,8 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
 /// A Tools menu row (tools spec § 5). A built-in is recorded under `tool:builtin:<id>` and handed
 /// back for the glue to replay; a user entry is launched through the scope, recorded under its
 /// key (a fixed choice under its own; a `choices_cmd` line never), and logged by position only.
+// one row per kind of choices: each case reads on its own.
+#[allow(clippy::match_same_arms)]
 fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match action {

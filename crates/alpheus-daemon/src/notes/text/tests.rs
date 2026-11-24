@@ -92,7 +92,7 @@ fn moves_never_split_a_scalar_or_a_mark() {
     let mut p = pad(text);
     let ok = |at: usize| {
         assert!(text.is_char_boundary(at), "{at}");
-        assert!(!text.get(at..).and_then(|s| s.chars().next()).is_some_and(|c| crate::grid::char_width(c) == 0), "{at} is before a mark");
+        assert!(!text.get(at..).and_then(|s| s.chars().next()).is_some_and(|c| char_width(c) == 0), "{at} is before a mark");
     };
     for at in 0..=text.len() {
         if !text.is_char_boundary(at) {

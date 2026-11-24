@@ -90,7 +90,7 @@ fn row_texts(b: &Boxed) -> Vec<String> {
 
 /// `s` centred in `w` cells (the left side takes the smaller half).
 fn centred(s: &str, w: u16) -> String {
-    let pad = usize::from(w.saturating_sub(crate::grid::text_width(s)));
+    let pad = usize::from(w.saturating_sub(text_width(s)));
     format!("{}{s}{}", " ".repeat(pad / 2), " ".repeat(pad - pad / 2))
 }
 
@@ -575,7 +575,7 @@ fn bluetooth_deadlines_and_logs_go_through_due() {
     );
     let (a, log) = q.bt_answered(
         &ActCall::StartDiscovery { adapter: "/org/bluez/hci0".into() },
-        Err(crate::sources::dbus::bt_act::ActError::Remote("org.bluez.Error.InProgress".into())),
+        Err(ActError::Remote("org.bluez.Error.InProgress".into())),
         t,
     );
     assert_eq!((a, log.as_deref()), (QuickAction::Nothing, Some("quick: bluetooth discovery failed (org.bluez.Error.InProgress)")));
@@ -1361,10 +1361,10 @@ fn the_wifi_attempt_rides_the_panel_s_one_timer() {
         q.key(&l, Key::Char(c), false, t);
     }
     assert!(matches!(q.key(&l, Key::Enter, false, t), QuickAction::RunSecret { .. }));
-    assert_eq!(q.deadline(), Some(t + crate::quick::wifi::CONNECT_TIMEOUT));
-    let d = q.due(t + crate::quick::wifi::CONNECT_TIMEOUT);
+    assert_eq!(q.deadline(), Some(t + wifi::CONNECT_TIMEOUT));
+    let d = q.due(t + wifi::CONNECT_TIMEOUT);
     assert_eq!((d.wifi_failed, d.redraw), (Some("no answer in 20 s"), true));
-    assert_eq!(q.deadline(), Some(t + crate::quick::wifi::CONNECT_TIMEOUT + crate::quick::wifi::FAILED_SHOWN));
+    assert_eq!(q.deadline(), Some(t + wifi::CONNECT_TIMEOUT + FAILED_SHOWN));
 }
 
 /// A held Backspace keeps erasing in the password field; elsewhere it
@@ -1677,7 +1677,7 @@ fn live_works_out_the_local_end_of_a_timed_dnd() {
     use crate::notify::dnd::Dnd;
     let bar = Bar::new(crate::config::BarConfig::default());
     let until = 1_800_000_000u64;
-    let lt = crate::clock::LocalTime::from_epoch(until as i64);
+    let lt = LocalTime::from_epoch(until as i64);
     let timed = Dnd { on: true, until: Some(until), by_sharing: false };
     let l = live(&bar, &timed);
     assert_eq!(l.dnd, Some(true));
@@ -1864,13 +1864,13 @@ fn the_last_profile_gone_closes_the_detail() {
     q.follow_vpn(&l, Some(vpn_state(3, &[])), t);
     assert!(q.vpn.open);
     q.key(&l, Key::Down, false, t);
-    assert_eq!(q.vpn.pick, crate::quick::vpn::Pick::Profile(vpn_uuid(2)));
+    assert_eq!(q.vpn.pick, vpn::Pick::Profile(vpn_uuid(2)));
     // One of three gone: the pick moves to its neighbour, the detail stays.
     let mut s = vpn_state(3, &[]);
     s.profiles.retain(|p| p.uuid != vpn_uuid(2));
     q.follow_vpn(&l, Some(s), t);
     assert!(q.vpn.open);
-    assert_eq!(q.vpn.pick, crate::quick::vpn::Pick::Profile(vpn_uuid(3)));
+    assert_eq!(q.vpn.pick, vpn::Pick::Profile(vpn_uuid(3)));
     // All gone: back on the rows, the row hidden, the selection on a row still shown.
     q.top = 4;
     q.follow_vpn(&l, Some(VpnState { profiles: vec![], active: vec![] }), t);
@@ -1896,13 +1896,13 @@ fn the_vpn_rides_the_panel_s_one_timer() {
     q.selected = Row::Vpn;
     q.key(&l, Key::Char(' '), false, t);
     assert_eq!(q.vpn_scope(), VpnScope::Detail, "an attempt widens the read");
-    assert_eq!(q.deadline(), Some(t + crate::quick::vpn::CONNECT_TIMEOUT));
+    assert_eq!(q.deadline(), Some(t + vpn::CONNECT_TIMEOUT));
     assert_eq!(q.due(t + Duration::from_secs(19)).vpn_failed, None);
-    let due = q.due(t + crate::quick::vpn::CONNECT_TIMEOUT);
+    let due = q.due(t + vpn::CONNECT_TIMEOUT);
     assert_eq!(due.vpn_failed, Some("no answer in 20 s"));
     assert!(due.redraw);
-    assert_eq!(q.deadline(), Some(t + crate::quick::vpn::CONNECT_TIMEOUT + FAILED_SHOWN), "the failed mark");
-    assert!(q.due(t + crate::quick::vpn::CONNECT_TIMEOUT + FAILED_SHOWN).redraw);
+    assert_eq!(q.deadline(), Some(t + vpn::CONNECT_TIMEOUT + FAILED_SHOWN), "the failed mark");
+    assert!(q.due(t + vpn::CONNECT_TIMEOUT + FAILED_SHOWN).redraw);
     assert_eq!(q.deadline(), None);
 }
 

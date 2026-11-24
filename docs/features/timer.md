@@ -6,8 +6,8 @@ tests enforce on it, and what it costs. It describes the code as it is today.
 
 ## What it does
 
-The `timer` module draws one chip, just before the clock. The chip changes once a minute at most:
-it never shows seconds.
+The `timer` module draws one chip, in a block of its own, just before the clock. The chip changes
+once a minute at most: it never shows seconds.
 
 | The timer is | The chip reads | Colour |
 | --- | --- | --- |

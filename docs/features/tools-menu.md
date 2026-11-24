@@ -70,7 +70,7 @@ killed at 1 s and shows nothing (neither on nor off). Past a bound the first
 ones are kept and one line of counts is logged. Invalid structure makes `launcher.toml` invalid, as for
 every other key. A built-in that opens a tab runs `[actions] open_tab` with `{tab}`, else the launcher's
 terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-category bound is dropped,
-not moved to the root (tools plan 1, decision 12).
+not moved to the root.
 
 **Binding it.** Bind `alpheus-launch --tools` yourself (Mango `bind=SUPER,x,spawn,alpheus-launch --tools`,
 Sway `bindsym $mod+x exec alpheus-launch --tools`). Exit 3 means the daemon is too old or not running, and

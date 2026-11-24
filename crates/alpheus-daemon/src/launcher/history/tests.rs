@@ -266,7 +266,7 @@ fn the_file_holds_only_ids_and_numbers() {
 fn the_largest_history_fits_the_read_limit() {
     let mut h = History::empty(HISTORY_MAX);
     for i in 0..HISTORY_MAX {
-        h.record(&format!("{i:0>width$}", width = ID_MAX), u64::MAX);
+        h.record(&format!("{i:0>ID_MAX$}"), u64::MAX);
     }
     for u in &mut h.entries {
         u.count = COUNT_MAX;

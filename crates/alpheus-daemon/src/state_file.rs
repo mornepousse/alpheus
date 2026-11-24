@@ -2,15 +2,30 @@
 //! do-not-disturb (`$XDG_STATE_HOME/alpheus/dnd`). One hardened writer: an owner-only directory
 //! (never a symlink, never open to others), a fresh temporary file never followed, renamed over the
 //! old one, so a reader sees the old file or the new one, never half of one.
+//!
+//! Never:
+//! - follow a link or write where someone else could: the directory is made owner-only and checked,
+//!   and the temporary file is fresh and never followed;
+//! - leave half a file behind: the rename is atomic, so a reader sees the old one or the new one;
+//! - be bypassed: the notepad reaches the disk only through here
+//!   (`notes_files_are_written_only_through_state_file`), and this file never panics
+//!   (`the_notification_server_has_no_panicking_path` has it on its list);
+//! - `fsync`: the rename is the guarantee, and a daemon that writes a note on every pause in the
+//!   typing must not wait for a disk.
+//!
+//! See: docs/features/notes.md (what a failed save does), docs/features/notifications.md (the
+//! do-not-disturb file and its three forms), docs/features/themes.md (the mode file the control
+//! center reads), docs/decisions.md ("The do-not-disturb file holds one of three forms").
 
 use std::fs::{DirBuilder, OpenOptions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-/// Do-not-disturb's file under the state directory (notifications spec § 5; small features 1,
-/// decision 6): any file means on to other readers (a session script reading the state); its
-/// text says whether it ends (`until <unix>`) or came from a screen share (`sharing`).
+/// Do-not-disturb's file under the state directory (notifications spec § 5): any file means on to
+/// other readers (a session script reading the state); its text says whether it ends
+/// (`until <unix>`) or came from a screen share (`sharing`). See docs/decisions.md, "The
+/// do-not-disturb file holds one of three forms".
 pub const DND_FILE: &str = "dnd";
 
 /// The focus timer's file: one line of the timer spec § 6, removed while the timer is idle.

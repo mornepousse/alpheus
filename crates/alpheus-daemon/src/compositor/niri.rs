@@ -10,7 +10,6 @@ use super::{CompositorState, Toplevel, Window, Workspace};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
-#[cfg(test)]
 use std::time::Duration;
 
 /// Casts kept (privacy spec § 3); a new id past it is ignored.
@@ -71,6 +70,8 @@ fn read<T: serde::de::DeserializeOwned>(name: &str, v: Option<&Value>) -> Result
 }
 
 impl Model {
+    // a malformed event and an unknown one both change nothing, each said where it is.
+    #[allow(clippy::match_same_arms)]
     pub fn apply_line(&mut self, line: &str) -> Result<bool, String> {
         let v: Value = serde_json::from_str(line).map_err(|e| format!("unreadable niri line: {e}"))?;
         let Some((name, body)) = v.as_object().and_then(|o| o.iter().next()) else { return Ok(false) };
@@ -249,7 +250,7 @@ impl Model {
             let most_recent = toplevels.remove(0);
             toplevels.push(most_recent);
         }
-        CompositorState { workspaces, window, toplevels, casting: self.casting(), cast_hold: std::time::Duration::ZERO }
+        CompositorState { workspaces, window, toplevels, casting: self.casting(), cast_hold: Duration::ZERO }
     }
 }
 

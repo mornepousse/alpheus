@@ -1,6 +1,15 @@
 //! Displays: shared types (mode, scale, an output's setting) and
 //! application plans. No call happens here: the daemon reads the outputs
 //! and applies the changes; geometry and profiles compute them.
+//!
+//! Never:
+//! - call anything: the daemon reads the screens and applies a configuration, and these only
+//!   compute (`the_daemon_only_reads_from_the_compositor` holds the one place that writes);
+//! - identify a screen by its connector: it is matched by its identity, which survives a replug
+//!   (docs/decisions.md, "A DisplayLink screen is told from the DRM directory, once per screen
+//!   name").
+//!
+//! See: docs/features/displays.md, docs/features/control-center.md (the Displays tab).
 
 pub mod geometry;
 pub mod profiles;
@@ -81,7 +90,7 @@ impl Scale {
         let s = self.0;
         let next = if dir > 0 {
             (s / Self::STEP + 1) * Self::STEP
-        } else if s % Self::STEP == 0 {
+        } else if s.is_multiple_of(Self::STEP) {
             s.saturating_sub(Self::STEP)
         } else {
             s / Self::STEP * Self::STEP

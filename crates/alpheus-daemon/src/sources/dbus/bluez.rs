@@ -1,5 +1,14 @@
 //! BlueZ: the adapter (powered or not) and the connected devices with their
 //! battery, in one GetManagedObjects.
+//!
+//! Never:
+//! - read a device's address or object path into anything the bar shows, and never name one in a
+//!   log line (`the_bluetooth_logs_name_no_device`);
+//! - act: the panel's connect, pair and power go through the acting connection (`bt_act.rs`), and
+//!   this reader never changes a property.
+//!
+//! See: docs/features/bar.md (the Bluetooth module), docs/features/quick-settings.md
+//! ("How it talks to BlueZ").
 
 use super::{BLUEZ, Bus};
 use crate::system::{BtDevice, BtState};
@@ -32,7 +41,7 @@ pub fn read(bus: &mut dyn Bus) -> io::Result<BtState> {
         })
         .collect();
     // The one that reports a battery first (the headset rather than a
-    // keyboard: Q8), then by name.
+    // keyboard), then by name.
     devices.sort_by(|a, b| b.battery.is_some().cmp(&a.battery.is_some()).then_with(|| a.name.cmp(&b.name)));
     Ok(BtState::On { devices })
 }
@@ -65,7 +74,7 @@ mod tests {
                 ]
             }
         );
-        // The device that reports a battery comes first, whatever its name (Q8).
+        // The device that reports a battery comes first, whatever its name.
         bus.bluez.get_mut(KEYBOARD).unwrap().get_mut(DEVICE).unwrap().0.insert("Alias".into(), Prop::Str("Aa clavier".into()));
         let BtState::On { devices } = read(&mut bus).unwrap() else { panic!("on") };
         assert_eq!(devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["CasqueBT", "Aa clavier"]);
@@ -76,8 +85,8 @@ mod tests {
         let mut bus = FakeBus::workstation();
         bus.connect_bluetooth();
         let d = bus.bluez.get_mut(HEADSET).unwrap().get_mut(DEVICE).unwrap();
-        // Alias still "CasqueBT", Name set too: Alias wins (added, not in the brief: the
-        // brief's version never has both present at once, so a swapped priority stays green).
+        // Alias still "CasqueBT", Name set too: Alias wins. Worth its own case, because the
+        // fixtures above never have both present at once, so a swapped priority would stay green.
         d.0.insert("Name".into(), Prop::Str("Name only".into()));
         let BtState::On { devices } = read(&mut bus).unwrap() else { panic!("on") };
         assert_eq!(devices[0].name, "CasqueBT", "Alias wins over Name when both are present");

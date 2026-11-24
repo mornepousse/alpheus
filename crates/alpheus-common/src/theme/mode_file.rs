@@ -1,6 +1,13 @@
 //! The light/dark mode in effect, as the daemon publishes it for the TUI (2026-10-07: the TUI
 //! never uses D-Bus): `$XDG_RUNTIME_DIR/alpheus/mode`, holding `dark` or `light` and a newline. The
 //! daemon writes it (`alpheus_daemon::appearance::write_mode`); the TUI reads it in mode "auto".
+//!
+//! Never:
+//! - make the control center a D-Bus client: the daemon reads the portal and writes this file,
+//!   which the control center reads in mode `auto`;
+//! - keep a stale mode: the file is written on every change, and its absence means "no daemon".
+//!
+//! See: docs/features/themes.md (the mode), docs/features/control-center.md.
 
 use super::Mode;
 use super::settings::read_capped;

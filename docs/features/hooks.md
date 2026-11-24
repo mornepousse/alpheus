@@ -62,7 +62,7 @@ bluetooth = ["sh", "-c", "[ \"$ALPHEUS_BLUETOOTH\" = connected ] && headset-prof
 At most five runs of one event happen at once, then one more every 3 seconds; a run that finds no
 token is dropped, not queued. `started` goes through the same bucket as the other events (it has
 its five tokens at start). The program is looked up on `$PATH` at each run, so one installed after
-the daemon started is found (hooks plan 1, decision 12). alpheus never waits for a hook, never reads its output and never kills
+the daemon started is found. alpheus never waits for a hook, never reads its output and never kills
 it. A hook runs in its own systemd scope, so it never dies with the bar and a restart of the bar
 never kills it. When the bucket is dry, a dropped run logs one `throttled` line per episode, and the
 next drops of that episode are silent.

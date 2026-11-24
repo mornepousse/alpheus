@@ -1,17 +1,27 @@
-//! Drawing of the grid into an ARGB8888 buffer (wl_shm: bytes B, G, R, A),
-//! cell by cell: each cell's background, then a glyph shaped by cosmic-text
-//! and placed at the left edge of its cell. The grid stays aligned even
-//! when a fallback font (emoji, CJK) has a different advance.
+//! The grid drawn into a shared-memory buffer, cell by cell.
 //!
-//! Bounded memory: the font database only holds the faces actually useful
-//! (cosmic-text otherwise parses every monospace face in its database up
-//! front), and the glyph cache is cleared past `MAX_CACHE` entries.
+//! Each cell's background first, then a glyph shaped by cosmic-text and placed at the left edge of
+//! its cell, so the grid stays aligned even when a fallback face (emoji, CJK) has a different
+//! advance. The buffer is ARGB8888 as `wl_shm` takes it (bytes B, G, R, A), premultiplied. The
+//! per-style background and line passes are in `background.rs`, which this file runs around the
+//! text pass; `plot` draws the resources popup's graphs, whose columns are whole pixels so they
+//! tile exactly at any scale.
 //!
-//! Masking: a character with no glyph anywhere (`family`, nor any
-//! `fallback`) is simply not drawn, rather than drawn as the resolved
-//! face's `.notdef` "missing glyph" box (`shape`'s `gl.glyph_id == 0`
-//! check). Its cell keeps the width `Grid::write` already gave it — only
-//! the paint is skipped.
+//! Bounded memory: the font database holds only the faces that turn out to be useful (cosmic-text
+//! would otherwise parse every monospace face it can find at start), and the glyph cache is
+//! cleared past `MAX_CACHE` entries. A character with no glyph in the family or any fallback is
+//! not drawn at all, rather than drawn as the resolved face's `.notdef` box; its cell keeps the
+//! width `Grid::write` gave it.
+//!
+//! Never:
+//! - paint with anything but the theme's sixteen roles
+//!   (`the_daemon_paints_with_roles_never_the_legacy_palette`);
+//! - grow without bound: the cache and the database are the two that could, and both are capped;
+//! - block or allocate per frame beyond the pool the surface owns (the memory suite's PSS tests
+//!   per popup and per style measure it).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/themes.md (the styles and their passes),
+//! docs/features/resources.md (the graphs), docs/measurements.md (the per-style figures).
 
 pub(crate) mod blocks;
 pub(crate) mod floating;
@@ -149,7 +159,7 @@ fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold:
     buffer.shape_until_scroll(fs, false);
     let mut shaped = Vec::new();
     for run in buffer.layout_runs() {
-        for gl in run.glyphs.iter() {
+        for gl in run.glyphs {
             if gl.glyph_id == 0 {
                 continue;
             }
@@ -220,7 +230,7 @@ pub fn columns(width_phys: u32, advance: f32) -> u16 {
     if advance <= 0.0 {
         return 0;
     }
-    ((width_phys as f32 / advance).floor() as u32).min(u16::MAX as u32) as u16
+    ((width_phys as f32 / advance).floor() as u32).min(u32::from(u16::MAX)) as u16
 }
 
 /// Cell under a point (x in logical px, like the Wayland pointer).
@@ -228,7 +238,7 @@ pub fn column_under(x_logical: f64, scale: i32, advance: f32) -> u16 {
     if advance <= 0.0 || x_logical <= 0.0 {
         return 0;
     }
-    ((x_logical * scale.max(1) as f64) / advance as f64).floor().min(u16::MAX as f64) as u16
+    ((x_logical * f64::from(scale.max(1))) / f64::from(advance)).floor().min(f64::from(u16::MAX)) as u16
 }
 
 fn attrs(family: &str, bold: bool) -> Attrs<'_> {
@@ -354,8 +364,9 @@ fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb) {
     rect(px, width, height, (0, s), (r, height.saturating_sub(r)), ink);
     rect(px, width, height, (width.saturating_sub(s), width), (r, height.saturating_sub(r)), ink);
     let (rf, sf) = (r as f32, s as f32);
-    let mix =
-        |stroke: u8, back: u8, ring: f32, inside: f32| ((stroke as f32 * ring + back as f32 * inside).round()).clamp(0.0, 255.0) as u8;
+    let mix = |stroke: u8, back: u8, ring: f32, inside: f32| {
+        ((f32::from(stroke) * ring + f32::from(back) * inside).round()).clamp(0.0, 255.0) as u8
+    };
     for cy in 0..r {
         for cx in 0..r {
             // Distance of the pixel's centre to the corner circle's centre, in the corner's own
@@ -380,7 +391,7 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
         return;
     }
-    let a = c.a() as u32;
+    let a = u32::from(c.a());
     if a == 0 {
         return;
     }
@@ -388,11 +399,11 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     let o = (y as usize * width as usize + x as usize) * 4;
     let src = [c.b(), c.g(), c.r()];
     for k in 0..3 {
-        px[o + k] = ((src[k] as u32 * a + px[o + k] as u32 * (255 - a)) / 255) as u8;
+        px[o + k] = ((u32::from(src[k]) * a + u32::from(px[o + k]) * (255 - a)) / 255) as u8;
     }
     // Premultiplied "over": an opaque destination stays exactly 255 (flat, popups: unchanged);
     // a transparent or translucent one (islands, translucent) keeps a valid premultiplied pixel.
-    px[o + 3] = ((255 * a + px[o + 3] as u32 * (255 - a)) / 255) as u8;
+    px[o + 3] = ((255 * a + u32::from(px[o + 3]) * (255 - a)) / 255) as u8;
 }
 
 fn has_family(f: &fontdb::FaceInfo, family: &str) -> bool {
@@ -436,7 +447,7 @@ fn find_replacement<'a>(faces: impl Iterator<Item = &'a fontdb::FaceInfo>) -> Op
 /// other face in its file.
 fn useful_faces(inventory: &fontdb::Database, family: &str) -> Vec<fontdb::FaceInfo> {
     let faces: Vec<&fontdb::FaceInfo> = inventory.faces().filter(|f| has_family(f, family) && f.style == fontdb::Style::Normal).collect();
-    let closest = |target: i32| faces.iter().min_by_key(|f| (f.weight.0 as i32 - target).abs()).map(|f| f.id);
+    let closest = |target: i32| faces.iter().min_by_key(|f| (i32::from(f.weight.0) - target).abs()).map(|f| f.id);
     let mut ids = Vec::new();
     for id in [closest(400), closest(700)].into_iter().flatten() {
         if !ids.contains(&id) {
@@ -645,7 +656,8 @@ impl Fonts {
             // Over the cell backgrounds, under the glyphs: a descender is never cut.
             background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
         }
-        // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
+        // No inks unless pills applies (`blocks::pills`): the other styles draw their glyphs in the
+        // foreground role.
         let (on, n) = blocks::pill_inks(roles, bg);
         self.glyphs(grid, roles, roles.bar_bg, px, width, band, 0, &on[..n], bg.style == BarStyle::Underline);
     }

@@ -214,7 +214,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                     if releases_memory_once_consumed(&request, buffered) {
                         crate::memory::release_memory();
                     }
-                    state.launcher_request(&q, request, conn)
+                    state.launcher_request(&q, request, conn);
                 }
             },
             Progress::Failed(m) => {

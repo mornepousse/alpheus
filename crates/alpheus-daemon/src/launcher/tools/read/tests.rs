@@ -301,14 +301,14 @@ fn the_slot_is_free_when_the_last_event_is_delivered() {
         let (next_exec, next) = (exec.clone(), choices_job(script(&d, "c2", "echo b")));
         let mut next = Some(next);
         spawn_job(first, exec, Arc::new(AtomicBool::new(false)), move |e| {
-            if matches!(e, JobEvent::Choices { .. } | JobEvent::StatesDone { .. }) {
-                if let Some(job) = next.take() {
-                    let done_tx = done_tx.clone();
-                    let started = spawn_job(job, next_exec.clone(), Arc::new(AtomicBool::new(false)), move |e| {
-                        let _ = done_tx.send(e);
-                    });
-                    let _ = tx.send(started.map_err(|e| e.kind()));
-                }
+            if matches!(e, JobEvent::Choices { .. } | JobEvent::StatesDone { .. })
+                && let Some(job) = next.take()
+            {
+                let done_tx = done_tx.clone();
+                let started = spawn_job(job, next_exec.clone(), Arc::new(AtomicBool::new(false)), move |e| {
+                    let _ = done_tx.send(e);
+                });
+                let _ = tx.send(started.map_err(|e| e.kind()));
             }
         })
         .unwrap();

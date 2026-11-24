@@ -49,7 +49,7 @@ fn the_rail_needs_84_columns_and_26_rows() {
 #[test]
 fn the_sound_summary_names_the_default_output_or_none() {
     let mut a = ready_app();
-    a.go_tab(Tab::Sound, std::time::Instant::now());
+    a.go_tab(Tab::Sound, Instant::now());
     assert!(subtitle(&a).ends_with("playing on CasqueBT"), "{}", subtitle(&a));
     if let Loadable::Ready(audio) = &mut a.data.audio {
         for n in &mut audio.sinks {

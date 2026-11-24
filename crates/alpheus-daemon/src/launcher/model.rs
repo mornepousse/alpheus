@@ -620,6 +620,8 @@ impl Launcher {
 
     /// The keys that mean something else in the Tools mode (spec § 2); the rest (editing, moving)
     /// is the common handling.
+    // Left in a typed query is spelled out, so it never falls to a later arm.
+    #[allow(clippy::match_same_arms)]
     fn apply_tools(&mut self, k: Key) -> Option<Outcome> {
         Some(match k {
             Key::Backspace if self.query.is_empty() => {
@@ -764,7 +766,7 @@ impl Launcher {
             };
         }
         // A confirm entry or choice: the box goes to its level with its question asked, so the
-        // question, its expiry and its timer are the Tools mode's only (spec decision 20).
+        // question, its expiry and its timer are the Tools mode's only (tools menu spec, decision 20).
         match choice {
             Some(_) => {
                 t.goto_choices(&self.config.tools, entry);
@@ -1241,7 +1243,8 @@ fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig, clipboar
     prefix::split(query, config.search_enabled(), clipboard)
 }
 
-/// The history rows' text is overwritten before it is freed (clipboard spec decision 18).
+/// The history rows' text is overwritten before it is freed, previews included (clipboard spec § 4,
+/// "Never a password").
 fn wipe_clips(clips: &mut [ClipRow]) {
     for c in clips {
         wipe(&mut c.preview);

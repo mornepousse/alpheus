@@ -815,7 +815,7 @@ impl Bt {
                     Some(_) if self.powered() => "on",
                     Some(_) => "off",
                 };
-                text_row(g, None, "‹ Bluetooth", value, Style::MUTED, selected)
+                text_row(g, None, "‹ Bluetooth", value, Style::MUTED, selected);
             }
             Line::BtCode => {
                 if let Some(Code::Shown { text, .. }) = &self.code {

@@ -44,7 +44,7 @@ fn the_power_module_parses_and_ends_the_default_order() {
 }
 
 #[test]
-fn settings_read() {
+fn every_setting_of_the_file_is_read() {
     let text = "modules = [\"clock\", \"workspaces\"]\nheight = 28\n[font]\nfamily = \"Fira Code\"\nfallback = [\"Noto Color Emoji\"]\n[clock]\nformat = \"%H:%M:%S\"\n[workspaces]\ncommand = [\"my-tool\", \"{workspace}\"]\n";
     let (c, w) = BarConfig::load(&file("ok", text));
     assert_eq!(w, None);
@@ -64,7 +64,7 @@ fn unknown_module_defaults_and_message() {
 }
 
 #[test]
-fn refused_with_reason() {
+fn a_refused_value_says_which_key_and_why() {
     let err = |t: &str| BarConfig::from_text(t).unwrap_err();
     assert!(err("modules = [\"clock\", \"clock\"]").contains("duplicate"));
     assert!(err("[clock]\nformat = \"%Q\"").contains("clock.format"));
@@ -671,7 +671,7 @@ fn dnd_while_sharing_defaults_off_and_reads_true() {
 }
 
 #[test]
-fn notification_rules_parse() {
+fn the_notification_rules_parse_with_their_bounds() {
     let c = BarConfig::from_text(
         "[[notifications.rules]]\napp = \"Chatty\"\naction = \"mute\"\n\
          [[notifications.rules]]\napp = \"Pager\"\nurgency = \"critical\"\n\
@@ -734,7 +734,7 @@ fn battery_warn_defaults_dedups_and_sorts() {
 }
 
 #[test]
-fn quick_dnd_until() {
+fn the_quick_panels_until_time_is_read_and_checked() {
     assert_eq!(QuickConfig::default().dnd_until_hm(), (8, 0));
     let unchecked = QuickConfig { dnd_until: "nonsense".into(), ..QuickConfig::default() };
     assert_eq!(unchecked.dnd_until_hm(), (8, 0), "a text the check would refuse falls back to 8:00");
@@ -793,7 +793,7 @@ fn hooks_check_their_commands() {
 }
 
 #[test]
-fn hooks_accept_shield() {
+fn the_hooks_table_accepts_the_shield_event() {
     let c = BarConfig::from_text("[hooks]\nshield = [\"notify-send\", \"shield\"]\n").unwrap();
     assert_eq!(c.hooks.shield, ["notify-send", "shield"]);
     assert!(!c.hooks.is_empty());
@@ -879,7 +879,7 @@ fn shield_is_empty_by_default() {
 }
 
 #[test]
-fn shield_reads() {
+fn the_shield_table_is_read_as_configured_only_when_it_is_whole() {
     let c = BarConfig::from_text(shield_text()).unwrap();
     assert!(c.shield.configured());
     assert_eq!(c.shield.flag, "/var/lib/test-shield/on");

@@ -560,7 +560,7 @@ fn a_message_lasts_until_the_next_key() {
 /// otherwise the error line would linger on screen until some other key is pressed, even
 /// though the click itself already invalidated it. A blank query in Commands mode gives a
 /// click that selects a real row yet still activates nothing (`primary`'s own `Shell`
-/// branch, blank text: Review the brief's Enter rule) — the one way to reach `Nothing`
+/// branch, blank text: Enter activates nothing) — the one way to reach `Nothing`
 /// from `click` without the index guard itself already rejecting it.
 #[test]
 fn clicking_clears_a_message_and_redraws_even_when_nothing_else_changes() {
@@ -795,7 +795,7 @@ fn a_colon_lists_emoji_and_copies() {
     assert!(!l.results.is_empty() && l.results.len() <= 5, "{:?}", sources(&l));
     assert!(l.results.iter().all(|h| matches!(h.source, Source::Emoji(_))), "{:?}", sources(&l));
     let Source::Emoji(offset) = l.results[0].source else { unreachable!() };
-    assert_eq!(crate::launcher::emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
+    assert_eq!(emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
     assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{2764}\u{fe0f}".into() }));
     assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Copy { text: "red heart".into() }));
 }

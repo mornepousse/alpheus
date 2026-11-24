@@ -1,13 +1,13 @@
 //! Wayland objects whose last reference must not be dropped inside calloop's dispatch.
 //!
-//! SCTK's keyboard bound with repeat on the loop keeps its repeat timer's calloop token in the
-//! `wl_keyboard`'s user data, and that data's Drop removes the token from the loop. The token
-//! stays there after the timer ran out (SCTK only replaces it at the next repeating key). A
-//! released `wl_keyboard` lives on in wayland-backend's object map until the compositor's
-//! `delete_id`, which the Wayland source reads in calloop's `before_handle_events`, while calloop
-//! borrows its sources: if the map held the last reference then, the Drop re-borrows them and
-//! panics ("RefCell already borrowed"), which then poisons wayland-backend and aborts the bar
-//! (the crash of 2026-10-06 and 2026-10-09, after a launcher or popup close).
+//! SCTK's keyboard, bound with repeat on the loop, keeps its repeat timer's calloop token in the
+//! `wl_keyboard`'s user data, and that data's Drop removes the token from the loop. The token stays
+//! there after the timer ran out (SCTK only replaces it at the next repeating key). A released
+//! `wl_keyboard` lives on in wayland-backend's object map until the compositor's `delete_id`,
+//! which the Wayland source reads in calloop's `before_handle_events`, while calloop borrows its
+//! sources: if the map held the last reference then, the Drop re-borrows them and panics
+//! ("RefCell already borrowed"), which poisons wayland-backend and aborts the bar (the crash of
+//! 2026-10-06 and 2026-10-09, after a launcher or popup close).
 //!
 //! So a released keyboard is never just dropped: `Retired` holds a clone, and once no one else
 //! does (the map let go, the repeat timer's closure is gone), drops it after `dispatch` returns.
@@ -18,6 +18,15 @@
 //! timer then repeats (`App::key_event`, sent nowhere once nothing is open) until the focused
 //! surface goes, and its closure keeps this keyboard retired until then. SCTK exposes neither the
 //! timer's token nor a way to clear the repeat.
+//!
+//! Never:
+//! - drop a released keyboard where calloop is borrowing its sources: every release goes through
+//!   `keyboard_retire`, and the loop drains this list right after each `dispatch` returns
+//!   (`a_released_keyboard_is_retired_then_dropped_after_the_dispatch`);
+//! - hold one for ever: the list drops whatever no one else references, and the tests here run a
+//!   real loop to prove both the hazard and the drain.
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/bar.md ("How it is built").
 
 use smithay_client_toolkit::reexports::client::Proxy;
 use smithay_client_toolkit::reexports::client::protocol::wl_keyboard;

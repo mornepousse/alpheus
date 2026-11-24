@@ -3,6 +3,18 @@
 //! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
 //! the bar shows "–". The compositor is detected once at start (`detect`), in the usual session-script
 //! order, with niri last.
+//!
+//! Never:
+//! - write to a compositor: each backend's requests are a fixed list, checked by
+//!   `compositor_requests_are_read_only`, `mango_writes_only_its_request_lines` and
+//!   `sway_writes_only_its_three_messages`; the one write alpheus makes is the configured
+//!   workspace command, from `actions.rs`;
+//! - open a socket anywhere else (`compositor_sockets_opened_only_in_sources`);
+//! - poll: every backend blocks on its socket, so a quiet session costs no wake-up.
+//!
+//! See: docs/compositors.md (what each compositor gives and what `wm-set` stands for),
+//! docs/features/bar.md ("What the bar reads, and what it writes"), docs/ARCHITECTURE.md
+//! ("Sources: what feeds the loop").
 
 pub mod dbus;
 pub mod hypr;
@@ -143,7 +155,7 @@ pub fn supervise<T>(
         // `&Box<dyn Any + Send>` wrongly lets itself be converted into a
         // trait object over THE BOX itself (which also implements `Any`)
         // rather than over the value it contains — `downcast_ref` would then
-        // always fail, silently (a verified trap: see the fix report).
+        // always fail, silently.
         let r: io::Result<()> = result.unwrap_or_else(|payload| Err(io::Error::other(format!("panic: {}", panic_text(&*payload)))));
         if closed {
             return; // the bar stops
@@ -215,10 +227,9 @@ pub fn spawn_source<T: Send + 'static>(
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name(name.into())
-        // A source thread only reads and publishes a small, bounded state:
-        // the default 8 MB stack is overkill (startup budget, step 6's
-        // second lever; only touched pages count towards PSS, so the gain
-        // is modest, but real).
+        // A source thread only reads and publishes a small, bounded state: the default 8 MB stack
+        // is overkill, and the smaller one serves the startup budget (only touched pages count
+        // towards PSS, so the gain is modest, but real).
         .stack_size(256 * 1024)
         .spawn(move || {
             let _guard = SourceGuard { name, send: &send, value: PhantomData };

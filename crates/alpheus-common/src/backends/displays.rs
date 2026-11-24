@@ -1,6 +1,14 @@
 //! Displays: asked of the alpheus daemon, which owns the compositor's output
 //! management (displays protocol spec), over the launcher's owner-only socket.
 //! Never the compositor directly, never a command.
+//!
+//! Never:
+//! - call the service behind the tool: the tool is the interface, and a missing one leaves the row
+//!   or the tab empty rather than failing;
+//! - run anything in a test: the fake executor answers (AGENTS.md).
+//!
+//! See: docs/features/control-center.md, docs/install.md (the tools), docs/compositors.md (what
+//! `wm-set` and `shell-ctl` stand for).
 
 use crate::displays::Step;
 use crate::displays::wire::{Snapshot, decode_snapshot, encode_desired};

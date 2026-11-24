@@ -1,5 +1,12 @@
 //! A test's own temporary directory, removed when its guard drops (even while a
 //! failed assert unwinds), so test runs leave nothing behind in `$TMPDIR`.
+//!
+//! Never:
+//! - leave a directory behind: the guard removes it even while a failed assert unwinds, so a test
+//!   run leaves nothing in `$TMPDIR` (AGENTS.md: the worktrees and the scratch files of an agent);
+//! - be used outside a test.
+//!
+//! See: CONTRIBUTING.md (the tests' isolation), docs/ARCHITECTURE.md ("Tests").
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};

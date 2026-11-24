@@ -5,7 +5,7 @@ members = ["crates/alpheus-common", "crates/alpheus", "crates/alpheus-daemon", "
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
 
 [workspace.dependencies]
@@ -38,3 +38,24 @@ dbus-crossroads = "0.5"
 lto = true
 codegen-units = 1
 strip = true
+
+# Readability lints (open-source plan 5). Warnings here, errors in CI (-D warnings).
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+# Left out on purpose: redundant_closure_for_method_calls (its fixes made long
+# paths that read worse) and needless_pass_by_value (36 hits, mostly thread
+# entry points, map_err adapters and temporaries, where references read worse).
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+unnested_or_patterns = "warn"
+match_same_arms = "warn"
+cast_lossless = "warn"
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"

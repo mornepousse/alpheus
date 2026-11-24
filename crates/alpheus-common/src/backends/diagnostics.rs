@@ -1,6 +1,14 @@
 //! Diagnostics: systemd's own tools (`systemctl`, `journalctl`, `coredumpctl`, `systemd-analyze`)
 //! read through `Executor::capture` (a deadline, a byte cap and a line cap, the process group
 //! killed after), plus the bug report's clipboard program. Only the Diag tab's worker calls these.
+//!
+//! Never:
+//! - call the service behind the tool: the tool is the interface, and a missing one leaves the row
+//!   or the tab empty rather than failing;
+//! - run anything in a test: the fake executor answers (AGENTS.md).
+//!
+//! See: docs/features/control-center.md, docs/install.md (the tools), docs/compositors.md (what
+//! `wm-set` and `shell-ctl` stand for).
 
 use super::{BResult, BackendError, exec_error, unparsable};
 use crate::config::Check;
@@ -635,7 +643,7 @@ mod tests {
     #[test]
     fn a_failed_read_is_unknown_in_the_report_not_none() {
         let (_f, t) = tools();
-        let t = t.with_facts(crate::diagnostics::report::HostFacts::default());
+        let t = t.with_facts(HostFacts::default());
         let text = t.report("Mango", 3);
         assert!(text.contains("Failed units: unknown") && text.contains("Errors this boot: unknown"), "{text}");
     }
@@ -656,7 +664,9 @@ mod tests {
         let denied = !tools(&dir).journal_readable();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         // (root opens anything: the assertion only holds for an ordinary user)
-        assert!(denied || unsafe { libc::geteuid() } == 0, "a file the user cannot open is not readable");
+        // SAFETY: geteuid(2) takes no argument and cannot fail.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert!(denied || root, "a file the user cannot open is not readable");
         assert!(!tools(&dir.join("missing")).journal_readable(), "no such directory");
     }
 

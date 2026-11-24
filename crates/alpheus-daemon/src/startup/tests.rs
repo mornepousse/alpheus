@@ -12,15 +12,15 @@ const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
 /// which step broke.
 #[test]
 fn watch_fd_failing_says_which_step_broke_not_no_session_bus() {
-    let connect = no_session_bus(std::io::Error::other("boom"));
-    let watch = watch_fd_failed(std::io::Error::other("boom"));
+    let connect = no_session_bus(io::Error::other("boom"));
+    let watch = watch_fd_failed(io::Error::other("boom"));
     assert_ne!(connect, watch, "two different steps must not share one line");
     assert!(connect.contains("no session bus"), "{connect:?}");
     assert!(!watch.contains("no session bus"), "the bus did connect: {watch:?}");
     assert!(watch.contains("fd"), "names the step that failed: {watch:?}");
 }
 
-/// Privacy delivery 2: the camera watch (an inotify instance, a scan) exists only with `privacy`.
+/// The camera watch (an inotify instance, a scan) exists only with `privacy`.
 #[test]
 fn the_camera_watch_starts_only_with_privacy() {
     assert!(camera_wanted(&[ModuleId::Privacy]));
@@ -308,7 +308,7 @@ fn end_of_session_recognizes_epipe_and_econnreset_only() {
 #[test]
 fn end_of_session_traverses_calloop_nesting() {
     use smithay_client_toolkit::reexports::calloop::Error as LoopError;
-    // Observed on this machine (headless sway, compositor killed):
+    // Observed with a headless sway whose compositor was killed:
     // calloop sometimes returns an `OtherError` wrapping a source's
     // `IoError`, instead of returning it directly — the real system
     // error is then at the second level of `source()`, not the first.

@@ -6,6 +6,17 @@
 //! allowlist (spec § 3), built in ONE place, `message`, with auto-start off:
 //! nothing outside the list can reach an application, and no call can
 //! start a service.
+//!
+//! Never:
+//! - block after the connect: a call is sent, remembered by its serial and given up on at its
+//!   deadline, so one slow application cannot stop the bar;
+//! - keep a timer at rest: the expiry timer is armed only while a call is pending
+//!   (`nothing_resident_while_the_launcher_is_closed`);
+//! - leave an answer waiting: what a settle round drained is routed from one idle read
+//!   (`answers_left_by_the_settle_rounds_are_routed_from_an_idle`), and a closed link is never
+//!   reconnected (docs/decisions.md, "A closed session bus is never reconnected").
+//!
+//! See: docs/features/tray.md ("How it is built"), docs/ARCHITECTURE.md ("Threads").
 
 use super::{
     APPEARANCE_NAMESPACE, CAPABILITIES, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH,
@@ -249,6 +260,8 @@ pub enum Call {
 }
 
 impl Call {
+    // one row per call: the table of the allowlist.
+    #[allow(clippy::match_same_arms)]
     pub fn method(&self) -> Method {
         match self {
             Call::Get { .. } => Method::Get,
@@ -380,7 +393,6 @@ pub fn message(call: &Call) -> Message {
         Call::RequestName => m.append2(WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE),
         Call::RequestNotifications => m.append2(NOTIFICATIONS_NAME, NOTIFICATIONS_NAME_FLAGS),
         Call::GetNameOwner { name } | Call::GetConnectionUnixProcessID { name } => m.append1(name.as_str()),
-        Call::ListNames => m,
         Call::AddMatch { rule } | Call::RemoveMatch { rule } => m.append1(rule.as_str()),
         Call::RegisterStatusNotifierHost { host, .. } => m.append1(host.as_str()),
         Call::ReadOne => m.append2(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY),
@@ -388,7 +400,7 @@ pub fn message(call: &Call) -> Message {
         Call::PlayerIdentity { .. } => m.append2(MPRIS_INTERFACE, "Identity"),
         Call::PlayerMetadata { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Metadata"),
         Call::PlayerPosition { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Position"),
-        Call::PlayerControl { .. } | Call::SubscribeUnits { .. } => m,
+        Call::ListNames | Call::PlayerControl { .. } | Call::SubscribeUnits { .. } => m,
     };
     m.set_auto_start(false);
     if method == Method::Event {
@@ -699,7 +711,7 @@ pub mod testing {
     /// A plain `Notify("Fictional", 0, "", summary, "", [], {}, -1)` as the bus delivers it, for the
     /// consumer's tests (notifications.rs names no dbus type).
     pub fn notify_call(summary: &str) -> Message {
-        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+        let mut m = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "Notify")
             .unwrap()
             .append3("Fictional", 0u32, "")
             .append3(summary, "", Vec::<String>::new())
@@ -712,7 +724,7 @@ pub mod testing {
     /// The same Notify, critical (`urgency` 2).
     pub fn critical_notify_call(summary: &str) -> Message {
         let hints: BTreeMap<String, Variant<u8>> = [("urgency".to_string(), Variant(2u8))].into();
-        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+        let mut m = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "Notify")
             .unwrap()
             .append3("Fictional", 0u32, "")
             .append3(summary, "", Vec::<String>::new())

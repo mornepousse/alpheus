@@ -1,4 +1,12 @@
 //! Energy: profile (powerprofilesctl) and "Keep awake" (tools-menu).
+//!
+//! Never:
+//! - call the service behind the tool: the tool is the interface, and a missing one leaves the row
+//!   or the tab empty rather than failing;
+//! - run anything in a test: the fake executor answers (AGENTS.md).
+//!
+//! See: docs/features/control-center.md, docs/install.md (the tools), docs/compositors.md (what
+//! `wm-set` and `shell-ctl` stand for).
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;

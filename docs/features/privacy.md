@@ -37,6 +37,11 @@ hears nothing. On a narrow bar the module is removed just before the power butto
 
 An indicator that goes off stays shown for half a second, so a stream that renegotiates never blinks.
 
+**Known limits.** Under Hyprland, a cast that was already running when the daemon started shows only
+through PipeWire (niri reports its casts at connection). On a board whose hardware codec nodes are
+named `video*` (some ARM boards), a codec in use also lights the camera: the nodes are never opened
+to tell them apart.
+
 **The popup.** It lists, under one heading per lit indicator, the apps that hold it, or `(unnamed)`
 when only the compositor knows (the compositors' events name no app). An app's name is the first of
 the portal's app id, `application.name`, the process binary and the node's name, cleaned, at most

@@ -3,6 +3,15 @@
 //! icon the pointer rests on and since when. The wiring arms one
 //! `DeadlineTimer` on `Arm`, removes it on `Cancel`; with the pointer
 //! anywhere else, nothing is armed.
+//!
+//! Never:
+//! - keep the timer while the pointer is elsewhere: it is armed on `Arm` and removed on `Cancel`,
+//!   so a bar nobody hovers costs nothing (`nothing_resident_while_the_launcher_is_closed`);
+//! - find its bar by an output's name (`hover_fire_finds_its_bar_by_surface_identity_never_by_name`),
+//!   or leave a tooltip's item behind after its popup closed
+//!   (`popup_close_resets_tooltip_item_for_a_closed_tooltip`).
+//!
+//! See: docs/features/tray.md ("Tooltips").
 
 use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::popup::Anchor;
@@ -149,7 +158,7 @@ mod tests {
         let (bar, extra, advance) = (100_u16, 60_u32, 8.0_f32);
         let row = super::tooltip_row(&"x".repeat(500), tooltip_columns(bar, extra, advance));
         let cells = row.width() + 2; // `list::padded`
-        assert!(cells as f32 * advance + extra as f32 <= bar as f32 * advance, "{cells} cells + frame within {bar} columns");
+        assert!(f32::from(cells) * advance + extra as f32 <= f32::from(bar) * advance, "{cells} cells + frame within {bar} columns");
     }
 
     #[test]

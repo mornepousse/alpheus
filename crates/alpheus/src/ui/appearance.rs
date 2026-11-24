@@ -310,7 +310,7 @@ fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -
         }
         BarStyle::Powerline => match (colors, b.hue) {
             (ModuleColors::Pills, Some(hue)) => Some(hue),
-            _ if i % 2 == 0 => Some(p.pill_bg),
+            _ if i.is_multiple_of(2) => Some(p.pill_bg),
             _ => Some(p.raised),
         },
     }

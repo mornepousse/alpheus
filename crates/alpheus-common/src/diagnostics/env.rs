@@ -1,5 +1,14 @@
 //! `systemctl --user show-environment`: `NAME=value` lines. The whole environment can hold secrets
 //! (tokens exported by a shell profile), so only the names asked for are ever kept.
+//!
+//! Never:
+//! - launch a tool or open a file: the backend does that, and these only read what it printed;
+//! - keep a field the view does not show: what journald or `coredumpctl` adds is dropped at the
+//!   parse, so a secret in the environment or a command line is never carried;
+//! - trust a text: everything from outside passes `text::clean_line` before it is kept.
+//!
+//! See: docs/features/control-center.md ("Diag"), docs/decisions.md (the Diag entries),
+//! AGENTS.md ("No private data in fixtures or logs").
 
 use crate::text::clean_line;
 

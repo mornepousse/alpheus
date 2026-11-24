@@ -534,7 +534,7 @@ mod tests {
         let drm = TempPath::dir("drm-displaylink");
         add_drm_card(&drm, "card0", "i915", &["eDP-1", "DVI-I-10", "HDMI-A-1"]);
         add_drm_card(&drm, "card2", "evdi", &["DVI-I-1", "HDMI-A-11"]);
-        // The connector's own `device/driver` (the brief's shape).
+        // A DisplayLink connector can carry the driver link itself, under the connector.
         std::fs::create_dir_all(drm.join("card3-DP-5/device")).unwrap();
         symlink("../../../../bus/platform/drivers/evdi", drm.join("card3-DP-5/device/driver")).unwrap();
         assert!(is_displaylink(&drm, "DVI-I-1"), "a connector of the evdi card");
@@ -607,7 +607,9 @@ placement = { x = 0, y = 0 }
         assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a directory");
         std::fs::remove_dir(&path).unwrap();
         let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // SAFETY: `c` is a NUL-terminated path that outlives the call.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0);
         assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a FIFO, without blocking");
     }
 

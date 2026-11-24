@@ -229,10 +229,10 @@ impl Drop for Sway {
     fn drop(&mut self) {
         // The whole group (see `process_group(0)` above), not just this
         // PID: `dbus-run-session`, `dbus-daemon` and the compositor it
-        // started share this pgid, never the test session's. SAFETY:
-        // kill(2) towards a group WE created at this launch
-        // (process_group(0)), never -1 nor 0.
+        // started share this pgid, never the test session's.
         let pgid = self.child.id() as i32;
+        // SAFETY: kill(2) towards a group WE created at this launch
+        // (process_group(0)), never -1 nor 0.
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.runtime);
@@ -478,7 +478,7 @@ pub struct TempDir(pub PathBuf);
 impl TempDir {
     /// `$TMPDIR/<name>-<pid>`, emptied first.
     pub fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
@@ -597,7 +597,7 @@ pub fn pw_dump_send(runtime: &Path, json: &str) {
         match fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&path) {
             Ok(f) => break f,
             Err(e) if e.raw_os_error() == Some(libc::ENXIO) && t.elapsed() < Duration::from_secs(10) => {
-                thread::sleep(Duration::from_millis(10))
+                thread::sleep(Duration::from_millis(10));
             }
             Err(e) => panic!("{}: {e}", path.display()),
         }
@@ -843,7 +843,7 @@ pub fn wl_paste(sway: &Sway) -> Option<String> {
     let mut out = child.stdout.take().expect("piped");
     let reader = thread::spawn(move || {
         let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        let _ = Read::read_to_string(&mut out, &mut text);
         text
     });
     let start = Instant::now();

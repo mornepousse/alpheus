@@ -1,5 +1,22 @@
-//! The bar's pure state: what the sources have said, nothing else.
-//! Messages change it; `layout` derives the grid for each screen from it.
+//! The bar's pure state: what the sources have said, and nothing else.
+//!
+//! `Msg` is everything a source can say (a compositor's workspaces, a sound reading, a D-Bus
+//! domain's state, a timer's chip, the notifications' view) and `Bar::apply` is the one place a
+//! message changes the state. It answers whether anything the bar draws changed, so the loop
+//! repaints only then; `layout` derives each screen's grid from this state, and `segments` the
+//! cells of one module. Nothing here reads a clock, a file or the system: the wiring hands in what
+//! it has read.
+//!
+//! Never:
+//! - keep what no module draws: a list the quick panel reads lives in the panel while it is open
+//!   (`the_bar_never_keeps_a_sink_list`, in this file's own tests), so the bar at rest stays small;
+//! - report a change that is not one: `set_if_changed` is how a message that says the same thing
+//!   again costs no repaint (`set_if_changed_stores_and_reports_only_a_change`);
+//! - read a source that is down as a state of its own: the module keeps its last reading and shows
+//!   its icon with `–` (docs/decisions.md, "A source that is down is not a state").
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (one message from the source to the
+//! pixels), docs/features/bar.md ("How it is built").
 
 use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
@@ -41,7 +58,7 @@ pub enum Msg {
         open: Option<u64>,
         state: Option<WifiState>,
     },
-    /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
+    /// The quick panel's Bluetooth (quick settings Bluetooth spec), only while it is open: the panel's
     /// (`quick/app.rs` takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
@@ -102,7 +119,7 @@ pub struct Bar {
     /// The privacy indicators (privacy spec §§ 3 and 4), fed by `privacy_at`; empty without the module.
     pub privacy: Privacy,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
-    /// at start and on every theme reload. `None` until then, the look of delivery 1.
+    /// at start and on every theme reload. `None` until then: no module takes its hue.
     pub module_colors: ModuleColors,
     /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
     /// by the wiring like `module_colors`; `Flat` until then.
@@ -209,6 +226,8 @@ impl Bar {
     }
 
     /// Applies a message; true if the display may have changed.
+    // one row per message: the ones that change nothing stay spelled out, each with its reason.
+    #[allow(clippy::match_same_arms)]
     pub fn apply(&mut self, m: Msg) -> bool {
         match m {
             Msg::Compositor(e) => {
@@ -241,9 +260,7 @@ impl Bar {
                 false
             }
             // The open quick panel's (`quick/app.rs` takes it first): never kept, no bar redraw.
-            Msg::Wifi { .. } => false,
-            Msg::Bt { .. } => false,
-            Msg::Vpn { .. } => false,
+            Msg::Wifi { .. } | Msg::Bt { .. } | Msg::Vpn { .. } => false,
             // A count going unknown keeps the last known one (spec § 6): a transient outage neither
             // hides the module nor re-arms the notice.
             Msg::Units(n) => n.is_some() && set_if_changed(&mut self.failed.system, n),
@@ -343,7 +360,7 @@ mod tests {
         assert!(b.privacy_at(&Msg::Compositor(Some(e.clone())), now), "the screen lights");
         assert!(b.privacy.shown().screen.active());
         e.casting = false;
-        e.cast_hold = std::time::Duration::ZERO;
+        e.cast_hold = Duration::ZERO;
         b.privacy_at(&Msg::Compositor(Some(e)), now);
         assert!(b.privacy.shown().screen.active(), "the off-delay still applies");
         b.privacy_at(&Msg::Compositor(None), now);
@@ -370,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn messages_and_changes() {
+    fn a_message_changes_the_state_and_says_whether_the_bar_must_repaint() {
         let mut b = Bar::new(BarConfig::default());
         assert_eq!(b.compositor, Feed::Waiting);
         assert!(b.apply(Msg::Compositor(Some(example()))));
@@ -438,7 +455,7 @@ mod tests {
         assert!(!b.apply(Msg::Wifi { open: None, state: None }));
     }
 
-    /// Quick settings delivery 3: the Bluetooth view is the open panel's, as the Wi-Fi state is.
+    /// Quick settings Bluetooth spec: the Bluetooth view is the open panel's, as the Wi-Fi state is.
     #[test]
     fn a_bt_view_is_never_kept_nor_drawn_by_the_bar() {
         let mut b = Bar::new(BarConfig::default());

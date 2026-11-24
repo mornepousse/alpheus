@@ -246,7 +246,7 @@ fn guard_publishes_dash_if_thread_panics() {
         true
     };
     let h = std::thread::spawn(move || {
-        let _guard = SourceGuard { name: "compositor", send: &send, value: std::marker::PhantomData };
+        let _guard = SourceGuard { name: "compositor", send: &send, value: PhantomData };
         panic!("simulation: panic outside the watched session");
     });
     assert!(h.join().is_err(), "the thread must really panic, otherwise this test proves nothing");

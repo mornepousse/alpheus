@@ -10,6 +10,15 @@
 //! unreachable (not running) or too old for a flag it was sent (`--index`/`--password`/`--visible`
 //! and the later ones, `--failed-refresh` among them), the only cases where a caller may fall
 //! back to another menu.
+//!
+//! Never:
+//! - grow: std and alpheus-common only — no Wayland, no fonts, no TUI, no D-Bus, no matcher and no
+//!   keyboard library (`alpheus_launch_stays_tiny`, in the foundation's boundaries.rs), because
+//!   this runs on every key press and in every script menu;
+//! - wait for ever: every verb but `--dmenu` gives up after two seconds, and exit code 3 is the one
+//!   a script falls back on (docs/cli.md).
+//!
+//! See: docs/cli.md (every verb, option and exit code), docs/features/launcher.md.
 
 use alpheus_common::launcher_ipc::{
     DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
@@ -150,7 +159,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                     }
                     None => QuickVerb::Top,
                 };
-                choose(&mut mode, Invocation::Quick(verb))?
+                choose(&mut mode, Invocation::Quick(verb))?;
             }
             "--for" => {
                 let value = it.next().ok_or_else(|| "--for needs a duration".to_string())?;
@@ -552,7 +561,8 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             Some(position) => print(&position.to_string()),
             None => fail(stderr, &format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
         },
-        (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
+        // The picker's Escape (Shield's) is dmenu's.
+        (Request::Dmenu { .. } | Request::Shield(ShieldVerb::Allow), Reply::Cancelled) => EXIT_CANCELLED,
         (
             Request::Toggle
             | Request::Close
@@ -576,8 +586,6 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Shield(_),
             Reply::Done,
         ) => EXIT_OK,
-        // The picker's Escape, as dmenu's.
-        (Request::Shield(ShieldVerb::Allow), Reply::Cancelled) => EXIT_CANCELLED,
         // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
         (Request::Shield(ShieldVerb::Status), Reply::Shield(text)) => {
             let code = print(&text);

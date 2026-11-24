@@ -4,6 +4,13 @@
 //! screen reports (its names) is cleaned before it is written, and what is
 //! read is checked: an unknown word, a wrong field count, a count past the
 //! caps or a control character is refused, never guessed at.
+//!
+//! Never:
+//! - carry a text as it came: a screen's names are cleaned before they are written and checked
+//!   when they are read, so neither side can be fed a control character or an over-long field;
+//! - add a dependency: std only, like the socket protocol it travels on.
+//!
+//! See: docs/features/displays.md ("Using it": the four verbs), docs/cli.md.
 
 use super::{Active, Mode, Output, Scale, Step};
 

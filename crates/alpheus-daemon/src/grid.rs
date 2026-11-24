@@ -1,6 +1,21 @@
-//! Grid of cells: what the bar shows, cell by cell (character, tints,
-//! bold), and the clickable zones. This is the tested object; the pixel
-//! drawing (`painter`) only copies it.
+//! The grid of cells: what one screen shows, and where a click lands.
+//!
+//! A `Grid` is the bar as characters with their tints, written only through `Grid::write`, which is
+//! what keeps a control character out of a cell and a wide character from being cut in half. It
+//! also records each module's clickable zone and, under the block styles, the blocks
+//! (`GroupKind`). This is the tested object: `painter` only copies it into pixels, and `layout`
+//! builds it from the state.
+//!
+//! Never:
+//! - let a text from outside into a cell unchecked: `write` cleans and measures it (`text.rs`
+//!   cleans what an application sends before that);
+//! - name a colour: a cell carries a role of the theme, never a value
+//!   (`the_daemon_paints_with_roles_never_the_legacy_palette`);
+//! - keep a zone for a module that drew nothing: a click must never reach a module that is not
+//!   there (`every_click_on_a_full_bar_stays_on_the_allowlist` clicks every zone of a full bar).
+//!
+//! See: docs/ARCHITECTURE.md ("The core"), docs/features/bar.md, docs/features/themes.md (the
+//! roles, the hues and the blocks).
 
 use crate::config::ModuleId;
 use crate::session_bus::ItemKey;
@@ -204,7 +219,7 @@ pub(crate) fn char_width(c: char) -> u16 {
 /// so the announced width stays what is actually written. A combining mark
 /// with no precomposed form (e.g. `q\u{301}`) cannot be recomposed: it stays
 /// alone in the stream, and so is always skipped further on (width 0),
-/// unchanged behaviour.
+/// so the text still reads as it was written.
 enum NfcChars<'a> {
     /// `s` is already NFC (the case of nearly all titles): no allocation, we
     /// read its characters directly.
@@ -380,7 +395,7 @@ mod tests {
 
     #[test]
     fn zone_at_finds_the_icon_cells() {
-        let key = |n: u32| crate::session_bus::ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
         let mut g = Grid::empty(10);
         g.zone(1, 2, Target::TrayItem(key(1)));
         g.zone(3, 5, Target::TrayItem(key(2))); // a two-cell glyph
@@ -454,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn write_and_styles() {
+    fn write_keeps_the_text_and_its_styles() {
         let mut g = Grid::empty(8);
         let x = g.write(1, 8, "ab", Style::ACTIVE);
         assert_eq!(x, 3);
@@ -492,7 +507,7 @@ mod tests {
     fn inner_end_bound_respected() {
         // Bites on `let end = end.min(self.width());`: replacing it with
         // `let end = self.width();` (ignoring the parameter) leaves these
-        // two assertions red (see fix report).
+        // two assertions red.
         assert_eq!(Grid::empty(8).write(0, 3, "abcdef", Style::NORMAL), 3);
         let mut g = Grid::empty(8);
         g.write(0, 3, "abcdef", Style::NORMAL);
@@ -504,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_never_orphaned() {
+    fn a_wide_character_is_never_cut_in_half() {
         // Overwriting the first half of a wide character with a narrow one
         // must blank its continuation, or it stays shown alone.
         let mut g = Grid::empty(4);
@@ -543,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn truncation_by_ellipsis() {
+    fn a_text_too_long_ends_with_an_ellipsis() {
         assert_eq!(truncate("Bonjour", 5), "Bonj…");
         assert_eq!(truncate("Bonjour", 7), "Bonjour");
         assert_eq!(truncate("日本語", 4), "日…");
@@ -553,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn decomposed_accents_recomposed() {
+    fn a_decomposed_accent_is_recomposed_before_it_is_drawn() {
         // "e\u{301}lan": a decomposed "e" (e + combining acute accent) must
         // be written recomposed to NFC, like a title from macOS.
         let mut g = Grid::empty(6);
@@ -572,7 +587,7 @@ mod tests {
     #[test]
     fn combining_mark_without_precomposed_form_always_skipped() {
         // "q" has no precomposed form with the acute accent: the combining
-        // mark stays skipped, unchanged behaviour.
+        // mark keeps its own place in the stream, and is skipped for its width.
         let mut g = Grid::empty(4);
         g.write(0, 4, "q\u{301}x", Style::NORMAL);
         assert_eq!(g.text(), "qx  ");
@@ -580,8 +595,8 @@ mod tests {
     }
 
     #[test]
-    fn already_nfc_unchanged() {
-        // A title already in NFC (accents and CJK) is written as before.
+    fn a_text_already_composed_is_left_as_it_is() {
+        // A title already in NFC (accents and CJK) is written through unchanged.
         let mut g = Grid::empty(8);
         g.write(0, 8, "é日本", Style::NORMAL);
         assert_eq!(g.text(), "é日本   ");
@@ -592,12 +607,12 @@ mod tests {
     fn accent_style_and_module_target() {
         assert_eq!(Style::ACCENT.code(), 'a');
         let mut g = Grid::empty(4);
-        g.zone(1, 3, Target::Module(crate::config::ModuleId::Volume));
-        assert_eq!(g.target_at(2), Some(&Target::Module(crate::config::ModuleId::Volume)));
+        g.zone(1, 3, Target::Module(ModuleId::Volume));
+        assert_eq!(g.target_at(2), Some(&Target::Module(ModuleId::Volume)));
     }
 
     #[test]
-    fn clickable_zones() {
+    fn each_module_gets_the_zone_it_drew() {
         let mut g = Grid::empty(10);
         let t = Target::Workspace { reference: "4".into(), output: "HDMI-A-1".into() };
         g.zone(2, 5, t.clone());

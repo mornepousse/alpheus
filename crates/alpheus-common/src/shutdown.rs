@@ -7,6 +7,15 @@
 //!
 //! In both cases, `watch` forces the exit if the loop does not finish on
 //! its own within the grace period.
+//!
+//! Never:
+//! - handle a signal in a thread of the daemon: they are blocked everywhere and read on the loop,
+//!   so a stop is one path (docs/cli.md, "Signals");
+//! - leave the terminal in raw mode or a trial unrestored: the TUI's loop and the daemon's
+//!   `shut_down` each end their own way (`the_displays_are_restored_before_the_app_is_dropped`,
+//!   `shutting_down_closes_and_saves_the_pad`).
+//!
+//! See: docs/cli.md (the exit codes and the grace period), docs/ARCHITECTURE.md ("Entry points").
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};

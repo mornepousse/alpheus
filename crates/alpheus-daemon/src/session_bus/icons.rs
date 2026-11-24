@@ -3,13 +3,21 @@
 //! what the item says about itself; an application nobody knows gets the
 //! first letter of its name. Never an image: the item's pixmaps are never
 //! even requested.
+//!
+//! Never:
+//! - ask for an image: an item's pixmaps are never requested, so no application sends the bar a
+//!   picture (`tray_d_bus_is_confined_and_allowlisted`);
+//! - grow per item: the table is read-only data, the overrides come from `bar.toml`, and an unknown
+//!   application costs a letter.
+//!
+//! See: docs/features/tray.md ("Icons"), docs/configuration.md (`[tray.icons]`).
 
 use super::host::Item;
 use super::{ItemKey, Status};
 use crate::grid::text_width;
 use std::collections::BTreeMap;
 
-// Codepoints verified in Nerd Fonts 3.4 (prior-art-icons.md).
+// Codepoints verified in Nerd Fonts 3.4.
 pub const STEAM: char = '\u{f04d3}'; // md-steam
 pub const DISCORD: char = '\u{f066f}'; // md-discord
 pub const TELEGRAM: char = '\u{f2c6}'; // fa-telegram
@@ -29,7 +37,7 @@ pub const TABLE: &[(&str, char)] = &[
     ("bluetooth", BLUETOOTH),
     ("kdeconnect", KDE_CONNECT),
 ];
-/// An item nothing is known about: no Title, Id nor process (question 6).
+/// An item nothing is known about: no Title, Id nor process.
 pub const UNKNOWN_LETTER: char = '?';
 
 #[derive(Debug, Clone, PartialEq, Eq)]

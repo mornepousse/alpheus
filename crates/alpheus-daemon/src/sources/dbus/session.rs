@@ -1,4 +1,12 @@
 //! One session on one connection: the initial reads, the publish, then each signal.
+//!
+//! Never:
+//! - read a domain no module asked for: the session reads what `Needs` says and nothing else;
+//! - leave an answer waiting: what a settle round drained is routed from one idle read
+//!   (`answers_left_by_the_settle_rounds_are_routed_from_an_idle`);
+//! - reconnect by itself: the supervisor (`run.rs`) starts the next session, with a growing delay.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop", "Threads"), docs/features/bar.md.
 
 use super::*;
 use crate::system::PanelScope;
@@ -31,7 +39,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
         Domain::Power => s.power = None,
         Domain::Units => s.units = None,
     }
-    // Rate limited per domain (follow-up, re-review): NotFound never logs
+    // Rate limited per domain: NotFound never logs
     // (worth_logging), and a short-circuiting `&&` means it never touches
     // `log_state` either — an absence doesn't arm or disarm the limiter.
     if worth_logging(e.kind()) && log_state.note_failure(d) {
@@ -105,24 +113,15 @@ fn units_soft(r: io::Result<()>, link: &mut UnitsLink, now: Instant) -> io::Resu
     }
 }
 
-/// Reads the wanted domains, publishes, then waits for signals: each one of
-/// a wanted domain re-reads it and publishes the whole state. Returns Err
-/// when the bus goes away or a domain's read fails (after publishing it as
-/// "–"): the supervisor shows "–" and retries with a growing delay.
-/// `log_state` rate-limits each domain's own failure log line (follow-up,
-/// re-review) — it must outlive this one call to do that, so it's the
-/// caller's (`start`'s closure persists across every backoff round;
-/// `session`'s own locals, like `s`, do not).
-/// Calls `publish` only when `s` differs from the last state actually
-/// published: a signal that passed `relevant`'s allowlist
-/// can still leave every field `session` tracks unchanged (two different
-/// allowed properties parsing to the same `SystemState`, a duplicate
-/// signal…), and publishing it anyway would reach the bar's channel, and
-/// cost a redraw, for nothing. `last` starts at `None`, which no real
-/// `SystemState` equals, so the very first call always publishes — the bar
-/// must leave "…" (Waiting) even when every domain reads as absent.
-/// Returns what `publish` returned, or `true` (nothing to report) when
-/// skipped; `last` is only updated on an actual, accepted publish.
+/// Calls `publish` only when `s` differs from the last state actually published: a signal that
+/// passed `relevant`'s allowlist can still leave every field `session` tracks unchanged (two
+/// different allowed properties parsing to the same `SystemState`, a duplicate signal…), and
+/// publishing it anyway would reach the bar's channel, and cost a redraw, for nothing. `last`
+/// starts at `None`, which no real `SystemState` equals, so the very first call always publishes —
+/// the bar must leave "…" (Waiting) even when every domain reads as absent.
+///
+/// Returns what `publish` returned, or `true` (nothing to report) when skipped; `last` is only
+/// updated on an actual, accepted publish.
 fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: &mut dyn FnMut(SystemState) -> bool) -> bool {
     if last.as_ref() == Some(s) {
         return true;
@@ -191,6 +190,14 @@ fn spoke(now: (PanelScope, u64), seen: &mut (PanelScope, u64)) -> bool {
     std::mem::replace(seen, now) != now
 }
 
+/// Reads the wanted domains, publishes, then waits for signals: each signal of a wanted domain
+/// re-reads it and publishes the whole state. Returns Err when the bus goes away or a domain's read
+/// fails (after publishing it as "–"): the supervisor shows "–" and retries with a growing delay.
+///
+/// `log_state` rate-limits each domain's own failure log line; it must outlive this one call to do
+/// that, so it is the caller's (`start`'s closure persists across every backoff round, while this
+/// function's own locals, like `s`, do not).
+///
 /// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
 /// again on each of its pokes and with every network re-read; Closed reads nothing. `units`: the
 /// loop's word "read the failed-units count now"; `opts`: whether to `Subscribe` to systemd and
@@ -244,7 +251,7 @@ pub fn session(
     if !publish_if_changed(&mut last, &s, publish) {
         return Ok(());
     }
-    // Right after the initial publish (follow-up, re-review): the startup
+    // Right after the initial publish: the startup
     // GetAll/GetManagedObjects/EnumerateDevices replies are done allocating
     // by now, and `malloc_trim` is cheap (a few µs) — freeing here, rather
     // than waiting for a first signal that may be seconds or minutes away,

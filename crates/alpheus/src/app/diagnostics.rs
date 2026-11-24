@@ -274,10 +274,10 @@ pub fn health(b: &crate::backends::Backends, var: &dyn Fn(&str) -> Option<OsStri
     }
     let mut own_env = Vec::new();
     for name in &names {
-        if let Some(value) = var(name) {
-            if !value.is_empty() {
-                own_env.push((name.to_string(), clean_line(&value.to_string_lossy(), 256)));
-            }
+        if let Some(value) = var(name)
+            && !value.is_empty()
+        {
+            own_env.push((name.to_string(), clean_line(&value.to_string_lossy(), 256)));
         }
     }
     HealthRead { compositor: comp, wayland: wayland_health(var), systemd_env: b.diagnostics.session_env(&names), own_env }
@@ -333,7 +333,7 @@ pub fn health_rows(i: &HealthInputs) -> Vec<HealthRow> {
                     match theirs.iter().find(|(n, _)| n == name) {
                         Some((_, v)) if v == ours => {}
                         Some((_, v)) if plain => {
-                            rows.push(row(false, format!("systemd --user has {name}={v} (this session: {ours})"), fix))
+                            rows.push(row(false, format!("systemd --user has {name}={v} (this session: {ours})"), fix));
                         }
                         None if plain => rows.push(row(false, format!("systemd --user has no {name} (this session: {ours})"), fix)),
                         Some(_) => rows.push(row(false, format!("systemd --user has a different {name}"), fix)),

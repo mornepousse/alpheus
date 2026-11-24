@@ -1,4 +1,4 @@
-//! Pixel tests of the bar shapes (themes delivery 2, spec § 6 "Painter"), at scales 1 and 2.
+//! Pixel tests of the bar shapes (themes spec § 6 "Painter"), at scales 1 and 2.
 //! Each test paints a 12-column bar with hand-made groups through `Fonts::paint_bar` into a buffer
 //! pre-filled with 0x11, so an unpainted pixel shows. Pixels are read back as (r, g, b, a),
 //! premultiplied as stored.

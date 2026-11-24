@@ -57,7 +57,7 @@ cargo build --release          # all three programs, in target/release/
 
 Build-time requirements:
 
-- Rust 1.85 or newer (edition 2024; the `rust-version` in the workspace `Cargo.toml`; no build with exactly 1.85 has been tested).
+- Rust 1.95 or newer (edition 2024; the `rust-version` in the workspace `Cargo.toml`, which CI builds with on every push).
 - `pkg-config`.
 - The development files of **libdbus-1** (the system-bus connection goes
   through the `dbus` crate, which links libdbus) and **libxkbcommon** (the
@@ -221,7 +221,7 @@ the window title are empty there (see [compositors.md](compositors.md)).
 ```sh
 alpheus-demon            # in a terminal of the session: the log goes to standard error
 alpheus-launch --toggle  # opens the launcher; exit code 3 means the daemon is not running
-alpheus                  # the control center; 1 to 7 switch tabs, q quits
+alpheus                  # the control center; 1 to 8 switch tabs, q quits
 ```
 
 The first log lines name the detected compositor (`compositor: Sway ($SWAYSOCK)`)

@@ -206,7 +206,7 @@ impl App {
                 n.act(|c| {
                     c.set_dnd(on);
                     Vec::new()
-                })
+                });
             });
             self.hooks_dnd(on);
         }
@@ -248,10 +248,10 @@ impl App {
         let dir = paths::state_dir();
         let read = state_file::read_dnd(&dir).map(|t| parse_saved(&t));
         let loaded = Dnd::loaded(read, now);
-        if loaded.saved() != read {
-            if let Err(e) = state_file::save_dnd(&dir, loaded.saved().map(saved_text).as_deref()) {
-                log(&format!("notifications: do not disturb could not be saved ({e})"));
-            }
+        if loaded.saved() != read
+            && let Err(e) = state_file::save_dnd(&dir, loaded.saved().map(saved_text).as_deref())
+        {
+            log(&format!("notifications: do not disturb could not be saved ({e})"));
         }
         self.dnd_timed.model = loaded;
         self.dnd = loaded.on;
@@ -314,7 +314,7 @@ impl App {
             s.act(|c| {
                 c.notify(n, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
         log(&format!("battery: alert at {} %", alert.threshold));
     }
@@ -337,7 +337,7 @@ impl App {
             s.act(|c| {
                 c.notify(incoming, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
         log("failed: notice");
     }
@@ -355,7 +355,7 @@ impl App {
             s.act(|c| {
                 c.notify(n, Instant::now(), minute_now());
                 c.take_effects()
-            })
+            });
         });
     }
 

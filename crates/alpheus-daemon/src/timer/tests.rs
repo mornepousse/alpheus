@@ -115,9 +115,8 @@ fn pomodoro_runs_its_rounds_then_ends() {
         let mut now = T0;
         let mut ends = Vec::new();
         for _ in 0..100 {
-            let end = match t {
-                Timer::Pomodoro { run: Run::Running(e), .. } => e,
-                _ => break,
+            let Timer::Pomodoro { run: Run::Running(end), .. } = t else {
+                break;
             };
             now = end;
             let (n, e) = t.due(l, now);
@@ -152,11 +151,11 @@ fn pomodoro_runs_its_rounds_then_ends() {
     assert_eq!(ends.iter().filter(|e| matches!(e, End::WorkDone { .. })).count(), 12);
     assert_eq!(ends.last(), Some(&End::SetDone { rounds: 12 }));
     // Skip: no End, and the long break's skip ends the set without `done`.
-    let w1 = running_pomodoro(T0 + L.work, Phase::Work, 1);
-    assert_eq!(w1.apply(Change::Skip, &L, T0 + 5), running_pomodoro(T0 + 5 + L.short, Phase::ShortBreak, 1));
-    let last_work = running_pomodoro(T0 + L.work, Phase::Work, 4);
-    assert_eq!(last_work.apply(Change::Skip, &L, T0), running_pomodoro(T0 + L.long, Phase::LongBreak, 4));
-    let long = running_pomodoro(T0 + L.long, Phase::LongBreak, 4);
+    let w1 = running_pomodoro(T0 + L.work, Work, 1);
+    assert_eq!(w1.apply(Change::Skip, &L, T0 + 5), running_pomodoro(T0 + 5 + L.short, ShortBreak, 1));
+    let last_work = running_pomodoro(T0 + L.work, Work, 4);
+    assert_eq!(last_work.apply(Change::Skip, &L, T0), running_pomodoro(T0 + L.long, LongBreak, 4));
+    let long = running_pomodoro(T0 + L.long, LongBreak, 4);
     assert_eq!(long.apply(Change::Skip, &L, T0), Timer::Idle { done: false });
 }
 
@@ -203,7 +202,7 @@ fn the_time_left_is_clamped_and_each_kind_has_its_word() {
 
 #[test]
 fn lengths_come_from_the_config() {
-    let c = crate::config::TimerConfig { work: 50, short_break: 10, long_break: 30, rounds: 3, ..Default::default() };
+    let c = TimerConfig { work: 50, short_break: 10, long_break: 30, rounds: 3, ..Default::default() };
     assert_eq!(Lengths::of(&c), Lengths { work: 50 * MINUTE_MS, short: 10 * MINUTE_MS, long: 30 * MINUTE_MS, rounds: 3 });
 }
 
@@ -251,9 +250,9 @@ fn the_chip_reads_minutes() {
     assert_eq!(chip_parts(sw, T0 + 59_999), Some((STOPWATCH, Some("0m"), ChipLook::Running)));
     assert_eq!(chip_parts(sw, T0 + 720_000), Some((STOPWATCH, Some("12m"), ChipLook::Running)));
     let p = Timer::Countdown { run: Run::Paused(1_440_000), total: 1_500_000 };
-    assert_eq!(chip_parts(p, T0), Some((crate::segments::PAUSE, Some("24m"), ChipLook::Paused)));
+    assert_eq!(chip_parts(p, T0), Some((PAUSE, Some("24m"), ChipLook::Paused)));
     let ps = Timer::Stopwatch { run: Run::Paused(720_000) };
-    assert_eq!(chip_parts(ps, T0), Some((crate::segments::PAUSE, Some("12m"), ChipLook::Paused)));
+    assert_eq!(chip_parts(ps, T0), Some((PAUSE, Some("12m"), ChipLook::Paused)));
     let idle = Timer::Idle { done: false };
     assert_eq!(idle.chip(T0, TimerIdle::Glyph), Some(TimerChip { glyph: TIMER, text: None, look: ChipLook::Idle }));
     assert_eq!(idle.chip(T0, TimerIdle::Hidden), None);
@@ -364,7 +363,7 @@ fn parse_saved_refuses_what_is_out_of_bounds() {
 #[test]
 fn the_notifications_say_what_ended() {
     let n = |e| incoming(e, &L);
-    let same = |i: &crate::notify::Incoming| {
+    let same = |i: &Incoming| {
         assert_eq!((i.urgency, i.tag.as_deref(), i.app_name.as_str()), (Urgency::Normal, Some("timer"), "alpheus"));
         assert_eq!((i.expire_ms, i.replaces_id, i.category.as_deref()), (-1, 0, None));
         assert!(i.actions.is_empty() && !i.transient && !i.resident);

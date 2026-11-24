@@ -1,6 +1,9 @@
-//! ~/.config/alpheus/bar.toml, optional. Absent: defaults, no message.
-//! Invalid: defaults and a warning (daemon log). Never an abort. Each
-//! setting is read once at startup and costs nothing if unused.
+//! `bar.toml`: every setting of the daemon, read once at start.
+//!
+//! The file is optional. Absent, the defaults apply with no message; invalid, the defaults apply
+//! with one warning in the log, and never an abort. A setting costs nothing while the module that
+//! reads it is not in `modules`. The example below is the whole file, with each key's default and
+//! what it does; docs/configuration.md is the same thing as a page, with the bounds.
 //!
 //! ```toml
 //! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
@@ -100,6 +103,17 @@
 //! started = ["notify-send", "alpheus up"]                   # argv, run as given (no ~ or $VAR expansion), detached; [] or absent: no hook
 //! theme_mode = []                                           # also dnd, battery_charge, battery_level, power_profile, network, vpn, bluetooth, privacy, shield, failed_units, displays
 //! ```
+//!
+//! Never:
+//! - abort on a bad file: an unknown key or a value out of bounds makes the whole file fall back to
+//!   the defaults, with one line in the log naming the key; the daemon always starts;
+//! - read the file again: `bar.toml` is read once at start, so a change needs a restart (the theme
+//!   files and `launcher.toml` are the two that reload, each in its own place);
+//! - cost anything for a module that is not in `modules`: no source of its own is started
+//!   (`startup::wanted`), and the memory suite measures each one.
+//!
+//! See: docs/configuration.md (every key, its default and its bounds, written from this file),
+//! docs/features/*.md ("Configuration" of each feature), docs/cli.md (when each file is read).
 
 use crate::clock;
 use crate::grid::text_width;
@@ -107,9 +121,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The bar's modules (spec, § 2), left to right by default. All are
-/// accepted from the start: a bar.toml written today stays valid once
-/// deliveries 3 to 5 arrive. Those not yet delivered simply do not show.
+/// The bar's modules (spec § 2), left to right by default: `[bar] modules` both orders the bar and
+/// says which daemon features run at all, so the OSD, the quick panel and the screens are named
+/// here although they draw no segment. An unknown name is an error when the file is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModuleId {
@@ -182,7 +196,7 @@ pub struct FontConfig {
     /// loaded) shipped alongside alpheus specifically to cover the symbols
     /// a Nerd Font window manager or terminal likes to put in a title (✳,
     /// ◐◓◑◒…) that JetBrainsMono Nerd Font Mono itself does not have; each
-    /// added or removed family changes memory by its own faces (Q11),
+    /// added or removed family costs at most its regular and bold faces (`useful_faces`),
     /// `[]` disables fallback entirely. A character that still has no
     /// glyph anywhere (checked family then every fallback) is masked
     /// rather than drawn as a `.notdef` box (`painter.rs`).
@@ -281,10 +295,10 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspacesConfig {
-    /// Command run to go to a workspace (click, wheel); `{workspace}` and
-    /// `{output}` are replaced in it. Default: `wm-set` (the author's
-    /// script), the only path to the compositor allowed by the
-    /// framing document.
+    /// Command run to go to a workspace (click, wheel); `{workspace}` and `{output}` are replaced
+    /// in it. Default: `wm-set`, a script of the maintainer's own session (docs/compositors.md,
+    /// "External commands"). This command is the one write to the compositor the daemon makes:
+    /// everything else it does with the compositor is a read (CONTRIBUTING.md, "The rules").
     pub command: Vec<String>,
 }
 
@@ -297,13 +311,11 @@ impl Default for WorkspacesConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActionsConfig {
-    /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
-    /// battery, `failed`); `{tab}` becomes home, sound, network, bluetooth or
-    /// diagnostics (the TUI's
-    /// `--tab`). Default: `alpheus-toggle` (the author's script), which
-    /// opens the TUI in a floating terminal, or closes it if already open —
-    /// not a neutral default yet (CONTRIBUTING.md, "What is accepted": personal
-    /// setups stay out of the code).
+    /// Opens alpheus on a tab (left click on volume, network, Bluetooth, battery, `failed`);
+    /// `{tab}` becomes home, sound, network, bluetooth or diagnostics (the TUI's `--tab`).
+    /// Default: `alpheus-toggle`, a script of the maintainer's own session (docs/compositors.md,
+    /// "External commands") that opens the TUI in a floating terminal, or closes it if already
+    /// open — not a neutral default yet, which CONTRIBUTING.md's "What is accepted" asks for.
     pub open_tab: Vec<String>,
     /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
     /// popup): a system monitor. Default: btop in
@@ -358,7 +370,7 @@ pub struct ResourcesConfig {
     /// Accepted (0 to 60) and ignored: the CPU sparkline is gone; kept so an existing `bar.toml` still loads.
     pub graph: u16,
     /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
-    /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).
+    /// zone `type` (x86_pkg_temp…); empty = automatic.
     pub sensor: String,
     /// The figures shown, in this order (never empty, no repeat).
     pub show: Vec<ResourceItem>,
@@ -378,7 +390,7 @@ impl Default for ResourcesConfig {
     }
 }
 
-/// How a battery segment shows up (spec Q, 2026-10-05): every peripheral
+/// How a battery segment shows up (reason not recorded): every peripheral
 /// with a real percentage defaults to "always" (today's behaviour); one that
 /// only reports a coarse UPower `BatteryLevel` defaults to "low" (today's
 /// behaviour: hidden unless Low, Critical or Action).
@@ -393,8 +405,8 @@ pub enum BatteryVisibility {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatteryConfig {
-    /// Peripherals with a real percentage (spec Q7's default: always shown,
-    /// error tint below 20 %).
+    /// Peripherals with a real percentage: shown always by default, warn below 20 % and error
+    /// below 10 %, as the laptop's own battery (`segments::charge_state`).
     pub peripherals: BatteryVisibility,
     /// Peripherals that only report a coarse level: "always" shows the bare
     /// icon (error tint when low, normal otherwise), "low" (default) shows
@@ -458,9 +470,10 @@ pub struct FailedConfig {
     /// Also count the user manager's failed units (the session bus).
     pub user_units: bool,
     /// `Subscribe()` to systemd so that a change arrives at once (the icon is instant, and systemd
-    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default,
-    /// see docs/decisions.md, "The failed-units count is read on triggers, and `Subscribe` is off by default"): the count is read on triggers only (a resume, `failed-refresh`, another
-    /// domain's wake-up, a piggyback).
+    /// and dbus-daemon send a signal per unit change to every subscriber); false (the default): the
+    /// count is read on triggers only (a resume, `failed-refresh`, another domain's wake-up, a
+    /// piggyback). See docs/decisions.md, "The failed-units count is read on triggers, and
+    /// `Subscribe` is off by default".
     pub subscribe: bool,
     /// A notification when the count rises.
     pub notify: bool,
@@ -518,7 +531,7 @@ impl ShieldConfig {
     }
 }
 
-/// `[shield]` checked (decision 8 of the plan): the hard errors of the file.
+/// `[shield]` checked: the hard errors of the file.
 fn check_shield(sh: &ShieldConfig) -> Result<(), String> {
     if !sh.flag.is_empty() {
         let p = Path::new(&sh.flag);

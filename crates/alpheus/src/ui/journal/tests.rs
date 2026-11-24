@@ -120,7 +120,7 @@ fn journal_picker() {
                 ratatui::crossterm::event::KeyModifiers::NONE,
             ),
             t,
-        )
+        );
     };
     press(&mut a, 'u');
     a.on_update(

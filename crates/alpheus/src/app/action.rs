@@ -305,7 +305,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tabs_wrap_around() {
+    fn the_tabs_wrap_around_at_both_ends() {
         assert_eq!(Tab::Home.prev(), Tab::Diagnostics);
         assert_eq!(Tab::Power.next(), Tab::Displays);
         assert_eq!(Tab::Displays.next(), Tab::Appearance);
@@ -361,13 +361,13 @@ mod tests {
     }
 
     #[test]
-    fn help_labels() {
+    fn every_action_has_a_help_label() {
         assert_eq!(Action::Palette.label(), "Command palette");
         assert_eq!(Action::GoTab(Tab::Sound).label(), "Tab Sound");
     }
 
     #[test]
-    fn full_palette() {
+    fn the_palette_lists_every_action() {
         let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()], &["Bureau".into()]);
         let labels: Vec<&str> = p.iter().map(|(l, _)| l.as_str()).collect();
         for expected in [

@@ -1,5 +1,13 @@
 //! The next instant the local clock reads a given time: how `alpheus-launch --dnd on --until
 //! HH:MM` turns a wall-clock time into a Unix time the daemon needs no time zone for.
+//!
+//! Never:
+//! - need a time zone in the daemon: the client turns `HH:MM` into a Unix time, which is what the
+//!   daemon stores and compares;
+//! - guess a day: a time already past is tomorrow's (docs/cli.md, `--dnd --until`).
+//!
+//! See: docs/cli.md (`--dnd on --until`), docs/features/notifications.md (a timed
+//! do-not-disturb), docs/decisions.md ("A timed do-not-disturb ends on the wall clock").
 
 // The `libc` crate only declares `tzset` for Windows; on Unix it is a standard C function
 // (time.h), already linked through the system's C library (as in the daemon's `clock.rs`).

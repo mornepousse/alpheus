@@ -1,7 +1,24 @@
-//! Click and wheel → command. Going to a workspace goes through the
-//! bar.toml command (`[workspaces] command`, default `wm-set workspace …`),
-//! never by writing to the compositor directly. The wheel computes the
-//! neighboring workspace itself and sends an absolute reference.
+//! A click or a wheel turn turned into a command.
+//!
+//! Going to a workspace goes through the configured command (`[workspaces] command`, `wm-set
+//! workspace …` by default), never a write to the compositor; the wheel works out the neighbouring
+//! workspace itself and sends an absolute reference, so a compositor that numbers workspaces its
+//! own way still lands on the right one. The system modules open a tab of the control center
+//! (`[actions] open_tab`), run the monitor (`[actions] resources`) or change the volume through
+//! `wpctl`. What the daemon handles itself — the launcher's button, the bell's middle click, the
+//! timer chip's — is not a command at all, and `toggles_launcher`, `toggles_dnd` and
+//! `timer_middle` say so.
+//!
+//! Never:
+//! - build a command that is not on the allowlist: `every_click_on_a_full_bar_stays_on_the_allowlist`
+//!   clicks every zone of a bar where every module is shown, with every button, with the quick
+//!   panel and without it, and `every_click_only_runs_the_workspace_command` pins the workspaces';
+//! - write to the compositor (`the_daemon_only_reads_from_the_compositor`), or raise the volume
+//!   above 100 % (`wpctl`'s `-l 1.0`, as the control center does);
+//! - run anything through a shell: every command is an argument list, run as written.
+//!
+//! See: docs/features/bar.md ("Using it": what each click does), docs/configuration.md
+//! (`[actions]`, `[workspaces]`), docs/compositors.md (`wm-set` and what it stands for).
 
 use crate::compositor::Workspace;
 use crate::config::ModuleId;
@@ -97,8 +114,8 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
         // right click takes over the TUI tab the left click used to open.
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Left) if quick => None,
         (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Right) if quick => open_tab(bar, m),
-        // -l 1.0: never beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
+        // `-l 1.0`: a wheel notch never takes the volume beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
         (ModuleId::Resources, Button::Right) => Some(bar.config.actions.resources.clone()),
@@ -146,8 +163,8 @@ pub fn toggles_dnd(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Notifications)
 }
 
-/// The timer chip's middle button (timer spec decision 16): handled inside the daemon, nothing is
-/// run. The left button is the popup's, right and the wheel do nothing.
+/// The timer chip's middle button (timer spec § 2): handled inside the daemon, nothing is run.
+/// The left button is the popup's, right and the wheel do nothing.
 pub fn timer_middle(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Timer)
 }

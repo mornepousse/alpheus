@@ -1,21 +1,30 @@
-//! From state to a screen's grid. Each module produces a segment; segments
-//! are laid out left to right in bar.toml order, separated by a dim "·". The
-//! window module is elastic: it takes the free space. With no active
-//! window, the window module has no segment at all (no empty "· ·"), but
-//! the free space still goes where it sits in the configured order — just
-//! before the segment that follows it — so the right-hand modules stay
-//! right-aligned instead of collapsing left; only with the window module
-//! absent from the configuration entirely does the free space fall back to
-//! preceding the last module. Narrow screen: modules disappear by priority
-//! (resources, the tray, media, title, then Bluetooth, network, volume,
-//! battery, the launcher button, and last the power button); workspaces, the
-//! clock and the notifications bell always stay.
+//! From the state to a screen's grid: the segments, their blocks, and what a narrow bar drops.
 //!
-//! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one
-//! block, never across the free space. `flat` and `underline` keep the "·" separators; the block
-//! styles put one blank pad cell inside each end of a block, one blank cell between blocks
-//! (powerline's arrow cell) and two blank cells between the modules of one block. The grid records the
-//! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
+//! Each module produces a segment; the segments are laid out left to right in the configured order,
+//! separated by a dim `·` under `flat` and `underline`. The window module is elastic: it takes the
+//! free space. With no active window it has no segment at all (no empty `· ·`), but the free space
+//! still goes where the module sits in the order — just before the segment that follows it — so the
+//! right-hand modules stay right-aligned instead of collapsing left; only with the window module
+//! absent from the configuration entirely does the free space fall back to preceding the last
+//! module. On a narrow screen the modules disappear in `REMOVAL`'s order (the resources, the tray,
+//! media, the title, then Bluetooth, the network, the volume, the battery, the launcher button, the
+//! timer chip, the failed-units count, the Shield glyph, the privacy indicators, and last the power
+//! button); the workspaces, the clock and the bell always stay.
+//!
+//! Blocks: consecutive modules of one kind (`ModuleSpec::group`) make one block, never across the
+//! free space. The block styles put one blank pad cell inside each end of a block, one blank cell
+//! between blocks (powerline's arrow cell) and two blank cells between the modules of one block.
+//! The grid records the blocks (`Grid::groups`) for every style but `flat`, which has none: its
+//! grid is cells and separators, nothing else.
+//!
+//! Never:
+//! - drop a module a narrow bar must keep: the workspaces, the clock and the bell are not in
+//!   `REMOVAL`, and each page says where its module sits in it (docs/features/bar.md);
+//! - read the state or the system: the segments come in built, and the style and the width with
+//!   them.
+//!
+//! See: docs/features/bar.md ("On a narrow screen"), docs/features/themes.md (the six styles and
+//! their blocks), docs/ARCHITECTURE.md ("The core").
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
@@ -25,12 +34,13 @@ use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
 use alpheus_common::theme::settings::{BarStyle, ModuleColors};
 
-/// Order of disappearance when space runs short: the spec's (resources,
-/// media, title), then the system indicators (Q9); the tray goes right
-/// after resources (tray spec), and the launcher button
-/// after the system indicators (2026-10-05: `Mod+Space` still opens the
-/// launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb), then the failed-units count (diagnostics spec § 6), then the Shield glyph (shield spec § 4), then the privacy indicators (privacy spec § 1), then the power button, the last of
-/// all (power spec § 1).
+/// Order of disappearance when space runs short: the spec's (resources, media, title), then the
+/// system indicators (their own order is not recorded); the tray goes right after resources (tray
+/// spec), and the launcher button after the system indicators (2026-10-05: `Mod+Space` still opens
+/// the launcher), then the timer chip (timer spec § 2: its popup is also reachable from a verb),
+/// then the failed-units count (diagnostics spec § 6), then the Shield glyph (shield spec § 4),
+/// then the privacy indicators (privacy spec § 1), then the power button, the last of all (power
+/// spec § 1).
 /// Workspaces, the clock and the bell always stay.
 const REMOVAL: [ModuleId; 14] = [
     ModuleId::Resources,
@@ -50,7 +60,7 @@ const REMOVAL: [ModuleId; 14] = [
 ];
 /// Minimum title width before it disappears.
 const MIN_TITLE: u16 = 8;
-/// Beyond this, a workspace's windows are summarized by "+" (Q4).
+/// Beyond this, a workspace's windows are summarized by "+" (the cut-off's reason is not recorded).
 const MAX_DOTS: u16 = 4;
 /// A longer workspace name is truncated.
 const MAX_NAME: u16 = 12;
@@ -252,14 +262,12 @@ impl Bar {
         lay_out_styled(&segs, columns, gap_at, self.style)
     }
 
-    /// When the window module is configured but has no segment (no active
-    /// window: `window()` returned `None`, so nothing in `segs` is elastic),
-    /// the index in `segs` where its free space belongs: just before the
-    /// segment that follows it in the configured module order, counting
-    /// only modules that actually survived into `segs` (narrow screens may
-    /// have dropped others along the way). `None` when the window module is
-    /// absent from the configuration entirely (the old "before the last
-    /// segment" rule applies then) or when it does have a segment (its own
+    /// When the window module is configured but has no segment (no active window: `window()`
+    /// returned `None`, so nothing in `segs` is elastic), the index in `segs` where its free space
+    /// belongs: just before the segment that follows it in the configured module order, counting
+    /// only modules that actually survived into `segs` (narrow screens may have dropped others
+    /// along the way). `None` when the window module is absent from the configuration entirely (the
+    /// free space then goes before the last segment) or when it does have a segment (its own
     /// elasticity handles the free space).
     fn window_gap(&self, segs: &[Segment]) -> Option<usize> {
         if segs.iter().any(|s| s.module == ModuleId::Window) {
@@ -292,7 +300,7 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
     let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(spacing_width(segs, space, spacing), u16::saturating_add);
     let free = columns.saturating_sub(fixed);
     let pad = if spacing == Spacing::Blocks { PAD } else { 0 };
-    // `flat` paints no block: its grid records none, exactly today's.
+    // `flat` paints no block: its grid records none.
     let record = style != BarStyle::Flat;
     // The block being laid out: its kind, first cell and hue; and where the last segment's text ended.
     let mut open: Option<(GroupKind, u16, Option<Hue>)> = None;

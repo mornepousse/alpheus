@@ -84,7 +84,7 @@ pub fn frame(shape: Shape, focused: bool) -> (BorderType, Borders) {
         (Shape::Line, _) => (BorderType::Plain, Borders::TOP),
         (Shape::Float, _) => (BorderType::Double, Borders::ALL),
         (Shape::Round, false) => (BorderType::Rounded, Borders::ALL),
-        (Shape::Arrow, false) | (Shape::Flat, false) => (BorderType::Plain, Borders::ALL),
+        (Shape::Arrow | Shape::Flat, false) => (BorderType::Plain, Borders::ALL),
         (_, true) => (BorderType::Thick, Borders::ALL),
     }
 }
@@ -169,7 +169,7 @@ mod tests {
 
     fn buf() -> Buffer {
         let mut b = Buffer::empty(Rect::new(0, 0, 20, 4));
-        for c in b.content.iter_mut() {
+        for c in &mut b.content {
             c.set_bg(BEHIND);
         }
         b

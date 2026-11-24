@@ -302,7 +302,7 @@ fn a_failed_readiness_read_kills_and_waits_the_child_never_leaking_it() {
     // removes it from /proc entirely.
     let reaped = (0..100).any(|i| {
         if i > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20));
         }
         std::fs::metadata(format!("/proc/{pid}")).is_err()
     });

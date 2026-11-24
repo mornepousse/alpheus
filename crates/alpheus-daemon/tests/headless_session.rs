@@ -44,10 +44,10 @@ const DELAY: Duration = Duration::from_secs(10);
 
 /// Waits (2 s at most) for the fake pw-dump `pid` to end.
 fn dies_within_2_s(pid: i32) {
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     while process_alive(pid) {
         assert!(t.elapsed() < Duration::from_secs(2), "pw-dump {pid} survived the daemon");
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -94,9 +94,9 @@ fn one_bar_per_output_and_hot_plugging() {
     assert_eq!(d.exit(Duration::from_millis(500)), None, "the daemon survives unplugging");
     sway.command("output HEADLESS-2 enable");
     let placed = || d.log().iter().filter(|l| l.contains("bar placed on HEADLESS-2")).count();
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     while placed() < 2 && t.elapsed() < DELAY {
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(placed(), 2, "the bar comes back with the screen: {:?}", d.log());
     sway.command("create_output");
@@ -120,7 +120,7 @@ fn clean_shutdown_on_sigterm_and_lock_released() {
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn compositor_crash_is_an_end_of_session_exit_code_0() {
-    // Decided and verified on this machine (recorded 2026-10-04): killing
+    // Decided and verified by hand (recorded 2026-10-04): killing
     // sway with a SIGKILL closes the daemon's Wayland connection with EPIPE
     // ("Broken pipe (os error 32)"), exactly what a clean disconnect would
     // also produce (end of session, compositor restart — see spec § 3).
@@ -202,10 +202,10 @@ fn the_system_bus_address_is_honoured() {
     // A bounded poll, not a flat sleep:
     // fails as soon as "source down" shows up, rather than only finding out
     // after waiting out a fixed delay.
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     while t.elapsed() < Duration::from_secs(3) {
         assert!(d2.log().iter().all(|l| !l.contains("source down")), "the private bus reached: {:?}", d2.log());
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1090,7 +1090,7 @@ fn sigterm_cancels_a_waiting_script_and_removes_the_socket() {
 /// `bus`: the daemon's tray is up and serving.
 fn wait_for_the_watcher(bus: &PrivateBus) {
     let peer = Peer::connect(bus);
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     loop {
         let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
             .unwrap()
@@ -1099,7 +1099,7 @@ fn wait_for_the_watcher(bus: &PrivateBus) {
             return;
         }
         assert!(t.elapsed() < DELAY, "the daemon never took the watcher name");
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -1130,7 +1130,7 @@ fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
     sway.scroll(FIRST_ICON.0, FIRST_ICON.1, "right", 1);
     let scroll = nimbus.wait_call("Scroll", DELAY);
     assert_eq!(scroll.as_deref(), Some("org.kde.StatusNotifierItem.Scroll(-120, horizontal)"), "one notch right: {:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let scrolls = nimbus.calls().iter().filter(|c| c.contains(".Scroll(")).count();
     assert_eq!(scrolls, 1, "one notch, one Scroll: {:?}", nimbus.calls());
     // A burst of signals: dirty, one frame callback, one re-read.
@@ -1138,11 +1138,11 @@ fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
     assert_eq!(reads(), 1, "the first Get only: {:?}", nimbus.calls());
     nimbus.set("IconName", Value::Str("nimbus-busy".into()));
     nimbus.burst("NewIcon", 20);
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     while reads() < 2 && t.elapsed() < DELAY {
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     // A signal landing after the frame callback may cost one more read under load; never one per
     // signal (an uncoalesced daemon would read 21 times).
     assert!((2..=3).contains(&reads()), "20 NewIcon, one re-read per frame at most: {:?}", nimbus.calls());
@@ -1157,7 +1157,7 @@ fn the_bar_works_without_a_session_bus() {
     let mut d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(TRAY_ONLY), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     assert!(d.wait_for("tray: no session bus", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(3));
+    thread::sleep(Duration::from_secs(3));
     let tray_lines: Vec<String> = d.log().into_iter().filter(|l| l.contains("tray:")).collect();
     assert_eq!(tray_lines.len(), 1, "one line, never retried: {tray_lines:?}");
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
@@ -1179,9 +1179,9 @@ fn a_closed_session_bus_empties_the_tray_once() {
     assert!(d.wait_for("tray: the session bus closed", DELAY), "{:?}", d.log());
     assert!(d.wait_for("tray: icons shown: 0", DELAY), "the tray emptied: {:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_millis(4500));
+    thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
@@ -1206,7 +1206,7 @@ fn tray_bar(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon,
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     let item = FakeItem::start(&bus, Spec::kde(1));
     // Registered, its eight Gets answered, the bar redrawn: well under a second on the private bus.
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     (bus, sway, hypr, d, item)
 }
 
@@ -1216,7 +1216,7 @@ fn a_tooltip_appears_after_half_a_second_and_goes_on_leave() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip", "");
     // The virtual pointer first, off the bar (its creation's 300 ms wait must not count as hovering).
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     let t = Instant::now();
     sway.hover(12, 10);
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
@@ -1224,7 +1224,7 @@ fn a_tooltip_appears_after_half_a_second_and_goes_on_leave() {
     assert_eq!(d.count("tooltip shown"), 1);
     sway.hover(640, 400); // off the bar: its surface's leave
     assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the icons: {:?}", d.log());
 }
 
@@ -1236,13 +1236,13 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-rest", "");
     sway.hover(640, 400); // the virtual pointer exists, off the bar
     while alpheus_daemon::clock::LocalTime::now().0.second > 50 {
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
     }
     sway.hover(1260, 10); // the clock, at the right end
     // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the clock");
@@ -1259,13 +1259,13 @@ fn no_timer_while_the_pointer_is_elsewhere() {
 fn opening_the_launcher_lets_the_same_tooltip_show_again_after() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-launcher", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
     // Past the toggle debounce: a Toggle right after the open is Hyprland's press-bind refire.
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
     // Still resting near the same icon (a different pixel, same cell): before the fix, this was
@@ -1283,7 +1283,7 @@ fn opening_the_launcher_lets_the_same_tooltip_show_again_after() {
 fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-unplug", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     sway.command("output HEADLESS-1 disable");
@@ -1291,7 +1291,7 @@ fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
     sway.command("output HEADLESS-1 enable");
     assert!(d.wait_for_count("bar placed on HEADLESS-1", 2, DELAY), "{:?}", d.log());
     sway.hover(640, 400); // off the bar first: the restored bar must see a real arrival
-    std::thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100));
     sway.hover(12, 10); // the same icon again, same ItemKey, a brand new bar surface
     assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
 }
@@ -1308,12 +1308,12 @@ fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
 fn a_hovered_items_tooltip_text_changing_does_not_close_it() {
     let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-text-changes", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     item.set("ToolTip", Value::ToolTip { title: "Nimbus — 4 new messages".into(), pixmap_bytes: 0 });
     item.emit("NewToolTip");
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("popup closed"), 0, "the tooltip must not close just because its text changed: {:?}", d.log());
     assert_eq!(d.count("tooltip shown"), 1, "still the same tooltip, not reopened: {:?}", d.log());
 }
@@ -1328,7 +1328,7 @@ fn a_hovered_items_tooltip_text_changing_does_not_close_it() {
 fn an_animating_icon_still_gets_its_tooltip_after_half_a_second() {
     let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-animated", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     let t = Instant::now();
     sway.hover(12, 10); // the tray's one icon
     let mut frame = 0;
@@ -1336,7 +1336,7 @@ fn an_animating_icon_still_gets_its_tooltip_after_half_a_second() {
         frame += 1;
         item.set("IconName", Value::Str(format!("nimbus-frame-{frame}")));
         item.emit("NewIcon");
-        std::thread::sleep(Duration::from_millis(90));
+        thread::sleep(Duration::from_millis(90));
     }
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
@@ -1351,13 +1351,13 @@ fn tooltips_false_gives_no_timer_and_no_tooltip() {
     sway.hover(640, 400); // the virtual pointer exists, off the bar
     // Not across a minute tick: the clock's own wake-up would count (as in the test above).
     while alpheus_daemon::clock::LocalTime::now().0.second > 55 {
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
     }
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon: armed with tooltips on, never with them off
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_secs(2));
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(2), "tooltips = false");
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the icon: {:?}", d.log());
@@ -1371,7 +1371,7 @@ fn tooltips_false_gives_no_timer_and_no_tooltip() {
 fn a_press_on_the_bar_closes_a_shown_tooltip() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-press", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     sway.click(1260, 10, "button1"); // elsewhere on the bar (the clock): still cancels the hover
@@ -1386,7 +1386,7 @@ fn a_press_on_the_bar_closes_a_shown_tooltip() {
 fn the_hovered_item_vanishing_closes_its_tooltip() {
     let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-vanish", "");
     sway.hover(640, 400);
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     item.kill(); // the application quits: its StatusNotifierItem disappears
@@ -1418,7 +1418,7 @@ fn menu_bar(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeItem) {
     let mut spec = Spec::kde(1);
     spec.menu = Some(FakeMenu::sample());
     let item = FakeItem::start(&bus, spec);
-    std::thread::sleep(Duration::from_secs(1)); // registered, read, drawn
+    thread::sleep(Duration::from_secs(1)); // registered, read, drawn
     (bus, sway, hypr, d, item)
 }
 
@@ -1452,7 +1452,7 @@ fn wait_recorded(item: &FakeItem, pattern: &str) -> bool {
         if item.calls().iter().any(|c| c.contains(pattern)) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
     }
     false
 }
@@ -1468,7 +1468,7 @@ fn a_submenu_opens_with_right_and_back_with_left() {
     keys(&sway, &["End", "Right"]); // on More, entered
     assert!(wait_recorded(&item, &format!("AboutToShow({more}")), "the submenu fetched on demand: {:?}", item.calls());
     assert!(wait_recorded(&item, &format!("GetLayout({more},")), "{:?}", item.calls());
-    std::thread::sleep(Duration::from_millis(300)); // grafted and entered
+    thread::sleep(Duration::from_millis(300)); // grafted and entered
     // Back at the root, on More; Up skips Disabled and the separator: High.
     keys(&sway, &["Left", "Up", "Return"]);
     let high = entry_id(&sample, "High");
@@ -1485,7 +1485,7 @@ fn steam_left_click_opens_the_menu() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     let item = FakeItem::start(&bus, Spec::steam());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button1"); // Activate refused (UnknownMethod): the menu instead
     assert!(d.wait_for("menu shown", DELAY), "{:?} / {:?}", d.log(), item.calls());
     assert!(item.calls().iter().any(|c| c.contains("Activate")), "Activate tried first: {:?}", item.calls());
@@ -1504,14 +1504,14 @@ fn a_second_left_click_on_steams_icon_only_closes_its_menu() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     let item = FakeItem::start(&bus, Spec::steam());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button1"); // Activate refused: the menu instead
     assert!(d.wait_for("menu shown", DELAY), "{:?} / {:?}", d.log(), item.calls());
-    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     let activates_before = item.calls().iter().filter(|c| c.contains("Activate")).count();
     sway.click(12, 10, "button1"); // the SAME left click: only closes it
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(item.calls().iter().filter(|c| c.contains("Activate")).count(), activates_before, "no new Activate: {:?}", item.calls());
     assert_eq!(d.count("menu shown"), 1, "closed, not reopened: {:?}", d.log());
 }
@@ -1528,7 +1528,7 @@ fn an_outside_click_closes_the_menu() {
     assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
     sway.click(12, 10, "button3");
     assert!(d.wait_for_count("menu shown", 2, DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     sway.click(640, 400, "button1");
     assert!(d.wait_for("popup closed (dismissed)", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("tray: menu session closed", 2, DELAY), "{:?}", d.log());
@@ -1541,7 +1541,7 @@ fn an_outside_click_closes_the_menu() {
 /// entry, "Late").
 fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
     let peer = Peer::connect(bus);
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let register = dbus::Message::new_method_call(
             "org.kde.StatusNotifierWatcher",
             "/StatusNotifierWatcher",
@@ -1554,7 +1554,7 @@ fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
         while let Some(call) = peer.next_call() {
             if call.interface().as_deref() == Some("com.canonical.dbusmenu") {
                 let Some(after) = menu_after else { continue }; // never answered
-                std::thread::sleep(after);
+                thread::sleep(after);
                 let reply = if call.member().as_deref() == Some("AboutToShow") {
                     call.method_return().append1(false)
                 } else {
@@ -1574,8 +1574,8 @@ fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
             }
             let property: String = call.read2::<&str, &str>().map(|(_, p)| p.to_string()).unwrap_or_default();
             let reply = match property.as_str() {
-                "Id" => call.method_return().append1(dbus::arg::Variant("hush")),
-                "Menu" => call.method_return().append1(dbus::arg::Variant(dbus::Path::from("/Menu"))),
+                "Id" => call.method_return().append1(Variant("hush")),
+                "Menu" => call.method_return().append1(Variant(dbus::Path::from("/Menu"))),
                 _ => dbus::Message::error(
                     &call,
                     &"org.freedesktop.DBus.Error.UnknownProperty".into(),
@@ -1595,7 +1595,7 @@ fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
 /// `open_menu`, lands.
 fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
     let peer = Peer::connect(bus);
-    std::thread::spawn(move || {
+    thread::spawn(move || {
         let register = dbus::Message::new_method_call(
             "org.kde.StatusNotifierWatcher",
             "/StatusNotifierWatcher",
@@ -1607,7 +1607,7 @@ fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
         let _ = peer.call(register);
         while let Some(call) = peer.next_call() {
             if call.interface().as_deref() == Some("org.kde.StatusNotifierItem") && call.member().as_deref() == Some("Activate") {
-                std::thread::sleep(delay);
+                thread::sleep(delay);
                 let reply =
                     dbus::Message::error(&call, &"org.freedesktop.DBus.Error.UnknownMethod".into(), &std::ffi::CString::new("no").unwrap());
                 let _ = peer.channel.send(reply);
@@ -1634,8 +1634,8 @@ fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
             }
             let property: String = call.read2::<&str, &str>().map(|(_, p)| p.to_string()).unwrap_or_default();
             let reply = match property.as_str() {
-                "Id" => call.method_return().append1(dbus::arg::Variant("slow")),
-                "Menu" => call.method_return().append1(dbus::arg::Variant(dbus::Path::from("/Menu"))),
+                "Id" => call.method_return().append1(Variant("slow")),
+                "Menu" => call.method_return().append1(Variant(dbus::Path::from("/Menu"))),
                 _ => dbus::Message::error(
                     &call,
                     &"org.freedesktop.DBus.Error.UnknownProperty".into(),
@@ -1661,11 +1661,11 @@ fn a_late_failed_activate_after_clicking_elsewhere_opens_nothing() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     slow_activate_item(&bus, Duration::from_millis(1500));
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button1"); // left click: Activate sent, answered late
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     sway.click(100, 10, "button1"); // elsewhere on the bar, before the error reply lands
-    std::thread::sleep(Duration::from_millis(1800)); // the delayed error reply has now landed
+    thread::sleep(Duration::from_millis(1800)); // the delayed error reply has now landed
     assert_eq!(d.count("menu shown"), 0, "clicked elsewhere before the reply landed: {:?}", d.log());
 }
 
@@ -1679,16 +1679,16 @@ fn a_silent_menu_never_opens_and_leaves_nothing_pending() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     hushed_item(&bus, None);
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button3");
     assert!(d.wait_for("tray: menu not shown (timeout)", Duration::from_secs(4)), "{:?}", d.log());
     assert_eq!(d.count("menu shown"), 0, "{:?}", d.log());
     // Nothing pending: the deadline timer is gone, the loop sleeps (away from a clock tick).
     while alpheus_daemon::clock::LocalTime::now().0.second > 50 {
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
     }
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_secs(3));
+    thread::sleep(Duration::from_secs(3));
     assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "{:?}", d.log());
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(3), "nothing pending");
 }
@@ -1727,7 +1727,7 @@ fn the_launcher_and_a_menu_are_never_open_together() {
     sway.click(12, 10, "button3");
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
     // The launcher opens (its socket, as Mod+Space would): the menu goes first.
-    common::launcher(&sway, &alpheus_common::launcher_ipc::Request::Toggle);
+    launcher(&sway, &Request::Toggle);
     assert!(d.wait_for("popup closed (launcher)", DELAY), "{:?}", d.log());
     assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
     // A right click on the icon now: the launcher closes (click outside) before the menu opens.
@@ -1746,11 +1746,11 @@ fn a_second_right_click_closes_the_menu() {
     let (_bus, sway, _hypr, d, _item) = menu_bar("menu-toggle");
     sway.click(12, 10, "button3");
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     sway.click(12, 10, "button3");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
     assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("menu shown"), 1, "closed, not reopened: {:?}", d.log());
     sway.click(12, 10, "button3");
     assert!(d.wait_for_count("menu shown", 2, DELAY), "a third right click opens it again: {:?}", d.log());
@@ -1765,7 +1765,7 @@ fn a_quick_right_click_after_closing_reopens_the_menu() {
     let (_bus, sway, _hypr, d, _item) = menu_bar("menu-reopen");
     sway.click(12, 10, "button3");
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     sway.click(12, 10, "button3");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
     sway.click(12, 10, "button3"); // within the 300 ms window
@@ -1784,10 +1784,10 @@ fn a_menu_answering_after_2_s_is_not_shown() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     hushed_item(&bus, Some(Duration::from_millis(1500)));
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button3");
     assert!(d.wait_for("tray: menu not shown (timeout)", Duration::from_secs(5)), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("menu shown"), 0, "{:?}", d.log());
     assert_eq!(d.count("popup closed"), 0, "no popup ever opened: {:?}", d.log());
 }
@@ -1821,7 +1821,7 @@ fn the_menu_closes_when_its_path_changes_under_it() {
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     let item = FakeItem::start(&bus, Spec::qt());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button3");
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
     item.set("Menu", Value::Path("/OtherMenu".into()));
@@ -1840,7 +1840,7 @@ fn clock_bar(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
     let toml = format!("modules = [\"clock\"]\n{extra}");
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // configured and drawn
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
     (sway, hypr, d)
 }
 
@@ -1874,7 +1874,7 @@ fn the_wheel_and_arrows_change_month() {
     let (sway, _hypr, d) = clock_bar("calendar-months", "");
     sway.click(40, 10, "button1");
     assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     sway.scroll(60, 120, "down", 1); // inside the calendar, below the clock: next month
     assert!(d.wait_for_count("calendar shows", 1, DELAY), "{:?}", d.log());
     keys(&sway, &["Right"]);
@@ -1898,7 +1898,7 @@ fn a_second_click_closes_it() {
     assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
     sway.click(40, 10, "button1");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("calendar shown"), 1, "closed, not reopened: {:?}", d.log());
     sway.click(40, 10, "button1");
     assert!(d.wait_for_count("calendar shown", 2, DELAY), "a third click opens it again: {:?}", d.log());
@@ -1909,7 +1909,7 @@ fn a_second_click_closes_it() {
 fn calendar_false_opens_nothing() {
     let (sway, _hypr, d) = clock_bar("calendar-off", "[clock]\ncalendar = false\n");
     sway.click(40, 10, "button1");
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     // The default mode is auto: with no session bus, its one line names the temporary directory
     // ("calendar-off"), which is not the calendar.
     let log = d.log();
@@ -1928,11 +1928,11 @@ fn a_click_elsewhere_closes_it_and_leaves_no_timer() {
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
     sway.hover(640, 400);
     while alpheus_daemon::clock::LocalTime::now().0.second > 50 {
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
     }
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times at rest after the calendar: {:?}", d.log());
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "after the calendar");
@@ -2034,7 +2034,7 @@ fn an_output_going_away_closes_the_calendar() {
     assert!(d.wait_for("bar placed on HEADLESS-2", DELAY), "{:?}", d.log());
     sway.command("output HEADLESS-1 pos 0 0"); // pinned: the click below lands on HEADLESS-1
     sway.command("output HEADLESS-2 pos 3000 0");
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     sway.click(40, 10, "button1");
     assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
     sway.command("output HEADLESS-1 disable");
@@ -2488,7 +2488,7 @@ fn a_fixed_mode_without_the_tray_never_opens_the_session_bus() {
     let d =
         start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(portal.calls(), Vec::<String>::new(), "never asked");
     assert_eq!(d.count("appearance:"), 0, "{:?}", d.log());
 }
@@ -2717,7 +2717,7 @@ fn without_the_tray_in_a_fixed_mode_the_connection_is_for_the_players_alone() {
     let (bus, _sway, _hypr, d, _player) = media_daemon("media-dark", MEDIA_LINK_BAR, Some("mode = \"dark\"\n"));
     let portal = FakePortal::start(&bus, 2);
     assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(connections_of(&bus, d.pid()), 1, "{:?}", d.log());
     assert_eq!(portal.calls(), Vec::<String>::new(), "a fixed mode never asks");
     assert_eq!(d.count("appearance:"), 0, "{:?}", d.log());
@@ -2739,7 +2739,7 @@ fn switching_to_auto_joins_the_media_connection() {
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn without_the_media_module_nothing_touches_the_players() {
     let (bus, _sway, _hypr, d, player) = media_daemon("media-absent", "modules = [\"clock\"]\n", Some("mode = \"dark\"\n"));
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(connections_of(&bus, d.pid()), 0, "no connection, so no rule and no call: {:?}", d.log());
     assert_eq!(player.calls(), Vec::<String>::new());
     assert_eq!(d.count("media:"), 0, "{:?}", d.log());
@@ -2762,9 +2762,9 @@ fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
     assert!(d.wait_for("media: the session bus closed", DELAY), "{:?}", d.log());
     assert!(d.wait_for("media: hidden", DELAY), "{:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_millis(4500));
+    thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
@@ -2793,7 +2793,7 @@ fn clicks_reach_the_player(name: &str, modules: &str) {
     assert_eq!(player.wait_call("Next", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.Next()"), "{:?}", d.log());
     sway.scroll(x, y, "down", 1);
     assert_eq!(player.wait_call("Previous", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.Previous()"), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let controls: Vec<String> = player.calls().into_iter().filter(|c| c.starts_with("org.mpris.MediaPlayer2.Player.")).collect();
     assert_eq!(
         controls,
@@ -2874,7 +2874,7 @@ fn popup_cell(bar_x: u32, column: u32, row: u32) -> (u32, u32) {
 /// just past: seconds 2 to 50.
 fn away_from_the_minute() {
     while !(2..=50).contains(&alpheus_daemon::clock::LocalTime::now().0.second) {
-        std::thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -2882,9 +2882,9 @@ fn away_from_the_minute() {
 /// bar's only other timer).
 fn activity_over_5_s(d: &Daemon) -> (u64, u64) {
     away_from_the_minute();
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(5));
     (d.main_thread_wakeups().saturating_sub(before), d.main_thread_cpu_ticks().saturating_sub(ticks))
 }
 
@@ -2907,7 +2907,7 @@ fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     for us in 1..=5 {
         player.seeked(us * 1_000_000);
-        std::thread::sleep(Duration::from_millis(300));
+        thread::sleep(Duration::from_millis(300));
     }
     assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_millis(1500), "the loop thread");
     d.main_thread_wakeups().saturating_sub(before)
@@ -2928,7 +2928,7 @@ fn the_media_popup_opens_on_a_left_click_and_escape_closes_it() {
     assert!(d.wait_for_count("media popup shown", 2, DELAY), "opens again: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "a second click on the module closes it: {:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("media popup shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
@@ -2964,13 +2964,13 @@ fn a_bar_removed_while_escape_is_down_releases_the_keyboard() {
     let (_bus, sway, _hypr, d, _players) = media_bar("media-unplug-escape", 2, &[]);
     sway.command("output HEADLESS-1 pos 0 0");
     sway.command("output HEADLESS-2 pos 3000 0");
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     sway.click(3000 + MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
     // Escape pressed and held 4 s: one wtype, its virtual keyboard alive throughout.
     let held = wtype_spawn(&sway, &["-s", "300", "-P", "Escape", "-s", "4000", "-p", "Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(200));
     assert_eq!(d.count("keyboard released"), 0, "Escape is down: the release waits: {:?}", d.log());
     sway.command("output HEADLESS-2 disable");
     assert!(d.wait_for("bar removed from HEADLESS-2", DELAY), "{:?}", d.log());
@@ -2992,18 +2992,18 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     let open = wakeups_over_5_s(&d);
     assert!((4..=12).contains(&open), "about one tick a second while open and playing: {open}");
     players[0].set_status("Paused");
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     let paused = rest_over_5_s(&d);
     assert_eq!(paused, 0, "paused while open: the tick is disarmed ({paused} wake-ups)");
     players[0].set_status("Playing");
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert!(wakeups_over_5_s(&d) >= 4, "playing again: the tick is back");
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
     sway.hover(640, 400);
     // SCTK arms its key repeat timer at the press of Escape and, at the release, only forgets the
     // key: the timer fires once at the repeat delay (600 ms on sway), finds no key and drops itself.
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     let after = rest_over_5_s(&d);
     assert_eq!(after, 0, "closed: nothing armed is left ({after} wake-ups)");
     let seeked = wakeups_over_seeked(&d, &players[0]);
@@ -3070,13 +3070,13 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-restyle", 2, &[]);
     sway.command("output HEADLESS-1 pos 0 0");
     sway.command("output HEADLESS-2 pos 3000 0");
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     sway.click(3000 + MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
     let config = sway.runtime.join("config/alpheus");
     write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\n");
     assert!(d.wait_for("popup closed (restyled)", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("popup closed"), 1, "closed once, though both bars moved: {:?}", d.log());
     sway.hover(640, 400);
     assert_eq!(rest_over_5_s(&d), 0, "the timer went with the popup");
@@ -3086,7 +3086,7 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     assert!(d.wait_for_count("media popup shown", 2, DELAY), "{:?}", d.log());
     write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\nmodule_colors = \"full\"\n");
     assert!(d.wait_for("theme reloaded: catppuccin, dark, module colours full", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("popup closed"), 1, "the same placement: the popup stays: {:?}", d.log());
     assert!(wakeups_over_5_s(&d) >= 4, "and keeps ticking");
 }
@@ -3164,7 +3164,7 @@ fn without_the_module_the_name_is_never_requested() {
     let (bus, sway, _hypr, d, ()) = bell_daemon("bell-none", "modules = [\"tray\", \"clock\"]\n", |_| ());
     assert!(d.wait_for("tray: on the session bus", DELAY), "{:?}", d.log());
     ready(&d);
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     let client = FakeClient::connect(&bus);
     assert_eq!(client.owner(NOTIFICATIONS), None, "never requested");
     assert_eq!(client.notify(&Note::new("Fictional", "anyone?")).unwrap_err(), "org.freedesktop.DBus.Error.ServiceUnknown");
@@ -3199,7 +3199,7 @@ fn dnd_from_alpheus_launch_is_saved_shown_and_restored() {
         assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
     }
     assert!(d.wait_for_count("bell: dnd on", 2, DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("bell: dnd on"), 2, "on twice is on once: {:?}", d.log());
     assert_eq!(script(&sway, &["--clear-notifications"], "").join().unwrap().0, EXIT_OK);
     assert!(d.wait_for("notifications: cleared", DELAY), "{:?}", d.log());
@@ -3307,7 +3307,7 @@ fn mako_holding_the_name_dims_the_bell_until_it_stops() {
     assert!(d.wait_for("bell: not serving", DELAY), "{:?}", d.log());
     let client = FakeClient::connect(&bus);
     assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(1000), "nothing changes while mako runs");
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("bell: serving"), 0, "{:?}", d.log());
     mako.kill(); // mako exits (pkill mako): its connection closes
     assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
@@ -3324,9 +3324,9 @@ fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
     bus.kill();
     assert!(d.wait_for("notifications: the session bus closed", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("bell: not serving", before + 1, DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     let (wakeups, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
-    std::thread::sleep(Duration::from_millis(4500));
+    thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - wakeups;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
     assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
@@ -5564,7 +5564,7 @@ fn windows_focuses_the_previous_window_then_steps() {
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
@@ -5600,19 +5600,19 @@ fn back_to_back_steps_end_on_the_last_selection_drawn() {
     let step = || assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     step();
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // past the open's debounce
+    thread::sleep(Duration::from_millis(300)); // past the open's debounce
     let first = below_bar();
     step();
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     step();
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let paced = below_bar();
     assert_ne!(paced, first, "two steps moved the selection");
     // Round the three windows at once, back to the same selection.
     step();
     step();
     step();
-    std::thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(500));
     assert!(below_bar() == paced, "after a burst of three steps the box shows the selection two paced steps showed");
 }
 
@@ -6237,7 +6237,7 @@ fn a_timed_dnd_ending_during_a_share_hands_over_to_sharing() {
     let (sway, hypr, d) = {
         let name = "dnd-timed-share";
         let (sway, hypr, d) = privacy_daemon_before(name, SHARING_BAR, SHARING_ON, &[privacy_orange(), privacy_red()], |sway| {
-            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20))
+            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20));
         });
         (sway, hypr, d)
     };
@@ -6693,7 +6693,7 @@ fn hooks_started_and_dnd_run_with_their_environment() {
     assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
     assert!(d.wait_for_count("do not disturb on", 1, DELAY), "{:?}", d.log());
     past_the_quiet_window();
-    // The marker says a change reached the model past the window: this machine was too slow for the
+    // The marker says a change reached the model past the window: the machine running the test was too slow for the
     // two verbs to land inside it, so the test proves nothing (never a failure).
     if d.count("hooks: quiet window over") > 0 {
         eprintln!("inconclusive: the first changes came after the quiet window: {:?}", d.log());
@@ -7077,7 +7077,7 @@ fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
     );
     assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
     assert!(d.wait_for("battery: alert at 10 %", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
 }
 

@@ -1,5 +1,13 @@
 //! Which signals matter: the allowlists of properties per object, and what a `Signal` says
 //! (the domain to re-read, a detail change, a wake, a poke).
+//!
+//! Never:
+//! - widen a match rule to a whole interface: the lists here are what keeps the daemon from waking
+//!   for a property no module draws (`d_bus_is_confined_to_sources_and_read_only` pins the rules);
+//! - carry a value in a signal: a `Signal` says which domain to read again, never what changed.
+//!
+//! See: docs/ARCHITECTURE.md ("Sources: what feeds the loop"), docs/features/failed.md (the
+//! piggybacked read), docs/measurements.md (the wake-ups a signal costs).
 
 use super::*;
 
@@ -16,25 +24,21 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 /// A UPower device's properties the bar reads (the laptop's DisplayDevice,
 /// or a peripheral — never a raw battery_BAT0 or line_power_*, dropped
 /// below by `upower_device_ignored` regardless of which property changed).
-/// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`) —
-/// missing from this list (re-review, follow-up): a rename wouldn't have
-/// re-read it until something else happened to change too. `BatteryLevel`
+/// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`), without which a rename
+/// would not be read again until something else about the device changed too. `BatteryLevel`
 /// (2026-10-05): a coarse-reporting peripheral (a Logitech HID++
 /// receiver…) going Low or Critical, or recovering from it, must re-read.
 const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
 /// BlueZ: the properties the bar reads, by interface.
 const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
-// Deviation from the brief's Device1{Connected, Alias, Name} (reported):
-// `Name` stays out of the live allowlist. `bluez::read` does fall back to
-// it, but only once Alias is absent — rare for anything that ever got
-// paired — while BlueZ keeps correcting a scanned device's advertised Name
-// as it collects more of it, right alongside RSSI/UUIDs; keeping it in
-// would defeat the scan-storm test below (a batch carrying Name, even with
-// nothing else relevant, would re-read on every such correction).
-// Settled (re-review, follow-up): a device with no alias of its own has
-// BlueZ mirror its Name into Alias, so a rename of an unaliased device
-// already arrives as an Alias change too — Name carries nothing Alias
-// doesn't, for anything the bar actually shows.
+// `Name` stays out of this live allowlist, narrower than the `Device1{Connected, Alias, Name}` the
+// spec names. `bluez::read` does fall back to it, but only once Alias is absent — rare for anything
+// that ever got paired — while BlueZ keeps correcting a scanned device's advertised Name as it
+// collects more of it, right alongside RSSI/UUIDs; keeping it in would defeat the scan-storm test
+// below (a batch carrying Name, even with nothing else relevant, would re-read on every such
+// correction). Nothing is lost: a device with no alias of its own has BlueZ mirror its Name into
+// Alias, so a rename of an unaliased device already arrives as an Alias change too — Name carries
+// nothing Alias does not, for anything the bar actually shows.
 const BLUEZ_DEVICE_PROPS: [&str; 2] = ["Connected", "Alias"];
 const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
 /// power-profiles-daemon: what the quick panel shows.
@@ -43,10 +47,9 @@ const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 /// systemd's Manager: the failed-units count, the only property of it that emits a change.
 const SYSTEMD_PROPS: [&str; 1] = [units::PROPERTY];
 
-/// The properties of `path`/`interface` the bar reads: an
-/// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
-/// not named here can't change what the bar shows. None: an interface the
-/// bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
+/// The properties of `path`/`interface` the bar reads: an ALLOWLIST, so a property not named here
+/// cannot change what the bar shows, and a service that grows a new one wakes nothing. None: an
+/// interface the bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
 fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [&'static str]> {
     if under(path, "/org/freedesktop/NetworkManager/ActiveConnection") {
         Some(&NM_ACTIVE_PROPS)
@@ -75,7 +78,7 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
 /// ThinkPad-style `BATC`/`BATT`, `CMB0`/`CMB1`… A peripheral's native name
 /// always carries its own driver's prefix, joined with an underscore
 /// (`hidpp_battery_1`, `sony_controller_battery_0`…), which is what still
-/// tells the two apart (follow-up, re-review: not only `BATn`).
+/// tells the two apart, whatever the built-in's own name.
 fn looks_like_builtin_battery_name(native: &str) -> bool {
     !native.is_empty() && !native.contains('_')
 }
@@ -118,7 +121,7 @@ impl Signal {
         }
     }
 
-    /// A Bluetooth panel signal (quick settings delivery 3), heard only while the panel is open:
+    /// A Bluetooth panel signal, heard only while the panel is open:
     /// what a device's or the adapter's properties changed to show, or a device appearing or going.
     /// None: not one (the bar's own signals, a scan's noise). `domain` does not change.
     pub fn bt_change(&self) -> Option<bt::BtChange> {

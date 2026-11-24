@@ -1,7 +1,16 @@
-//! Only one daemon at a time: an exclusive `flock` on
-//! `$XDG_RUNTIME_DIR/alpheus-demon.lock`, held as long as the daemon lives
-//! and released by the kernel when it ends, even abruptly (no orphan file
-//! left behind to block the next one).
+//! One daemon at a time: an exclusive `flock` held for as long as the daemon lives.
+//!
+//! The lock is `$XDG_RUNTIME_DIR/alpheus-demon.lock`, and the file holds the pid, so a second
+//! daemon can name it in the line it logs before exiting. The kernel releases the lock when the
+//! process ends, however it ends, so nothing stale is ever left to block the next start. A failed
+//! `flock` reads as "already running" only when the error is `EWOULDBLOCK`: any other error shows
+//! its own message, so a permission or file-system problem is not mistaken for a second daemon.
+//!
+//! Never:
+//! - leave the lock behind: it belongs to the open file, and the kernel drops it;
+//! - wait for it: `LOCK_NB` refuses instead, and the daemon exits 1.
+//!
+//! See: docs/cli.md ("One instance"), docs/ARCHITECTURE.md ("Entry points").
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};

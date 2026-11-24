@@ -193,10 +193,9 @@ impl Op {
             Op::SetDnd(_) => &[Domain::Dnd],
             Op::ToggleKeepAwake { .. } => &[Domain::KeepAwake],
             Op::SetProfile(_) => &[Domain::Profiles],
-            Op::Power(_) => &[],
             Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => &[Domain::Displays],
             Op::UnitUser(..) => &[Domain::Failed],
-            Op::FailedRefresh | Op::Copy { .. } => &[],
+            Op::Power(_) | Op::FailedRefresh | Op::Copy { .. } => &[],
         }
     }
 }
@@ -438,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn domains_per_tab() {
+    fn each_tab_asks_for_its_own_domains() {
         assert_eq!(Tab::Home.domains().len(), 7);
         assert_eq!(Tab::Sound.domains(), &[Domain::Audio]);
         assert_eq!(Tab::Displays.domains(), &[Domain::Displays]);
@@ -479,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn fetch_and_perform() {
+    fn a_fetch_and_an_action_each_answer_once() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("shell-ctl dnd-status", "on\n");
         f.ok("nmcli radio wifi off", "");
@@ -490,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn burst_coalescing() {
+    fn a_burst_of_requests_is_coalesced() {
         let (r, dropped) = coalesce(vec![
             Request::Do(Op::SetVolume(NodeRef::DefaultSink, 10)),
             Request::Refresh(vec![Domain::Volume]),
@@ -664,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn the_thread_responds() {
+    fn the_thread_answers_every_request() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("shell-ctl dnd-status", "off\n");
         f.ok("shell-ctl dnd-on", "");
@@ -711,7 +710,7 @@ mod tests {
         assert_eq!(Op::ToggleKeepAwake { now_on: true }.domains(), &[Domain::KeepAwake]);
         assert!(Op::SetVolume(NodeRef::DefaultSink, 5).domains().contains(&Domain::Audio));
         assert!(Op::SetDefault(64).domains().contains(&Domain::Volume));
-        assert!(Op::Power(crate::backends::PowerAction::Lock).domains().is_empty());
+        assert!(Op::Power(PowerAction::Lock).domains().is_empty());
         for op in [Op::TryDisplays(Plan::default()), Op::KeepDisplays, Op::RevertDisplays] {
             assert_eq!(op.domains(), &[Domain::Displays]);
         }

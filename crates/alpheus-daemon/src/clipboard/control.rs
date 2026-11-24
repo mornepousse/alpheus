@@ -520,7 +520,7 @@ mod tests {
             assert_eq!(out, "héllo".as_bytes(), "{mime}");
         }
         let mut out = Vec::new();
-        serve(crate::clipboard::offer::MARKER, "héllo", &mut out);
+        serve(MARKER, "héllo", &mut out);
         serve("image/png", "héllo", &mut out);
         assert!(out.is_empty(), "the marker and other types get nothing");
     }

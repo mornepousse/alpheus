@@ -75,7 +75,7 @@ A `modules` list of your own needs `"power"` added, after `"clock"`, to show the
 narrow bar the button is the last module to be removed. Without the `window` module in `modules`,
 the free space goes before the last module, so a bar configured `[..., "clock", "power"]` shows the
 ⏻ alone at the right end, with the clock at the left (what is wanted there, if the clock should
-stay beside it, is not decided: power plan 1, decision 13, to be confirmed at the trial).
+stay beside it, is not decided yet).
 
 ## How it is built
 

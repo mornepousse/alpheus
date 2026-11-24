@@ -158,7 +158,7 @@ available profile of the highest priority (Hi-Fi: names starting `a2dp-sink`; Mi
 The row is hidden for a device whose active profile is of neither kind (LE Audio, for instance), and
 it follows the profile when WirePlumber switches it on its own. The device and its profiles
 (at most 8 devices of 32 profiles) are kept from the `pw-dump` child the sound source already runs
-(`pipewire.rs`): no process is started when the panel opens.
+(`pipewire/bt.rs`): no process is started when the panel opens.
 
 **How it talks to BlueZ.** What the panel shows is read on the D-Bus thread's read-only connection,
 only while the panel is open: a tap with a scope (Closed, Row or Detail) and its own socket pair, and

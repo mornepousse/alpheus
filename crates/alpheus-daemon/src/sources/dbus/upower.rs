@@ -1,5 +1,14 @@
 //! UPower: the laptop's battery (its "display device", the aggregate UPower
 //! shows in panels) and the peripherals with their own battery.
+//!
+//! Never:
+//! - start another service: UPower is the one the daemon may ask the bus for, once per session
+//!   start and only when the battery is wanted (`start_service_by_name_names_upower_alone`, and
+//!   docs/decisions.md, "UPower is the one service the daemon may start");
+//! - read a peripheral's serial or address: the module draws a glyph and a percentage.
+//!
+//! See: docs/features/bar.md (the battery module), docs/features/notifications.md (the low-battery
+//! alerts), docs/configuration.md (`[battery]`).
 
 use super::{Bus, UPOWER, optional};
 use crate::sources::dbus::props::Props;

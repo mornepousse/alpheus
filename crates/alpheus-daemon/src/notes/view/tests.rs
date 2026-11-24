@@ -83,7 +83,7 @@ fn an_empty_pad_shows_the_hint_after_the_caret() {
     assert!(!text_of(&render(&ro, &b).rows[2]).contains("Type here"));
 }
 
-/// M6 (decision 4): `not saved` in the error style, `read only` in warn, the others muted.
+/// `not saved` in the error style, `read only` in warn, the others muted.
 #[test]
 fn the_status_word_styles() {
     let (mut n, b) = notes("x");

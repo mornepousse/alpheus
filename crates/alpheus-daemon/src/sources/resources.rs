@@ -10,6 +10,16 @@
 //! read leaves its own figure out; the next tick tries again (resources
 //! have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
+//!
+//! Never:
+//! - run a command: everything comes from `/proc` and `/sys`, which is why the resources module
+//!   adds no process (`the_only_stream_is_pw_dump_monitor` pins the one child the daemon keeps);
+//! - read what no item asks for: an item left out of `[resources] show` is never read, and
+//!   `gpu_sensor` exists so that a discrete GPU's sensor is not woken on a hybrid laptop;
+//! - keep more than the ring: the last 60 samples, about 3 KB (`the_history_stays_small`).
+//!
+//! See: docs/features/resources.md (the items, the ring and the graphs), docs/configuration.md
+//! (`[resources]`), docs/measurements.md (what a reading costs on the loop).
 
 use crate::config::{ResourceItem, ResourcesConfig};
 use crate::log::write as log;
@@ -50,7 +60,7 @@ pub fn cpu_percent(a: CpuTimes, b: CpuTimes) -> Option<u8> {
 /// KiB in a GiB.
 const GIB_KB: u64 = 1024 * 1024;
 
-/// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like htop
+/// Memory in use, in tenths of GiB, rounded (shown as "10.5G"). Like htop
 /// (2026-10-06: RAM only, caches left out): MemTotal − MemFree −
 /// Buffers − (Cached + SReclaimable − Shmem). Shmem (tmpfs, shared buffers)
 /// sits inside Cached but cannot be reclaimed, so it stays counted as used;
@@ -409,11 +419,11 @@ impl Reader {
             };
             self.previous = now;
         }
-        if self.shows(ResourceItem::Memory) {
-            if let Ok(text) = std::fs::read_to_string(self.roots.root.join("proc/meminfo")) {
-                sample.memory = parse_meminfo(&text);
-                sample.memory_total = parse_mem_total(&text);
-            }
+        if self.shows(ResourceItem::Memory)
+            && let Ok(text) = std::fs::read_to_string(self.roots.root.join("proc/meminfo"))
+        {
+            sample.memory = parse_meminfo(&text);
+            sample.memory_total = parse_mem_total(&text);
         }
         if self.shows(ResourceItem::Temperature) {
             sample.temperature = self.cpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));
@@ -566,8 +576,8 @@ mod tests {
 
     #[test]
     fn memory_falls_back_to_memfree_without_memavailable() {
-        // Pre-3.14 kernels have no MemAvailable at all; same fixture, that
-        // line (and the cache lines) dropped — matches the 217 already worked out in step 6.
+        // Pre-3.14 kernels have no MemAvailable at all; the same fixture with that line (and the
+        // cache lines) dropped, so the figure below is MemTotal − MemFree on it.
         let no_available: String = MEMINFO
             .lines()
             .filter(|l| !["MemAvailable:", "Buffers:", "Cached:", "SReclaimable:"].iter().any(|k| l.starts_with(k)))

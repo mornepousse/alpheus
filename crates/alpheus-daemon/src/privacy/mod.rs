@@ -46,8 +46,7 @@ pub const MAX_NAMES: usize = 8;
 /// The model keeps no more nodes and links than this (privacy spec § 8).
 pub const MAX_NODES: usize = 1024;
 pub const MAX_LINKS: usize = 4096;
-/// The popup is at most this many cells wide, a longer name being cut (privacy plan 1, "Decisions
-/// written down", item 6).
+/// The popup is at most this many cells wide, a longer name being cut.
 pub const POPUP_WIDTH: u16 = 32;
 
 /// One indicator: the apps holding the device, and whether a holder has no name.
@@ -71,11 +70,11 @@ impl Indicator {
         };
         // `binary_search_by` gives `Err(at)` when the name is not there yet, with the place where it
         // belongs. A name that would land past `MAX_NAMES` is dropped.
-        if let Err(at) = self.names.binary_search_by(|n| n.as_str().cmp(app)) {
-            if at < MAX_NAMES {
-                self.names.insert(at, app.to_string());
-                self.names.truncate(MAX_NAMES);
-            }
+        if let Err(at) = self.names.binary_search_by(|n| n.as_str().cmp(app))
+            && at < MAX_NAMES
+        {
+            self.names.insert(at, app.to_string());
+            self.names.truncate(MAX_NAMES);
         }
     }
 
@@ -259,7 +258,7 @@ pub struct Privacy {
     /// PipeWire's last capture, the ignored names already removed.
     pw: Capture,
     mic_muted: bool,
-    /// The holders of the video devices, the ignored names already removed (privacy delivery 2).
+    /// The holders of the video devices, the ignored names already removed (the camera scan's).
     devices: Indicator,
     /// The compositor says a screen is being cast.
     casting: bool,
@@ -342,10 +341,11 @@ impl Privacy {
         for off in self.off_at.iter().flatten() {
             keep_earliest(&mut earliest, *off);
         }
-        if let Some(release) = self.release_at {
-            if self.shown.screen.active() && !self.pw.screen.active() {
-                keep_earliest(&mut earliest, release + OFF_DELAY);
-            }
+        if let Some(release) = self.release_at
+            && self.shown.screen.active()
+            && !self.pw.screen.active()
+        {
+            keep_earliest(&mut earliest, release + OFF_DELAY);
         }
         earliest
     }

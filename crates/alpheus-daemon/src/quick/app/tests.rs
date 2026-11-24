@@ -333,8 +333,8 @@ fn an_nmcli_never_started_ends_the_attempt_at_once() {
 }
 
 /// A Bluetooth headset on its Hi-Fi profile.
-fn a_bluetooth_headset() -> Option<crate::system::Headset> {
-    Some(crate::system::Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
+fn a_bluetooth_headset() -> Option<Headset> {
+    Some(Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
 }
 
 /// Quick Bluetooth spec § 4: the headset goes to the open panel, never the bar.
@@ -417,10 +417,10 @@ fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
     assert!(!q.bt.open, "the detail closed");
     assert!(!adapter_seen(&q) && !connection_wanted(Some(&q), 0));
     assert!(!opens_for(&q.bt_leaving(), adapter_seen(&q)), "nothing reopened toward the old owner");
-    let late = crate::quick::bt::BtOrder::Call(crate::sources::dbus::bt_act::ActCall::StopDiscovery { adapter: HCI0.into() });
+    let late = quick::bt::BtOrder::Call(crate::sources::dbus::bt_act::ActCall::StopDiscovery { adapter: HCI0.into() });
     assert!(!opens_for(&[late], adapter_seen(&q)), "nor by a call still made before the new owner shows");
     panel_bt(&mut q, &live, Some(3), Some(bt_view()), Some(3), t).expect("the new owner");
-    assert!(adapter_seen(&q) && quick::shown(&live, &q).contains(&Row::Bluetooth), "the row back");
+    assert!(adapter_seen(&q) && shown(&live, &q).contains(&Row::Bluetooth), "the row back");
 }
 
 /// As the D-Bus thread reports it: BlueZ gone reads as a view with no adapter
@@ -452,7 +452,7 @@ fn a_do_not_disturb_choice_becomes_the_request_the_command_line_sends() {
     assert_eq!((u32::from(local.hour), u32::from(local.minute)), at, "the end falls on the configured wall-clock time");
 }
 
-fn vpn_around() -> crate::system::VpnState {
+fn vpn_around() -> VpnState {
     use crate::system::{VpnKind, VpnProfile, VpnState};
     VpnState {
         profiles: vec![VpnProfile {

@@ -137,7 +137,7 @@ impl App {
         let mut chunk = [0u8; 16 * 1024];
         let read = loop {
             match file.read(&mut chunk) {
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 other => break other,
             }
         };
@@ -255,7 +255,7 @@ mod tests {
         let mut b = PasteBuffer::default();
         let chunk = [b'a'; 4096];
         assert_eq!(step(Ok(10), &chunk, &mut b), Step::Continue);
-        assert_eq!(step(Err(std::io::ErrorKind::WouldBlock.into()), &chunk, &mut b), Step::Continue);
+        assert_eq!(step(Err(ErrorKind::WouldBlock.into()), &chunk, &mut b), Step::Continue);
         assert_eq!(step(Ok(0), &chunk, &mut b), Step::Stop, "EOF");
         let mut b = PasteBuffer::default();
         let mut last = Step::Continue;
@@ -263,10 +263,7 @@ mod tests {
             last = step(Ok(4096), &chunk, &mut b);
         }
         assert_eq!(last, Step::Stop, "the cap");
-        assert_eq!(
-            step(Err(std::io::ErrorKind::BrokenPipe.into()), &chunk, &mut PasteBuffer::default()),
-            Step::Failed(ErrorKind::BrokenPipe)
-        );
+        assert_eq!(step(Err(ErrorKind::BrokenPipe.into()), &chunk, &mut PasteBuffer::default()), Step::Failed(ErrorKind::BrokenPipe));
     }
 
     #[test]

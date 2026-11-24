@@ -1,5 +1,11 @@
 //! WCAG 2 contrast (relative luminance, contrast ratio), used by the
 //! presets' legibility test and available to the Appearance tab later.
+//!
+//! Never:
+//! - guess a ratio: the formula is WCAG 2's, which is what makes the presets' legibility a test and
+//!   not an opinion.
+//!
+//! See: docs/features/themes.md ("Rules it keeps").
 
 use super::Rgb;
 
@@ -7,7 +13,7 @@ use super::Rgb;
 /// weighted 0.2126 / 0.7152 / 0.0722. 0.0 for black, 1.0 for white.
 pub fn luminance(Rgb(r, g, b): Rgb) -> f32 {
     fn linear(c: u8) -> f32 {
-        let c = c as f32 / 255.0;
+        let c = f32::from(c) / 255.0;
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
     }
     0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)

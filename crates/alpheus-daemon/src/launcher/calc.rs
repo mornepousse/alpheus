@@ -149,10 +149,8 @@ fn lex_number(chars: &[char], i: &mut usize, flags: &mut Flags) -> Option<Value>
             }
         }
     }
-    if !float {
-        if let Ok(n) = text.parse::<i128>() {
-            return Some(Value::Int(n));
-        }
+    if !float && let Ok(n) = text.parse::<i128>() {
+        return Some(Value::Int(n));
     }
     flags.all_int = false;
     text.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Float)

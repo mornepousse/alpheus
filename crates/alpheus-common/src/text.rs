@@ -1,5 +1,13 @@
 //! Text from outside (a unit's description, a journal message) made safe to put in a terminal
 //! cell: no control character, no escape sequence, no bidirectional override gets through.
+//!
+//! Never:
+//! - let an escape sequence or a bidirectional override through: a unit's description and a journal
+//!   message are hostile input, and the terminal would obey them;
+//! - remove ZWNJ (U+200C) or ZWJ (U+200D): they shape ordinary text (the one list of invisible
+//!   characters lives here, and the daemon's `text.rs` uses it).
+//!
+//! See: docs/features/control-center.md, docs/features/tray.md (the same rule for the bar).
 
 /// Zero-width and bidirectional formatting characters: drawn as nothing, they could hide or
 /// reorder what a cell shows (soft hyphen, word joiners, the byte-order mark). U+200C and U+200D
