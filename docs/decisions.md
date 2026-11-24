@@ -1756,6 +1756,21 @@ is dropped unread and never taken for the next one's.
 
 Date: 2026-11-24 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline`, `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
 
+### The colour picker picks from a frozen frame and copies text through `copy`, as written
+
+The picker captures the focused output once, through the same flow as a whole screen (the settle
+round trip first, so a closing menu is not in it), and shows that frame on its own Overlay surface:
+moving content stands still, and the lens reads the very pixels the click picks. The frame belongs
+to the open picker and goes with it at close; nothing of it stays. The value is text: `{hex}` is
+`#RRGGBB` in upper case, `[captures] pick_format` may fill `{r}`, `{g}`, `{b}` and `{hex}` instead.
+It reaches `launcher.toml`'s `copy` the way a screenshot does (a private file, `pick.txt`, on its
+standard input, from the `alpheus-capture` thread), so "copied" is the command's exit 0; the command
+is run as written, with no image type, and a custom one must accept text on its standard input. Esc,
+a right click, focus taken or another surface opened is a silent cancel; the compositor taking the
+surface away, or no buffer to open it, is a critical failure; the clipboard is touched only by a pick.
+
+Date: 2026-11-24 · Source: tests `a_pick_settles_grabs_the_screen_then_opens_the_picker`, `a_picker_that_fails_ends_the_pick_as_a_critical_failure` (`captures/tests.rs`), `esc_picks_nothing_and_copies_nothing`, `the_value_is_uppercase_hex_by_default`, `pick_format_fills_r_g_b_hex` (`captures/pick/tests.rs`), `a_picked_value_reaches_the_copy_command_as_text`, `a_picked_value_the_copy_command_refuses_is_a_copy_failure` (`captures/deliver/tests.rs`), `the_picker_frame_is_kept_only_while_the_picker_is_open`, `a_picker_that_cannot_open_fails_its_capture` (`tests/guardrails.rs`), `colour_picker_copies_the_pixel_under_the_pointer` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_colour_pick` (`tests/memory.rs`)
+
 
 ### Large blocks are always mapped on their own
 

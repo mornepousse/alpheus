@@ -299,7 +299,7 @@ Screenshots and recordings, driven by `alpheus-launch --capture` and the Tools m
 | `annotate` | command | `["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]` | non-blank program, no NUL | The annotation tool (not wired yet). |
 | `ocr` | command | `["tesseract", "{file}", "-", "-l", "eng"]` | same | The text recogniser (not wired yet). |
 | `record` | command | `["wf-recorder", "-g", "{geometry}", "-f", "{out}"]` | same | The recorder (not wired yet). |
-| `pick_format` | string | `"{hex}"` | | The colour picker's text, with `{r}`, `{g}`, `{b}`, `{hex}` (not wired yet). |
+| `pick_format` | string | `"{hex}"` | at least one placeholder, only `{r}`, `{g}`, `{b}`, `{hex}` between braces, no control character, at most 256 bytes | The colour picker's copied text: `{r}`, `{g}`, `{b}` are 0 to 255, `{hex}` is `#RRGGBB` in upper case. |
 
 ### `[hooks]`
 
