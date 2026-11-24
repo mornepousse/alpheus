@@ -149,6 +149,9 @@ fn the_table_is_the_specs() {
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
+    // System sits beside Session: 40 is the Captures category's.
+    let orders: Vec<(&str, u16)> = BUILTIN_CATEGORIES.into_iter().zip(BUILTIN_ORDERS).collect();
+    assert_eq!(orders, [(quick, 10), (control, 20), (utilities, 30), (system, 80), (session, 90), (diagnostics, 70)]);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
     assert_eq!(slugs, ["home", "sound", "network", "bluetooth", "power", "displays", "appearance", "diagnostics"]);
     assert!(BUILTINS.iter().all(|b| b.glyph != ' ' && !b.glyph.is_ascii()), "every built-in has a Nerd Font glyph");
@@ -315,7 +318,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 40 System, 50 Beta, 70 Diagnostics, 90 Session), names breaking the tie.
+    // 50 Beta, 70 Diagnostics, 80 System, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -329,9 +332,9 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
-            "[System]",
             "Beta",
             "[Diagnostics]",
+            "[System]",
             "[Session]",
         ]
     );

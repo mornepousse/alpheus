@@ -13,7 +13,7 @@ use alpheus_common::launcher_ipc::QuickVerb;
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 6] = [10, 20, 30, 40, 90, 70];
+const BUILTIN_ORDERS: [u16; 6] = [10, 20, 30, 80, 90, 70];
 /// Their glyphs (Nerd Font Material Design), in the same order.
 const BUILTIN_GLYPHS: [char; 6] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F08D6}', '\u{F0343}', '\u{F00E4}'];
 
