@@ -137,6 +137,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v32.1.0
+      # Free binary cache in the GitHub Actions cache, no secret. Only the
+      # Actions cache is used (no FlakeHub, so no `id-token: write`: `contents:
+      # read` is enough) and the diagnostics endpoint is switched off.
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+          diagnostic-endpoint: ""
       - run: nix flake check
       - run: nix build .#alpheus .#alpheus-demon .#alpheus-launch
 
