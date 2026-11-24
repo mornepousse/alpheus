@@ -3703,6 +3703,10 @@ fn the_kill_list_has_no_panicking_path_and_logs_fixed_words() {
     }
     let glue =
         production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "launcher/processes_app.rs").expect("glue").1);
+    // The one count line: how many rows the list opened with, a number and never a name.
+    let count_line = "log(&format!(\"kill list: {count} listed\", count = rows.len()));";
+    assert_eq!(glue.matches(count_line).count(), 1, "the kill list's one count line");
+    let glue = glue.replace(count_line, "");
     assert_eq!(clipboard_unfixed_log(&glue), None, "a log line of the kill list's glue is not fixed words");
     assert!(glue.contains("log(\"kill list: signal\")"), "the one log line the glue writes about a signal");
     // Spawns nothing and sends no signal of its own: the one `kill(2)` is the signaller's.

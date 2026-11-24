@@ -8492,51 +8492,56 @@ fn shield_the_hook_fires_on_a_change_past_the_quiet_window() {
     assert_eq!(recorded(&w.sway, "hook-rec"), ["hook-rec up|ALPHEUS_EVENT=shield ALPHEUS_SHIELD=on "]);
 }
 
-/// The kill list, `--kill`: a `sleep` the test started and nothing else is filtered to, and Enter
-/// sends it SIGTERM (it exits by that signal); a second one that ignores SIGTERM takes Ctrl+Enter
-/// then Enter and dies of SIGKILL. The list shows this user's real processes, so each child carries a
-/// number of its own that the typed filter matches, and nothing else is ever signalled. No log line
-/// holds a name, a pid or a command line.
+/// The kill list, `--kill`: Enter sends SIGTERM to a `sleep` the test started (it exits by that
+/// signal); a second child that ignores SIGTERM takes Ctrl+Enter then Enter and dies of SIGKILL.
+/// The daemon reads `proc_dir`, a folder of the test's own holding only a symlink to each child's
+/// `/proc/<pid>`, never the real `/proc`: the list can show nothing else, so no process of the
+/// person running the test can be signalled. Each open logs how many rows it has, and the test
+/// asserts exactly one before each Enter. No log line holds a name, a pid or a command line.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn kill_list_opens_and_signals_by_enter() {
     use std::os::unix::process::ExitStatusExt;
     let sway = Sway::start("kill-list", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let mut d = start_daemon_with(&sway, &DaemonOptions::default());
+    let proc_dir = sway.runtime.join("proc");
+    std::fs::create_dir_all(&proc_dir).unwrap();
+    std::os::unix::fs::symlink("/proc/uptime", proc_dir.join("uptime")).unwrap();
+    let toml = format!("proc_dir = {:?}\n", proc_dir.display().to_string());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
     ready(&d);
-    // A number of this test's own, so the filter finds the child and no other process.
-    let marker = format!("{}", 600_000 + std::process::id() % 100_000);
-    let mut sleeper = GroupChild::spawn(Command::new("sleep").arg(&marker));
-    // A program that ignores SIGTERM: the shell traps it, and its command line names the marker.
-    let stubborn_marker = format!("{}", 700_000 + std::process::id() % 100_000);
-    let mut stubborn = GroupChild::spawn(Command::new("sh").args(["-c", "trap '' TERM; while :; do sleep 1; done", &stubborn_marker]));
-    // The children are in /proc before the list is read.
+    // Lists a child of the test, and only it: the folder's one entry.
+    let list = |child: &GroupChild| {
+        std::os::unix::fs::symlink(format!("/proc/{}", child.id()), proc_dir.join(child.id().to_string())).unwrap();
+    };
+    let mut sleeper = GroupChild::spawn(Command::new("sleep").arg("600"));
+    list(&sleeper);
+    // A program that ignores SIGTERM: the shell traps it.
+    let mut stubborn = GroupChild::spawn(Command::new("sh").args(["-c", "trap '' TERM; while :; do sleep 1; done"]));
     thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
     assert_eq!(d.count(SCAN_STARTED), 0, "the kill list scans no application: {:?}", d.log());
-    // The filter, then Enter: SIGTERM to the one row.
-    assert!(wtype(&sway, &["-s", "300", &marker, "-s", "200", "-k", "Return"]).success());
+    assert!(d.wait_for("kill list: 1 listed", DELAY), "exactly one row before Enter: {:?}", d.log());
+    // Enter: SIGTERM to the one row.
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
     let status = wait_for_exit(&mut sleeper);
     assert_eq!(status.signal(), Some(15), "ended by SIGTERM: {status:?} {:?}", d.log());
     assert!(d.wait_for("kill list: signal", DELAY), "{:?}", d.log());
-    // wtype's keyboard goes with its process: the box closes on the lost focus; open it again.
+    // wtype's keyboard goes with its process: the box closes on the lost focus; open it again on
+    // the other child alone.
     assert!(d.wait_for("launcher closed (focus lost)", DELAY), "{:?}", d.log());
+    std::fs::remove_file(proc_dir.join(sleeper.id().to_string())).unwrap();
+    list(&stubborn);
     assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("kill list: 1 listed", 2, DELAY), "exactly one row before Enter: {:?}", d.log());
     // Ctrl+Enter asks; Enter 0.6 s later kills.
-    assert!(
-        wtype(
-            &sway,
-            &["-s", "300", &stubborn_marker, "-s", "200", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "600", "-k", "Return"]
-        )
-        .success()
-    );
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "600", "-k", "Return"]).success());
     let status = wait_for_exit(&mut stubborn);
     assert_eq!(status.signal(), Some(9), "ended by SIGKILL: {status:?} {:?}", d.log());
     assert!(
-        d.log().iter().all(|l| !l.contains(&marker) && !l.contains(&stubborn_marker) && !l.contains("sleep") && !l.contains("trap")),
+        d.log().iter().all(|l| !l.contains("sleep") && !l.contains("trap")),
         "never a name or a command line in the log: {:?}",
         d.log()
     );

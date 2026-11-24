@@ -13,6 +13,7 @@
 //! search = "https://duckduckgo.com/?q={query}"     # the `?` prefix's URL, {query} percent-encoded; "" disables `?`
 //! open = ["xdg-open"]                              # opens that URL (the URL is appended); [] disables `?`
 //! rows = 10                                        # result rows, 3 to 30
+//! proc_dir = "/proc"                               # where the kill list reads processes (an absolute path; tests point it elsewhere)
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
 //! [[sources]]                                      # menu scripts whose lines are searchable (at most 8)
@@ -93,6 +94,9 @@ pub struct LauncherConfig {
     /// Opens the search URL: the URL is appended as the last argument; empty disables the prefix.
     pub open: Vec<String>,
     pub rows: u16,
+    /// Where the kill list reads processes and start times: `/proc`, or an absolute folder shaped like
+    /// it (a test's own, holding only its children).
+    pub proc_dir: PathBuf,
     /// Entries kept; 0 disables the history (never read, never written).
     pub history: usize,
     pub prefixes: Prefixes,
@@ -114,6 +118,7 @@ impl Default for LauncherConfig {
             search: "https://duckduckgo.com/?q={query}".into(),
             open: vec!["xdg-open".into()],
             rows: 10,
+            proc_dir: PathBuf::from("/proc"),
             history: 200,
             prefixes: Prefixes::default(),
             focus: vec!["wm-set".into(), "focus-window".into(), "{window}".into()],
@@ -133,6 +138,7 @@ struct Raw {
     search: String,
     open: Vec<String>,
     rows: u16,
+    proc_dir: PathBuf,
     history: usize,
     prefixes: Prefixes,
     focus: Vec<String>,
@@ -150,6 +156,7 @@ impl Default for Raw {
             search: d.search,
             open: d.open,
             rows: d.rows,
+            proc_dir: d.proc_dir,
             history: d.history,
             prefixes: d.prefixes,
             focus: d.focus,
@@ -220,6 +227,9 @@ impl LauncherConfig {
         if !(ROWS_MIN..=ROWS_MAX).contains(&r.rows) {
             return Err(format!("rows {} out of range {ROWS_MIN} to {ROWS_MAX}", r.rows));
         }
+        if !r.proc_dir.is_absolute() {
+            return Err("proc_dir must be an absolute path".into());
+        }
         if r.history > HISTORY_MAX {
             return Err(format!("history {} out of range 0 to {HISTORY_MAX}", r.history));
         }
@@ -275,6 +285,7 @@ impl LauncherConfig {
             search: r.search,
             open: r.open,
             rows: r.rows,
+            proc_dir: r.proc_dir,
             history: r.history,
             prefixes: r.prefixes,
             focus: r.focus,
@@ -398,6 +409,16 @@ mod tests {
     }
 
     #[test]
+    fn proc_dir_defaults_to_proc_and_must_be_absolute() {
+        assert_eq!(LauncherConfig::default().proc_dir, PathBuf::from("/proc"));
+        assert_eq!(LauncherConfig::from_text("").unwrap().proc_dir, PathBuf::from("/proc"));
+        assert_eq!(LauncherConfig::from_text("proc_dir = \"/run/test/proc\"\n").unwrap().proc_dir, PathBuf::from("/run/test/proc"));
+        let e = LauncherConfig::from_text("proc_dir = \"proc\"\n").unwrap_err();
+        assert!(e.contains("proc_dir") && e.contains("absolute"), "{e}");
+        assert!(LauncherConfig::from_text("proc_dir = \"\"\n").is_err());
+    }
+
+    #[test]
     fn a_default_tools_prefix_that_clashes_is_turned_off_with_a_note() {
         let c = LauncherConfig::from_text("[prefixes]\ncommands = \"/run \"\n").unwrap();
         assert_eq!(c.prefixes.tools, "", "the default `/` clashes with `/run `: the jump is off");
@@ -468,6 +489,7 @@ mod tests {
             search: "https://duckduckgo.com/?q={query}".into(),
             open: vec!["xdg-open".into()],
             rows: 6,
+            proc_dir: PathBuf::from("/proc"),
             history: 0,
             prefixes: Prefixes { commands: "!".into(), windows: "win:".into(), tools: "/".into() },
             focus: vec!["my-wm".into(), "focus".into(), "--window={window}".into()],
