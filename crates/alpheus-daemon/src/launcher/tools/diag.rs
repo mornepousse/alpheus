@@ -192,14 +192,14 @@ pub fn subnet_from_route(route: &str) -> Option<String> {
             if name != iface || !up || gateway != "00000000" {
                 return None;
             }
-            let dest = u32::from_str_radix(dest, 16).ok()?.to_ne_bytes();
+            let [a, b, c, d] = u32::from_str_radix(dest, 16).ok()?.to_ne_bytes();
             let mask = u32::from_be_bytes(u32::from_str_radix(mask, 16).ok()?.to_ne_bytes());
             let prefix = mask.leading_ones();
             // A contiguous mask: its ones, then its zeros.
-            if mask == 0 || prefix + mask.trailing_zeros() != 32 || !(WIDEST..=NARROWEST).contains(&prefix) || dest[..2] == [169, 254] {
+            if mask == 0 || prefix + mask.trailing_zeros() != 32 || !(WIDEST..=NARROWEST).contains(&prefix) || [a, b] == [169, 254] {
                 return None;
             }
-            Some((metric, format!("{}.{}.{}.{}/{prefix}", dest[0], dest[1], dest[2], dest[3])))
+            Some((metric, format!("{a}.{b}.{c}.{d}/{prefix}")))
         })
         .min_by_key(|(metric, _)| *metric)
         .map(|(_, net)| net)
