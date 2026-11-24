@@ -3,11 +3,12 @@
 //!
 //! This is the pure half of the privacy module. It holds the PipeWire graph the sound model keeps
 //! for it (`GraphNode`, `GraphLink`), the rules that turn that graph into who holds what
-//! (`capture`), and `Privacy`, which merges what PipeWire, the video devices (`camera.rs`) and the
-//! compositor say. `Privacy` also keeps the ignore list, the 0.5 s off-delay, the compositor's
-//! release hold and the default source's mute, and it draws the popup (`render`). The other half,
-//! `app.rs`, does the talking to the outside: it feeds `Privacy` the messages and the time and runs
-//! the popup and the timer. `camera.rs` and `camera_app.rs` are the camera opened outside PipeWire.
+//! (`capture`), and `Privacy`, which merges what PipeWire, the video devices (`camera.rs`), the
+//! compositor and alpheus's own recorder (`captures/record.rs`, named `alpheus`) say. `Privacy`
+//! also keeps the ignore list, the 0.5 s off-delay, the compositor's release hold and the default
+//! source's mute, and it draws the popup (`render`). The other half, `app.rs`, does the talking to
+//! the outside: it feeds `Privacy` the messages and the time and runs the popup and the timer.
+//! `camera.rs` and `camera_app.rs` are the camera opened outside PipeWire.
 //!
 //! Never:
 //! - read a clock, a file or a socket, start a thread or a process, or run a command: the caller
@@ -41,6 +42,8 @@ pub const OFF_DELAY: Duration = Duration::from_millis(500);
 /// screenshot. See docs/decisions.md, "A compositor's screencast release counts
 /// after a one-second hold".
 pub const CAST_HOLD: Duration = Duration::from_secs(1);
+/// The name the screen shows while alpheus records it.
+pub const RECORDER: &str = "alpheus";
 /// App names kept per indicator, at most.
 pub const MAX_NAMES: usize = 8;
 /// The model keeps no more nodes and links than this.
@@ -262,6 +265,9 @@ pub struct Privacy {
     casting: bool,
     /// After a release: the instant it counts, when the hold ends.
     release_at: Option<Instant>,
+    /// alpheus itself records the screen (`captures/record.rs`): the screen shows `alpheus`, unless
+    /// the ignore list names it.
+    recording: bool,
     shown: Capture,
     /// Per indicator (microphone, camera, screen): when it goes off, once it is no longer live.
     off_at: [Option<Instant>; 3],
@@ -276,6 +282,7 @@ impl Privacy {
             mic_muted: false,
             casting: false,
             release_at: None,
+            recording: false,
             shown: Capture::default(),
             off_at: [None; 3],
         }
@@ -329,6 +336,18 @@ impl Privacy {
             changed |= self.settle(now);
         }
         changed
+    }
+
+    /// Whether alpheus records the screen (its own recorder, which PipeWire and the compositor may
+    /// not see). True when what is shown changed. See docs/decisions.md, "Recording is the external
+    /// tool's, driven and stopped by alpheus".
+    pub fn set_recording(&mut self, recording: bool, now: Instant) -> bool {
+        self.expire_cast(now);
+        if recording == self.recording {
+            return false;
+        }
+        self.recording = recording;
+        self.settle(now)
     }
 
     /// The earliest instant at which `due` has something to apply: a pending off, or the end of
@@ -444,7 +463,14 @@ impl Privacy {
             1 => &self.pw.camera,
             _ => &self.pw.screen,
         };
-        if i == 2 && !pw.active() && (self.casting || self.release_at.is_some()) {
+        let casting = i == 2 && !pw.active() && (self.casting || self.release_at.is_some());
+        if i == 2 && self.recording {
+            // alpheus's own recorder, beside whoever else holds the screen; the ignore list applies
+            // to its name as to any.
+            let ours = Indicator { names: vec![RECORDER.to_string()], unnamed: false }.without(&self.ignore);
+            let held = if casting { Indicator { names: Vec::new(), unnamed: true } } else { pw.clone() };
+            Cow::Owned(held.merged(&ours))
+        } else if casting {
             Cow::Owned(Indicator { names: Vec::new(), unnamed: true })
         } else if i == 1 && self.devices.active() {
             Cow::Owned(pw.merged(&self.devices))

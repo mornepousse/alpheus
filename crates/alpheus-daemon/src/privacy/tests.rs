@@ -402,3 +402,31 @@ fn a_release_adds_no_deadline_while_pipewire_holds_the_screen() {
     p.set_casting(false, CAST_HOLD, t0 + millis(100));
     assert_eq!(p.deadline(), None);
 }
+
+/// A recording alpheus runs lights the screen at once, named `alpheus` (the compositor and PipeWire
+/// may not see a recorder that bypasses them), beside what PipeWire names; it goes off one delay
+/// after the recording ends, as any holder does. Nothing else is lit.
+#[test]
+fn recording_lights_the_privacy_screen_glyph() {
+    let t0 = Instant::now();
+    let mut p = Privacy::new(Vec::new());
+    assert!(p.set_recording(true, t0), "lit at once");
+    assert_eq!(p.shown().screen, Indicator { names: vec!["alpheus".into()], unnamed: false });
+    assert!(!p.shown().mic.active() && !p.shown().camera.active());
+    assert!(!p.set_recording(true, t0 + millis(10)), "no change");
+    let cast = Capture { screen: indicator(&["obs"], false), ..Capture::default() };
+    p.set_sound(Some(&cast), false, t0 + millis(20));
+    assert_eq!(p.shown().screen.names, ["alpheus", "obs"], "both holders");
+    p.set_sound(Some(&Capture::default()), false, t0 + millis(30));
+    assert!(!p.set_recording(false, t0 + millis(100)), "going off waits the delay");
+    assert!(p.shown().screen.active());
+    assert_eq!(p.shown().screen.names, ["alpheus"], "obs went, alpheus stays shown");
+    assert_eq!(p.deadline(), Some(t0 + millis(100) + OFF_DELAY));
+    assert!(!p.due(t0 + millis(100) + OFF_DELAY - millis(1)));
+    assert!(p.due(t0 + millis(100) + OFF_DELAY));
+    assert!(p.shown().is_empty());
+    // The ignore list applies to alpheus as to any name.
+    let mut ignoring = Privacy::new(vec!["Alpheus".into()]);
+    assert!(!ignoring.set_recording(true, t0));
+    assert!(ignoring.shown().is_empty());
+}
