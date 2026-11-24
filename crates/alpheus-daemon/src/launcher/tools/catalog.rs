@@ -98,7 +98,7 @@ pub const BUILTINS: [Builtin; 32] = [
     b("capture.area_save", "Area (save)", CAPTURES, '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
     b("capture.annotate", "Annotate", CAPTURES, '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)),
     b("capture.record", "Record screen", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)),
-    b("capture.record_area", "Record area", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
+    b("capture.record_area", "Record area", CAPTURES, '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
     b("capture.stop", "Stop recording", CAPTURES, '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)),
     b("capture.pick", "Colour picker", CAPTURES, '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)),
     b("capture.ocr", "Text from area (OCR)", CAPTURES, '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)),
@@ -140,6 +140,12 @@ pub struct Context {
     pub recording: bool,
 }
 
+/// Whether a capture verb is built: the others answer "not available yet", and their rows stay
+/// hidden (in the table, with their ids) until their tasks land.
+const fn built(verb: CaptureVerb) -> bool {
+    matches!(verb, CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave)
+}
+
 /// Whether `b` shows under `c`.
 pub fn shown(b: &Builtin, c: &Context) -> bool {
     match b.action {
@@ -156,8 +162,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Lock => c.lock,
         BuiltinAction::Power => c.session,
         BuiltinAction::Reload => c.reload,
-        BuiltinAction::Capture(CaptureVerb::Stop) => c.captures && c.recording,
-        BuiltinAction::Capture(_) => c.captures,
+        BuiltinAction::Capture(verb) => c.captures && built(verb) && (verb != CaptureVerb::Stop || c.recording),
     }
 }
 

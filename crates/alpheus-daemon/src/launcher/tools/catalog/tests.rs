@@ -195,17 +195,7 @@ fn shown_follows_the_context() {
                 c.captures = true;
                 c.recording = true;
             },
-            &[
-                "capture.full",
-                "capture.area",
-                "capture.area_save",
-                "capture.annotate",
-                "capture.record",
-                "capture.record_area",
-                "capture.stop",
-                "capture.pick",
-                "capture.ocr",
-            ],
+            &["capture.full", "capture.area", "capture.area_save"],
         ),
     ];
     for (flip, rows) in flips {
@@ -219,7 +209,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 32);
+    assert_eq!(ids_shown(&all()).len(), 26, "the table's 32, less the six captures not built yet");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -254,11 +244,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 32);
+    assert_eq!(builtin_ids(&cat).len(), 26);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 30);
+    assert_eq!(ids.len(), 24);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -484,33 +474,33 @@ fn no_screencopy_hides_the_captures() {
     assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Captures]".to_string()), "no empty category");
     let (cat, _) = build("", &all());
     let at = cat.categories.iter().position(|k| k.name == "Captures").unwrap();
-    assert_eq!(
-        names(&cat, &cat.category_rows(at)),
-        [
-            "Screenshot",
-            "Area",
-            "Area (save)",
-            "Annotate",
-            "Record screen",
-            "Record area",
-            "Stop recording",
-            "Colour picker",
-            "Text from area (OCR)"
-        ]
-    );
+    assert_eq!(names(&cat, &cat.category_rows(at)), ["Screenshot", "Area", "Area (save)"]);
     // The category sits between Utilities and Session.
     let root = category_names(&cat, &cat.root_rows());
     let place = |n: &str| root.iter().position(|r| r == n).unwrap();
     assert!(place("[Utilities]") < place("[Captures]") && place("[Captures]") < place("[Session]"), "{root:?}");
 }
 
-/// "Stop recording" shows only while something records.
+/// The entries whose verb is not built yet stay in the table (ids, labels, order) and are hidden,
+/// whatever the context says, until their tasks land: no row that answers "not available yet".
 #[test]
-fn stop_recording_shows_only_while_recording() {
-    let idle = Context { recording: false, ..all() };
-    let ids = ids_shown(&idle);
-    assert!(!ids.contains(&"capture.stop") && ids.contains(&"capture.record"), "{ids:?}");
-    assert!(ids_shown(&all()).contains(&"capture.stop"));
-    // Recording without screencopy cannot be: the stop is hidden with the rest.
-    assert!(!ids_shown(&Context { captures: false, ..all() }).contains(&"capture.stop"));
+fn the_unbuilt_captures_are_hidden_until_their_tasks_land() {
+    let shown = ids_shown(&all());
+    for id in ["capture.annotate", "capture.record", "capture.record_area", "capture.stop", "capture.pick", "capture.ocr"] {
+        assert!(BUILTINS.iter().any(|b| b.id == id), "{id} stays in the table");
+        assert!(!shown.contains(&id), "{id} is hidden");
+    }
+    for id in ["capture.full", "capture.area", "capture.area_save"] {
+        assert!(shown.contains(&id), "{id} shows");
+    }
+}
+
+/// The capture rows each have a glyph of their own, the two recordings included.
+#[test]
+fn every_capture_row_has_its_own_glyph() {
+    let glyphs: Vec<char> = BUILTINS.iter().filter(|b| b.id.starts_with("capture.")).map(|b| b.glyph).collect();
+    let mut unique = glyphs.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
 }
