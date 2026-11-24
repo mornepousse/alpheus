@@ -46,6 +46,9 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Changed
 
+- **Failed units, instant icon** (24): `[failed] subscribe` now defaults to `true`, so a failed unit
+  shows at once; the cost lands on systemd and dbus-daemon, a signal per unit change. Set it to
+  `false` to read the count on triggers only. [Page](docs/features/failed.md).
 - **Open-source cleanup** (22-23): the daemon's code is organised in one folder per feature, a house
   standard ([docs/STYLE.md](docs/STYLE.md)) governs code comments and tests, and the documentation
   was rewritten: a page per feature, a tour, an architecture overview, the settled

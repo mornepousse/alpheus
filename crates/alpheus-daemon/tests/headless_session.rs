@@ -7548,12 +7548,12 @@ fn error_red_on_the_bar(sway: &Sway) -> bool {
 }
 
 /// Spec § 6: nothing drawn at 0; a count pushed by a subscribed manager draws `󰀦 N` in the error
-/// role and it goes again at 0. Either manager's count counts.
+/// role and it goes again at 0. Either manager's count counts. `[failed]` is left at its defaults:
+/// `subscribe` is on by default, so both managers are subscribed with no key written.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn failed_module_shows_only_above_zero() {
-    let (sway, _sys_bus, _user_bus, sys, usr, d) =
-        failed_daemon("failed-shows", &format!("{FAILED_BAR}[failed]\nsubscribe = true\n"), 0, 0, |_| ());
+    let (sway, _sys_bus, _user_bus, sys, usr, d) = failed_daemon("failed-shows", FAILED_BAR, 0, 0, |_| ());
     failed_counts_read(&sys, &usr);
     assert!(!error_red_on_the_bar(&sway), "nothing at zero: {:?}", d.log());
     sys.wait_until("the system subscription", |s| s.subscribers() == 1);

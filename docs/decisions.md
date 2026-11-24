@@ -209,16 +209,17 @@ The bar's other modules do not keep their value: the network, Bluetooth and batt
 
 Date: 2026-11-15 · Source: hooks spec § 2; hooks plan 1, decision 6; diagnostics spec § 6 and "Decisions written down" 13
 
-### The failed-units count is read on triggers, and `Subscribe` is off by default
+### The failed-units count is pushed by a subscription, and read on triggers when it is off
 
 systemd sends the Manager's `PropertiesChanged` only while some client has called `Subscribe()`, so
-without it no signal about the count arrives. `[failed] subscribe = true` makes the icon instant,
-and its cost lands on systemd and dbus-daemon (a signal per unit change to every subscriber), not
-on alpheus. The default is `false` until it is chosen after use. Without a subscription the count
-is read on triggers: session start, resume, `alpheus-launch --failed-refresh`, and a read added to
-another domain's wake-up at most once a minute. No timer is added for it.
+without it no signal about the count arrives. `[failed] subscribe` is `true` by default: the icon is
+instant, and the cost lands on systemd and dbus-daemon (a signal per unit change to every
+subscriber), not on alpheus. While subscribed, the read added to another domain's wake-up is
+skipped, since systemd pushes the change. With `subscribe = false` the count is read on triggers:
+session start, resume, `alpheus-launch --failed-refresh`, and a read added to another domain's
+wake-up at most once a minute. No timer is added for it, either way.
 
-Date: 2026-11-22 · Source: diagnostics spec §§ 6 and 9, and its "Decisions written down" 1 (final fix wave, the owner to choose at the trial); diagnostics plan 1, "Decisions written down" 1 said on, which that decision reverses
+Date: 2026-11-24 · Source: the owner's choice at the trial of the diagnostics work: an instant icon is worth a signal per unit change on systemd and dbus-daemon. It replaces the 2026-11-22 entry, "`Subscribe` is off by default until it is chosen after use"; diagnostics spec §§ 6 and 9, and its "Decisions written down" 1
 
 ### The failed-units count is asked for one property, never the whole interface
 

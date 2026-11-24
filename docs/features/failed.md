@@ -49,16 +49,17 @@ list you wrote yourself needs `"failed"` added after `"shield"`.
 | Key (under `[failed]`) | Default | Meaning |
 | --- | --- | --- |
 | `user_units` | `true` | also count the user manager's failed units (this uses the session bus); `false` leaves the session bus alone |
-| `subscribe` | `false` | `true`: call `Subscribe()` on systemd so that a change arrives at once (the icon is instant; systemd and dbus-daemon then send a signal per unit change to every subscriber); `false`: the count is read on triggers only (see below) |
+| `subscribe` | `true` | `true`: call `Subscribe()` on systemd so that a change arrives at once (the icon is instant; systemd and dbus-daemon then send a signal per unit change to every subscriber); `false`: the count is read on triggers only (see below) |
 | `notify` | `false` | send one notification when the total rises (needs `notifications` in `modules`) |
 
-With `subscribe = false` the count is read at start, on resume, on `failed-refresh`, and once more
-whenever another D-Bus domain wakes the daemon and the count was last read a minute ago or more.
-With `true` that last trigger is skipped, since systemd pushes the change.
+With the default `subscribe = true` the count is read at start, on resume and on `failed-refresh`,
+and systemd pushes every change; the read added to another D-Bus domain's wake-up is skipped. With
+`false` that read comes back: once more whenever another domain wakes the daemon and the count was
+last read a minute ago or more.
 
 ```toml
 [failed]
-subscribe = true
+subscribe = false   # read on triggers only; systemd is not told to signal
 notify = true
 ```
 
@@ -99,7 +100,7 @@ manager's count against a fake outbox), `tests/failed_private_bus.rs` (a private
 - No timer and no polling: the system count rides the D-Bus thread's own wait, the user count the
   session link's own descriptor (`at_rest_no_wakeups_with_failed_units`).
 - The reasons are in [decisions.md](../decisions.md): "A source that is down is not a state", "The
-  failed-units count is read on triggers, and `Subscribe` is off by default", "The failed-units
+  failed-units count is pushed by a subscription, and read on triggers when it is off", "The failed-units
   count is asked for one property, never the whole interface", "The failed-units notice waits for
   both managers", "The bar has no ignore list for failed units".
 

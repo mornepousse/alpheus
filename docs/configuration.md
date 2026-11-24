@@ -174,7 +174,7 @@ Only with `privacy` in `modules`. See [the privacy indicators](features/privacy.
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
 | `user_units` | bool | `true` | | Also count the user manager's failed units (the session bus); `false`: that bus is never touched. |
-| `subscribe` | bool | `false` | | `true`: call `Subscribe()` on each manager so a change arrives at once (the cost lands on systemd and dbus-daemon, a signal per unit change); `false`: read at start, on resume, on a refresh and piggybacked on another domain's wake-up (at most once a minute). |
+| `subscribe` | bool | `true` | | `true`: call `Subscribe()` on each manager so a change arrives at once (the cost lands on systemd and dbus-daemon, a signal per unit change); `false`: read at start, on resume, on a refresh and piggybacked on another domain's wake-up (at most once a minute). |
 | `notify` | bool | `false` | | One notification when the total rises (needs `notifications` in `modules`); re-armed at 0. |
 
 See [the failed-units count](features/failed.md).
@@ -372,7 +372,7 @@ ignore = []               # app names (whole name, any case) never shown; an ind
 
 [failed]                                     # the failed-units count (the `failed` module)
 user_units = true    # also count the user manager's failed units (the session bus); false: that bus is never touched
-subscribe = false    # true: call Subscribe() on each manager so a change arrives at once; false (default): read at start, on resume, on a refresh and piggybacked (at most once a minute)
+subscribe = true     # true (default): call Subscribe() on each manager so a change arrives at once; false: read at start, on resume, on a refresh and piggybacked (at most once a minute)
 notify = false       # one notification when the total rises (needs "notifications" in modules); re-armed at 0
 
 [notifications]
