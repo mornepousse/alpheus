@@ -4783,6 +4783,146 @@ fn the_panic_hook_is_installed_before_anything_else() {
     }
 }
 
+/// Format placeholders that print an error's own text: `{e}`, `{err:?}`, `{error:#?}`… A system error's
+/// message can quote a path, a name or an address, so a line carries `log::kind_word`/`error_word`
+/// (a fixed word) instead.
+const ERROR_PLACEHOLDERS: [&str; 9] = ["{e}", "{e:?}", "{e:#?}", "{err}", "{err:?}", "{err:#?}", "{error}", "{error:?}", "{error:#?}"];
+
+/// What in `code` (production code, comments removed) could put a program, an argument list, an
+/// error's text or a panic's payload in a log line or in the text one is built from; the first
+/// offending line, or None.
+fn log_word_leak(code: &str) -> Option<String> {
+    // An error handed to a positional placeholder: `format!("… {}", e)`, `{}", e.error)`, `e.to_string()`.
+    const POSITIONAL: [&str; 7] = [", e)", ", &e)", ", err)", ", &err)", ", e.error)", "e.to_string()", "err.to_string()"];
+    // The program or the argument list named in a line (`{program}`, `{prog}`, `{argv…}`, `argv.join(`).
+    const COMMAND: [&str; 6] = ["{program", "{prog}", "{prog:", "{argv", "argv.join(", "args.join("];
+    // A panic's message read back out of a caught payload.
+    const PAYLOAD: [&str; 3] = ["panic_text", "downcast_ref::<&str>", "downcast_ref::<String>"];
+    code.lines().find_map(|line| {
+        // A pattern that starts with a letter must start a word: `e.to_string()` is not `name.to_string()`.
+        // A positional argument only means something next to a format string.
+        let formats = line.contains("{}") || line.contains("{:?}");
+        let positional = if formats { POSITIONAL.as_slice() } else { &[] };
+        let leaks = ERROR_PLACEHOLDERS.iter().chain(positional).chain(&COMMAND).chain(&PAYLOAD).any(|p| {
+            line.match_indices(p).any(|(i, _)| {
+                !p.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    || !line[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+        });
+        leaks.then(|| line.trim().to_string())
+    })
+}
+
+/// The log's rule (AGENTS.md "No private data in fixtures or logs", docs/decisions.md "Logs carry
+/// fixed words and numbers only"), daemon-wide: no production line formats a system error's own text
+/// (its OS message can quote a path), names a program or an argument list, or reads a panic's
+/// payload. Lines end up in the log through `log(`, but also through the strings that functions
+/// return for it (`spawn_session`, `link_failed`…), so every production line is read, not only the
+/// `log(` calls.
+///
+/// A few lines format an error for a reader that is not the log: the reply to a launcher client, the
+/// launcher's own message box, and the errors that cross a thread before a `log(` turns them into a
+/// word. Each is listed with the reason; nothing else may be added without one.
+#[test]
+fn no_log_line_names_a_program_an_error_text_or_a_panic_payload() {
+    const NOT_LOGGED: &[(&str, &str, &str)] = &[
+        ("compositor/hypr.rs", "unreadable {what} response: {e}", "an io::Error of the source thread: logged as `error_word`"),
+        (
+            "compositor/mango.rs",
+            "mango refused: {}",
+            "the compositor's own reply, turned into an io::Error of the source thread: logged as `error_word`",
+        ),
+        ("compositor/niri.rs", "unreadable {name}: {e}", "the same"),
+        ("compositor/niri.rs", "unreadable niri line: {e}", "the same"),
+        ("launcher/host.rs", "could not scan applications: {e}", "the launcher's message box (the user's own screen), not the log"),
+        (
+            "launcher/run.rs",
+            "{program}: program not found",
+            "the launcher's message box (spec § 3: a launch failure shows in the box), not the log",
+        ),
+        ("launcher/run.rs", "{program}: timed out", "the same"),
+        ("launcher/run.rs", "{program}: {m}", "the same"),
+        ("launcher/socket.rs", "read: {e}", "the reply to the launcher's client, not the log"),
+        ("launcher/surface.rs", "the launcher could not open: {e}", "the reply to the launcher's client, not the log"),
+        ("launcher/view.rs", "error: {e}", "the launcher's own message line, not the log"),
+        ("outputs/app.rs", "malformed request: {e}", "the reply to the CLI's client, not the log"),
+        ("pipewire/follow.rs", "pw-dump: {e}", "an io::Error of the sound thread: logged as `error_word`"),
+        ("session_bus/codec.rs", "{what}: {e}", "a `CallError::BadReply` whose text only `CallError::word` reaches the log from"),
+        ("session_bus/bus.rs", "tray call {method:?} to {destination} {path}: {e}", "a panic message: the hook never prints one"),
+        (
+            "watch.rs",
+            "theme: {e}; theme files read at startup only",
+            "a String already made of fixed words (`Inotify::new`, a kind's word)",
+        ),
+        ("watch.rs", "shield: flag not watched ({e})", "the same: the closed list of `the_shield_logs_name_nothing` names this literal"),
+        ("sources/sound.rs", "pw-dump: {e:?}", "an io::Error of the sound thread: logged as `error_word`"),
+    ];
+    let mut checked = 0;
+    let mut unlisted = Vec::new();
+    for (p, text) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&text);
+        for line in code.lines() {
+            checked += 1;
+            if let Some(leak) = log_word_leak(line)
+                && !NOT_LOGGED.iter().any(|(file, snippet, _)| *file == name && leak.contains(snippet))
+            {
+                unlisted.push(format!("{name}: {leak}"));
+            }
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "lines that format an error's text, a program, an argument list or a panic payload:\n{}",
+        unlisted.join("\n")
+    );
+    assert!(checked > 10_000, "the production code was read: {checked} lines");
+    for (file, snippet, _) in NOT_LOGGED {
+        let text = &source_files().into_iter().find(|(p, _)| relative_path(p) == *file).unwrap_or_else(|| panic!("{file}")).1;
+        assert!(
+            production_code_without_comments(text).contains(snippet),
+            "{file}: the listed line `{snippet}` is gone, drop it from the list"
+        );
+    }
+    // The two catch sites keep only the word "panic" (the hook already logged the thread and the place).
+    let files = source_files();
+    for name in ["sources/mod.rs", "sources/dbus/run.rs"] {
+        let code =
+            production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        assert!(code.contains("panicked = true;") && code.contains("\"panic\""), "{name}: a caught panic is logged as the word `panic`");
+    }
+}
+
+/// The helper of the test above bites: each leak form is seen, a fixed word is not.
+#[test]
+fn the_log_word_guardrail_helper_bites() {
+    for leak in [
+        "log(&format!(\"x {e}\"));",
+        "log(&format!(\"x {e:?}\"));",
+        "log(&format!(\"x {err}\"));",
+        "log(&format!(\"x {}\", e));",
+        "log(&format!(\"x {}\", e.error));",
+        "log(&format!(\"{}: {}\", argv.join(\" \"), word));",
+        "log(&format!(\"quick: {program} could not start\"));",
+        "log(&format!(\"{prog}: refused\"));",
+        "let t = panic_text(&*payload);",
+        "if let Some(s) = p.downcast_ref::<&str>() {",
+        "log(&format!(\"{}\", e.to_string()));",
+    ] {
+        assert!(log_word_leak(leak).is_some(), "not seen: {leak}");
+    }
+    for fine in [
+        "log(&format!(\"power: {} could not start ({})\", s.word(), crate::log::exec_word(&e)));",
+        "log(&format!(\"x {word}\", word = crate::log::error_word(&e)));",
+        "log(&format!(\"notes: not saved ({:?})\", e.kind()));",
+        "log(\"source down: panic\");",
+        "return Ok(StateForm::Process(name.to_string()));",
+        "Err(e) => (Default::default(), Some(format!(\"x: {}\", crate::log::kind_word(e.kind())))),",
+    ] {
+        assert_eq!(log_word_leak(fine), None, "wrongly seen: {fine}");
+    }
+}
+
 /// The launcher's guard logs the place only (as the pad's): a panic message can quote the query, a
 /// menu line or a password, which are never logged. The guard's body is read in both views, and the
 /// whole-file lists keep their comments, so a leak form appears in neither.
