@@ -828,7 +828,7 @@ fn only_the_allowlisted_properties_are_relevant() {
     // An active connection: State only.
     const AC9: &str = "/org/freedesktop/NetworkManager/ActiveConnection/9";
     let changed_ac = |names: &[&str]| with_names(signal(AC9, PROPERTIES, "PropertiesChanged", Some(network::ACTIVE)), names).domain();
-    assert_eq!(changed_ac(&["Id"]), None, "no name is ever read (Q1)");
+    assert_eq!(changed_ac(&["Id"]), None, "no name is ever read: the module draws icons only");
     assert_eq!(changed_ac(&["State"]), Some(Domain::Network));
     // A UPower device (the DisplayDevice, or a peripheral): the properties `upower::read` looks at.
     const DISPLAY: &str = "/org/freedesktop/UPower/devices/DisplayDevice";

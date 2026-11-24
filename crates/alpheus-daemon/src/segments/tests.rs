@@ -92,7 +92,11 @@ fn volume_hidden_while_waiting_or_without_sink_dash_when_down() {
 fn network_icons_only_and_vpn_count() {
     assert_eq!(draw(&network(&online(Link::Ethernet, 2, false)).unwrap()), ("\u{f0200} \u{f0582} 2".into(), ".aaaa".into()));
     assert_eq!(draw(&network(&online(Link::Wifi, 1, false)).unwrap()), ("\u{f05a9} \u{f0582}".into(), ".aa".into()), "one VPN: no count");
-    assert_eq!(draw(&network(&online(Link::Wifi, 0, false)).unwrap()), ("\u{f05a9}".into(), ".".into()), "no name (Q1)");
+    assert_eq!(
+        draw(&network(&online(Link::Wifi, 0, false)).unwrap()),
+        ("\u{f05a9}".into(), ".".into()),
+        "no name: the network module draws icons only"
+    );
     assert_eq!(draw(&network(&online(Link::Vpn, 0, false)).unwrap()).0, "\u{f0582}");
     assert_eq!(draw(&network(&online(Link::Other, 0, false)).unwrap()).0, "\u{f059f}");
     assert_eq!(

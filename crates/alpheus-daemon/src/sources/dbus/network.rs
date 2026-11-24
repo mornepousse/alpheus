@@ -86,7 +86,7 @@ mod tests {
         let mut bus = FakeBus::workstation();
         primary(&mut bus, 9);
         assert_eq!(read(&mut bus).unwrap(), NetState::Online { link: Link::Wifi, vpns: 2, limited: false });
-        assert!(bus.calls.iter().all(|c| !c.contains("AccessPoint")), "icons only (Q1): the access point is never read: {:?}", bus.calls);
+        assert!(bus.calls.iter().all(|c| !c.contains("AccessPoint")), "icons only: the access point is never read: {:?}", bus.calls);
     }
 
     #[test]

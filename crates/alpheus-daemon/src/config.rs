@@ -390,7 +390,7 @@ impl Default for ResourcesConfig {
     }
 }
 
-/// How a battery segment shows up (spec Q, 2026-10-05): every peripheral
+/// How a battery segment shows up (settled 2026-10-05): every peripheral
 /// with a real percentage defaults to "always" (today's behaviour); one that
 /// only reports a coarse UPower `BatteryLevel` defaults to "low" (today's
 /// behaviour: hidden unless Low, Critical or Action).
