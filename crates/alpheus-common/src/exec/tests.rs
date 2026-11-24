@@ -440,6 +440,11 @@ fn children_start_with_no_blocked_signal() {
     let f = std::env::temp_dir().join(format!("alpheus-sigblk-{}", std::process::id()));
     let _ = std::fs::remove_file(&f);
     let script = format!("grep SigBlk /proc/self/status > {}", f.display());
+    // `run_with_stdin_file` discards the output: its command writes the mask to a file of its own.
+    let (input, from_file) = (f.with_extension("in"), f.with_extension("file"));
+    std::fs::write(&input, "x").unwrap();
+    let file_script = format!("grep SigBlk /proc/self/status > {}", from_file.display());
+    let stdin_file = input.clone();
     let (run, stream) = std::thread::spawn(move || {
         // SAFETY: a zero-filled sigset_t initialized by sigemptyset and
         // sigaddset; pthread_sigmask only changes THIS test thread's mask.
@@ -454,6 +459,7 @@ fn children_start_with_no_blocked_signal() {
         let mut stream = String::new();
         e.stream("grep", &["SigBlk", "/proc/self/status"]).unwrap().read_to_string(&mut stream).unwrap();
         e.spawn("sh", &["-c", &script]).unwrap();
+        assert_eq!(e.run_with_stdin_file("sh", &["-c", &file_script], &stdin_file, Duration::from_secs(5)), Ok(Some(0)));
         (run, stream)
     })
     .join()
@@ -465,7 +471,10 @@ fn children_start_with_no_blocked_signal() {
         })
         .expect("the spawned command ran");
     let _ = std::fs::remove_file(&f);
-    for out in [run, stream, spawned] {
+    let with_stdin_file = std::fs::read_to_string(&from_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&from_file);
+    let _ = std::fs::remove_file(&input);
+    for out in [run, stream, spawned, with_stdin_file] {
         assert_eq!(out.trim(), "SigBlk:\t0000000000000000", "a mask inherited from the parent");
     }
 }

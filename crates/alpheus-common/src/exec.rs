@@ -648,14 +648,20 @@ impl Executor for SystemExecutor {
             return Err(ExecError::Io("alpheus is shutting down".into()));
         }
         let input = std::fs::File::open(file).map_err(|e| ExecError::Io(e.to_string()))?;
-        let mut child = Command::new(prog)
+        let mut command = Command::new(prog);
+        command
             .args(args)
+            // As `run`: untranslated, whatever the user's locale.
+            .env("LC_ALL", "C.UTF-8")
             .stdin(Stdio::from(input))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(io_err)?;
+            .process_group(0);
+        // The daemon blocks SIGTERM, SIGHUP and SIGINT in every thread: without this the program, and
+        // what it leaves behind (`wl-copy` holding the clipboard), would ignore them for life.
+        // SAFETY: `unblock_signals` only makes async-signal-safe calls.
+        unsafe { command.pre_exec(unblock_signals) };
+        let mut child = command.spawn().map_err(io_err)?;
         let start = Instant::now();
         loop {
             match child.try_wait() {
