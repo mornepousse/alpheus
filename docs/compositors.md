@@ -70,7 +70,8 @@ Commands alpheus runs that **you must provide** (or replace). "Configurable"
 means a key in a config file; the others are hard-wired today.
 
 Every command is run without a shell, as a plain argument vector. The TUI
-kills a tool call after 2 seconds; the daemon starts its commands detached
+kills a tool call after 2 seconds, except the Power tab's `[quick]` session commands, which it
+starts detached like the daemon does; the daemon starts its commands detached
 (clicks, the launcher, `[quick]`), so they are not timed, except the launcher's
 `list` sources (1 s). A missing program is reported in the UI ("<tool> not found" in the tab, or
 a log line) and nothing else breaks.
@@ -123,7 +124,7 @@ nothing else breaks. At most 3 profiles are applied automatically per set of scr
 | `foot` / `foot --hold` | the launcher, for terminal apps (`terminal`, `terminal_hold`) | yes: `launcher.toml` | a terminal that accepts a command after its arguments |
 | `systemd-run --user --scope --quiet --collect -- <command>` | the launcher, to start apps | no (falls back to a detached spawn when `systemd-run` is not installed) | systemd with a user manager |
 | `loginctl lock-session`, `systemctl reboot`, `systemctl poweroff` | the quick panel and the ⏻ menu | yes: `[quick] lock`, `reboot`, `poweroff` (empty hides the entry); `logout` is empty by default | any command; reboot and power off ask for confirmation first |
-| `[quick]` `lock`, `logout`, `reboot`, `poweroff` | the TUI's Power tab, the same commands as the bar's | yes: `bar.toml`; empty hides the button | any command; lock is started detached |
+| `[quick]` `lock`, `logout`, `reboot`, `poweroff` | the TUI's Power tab, the same commands as the bar's | yes: `bar.toml`; empty hides the button | any command; started detached, like the bar's |
 | `systemctl suspend` | the TUI's Power tab | no | systemd |
 | `shell-ctl dnd-status` / `dnd-on` / `dnd-off` | the TUI's Home tab (do not disturb) | no | `dnd-status` prints `on` or `off` on standard output (anything else is an error); the other two set the state, exit 0. The bar's own notifications module does not use it: it has `alpheus-launch --dnd` |
 | `tools-menu "Garder éveillé"` | the TUI's "Keep awake" | no | toggles keep-awake; alpheus reads the state from the flag file `$XDG_RUNTIME_DIR/garder-eveille`, which the script must create or remove (names kept as the author's contract) |

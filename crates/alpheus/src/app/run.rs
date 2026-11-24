@@ -177,13 +177,18 @@ impl Drop for Cleanup {
     }
 }
 
+/// The tool backends, the session actions running the app's own `[quick]` commands: the Power tab
+/// shows the buttons of `app.session`, so what a button runs must come from the same value.
+fn backends_for(app: &App, exec: Arc<dyn crate::exec::Executor>, runtime_dir: std::path::PathBuf) -> Backends {
+    Backends::system(exec, runtime_dir, app.session.clone())
+}
+
 /// Runs the control center until the user quits or a stop signal arrives.
 pub fn run(options: Options) -> io::Result<()> {
     install_signals()?;
     let app = build_app(&config_dir(), options.tab, Instant::now());
-    let session = app.session.clone();
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
-    let backends = Backends::system(exec.clone(), runtime_dir(), session);
+    let backends = backends_for(&app, exec.clone(), runtime_dir());
     let displays = backends.displays.clone();
     let (tx, rx) = worker::spawn_with(backends, Arc::new(|k| std::env::var_os(k)));
     spawn_guard(exec.clone());
@@ -294,6 +299,22 @@ mod tests {
         assert_eq!(b.items().len(), 4);
         assert!(!format!("{:?}", b.items()).contains("Logout"));
         assert!(b.status.warning.as_deref().is_some_and(|w| w.starts_with("bar.toml invalid")));
+    }
+
+    /// What the Power buttons run is what `run` wires from the app's `session`.
+    #[test]
+    fn the_backends_run_the_apps_session_commands() {
+        use crate::backends::PowerAction;
+        let dir = alpheus_common::temp_path::TempPath::new("run-backends-session");
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("session-logout", "");
+        let mut a = build_app(&dir, Tab::Power, Instant::now());
+        a.session = crate::app::testing::full_session();
+        let b = backends_for(&a, f.clone(), dir.to_path_buf());
+        assert_eq!(b.power.perform(PowerAction::Logout), Ok(()));
+        assert_eq!(f.calls(), vec!["session-logout".to_string()]);
+        a.session = SessionCommands::default();
+        assert!(backends_for(&a, f, dir.to_path_buf()).power.perform(PowerAction::Logout).is_err());
     }
 
     #[test]

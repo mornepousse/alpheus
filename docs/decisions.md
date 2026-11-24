@@ -1496,7 +1496,10 @@ The Power tab's Lock, Log out, Reboot and Power off run `[quick]`'s `lock`, `log
 be `hyprlock` and `wm-set exit`, the author's own session, which broke every other setup. The
 control center must not depend on the daemon crate, so the four commands, their neutral defaults
 and a lenient reader of `bar.toml`'s `[quick]` keys live in alpheus-common (`SessionCommands`);
-the daemon takes its defaults from there and keeps the validation of the whole file. Suspend stays
+the daemon takes its defaults from there and keeps the validation of the whole file: the control
+center reads only the four keys, so the two can differ when `bar.toml` has an error elsewhere. The
+commands start detached, as the bar starts them, so the TUI's 2 s tool limit never kills a user's
+command. Suspend stays
 `systemctl suspend`: the bar has no such entry and nothing in the project handles sleep policy.
 
 Date: 2026-11-24 · Source: maintainer's approval before the public release; `SessionCommands`, `App::session`

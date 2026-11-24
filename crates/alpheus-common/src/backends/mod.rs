@@ -57,6 +57,9 @@ pub enum BackendError {
     /// What the alpheus daemon answered, or why it could not be asked: a
     /// sentence shown as it is (displays).
     Daemon(String),
+    /// An action the user's configuration leaves out (an empty session command): a sentence
+    /// shown as it is.
+    NotConfigured(String),
 }
 
 impl fmt::Display for BackendError {
@@ -65,7 +68,7 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} not found"),
             BackendError::Timeout { tool } => write!(f, "{tool} is not responding"),
             BackendError::Unparsable { tool, detail } => write!(f, "unreadable output from {tool}: {detail}"),
-            BackendError::Daemon(text) => f.write_str(text),
+            BackendError::Daemon(text) | BackendError::NotConfigured(text) => f.write_str(text),
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {
@@ -104,7 +107,7 @@ pub(crate) fn run_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<
     }
 }
 
-/// Launches without waiting (lock screen).
+/// Launches without waiting (the user's session commands: lock, log out, reboot, power off).
 pub(crate) fn spawn_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<()> {
     exec.spawn(prog, args).map_err(|e| exec_error(prog, e))
 }
@@ -173,6 +176,7 @@ mod tests {
         assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: None, stderr: "".into() }), "nmcli failed");
         assert_eq!(m(unparsable("wpctl", "missing section")), "unreadable output from wpctl: missing section");
         assert_eq!(m(BackendError::Daemon("the alpheus daemon is not running".into())), "the alpheus daemon is not running");
+        assert_eq!(m(BackendError::NotConfigured("Log out is not configured".into())), "Log out is not configured");
     }
 
     #[test]

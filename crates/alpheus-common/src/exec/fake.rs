@@ -220,10 +220,10 @@ mod tests {
     #[test]
     fn spawn_logged() {
         let f = FakeExecutor::new();
-        f.ok("hyprlock", "");
-        assert_eq!(f.spawn("hyprlock", &[]), Ok(()));
+        f.ok("screen-lock", "");
+        assert_eq!(f.spawn("screen-lock", &[]), Ok(()));
         assert_eq!(f.spawn("unknown", &[]), Err(ExecError::NotFound));
-        assert_eq!(f.calls(), vec!["hyprlock".to_string(), "unknown".to_string()]);
+        assert_eq!(f.calls(), vec!["screen-lock".to_string(), "unknown".to_string()]);
     }
 
     #[test]

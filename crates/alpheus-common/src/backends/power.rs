@@ -1,6 +1,6 @@
 //! Session power. Lock, log out, reboot and power off run the commands of bar.toml's `[quick]`
 //! (`SessionCommands`, the same ones as the bar's power menu); an empty command hides its action.
-//! Suspend is `systemctl suspend`.
+//! They start detached, as the bar starts them; Suspend is `systemctl suspend`, run and checked.
 //!
 //! Never:
 //! - spell a session command out in code: they are the user's (`[quick]`), with neutral defaults;
@@ -164,13 +164,13 @@ impl Power for SessionPower {
         };
         if !self.commands.shows(a) {
             // The tab does not offer it; a stale palette or key still ends in a sentence, not a run.
-            return Err(BackendError::Daemon(format!("{} is not configured in bar.toml's [quick]", a.label())));
+            return Err(BackendError::NotConfigured(format!("{} is not configured in bar.toml's [quick]", a.label())));
         }
         let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-        match a {
-            PowerAction::Lock => spawn_ok(e, &argv[0], &args),
-            _ => run_ok(e, &argv[0], &args).map(|_| ()),
-        }
+        // Started detached, like the bar starts them: the user's command is not timed (the TUI
+        // would kill it after its 2 s limit) and its exit status is not waited for; only a program
+        // that cannot start is reported.
+        spawn_ok(e, &argv[0], &args)
     }
 }
 
@@ -232,6 +232,38 @@ mod tests {
             p.perform(a).unwrap();
         }
         assert_eq!(f.calls(), vec!["screen-lock -f", "session-logout --now", "my-reboot --now", "my-off"]);
+    }
+
+    /// A user's session command starts like the bar starts it, detached: a log out that outlives
+    /// the TUI's 2 s limit must not be killed, and what it exits with is not waited for.
+    #[test]
+    fn configured_session_commands_are_started_detached_not_run_with_a_limit() {
+        let f = Arc::new(FakeExecutor::new());
+        // `run` would turn this exit status into a failure; a detached start never sees it.
+        f.respond("session-logout --now", Ok(crate::exec::Output::fail(1, "late")));
+        f.ok("my-reboot", "");
+        f.ok("my-off", "");
+        let c = SessionCommands {
+            logout: argv(&["session-logout", "--now"]),
+            reboot: argv(&["my-reboot"]),
+            poweroff: argv(&["my-off"]),
+            ..SessionCommands::default()
+        };
+        let p = sp(&f, c);
+        for a in [PowerAction::Logout, PowerAction::Reboot, PowerAction::Poweroff] {
+            assert_eq!(p.perform(a), Ok(()), "{a:?}");
+        }
+        assert_eq!(p.perform(PowerAction::Suspend), Err(BackendError::Missing { tool: "systemctl".into() }), "suspend stays a plain run");
+    }
+
+    #[test]
+    fn an_action_that_is_not_configured_says_so() {
+        let f = Arc::new(FakeExecutor::new());
+        let p = sp(&f, SessionCommands::default());
+        assert_eq!(
+            p.perform(PowerAction::Logout),
+            Err(BackendError::NotConfigured("Log out is not configured in bar.toml's [quick]".into()))
+        );
     }
 
     #[test]
