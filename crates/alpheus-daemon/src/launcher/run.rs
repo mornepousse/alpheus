@@ -205,7 +205,7 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
 pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match a {
-        // Never recorded.
+        // Never recorded: no typed text, and a dmenu line is not an app.
         Activation::Choose { mut text, line } if l.index => {
             wipe(&mut text);
             return Ok(Done::Reply(Reply::Index(line)));

@@ -637,7 +637,7 @@ fn resources_tick_at_the_configured_interval() {
 
 const EVERY_ITEM: &str = "show = [\"cpu\", \"memory\", \"temperature\", \"net\", \"disk\", \"gpu\"]\n";
 
-/// Small features 2: the one-time cost of all six items over the default three (two fresh
+/// The resources items `net`, `disk`, `gpu` and the do-not-disturb duration: the one-time cost of all six items over the default three (two fresh
 /// daemons, same tick rate), then, in the six-item daemon, what ~60 more passes keep. PSS
 /// without the shm pools: the compositor maps those too, so they move on their own.
 #[test]
@@ -3031,7 +3031,7 @@ fn displays_pss_after_hotplug_cycles() {
     assert!(own_40 <= own_20 + 32, "{own_40} KB after 40 cycles vs {own_20} KB after 20, without the pools: still growing");
 }
 
-/// `NOTIFY_BAR` plus what small features 1 adds to the configuration: 32 rules, four battery
+/// `NOTIFY_BAR` plus what the battery alerts, rules and timed do-not-disturb add to the configuration: 32 rules, four battery
 /// thresholds and `dnd_while_sharing`, with `battery` and `privacy` in `modules` for the last two.
 const SMALL_BASE_BAR: &str = "modules = [\"workspaces\", \"window\", \"notifications\", \"battery\", \"privacy\", \"clock\"]\n";
 
@@ -3040,7 +3040,7 @@ fn small_features_bar() -> String {
     format!("{SMALL_BASE_BAR}[battery]\nwarn = [30, 20, 10, 5]\n[notifications]\ndnd_while_sharing = true\n{rules}")
 }
 
-/// Small features 1: the rules, the battery thresholds and the option cost nothing at start (3
+/// The rules, the battery thresholds and the option cost nothing at start (3
 /// outputs, each bar on a daemon of its own, the server answering).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3057,7 +3057,7 @@ fn small_features_cost_nothing_at_start() {
     }
     let (base, with) = (kb[0], kb[1]);
     eprintln!(
-        "small features PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
+        "notification-rules PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
     );
     assert!(with <= base + 128, "{with} KB vs {base} KB: more than 128 KB for configuration alone — report, never raise");
 }
@@ -3078,7 +3078,7 @@ fn calc_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
     open
 }
 
-/// Small features 1: `--calc` opened with `6*7` typed, then closed (a typed Escape): the box's
+/// `--calc` opened with `6*7` typed, then closed (a typed Escape): the box's
 /// cost, and nothing kept once it is gone. The first open of any launcher box warms file-backed
 /// pages (code, fonts) and the glyph cache once (+0.4-0.7 MB, measured for a plain Toggle with the
 /// same typing too), so, as in `launcher_open_close_cycles_no_growth`, `closed` is read after one
@@ -3105,7 +3105,7 @@ fn launcher_calc_pss_open_and_closed() {
     assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
 }
 
-/// Small features 1: a do-not-disturb with an end an hour away is one armed timer and nothing
+/// A do-not-disturb with an end an hour away is one armed timer and nothing
 /// else: the loop sleeps, as it does with an untimed one.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -3148,7 +3148,7 @@ fn at_rest_no_wakeups_with_a_timed_dnd() {
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
 
-/// Small features 1: after `--calc`, a typed query and an Escape: no timer, watch or repeat left.
+/// After `--calc`, a typed query and an Escape: no timer, watch or repeat left.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_a_calc_cycle() {
@@ -3741,7 +3741,7 @@ fn timer_popup_ticks_each_second_only_while_open() {
     assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 5 s: {:?}", d.log());
 }
 
-// ---- The failed-units module . Two private buses, each with a
+// ---- The failed-units module. Two private buses, each with a
 // `FakeSystemd` (the system and the user manager), as the headless tests. ----
 
 const FAILED_ON: &str = "modules = [\"workspaces\", \"window\", \"failed\", \"clock\"]\n";

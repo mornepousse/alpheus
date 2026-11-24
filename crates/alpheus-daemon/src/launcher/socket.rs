@@ -235,7 +235,7 @@ impl Conn {
     }
 
     /// When this connection was accepted: the latency the daemon logs
-    /// starts here, not once the request
+    /// (open latency < 20 ms) starts here, not once the request
     /// has been read — a slow or large request must count against the
     /// budget too, not be hidden by starting the clock late.
     pub fn accepted_at(&self) -> Instant {

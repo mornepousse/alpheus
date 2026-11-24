@@ -160,7 +160,7 @@ pub fn read_source(source: &SourceConfig, exec: &dyn Executor, log: &mut dyn FnM
     kept
 }
 
-/// Every source, one after another in launcher.toml's order.
+/// Every source, one after another in launcher.toml's order (at most 8 × 1 s).
 pub fn read_all(sources: &[SourceConfig], exec: &dyn Executor, log: &mut dyn FnMut(&str)) -> Entries {
     let mut items = Vec::new();
     for (i, s) in sources.iter().enumerate() {

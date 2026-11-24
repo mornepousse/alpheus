@@ -367,8 +367,7 @@ impl Default for Ranker {
     }
 }
 
-/// Window, App, Tool, Entry, Command, Line: the order between kinds at equal score and frecency
-///.
+/// Window, App, Tool, Entry, Command, Line: the order between kinds at equal score and frecency.
 fn kind(s: Source) -> u8 {
     match s {
         Source::Window(_) => 0,

@@ -168,7 +168,7 @@ fn nested(levels: usize) -> Vec<u8> {
     reply(4, objects.as_bytes())
 }
 
-/// A tree nested
+/// On the compositor thread's real 256 KiB stack (`spawn_source`'s): a tree nested
 /// exactly MAX_NESTING levels is read and published; one level more ends the session as
 /// unreadable, before serde_json recurses.
 #[test]

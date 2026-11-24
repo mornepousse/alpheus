@@ -220,7 +220,7 @@ fn the_media_files_have_no_panicking_path() {
     }
 }
 
-/// Small features 1, notification rules: the rules never name an app or a text in a log, and
+/// Notification rules: the rules never name an app or a text in a log, and
 /// notify/mod.rs, the pure model, logs nothing.
 #[test]
 fn the_notification_rules_log_nothing() {
@@ -1842,7 +1842,7 @@ const DBUS_FILES: [&str; 6] = [
     "session_bus/router.rs",
 ];
 
-/// Bluetooth's acting connection : the
+/// Bluetooth's acting connection: the
 /// only D-Bus file that changes anything, and only through the pinned
 /// `ActMethod` list; one builder, one sender, auto-start off; never a name
 /// requested, never the default agent, never a blocking call.
@@ -2563,7 +2563,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert_eq!(argv, ["tools-menu", "--run", line], "{spawner:?}: the line is one argv element, as is");
         assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell: {argv:?}");
     }
-    // The calculator (small features 1): Enter and Ctrl+Enter on its row, in its own mode and in All,
+    // The calculator: Enter and Ctrl+Enter on its row, in its own mode and in All,
     // reach exactly one call, the configured `copy` command, the text on its input and never in its
     // argv, never in a scope, never through a shell; and Copy comes from the calculator row alone.
     let copy_bin = bin.join("copy-stub");
@@ -3674,7 +3674,7 @@ fn the_timer_has_no_panicking_path() {
     }
 }
 
-/// Small features 1: the calculator's evaluator runs on each keystroke of the launcher's
+/// The calculator's evaluator runs on each keystroke of the launcher's
 /// query and must never panic, whatever is typed. Production code only.
 #[test]
 fn the_calculator_has_no_panicking_path() {

@@ -281,7 +281,7 @@ fn toggle_opens_and_closes_the_launcher() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
-/// Small features, `--calc`: the calculator opens with no scan, Enter copies the result through
+/// `--calc`: the calculator opens with no scan, Enter copies the result through
 /// `copy` (a stub script, never `wl-copy`), and a second `--calc` past the debounce closes it.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -3312,7 +3312,7 @@ fn a_timed_dnd_is_cancelled_by_off_and_toggle() {
     assert!(!file.exists(), "toggled off: no file");
 }
 
-/// Spec, Success criteria: with mako running nothing changes and the bell is dim; once mako stops,
+/// With mako running nothing changes and the bell is dim; once mako stops,
 /// alpheus takes the name at once.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -4051,7 +4051,7 @@ fn a_pw_dump_send_above_pipe_buf_fails_clearly() {
     pw_dump_send(Path::new("/nonexistent-alpheus-it"), &"x".repeat(4096));
 }
 
-// ---- The OSD . The fake pw-dump is `Fifo`; the backlight a fake tree
+// ---- The OSD. The fake pw-dump is `Fifo`; the backlight a fake tree
 // under the test's runtime directory, never /sys. ----
 
 /// The OSD's tests' bar: the volume (its sound source), the OSD, the clock. `extra`: more `[osd]`
@@ -5871,7 +5871,7 @@ fn power_verb_opens_and_closes_the_menu() {
     assert_eq!(d.count("power menu shown"), 0, "{:?}", d.log());
 }
 
-// ---- The resources popup . The daemon reads the host's real /proc and
+// ---- The resources popup. The daemon reads the host's real /proc and
 // /sys, so only the memory graph is looked for: it has a point on any machine. ----
 
 /// The resources module's bar (catppuccin dark): the module alone, a reading every second, a fake
@@ -5988,7 +5988,7 @@ fn resources_escape_closes_and_right_click_runs_the_monitor() {
     assert_eq!(d.count("resources popup shown"), 1, "no popup for the right click: {:?}", d.log());
 }
 
-// ---- The privacy indicators . The fake pw-dump is `Fifo`, the batches
+// ---- The privacy indicators. The fake pw-dump is `Fifo`, the batches
 // synthetic (`capture_delta`); wpctl a fake recorder; the compositor the fake Hyprland. ----
 
 /// The bar's height in px (default font): the glyphs are looked for above it.
@@ -6350,7 +6350,7 @@ fn privacy_at_rest_no_wakeups_after_a_capture() {
     assert_eq!(rest, 0, "nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
 }
 
-// ---- The camera opened outside PipeWire . Fake `/dev` and `/proc` trees in a
+// ---- The camera opened outside PipeWire. Fake `/dev` and `/proc` trees in a
 // temporary directory, handed to the daemon through `[privacy] dev_dir` and `proc_dir`. ----
 
 /// A fake `dev/video0` (a plain file) and a fake `proc`, both below one guard.
@@ -7526,7 +7526,7 @@ fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
     assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
 }
 
-// ---- The failed-units module . Two private buses: the system one and
+// ---- The failed-units module. Two private buses: the system one and
 // the session one each carry a `FakeSystemd`; the compositor is the headless sway. ----
 
 /// The bar with the failed count and the clock only: no hue but the error role's could be red.

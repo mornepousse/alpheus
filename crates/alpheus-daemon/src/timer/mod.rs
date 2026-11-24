@@ -542,7 +542,7 @@ pub fn length_text(ms: u64) -> String {
     }
 }
 
-/// The notification an end becomes.
+/// The notification an end becomes, shaped like `battery_alert::incoming`.
 ///
 /// Normal urgency, the notification server's own timeout, and one tag (`timer`) so that a
 /// Pomodoro's next notice replaces the last while it is still on screen. None for the stopwatch's

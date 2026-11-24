@@ -401,8 +401,7 @@ pub fn view(players: &Players, title_max: u16) -> Option<MediaView> {
     Some(MediaView { playing: p.status == Status::Playing, title: truncate_title(&title, title_max) })
 }
 
-/// The title, else the last path segment of the url (percent-decoded), else the player's name
-///.
+/// The title, else the last path segment of the url (percent-decoded), else the player's name.
 pub fn display_title(track: &Track, identity: Option<&str>, bus_name: &str) -> String {
     if let Some(title) = &track.title {
         return title.clone();

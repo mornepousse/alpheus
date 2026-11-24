@@ -6,7 +6,7 @@ and the function that does it, so you can open the code and read along. The map 
 in [`ARCHITECTURE.md`](ARCHITECTURE.md); words in the [glossary](GLOSSARY.md) are linked at their
 first use.
 
-Written against commit 961a17d; names are given rather than lines, search for them.
+Names are given rather than lines, search for them.
 Lines are not given because they move; search for the name. All paths are under
 `crates/alpheus-daemon/src/`.
 

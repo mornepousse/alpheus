@@ -84,7 +84,7 @@ pub struct LauncherConfig {
     /// A $PATH command or typed shell text, Enter: held open after the command
     /// exits, so its output stays readable. Ctrl+Enter never uses this (it runs detached).
     pub terminal_hold: Vec<String>,
-    /// The calculator's copy command (small features 1): the text goes on its stdin, never on
+    /// The calculator's copy command: the text goes on its stdin, never on
     /// its argv; empty hides the action.
     pub copy: Vec<String>,
     /// The `?` prefix's URL template (launcher 2): `{query}` is replaced by the percent-encoded

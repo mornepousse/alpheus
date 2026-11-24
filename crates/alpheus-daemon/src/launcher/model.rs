@@ -54,7 +54,7 @@ pub enum Activation {
     },
     /// A command-source entry: its source's `run` with the whole line.
     Entry(usize),
-    /// The calculator's text (small features 1) for the clipboard: handed to `Config::copy` on its
+    /// The calculator's text for the clipboard: handed to `Config::copy` on its
     /// stdin, never on an argv.
     Copy {
         text: String,
@@ -170,7 +170,7 @@ pub struct Launcher {
     pub history: History,
     pub now: u64,
     pub results: Vec<Hit>,
-    /// The calculator's answer for the query (small features 1): None outside `Mode::All` and
+    /// The calculator's answer for the query: None outside `Mode::All` and
     /// `Mode::Calc`, for a query that is no expression, or in All for one that does not look like
     /// math. Set by `rank`, with the row it makes.
     pub calc: Option<Calc>,

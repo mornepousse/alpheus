@@ -25,7 +25,7 @@ exception: a short `//!` saying what the file tests is enough):
 Before:
 
 ```rust
-//! The focus timer's model a countdown, a Pomodoro or a stopwatch, every change
+//! The focus timer's model: a countdown, a Pomodoro or a stopwatch, every change
 //! made to it, the end it comes to, the chip it draws, when the chip next changes, the state
 //! file's line and the notification an end becomes. Pure: times are wall-clock Unix milliseconds
 //! handed in by the wiring (`timer_app.rs`), nothing here reads a clock, a file or starts anything.

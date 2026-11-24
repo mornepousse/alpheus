@@ -396,7 +396,7 @@ Figures are those recorded when each part merged, in release, back to back with 
 - **The panel itself** (`quick_pss_idle_open_and_closed`): module on and closed, 96–108 KB over the
   bar without it (when the first delivery merged); open, 316–338 KB over rest; once closed, +208…+210
   KB over rest (the first open's code and font pages, paid once); 20 more cycles −28…−4 KB (these
-  three re-measured at the UI refresh against `d9b8965`). The test bounds total PSS: the module at
+  three re-measured at the UI refresh against the base just before it). The test bounds total PSS: the module at
   rest ≤ 256 KB, open ≤ 1 MB over rest, closed ≤ rest + 512 KB, 20 more cycles ≤ closed + 128 KB.
 - **The details open:** the Wi-Fi detail on 40 access points (32 listed), 898–910 KB over the module
   at rest (`quick_wifi_pss_detail_open_and_closed`); the VPN detail on 10 profiles, 846–854 KB

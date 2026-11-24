@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 
 /// How long after the launcher opens a Toggle is still ignored
-/// (commit 9331286): with a press bind, Hyprland fires the bind a second time on
+/// (pinned by `a_toggle_within_the_debounce_window_is_ignored_but_still_acked`): with a press bind, Hyprland fires the bind a second time on
 /// release once the launcher has grabbed the keyboard, so a second Toggle
 /// lands here a few ms to ~200 ms after the open and would otherwise close
 /// the box right back. Ignoring it is what keeps the press bind usable — a
@@ -855,7 +855,7 @@ mod tests {
     }
 
     /// A Toggle arriving less than `TOGGLE_DEBOUNCE` after the open is the
-    /// Hyprland press-bind refire (commit 9331286): it must
+    /// Hyprland press-bind refire: it must
     /// be ignored, not close the box right back — but the socket still
     /// replies Done, so `alpheus-launch` exits 0.
     #[test]

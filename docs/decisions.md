@@ -1013,7 +1013,7 @@ Date: 2026-10-09 · Source: tests `ten_bubbles_then_one_per_second_and_critical_
 
 A bubble beyond `max_visible` waits with no timer and gets its whole timeout when it first shows. One
 that the host has drawn keeps its expiry when newer bubbles push it back: a steady flow of notifications
-used to push every shown bubble back before it expired, so nothing expired . Under
+used to push every shown bubble back before it expired, so nothing expired. Under
 do-not-disturb a live bubble that is hidden still has its timer and closes on time. Waiting bubbles
 used to count down too; they no longer do.
 
@@ -1682,12 +1682,13 @@ answers, so the window opens in under 100 ms even when every tool takes 500 ms t
 
 Date: 2026-10-04 · Source: tests `first_render_under_100_ms_even_with_slow_tools`, `first_render_of_the_dashboard_under_100_ms_even_with_slow_tools` and `first_render_of_diagnostics_under_100_ms_even_with_slow_tools` (`crates/alpheus/tests/first_render.rs`)
 
-### The control center runs a fixed list of commands, and systemctl only to read or to restart a unit
+### The control center runs a fixed list of commands, and systemctl only to read, or to restart or clear a user unit
 
 Every command the control center launches is on an allowlist that a guardrail test checks against a fake
 executor. `systemctl` is limited to `suspend`, `reboot` and `poweroff`, reading the failed units and the
 services, `show-environment` and `--version`, and, for the user manager only, restarting a unit without
 blocking or resetting its failed state: it never starts or stops a unit or changes the environment.
+Actions on a system unit never reach the executor: they run in the control center's own window.
 
 Date: 2026-10-04 · Source: tests `every_launched_command_is_on_the_allowlist`, `systemctl_never_starts_stops_or_changes_the_environment` and `the_systemctl_line_rule_itself_bites` (`crates/alpheus/tests/guardrails.rs`)
 

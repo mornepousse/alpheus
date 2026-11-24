@@ -544,7 +544,7 @@ fn the_vpn_reading_on_a_private_bus() {
     assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
 }
 
-// The failed-units count over the wire : a fake systemd that, like the real
+// The failed-units count over the wire: a fake systemd that, like the real
 // one, sends the Manager's `PropertiesChanged` only while a client has called `Subscribe`.
 
 /// A session over `domains` on the bus, publishing the count it sees; the tap that pokes it.

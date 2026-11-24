@@ -7,10 +7,10 @@
 //! `crate::displays::...` and `alpheus::backends::...` stay valid.
 //!
 //! Never:
-//! - launch a daemon or leave a process behind on exit (docs/decisions.md "The control center runs a fixed list of commands, and systemctl only to read or to restart a unit").
+//! - launch a daemon or leave a process behind on exit (docs/decisions.md "The control center runs a fixed list of commands, and systemctl only to read, or to restart or clear a user unit").
 //!
 //! See: docs/features/control-center.md,
-//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read or to restart a unit").
+//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read, or to restart or clear a user unit").
 
 pub use alpheus_common::{backends, config, diagnostics, displays, exec};
 

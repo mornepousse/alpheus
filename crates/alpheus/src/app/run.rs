@@ -15,7 +15,7 @@
 //!   stuck.
 //!
 //! See: docs/features/control-center.md,
-//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read or to restart a unit").
+//! docs/decisions.md ("The control center runs a fixed list of commands, and systemctl only to read, or to restart or clear a user unit").
 
 use super::App;
 use super::action::Tab;

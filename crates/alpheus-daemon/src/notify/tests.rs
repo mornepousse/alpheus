@@ -198,7 +198,7 @@ fn an_action_needs_a_sane_key_and_its_label_is_capped() {
     assert_eq!(action("x", "<b>Reply</b>\n").map(|a| a.label), Some("<b>Reply</b>".into()), "a label is plain text");
 }
 
-// ---- timeouts ----
+// ---- timeouts (docs/decisions.md, "A bubble's timeout follows its urgency") ----
 
 #[test]
 fn a_bubbles_timeout_follows_its_urgency_and_the_apps_own_choice() {
