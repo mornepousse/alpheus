@@ -233,8 +233,9 @@ fn serving(bus: &PrivateBus, dnd: bool) -> Pump<Driver> {
     pump
 }
 
-/// Spec § 1: while mako holds the name, alpheus waits in the queue, serves nothing and refuses
-/// calls made to it directly; a release hands the name over and it serves at once.
+/// While mako holds the name, alpheus waits in the queue, serves nothing and refuses
+/// calls made to it directly; a release hands the name over and it serves at once (see "The
+/// notification server queues behind another server and never replaces it" in `docs/decisions.md`).
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn queued_behind_mako_nothing_is_served_until_it_releases_the_name() {
@@ -324,7 +325,7 @@ fn forged_name_signals_from_a_stranger_change_nothing() {
     assert!(stranger.notify(&Note::new("Fictional", "still served")).is_ok_and(|id| id < MAKO_FIRST_ID));
 }
 
-/// Spec § 1: a reply goes out for every call, whether or not a bubble shows (do not disturb, a
+/// A reply goes out for every call, whether or not a bubble shows (do not disturb, a
 /// transient one, a malformed call), and a no-reply Notify is still ingested.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -350,7 +351,7 @@ fn replies_always_arrive_even_when_no_bubble_is_shown() {
     assert_eq!(server.with(|d| d.bus.pending()), 0);
 }
 
-/// Spec § 1: reasons 1 (expired), 2 (dismissed by the person), 3 (CloseNotification); an unknown id
+/// Reasons 1 (expired), 2 (dismissed by the person), 3 (CloseNotification); an unknown id
 /// gets the empty reply and no signal.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -417,8 +418,9 @@ fn action_invoked_is_broadcast_to_a_listener_on_another_connection() {
     assert_eq!(listener.heard_within(QUIET), Vec::<Heard>::new(), "resident: no NotificationClosed after its action");
 }
 
-/// Spec § 1, Ids: replaces_id in place, an unknown one taken as is (Electron's tags) with the counter
-/// jumping past it, and the x-canonical-private-synchronous tag.
+/// `replaces_id` in place, an unknown one taken as is (Electron's tags) with the counter jumping
+/// past it (see "An unknown `replaces_id` is accepted as that id" in `docs/decisions.md`), and the
+/// x-canonical-private-synchronous tag.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn replaced_by_id_and_by_tag_in_place() {
@@ -444,8 +446,8 @@ fn replaced_by_id_and_by_tag_in_place() {
     server.with(|d| assert_eq!(d.n.center().history().filter(|e| e.summary.ends_with('%')).count(), 1));
 }
 
-/// Spec § 2: the portal sends an empty app_name (identity from desktop-entry); hints arrive in
-/// other types than the spec's (urgency as u32), and image-data, skipped unread, costs nothing.
+/// The portal sends an empty app_name (identity from desktop-entry); hints arrive in other types
+/// than the freedesktop specification's (urgency as u32), and image-data, skipped unread, costs nothing.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_portal_style_call_and_odd_hint_types_are_served() {
@@ -466,7 +468,7 @@ fn a_portal_style_call_and_odd_hint_types_are_served() {
     });
 }
 
-/// Spec § 2, Spam: one identity gets 10 bubbles (the bucket), the rest go to the history only;
+/// Spam: one identity gets 10 bubbles (the bucket), the rest go to the history only;
 /// critical bypasses it; an identical one within 1 s merges; a flood is answered in full, the
 /// history capped, nothing left pending.
 #[test]
@@ -500,8 +502,8 @@ fn spam_is_bounded_merged_and_critical_bypasses_the_bucket() {
     });
 }
 
-/// Spec § 7: a session bus that dies leaves no bubble, no timer, nothing pending, the bell dim, and
-/// nothing to read again.
+/// A session bus that dies leaves no bubble, no timer, nothing pending, the bell dim, and nothing to
+/// read again (see "A closed session bus is never reconnected" in `docs/decisions.md`).
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn the_bus_dying_leaves_no_bubble_no_timer_and_nothing_spins() {
@@ -788,7 +790,7 @@ impl Pumped for LinkDriver {
     }
 }
 
-/// Spec § 1: with the tray off, ONE link carries the media module, the portal's follower and the
+/// With the tray off, ONE link carries the media module, the portal's follower and the
 /// notifications server; a change the bar makes reaches it through `has_ready`, never re-entrantly.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -870,7 +872,7 @@ fn a_dead_bus_closes_the_link_and_dims_the_bell() {
     });
 }
 
-/// Spec § 1 on the link: queued behind mako (reply 2), the link serves nothing; mako leaving, the
+/// On the link: queued behind mako (reply 2), the link serves nothing; mako leaving, the
 /// bus driver's NameAcquired reaches the server through the link's signal routing.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]

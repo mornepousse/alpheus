@@ -38,7 +38,8 @@ pub enum Value {
         pixmap_bytes: usize,
     },
     /// `IconPixmap`/`AttentionIconPixmap` (`a(iiay)`, one 32x32 entry of `bytes` bytes): the daemon
-    /// never reads it (spec § 3), but a real item may still offer it alongside (or instead of) an
+    /// never reads it (see "The tray asks one property at a time, never icon pixmaps, with a 2 s
+    /// timeout" in `docs/decisions.md`), but a real item may still offer it alongside (or instead of) an
     /// icon name.
     IconPixmap(usize),
 }
