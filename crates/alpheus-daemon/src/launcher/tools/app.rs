@@ -85,6 +85,9 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         usb_reset: !launcher.tools.builtin.usb_reset.is_empty(),
         shutdown: timer && !bar.quick.poweroff.is_empty(),
         shutdown_left: None,
+        // The captures' own answers are the daemon's, added by `tools_context`.
+        captures: false,
+        recording: false,
     }
 }
 
@@ -238,7 +241,8 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Emoji
         | BuiltinAction::Power
         | BuiltinAction::Shield
-        | BuiltinAction::Kill => return Ok(None),
+        | BuiltinAction::Kill
+        | BuiltinAction::Capture(_) => return Ok(None),
     };
     let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
@@ -375,7 +379,7 @@ impl App {
             diagnostics: tools::join::DIAGNOSTICS_TAB.is_some(),
             nmap: has_program(&ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs, "nmap"),
         };
-        let mut c = context(&self.bar.config, launcher, self.timer.enabled, join);
+        let mut c = Context { captures: self.screencopy.is_some(), ..context(&self.bar.config, launcher, self.timer.enabled, join) };
         // A shutdown pending: the entry's first choice cancels it, with the time left.
         c.shutdown_left = self.timer.shutdown.map(|s| s.left(crate::timer::app::unix_ms()));
         c
@@ -603,6 +607,7 @@ impl App {
                 self.launcher_open_processes(qh, Instant::now());
                 None
             }
+            BuiltinAction::Capture(verb) => Some(self.capture_verb(&Request::Capture(verb))),
         };
         if reply.as_ref().is_some_and(is_refusal) {
             log(&format!("tools: built-in {id} refused"));

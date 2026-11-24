@@ -68,7 +68,7 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
@@ -289,6 +289,18 @@ at start.
 
 See [Shield mode](features/shield.md).
 
+### `[captures]`
+
+Screenshots and recordings, driven by `alpheus-launch --capture` and the Tools menu's Captures category. Read at start. The copy command is `launcher.toml`'s `copy`.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `dir` | path | `""` | absolute or `~/…`, no NUL | Where `area-save` writes `%Y%m%d-%H%M%S.png`. Empty: `$XDG_PICTURES_DIR/screenshots` (else the pictures entry of `user-dirs.dirs`), else `~/Pictures/screenshots`. |
+| `annotate` | command | `["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]` | non-blank program, no NUL | The annotation tool (not wired yet). |
+| `ocr` | command | `["tesseract", "{file}", "-", "-l", "eng"]` | same | The text recogniser (not wired yet). |
+| `record` | command | `["wf-recorder", "-g", "{geometry}", "-f", "{out}"]` | same | The recorder (not wired yet). |
+| `pick_format` | string | `"{hex}"` | | The colour picker's text, with `{r}`, `{g}`, `{b}`, `{hex}` (not wired yet). |
+
 ### `[hooks]`
 
 A command per event, its data in `ALPHEUS_*` variables (never as arguments). Absent or `[]`: no
@@ -428,6 +440,8 @@ auto = true                          # apply the displays.toml profile that matc
 [clipboard]
 enabled = false           # true: follow the clipboard and keep a text history in memory (50 x 4 KiB, never a copy with a password-manager hint); read at start
 
+# [captures]              # screenshots (see the table above; `dir` empty: $XDG_PICTURES_DIR/screenshots)
+# dir = ""
 # [shield]                # Shield mode: none set, no Shield anywhere; read at start (restart the daemon after a change)
 # flag = "/var/lib/shield/on"      # absolute: the mode is on while this file exists (not in alpheus's config directory)
 # on = ["pkexec", "/usr/local/bin/shield-root", "on"]     # argv, run as given; their program asks for authorisation itself

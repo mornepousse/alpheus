@@ -399,6 +399,25 @@ fn outputs_protocol_only_in_wlr_rs() {
     assert!(seen, "the protocol file names the protocol");
 }
 
+/// The only file that speaks `zwlr_screencopy_manager_v1`.
+const SCREENCOPY_PROTOCOL_FILE: &str = "captures/screencopy.rs";
+
+/// One file speaks the screencopy protocol; the rest of the daemon only sees a `Frame`.
+#[test]
+fn screencopy_only_in_screencopy_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["zwlr_screencopy", "ZwlrScreencopy"] {
+            if t.contains(token) {
+                assert_eq!(name, SCREENCOPY_PROTOCOL_FILE, "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
 /// No output power management anywhere in alpheus,
 /// never a screen powered off (`dpms` is already a forbidden word in the daemon).
 #[test]
@@ -550,7 +569,12 @@ fn shutting_down_closes_and_saves_the_pad() {
 #[test]
 fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
-    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
+    for (name, create) in [
+        ("osd/surface.rs", "fn osd_create("),
+        ("notify/bubbles_surface.rs", "fn bubbles_create("),
+        // The capture selector: on Overlay too, or a fullscreen game on Hyprland would hide it.
+        ("captures/select_app.rs", "fn select_open("),
+    ] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code_without_comments(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
@@ -896,7 +920,7 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_common::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -922,6 +946,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
             Request::Shield(_) => "shield",
+            Request::Capture(_) => "capture",
         }
     }
     let all = [
@@ -948,6 +973,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsKeep,
         Request::OutputsRevert,
         Request::Shield(ShieldVerb::Status),
+        Request::Capture(CaptureVerb::Select),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -974,7 +1000,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs-try",
             "outputs-keep",
             "outputs-revert",
-            "shield"
+            "shield",
+            "capture"
         ]
     );
 }
@@ -1724,6 +1751,14 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // switch waits for its flag (the 5 s grace or the 60 s bound).
         ("shield/run.rs", "thread::Builder", 1),
         ("shield/app.rs", "Timer::", 1),
+        // A capture's worker: the short-lived `alpheus-capture` thread that cuts, encodes and
+        // copies or saves one frame, started when the frame arrives and ending with its report
+        // (one capture at a time, so one thread at most).
+        ("captures/app.rs", "thread::Builder", 1),
+        // The awaited frame's deadline (5 s), built in `CaptureApp::new`: armed only while a frame is
+        // awaited, disarmed by every way a capture ends; a compositor that never answers cannot hold
+        // the one capture slot for ever.
+        ("captures/app.rs", "Timer::", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -4674,6 +4709,214 @@ fn the_notes_spawn_only_the_copy_command() {
         }
     }
     assert!(seen >= 8, "the notes files were found: {seen}");
+}
+
+/// The capture selector's model is pure: no log, no panicking path, no slicing by range (a
+/// selection is arithmetic on coordinates the pointer hands in). Production code only.
+#[test]
+fn the_selector_model_is_pure_and_cannot_panic() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select.rs").expect("captures/select.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "Instant", "SystemTime"] {
+        assert!(!production.contains(p), "{p} in captures/select.rs's production code");
+    }
+    for code in production_code_without_comments(t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in captures/select.rs's production code");
+        }
+    }
+}
+
+/// The selector's surface logs fixed words only: never the rectangle, an output's name or a key.
+/// The two variable parts are a close reason's word and the guard's `what`, themselves fixed.
+fn selector_unfixed_log(code: &str) -> Option<String> {
+    for call in log_calls(code) {
+        let mut text = call.to_string();
+        // The one placeholder filled by a variable: the close reason's word.
+        if text.contains(", reason.text()") {
+            text = text.replace(", reason.text()", "").replacen("{}", "", 1);
+        }
+        text = text.replace("{what}", "");
+        let arg = call["log(".len()..call.len().saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        if !arg.starts_with('"') || text.contains('{') {
+            return Some(call.to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn the_selector_logs_fixed_words_only() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select_app.rs").expect("select_app.rs").1;
+    let code = production_code_without_comments(t);
+    assert_eq!(selector_unfixed_log(&code), None);
+    assert!(code.matches("log(").count() >= 6, "the log calls were found");
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production_code(t).contains(p), "{p} in captures/select_app.rs's production code");
+    }
+}
+
+#[test]
+fn the_selector_log_guardrail_helper_bites() {
+    assert_eq!(selector_unfixed_log("log(\"capture: selector shown\");"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture: selector closed ({})\", reason.text()));"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture error in {what}\"));"), None);
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {rect:?}\"));").is_some(), "a geometry");
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {}x{}\", r.width, r.height));").is_some(), "a bare placeholder");
+    assert!(selector_unfixed_log("log(&label);").is_some(), "a variable");
+}
+
+/// One capture file's text, by its path under `src/`.
+fn captures_file(name: &str) -> String {
+    let files = source_files();
+    files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone()
+}
+
+/// The capture glue logs fixed words only: never a path, a file name, a geometry or an output name
+/// (the notice carries the file's name, the log never does).
+#[test]
+fn the_capture_logs_fixed_words_only() {
+    for name in ["captures/app.rs", "captures/deliver.rs", "captures/mod.rs", "captures/paths.rs"] {
+        let t = captures_file(name);
+        let code = production_code_without_comments(&t);
+        assert_eq!(selector_unfixed_log(&code), None, "{name}");
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production_code(&t).contains(p), "{p} in {name}'s production code");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.matches("log(").count() >= 10, "the log calls were found");
+    // The worker, the protocol, the encoder and the pure files never log at all: the glue says one
+    // word per ending, and a frame or a buffer never reaches a log line.
+    for name in ["captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/screencopy.rs", "captures/encode.rs"] {
+        let code = production_code_without_comments(&captures_file(name));
+        for p in ["log(", "log::", "eprintln!", "println!", "eprint!", "dbg!("] {
+            assert!(!code.contains(p), "{p} in {name}");
+        }
+    }
+}
+
+/// The flow and the paths are pure: no clock, no environment, no file, no thread.
+#[test]
+fn the_capture_flow_and_paths_are_pure() {
+    for name in ["captures/mod.rs", "captures/paths.rs"] {
+        let code = production_code_without_comments(&captures_file(name));
+        for p in ["Instant", "SystemTime", "std::env", "std::fs", "File::", "thread::", "Command"] {
+            assert!(!code.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// A selector that cannot open (no shared buffer) fails its capture, critical: it is never answered
+/// as the user's silent cancel.
+#[test]
+fn a_selector_that_cannot_open_fails_its_capture() {
+    let select = production_code_without_comments(&captures_file("captures/select_app.rs"));
+    let open = function_body(&select, "pub(crate) fn select_open(");
+    let refused = open.find("SlotPool::new(").expect("the pool is made at open");
+    let answer = open[refused..].find("select_finished(").map(|i| &open[refused + i..]).expect("a refused pool is answered");
+    assert!(answer.starts_with("select_finished(None, SelectorAnswer::Failed,"), "{}", &answer[..60.min(answer.len())]);
+}
+
+/// A capture's frame is asked of the compositor in one place, after the round trip that waits for
+/// the selector's removal: the selector's answer never asks for it itself, or the dim could be in
+/// the capture (docs/decisions.md, "A capture waits for the selector's removal").
+#[test]
+fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("capture_output(").count(), 1, "one place asks for a frame");
+    assert!(function_body(&app, "fn capture_grab(").contains("capture_output("));
+    let selected = function_body(&app, "pub(crate) fn capture_selected(");
+    for p in ["capture_grab", "capture_output", "Step::Grab"] {
+        assert!(!selected.contains(p), "the selector's answer reaches {p} directly");
+    }
+    assert!(function_body(&app, "fn capture_settle(").contains(".sync("), "the settle is a round trip");
+    // The step that follows the round trip is the only other way to a grab.
+    let settled = function_body(&app, "fn event(");
+    assert!(settled.contains("flow.settled("), "the round trip's answer is what lets the flow go on");
+    let flow = production_code_without_comments(&captures_file("captures/mod.rs"));
+    assert!(function_body(&flow, "pub fn selected(").contains("Step::Settle"), "a selection waits");
+    assert!(!function_body(&flow, "pub fn selected(").contains("Step::Grab"), "and never grabs in the same turn");
+    // A whole screen waits too: it is asked as a menu may be closing.
+    assert!(function_body(&flow, "pub fn begin(").contains("Step::Settle"), "a whole screen waits");
+    assert!(!function_body(&flow, "pub fn begin(").contains("Step::Grab"), "and never grabs at the verb");
+}
+
+/// The Tools menu shows the Captures entries only when the compositor has screencopy.
+#[test]
+fn the_tools_menu_hides_the_captures_without_screencopy() {
+    let app = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
+    assert!(function_body(&app, "fn tools_context(").contains("captures: self.screencopy.is_some()"));
+}
+
+/// A capture that ends gives its frame up and disarms the deadline, and an answer carries the
+/// capture it is for.
+#[test]
+fn a_capture_that_ends_gives_up_its_frame_and_its_deadline() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let reset = function_body(&app, "fn capture_reset(");
+    assert!(reset.contains("pending.cancel()") && reset.contains("due = None") && reset.contains("capture_timer_sync"));
+    assert!(function_body(&app, "fn capture_finish(").contains("capture_reset()"), "every ending resets");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("generation != self.capture.flow.generation()"), "a late frame is told by its generation");
+    let screencopy = production_code_without_comments(&captures_file("captures/screencopy.rs"));
+    assert!(function_body(&screencopy, "pub fn cancel(self)").contains(".destroy()"), "the frame object is destroyed");
+}
+
+/// The frame's deadline is armed only while a frame is awaited: it is set in one place, right
+/// after the frame was asked, and its expiry goes through the flow (`grab_expired`, which ignores
+/// a capture that no longer waits) and gives the asked frame up.
+#[test]
+fn the_frame_deadline_is_armed_only_while_a_frame_is_awaited() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("due = Some(").count(), 1, "one place arms the deadline");
+    let grab = function_body(&app, "fn capture_grab(");
+    let asked = grab.find("Some(pending) =>").expect("the frame was asked");
+    assert!(grab[asked..].contains("due = Some(Instant::now() + GRAB_LIMIT)"), "armed only once a frame request exists");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("due = None"), "an answer disarms it");
+    let tick = function_body(&app, "fn capture_tick(");
+    assert!(tick.contains("flow.grab_expired(") && tick.contains("pending.cancel()") && tick.contains("due = None"));
+}
+
+/// The worker always mails its ending: `run` returns a `Finish` whatever happens in it (a panic is
+/// caught there), and the closure sends it after `run`, unconditionally.
+#[test]
+fn the_capture_worker_always_mails_its_ending() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let encode = function_body(&app, "fn capture_encode(");
+    let run = encode.find("let finish = run(").expect("the worker runs the job");
+    let after_run = run + encode[run..].find(';').expect("the job is one statement") + 1;
+    let send = encode.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
+    assert!(after_run <= send, "after the job");
+    assert_eq!(encode[after_run..send].trim(), "", "the next statement, under no condition");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(function_body(&deliver, "pub fn run(").contains("catch_unwind("), "a panic in the job is caught");
+}
+
+/// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
+/// standard input (a PNG does not fit the page of `spawn_with_input`).
+#[test]
+fn the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        if name != "captures/encode.rs" && name != "captures/deliver.rs" {
+            assert!(!code.contains("encode_png("), "{name} encodes a PNG");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.contains(".name(\"alpheus-capture\".into())"), "the worker is named");
+    assert!(app.contains("run(exec.as_ref(), frame"), "the frame is encoded in the worker's closure");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(deliver.contains("run_with_stdin_file("));
+    assert!(deliver.contains("catch_unwind("), "a panic in the worker ends the capture as a failure");
+    for p in ["spawn_with_input(", ".spawn(", "Command::new", ".run(", ".capture("] {
+        assert!(!deliver.contains(p), "{p} in deliver.rs");
+    }
 }
 
 /// The pad's glue never panics on its own either: no unwrap, expect, panic or

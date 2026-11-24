@@ -199,7 +199,8 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert
-            | Request::Shield(_),
+            | Request::Shield(_)
+            | Request::Capture(_),
             _,
         ) => (Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
     }
@@ -707,7 +708,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alpheus_common::launcher_ipc::{DndVerb, OsdVerb, QuickVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{CaptureVerb, DndVerb, OsdVerb, QuickVerb, TimerVerb};
 
     fn dmenu() -> Request {
         Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }
@@ -744,6 +745,7 @@ mod tests {
             (Request::FailedRefresh, None, not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
             (Request::Notes, Some(Apps), not_ours(), refused()),
+            (Request::Capture(CaptureVerb::Select), Some(Apps), not_ours(), refused()),
             (Request::Clipboard, None, Action::OpenClipboard, done()),
             (Request::Clipboard, Some(Clipboard), Action::Close(R::Toggle), done()),
             (Request::Clipboard, Some(Apps), Action::OpenClipboard, done()),

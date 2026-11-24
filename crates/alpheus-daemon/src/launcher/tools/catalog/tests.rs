@@ -1,5 +1,6 @@
 use super::*;
 use crate::launcher::config::LauncherConfig;
+use alpheus_common::launcher_ipc::CaptureVerb;
 
 fn tools(text: &str) -> ToolsConfig {
     LauncherConfig::from_text(text).unwrap().tools
@@ -23,6 +24,8 @@ fn all() -> Context {
         usb_reset: true,
         shutdown: true,
         shutdown_left: None,
+        captures: true,
+        recording: true,
     }
 }
 
@@ -76,6 +79,15 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "capture.full",
+            "capture.area",
+            "capture.area_save",
+            "capture.annotate",
+            "capture.record",
+            "capture.record_area",
+            "capture.stop",
+            "capture.pick",
+            "capture.ocr",
             "shutdown",
             "process.kill",
             "lock",
@@ -122,6 +134,15 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Screenshot",
+            "Area",
+            "Area (save)",
+            "Annotate",
+            "Record screen",
+            "Record area",
+            "Stop recording",
+            "Colour picker",
+            "Text from area (OCR)",
             "Schedule shutdown",
             "Kill a process",
             "Lock",
@@ -141,17 +162,19 @@ fn the_table_is_the_specs() {
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, system, session, diagnostics] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, captures, system, session, diagnostics] = BUILTIN_CATEGORIES;
+    assert_eq!(captures, "Captures");
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
+    expected.extend([captures; 9]);
     expected.extend([system; 2]);
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
     // System sits beside Session: 40 is the Captures category's.
     let orders: Vec<(&str, u16)> = BUILTIN_CATEGORIES.into_iter().zip(BUILTIN_ORDERS).collect();
-    assert_eq!(orders, [(quick, 10), (control, 20), (utilities, 30), (system, 80), (session, 90), (diagnostics, 70)]);
+    assert_eq!(orders, [(quick, 10), (control, 20), (utilities, 30), (captures, 40), (system, 80), (session, 90), (diagnostics, 70)]);
     let slugs: Vec<&str> = BUILTINS.iter().filter_map(|b| b.tab_slug()).collect();
     assert_eq!(slugs, ["home", "sound", "network", "bluetooth", "power", "displays", "appearance", "diagnostics"]);
     assert!(BUILTINS.iter().all(|b| b.glyph != ' ' && !b.glyph.is_ascii()), "every built-in has a Nerd Font glyph");
@@ -166,6 +189,20 @@ fn the_table_is_the_specs() {
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
     assert_eq!(action("process.kill"), BuiltinAction::Kill);
+    // Each capture entry replays the verb of its own name.
+    for (id, verb) in [
+        ("capture.full", CaptureVerb::Full),
+        ("capture.area", CaptureVerb::Area),
+        ("capture.area_save", CaptureVerb::AreaSave),
+        ("capture.annotate", CaptureVerb::Annotate),
+        ("capture.record", CaptureVerb::Record),
+        ("capture.record_area", CaptureVerb::RecordArea),
+        ("capture.stop", CaptureVerb::Stop),
+        ("capture.pick", CaptureVerb::Pick),
+        ("capture.ocr", CaptureVerb::Ocr),
+    ] {
+        assert_eq!(action(id), BuiltinAction::Capture(verb), "{id}");
+    }
 }
 
 #[test]
@@ -189,7 +226,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes, emoji, the kill list and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 14] = [
+    let flips: [Flip; 15] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -217,6 +254,13 @@ fn shown_follows_the_context() {
         (|c| c.nmap = true, &["diag.scan"]),
         (|c| c.usb_reset = true, &["diag.usb_reset"]),
         (|c| c.shutdown = true, &["shutdown"]),
+        (
+            |c| {
+                c.captures = true;
+                c.recording = true;
+            },
+            &["capture.full", "capture.area", "capture.area_save"],
+        ),
     ];
     for (flip, rows) in flips {
         let mut c = Context::default();
@@ -229,7 +273,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 36);
+    assert_eq!(ids_shown(&all()).len(), 39, "the table's 45, less the six captures not built yet");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -249,6 +293,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "diag.scan" => c.nmap = false,
         "diag.usb_reset" => c.usb_reset = false,
         "shutdown" => c.shutdown = false,
+        "capture.full" => c.captures = false,
         other => panic!("{other}"),
     }
 }
@@ -266,11 +311,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 36);
+    assert_eq!(builtin_ids(&cat).len(), 39);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 34);
+    assert_eq!(ids.len(), 37);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -318,7 +363,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 70 Diagnostics, 80 System, 90 Session), names breaking the tie.
+    // 40 Captures, 50 Beta, 70 Diagnostics, 80 System, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -332,6 +377,7 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
+            "[Captures]",
             "Beta",
             "[Diagnostics]",
             "[System]",
@@ -561,4 +607,44 @@ fn the_shutdown_choices_follow_the_pending_state() {
     let at = cat.entries.iter().position(|e| e.name == "Schedule shutdown").unwrap();
     assert_eq!(cat.categories[cat.entries[at].category.unwrap()].name, "System");
     assert_eq!(cat.flat().iter().filter(|f| f.entry == at && f.choice.is_some()).count(), 5);
+}
+
+/// A compositor without screencopy hides the Captures entries, and with them their category.
+#[test]
+fn no_screencopy_hides_the_captures() {
+    let c = Context { captures: false, ..all() };
+    assert!(ids_shown(&c).iter().all(|id| !id.starts_with("capture.")), "{:?}", ids_shown(&c));
+    let (cat, _) = build("", &c);
+    assert!(!category_names(&cat, &cat.root_rows()).contains(&"[Captures]".to_string()), "no empty category");
+    let (cat, _) = build("", &all());
+    let at = cat.categories.iter().position(|k| k.name == "Captures").unwrap();
+    assert_eq!(names(&cat, &cat.category_rows(at)), ["Screenshot", "Area", "Area (save)"]);
+    // The category sits between Utilities and Session.
+    let root = category_names(&cat, &cat.root_rows());
+    let place = |n: &str| root.iter().position(|r| r == n).unwrap();
+    assert!(place("[Utilities]") < place("[Captures]") && place("[Captures]") < place("[Session]"), "{root:?}");
+}
+
+/// The entries whose verb is not built yet stay in the table (ids, labels, order) and are hidden,
+/// whatever the context says, until their tasks land: no row that answers "not available yet".
+#[test]
+fn the_unbuilt_captures_are_hidden_until_their_tasks_land() {
+    let shown = ids_shown(&all());
+    for id in ["capture.annotate", "capture.record", "capture.record_area", "capture.stop", "capture.pick", "capture.ocr"] {
+        assert!(BUILTINS.iter().any(|b| b.id == id), "{id} stays in the table");
+        assert!(!shown.contains(&id), "{id} is hidden");
+    }
+    for id in ["capture.full", "capture.area", "capture.area_save"] {
+        assert!(shown.contains(&id), "{id} shows");
+    }
+}
+
+/// The capture rows each have a glyph of their own, the two recordings included.
+#[test]
+fn every_capture_row_has_its_own_glyph() {
+    let glyphs: Vec<char> = BUILTINS.iter().filter(|b| b.id.starts_with("capture.")).map(|b| b.glyph).collect();
+    let mut unique = glyphs.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
 }

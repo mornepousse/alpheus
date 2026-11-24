@@ -194,6 +194,71 @@ fn spawn_with_input_of_a_missing_program_is_not_found() {
     assert_eq!(exec().spawn_with_input("alpheus-nonexistent-program", &[], &[b"x"]), Err(ExecError::NotFound));
 }
 
+const LIMIT: Duration = Duration::from_secs(5);
+
+/// A standard input from a file has no size bound: a megabyte arrives whole, and the call returns
+/// the program's own exit code, so a caller knows the program took its input.
+#[test]
+fn run_with_stdin_file_feeds_a_big_file_and_reports_the_exit() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, got) = (dir.join("in"), dir.join("got"));
+    let payload: Vec<u8> = (0..(1 << 20)).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&input, &payload).unwrap();
+    let script = format!("cat > '{}'", got.display());
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, LIMIT), Ok(Some(0)));
+    assert_eq!(std::fs::read(&got).unwrap(), payload, "the whole file, read before the call returned");
+    assert_eq!(
+        exec().run_with_stdin_file("sh", &["-c", "cat > /dev/null; exit 3"], &input, LIMIT),
+        Ok(Some(3)),
+        "a failing exit is reported"
+    );
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", "kill -9 $$"], &input, LIMIT), Ok(None), "a signal has no code");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the program leaves running in the background (`wl-copy` forks and its foreground ends) does
+/// not hold the call, and one that never ends is killed at the limit.
+#[test]
+fn run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("in");
+    std::fs::write(&input, "x").unwrap();
+    let late = dir.join("late");
+    let script = format!("cat > /dev/null; (sleep 1; touch '{}') & exit 0", late.display());
+    let t = Instant::now();
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, LIMIT), Ok(Some(0)));
+    assert!(t.elapsed() < Duration::from_millis(900), "the background child is not waited for: {:?}", t.elapsed());
+    let hang = dir.join("hung");
+    let script = format!("sleep 2; touch '{}'", hang.display());
+    let t = Instant::now();
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, Duration::from_millis(200)), Err(ExecError::Timeout));
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    std::thread::sleep(Duration::from_millis(2300));
+    assert!(!hang.exists(), "killed at the limit, it never got to finish");
+    assert!(late.exists(), "the background child of the first run was left alone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_with_stdin_file_names_a_missing_program_or_file() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let there = dir.join("there");
+    std::fs::write(&there, "x").unwrap();
+    assert_eq!(exec().run_with_stdin_file("alpheus-nonexistent-program", &[], &there, LIMIT), Err(ExecError::NotFound));
+    let marker = dir.join("started");
+    let touch = format!("touch '{}'", marker.display());
+    assert!(matches!(exec().run_with_stdin_file("sh", &["-c", &touch], &dir.join("absent"), LIMIT), Err(ExecError::Io(_))));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a missing file starts nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Threads of this whole test binary (other tests may have their own,
 /// transient ones): a regression that brings back a reaper thread per
 /// `spawn` shows up as a jump of (about) N, held for as long as the N
@@ -375,6 +440,11 @@ fn children_start_with_no_blocked_signal() {
     let f = std::env::temp_dir().join(format!("alpheus-sigblk-{}", std::process::id()));
     let _ = std::fs::remove_file(&f);
     let script = format!("grep SigBlk /proc/self/status > {}", f.display());
+    // `run_with_stdin_file` discards the output: its command writes the mask to a file of its own.
+    let (input, from_file) = (f.with_extension("in"), f.with_extension("file"));
+    std::fs::write(&input, "x").unwrap();
+    let file_script = format!("grep SigBlk /proc/self/status > {}", from_file.display());
+    let stdin_file = input.clone();
     let (run, stream) = std::thread::spawn(move || {
         // SAFETY: a zero-filled sigset_t initialized by sigemptyset and
         // sigaddset; pthread_sigmask only changes THIS test thread's mask.
@@ -389,6 +459,7 @@ fn children_start_with_no_blocked_signal() {
         let mut stream = String::new();
         e.stream("grep", &["SigBlk", "/proc/self/status"]).unwrap().read_to_string(&mut stream).unwrap();
         e.spawn("sh", &["-c", &script]).unwrap();
+        assert_eq!(e.run_with_stdin_file("sh", &["-c", &file_script], &stdin_file, Duration::from_secs(5)), Ok(Some(0)));
         (run, stream)
     })
     .join()
@@ -400,7 +471,10 @@ fn children_start_with_no_blocked_signal() {
         })
         .expect("the spawned command ran");
     let _ = std::fs::remove_file(&f);
-    for out in [run, stream, spawned] {
+    let with_stdin_file = std::fs::read_to_string(&from_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&from_file);
+    let _ = std::fs::remove_file(&input);
+    for out in [run, stream, spawned, with_stdin_file] {
         assert_eq!(out.trim(), "SigBlk:\t0000000000000000", "a mask inherited from the parent");
     }
 }

@@ -7,15 +7,15 @@ use super::config::{BUILTIN_CATEGORIES, DEFAULT_ORDER, ToolsConfig};
 use super::diag::{PORTS_PROMPT, Scan, TARGET_PROMPT};
 use crate::quick::Toggle;
 use alpheus_common::diagnostics::query::Preset;
-use alpheus_common::launcher_ipc::QuickVerb;
+use alpheus_common::launcher_ipc::{CaptureVerb, QuickVerb};
 
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 6] = [10, 20, 30, 80, 90, 70];
+const BUILTIN_ORDERS: [u16; 7] = [10, 20, 30, 40, 80, 90, 70];
 /// Their glyphs (Nerd Font Material Design), in the same order.
-const BUILTIN_GLYPHS: [char; 6] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F08D6}', '\u{F0343}', '\u{F00E4}'];
+const BUILTIN_GLYPHS: [char; 7] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0100}', '\u{F08D6}', '\u{F0343}', '\u{F00E4}'];
 
 /// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub enum BuiltinAction {
     Preset(Preset),
     /// The kill list (`--kill`).
     Kill,
+    /// A capture verb of the daemon (`--capture <word>`), replayed after the box closed.
+    Capture(CaptureVerb),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,12 +82,13 @@ const fn b(id: &'static str, label: &'static str, category: &'static str, glyph:
 const QUICK: &str = "Quick settings";
 const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
+const CAPTURES: &str = "Captures";
 const SYSTEM: &str = "System";
 const SESSION: &str = "Session";
 const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 36] = [
+pub const BUILTINS: [Builtin; 45] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -106,6 +109,15 @@ pub const BUILTINS: [Builtin; 36] = [
     b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
     b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
+    b("capture.full", "Screenshot", CAPTURES, '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)),
+    b("capture.area", "Area", CAPTURES, '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)),
+    b("capture.area_save", "Area (save)", CAPTURES, '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
+    b("capture.annotate", "Annotate", CAPTURES, '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)),
+    b("capture.record", "Record screen", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)),
+    b("capture.record_area", "Record area", CAPTURES, '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
+    b("capture.stop", "Stop recording", CAPTURES, '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)),
+    b("capture.pick", "Colour picker", CAPTURES, '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)),
+    b("capture.ocr", "Text from area (OCR)", CAPTURES, '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)),
     b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown),
     b("process.kill", "Kill a process", SYSTEM, '\u{F068C}', BuiltinAction::Kill),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
@@ -159,6 +171,16 @@ pub struct Context {
     pub shutdown: bool,
     /// The time left of the shutdown pending, in milliseconds: its first choice cancels it.
     pub shutdown_left: Option<u64>,
+    /// The compositor offers screencopy: the Captures entries show.
+    pub captures: bool,
+    /// A recording runs: "Stop recording" shows.
+    pub recording: bool,
+}
+
+/// Whether a capture verb is built: the others answer "not available yet", and their rows stay
+/// hidden (in the table, with their ids) until their tasks land.
+const fn built(verb: CaptureVerb) -> bool {
+    matches!(verb, CaptureVerb::Full | CaptureVerb::Area | CaptureVerb::AreaSave)
 }
 
 /// Whether `b` shows under `c`.
@@ -181,6 +203,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Scan => c.nmap,
         BuiltinAction::UsbReset => c.usb_reset,
         BuiltinAction::Preset(_) => c.diagnostics,
+        BuiltinAction::Capture(verb) => c.captures && built(verb) && (verb != CaptureVerb::Stop || c.recording),
     }
 }
 

@@ -66,6 +66,9 @@ fn requests() -> Vec<Request> {
         Request::Shield(ShieldVerb::Toggle),
         Request::Shield(ShieldVerb::Status),
         Request::Shield(ShieldVerb::Allow),
+        Request::Capture(CaptureVerb::Select),
+        Request::Capture(CaptureVerb::AreaSave),
+        Request::Capture(CaptureVerb::RecordArea),
     ]
 }
 
@@ -600,6 +603,21 @@ fn timer_words_round_trip_and_bad_ones_are_refused() {
         "an unknown word is named"
     );
     assert_eq!(Request::Timer(TimerVerb::Stop).reply_timeout(), Some(Duration::from_secs(2)));
+}
+
+#[test]
+fn the_capture_words_round_trip_and_nothing_else_parses() {
+    let words: Vec<&str> = CaptureVerb::ALL.iter().map(|v| v.word()).collect();
+    assert_eq!(words, ["full", "area", "area-save", "pick", "annotate", "ocr", "record", "record-area", "stop", "select"]);
+    for v in CaptureVerb::ALL {
+        assert_eq!(encode_request(&Request::Capture(v)), format!("alpheus-launcher/1 capture {}\n", v.word()).into_bytes());
+        assert_eq!(CaptureVerb::parse(v.word()), Some(v));
+        assert_eq!(decode(&encode_request(&Request::Capture(v))), Ok(Some(Request::Capture(v))));
+    }
+    assert_eq!(CaptureVerb::parse("Select"), None, "the words are exact");
+    assert_eq!(CaptureVerb::parse("area_save"), None);
+    assert!(matches!(decode(b"alpheus-launcher/1 capture\n"), Err(IpcError::Malformed(_))), "a bare capture is not a request");
+    assert!(matches!(decode(b"alpheus-launcher/1 capture sideways\n"), Err(IpcError::Malformed(_))));
 }
 
 #[test]

@@ -14,6 +14,7 @@ pub mod appearance;
 pub mod background;
 pub mod backlight;
 pub mod calendar;
+pub mod captures;
 pub mod clipboard;
 pub mod clock;
 pub mod compositor;

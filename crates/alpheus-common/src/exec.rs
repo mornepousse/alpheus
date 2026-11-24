@@ -7,7 +7,7 @@
 //! - block in the daemon: `run` waits, and the daemon's wrapper refuses it outright
 //!   (`the_only_system_executor_is_wrapped_in_non_blocking`, in the daemon's guardrails);
 //! - write more than one page to a program's standard input (`MAX_INPUT`), so a write never waits
-//!   for the program to read.
+//!   for the program to read (a payload that needs more goes through a file: `run_with_stdin_file`).
 //!
 //! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/shield.md and
 //! docs/features/quick-settings.md (what runs through it).
@@ -115,6 +115,27 @@ pub trait Executor: Send + Sync {
     /// input, before reading it all): the program was launched, so the caller never runs it again
     /// for that error.
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError>;
+
+    /// Runs `prog args…` with the standard input read from the file `file`, its output discarded, and
+    /// waits at most `limit` for the program's own exit (a program that forks and leaves a child
+    /// behind, as `wl-copy` does to hold the clipboard, is done when its foreground ends). For a
+    /// payload `spawn_with_input`'s page cannot carry: a screenshot sent to the clipboard program. The
+    /// file is read through a descriptor opened here, so no pipe can fill. Returns the exit code
+    /// (`None`: ended by a signal); `Timeout` kills the program (only it, never what it left behind);
+    /// a file that cannot be opened is an `Io` error and starts nothing. Blocks: only on a worker
+    /// thread, never the event loop. Not supported by default.
+    ///
+    /// The program is not registered in `Running`, so `kill_running` at shutdown does not reach it;
+    /// what bounds it is `limit`, at which only the direct child is killed (not its process group).
+    fn run_with_stdin_file(
+        &self,
+        _prog: &str,
+        _args: &[&str],
+        _file: &std::path::Path,
+        _limit: Duration,
+    ) -> Result<Option<i32>, ExecError> {
+        Err(ExecError::Io("standard input from a file is not supported".into()))
+    }
 
     /// `spawn` (detached, double fork, own session, stdio nulled, never registered in `Running`), with
     /// each `(name, value)` added to the inherited environment and each name of `unset` removed from
@@ -628,6 +649,45 @@ impl Executor for SystemExecutor {
 
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
         spawn_detached_with_input(prog, args, input).map(|_intermediate_pid| ())
+    }
+
+    fn run_with_stdin_file(&self, prog: &str, args: &[&str], file: &std::path::Path, limit: Duration) -> Result<Option<i32>, ExecError> {
+        if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
+            return Err(ExecError::Io("alpheus is shutting down".into()));
+        }
+        let input = std::fs::File::open(file).map_err(|e| ExecError::Io(e.to_string()))?;
+        let mut command = Command::new(prog);
+        command
+            .args(args)
+            // As `run`: untranslated, whatever the user's locale.
+            .env("LC_ALL", "C.UTF-8")
+            .stdin(Stdio::from(input))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        // The daemon blocks SIGTERM, SIGHUP and SIGINT in every thread: without this the program, and
+        // what it leaves behind (`wl-copy` holding the clipboard), would ignore them for life.
+        // SAFETY: `unblock_signals` only makes async-signal-safe calls.
+        unsafe { command.pre_exec(unblock_signals) };
+        let mut child = command.spawn().map_err(io_err)?;
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status.code()),
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ExecError::Io(e.to_string()));
+                }
+            }
+            if start.elapsed() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ExecError::Timeout);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {

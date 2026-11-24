@@ -18,6 +18,7 @@ dbus.workspace = true
 dbus-crossroads.workspace = true
 libc.workspace = true
 nucleo-matcher.workspace = true
+png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smithay-client-toolkit.workspace = true

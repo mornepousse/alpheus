@@ -1700,3 +1700,76 @@ bar and rows. The sizes were set after measuring a real 87 by 26 window, and the
 cover the classic layout.
 
 Date: 2026-11-15 · Source: tests `the_rail_needs_84_columns_and_26_rows`, `an_87_by_26_window_shows_the_rail` and `resizing_across_the_threshold_keeps_hits_honest` (`ui/rail/tests.rs`), `the_dashboard_needs_a_64x20_body` and `an_87_by_26_window_shows_the_whole_dashboard` (`ui/home`)
+
+### Screenshots are encoded by the `png` crate, on a short-lived thread, and nothing of a capture is kept
+
+The only new dependency of the captures is `png` with its default features off (its backend is
+`flate2` over `miniz_oxide`; no image-format zoo, no `image` crate): about 78 KB in the stripped
+daemon, measured back to back against the commit before it. A capture lives in its own shm pool,
+dropped the moment the compositor answers, so the bar's pool never grows by a screenshot and a cycle
+leaves the anonymous memory where it was. One file, `captures/screencopy.rs`, speaks the screencopy
+protocol.
+
+Date: 2026-11-24 · Source: tests `encode_png_round_trips_a_small_image`, `a_wrong_size_is_refused` (`captures/encode.rs`), `a_capture_cycle_gives_its_memory_back` and `capture_output_returns_a_frame_of_the_output_size` (`tests/screencopy_headless.rs`), `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)
+
+### A capture never touches the clipboard unless it succeeded
+
+A cancelled selection is silent and leaves the clipboard as it was; a capture that failed gives one
+critical notice and leaves it too; the success notice follows a capture that happened. The clipboard is
+only reached by the worker with PNG bytes in hand, and a copy command that cannot start is a failure,
+not a success. A custom `copy` command must accept a PNG on its standard input: the default `wl-copy`
+alone is told `--type image/png`.
+
+Date: 2026-11-24 · Source: tests `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one` (`captures/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
+
+### A capture waits for the selector's removal
+
+The selector's surface is destroyed before its answer is used, but the compositor must deal with the
+removal before a frame is asked, or the dim is in the capture. The flow therefore waits for a
+`wl_display.sync` sent after the destruction (`Step::Settle`, then `Flow::settled`); the selector's
+answer never asks for the frame itself. On the harness's sway the dim stays out even without the wait
+(requests are handled in order), so the rule is pinned on the flow and by a guardrail, and the headless
+test checks the pixels.
+
+Date: 2026-11-24 · Source: tests `a_selection_waits_for_the_compositor_before_the_frame_is_asked`, `every_scope_waits_for_the_compositor_before_its_frame` (`captures/tests.rs`), `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`), `an_area_capture_has_no_dim_tint` (`tests/headless_session.rs`)
+
+### A screenshot reaches the copy command as a file on its standard input
+
+`Executor::spawn_with_input` carries at most one page, which a PNG far exceeds. The worker writes the
+PNG to a private file (`$XDG_RUNTIME_DIR/alpheus/capture.png`, owner only, atomic), starts the copy
+command with that file as its standard input (`Executor::run_with_stdin_file`: no pipe to fill) and waits at most 5 s for the command's own exit,
+the foreground of `wl-copy` ending once it has read the file; "copied" means that exit was 0, as
+`screenshot.sh` checks `wl-copy`'s. A non-zero exit, a signal or the timeout (the command is killed,
+never what it left behind) is a copy failure. The file is removed afterwards, also when the worker
+panics (a panic ends the capture as a failure), and a start clears one a killed daemon left. The cut,
+the encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
+
+Date: 2026-11-24 · Source: tests `run_with_stdin_file_feeds_a_big_file_and_reports_the_exit`, `run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin`, `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`, `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, `stale_private_files_are_removed_at_start_and_nothing_else` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file`, `the_capture_worker_always_mails_its_ending` (`tests/guardrails.rs`), `a_start_clears_the_capture_files_a_killed_daemon_left` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
+### A frame that never comes fails the capture, and a late frame is never the next one's
+
+One capture runs at a time, so a compositor that never answered a frame request would hold the slot
+until the daemon restarted. A one-shot timer, armed only while a frame is awaited (5 s), fails the
+capture, destroys the frame object and frees the slot. Every answer (the round trip, the frame, the
+deadline) carries the number of the capture it is for, so the late answer of a capture that has ended
+is dropped unread and never taken for the next one's.
+
+Date: 2026-11-24 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline`, `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
+
+
+### Large blocks are always mapped on their own
+
+glibc raises its mmap threshold to the size of the first large block a program frees, and from then
+on serves blocks of that size from an arena's heap. In the daemon the first such block is a
+capture's frame (3.6 MB at 1280 × 720): after it, the worker's image and PNG came from the second
+arena (`M_ARENA_MAX` is 2), where a freed block at the heap's top is never returned by
+`malloc_trim`, and one frame's worth of anonymous memory stayed resident from the third capture on
+(1,080 → 4,740 KB over ten captures, three runs out of three). The daemon now sets
+`M_MMAP_THRESHOLD` to glibc's own default, 128 KiB, at start, next to `M_ARENA_MAX`: setting it
+turns the dynamic adjustment off, so every block of 128 KiB or more has its own mapping and is
+unmapped when freed. The cost is one `mmap` and one `munmap` per such block: a few per capture,
+and elsewhere only where a block that large is allocated. The memory suite is the check that no
+other figure rose with it: `startup_pss_per_source` reads the same on both sides, 3 runs each. A
+user's `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=…` is overridden by this call.
+
+Date: 2026-11-24 · Source: `limit_malloc_arenas` (`startup.rs`), test `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)

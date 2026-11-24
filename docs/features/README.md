@@ -30,6 +30,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [Notifications](notifications.md): alpheus's own notification server, with bubbles, a bell, a history panel and do-not-disturb.
 - [The on-screen display](osd.md): a pill that shows a volume, microphone or brightness level for a moment.
 - [The Tools menu](tools-menu.md): one launcher-style box for "do something to my session".
+- [Captures](captures.md): screenshots of the screen or an area, copied or saved, from a key or the Tools menu.
 
 ## Behind the scenes
 

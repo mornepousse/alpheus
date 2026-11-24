@@ -125,6 +125,8 @@ pub enum Mail {
     },
     /// A Shield worker's report.
     Shield(crate::shield::ShieldMail),
+    /// A capture's frame, or the worker's ending.
+    Capture(crate::captures::app::CaptureMail),
     Stop,
 }
 
@@ -542,14 +544,26 @@ pub fn run() -> i32 {
 /// 15 MB): otherwise the sound and D-Bus threads would each
 /// get their own arena, whose freed fragments `release_memory`
 /// (`malloc_trim`) can't always hand back to the system.
+///
+/// It also pins the mmap threshold at glibc's own default (128 KiB). Left dynamic, glibc raises it
+/// to the size of the first large block freed (a capture's 3.6 MB frame), after which such blocks
+/// come from an arena's heap; on the second arena the freed block is the heap's top, which
+/// `malloc_trim` never returns, so one frame's worth stayed resident after the third capture. A
+/// fixed threshold keeps every block of 128 KiB or more in its own mapping, unmapped when freed.
+/// See docs/decisions.md, "Large blocks are always mapped on their own".
 fn limit_malloc_arenas() {
     // SAFETY: mallopt(3) only changes the allocator's configuration; no
     // other thread exists yet (sources and the guard start further below).
     #[cfg(target_env = "gnu")]
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, MMAP_THRESHOLD);
     }
 }
+
+/// glibc's default mmap threshold, set explicitly so that it never moves (`limit_malloc_arenas`).
+#[cfg(target_env = "gnu")]
+const MMAP_THRESHOLD: libc::c_int = 128 * 1024;
 
 /// bar.toml and the theme, read once at start-up.
 struct Loaded {
@@ -701,6 +715,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
             state.tools_choices(generation, token, entry, lines, failed);
         }
         channel::Event::Msg(Mail::Shield(m)) => state.shield_mail(m),
+        channel::Event::Msg(Mail::Capture(m)) => state.capture_mail(m),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
@@ -772,6 +787,8 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     // and its deadline; with the loop handle made, whatever `notifications` is.
     state.timer_load(crate::timer::app::unix_ms());
     state.start_notifications(want.notifications);
+    // A capture's private file left by a daemon that was killed mid-copy.
+    crate::captures::deliver::remove_stale(&paths::runtime_dir().join("alpheus"));
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.theme.mode_runtime = alpheus_common::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
@@ -880,6 +897,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         // A launcher draw that found both buffers busy, done now if one was released.
         state.launcher_guarded("deferred draw", |app| app.launcher_after_dispatch());
         state.notes_guarded("deferred draw", |app| app.notes_after_dispatch());
+        state.select_guarded("deferred draw", |app| app.select_after_dispatch());
         // Outside the dispatch: a released keyboard's last reference (`retired`).
         state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a
@@ -900,6 +918,8 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     core.state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
     // The quick notepad saves what was typed (even after a failed autosave) and goes, guarded too.
     core.state.notes_guarded("shutdown", |app| app.notes_close(CloseReason::Close));
+    // A selection in progress is cancelled: the daemon is stopping.
+    core.state.select_guarded("shutdown", |app| app.select_close(crate::captures::select_app::SelectClose::Cancelled));
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());

@@ -103,6 +103,65 @@ impl OsdVerb {
     }
 }
 
+/// `--capture`'s word: what to capture and what to do with it. `select` is the debug verb: it
+/// runs the area selector alone and captures nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureVerb {
+    /// The focused output, copied.
+    Full,
+    /// An area picked with the selector, copied.
+    Area,
+    /// An area, saved to the pictures folder.
+    AreaSave,
+    /// The colour of one pixel, copied.
+    Pick,
+    /// An area, handed to the annotation tool.
+    Annotate,
+    /// An area's text, copied.
+    Ocr,
+    /// The focused output, recorded.
+    Record,
+    /// An area, recorded.
+    RecordArea,
+    /// Ends the recording.
+    Stop,
+    Select,
+}
+
+impl CaptureVerb {
+    pub const ALL: [CaptureVerb; 10] = [
+        CaptureVerb::Full,
+        CaptureVerb::Area,
+        CaptureVerb::AreaSave,
+        CaptureVerb::Pick,
+        CaptureVerb::Annotate,
+        CaptureVerb::Ocr,
+        CaptureVerb::Record,
+        CaptureVerb::RecordArea,
+        CaptureVerb::Stop,
+        CaptureVerb::Select,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            CaptureVerb::Full => "full",
+            CaptureVerb::Area => "area",
+            CaptureVerb::AreaSave => "area-save",
+            CaptureVerb::Pick => "pick",
+            CaptureVerb::Annotate => "annotate",
+            CaptureVerb::Ocr => "ocr",
+            CaptureVerb::Record => "record",
+            CaptureVerb::RecordArea => "record-area",
+            CaptureVerb::Stop => "stop",
+            CaptureVerb::Select => "select",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<CaptureVerb> {
+        CaptureVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
 /// `--shield`'s word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldVerb {
@@ -306,6 +365,9 @@ pub enum Request {
     /// Shield mode: answered Done, `Reply::Shield` for `status`, Cancelled for an
     /// escaped picker. An older daemon refuses it as an unknown request.
     Shield(ShieldVerb),
+    /// The captures: answered Done, also when the selector could not open. An older daemon
+    /// refuses it as an unknown request.
+    Capture(CaptureVerb),
 }
 
 impl Request {
@@ -426,6 +488,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Timer(TimerVerb::Shutdown(secs)) => format!("{MAGIC} timer shutdown {secs}\n").into_bytes(),
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
+        Request::Capture(v) => format!("{MAGIC} capture {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -475,6 +538,7 @@ enum Header {
     OutputsKeep,
     OutputsRevert,
     Shield(ShieldVerb),
+    Capture(CaptureVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -631,6 +695,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::OutputsKeep => Some(Request::OutputsKeep),
         Header::OutputsRevert => Some(Request::OutputsRevert),
         Header::Shield(v) => Some(Request::Shield(v)),
+        Header::Capture(v) => Some(Request::Capture(v)),
         Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
@@ -692,6 +757,9 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["shield", word] => {
             ShieldVerb::parse(word).map(Header::Shield).ok_or_else(|| IpcError::Malformed(format!("unknown shield word {:?}", cut(word))))
         }
+        ["capture", word] => CaptureVerb::parse(word)
+            .map(Header::Capture)
+            .ok_or_else(|| IpcError::Malformed(format!("unknown capture word {:?}", cut(word)))),
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),
         ["outputs-revert"] => Ok(Header::OutputsRevert),

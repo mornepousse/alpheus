@@ -485,6 +485,51 @@ impl Default for FailedConfig {
     }
 }
 
+/// `[captures]`: where a screenshot is saved and the external tools of the captures.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapturesConfig {
+    /// Absolute or `~/…`; empty: `$XDG_PICTURES_DIR/screenshots`, else `~/Pictures/screenshots`.
+    pub dir: String,
+    /// `{file}` and `{out}` are whole elements; empty: no annotation.
+    pub annotate: Vec<String>,
+    /// The text on its standard output is what is copied; empty: no OCR.
+    pub ocr: Vec<String>,
+    /// `{geometry}` and `{out}` are whole elements; the screen variant has no `-g`; empty: no recording.
+    pub record: Vec<String>,
+    /// The colour picker's text, with `{r}`, `{g}`, `{b}` and `{hex}`.
+    pub pick_format: String,
+}
+
+impl Default for CapturesConfig {
+    fn default() -> Self {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
+        CapturesConfig {
+            dir: String::new(),
+            annotate: argv(&["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit"]),
+            ocr: argv(&["tesseract", "{file}", "-", "-l", "eng"]),
+            record: argv(&["wf-recorder", "-g", "{geometry}", "-f", "{out}"]),
+            pick_format: "{hex}".into(),
+        }
+    }
+}
+
+/// `[captures]` checked: the hard errors of the file.
+fn check_captures(c: &CapturesConfig) -> Result<(), String> {
+    if !c.dir.is_empty() && (!(c.dir.starts_with('/') || c.dir.starts_with("~/")) || c.dir.contains('\0')) {
+        return Err("captures.dir: must be an absolute path (\"/…\" or \"~/…\")".into());
+    }
+    for (key, command) in [("captures.annotate", &c.annotate), ("captures.ocr", &c.ocr), ("captures.record", &c.record)] {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("{key}: the program is blank"));
+        }
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("{key}: an argument holds a NUL"));
+        }
+    }
+    Ok(())
+}
+
 /// The longest `[shield] on_text` or `off_text`, in bytes.
 pub const SHIELD_TEXT_MAX: usize = 256;
 
@@ -1043,6 +1088,7 @@ pub struct BarConfig {
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
     pub shield: ShieldConfig,
+    pub captures: CapturesConfig,
 }
 
 impl Default for BarConfig {
@@ -1068,6 +1114,7 @@ impl Default for BarConfig {
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
             shield: ShieldConfig::default(),
+            captures: CapturesConfig::default(),
         }
     }
 }
@@ -1119,6 +1166,8 @@ struct Raw {
     hooks: HooksConfig,
     #[serde(default)]
     shield: ShieldConfig,
+    #[serde(default)]
+    captures: CapturesConfig,
 }
 
 impl BarConfig {
@@ -1246,6 +1295,7 @@ impl BarConfig {
         check_quick(&b.quick)?;
         check_hooks(&b.hooks)?;
         check_shield(&b.shield)?;
+        check_captures(&b.captures)?;
         check_timer(&b.timer)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
@@ -1281,6 +1331,7 @@ impl BarConfig {
             displays: b.displays,
             hooks: b.hooks,
             shield: b.shield,
+            captures: b.captures,
         })
     }
 }

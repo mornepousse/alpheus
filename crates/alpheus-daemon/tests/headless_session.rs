@@ -28,7 +28,7 @@ use common::{
     start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy, wl_paste, write_atomically, wtype,
     wtype_spawn,
 };
-use common::{FakeSystemd, FakeVpn, shield_record, shield_stub, vpn_uuid};
+use common::{FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -8693,4 +8693,341 @@ fn wait_for_exit(child: &mut GroupChild) -> std::process::ExitStatus {
         assert!(t.elapsed() < DELAY, "the child was never signalled");
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+// `alpheus-launch --capture select` end to end, on the Sway backend: the area selector alone.
+// Nothing is captured; the log says only that an area was selected or that nothing was (never the
+// geometry), so a geometry is pinned by the model's own tests.
+
+const SELECTOR_SHOWN: &str = "capture: selector shown";
+
+fn selector_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    // The pointer exists on the seat before the surface does.
+    sway.hover(50, 50);
+    (sway, d)
+}
+
+/// Sends the verb and waits for the selector's surface to be drawn.
+fn open_selector(sway: &Sway, d: &Daemon, nth: usize) {
+    assert_eq!(script(sway, &["--capture", "select"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(SELECTOR_SHOWN, nth, DELAY), "{:?}", d.log());
+    // A motion over the new surface, so the pointer has entered it.
+    sway.hover(60, 60);
+}
+
+/// Dragging with the left button selects, and the release closes the selector with an area.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn area_capture_by_drag_selects_the_area() {
+    let (sway, d) = selector_daemon("select-drag");
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: nothing selected"), 0, "{:?}", d.log());
+}
+
+/// A click without a drag, and a click of the right button, select nothing.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_click_without_a_drag_and_a_right_click_cancel() {
+    let (sway, d) = selector_daemon("select-click");
+    open_selector(&sway, &d, 1);
+    sway.hover(100, 100);
+    sway.command("seat - cursor press button1");
+    sway.command("seat - cursor release button1");
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    open_selector(&sway, &d, 2);
+    sway.hover(120, 120);
+    sway.click(120, 120, "button3");
+    assert!(d.wait_for_count("capture: selector closed (cancelled)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: area selected"), 0, "{:?}", d.log());
+}
+
+/// Escape cancels with nothing selected, and the clipboard is left as it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn esc_cancels_silently_and_leaves_the_clipboard() {
+    let (sway, d) = selector_daemon("select-esc");
+    let _selection = wl_copy(&sway, "kept text 31", None, false);
+    let t = Instant::now();
+    while wl_paste(&sway).as_deref() != Some("kept text 31") {
+        assert!(t.elapsed() < DELAY, "the clipboard never held the text");
+        thread::sleep(Duration::from_millis(20));
+    }
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (220, 180), true);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert_eq!(wl_paste(&sway).as_deref(), Some("kept text 31"), "a cancel never touches the clipboard: {:?}", d.log());
+}
+
+/// Enter confirms the rectangle while the button is still down.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn enter_confirms_the_rectangle_being_dragged() {
+    let (sway, d) = selector_daemon("select-enter");
+    open_selector(&sway, &d, 1);
+    // One continuous wtype: its keyboard leaving would close the selector as `focus lost`.
+    let keys = wtype_spawn(&sway, &["-s", "1800", "-k", "Return"]);
+    sway.drag((100, 100), (260, 200), true);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert!(keys.wait().unwrap().success());
+}
+
+/// The verb a second time cancels the open selector; the launcher and the pad give way to it, and
+/// it to them: one box at a time.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_selector_is_one_box_at_a_time() {
+    let (sway, d) = selector_daemon("select-exclusive");
+    open_selector(&sway, &d, 1);
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    // The pad replaces an open selector.
+    open_selector(&sway, &d, 2);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    // The selector replaces an open launcher box: its dmenu client is cancelled.
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+    let menu = script(&sway, &["--dmenu"], "a\nb\n");
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert_eq!(menu.join().unwrap().0, 1, "the dmenu client is cancelled");
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SELECTOR_SHOWN, 3, DELAY), "{:?}", d.log());
+}
+
+// The captures end to end, on the Sway backend and the harness's own sway only: `--capture full`
+// copies the output through a fake `copy` that records its standard input, `area-save` writes the
+// area into a temporary `[captures] dir`. The output's background is a known colour, so a pixel of
+// the PNG says whether the selector's dim was in it. Nothing here touches a real clipboard.
+
+/// The background the harness's output is painted with, and what a capture of it must hold.
+const CAPTURE_BG: [u8; 4] = [0x33, 0x66, 0x99, 0xFF];
+
+/// A daemon on the harness's sway with the `copy` of launcher.toml being a fake that records its
+/// standard input (`fake-copy`), the captures' folder `<runtime>/shots`, and the notifications module
+/// when `bus` is given. Returns the sway, the daemon and the folder.
+fn capture_session(name: &str, bus: Option<&PrivateBus>) -> (Sway, Daemon, PathBuf) {
+    let sway = Sway::start(name, 1);
+    sway.command("output * bg #336699 solid_color");
+    fake_stdin_recorder(&sway, "fake-copy");
+    let shots = sway.runtime.join("shots");
+    let bar = format!("modules = [\"notifications\", \"clock\"]\n[captures]\ndir = \"{}\"\n", shots.display());
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(&bar),
+            launcher_toml: Some("copy = [\"fake-copy\"]\n"),
+            session_bus: bus.map(|b| b.address.as_str()),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    ready(&d);
+    // The background is drawn before the first capture, as in the screencopy tests.
+    thread::sleep(Duration::from_millis(300));
+    sway.hover(50, 50);
+    (sway, d, shots)
+}
+
+/// `png` decoded to (width, height, RGBA rows).
+fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().expect("a PNG");
+    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut buf).expect("a PNG frame");
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, buf)
+}
+
+/// The pixel (x, y) of an RGBA image `width` wide.
+fn rgba_at(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+}
+
+/// The one file of `dir`, once it is there.
+fn the_one_file(dir: &Path) -> PathBuf {
+    let t = Instant::now();
+    loop {
+        let files: Vec<PathBuf> = std::fs::read_dir(dir).map(|d| d.map(|e| e.unwrap().path()).collect()).unwrap_or_default();
+        if let [only] = files.as_slice() {
+            return only.clone();
+        }
+        assert!(t.elapsed() < DELAY, "{} never held exactly one file: {files:?}", dir.display());
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sends `--capture <verb>` and waits for the selector to be drawn, the pointer over it.
+fn open_capture_selector(sway: &Sway, d: &Daemon, verb: &str, nth: usize) {
+    assert_eq!(script(sway, &["--capture", verb], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(SELECTOR_SHOWN, nth, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+}
+
+/// The whole output is captured and copied: a PNG of the output's size, the background colour in it.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn capture_full_writes_a_png_of_the_output() {
+    let (sway, d, _shots) = capture_session("capture-full-png", None);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
+    let t = Instant::now();
+    while recorded_stdin(&sway, "fake-copy").is_empty() {
+        assert!(t.elapsed() < DELAY, "the copy command never read the image");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (w, h, rgba) = decode_png(&recorded_stdin(&sway, "fake-copy"));
+    assert_eq!((w, h), OUTPUT_SIZE, "the output's own size");
+    // The bar covers the top rows: the middle and the bottom corner are the background.
+    assert_eq!(rgba_at(&rgba, w, w / 2, h / 2), CAPTURE_BG);
+    assert_eq!(rgba_at(&rgba, w, w - 1, h - 1), CAPTURE_BG);
+    // The daemon's private file is gone once the copy took it.
+    let left: Vec<_> = std::fs::read_dir(sway.runtime.join("alpheus")).into_iter().flatten().flatten().map(|e| e.file_name()).collect();
+    assert!(left.iter().all(|n| !n.to_string_lossy().contains("capture.png")), "{left:?}");
+}
+
+/// A whole-screen capture is copied once, through the configured command, and says so: one notice
+/// bubble, never "not serving".
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn capture_full_copies_and_notifies() {
+    let bus = PrivateBus::start("capture-full-notify");
+    let (sway, d, _shots) = capture_session("capture-full-notify", Some(&bus));
+    wait_for_the_server(&bus);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the success notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy").len(), 1, "the copy command ran once");
+    let png = recorded_stdin(&sway, "fake-copy");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "a PNG on its standard input");
+    assert_eq!(d.count("capture: no notification"), 0, "{:?}", d.log());
+    assert_eq!(d.count("capture: failed") + d.count("capture: copy failed"), 0, "{:?}", d.log());
+}
+
+/// The area is saved under the dated name in the configured folder, holds exactly the background:
+/// the selector's dim is not in it (the frame is asked once the compositor has dealt with the
+/// selector's removal), nor its border.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_area_capture_has_no_dim_tint() {
+    let (sway, d, shots) = capture_session("capture-area-dim", None);
+    open_capture_selector(&sway, &d, "area-save", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: saved", DELAY), "{:?}", d.log());
+    let file = the_one_file(&shots);
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    assert!(
+        name.len() == 19 && name.ends_with(".png") && digits(&name[..8]) && &name[8..9] == "-" && digits(&name[9..15]),
+        "a dated name: {name}"
+    );
+    let (w, h, rgba) = decode_png(&std::fs::read(&file).unwrap());
+    assert_eq!((w, h), (400, 300), "the selected area");
+    for (x, y) in [(0, 0), (399, 0), (0, 299), (399, 299), (200, 150), (10, 290)] {
+        assert_eq!(rgba_at(&rgba, w, x, y), CAPTURE_BG, "({x}, {y}) is the output's own colour, not dimmed");
+    }
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| *p == CAPTURE_BG), "every pixel of the area is the background");
+    // A save copies nothing.
+    assert!(recorded(&sway, "fake-copy").is_empty(), "{:?}", d.log());
+}
+
+/// A cancelled selection is silent: nothing is copied, nothing saved, no notice, the clipboard is as
+/// it was.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_cancelled_capture_is_silent_and_copies_nothing() {
+    let bus = PrivateBus::start("capture-cancel");
+    let (sway, d, shots) = capture_session("capture-cancel", Some(&bus));
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "area", 1);
+    sway.click(120, 120, "button3");
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-copy").is_empty(), "no copy: {:?}", d.log());
+    assert!(!shots.exists(), "no save");
+    assert_eq!(d.count("bubbles shown"), 0, "no notice: {:?}", d.log());
+    assert_eq!(d.count("capture: copied"), 0, "{:?}", d.log());
+}
+
+/// One capture at a time: a verb sent while the selector is open is ignored with a log word, and the
+/// capture still finishes as asked.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_second_capture_while_one_runs_is_ignored() {
+    let (sway, d, _shots) = capture_session("capture-busy", None);
+    open_capture_selector(&sway, &d, "area", 1);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0, "ignored, not an error");
+    assert_eq!(script(&sway, &["--capture", "area-save"], "").join().unwrap().0, 0);
+    // The debug selector is not toggled under a capture's selector either.
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: busy", 3, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SELECTOR_SHOWN), 1, "no second selector: {:?}", d.log());
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: copied", DELAY), "the first capture goes on as asked: {:?}", d.log());
+    assert_eq!(d.count("capture: copied"), 1, "{:?}", d.log());
+    // Free again: the next one runs.
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: copied", 2, DELAY), "{:?}", d.log());
+}
+
+/// The verbs not built yet answer with a fixed message and exit 2.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_unbuilt_capture_verbs_exit_2_with_a_fixed_message() {
+    let (sway, d, _shots) = capture_session("capture-notyet", None);
+    for verb in ["pick", "annotate", "ocr", "record", "record-area", "stop"] {
+        let (code, out, err) = script(&sway, &["--capture", verb], "").join().unwrap();
+        assert_eq!((code, out.as_str()), (2, ""), "{verb}");
+        assert!(err.contains("not available yet"), "{verb}: {err}");
+    }
+    assert_eq!(d.count("capture: busy"), 0);
+}
+
+/// A daemon killed between writing the copy's private file and removing it leaves `capture.png`
+/// (or the writer's `.capture.png.<pid>`) in `$XDG_RUNTIME_DIR/alpheus`: the next start clears
+/// those, and leaves every other file of the folder alone.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_start_clears_the_capture_files_a_killed_daemon_left() {
+    let sway = Sway::start("capture-stale", 1);
+    let private = sway.runtime.join("alpheus");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for name in ["capture.png", ".capture.png.4242", "kept.png"] {
+        std::fs::write(private.join(name), b"stale").unwrap();
+    }
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(!private.join("capture.png").exists(), "{:?}", d.log());
+    assert!(!private.join(".capture.png.4242").exists());
+    assert!(private.join("kept.png").exists(), "only the capture's own files are cleared");
+}
+
+/// An area capture asked while the debug selector is open replaces it: the debug selector's close
+/// is not the capture's answer, so the new selector's drag is captured and copied.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_area_capture_replaces_the_debug_selector_and_still_copies() {
+    let (sway, d, _shots) = capture_session("capture-over-debug", None);
+    open_capture_selector(&sway, &d, "select", 1);
+    open_capture_selector(&sway, &d, "area", 2);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: copied", DELAY), "the capture's own selector answers: {:?}", d.log());
+    assert_eq!(d.count("capture: cancelled"), 0, "{:?}", d.log());
 }

@@ -115,6 +115,25 @@ they change (`[displays] auto`, on by default; the `displays` module must be in
 the protocol gets the message "the compositor has no output management" and
 nothing else breaks. At most 3 profiles are applied automatically per set of screens per minute (a dock reconnecting in a loop must not modeset forever); a profile held back is applied when that minute ends, if the screens are still the same. When the daemon stops during a trial it sends back the layout from before. Known limits: a daemon that crashes loses the trial (the trial layout stays), and a try still waiting for the compositor's answer at shutdown may keep its layout (the restore can be cancelled by it).
 
+### Captures and layer animations
+
+`alpheus-launch --capture` asks for one frame through `zwlr_screencopy_manager_v1` (Sway, Hyprland,
+Mango and niri offer it; without it the verbs exit 2 and the Captures entries are hidden). Every
+capture waits for one round trip with the compositor before the frame is asked, so a surface that
+has just been destroyed (the area selector, the Tools menu the verb came from) is gone from the
+scene. A compositor that fades layer surfaces out, as Hyprland does by default, may still be
+drawing the fade when the frame is taken, so a screenshot can hold the closing selector's dim or the
+launcher's box half transparent. Turn the animation off for the namespaces alpheus uses:
+
+- `alpheus-selector`: the area selector;
+- `alpheus-launcher`: the launcher and the Tools menu, and `alpheus-launcher-scrim` behind them.
+
+On Hyprland, a `noanim` layer rule for each (`layerrule = noanim, alpheus-selector`; newer releases
+write it `layerrule = no_anim on, match:namespace alpheus-selector`: use the form your version
+accepts). Mango's layer close animation has not been checked: if a capture shows a fade, give the
+same namespaces no animation there. Sway draws no such animation, and the headless test of the
+dim passes on it.
+
 ### Other commands
 
 | Command | Who runs it | Configurable | Expects |

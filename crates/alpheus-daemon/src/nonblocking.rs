@@ -41,6 +41,16 @@ impl<E: Executor> Executor for NonBlocking<E> {
         self.0.spawn_with_input(prog, args, input)
     }
 
+    fn run_with_stdin_file(
+        &self,
+        prog: &str,
+        args: &[&str],
+        file: &std::path::Path,
+        limit: std::time::Duration,
+    ) -> Result<Option<i32>, ExecError> {
+        self.0.run_with_stdin_file(prog, args, file, limit)
+    }
+
     fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {
         self.0.spawn_with_env(prog, args, env, unset)
     }
@@ -97,6 +107,18 @@ mod tests {
         let e = NonBlocking(fake);
         let l = CaptureLimits { deadline: Duration::from_secs(1), max_bytes: 10, max_lines: 10 };
         assert_eq!(e.capture("fake-list", &[], l), Ok(c));
+    }
+
+    #[test]
+    fn run_with_stdin_file_is_delegated() {
+        let fake = FakeExecutor::new();
+        fake.ok("wl-copy --type image/png", "");
+        let path = std::env::temp_dir().join(format!("alpheus-nonblocking-{}", std::process::id()));
+        std::fs::write(&path, b"png").unwrap();
+        let e = NonBlocking(fake);
+        assert_eq!(e.run_with_stdin_file("wl-copy", &["--type", "image/png"], &path, Duration::from_secs(1)), Ok(Some(0)));
+        assert_eq!(e.0.inputs(), [("wl-copy --type image/png".to_string(), b"png".to_vec())]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
