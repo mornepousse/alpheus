@@ -16,7 +16,7 @@
 //! - put a device's name, id or `vid:pid` in a log line (guardrail `the_shield_logs_name_nothing`);
 //! - panic: a USB name is text from outside (guardrail `the_shield_files_have_no_panicking_path`).
 //!
-//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§ 5), docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/features/shield.md.
 
 use crate::actions::Button;

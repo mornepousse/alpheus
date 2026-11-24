@@ -20,7 +20,7 @@
 //! - panic: a guardrail (`the_shield_files_have_no_panicking_path`) reads this file's code; should
 //!   `run_job` panic anyway, the worker still reports, as `WorkerFailed`.
 //!
-//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§§ 6 and 7), docs/features/shield.md, and
+//! See: docs/features/shield.md and
 //! docs/decisions.md ("Shield commands and reads run on a short-lived thread", "A running Shield
 //! command is never killed at its deadline").
 
@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// A device list: short and small (shield spec § 6: 2 s, 64 KiB, 1,024 lines).
+/// A device list: short and small (2 s, 64 KiB, 1,024 lines).
 pub const LIST_LIMITS: CaptureLimits = CaptureLimits { deadline: Duration::from_secs(2), max_bytes: 64 * 1024, max_lines: 1024 };
 
 /// Runs `argv` as `job` and reports how it ended. Synchronous.

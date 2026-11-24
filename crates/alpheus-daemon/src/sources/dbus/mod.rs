@@ -81,9 +81,9 @@ pub use tap::UnitsTap;
 pub const NM: &str = "org.freedesktop.NetworkManager";
 pub const UPOWER: &str = "org.freedesktop.UPower";
 pub const BLUEZ: &str = "org.bluez";
-/// power-profiles-daemon (quick spec § 5): read, never set (the panel runs powerprofilesctl).
+/// power-profiles-daemon: read, never set (the panel runs powerprofilesctl).
 pub const POWER_PROFILES: &str = "net.hadess.PowerProfiles";
-/// systemd's manager (diagnostics spec § 6): its failed-units count, one property, never `GetAll`.
+/// systemd's manager: its failed-units count, one property, never `GetAll`.
 pub const SYSTEMD1: &str = "org.freedesktop.systemd1";
 /// The bus driver, which answers `GetNameOwner`, `AddMatch` and the rest.
 pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
@@ -125,7 +125,7 @@ pub trait Bus {
     fn now(&self) -> Instant {
         Instant::now()
     }
-    /// `org.freedesktop.NetworkManager.GetDevices` (quick Wi-Fi spec § 5): the devices' paths.
+    /// `org.freedesktop.NetworkManager.GetDevices`: the devices' paths.
     fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>>;
     /// `org.freedesktop.NetworkManager.Settings.ListConnections`: the saved connections' paths.
     fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>>;
@@ -181,7 +181,7 @@ pub enum Domain {
     Bluetooth,
     Battery,
     Power,
-    /// systemd's failed-units count (diagnostics spec § 6).
+    /// systemd's failed-units count.
     Units,
 }
 
@@ -200,7 +200,7 @@ pub struct SystemState {
     /// systemd1, or its read failed. When it was last read is not here: it would make every read
     /// differ and the bar redraw (`Msg::UnitsRead` says it).
     pub units: Option<u32>,
-    /// The quick panel's Wi-Fi, only while it is open (quick Wi-Fi spec § 5); None otherwise.
+    /// The quick panel's Wi-Fi, only while it is open; None otherwise.
     pub wifi: Option<WifiState>,
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
     /// earlier open.
@@ -210,8 +210,7 @@ pub struct SystemState {
     pub bt: Option<BtView>,
     /// The open `bt` was read for (`BtTap::snapshot`), as `wifi_open`.
     pub bt_open: u64,
-    /// The quick panel's VPN profiles and active VPN connections, only while it is open (quick VPN
-    /// spec § 5); None otherwise.
+    /// The quick panel's VPN profiles and active VPN connections, only while it is open; None otherwise.
     pub vpn: Option<VpnState>,
     /// The open `vpn` was read for (`VpnTap::snapshot`), as `wifi_open`.
     pub vpn_open: u64,
@@ -228,7 +227,7 @@ fn wanted(domains: &[Domain]) -> bool {
 /// again with a growing delay if lost or if a domain's read fails. A
 /// domain's own outage shows "–" for it alone, the others keep their last
 /// value during the delay; the bus itself going away blanks
-/// all three. `wifi`, `bt`, `vpn`: the quick panel's taps (quick Wi-Fi spec § 5), polled beside the
+/// all three. `wifi`, `bt`, `vpn`: the quick panel's taps, polled beside the
 /// bus; None: a tap nothing ever sets. `units`: the loop's word to read the failed-units count
 /// now, `opts` how that count is followed, `units_read` called after each successful read of it.
 #[allow(clippy::too_many_arguments)]

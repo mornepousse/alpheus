@@ -31,9 +31,9 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
 /// BlueZ: the properties the bar reads, by interface.
 const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
-// `Name` stays out of this live allowlist, narrower than the `Device1{Connected, Alias, Name}` the
-// spec names. `bluez::read` does fall back to it, but only once Alias is absent — rare for anything
-// that ever got paired — while BlueZ keeps correcting a scanned device's advertised Name as it
+// `Name` stays out of this live allowlist, narrower than the `Device1{Connected, Alias, Name}`
+// that `bluez::read` reads. `bluez::read` does fall back to it, but only once Alias is absent —
+// rare for anything that ever got paired — while BlueZ keeps correcting a scanned device's advertised Name as it
 // collects more of it, right alongside RSSI/UUIDs; keeping it in would defeat the scan-storm test
 // below (a batch carrying Name, even with nothing else relevant, would re-read on every such
 // correction). Nothing is lost: a device with no alias of its own has BlueZ mirror its Name into
@@ -96,7 +96,7 @@ fn upower_device_ignored(path: &str) -> bool {
 }
 
 impl Signal {
-    /// The loop's word through the `WifiTap` (quick Wi-Fi spec § 5): made by `next_signal`, never
+    /// The loop's word through the `WifiTap`: made by `next_signal`, never
     /// received: every D-Bus signal carries a path and a member, this one neither.
     pub fn poke() -> Signal {
         Signal { path: String::new(), interface: String::new(), member: String::new(), arg0: None, names: Vec::new() }
@@ -106,7 +106,7 @@ impl Signal {
         self.path.is_empty() && self.member.is_empty()
     }
 
-    /// A Wi-Fi detail signal (quick Wi-Fi spec § 5), heard only while its rules are on: an access
+    /// A Wi-Fi detail signal, heard only while its rules are on: an access
     /// point's properties the panel shows, the device's list, the saved connections. None: not one.
     pub fn wifi_change(&self) -> Option<wifi::WifiChange> {
         const AP_PROPS: [&str; 5] = ["Ssid", "Strength", "Flags", "WpaFlags", "RsnFlags"];

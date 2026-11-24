@@ -18,7 +18,7 @@
 //!
 //! The one thing read here is the flag itself, by `read_flag`, which tests whether the file exists.
 //!
-//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§§ 3, 7, 8, 9), docs/features/shield.md, and
+//! See: docs/features/shield.md and
 //! docs/decisions.md ("An unknown Shield state is never read as off", "A Shield switch succeeds
 //! when the flag reaches its target", "A running Shield command is never killed at its deadline",
 //! "A Shield verb for the state already held runs nothing").
@@ -121,7 +121,7 @@ pub enum Finish {
     ListFailed(Reason),
 }
 
-/// The notices' kinds (shield spec § 8).
+/// The notices' kinds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoticeKind {
     On,
@@ -147,9 +147,9 @@ pub fn notice(kind: &NoticeKind, config: &ShieldConfig) -> (String, String) {
     (summary.into(), body.into())
 }
 
-/// What `alpheus-launch --shield status` prints (shield spec § 9).
+/// What `alpheus-launch --shield status` prints.
 ///
-/// The devices are listed only while the mode is on (shield spec § 9: `status` reads the list only
+/// The devices are listed only while the mode is on (`status` reads the list only
 /// while on, and when `blocked` is set).
 pub fn status_text(state: Option<bool>, listing: Option<Result<&Parsed, Reason>>) -> String {
     let head = match state {
@@ -195,7 +195,7 @@ pub struct VerbCtx {
     pub can_allow: bool,
 }
 
-/// What the daemon does for a verb (shield spec § 9), decided without side effects.
+/// What the daemon does for a verb, decided without side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerbPlan {
     /// Answer at once.
@@ -208,7 +208,7 @@ pub enum VerbPlan {
     AllowRead,
 }
 
-/// The picker's prompt (shield spec § 9).
+/// The picker's prompt.
 pub const PICKER_PROMPT: &str = "Allow a blocked USB device";
 /// The words of a refusal (`shield: not started (<why>)` in the log, the client's error line): one
 /// wording per condition, whoever asked (a verb, the panel, the picker).

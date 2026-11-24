@@ -1,4 +1,4 @@
-//! Bluetooth's acting connection (quick settings Bluetooth spec § 5): the only place alpheus
+//! Bluetooth's acting connection: the only place alpheus
 //! changes anything on BlueZ. Its own private connection to the system bus: reads never block, the
 //! connect and the writes do, as the tray's session connection does; opened only while the panel's
 //! Bluetooth detail is open or a call is in flight. Every call is a typed `ActCall`, built in ONE
@@ -40,7 +40,7 @@ const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
 const LOCAL: &str = "org.freedesktop.DBus.Local";
 /// Where `AgentManager1` lives.
 const AGENT_MANAGER_PATH: &str = "/org/bluez";
-/// The one object this connection serves (spec § 3), to BlueZ's unique name only.
+/// The one object this connection serves, to BlueZ's unique name only.
 pub const AGENT_PATH: &str = "/org/alpheus/bluetooth/agent";
 /// The agent's IO capability: it shows a code and confirms one, never types one in.
 pub const CAPABILITY: &str = "KeyboardDisplay";
@@ -62,7 +62,7 @@ const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 /// asking BlueZ's owner again (`recheck`).
 const NO_REPLY: &str = "org.freedesktop.DBus.Error.NoReply";
 
-/// Every method this connection may call, exhaustively (spec § 5; pinned by tests/guardrails.rs).
+/// Every method this connection may call, exhaustively (pinned by tests/guardrails.rs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActMethod {
     GetNameOwner,
@@ -388,7 +388,7 @@ fn take(held: &mut VecDeque<(AgentId, Message)>, id: AgentId) -> Option<Message>
 
 /// A `NoReply` once the owner was asked again (`answer`: the owner's unique name, None when
 /// `org.bluez` has none): BlueZ still there under the same name, a remote error that shows
-/// `failed`; gone or replaced, the action ends silently (spec § 6).
+/// `failed`; gone or replaced, the action ends silently.
 fn rechecked(known: Option<&str>, answer: Option<&str>) -> ActError {
     match (known, answer) {
         (Some(k), Some(a)) if k == a => ActError::Remote(NO_REPLY.into()),
@@ -858,7 +858,7 @@ mod tests {
         }
     }
 
-    /// Spec § 6: a `NoReply` is a remote error only while the same unique name still
+    /// A `NoReply` is a remote error only while the same unique name still
     /// owns `org.bluez`; gone or replaced, the action ends silently.
     #[test]
     fn a_no_reply_is_gone_unless_the_same_owner_is_still_there() {

@@ -16,7 +16,7 @@
 //!   a device or profile name is cleaned and cut first (`clean_value`);
 //! - panic: no unwrap, expect or panic macro in its production code (a guardrail checks).
 //!
-//! See: docs/specs/2026-11-15-alpheus-hooks-design.md (§§ 2, 4, 5), docs/features/hooks.md, and
+//! See: docs/features/hooks.md and
 //! docs/decisions.md ("A hook fires on a change, never for the state at start", "A hook's data
 //! reaches it through the environment, never the arguments", "Each hook has a token bucket",
 //! "A source that is down is not a state").
@@ -237,7 +237,8 @@ fn six_hex_pairs(s: &str, sep: char) -> bool {
 }
 
 /// Whether `s` is a Bluetooth address (six hex pairs joined by `:` or by `-`). An address is never
-/// handed to a hook: the spec's list of what a hook gets (§ 5) holds no address, and a device with
+/// handed to a hook: what a hook gets holds no address (docs/decisions.md, "A hook's data reaches it through the
+/// environment, never the arguments"), and a device with
 /// no name of its own is shown by its address.
 fn address_like(s: &str) -> bool {
     six_hex_pairs(s, ':') || six_hex_pairs(s, '-')
@@ -312,7 +313,7 @@ impl Event {
     }
 
     /// The variables the hook is given: `ALPHEUS_EVENT` first, then the event's own (the order of
-    /// the spec's § 2 table).
+    /// the variables table in docs/features/hooks.md).
     pub fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![("ALPHEUS_EVENT", self.id().key().to_string())];
         match self {
@@ -597,8 +598,8 @@ impl Hooks {
 
     /// The indicators against the last ones (all off at start), microphone, camera, screen. While
     /// the sound source is down the microphone, the camera and the screen are kept, while the
-    /// compositor is down the screen: a source down is not a state (spec § 2), and they are compared
-    /// again once it is back.
+    /// compositor is down the screen: a source down is not a state (docs/decisions.md,
+    /// "A source that is down is not a state"), and they are compared again once it is back.
     pub fn on_capture(&mut self, c: &Capture) -> Vec<Event> {
         if !self.wants(HookId::Privacy) {
             return Vec::new();

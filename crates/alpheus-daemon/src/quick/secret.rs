@@ -17,10 +17,9 @@
 //!
 //! What is not covered: the buffer is not locked in memory, the key event that carried each typed
 //! character comes from SCTK (the Wayland toolkit) as a heap string that is not wiped, and the
-//! `Key::Char` that hands each character to the panel sits on the stack, not wiped either (quick Wi-Fi
-//! spec § 3).
+//! `Key::Char` that hands each character to the panel sits on the stack, not wiped either.
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-wifi-design.md (§ 3), docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/decisions.md ("The Wi-Fi password lives in one boxed buffer that is wiped").
 
 use std::sync::atomic::{Ordering, compiler_fence};

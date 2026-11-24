@@ -2,15 +2,14 @@
 //! command prints.
 //!
 //! Bytes go in and devices come out, so nothing here starts anything or reads a file. A device's
-//! name comes from a USB descriptor, so it is hostile text: it is read at token level (shield spec
-//! § 6), cleaned, cut to a length and never logged.
+//! name comes from a USB descriptor, so it is hostile text: it is read at token level, cleaned, cut to a length and never logged.
 //!
 //! Never:
 //! - start a thread or a command, or read a file (`run.rs` runs the command and hands the bytes);
 //! - write a log line, or panic: guardrail tests (`the_shield_logs_name_nothing`,
 //!   `the_shield_files_have_no_panicking_path`) read this file's code.
 //!
-//! See: docs/specs/2026-11-21-alpheus-shield-design.md (§ 6), docs/features/shield.md, and
+//! See: docs/features/shield.md and
 //! docs/decisions.md ("The picker line starts with the checked vendor and product ids").
 
 /// At most this many devices are kept.
@@ -132,7 +131,7 @@ fn name_value(tokens: &[Token]) -> &str {
 /// One line of the listing as a device, or None when it is not a `<id>: block id <vid:pid> …` line.
 fn parse_line(line: &str) -> Option<UsbDevice> {
     let (id, rest) = line.trim_start().split_once(": ")?;
-    // The id is 1 to 10 digits that fit a `u32` (shield spec § 6).
+    // The id is 1 to 10 digits that fit a `u32`.
     if id.is_empty() || id.len() > 10 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -152,7 +151,7 @@ fn parse_line(line: &str) -> Option<UsbDevice> {
 
 /// `allow` with its `{id}` element replaced by the decimal id; None when `allow` is empty. Only a
 /// whole element equal to `{id}` is replaced: the id comes from a parsed line and goes into one
-/// argument, never into a larger one (shield spec § 2: `{id}` is one whole element).
+/// argument, never into a larger one (`{id}` is one whole element).
 pub fn allow_argv(allow: &[String], id: u32) -> Option<Vec<String>> {
     if allow.is_empty() {
         return None;

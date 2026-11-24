@@ -25,8 +25,7 @@
 //!   the only thing formatted for a log with `Debug` is an `io::ErrorKind`;
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`).
 //!
-//! See: docs/specs/2026-10-20-alpheus-quick-settings-bluetooth-design.md,
-//! docs/features/quick-settings.md, and docs/decisions.md ("The Bluetooth acting connection opens
+//! See: docs/features/quick-settings.md and docs/decisions.md ("The Bluetooth acting connection opens
 //! with one blocking connect and asks for BlueZ's owner itself", "Bluetooth deadlines live in the
 //! panel, and a late answer is forgotten").
 
@@ -42,10 +41,10 @@ use smithay_client_toolkit::reexports::calloop::{Interest, Mode as Trigger, Post
 use std::time::Instant;
 
 /// The error a call is answered with when no acting connection could be opened: the action shows
-/// `failed` (spec § 6).
+/// `failed`.
 pub(crate) const NO_SERVER: &str = "org.freedesktop.DBus.Error.NoServer";
 
-/// Whether the acting connection is wanted (spec § 5): a panel, and its detail open, an action or a
+/// Whether the acting connection is wanted: a panel, and its detail open, an action or a
 /// code running, or a call still in flight (kept for its reply). Never without a panel: closing it
 /// sent its leaving orders first.
 pub(crate) fn connection_wanted(q: Option<&Quick>, in_flight: usize) -> bool {

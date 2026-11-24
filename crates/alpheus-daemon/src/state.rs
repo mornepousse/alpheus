@@ -49,30 +49,30 @@ pub enum Msg {
     Network(Option<NetState>),
     Bluetooth(Option<BtState>),
     Battery(Option<PowerState>),
-    /// power-profiles-daemon (quick spec § 5); None: the system bus is down.
+    /// power-profiles-daemon; None: the system bus is down.
     Profile(Option<ProfileState>),
-    /// The quick panel's Wi-Fi (quick Wi-Fi spec § 5), only while the panel is open: moved into it
+    /// The quick panel's Wi-Fi, only while the panel is open: moved into it
     /// (`quick_take`), never kept by the bar. `state` None: the panel closed, or the system bus is
     /// down. `open`: the panel's open it was read for (`WifiTap::snapshot`); None, the bus down: any.
     Wifi {
         open: Option<u64>,
         state: Option<WifiState>,
     },
-    /// The quick panel's Bluetooth (quick settings Bluetooth spec), only while it is open: the panel's
+    /// The quick panel's Bluetooth, only while it is open: the panel's
     /// (`quick/app.rs` takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
         open: Option<u64>,
         state: Option<BtView>,
     },
-    /// The quick panel's VPN profiles and active VPN connections (quick VPN spec § 5), only while
+    /// The quick panel's VPN profiles and active VPN connections, only while
     /// it is open: the panel's, never kept by the bar. `state` None: the panel closed or the system
     /// bus down. `open`: as `Wifi`'s (`VpnTap::snapshot`).
     Vpn {
         open: Option<u64>,
         state: Option<VpnState>,
     },
-    /// systemd's count of failed units on the system bus (diagnostics spec § 6); None: not read,
+    /// systemd's count of failed units on the system bus; None: not read,
     /// nobody owns systemd1, its read failed, or the system bus is down.
     Units(Option<u32>),
     /// The failed-units count was just read, whatever it said (sent outside the published state: a
@@ -85,12 +85,12 @@ pub enum Msg {
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring.
     Tray(Vec<TrayIcon>),
-    /// What the media module shows; None: no player, or every player stopped (media spec § 1).
+    /// What the media module shows; None: no player, or every player stopped.
     Media(Option<MediaView>),
-    /// What the bell shows (notifications spec § 4): the unread count, do-not-disturb, whether the
+    /// What the bell shows: the unread count, do-not-disturb, whether the
     /// name is ours. Sent by the wiring from the first word of the server on.
     Notifications(NotifyView),
-    /// What the timer's chip shows (timer spec § 2); None: hidden.
+    /// What the timer's chip shows; None: hidden.
     Timer(Option<TimerChip>),
 }
 
@@ -116,15 +116,15 @@ pub struct Bar {
     pub notifications: Option<NotifyView>,
     /// The timer's chip; None until the wiring sends one (and when `[timer] idle = "hidden"` at rest).
     pub timer: Option<TimerChip>,
-    /// The privacy indicators (privacy spec §§ 3 and 4), fed by `privacy_at`; empty without the module.
+    /// The privacy indicators fed by `privacy_at`; empty without the module.
     pub privacy: Privacy,
-    /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
+    /// How much of each module takes its hue: the theme's setting, written by the wiring
     /// at start and on every theme reload. `None` until then: no module takes its hue.
     pub module_colors: ModuleColors,
-    /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
+    /// The bar's shape: its block spacing here, its pixels in the painter. Written
     /// by the wiring like `module_colors`; `Flat` until then.
     pub style: BarStyle,
-    /// Shield mode's view (shield spec); None without `[shield]`. Set by `ShieldApp`, never by a message.
+    /// Shield mode's view; None without `[shield]`. Set by `ShieldApp`, never by a message.
     pub shield: Option<crate::shield::ShieldView>,
 }
 
@@ -209,9 +209,8 @@ impl Bar {
         }
     }
 
-    /// Feeds the privacy indicators from a sound or compositor message, at `now` (privacy spec
-    /// §§ 3 and 4); called before `apply`. True when what they show changed. Nothing is read or
-    /// kept without the `privacy` module. A compositor that is down counts as not casting.
+    /// Feeds the privacy indicators from a sound or compositor message, at `now`; called before `apply`. True when what they show changed. Nothing is
+    /// read or kept without the `privacy` module. A compositor that is down counts as not casting.
     pub fn privacy_at(&mut self, m: &Msg, now: Instant) -> bool {
         if !self.config.modules.contains(&ModuleId::Privacy) {
             return false;
@@ -261,7 +260,7 @@ impl Bar {
             }
             // The open quick panel's (`quick/app.rs` takes it first): never kept, no bar redraw.
             Msg::Wifi { .. } | Msg::Bt { .. } | Msg::Vpn { .. } => false,
-            // A count going unknown keeps the last known one (spec § 6): a transient outage neither
+            // A count going unknown keeps the last known one: a transient outage neither
             // hides the module nor re-arms the notice.
             Msg::Units(n) => n.is_some() && set_if_changed(&mut self.failed.system, n),
             Msg::UnitsRead => false,
@@ -282,7 +281,7 @@ mod tests {
     use crate::system::*;
     use alpheus_common::backends::Volume;
 
-    /// Diagnostics spec § 6: the system manager's count is kept (and says when it changed); the word that it
+    /// The system manager's count is kept (and says when it changed); the word that it
     /// was read again is no state and no redraw.
     #[test]
     fn the_failed_count_is_kept_and_its_read_word_changes_nothing() {
@@ -308,7 +307,7 @@ mod tests {
 
     const H: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
-    /// Quick spec § 5: the list belongs to the open panel (`quick_take` moves it there first); the bar
+    /// The list belongs to the open panel (`quick_take` moves it there first); the bar
     /// never keeps one, whatever reaches it.
     #[test]
     fn the_bar_never_keeps_a_sink_list() {
@@ -319,7 +318,7 @@ mod tests {
         assert!(matches!(&b.sound, Feed::Ready(s) if s.sinks.is_none()), "{:?}", b.sound);
     }
 
-    // ---- privacy (privacy spec §§ 3, 4 and 7) ----
+    // ---- privacy ----
 
     fn holding_the_mic() -> SoundState {
         let mic = crate::privacy::Indicator { names: vec!["firefox".into()], unnamed: false };
@@ -435,7 +434,7 @@ mod tests {
         assert_eq!(b.battery, Feed::Down);
     }
 
-    /// Quick spec § 5: the profile is kept for the panel; nothing in the bar draws it.
+    /// The profile is kept for the panel; nothing in the bar draws it.
     #[test]
     fn a_profile_change_is_kept_and_redraws_no_bar() {
         let mut b = Bar::new(BarConfig::default());
@@ -446,7 +445,7 @@ mod tests {
         assert_eq!(b.profile, Feed::Down);
     }
 
-    /// Quick Wi-Fi spec § 5: the Wi-Fi state is the open panel's (quick_take moves it there first);
+    /// The Wi-Fi state is the open panel's (quick_take moves it there first);
     /// the bar keeps nothing and redraws nothing for it.
     #[test]
     fn a_wifi_state_is_never_kept_nor_drawn_by_the_bar() {
@@ -455,7 +454,7 @@ mod tests {
         assert!(!b.apply(Msg::Wifi { open: None, state: None }));
     }
 
-    /// Quick settings Bluetooth spec: the Bluetooth view is the open panel's, as the Wi-Fi state is.
+    /// The Bluetooth view is the open panel's, as the Wi-Fi state is.
     #[test]
     fn a_bt_view_is_never_kept_nor_drawn_by_the_bar() {
         let mut b = Bar::new(BarConfig::default());

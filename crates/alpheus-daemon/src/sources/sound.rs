@@ -50,8 +50,7 @@ pub fn session(exec: &dyn Executor, scope: Scope, tap: &SoundTap, publish: &mut 
 
 /// Starts the sound source in its thread (`sound`), for the whole session. `scope`: what is read
 /// of it when the quick panel is closed (the OSD's needs, or the bar's alone), so a change nobody
-/// draws publishes nothing; `tap`: shared with the loop, which opens and closes the panel's scope
-/// (quick spec § 5).
+/// draws publishes nothing; `tap`: shared with the loop, which opens and closes the panel's scope.
 pub fn start(exec: Arc<dyn Executor>, scope: Scope, tap: Arc<SoundTap>, send: impl Fn(Option<SoundState>) -> bool + Send + 'static) {
     if let Err(e) = spawn_source("sound", move |p| session(exec.as_ref(), scope, &tap, p), send) {
         log(&format!("sound thread: {word}", word = crate::log::error_word(&e)));

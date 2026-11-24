@@ -52,7 +52,7 @@ impl CompositorName for Compositor {
     }
 }
 
-/// The socket a Mango session opens: `$MANGO_INSTANCE_SIGNATURE` read again (spec § 2, the path
+/// The socket a Mango session opens: `$MANGO_INSTANCE_SIGNATURE` read again (the path
 /// embeds Mango's pid), or the detected path if the variable is gone or unusable.
 fn mango_path(var: impl Fn(&str) -> Option<OsString>, detected: &Path) -> PathBuf {
     mango_socket(var).unwrap_or_else(|| detected.to_path_buf())

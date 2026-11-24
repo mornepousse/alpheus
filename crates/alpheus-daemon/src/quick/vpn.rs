@@ -26,7 +26,7 @@
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
 //! - read a clock: the caller passes `now` (no guardrail checks it).
 //!
-//! See: docs/specs/2026-11-15-alpheus-quick-vpn-design.md, docs/features/quick-settings.md, and
+//! See: docs/features/quick-settings.md and
 //! docs/decisions.md ("alpheus never handles a VPN secret", "Space on the VPN row takes the active
 //! profile down, else brings the last used one up", "A VPN attempt lives in the panel only, and
 //! taking a profile down is no attempt", "Several active connections for one VPN profile count by
@@ -556,7 +556,7 @@ impl Vpn {
     }
 }
 
-/// "● ⛨ VPN-Test-1  …" (quick VPN spec): ● on an activated profile in the accent, the glyph of its
+/// "● ⛨ VPN-Test-1  …": ● on an activated profile in the accent, the glyph of its
 /// kind and its name cut to fit, then the tag. The tag column is the widest tag's, `failed`, ending
 /// one cell before the row's end whatever the name; the name keeps one blank cell before it.
 fn profile_row(g: &mut Grid, p: &Listed, tag: &str, tag_style: Style, selected: bool) {

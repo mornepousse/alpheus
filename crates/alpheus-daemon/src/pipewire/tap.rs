@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// What the sound thread shares with the loop (quick spec § 5): its pw-dump model, so an opening
+/// What the sound thread shares with the loop: its pw-dump model, so an opening
 /// quick panel reads the sinks at once (pw-dump is silent at rest), and whether that panel is open,
 /// so the thread publishes the sink list (`Scope::Panel`) only then. Locked once per pw-dump batch
 /// and once per open or close; a poisoned lock is taken over, never a panic.

@@ -23,7 +23,7 @@
 //! - panic (guardrail `the_quick_panel_has_no_panicking_path`);
 //! - read a clock: the caller passes `now` (no guardrail checks it).
 //!
-//! See: docs/specs/2026-10-11-alpheus-quick-settings-wifi-design.md, docs/features/quick-settings.md,
+//! See: docs/features/quick-settings.md,
 //! and docs/decisions.md ("A Wi-Fi attempt on a new network outlives the quick panel", "The Wi-Fi
 //! password lives in one boxed buffer that is wiped", "An SSID that nmcli would misread is never
 //! passed to it", "A failed Wi-Fi attempt deletes its new profile only when sure", "A row under
@@ -44,7 +44,7 @@ use std::cmp::Reverse;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-/// The most networks the detail lists (quick Wi-Fi spec § 2).
+/// The most networks the detail lists.
 pub const NETWORKS_MAX: usize = 32;
 /// NMDeviceState 100: the device is activated (connected).
 pub const ACTIVATED: u32 = 100;
@@ -67,7 +67,7 @@ pub const HIDDEN: &str = "hidden";
 pub const ACTIVATING: RangeInclusive<u32> = 40..=90;
 /// NMDeviceState 120: the activation failed.
 pub const FAILED: u32 = 120;
-/// No word from NetworkManager this long after Enter: failed (quick Wi-Fi spec § 2).
+/// No word from NetworkManager this long after Enter: failed.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// An attempt still activating on its network at `CONNECT_TIMEOUT` waits up to this long from its
 /// start, because a slow activation may outlast NetworkManager's default 45 s DHCP timeout (commit
@@ -158,7 +158,7 @@ fn run_more(config: &QuickConfig) -> QuickAction {
     crate::quick::run_and_close(more(config), "wifi more")
 }
 
-/// What Enter does on a network (quick Wi-Fi spec § 2).
+/// What Enter does on a network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     /// The one the device is on: disconnect, by its active connection's uuid (None: not known).
@@ -197,7 +197,7 @@ pub enum Pick {
     More,
 }
 
-/// The password field, under the network `ap` (quick Wi-Fi spec § 3).
+/// The password field, under the network `ap`.
 ///
 /// Its `Debug` is derived, which is safe: `Secret` has its own `Debug` that shows no byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,7 +212,7 @@ pub struct Field {
     pub missing: Option<Instant>,
 }
 
-/// A connection under way (quick Wi-Fi spec § 2), followed by the panel (`Wifi`) or, once the panel
+/// A connection under way, followed by the panel (`Wifi`) or, once the panel
 /// closed, by `WifiFollow` in `app.rs`: it needs nothing of the panel, only the states read and the
 /// clock. See docs/decisions.md, "A Wi-Fi attempt on a new network outlives the quick panel".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,7 +445,7 @@ impl Wifi {
         }
     }
 
-    /// The row's value: the connected SSID, "on" or "off" (quick Wi-Fi spec § 1).
+    /// The row's value: the connected SSID, "on" or "off".
     pub fn value(&self) -> String {
         // The radio off comes first, as in `glyph`.
         match self.connected() {
@@ -456,7 +456,7 @@ impl Wifi {
         }
     }
 
-    /// The detail's networks (quick Wi-Fi spec § 2): one per SSID, at its strongest access point;
+    /// The detail's networks: one per SSID, at its strongest access point;
     /// the connected network is included even when the list misses it, and so is the open field's
     /// for `FIELD_KEPT` once the list misses it; hidden ones are left out. The order is the
     /// connected one, then the saved ones by signal, then the others by signal (then by label), cut
@@ -849,7 +849,7 @@ impl Wifi {
         }
     }
 
-    /// Enter on `n` (quick Wi-Fi spec § 2): the exact nmcli command for its kind, the attempt it
+    /// Enter on `n`: the exact nmcli command for its kind, the attempt it
     /// starts followed; the password field for a new secured one; `More…` chosen for one the panel
     /// does not handle. One attempt at a time: only `More…` goes on meanwhile.
     // one row per kind of network: each case reads on its own.
@@ -955,7 +955,7 @@ impl Wifi {
     }
 }
 
-/// "● HomeNet-5G  ▂▄▆█ 🔒 saved" (quick Wi-Fi spec § 2): ● on the connected one in the accent,
+/// "● HomeNet-5G  ▂▄▆█ 🔒 saved": ● on the connected one in the accent,
 /// the SSID cut to fit, then the signal, the lock for a secured one, and the tag. The signal and
 /// the lock sit in one column on every row: the tag's room is the widest tag's, one cell from the
 /// end. Selected: the band across the whole row.
@@ -980,7 +980,7 @@ fn network_row(g: &mut Grid, n: &Network, tag: &str, tag_style: Style, selected:
     }
 }
 
-/// "   Password  ••••••••" (quick Wi-Fi spec § 3): one dot per character, the end kept when longer
+/// "   Password  ••••••••": one dot per character, the end kept when longer
 /// than the row; `too long` in warn after a character that did not fit. Never a byte of the secret.
 fn password_row(g: &mut Grid, f: &Field, selected: bool) {
     let end = g.width();

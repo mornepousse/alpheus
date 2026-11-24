@@ -16,10 +16,8 @@
 //! - run anything but the entry's own `[quick]` command (a guardrail checks);
 //! - leave the timer armed once the menu is gone.
 //!
-//! See: docs/specs/2026-10-13-alpheus-power-menu-design.md (§ 2, § 3, § 4),
-//! docs/specs/2026-11-21-alpheus-tools-menu-design.md (§ 7, the verb), docs/features/power.md, and
-//! docs/decisions.md ("The power menu has its own timer", "`alpheus-launch --power` opens the menu
-//! without a grab").
+//! See: docs/features/power.md and docs/decisions.md ("The power menu has its own timer",
+//! "`alpheus-launch --power` opens the menu without a grab").
 
 use crate::actions::Button;
 use crate::keys::Key;

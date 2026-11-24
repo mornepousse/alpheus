@@ -22,7 +22,7 @@
 //! A guardrail counts the calls this file builds and looks for the word `method_call` in it, so no
 //! function here is named with it.
 //!
-//! See: docs/specs/2026-11-21-alpheus-diagnostics-design.md (§ 6), docs/features/failed.md, and
+//! See: docs/features/failed.md and
 //! docs/decisions.md ("The failed-units count is asked for one property, never the whole
 //! interface", "A source that is down is not a state").
 

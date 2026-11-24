@@ -1,4 +1,4 @@
-//! BlueZ's Bluetooth for the quick panel (quick settings Bluetooth spec), read only and only while the
+//! BlueZ's Bluetooth for the quick panel, read only and only while the
 //! panel is open: the first adapter (`BtScope::Row`); with the detail open, the paired devices and
 //! the ones scanning has seen nearby too (`BtScope::Detail`), followed through the bar's own BlueZ
 //! signals (`Signal::bt_change`). The loop asks through a `BtTap`; the D-Bus thread reads here,

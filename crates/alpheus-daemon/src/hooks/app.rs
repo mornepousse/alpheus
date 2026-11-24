@@ -14,7 +14,7 @@
 //!   statement of this file);
 //! - start a thread: nothing here runs off the event loop.
 //!
-//! See: docs/specs/2026-11-15-alpheus-hooks-design.md (§§ 3, 5), docs/features/hooks.md, and
+//! See: docs/features/hooks.md and
 //! docs/decisions.md ("A hook runs in its own systemd scope", "A hook's data reaches it through the
 //! environment, never the arguments").
 
