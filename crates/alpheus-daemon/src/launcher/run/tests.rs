@@ -608,7 +608,10 @@ fn perform_runs_through_the_scope_and_records() {
     assert_eq!(ids, ["tool:user:Nix/Update", "tool:user:Nix/Gen/50%", "tool:user:/Hold"], "no dynamic line, no typed text");
     // A built-in is recorded and handed back for the glue.
     let notes = BUILTINS.iter().position(|b| b.id == "notes").unwrap();
-    assert_eq!(perform(&mut l, Activation::Tool(ToolAction::Builtin(notes)), &c), Ok(Done::Builtin(notes)));
+    assert_eq!(
+        perform(&mut l, Activation::Tool(ToolAction::Builtin { index: notes, choice: None, text: None }), &c),
+        Ok(Done::Builtin(notes))
+    );
     assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:notes"));
     assert!(std::fs::read_to_string(&h).unwrap().contains("tool:builtin:notes"), "saved");
     assert_eq!(f.calls().len(), 4, "a built-in runs nothing here");
@@ -701,4 +704,24 @@ fn text_is_never_recorded_in_history_nor_shown_by_debug() {
     // Neither Debug output (a panic message, an assertion) shows it.
     let a = ToolAction::User { entry: 0, choice: None, text: Some("secret-target.example".into()) };
     assert!(!format!("{a:?}").contains("secret-target"));
+}
+
+#[test]
+fn a_built_ins_choice_is_recorded_under_its_key_and_its_text_never() {
+    let d = TempDir::new("run-builtin-choice");
+    let h = d.join("launcher-history");
+    let f = FakeExecutor::new();
+    let mut l = tools_launcher("");
+    let scan = BUILTINS.iter().position(|b| b.id == "diag.scan").unwrap();
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &[]);
+    let a = Activation::Tool(ToolAction::Builtin {
+        index: scan,
+        choice: Some("Full scan (all ports)".into()),
+        text: Some("secret-host.example".into()),
+    });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::Builtin(scan)));
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:builtin:diag.scan/Full scan (all ports)"]);
+    assert!(!std::fs::read_to_string(&h).unwrap().contains("secret-host"));
+    assert!(f.calls().is_empty(), "perform runs nothing for a built-in: the glue replays it");
 }

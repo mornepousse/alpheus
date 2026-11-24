@@ -26,7 +26,7 @@ pub const CHOICE_PLACEHOLDER: &str = "{choice}";
 /// The one element of `run` replaced by the typed text (`ask`), whole: never part of an argument.
 pub const TEXT_PLACEHOLDER: &str = "{text}";
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
-pub const BUILTIN_CATEGORIES: [&str; 4] = ["Quick settings", "Control center", "Utilities", "Session"];
+pub const BUILTIN_CATEGORIES: [&str; 5] = ["Quick settings", "Control center", "Utilities", "Session", "Diagnostics"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,6 +39,8 @@ pub struct ToolsConfig {
     pub root: Vec<String>,
     /// The "Reload the bar" built-in's argv; empty hides it.
     pub reload: Vec<String>,
+    /// The commands of the built-ins that run one (`[tools.builtin]`).
+    pub builtin: BuiltinCommands,
     #[serde(rename = "category")]
     pub categories: Vec<CategoryConfig>,
     #[serde(rename = "entry")]
@@ -47,7 +49,29 @@ pub struct ToolsConfig {
 
 impl Default for ToolsConfig {
     fn default() -> Self {
-        ToolsConfig { builtins: true, hide: Vec::new(), root: Vec::new(), reload: Vec::new(), categories: Vec::new(), entries: Vec::new() }
+        ToolsConfig {
+            builtins: true,
+            hide: Vec::new(),
+            root: Vec::new(),
+            reload: Vec::new(),
+            builtin: BuiltinCommands::default(),
+            categories: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+/// `[tools.builtin]`: the commands of built-ins that run a command of the machine's, not the daemon's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BuiltinCommands {
+    /// "Reset USB (xHCI)": run in the held terminal, so `sudo` can ask there; empty hides the entry.
+    pub usb_reset: Vec<String>,
+}
+
+impl Default for BuiltinCommands {
+    fn default() -> Self {
+        BuiltinCommands { usb_reset: ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"].map(String::from).to_vec() }
     }
 }
 
@@ -180,6 +204,10 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     if !t.reload.is_empty() {
         check_argv("tools.reload", "reload", &t.reload)
             .map_err(|_| "tools.reload: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
+    }
+    if !t.builtin.usb_reset.is_empty() {
+        check_argv("tools.builtin", "usb_reset", &t.builtin.usb_reset)
+            .map_err(|_| "tools.builtin.usb_reset: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
     }
     // Called before `bounded`: what a bound would cut is checked all the same (the sets keep it linear).
     let mut category_names = HashSet::new();

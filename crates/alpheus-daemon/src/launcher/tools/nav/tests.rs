@@ -509,7 +509,7 @@ fn enter_on_a_plain_tool_runs_it_and_a_builtin_is_handed_out() {
     let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
     l.set_tools(catalog);
     typed(&mut l, "notes");
-    let Outcome::Activate(Activation::Tool(ToolAction::Builtin(b))) = l.key(Key::Enter) else { panic!() };
+    let Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, .. })) = l.key(Key::Enter) else { panic!() };
     assert_eq!(crate::launcher::tools::catalog::BUILTINS[b].id, "notes");
 }
 
@@ -818,4 +818,132 @@ fn a_right_arrow_on_an_ask_entry_opens_its_prompt() {
     assert_eq!(l.key(Key::Right), Outcome::Redraw);
     assert_eq!(texts(&l), ["Host"]);
     assert_eq!(l.key(Key::Right), Outcome::Nothing, "→ in the prompt does nothing");
+}
+
+/// A Tools box over the built-ins only, with the diagnostics on.
+fn diag_box() -> Launcher {
+    let config = LauncherConfig::from_text("").unwrap();
+    let c = Context { nmap: true, usb_reset: true, diagnostics: true, ..Context::default() };
+    let catalog = Catalog::build(&config.tools, &c, &mut |_| {});
+    Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000)
+}
+
+fn builtin_index(id: &str) -> usize {
+    crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == id).unwrap()
+}
+
+fn into_scan_choices(l: &mut Launcher) {
+    select(l, "Diagnostics");
+    l.key(Key::Enter);
+    select(l, "Network scan");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "the scan drills into its ten scans");
+    assert_eq!(texts(l).len(), 10);
+}
+
+#[test]
+fn a_scan_asks_its_target_then_runs_with_it_whole() {
+    use crate::launcher::tools::diag::{Scan, TARGET_PROMPT};
+    let mut l = diag_box();
+    into_scan_choices(&mut l);
+    select(&mut l, Scan::Quick.label());
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    assert_eq!(texts(&l), [TARGET_PROMPT]);
+    typed(&mut l, "a b; -x");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin {
+            index: builtin_index("diag.scan"),
+            choice: Some(Scan::Quick.label().into()),
+            text: Some("a b; -x".into()),
+        }))
+    );
+    assert!(l.query.is_empty());
+}
+
+#[test]
+fn the_sweep_runs_at_once_and_a_port_scan_asks_for_the_ports_too() {
+    use crate::launcher::tools::diag::{PORTS_PROMPT, Scan};
+    let mut l = diag_box();
+    into_scan_choices(&mut l);
+    select(&mut l, Scan::HostDiscovery.label());
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin {
+            index: builtin_index("diag.scan"),
+            choice: Some(Scan::HostDiscovery.label().into()),
+            text: None,
+        })),
+        "no prompt: the subnet is the box's own"
+    );
+    let mut l = diag_box();
+    into_scan_choices(&mut l);
+    select(&mut l, Scan::Ports.label());
+    l.key(Key::Enter);
+    assert_eq!(texts(&l), [PORTS_PROMPT]);
+}
+
+#[test]
+fn a_typed_scan_target_never_shows_in_debug_output() {
+    let a = ToolAction::Builtin { index: 0, choice: Some("c".into()), text: Some("secret-host".into()) };
+    assert!(!format!("{a:?}").contains("secret-host"));
+}
+
+#[test]
+fn a_flat_search_choice_of_the_scan_asks_too() {
+    use crate::launcher::tools::diag::{Scan, TARGET_PROMPT};
+    let mut l = diag_box();
+    typed(&mut l, "Aggressive");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "the choice's prompt opens");
+    assert_eq!(texts(&l), [TARGET_PROMPT]);
+    typed(&mut l, "h");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin {
+            index: builtin_index("diag.scan"),
+            choice: Some(Scan::Aggressive.label().into()),
+            text: Some("h".into()),
+        }))
+    );
+}
+
+#[test]
+fn the_usb_reset_asks_for_a_second_enter() {
+    let mut l = diag_box();
+    select(&mut l, "Diagnostics");
+    l.key(Key::Enter);
+    select(&mut l, "Reset USB (xHCI)");
+    let t0 = Instant::now();
+    assert_eq!(key_at(&mut l, Key::Enter, t0), Outcome::Asked, "the first Enter asks");
+    let run = key_at(&mut l, Key::Enter, t0 + 500 * MS);
+    assert_eq!(
+        run,
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: builtin_index("diag.usb_reset"), choice: None, text: None }))
+    );
+}
+
+#[test]
+fn a_mod_space_hit_on_the_sweep_runs_it_and_one_on_a_scan_asks() {
+    use crate::launcher::tools::diag::{Scan, TARGET_PROMPT};
+    let config = LauncherConfig::from_text("").unwrap();
+    let c = Context { nmap: true, ..Context::default() };
+    let catalog = Catalog::build(&config.tools, &c, &mut |_| {});
+    let mut l = Launcher::for_apps(config.clone(), Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog.clone());
+    typed(&mut l, "Host discovery");
+    let out = l.key(Key::Enter);
+    assert_eq!(
+        out,
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin {
+            index: builtin_index("diag.scan"),
+            choice: Some(Scan::HostDiscovery.label().into()),
+            text: None,
+        })),
+        "no prompt for the sweep, from Mod+Space either"
+    );
+    assert_eq!(l.mode, Mode::All, "and the box did not detour through the Tools mode");
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    typed(&mut l, "Aggressive scan");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "a scan goes to the Tools mode's prompt");
+    assert_eq!(texts(&l), [TARGET_PROMPT]);
 }

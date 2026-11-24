@@ -5,6 +5,7 @@
 pub mod app;
 pub mod catalog;
 pub mod config;
+pub mod diag;
 pub mod join;
 pub mod nav;
 pub mod read;

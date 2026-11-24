@@ -168,10 +168,15 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
 fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match action {
-        ToolAction::Builtin(i) => {
-            let id = BUILTINS.get(i).ok_or_else(gone)?.id;
-            remember(l, ctx, &format!("tool:builtin:{id}"));
-            Ok(Done::Builtin(i))
+        // A built-in's fixed choice is kept as `tool:builtin:<id>/<choice>` (the catalog's own key);
+        // what was typed never is.
+        ToolAction::Builtin { index, choice, text: _ } => {
+            let id = BUILTINS.get(index).ok_or_else(gone)?.id;
+            match choice {
+                Some(c) => remember(l, ctx, &format!("tool:builtin:{id}/{c}")),
+                None => remember(l, ctx, &format!("tool:builtin:{id}")),
+            }
+            Ok(Done::Builtin(index))
         }
         ToolAction::User { entry, choice, text } => {
             let catalog = &l.tools().ok_or_else(gone)?.catalog;

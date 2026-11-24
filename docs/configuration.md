@@ -510,6 +510,12 @@ bound the first ones are kept, with one log line of counts.
 | `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
 
+`[tools.builtin]`:
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `usb_reset` | command | `["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]` | non-blank program | The "Reset USB (xHCI)" built-in's command, run in `terminal_hold` after a second Enter (so `sudo` can ask there; alpheus never runs as root); `[]` hides the entry. |
+
 `[[tools.category]]`, **at most 16**:
 
 | Key | Type | Default | Bounds | Meaning |

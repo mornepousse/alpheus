@@ -709,6 +709,33 @@ fn tools_tab_builtin_runs_open_tab_or_falls_back() {
     assert_eq!(recorded_argv(&sway, "term-rec")[0], ["alpheus", "--tab", "displays"]);
 }
 
+/// A Diagnostics preset built-in runs the launcher's terminal with `alpheus --tab diagnostics
+/// --preset <slug>`, and "USB events" the fixed script in `terminal_hold`; both through recorders,
+/// argument by argument, and the log names the built-in by id only.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_diag_preset_entry_opens_the_tab_on_it() {
+    let sway = Sway::start("tools-diag-presets", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let term = fake_argv_recorder(&sway, "term-rec");
+    let hold = fake_argv_recorder(&sway, "hold-rec");
+    let toml = format!("terminal = [\"{}\", \"-e\"]\nterminal_hold = [\"{}\", \"--hold\"]\n", term.display(), hold.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["Out of memory", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "term-rec").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "term-rec")[0], ["-e", "alpheus", "--tab", "diagnostics", "--preset", "oom"]);
+    assert!(d.wait_for("tools: built-in diag.preset.oom", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["USB events", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "hold-rec").len() == 1), "{:?}", d.log());
+    let argv = &recorded_argv(&sway, "hold-rec")[0];
+    assert_eq!(&argv[..3], ["--hold", "sh", "-c"]);
+    assert!(argv[3].contains("udevadm monitor --udev --subsystem-match=usb"), "{argv:?}");
+    assert!(d.wait_for("tools: built-in diag.usb_events", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("udevadm") && !l.contains("--preset")), "never the command: {:?}", d.log());
+}
+
 /// The Shield built-in opens the quick panel on the Shield detail when `[shield]` is configured
 /// and the `quick` module is on; without `[shield]` the row is absent (typing `Shield` and Enter
 /// runs nothing).

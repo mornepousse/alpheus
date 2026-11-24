@@ -758,7 +758,12 @@ impl Launcher {
             RowId::Category(_) | RowId::Prompt(_) => return Outcome::Nothing,
         };
         let Some(e) = t.catalog.entries.get(entry) else { return Outcome::Nothing };
-        let (confirm, with_choices) = (e.confirm || e.ask.is_some(), !matches!(e.choices, Choices::None));
+        // The fixed choice's own text, for the entries whose choices ask differently (the scan's sweep).
+        let chosen = match (&e.choices, choice) {
+            (Choices::Fixed(lines), Some(k)) => lines.get(k).map(String::as_str),
+            _ => None,
+        };
+        let (confirm, with_choices) = (e.confirm || e.ask_for(chosen).is_some(), !matches!(e.choices, Choices::None));
         if choice.is_none() && with_choices {
             let step = t.goto_choices(&self.config.tools, entry);
             self.enter_tools_mode();

@@ -15,6 +15,18 @@ fn v(s: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn the_usb_reset_command_is_configurable_and_empty_hides_it() {
+    let d = ToolsConfig::default();
+    assert_eq!(d.builtin.usb_reset, v(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]));
+    let mine = parse("[tools.builtin]\nusb_reset = [\"my-reset\", \"--now\"]\n").unwrap().tools;
+    assert_eq!(mine.builtin.usb_reset, v(&["my-reset", "--now"]));
+    assert!(parse("[tools.builtin]\nusb_reset = []\n").unwrap().tools.builtin.usb_reset.is_empty(), "[] is valid: it hides the entry");
+    let e = parse("[tools.builtin]\nusb_reset = [\" \"]\n").unwrap_err();
+    assert!(e.contains("tools.builtin.usb_reset"), "{e}");
+    assert!(parse("[tools.builtin]\nnope = 1\n").is_err(), "an unknown key is refused");
+}
+
+#[test]
 fn defaults_are_builtins_on_and_nothing_else() {
     let d = ToolsConfig::default();
     assert!(d.builtins);
@@ -205,6 +217,7 @@ fn invalid_rules_make_the_file_invalid() {
         ("[[tools.category]]\nname = \"Zeta\"\nicon = \"ab\"\n".into(), "tools.category 1", "icon must be one character"),
         ("[[tools.category]]\nname = \"Zeta\"\norder = 1001\n".into(), "tools.category 1", "order 1001 past 1000"),
         ("[tools]\nreload = [\" \"]\n".into(), "tools.reload", "empty program"),
+        ("[tools.builtin]\nusb_reset = [\" \"]\n".into(), "tools.builtin.usb_reset", "empty program"),
     ];
     for (text, at, rule) in cases {
         let e = parse(&text).unwrap_err();
@@ -212,7 +225,7 @@ fn invalid_rules_make_the_file_invalid() {
         assert!(!e.contains("Zeta"), "the message must not name the entry or category: {e}");
     }
     for (text, needle) in [
-        ("[tools]\nbuiltin = true\n", "unknown field"),
+        ("[tools]\nbuiltinz = true\n", "unknown field"),
         ("[[tools.entry]]\nname = \"Zeta\"\nrun = [\"x\"]\nicons = \"a\"\n", "unknown field"),
         ("[[tools.category]]\nname = \"Zeta\"\nrun = [\"x\"]\n", "unknown field"),
     ] {

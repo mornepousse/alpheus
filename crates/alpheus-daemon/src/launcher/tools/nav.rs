@@ -94,15 +94,26 @@ pub struct ToolRow {
 /// The text is never written to a log or to the history.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ToolAction {
-    Builtin(usize),
-    User { entry: usize, choice: Option<String>, text: Option<String> },
+    /// A built-in (an index into `BUILTINS`), with its fixed choice and typed text when it has them.
+    Builtin {
+        index: usize,
+        choice: Option<String>,
+        text: Option<String>,
+    },
+    User {
+        entry: usize,
+        choice: Option<String>,
+        text: Option<String>,
+    },
 }
 
 // By hand: the typed text never reaches a `{:?}`, a panic message or an assertion's output.
 impl std::fmt::Debug for ToolAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ToolAction::Builtin(i) => write!(f, "Builtin({i})"),
+            ToolAction::Builtin { index, choice, text } => {
+                write!(f, "Builtin {{ index: {index}, choice: {choice:?}, text: {} }}", if text.is_some() { "Some(..)" } else { "None" })
+            }
             ToolAction::User { entry, choice, text } => {
                 write!(f, "User {{ entry: {entry}, choice: {choice:?}, text: {} }}", if text.is_some() { "Some(..)" } else { "None" })
             }
@@ -255,7 +266,12 @@ impl ToolsState {
                 .entries
                 .get(entry)
                 .and_then(|e| {
-                    e.ask.as_ref().map(|label| ToolRow { id: RowId::Prompt(entry), icon: e.icon, text: label.clone(), trail: Trail::None })
+                    e.ask_for(self.asked.as_deref()).map(|label| ToolRow {
+                        id: RowId::Prompt(entry),
+                        icon: e.icon,
+                        text: label.to_string(),
+                        trail: Trail::None,
+                    })
                 })
                 .into_iter()
                 .collect(),
@@ -419,16 +435,13 @@ impl ToolsState {
                     let selected = self.through_category(e, selected);
                     return self.drill_prompt(e, None, selected);
                 }
-                let action = match entry.kind {
-                    EntryKind::Builtin(b) => ToolAction::Builtin(b),
-                    EntryKind::User(_) => ToolAction::User { entry: e, choice: None, text: None },
-                };
+                let action = self.action(e, None, None);
                 self.answer(row, entry.confirm, action, now)
             }
             RowId::Choice(e, k) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 let Some(choice) = self.choice_lines(e).get(k).cloned() else { return Step::Drill(None) };
-                if entry.ask.is_some() {
+                if entry.ask_for(Some(&choice)).is_some() {
                     // From the root's flat search the prompt goes down through the entry's
                     // choices, so Esc lands on them.
                     let selected = if matches!(self.level, Level::Root) {
@@ -440,7 +453,9 @@ impl ToolsState {
                     };
                     return self.drill_prompt(e, Some(choice), selected);
                 }
-                self.answer(row, entry.confirm, ToolAction::User { entry: e, choice: Some(choice), text: None }, now)
+                let confirm = entry.confirm;
+                let action = self.action(e, Some(choice), None);
+                self.answer(row, confirm, action, now)
             }
             // Its answer is the typed text: `submit`.
             RowId::Prompt(_) => Step::Wait,
@@ -478,7 +493,15 @@ impl ToolsState {
         if text.trim().is_empty() {
             return Some(Step::Wait);
         }
-        Some(Step::Run(ToolAction::User { entry, choice: self.asked.clone(), text: Some(text) }))
+        Some(Step::Run(self.action(entry, self.asked.clone(), Some(text))))
+    }
+
+    /// The action of catalog entry `entry`, a built-in's or a user entry's.
+    fn action(&self, entry: usize, choice: Option<String>, text: Option<String>) -> ToolAction {
+        match self.catalog.entries.get(entry).map(|e| e.kind) {
+            Some(EntryKind::Builtin(index)) => ToolAction::Builtin { index, choice, text },
+            _ => ToolAction::User { entry, choice, text },
+        }
     }
 
     fn answer(&mut self, row: RowId, confirm: bool, action: ToolAction, now: Instant) -> Step {

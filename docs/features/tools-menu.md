@@ -62,6 +62,7 @@ and `[prefixes] tools` (default `/`; `""` turns the prefix off).
 | `hide` | `[]` | Built-in ids never shown (`"tab.power"`, `"quick.shield"`, …); an unknown id is logged and ignored |
 | `root` | `[]` | Built-in ids also listed at the root, first, in this order |
 | `reload` | `[]` | The argv of "Reload the bar"; empty hides the entry |
+| `[tools.builtin] usb_reset` | `sh -c 'sudo modprobe -r xhci_pci && …'` | The argv of "Reset USB (xHCI)", run in `terminal_hold`; `[]` hides the entry |
 
 `[[tools.category]]` (at most 16) has `name`, `icon` (one character) and `order`. `[[tools.entry]]` (at
 most 128) has:

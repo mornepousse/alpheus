@@ -4,16 +4,18 @@
 //! command, no log (the notes go through a callback the glue logs).
 
 use super::config::{BUILTIN_CATEGORIES, DEFAULT_ORDER, ToolsConfig};
+use super::diag::{PORTS_PROMPT, Scan, TARGET_PROMPT};
 use crate::quick::Toggle;
+use alpheus_common::diagnostics::query::Preset;
 use alpheus_common::launcher_ipc::QuickVerb;
 
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 4] = [10, 20, 30, 90];
+const BUILTIN_ORDERS: [u16; 5] = [10, 20, 30, 90, 70];
 /// Their glyphs (Nerd Font Material Design), in the same order.
-const BUILTIN_GLYPHS: [char; 4] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}'];
+const BUILTIN_GLYPHS: [char; 5] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}', '\u{F00E4}'];
 
 /// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,14 @@ pub enum BuiltinAction {
     Power,
     Reload,
     Shield,
+    /// The network scans (`diag.rs`): a fixed choice, then the typed target.
+    Scan,
+    /// `udevadm monitor` and the kernel journal, in the held terminal.
+    UsbEvents,
+    /// `[tools.builtin] usb_reset`, in the held terminal.
+    UsbReset,
+    /// The control center's Diag tab opened on this preset.
+    Preset(Preset),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,9 +77,10 @@ const QUICK: &str = "Quick settings";
 const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
 const SESSION: &str = "Session";
+const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 23] = [
+pub const BUILTINS: [Builtin; 34] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -93,6 +104,17 @@ pub const BUILTINS: [Builtin; 23] = [
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
+    b("diag.scan", "Network scan", DIAGNOSTICS, '\u{F0437}', BuiltinAction::Scan),
+    b("diag.usb_events", "USB events", DIAGNOSTICS, '\u{F0553}', BuiltinAction::UsbEvents),
+    b("diag.usb_reset", "Reset USB (xHCI)", DIAGNOSTICS, '\u{F0709}', BuiltinAction::UsbReset),
+    b("diag.preset.errors", "Errors this boot", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ErrorsThisBoot)),
+    b("diag.preset.usb", "USB", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Usb)),
+    b("diag.preset.suspend", "Suspend and resume", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::SuspendResume)),
+    b("diag.preset.oom", "Out of memory", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::OutOfMemory)),
+    b("diag.preset.thermal", "Thermal and throttling", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Thermal)),
+    b("diag.preset.network", "NetworkManager", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::NetworkManager)),
+    b("diag.preset.live", "Live journal", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Live)),
+    b("diag.preset.service", "Logs of a service…", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ServiceLogs)),
 ];
 
 /// What decides which built-ins show: plain booleans, so the
@@ -122,6 +144,10 @@ pub struct Context {
     pub clipboard: bool,
     /// The diagnostics hook says so.
     pub diagnostics: bool,
+    /// `nmap` is on the `$PATH`.
+    pub nmap: bool,
+    /// `[tools.builtin] usb_reset` is set.
+    pub usb_reset: bool,
 }
 
 /// Whether `b` shows under `c`.
@@ -134,12 +160,15 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Toggle(Toggle::NightLight) => c.night_light,
         // Only the diagnostics tab is conditional, and it is the one with a hook.
         BuiltinAction::Tab => b.id != "tab.diagnostics" || c.diagnostics,
-        BuiltinAction::Notes | BuiltinAction::Emoji => true,
+        BuiltinAction::Notes | BuiltinAction::Emoji | BuiltinAction::UsbEvents => true,
         BuiltinAction::Timer => c.timer,
         BuiltinAction::Clipboard => c.clipboard,
         BuiltinAction::Lock => c.lock,
         BuiltinAction::Power => c.session,
         BuiltinAction::Reload => c.reload,
+        BuiltinAction::Scan => c.nmap,
+        BuiltinAction::UsbReset => c.usb_reset,
+        BuiltinAction::Preset(_) => c.diagnostics,
     }
 }
 
@@ -173,6 +202,9 @@ pub struct Entry {
     pub confirm: bool,
     /// The label of the typed text the entry asks for, after its choice if it has one.
     pub ask: Option<String>,
+    /// Fixed choices that ask differently: another label, or `None` for no prompt at all (the scan's
+    /// sweep has no target, "Specific ports" asks for ports too). Empty for a user entry.
+    pub ask_overrides: Vec<(String, Option<String>)>,
     /// Whether a state is known for it: a built-in with a daemon-side state, a user entry with `state`.
     pub has_state: bool,
     /// The history key; a fixed choice appends `/<choice>` (`Catalog::choice_key`).
@@ -208,6 +240,45 @@ pub struct Catalog {
     pub entries: Vec<Entry>,
     /// The entries `[tools] root` lists at the root, first, in that order.
     pub root: Vec<usize>,
+}
+
+impl Entry {
+    /// The prompt label for `choice` (None for an entry with no choices): none when it asks nothing.
+    pub fn ask_for(&self, choice: Option<&str>) -> Option<&str> {
+        if let Some(c) = choice
+            && let Some((_, label)) = self.ask_overrides.iter().find(|(k, _)| k == c)
+        {
+            return label.as_deref();
+        }
+        self.ask.as_deref()
+    }
+}
+
+/// The choices, confirmation and prompts a built-in entry carries beyond its row: only the
+/// diagnostics ones have any.
+fn builtin_shape(action: BuiltinAction) -> Shape {
+    let plain = Shape { choices: Choices::None, confirm: false, ask: None, ask_overrides: Vec::new() };
+    match action {
+        BuiltinAction::Scan => Shape {
+            choices: Choices::Fixed(Scan::ALL.iter().map(|s| s.label().to_string()).collect()),
+            ask: Some(TARGET_PROMPT.to_string()),
+            ask_overrides: vec![
+                (Scan::HostDiscovery.label().to_string(), None),
+                (Scan::Ports.label().to_string(), Some(PORTS_PROMPT.to_string())),
+            ],
+            ..plain
+        },
+        BuiltinAction::UsbReset => Shape { confirm: true, ..plain },
+        _ => plain,
+    }
+}
+
+/// What `builtin_shape` returns: the fields of an `Entry` a built-in sets beyond its row.
+struct Shape {
+    choices: Choices,
+    confirm: bool,
+    ask: Option<String>,
+    ask_overrides: Vec<(String, Option<String>)>,
 }
 
 fn icon_of(s: &Option<String>) -> Option<char> {
@@ -251,15 +322,17 @@ impl Catalog {
         if t.builtins {
             for (i, b) in BUILTINS.iter().enumerate() {
                 if shown(b, c) && !t.hide.iter().any(|h| h == b.id) {
+                    let Shape { choices, confirm, ask, ask_overrides } = builtin_shape(b.action);
                     entries.push(Entry {
                         kind: EntryKind::Builtin(i),
                         name: b.label.to_string(),
                         category: category_of(b.category),
                         icon: Some(b.glyph),
                         order: DEFAULT_ORDER,
-                        choices: Choices::None,
-                        confirm: false,
-                        ask: None,
+                        choices,
+                        confirm,
+                        ask,
+                        ask_overrides,
                         has_state: matches!(b.action, BuiltinAction::Dnd | BuiltinAction::Toggle(_)),
                         key: format!("tool:builtin:{}", b.id),
                     });
@@ -283,6 +356,7 @@ impl Catalog {
                 choices,
                 confirm: e.confirm,
                 ask: e.ask.clone(),
+                ask_overrides: Vec::new(),
                 has_state: !e.state.is_empty(),
                 key: format!("tool:user:{}/{}", e.category.as_deref().unwrap_or(""), e.name),
             });

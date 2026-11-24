@@ -8,13 +8,16 @@ read from their parsers.
 ```
 alpheus [--tab <name>]
 alpheus [--tab=<name>]
+alpheus --tab diagnostics --preset <slug>
 ```
 
 Opens the TUI in the current terminal, on the Home tab unless told otherwise.
 `<name>` is one of `home`, `sound`, `network`, `bluetooth`, `power`,
 `displays`, `appearance`, `diagnostics` (`theme` is accepted for `appearance`
 and `diag` for `diagnostics`; case is ignored). The tabs are also reached with
-`1` to `8` once open.
+`1` to `8` once open. `--preset <slug>` (`errors`, `usb`, `suspend`, `oom`, `thermal`, `network`,
+`live`, `service`; only with `--tab diagnostics`) opens the Diag tab on that journal view, as the
+Tools menu's Diagnostics entries do.
 
 There is no `--help`; the usage appears in the error text.
 
@@ -23,7 +26,7 @@ There is no `--help`; the usage appears in the error text.
 | 0 | ended with `q`, or stopped cleanly by SIGTERM/SIGHUP |
 | 1 | a terminal I/O error |
 | 128 + signal | a stop signal the loop did not honour within 0.3 s (e.g. a closed terminal) |
-| 2 | an unknown option, a missing `--tab` value or an unknown tab name (message on standard error) |
+| 2 | an unknown option, a missing `--tab` or `--preset` value, an unknown tab or preset name, or a preset without `--tab diagnostics` (message on standard error) |
 
 Configuration: `~/.config/alpheus/config.toml`, see the
 [configuration reference](configuration.md).

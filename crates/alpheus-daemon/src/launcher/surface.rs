@@ -729,16 +729,18 @@ impl App {
                 // A built-in that spawns has its program checked while the box is still open: a
                 // missing one is said in the box, which stays.
                 let prepared = match &a {
-                    Activation::Tool(ToolAction::Builtin(i)) => match self.tools_prepare(*i) {
-                        Ok(argv) => argv,
-                        Err(m) => {
-                            if let Some(open) = self.launcher.as_mut() {
-                                open.model.show_message(m);
+                    Activation::Tool(ToolAction::Builtin { index, choice, text }) => {
+                        match self.tools_prepare(*index, choice.as_deref(), text.as_deref()) {
+                            Ok(argv) => argv,
+                            Err(m) => {
+                                if let Some(open) = self.launcher.as_mut() {
+                                    open.model.show_message(m);
+                                }
+                                self.launcher_redraw();
+                                return;
                             }
-                            self.launcher_redraw();
-                            return;
                         }
-                    },
+                    }
                     _ => None,
                 };
                 let App { launcher, exec, .. } = self;

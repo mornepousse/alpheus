@@ -91,6 +91,25 @@ impl Preset {
         }
     }
 
+    /// The word `alpheus --preset` takes and a Tools built-in (`diag.preset.<slug>`) is named by.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Preset::ErrorsThisBoot => "errors",
+            Preset::Usb => "usb",
+            Preset::SuspendResume => "suspend",
+            Preset::OutOfMemory => "oom",
+            Preset::Thermal => "thermal",
+            Preset::NetworkManager => "network",
+            Preset::Live => "live",
+            Preset::ServiceLogs => "service",
+        }
+    }
+
+    /// The preset of `slug`, exactly as `slug` spells it.
+    pub fn from_slug(slug: &str) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| p.slug() == slug)
+    }
+
     /// Follow starts on for these two.
     pub fn follows(self) -> bool {
         matches!(self, Preset::Live | Preset::Usb)
@@ -200,6 +219,18 @@ mod tests {
 
     fn with_prefix(rest: &[&str]) -> Vec<String> {
         PREFIX.iter().chain(rest.iter()).map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn every_preset_slug_round_trips_and_is_a_word() {
+        let slugs = ["errors", "usb", "suspend", "oom", "thermal", "network", "live", "service"];
+        for (p, want) in Preset::ALL.into_iter().zip(slugs) {
+            assert_eq!(p.slug(), want);
+            assert_eq!(Preset::from_slug(want), Some(p));
+        }
+        assert_eq!(Preset::from_slug("Errors"), None, "the slug is exact");
+        assert_eq!(Preset::from_slug(""), None);
+        assert_eq!(Preset::from_slug("service logs"), None);
     }
 
     #[test]
