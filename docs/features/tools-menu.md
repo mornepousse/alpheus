@@ -35,11 +35,13 @@ second one between 0.4 s and 3 s later. A double Enter never runs it.
 
 **Typing a value.** An entry with `ask = "Target"` has a prompt step: Enter on it (or, when it has
 choices, on one of its choices) opens a level with one row, the label, and what you type goes in the
-box's own input line, not into a filter. Enter runs with the text, Esc (or ⌫ on an empty line) goes
-back to the choices, or to the category. A blank text runs nothing and the prompt stays. The text
+box's own input line, not into a filter. Enter runs with the text; Esc, ← or ⌫ on an empty line goes
+back to the choices, or to the category (the root for an entry with none). A blank text runs nothing
+and the prompt stays. Clicking another mode with the prompt open drops the text and the prompt. The text
 reaches `run` as the one whole element `{text}`, the same rule as `{choice}`: spaces, quotes and `;`
 stay inside that one argument, and alpheus never passes it through a shell. It is never logged and
-never kept in the history (the history records the entry, and its fixed choice if it has one). An
+never kept in the history (the history records the entry, and its fixed choice if it has one). A
+launch that fails keeps the box open, but the typed text is gone: type it again. An
 entry with `ask` and `confirm` is refused: the typed text is the confirmation.
 
 **A held Enter** does nothing in the Tools mode, so the repeat of the key that ran a built-in does not

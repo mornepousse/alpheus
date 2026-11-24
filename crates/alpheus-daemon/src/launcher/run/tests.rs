@@ -678,7 +678,7 @@ fn the_typed_text_is_one_whole_argv_element() {
 }
 
 #[test]
-fn text_is_never_logged_nor_recorded_in_history() {
+fn text_is_never_recorded_in_history_nor_shown_by_debug() {
     let d = TempDir::new("run-ask-history");
     let h = d.join("launcher-history");
     let bin = stubs("ask-history", &["atool", "foot"]);

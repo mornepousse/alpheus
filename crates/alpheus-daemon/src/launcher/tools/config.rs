@@ -224,6 +224,12 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         if !e.choices_cmd.is_empty() {
             check_argv(&at, "choices_cmd", &e.choices_cmd)?;
         }
+        // Those two run before anything is typed: only `run` has a text to receive.
+        for (key, argv) in [("state", &e.state), ("choices_cmd", &e.choices_cmd)] {
+            if argv.iter().any(|a| a.contains(TEXT_PLACEHOLDER)) {
+                return Err(format!("{at}: {key} must not hold \"{TEXT_PLACEHOLDER}\" (only run takes the typed text)"));
+            }
+        }
         for (k, choice) in e.choices.iter().enumerate() {
             check_text(&at, &format!("choice {}", k + 1), choice, CHOICE_MAX)?;
         }

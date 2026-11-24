@@ -526,7 +526,7 @@ bound the first ones are kept, with one log line of counts.
 | `category` | string | the root | a `[[tools.category]]` or a built-in category | Where the entry lives. |
 | `icon` | one character | none | exactly 1 character | The row's glyph. |
 | `order` | integer | `50` | 0 to 1000 | Sort order among its siblings. |
-| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}`; with `ask`, `{text}` exactly once as a whole element (not the program), and without `ask`, no `{text}` | What the entry runs (no shell). |
+| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}`; with `ask`, `{text}` exactly once as a whole element (not the program), and without `ask`, no `{text}`; `{text}` never in `state` or `choices_cmd` | What the entry runs (no shell). |
 | `terminal` | bool | `false` | not with `hold` | `true`: the launcher's `terminal` is put in front. |
 | `hold` | bool | `false` | not with `terminal` | `true`: `terminal_hold` instead (the output stays readable). |
 | `confirm` | bool | `false` | not with `ask` | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |

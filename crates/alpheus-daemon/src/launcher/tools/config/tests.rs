@@ -187,6 +187,14 @@ fn invalid_rules_make_the_file_invalid() {
         (entry("ask = \"T\"\nconfirm = true\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask and confirm"),
         (entry("ask = \" \"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must not be blank"),
         (entry("ask = \"\"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must be 1 to 48 characters"),
+        // Only `run` may hold `{text}`: a read runs before anything is typed.
+        (entry("state = [\"x\", \"{text}\"]\n"), "tools.entry 1", "state must not hold \"{text}\""),
+        (entry("state = [\"x\", \"a{text}\"]\n"), "tools.entry 1", "state must not hold \"{text}\""),
+        (
+            entry("choices_cmd = [\"x\", \"{text}\"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"),
+            "tools.entry 1",
+            "choices_cmd must not hold \"{text}\"",
+        ),
         (entry("state = [\" \"]\n"), "tools.entry 1", "state empty"),
         (entry("choices_cmd = [\" \"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"), "tools.entry 1", "choices_cmd empty"),
         (cat(""), "tools.category 1", "name must be 1 to 48 characters"),

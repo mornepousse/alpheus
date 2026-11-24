@@ -809,6 +809,12 @@ impl Launcher {
             self.ranker.forget();
             if let Some(t) = self.tools.as_mut() {
                 t.cancel_read();
+                // A prompt's query is an answer, not a filter: it stays in no other mode, and the
+                // Tools mode does not come back to the prompt.
+                if t.prompting() {
+                    t.up();
+                    self.query.clear();
+                }
             }
         }
         self.mode = m;
