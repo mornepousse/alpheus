@@ -1,12 +1,18 @@
 # Changelog
 
 All notable changes to alpheus, in the layout of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-There are no version numbers yet: every delivery is listed under *Unreleased*, by the month it was
-merged, newest first. Each entry links to its feature page (or, when there is none, to the
+Deliveries are listed under their version, by the month they were merged, newest first; what is
+not released yet goes under a new *Unreleased* heading above the latest version. Each entry links to its feature page (or, when there is none, to the
 code it touches). Costs are measured in release builds, back to back with the build before; the method and the
 tables are in [docs/measurements.md](docs/measurements.md). The number in parentheses after a title is the day of the month the delivery merged.
 
-## Unreleased
+## [0.1.0] - unreleased
+
+The first public release of alpheus, a light Wayland desktop shell written in Rust: a layer-shell
+bar daemon with a launcher, notifications, an on-screen display and quick settings, and a terminal
+control center, for Hyprland, Sway, niri and Mango. Every feature that is not enabled costs nothing.
+It ships as the source, x86_64 Linux binaries built by CI and a Nix flake; everything below was
+delivered before it, by the month it was merged.
 
 ### 2026-11
 
