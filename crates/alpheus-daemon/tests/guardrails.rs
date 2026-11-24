@@ -986,12 +986,18 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
 /// braces (correct even nested), not by cutting at the first `#[cfg(test)]`
 /// found (that would also, wrongly, have erased everything after it in the
 /// file, test or not).
+///
+/// The marker, the braces and the semicolon are looked for in `blanked(text)`, where every comment
+/// and every literal is spaces: only the code's own braces count, and the offsets found index
+/// `text` itself, which is what is sliced.
 fn production_code(text: &str) -> String {
+    let view = blanked(text);
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find("#[cfg(test)]") {
-        out.push_str(&rest[..i]);
-        let after_marker = &rest["#[cfg(test)]".len() + i..];
+    let mut done = 0;
+    while let Some(i) = view[done..].find("#[cfg(test)]").map(|i| done + i) {
+        out.push_str(&text[done..i]);
+        let marker_end = i + "#[cfg(test)]".len();
+        let after_marker = &view[marker_end..];
         let open = after_marker.find('{');
         let semi = after_marker.find(';');
         // A brace-less item (`pub mod fake;`, a `use`, a unit struct…) ends
@@ -1004,11 +1010,11 @@ fn production_code(text: &str) -> String {
             (None, _) => true,
         };
         if ends_at_semicolon {
-            rest = match semi {
-                Some(s) => &after_marker[s + 1..],
+            done = match semi {
+                Some(s) => marker_end + s + 1,
                 // No `;` and no `{` anywhere after the marker (end of
                 // file): nothing left to strip.
-                None => "",
+                None => text.len(),
             };
             continue;
         }
@@ -1029,11 +1035,131 @@ fn production_code(text: &str) -> String {
             }
         }
         // Brace never closed: should not happen in Rust that compiles, but
-        // an empty string rather than a panic on a malformed file remains
-        // the safest choice for a guardrail.
-        rest = relative_end.map(|f| &after_marker[f..]).unwrap_or("");
+        // stripping to the end of the file rather than panicking on a
+        // malformed one remains the safest choice for a guardrail.
+        done = relative_end.map_or(text.len(), |f| marker_end + f);
     }
-    out.push_str(rest);
+    out.push_str(&text[done..]);
+    out
+}
+
+/// Blanks `out` for one character of a comment or a literal: a space per byte, so the copy keeps
+/// `text`'s byte offsets, and a newline as it is, so line numbers keep their meaning.
+fn blank(out: &mut String, c: char) {
+    if c == '\n' {
+        out.push('\n');
+    } else {
+        for _ in 0..c.len_utf8() {
+            out.push(' ');
+        }
+    }
+}
+
+/// `text` with every comment and every literal blanked out, byte for byte: the copy `production_code`
+/// searches, while it slices `text` itself at the offsets found. Same length, and the two agree
+/// byte for byte everywhere a search can land (inside a blanked run there is nothing but spaces and
+/// newlines), so an offset of one is an offset of the other.
+///
+/// Why not search the text itself: a `{`, a `;` or the test marker written inside a string, a char
+/// literal or a comment is not the code's, and counting it moved the end of a test item — far
+/// enough, when it was unbalanced, to take every real item after it out of the production view.
+/// `compositor/mango.rs`'s fixture (`r#"{"monitors":["#`) is such a string, and a comment that
+/// spells the test-configuration attribute out is such a comment.
+///
+/// The literal shapes are `without_comments`', which this follows: a raw string (`r"…"`, `r#"…"#`,
+/// and the byte and C forms) has no escape rule and ends at the quote followed by as many `#` as
+/// opened it; a plain string ends at its first unescaped quote; a char literal is one character, an
+/// escape, or neither (a lifetime, which has no closing quote).
+fn blanked(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (c, next) {
+            ('/', Some('/')) => {
+                while i < chars.len() && chars[i] != '\n' {
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                let mut depth = 0;
+                while i < chars.len() {
+                    match (chars[i], chars.get(i + 1).copied()) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            out.push_str("  ");
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            out.push_str("  ");
+                            i += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        (n, _) => {
+                            blank(&mut out, n);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            ('r', _) if raw_string_opens(&chars, i) => {
+                let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+                let quote = i + 1 + hashes;
+                for j in i..=quote {
+                    blank(&mut out, chars[j]);
+                }
+                i = quote + 1;
+                while i < chars.len() {
+                    let closes = chars[i] == '"' && chars.len() > i + hashes && chars[i + 1..=i + hashes].iter().all(|&c| c == '#');
+                    if closes {
+                        for j in i..=i + hashes {
+                            blank(&mut out, chars[j]);
+                        }
+                        i += hashes + 1;
+                        break;
+                    }
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                }
+            }
+            ('"', _) => {
+                blank(&mut out, c);
+                i += 1;
+                while i < chars.len() {
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                    if chars[i - 1] == '\\' && i < chars.len() {
+                        blank(&mut out, chars[i]);
+                        i += 1;
+                    } else if chars[i - 1] == '"' {
+                        break;
+                    }
+                }
+            }
+            ('\'', _) => {
+                let len = match (next, chars.get(i + 2).copied()) {
+                    (Some('\\'), _) => chars[i + 2..].iter().position(|&q| q == '\'').map(|p| p + 3),
+                    (Some(_), Some('\'')) => Some(3),
+                    _ => None,
+                };
+                let len = len.unwrap_or(1);
+                for j in i..i + len {
+                    blank(&mut out, chars[j]);
+                }
+                i += len;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
     out
 }
 
@@ -1062,10 +1188,9 @@ fn raw_string_opens(chars: &[char], i: usize) -> bool {
 /// numbers keep their meaning. String and char literals are skipped over, so a `//` inside a URL
 /// string is not a comment. A raw string (`r"…"`, `r#"…"#`, and the byte and C forms `br`, `cr`) is
 /// copied whole, with no escape rule, so neither a `//` nor a quote inside one is read as anything
-/// else. Braces inside a literal are kept, and `production_code` counts them: an unbalanced one
-/// inside a test item still takes the rest of that file out of the production view
-/// (`a_brace_in_a_string_of_a_test_item_still_fools_production_code` shows it, and `compositor/mango.rs`
-/// has one today, harmless only because its test module is the file's last item).
+/// else. Braces inside a literal are kept, and harmless: `production_code` counts braces in
+/// `blanked`, where a literal is spaces, so an unbalanced one inside a test item cannot move the
+/// end of that item (`a_brace_in_a_string_of_a_test_item_leaves_the_production_code_alone`).
 fn without_comments(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -1174,11 +1299,11 @@ fn without_comments(text: &str) -> String {
 /// question about the code, and a comment that shows a line which would leak — the very thing a
 /// page or a header may need to explain — is not one.
 ///
-/// The comments go first: a `#[cfg(test)]` or a brace written inside one would otherwise fool
-/// `production_code`'s brace counting and strip real production code with the test item
-/// (`a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone`). `production_code` alone,
-/// which the word lists are given, still counts those braces: that is the price of reading the
-/// comments.
+/// The comments go first, and `production_code` blanks whatever is left of a comment or a literal
+/// before it counts a brace, so neither view can be fooled by a test marker, a brace or a
+/// semicolon that is not the code's
+/// (`a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone`,
+/// `a_cfg_test_marker_inside_a_literal_or_a_comment_strips_nothing`).
 fn production_code_without_comments(text: &str) -> String {
     production_code(&without_comments(text))
 }
@@ -1278,15 +1403,44 @@ fn a_raw_string_in_a_test_item_leaves_the_production_code_after_it_alone() {
     assert!(!code.contains("from_a_comment"), "the comment after the test item's raw string still goes: {code}");
 }
 
-/// What this file does today, not what it should do: `production_code` counts the braces inside a
-/// string literal too, so an unbalanced one in a test item takes the rest of the file out of the
-/// production view. `compositor/mango.rs` holds such a fixture (`r#"{"monitors":["#`), harmless only
-/// because its test module is the file's last item. A `production_code` that skipped literals would
-/// turn this test red, and that would be the improvement, not a regression.
+/// A brace inside a string of a test item is the string's, not the code's: the item ends at its own
+/// closing brace, and the production code after it stays. Two real files hold an unbalanced one —
+/// `compositor/sway.rs`'s test region counts 140 `{` against 139 `}`, and `compositor/mod.rs`'s is
+/// the same — so the old counting never closed their test module and read to the end of the file.
+/// Harmless there, because that module is each file's last item; it would have hidden anything
+/// written after it.
 #[test]
-fn a_brace_in_a_string_of_a_test_item_still_fools_production_code() {
-    let text = "#[cfg(test)]\nmod tests {\n    let j = r#\"{\"#;\n}\nfn real() {}\n";
-    assert!(!production_code_without_comments(text).contains("fn real()"), "the hole that stays");
+fn a_brace_in_a_string_of_a_test_item_leaves_the_production_code_alone() {
+    for literal in ["r#\"{\"#", "\"{\"", "'{'", "\"}\"", "r##\"a \"# {\"##"] {
+        let text = format!("#[cfg(test)]\nmod tests {{\n    let j = {literal};\n}}\nfn real() {{}}\n");
+        let code = production_code_without_comments(&text);
+        assert!(code.contains("fn real()"), "{literal}: the production code after the test item: {code}");
+        assert!(!code.contains("let j"), "{literal}: the test item goes: {code}");
+    }
+}
+
+/// The marker itself, written inside a string or a comment, is not the code's either: nothing is
+/// stripped for it. A comment that spells the test-configuration attribute out is the real case —
+/// one in `deadline.rs` hid the rest of that file from every word list until this was fixed.
+#[test]
+fn a_cfg_test_marker_inside_a_literal_or_a_comment_strips_nothing() {
+    let in_string = "const M: &str = \"#[cfg(test)]\";\nfn real() {}\n";
+    assert!(production_code(in_string).contains("fn real()"), "a marker inside a string literal");
+    let in_comment = "/// The attribute #[cfg(test)] would gate it.\nfn real() {}\n";
+    assert!(production_code(in_comment).contains("fn real()"), "a marker inside a comment");
+    let both = "#[cfg(test)]\nmod tests {\n    const M: &str = \"#[cfg(test)]\";\n}\nfn real() {}\n";
+    let code = production_code(both);
+    assert!(code.contains("fn real()") && !code.contains("const M"), "the real marker still strips its item: {code}");
+}
+
+/// A `{` inside a string does not open the block of a brace-less test item: the item ends at its own
+/// semicolon, and the real items after it stay.
+#[test]
+fn a_semicolon_inside_a_string_does_not_end_a_brace_less_test_item() {
+    let text = "#[cfg(test)]\nconst S: &str = \"a { b\";\nfn real() {}\n";
+    let code = production_code(text);
+    assert!(code.contains("fn real()"), "{code}");
+    assert!(!code.contains("const S"), "the brace-less test item goes: {code}");
 }
 
 #[test]
@@ -1377,11 +1531,12 @@ fn a_brace_in_a_comment_of_a_test_item_leaves_the_production_code_alone() {
     let code = production_code_without_comments(text);
     assert!(code.contains("fn a()") && code.contains("fn b()"), "both production items stay: {code}");
     assert!(!code.contains("mod tests"), "the test item goes: {code}");
-    // What this says about `production_code` alone, the view the word lists are given: it counts the
-    // comment's brace, so the test item never closes and it strips to the end of the file. A
-    // `production_code` that skipped comments or literals would turn the line below red, and that
-    // would be the improvement, not a regression.
-    assert!(!production_code(text).contains("fn b()"), "the cost of reading the comments, as it stands");
+    // And the same of `production_code` alone, the view the word lists are given: it reads the
+    // comments, but it no longer counts their braces, so the test item still ends where its own
+    // brace closes.
+    let with_comments = production_code(text);
+    assert!(with_comments.contains("fn a()") && with_comments.contains("fn b()"), "both production items stay: {with_comments}");
+    assert!(!with_comments.contains("mod tests"), "the test item goes: {with_comments}");
 }
 
 /// `Executor::run` blocks (up to 2 s): it must never be reachable from the
