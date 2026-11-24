@@ -61,7 +61,7 @@ The key `[captures] dir` in `bar.toml` sets the folder of `area-save` (default
 `~/Pictures/screenshots`; with no home to anchor it, a save fails rather than land in a relative
 path). `pick_format` is the picker's text: `{hex}` (`#RRGGBB`, upper case) by default, with `{r}`,
 `{g}`, `{b}` (0 to 255) and `{hex}` to fill, for instance `"rgb({r}, {g}, {b})"`; at least one
-placeholder, no other `{…}`, one line of at most 256 bytes. The other keys (`annotate`, `ocr`,
+placeholder, no other `{…}` (so no literal `{`…`}` pair either), one line of at most 256 bytes. The other keys (`annotate`, `ocr`,
 `record`) are read and checked but used by
 later deliveries. See [configuration.md](../configuration.md#captures).
 
@@ -91,9 +91,14 @@ On a compositor that fades layer surfaces, see
 - `captures/paths.rs`: the folder and the dated name.
 - `captures/pick.rs` and `pick_app.rs`: the picker's model (the `Shot` that reads the frozen frame
   through the output's scale and rotation, the lens, the value's text, the gestures) and its Overlay
-  layer surface. The surface owns the frame: it goes with the surface at close. A draw repaints from
+  layer surface. The surface owns the frame: it goes with the surface at close. The lens, its
+  frame and the swatch are plain rectangles (`fill_rect`); only the `#RRGGBB` card goes through the
+  painter (the launcher's font and card colours). A draw repaints from
   the frame only what the previous overlay of that buffer covered, so a motion costs the lens's
-  pixels, not the output's.
+  pixels, not the output's; it damages that area, the overlay on screen (the other buffer's, when
+  two alternate) and the new one (`the_picker_leaves_no_old_lens_on_the_screen`). A redraw is skipped
+  only while the frame's pixel under the pointer stays the same, so the lens always shows what a
+  click copies.
 
 The path of one area capture: the verb → `Flow::begin` → the selector opens → its answer →
 `Settle` (the sync, after the selector's surface is destroyed) → the frame is asked, with a 5 s
@@ -167,6 +172,6 @@ the PNG and the worker thread, all given back (`release_memory`). Ten more captu
 anonymous memory by 8 to 16 KB (limit 64 KB), with 0 wake-ups at rest afterwards
 (`at_rest_no_wakeups_after_a_screen_capture`). The `png` crate adds ≈ 78 KB to the stripped binary.
 The colour picker, while open, holds the frame (3.6 MB at 1280 × 720) and its surface's pool
-(≈ 3.7 MB): +7.7 MB of PSS, all given back at close; ten more picks grew the daemon's anonymous
-memory by 12 to 28 KB (limit 64 KB), with 0 wake-ups at rest afterwards
+(≈ 3.7 MB): +7.6 MB of PSS, all given back at close; ten more picks moved the daemon's anonymous
+memory by −12 to +12 KB (limit 64 KB), with 0 wake-ups at rest afterwards
 (`at_rest_no_wakeups_after_a_colour_pick`). See [measurements.md](../measurements.md).

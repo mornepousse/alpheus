@@ -114,7 +114,8 @@ impl Shot {
 }
 
 /// The value's text: `format` with `{r}`, `{g}` and `{b}` (0 to 255) and `{hex}` (`#RRGGBB`, upper
-/// case) filled in; anything else is kept as written.
+/// case) filled in; anything else is kept as written. A configured `pick_format` never holds any
+/// other `{…}`: the config refuses it (`check_pick_format`), so a literal brace pair cannot occur.
 pub fn value_text(colour: Rgb, format: &str) -> String {
     let Rgb(r, g, b) = colour;
     format
