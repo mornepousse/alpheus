@@ -906,6 +906,32 @@ fn a_flat_search_choice_of_the_scan_asks_too() {
     );
 }
 
+/// A Tools launcher with the built-ins, a shutdown pending or not.
+fn shutdown_tools(left: Option<u64>) -> Launcher {
+    let config = LauncherConfig::from_text("").unwrap();
+    let ctx = Context { timer: true, shutdown: true, shutdown_left: left, ..Context::default() };
+    let catalog = Catalog::build(&config.tools, &ctx, &mut |_| {});
+    Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000)
+}
+
+#[test]
+fn a_builtin_choice_activates_the_builtin_with_its_label() {
+    let mut l = shutdown_tools(Some(80 * 60_000));
+    select(&mut l, "System");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
+    select(&mut l, "Schedule shutdown");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "an entry with choices drills");
+    assert_eq!(texts(&l), ["Cancel shutdown (in 1h20)", "30 min", "1 h", "1 h 30", "2 h", "3 h"]);
+    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    select(&mut l, "1 h 30");
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("1 h 30".into()), text: None })));
+    select(&mut l, "Cancel shutdown (in 1h20)");
+    assert_eq!(
+        l.key(Key::Enter),
+        Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("Cancel shutdown (in 1h20)".into()), text: None }))
+    );
+}
+
 #[test]
 fn the_usb_reset_asks_for_a_second_enter() {
     let mut l = diag_box();
@@ -946,4 +972,15 @@ fn a_mod_space_hit_on_the_sweep_runs_it_and_one_on_a_scan_asks() {
     typed(&mut l, "Aggressive scan");
     assert_eq!(l.key(Key::Enter), Outcome::Redraw, "a scan goes to the Tools mode's prompt");
     assert_eq!(texts(&l), [TARGET_PROMPT]);
+}
+
+#[test]
+fn a_builtin_choice_is_reachable_from_the_flat_search() {
+    let mut l = shutdown_tools(None);
+    typed(&mut l, "shutdown 2 h");
+    let t = selected_text(&l);
+    assert!(t.contains("2 h"), "{t}");
+    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    // The flat row of a fixed choice: Enter drills nowhere, it activates.
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("2 h".into()), text: None })));
 }

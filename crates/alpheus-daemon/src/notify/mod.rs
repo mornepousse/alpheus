@@ -590,10 +590,22 @@ impl Center {
 
     /// Takes in one notification and returns its id: always answered, bubble or not (replacement, tags,
     /// merging, the bucket and the history: docs/decisions.md, docs/features/notifications.md).
-    pub fn notify(&mut self, mut n: Incoming, now: Instant, at: u32) -> u32 {
+    pub fn notify(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
+        self.take_in(n, now, at, true)
+    }
+
+    /// `notify` with the user's rules set aside: neither a drop, a mute nor an urgency rule touches
+    /// it. For the one notice that must always be seen, the scheduled shutdown's warning, as
+    /// do-not-disturb never hides a critical one (docs/decisions.md, "A scheduled shutdown always
+    /// warns a minute before").
+    pub fn notify_exempt(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
+        self.take_in(n, now, at, false)
+    }
+
+    fn take_in(&mut self, mut n: Incoming, now: Instant, at: u32, ruled: bool) -> u32 {
         // The rules come first: a drop is answered and forgotten, an urgency replaces the sender's,
         // a mute leaves the bubble out of everything below (the merge included).
-        let (action, urgency) = match self.rule_for(&n) {
+        let (action, urgency) = match self.rule_for(&n).filter(|_| ruled) {
             Some(r) => (r.action, r.urgency),
             None => (None, None),
         };

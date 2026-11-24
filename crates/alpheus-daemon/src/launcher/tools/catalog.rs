@@ -13,9 +13,9 @@ use alpheus_common::launcher_ipc::QuickVerb;
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
-const BUILTIN_ORDERS: [u16; 5] = [10, 20, 30, 90, 70];
+const BUILTIN_ORDERS: [u16; 6] = [10, 20, 30, 40, 90, 70];
 /// Their glyphs (Nerd Font Material Design), in the same order.
-const BUILTIN_GLYPHS: [char; 5] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0343}', '\u{F00E4}'];
+const BUILTIN_GLYPHS: [char; 6] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F08D6}', '\u{F0343}', '\u{F00E4}'];
 
 /// What a built-in does when chosen. Run by `app.rs`, after the box closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,8 @@ pub enum BuiltinAction {
     Tab,
     Notes,
     Timer,
+    /// The scheduled shutdown: its choices are the durations (and a cancel), see `timer::shutdown`.
+    Shutdown,
     Clipboard,
     Emoji,
     Lock,
@@ -76,11 +78,12 @@ const fn b(id: &'static str, label: &'static str, category: &'static str, glyph:
 const QUICK: &str = "Quick settings";
 const CONTROL: &str = "Control center";
 const UTILITIES: &str = "Utilities";
+const SYSTEM: &str = "System";
 const SESSION: &str = "Session";
 const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order.
-pub const BUILTINS: [Builtin; 34] = [
+pub const BUILTINS: [Builtin; 35] = [
     b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
     b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
@@ -101,6 +104,7 @@ pub const BUILTINS: [Builtin; 34] = [
     b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
     b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
     b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
+    b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown),
     b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
     b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
     b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
@@ -148,6 +152,10 @@ pub struct Context {
     pub nmap: bool,
     /// `[tools.builtin] usb_reset` is set.
     pub usb_reset: bool,
+    /// `timer` in `modules` and `[quick] poweroff` set: the shutdown can be scheduled.
+    pub shutdown: bool,
+    /// The time left of the shutdown pending, in milliseconds: its first choice cancels it.
+    pub shutdown_left: Option<u64>,
 }
 
 /// Whether `b` shows under `c`.
@@ -162,6 +170,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Tab => b.id != "tab.diagnostics" || c.diagnostics,
         BuiltinAction::Notes | BuiltinAction::Emoji | BuiltinAction::UsbEvents => true,
         BuiltinAction::Timer => c.timer,
+        BuiltinAction::Shutdown => c.shutdown,
         BuiltinAction::Clipboard => c.clipboard,
         BuiltinAction::Lock => c.lock,
         BuiltinAction::Power => c.session,
@@ -255,8 +264,8 @@ impl Entry {
 }
 
 /// The choices, confirmation and prompts a built-in entry carries beyond its row: only the
-/// diagnostics ones have any.
-fn builtin_shape(action: BuiltinAction) -> Shape {
+/// diagnostics ones and the shutdown have any.
+fn builtin_shape(action: BuiltinAction, c: &Context) -> Shape {
     let plain = Shape { choices: Choices::None, confirm: false, ask: None, ask_overrides: Vec::new() };
     match action {
         BuiltinAction::Scan => Shape {
@@ -269,6 +278,7 @@ fn builtin_shape(action: BuiltinAction) -> Shape {
             ..plain
         },
         BuiltinAction::UsbReset => Shape { confirm: true, ..plain },
+        BuiltinAction::Shutdown => Shape { choices: Choices::Fixed(crate::timer::shutdown::labels(c.shutdown_left)), ..plain },
         _ => plain,
     }
 }
@@ -322,7 +332,7 @@ impl Catalog {
         if t.builtins {
             for (i, b) in BUILTINS.iter().enumerate() {
                 if shown(b, c) && !t.hide.iter().any(|h| h == b.id) {
-                    let Shape { choices, confirm, ask, ask_overrides } = builtin_shape(b.action);
+                    let Shape { choices, confirm, ask, ask_overrides } = builtin_shape(b.action, c);
                     entries.push(Entry {
                         kind: EntryKind::Builtin(i),
                         name: b.label.to_string(),

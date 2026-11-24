@@ -21,6 +21,8 @@ fn all() -> Context {
         diagnostics: true,
         nmap: true,
         usb_reset: true,
+        shutdown: true,
+        shutdown_left: None,
     }
 }
 
@@ -74,6 +76,7 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "shutdown",
             "lock",
             "power",
             "reload",
@@ -118,6 +121,7 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Schedule shutdown",
             "Lock",
             "Power menu",
             "Reload the bar",
@@ -135,10 +139,11 @@ fn the_table_is_the_specs() {
         ]
     );
     let categories: Vec<&str> = BUILTINS.iter().map(|b| b.category).collect();
-    let [quick, control, utilities, session, diagnostics] = BUILTIN_CATEGORIES;
+    let [quick, control, utilities, system, session, diagnostics] = BUILTIN_CATEGORIES;
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
+    expected.extend([system; 1]);
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
@@ -177,7 +182,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes, emoji and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 13] = [
+    let flips: [Flip; 14] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -204,6 +209,7 @@ fn shown_follows_the_context() {
         ),
         (|c| c.nmap = true, &["diag.scan"]),
         (|c| c.usb_reset = true, &["diag.usb_reset"]),
+        (|c| c.shutdown = true, &["shutdown"]),
     ];
     for (flip, rows) in flips {
         let mut c = Context::default();
@@ -216,7 +222,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 34);
+    assert_eq!(ids_shown(&all()).len(), 35);
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -235,6 +241,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "tab.diagnostics" => c.diagnostics = false,
         "diag.scan" => c.nmap = false,
         "diag.usb_reset" => c.usb_reset = false,
+        "shutdown" => c.shutdown = false,
         other => panic!("{other}"),
     }
 }
@@ -252,11 +259,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 34);
+    assert_eq!(builtin_ids(&cat).len(), 35);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 32);
+    assert_eq!(ids.len(), 33);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -304,7 +311,7 @@ run = [\"x\"]
     let (cat, _) = build(text, &all());
     // The listed built-ins first, in the order given; then the categories and root entries by
     // order (10 Quick settings, 15 Nix, 20 Control center, 30 Alpha | Utilities | Zed by name,
-    // 50 Beta, 70 Diagnostics, 90 Session), names breaking the tie.
+    // 40 System, 50 Beta, 70 Diagnostics, 90 Session), names breaking the tie.
     let rows = cat.root_rows();
     assert_eq!(
         category_names(&cat, &rows),
@@ -318,6 +325,7 @@ run = [\"x\"]
             "Alpha",
             "[Utilities]",
             "[Zed]",
+            "[System]",
             "Beta",
             "[Diagnostics]",
             "[Session]",
@@ -523,4 +531,27 @@ fn the_scan_entry_lists_the_ten_scans_and_asks_except_for_the_sweep() {
         cat.choice_key(cat.entries.iter().position(|e| e.name == "Network scan").unwrap(), Scan::Full.label()),
         "tool:builtin:diag.scan/Full scan (all ports)"
     );
+}
+
+/// The shutdown built-in's choices: the five durations, and a first one that cancels (with the time
+/// left) only while a shutdown is pending.
+#[test]
+fn the_shutdown_choices_follow_the_pending_state() {
+    let choices = |left: Option<u64>| {
+        let (cat, _) = build("", &Context { shutdown_left: left, ..all() });
+        let e = cat.entries.iter().find(|e| e.name == "Schedule shutdown").expect("the shutdown entry");
+        (e.choices.clone(), e.key.clone())
+    };
+    let (none, key) = choices(None);
+    assert_eq!(none, Choices::Fixed(["30 min", "1 h", "1 h 30", "2 h", "3 h"].map(String::from).to_vec()));
+    assert_eq!(key, "tool:builtin:shutdown");
+    let (pending, _) = choices(Some(80 * 60_000));
+    let Choices::Fixed(list) = pending else { panic!("fixed choices") };
+    assert_eq!(list[0], "Cancel shutdown (in 1h20)");
+    assert_eq!(list.len(), 6);
+    // It is in the System category, and its choices are in the flat search.
+    let (cat, _) = build("", &all());
+    let at = cat.entries.iter().position(|e| e.name == "Schedule shutdown").unwrap();
+    assert_eq!(cat.categories[cat.entries[at].category.unwrap()].name, "System");
+    assert_eq!(cat.flat().iter().filter(|f| f.entry == at && f.choice.is_some()).count(), 5);
 }

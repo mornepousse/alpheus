@@ -830,6 +830,25 @@ fn a_dropped_app_is_answered_but_never_stored() {
     assert_eq!(c.view(true).unread, 0);
 }
 
+/// The shutdown's warning is set apart from the user's rules: a drop, a mute or a lowering urgency
+/// rule on app `alpheus` never hides it, while an ordinary notice from the same app obeys them.
+#[test]
+fn an_exempt_notice_ignores_every_rule() {
+    for rule in [(DROP, None), (MUTE, None), (None, Some(RuleUrgency::Low))] {
+        let mut c = ruled(&[("alpheus", rule.0, rule.1)]);
+        let t = Instant::now();
+        let id = c.notify_exempt(critical("alpheus", "Powering off in 1 min"), t, 0);
+        assert!(id != 0);
+        assert_eq!(c.bubbles().len(), 1, "{rule:?}: the bubble shows");
+        assert_eq!(c.history().next().map(|e| e.urgency), Some(Urgency::Critical), "{rule:?}: still critical");
+        // The same notice through the rules is subject to them.
+        let mut c = ruled(&[("alpheus", rule.0, rule.1)]);
+        c.notify(critical("alpheus", "Powering off in 1 min"), t, 0);
+        let obeyed = c.bubbles().is_empty() || c.history().next().is_some_and(|e| e.urgency != Urgency::Critical);
+        assert!(obeyed, "{rule:?}: an ordinary notice obeys the rule");
+    }
+}
+
 #[test]
 fn an_urgency_rule_replaces_the_senders() {
     let mut c = ruled(&[("Pager", None, Some(RuleUrgency::Critical))]);

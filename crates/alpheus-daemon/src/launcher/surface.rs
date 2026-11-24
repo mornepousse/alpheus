@@ -792,6 +792,10 @@ impl App {
                         let qh = self.qh.clone();
                         self.run_builtin(&qh, i, prepared);
                     }
+                    Ok(Done::BuiltinChoice(i, choice)) => {
+                        self.launcher_close(CloseReason::Activated);
+                        self.run_builtin_choice(i, &choice);
+                    }
                 }
             }
         }

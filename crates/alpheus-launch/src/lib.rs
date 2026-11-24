@@ -45,7 +45,8 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
-                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
+                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+                      | --timer shutdown DURATION | --timer shutdown-cancel | --notes
                       | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
@@ -73,6 +74,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   --windows               open the window switcher (the previous window selected), or select the next window when it is open
   --timer start DURATION  start the bar's focus timer: 90s, 25m, 1h30m or a bare number of minutes (1 s to 24 h)
+  --timer shutdown DURATION  power off after DURATION (same forms), alongside the timer; shutdown-cancel cancels it
   --timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
                           start a Pomodoro or a stopwatch, pause, resume, toggle or stop the timer,
                           skip to a Pomodoro's next phase, open or close its popup
@@ -379,13 +381,19 @@ fn units(s: &str) -> Option<u64> {
 
 /// The words after `--timer`: `start DURATION`, or one of `TimerVerb::parse_word`'s.
 fn timer_arg<'a>(it: &mut impl Iterator<Item = &'a OsString>) -> Result<TimerVerb, String> {
-    const WORDS: &str = "start, pomodoro, stopwatch, pause, resume, toggle, stop, skip or popup";
+    const WORDS: &str = "start, pomodoro, stopwatch, pause, resume, toggle, stop, skip, popup, shutdown or shutdown-cancel";
     let word = utf8(it.next().ok_or_else(|| format!("--timer needs {WORDS}"))?)?;
     if word == "start" {
         let value = utf8(it.next().ok_or("--timer start needs a duration (90s, 25m, 1h30m or minutes)")?)?;
         return parse_timer_duration(value)
             .map(TimerVerb::Start)
             .ok_or_else(|| format!("--timer start takes 90s, 25m, 1h30m or minutes, from 1 second to 24 hours, not {value:?}"));
+    }
+    if word == "shutdown" {
+        let value = utf8(it.next().ok_or("--timer shutdown needs a duration (90s, 25m, 1h30m or minutes)")?)?;
+        return parse_timer_duration(value)
+            .map(TimerVerb::Shutdown)
+            .ok_or_else(|| format!("--timer shutdown takes 90s, 25m, 1h30m or minutes, from 1 second to 24 hours, not {value:?}"));
     }
     TimerVerb::parse_word(word).ok_or_else(|| format!("--timer takes {WORDS}, not {word:?}"))
 }
@@ -618,6 +626,9 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
+        // `timer shutdown <secs>` has one field too many for an old daemon's `timer` headers, so
+        // even one that has the timer refuses it as an unknown request "timer".
+        Request::Timer(TimerVerb::Shutdown(_)) if error == "malformed request: unknown request \"timer\"" => Some("--timer shutdown"),
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         Request::Tools if error == "malformed request: unknown request \"tools\"" => Some("--tools"),
@@ -671,7 +682,13 @@ const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
 /// What a daemon too old for `--timer` answers (`socket::describe` of an unknown request) and the
 /// name for the message; exit 3, so a key bound to it can fall back. A word added later adds a row,
 /// as `OLD_QUICK`'s.
-const OLD_TIMER: [(&str, &str); 1] = [("malformed request: unknown request \"timer\"", "--timer")];
+const OLD_TIMER: [(&str, &str); 2] = [
+    ("malformed request: unknown request \"timer\"", "--timer"),
+    // A daemon with the timer but not the shutdown knows `timer <word>` and `timer start <secs>`:
+    // the cancel is an unknown word to it (the 3-field `timer shutdown <secs>` is handled in
+    // `too_old_for`, because the same refusal text means a daemon with no timer at all there).
+    ("malformed request: unknown timer word \"shutdown-cancel\"", "--timer shutdown-cancel"),
+];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
@@ -884,6 +901,9 @@ mod tests {
             (&["--timer", "stopwatch"], TimerVerb::Stopwatch),
             (&["--timer", "popup"], TimerVerb::Popup),
             (&["--timer", "skip"], TimerVerb::Skip),
+            (&["--timer", "shutdown", "1h30m"], TimerVerb::Shutdown(5400)),
+            (&["--timer", "shutdown", "90"], TimerVerb::Shutdown(5400)),
+            (&["--timer", "shutdown-cancel"], TimerVerb::ShutdownCancel),
         ] {
             assert_eq!(parse_args(&args(a)), Ok(Invocation::Timer(v)), "{a:?}");
             assert_eq!(request_of(Invocation::Timer(v), 0), Ok(Request::Timer(v)));
@@ -893,6 +913,9 @@ mod tests {
             (&["--timer", "start"], "needs a duration"),
             (&["--timer", "start", "0s"], "from 1 second to 24 hours"),
             (&["--timer", "start", "25h"], "from 1 second to 24 hours"),
+            (&["--timer", "shutdown"], "--timer shutdown needs a duration"),
+            (&["--timer", "shutdown", "0s"], "--timer shutdown takes"),
+            (&["--timer", "shutdown", "25h"], "--timer shutdown takes"),
             (&["--timer", "nap"], "--timer takes start"),
             (&["--timer", "stop", "--close"], "only one of"),
             (&["--toggle", "--timer", "stop"], "only one of"),
@@ -913,6 +936,16 @@ mod tests {
         assert_eq!(reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
         assert!(String::from_utf8_lossy(&err).contains("--timer"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
+        // A daemon with the timer but without the shutdown names the verb it lacks.
+        for (verb, word, refusal) in [
+            (TimerVerb::Shutdown(60), "--timer shutdown", "malformed request: unknown request \"timer\""),
+            (TimerVerb::ShutdownCancel, "--timer shutdown-cancel", "malformed request: unknown timer word \"shutdown-cancel\""),
+        ] {
+            let mut err = Vec::new();
+            let code = reply_to_exit(&Request::Timer(verb), Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err);
+            assert_eq!(code, EXIT_UNREACHABLE, "{word}");
+            assert!(String::from_utf8_lossy(&err).contains(word), "{}", String::from_utf8_lossy(&err));
+        }
         let other = "the timer module is not in modules";
         assert_eq!(reply_to_exit(&request, Reply::Error(other.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
         assert!(String::from_utf8_lossy(&err).contains(other), "{}", String::from_utf8_lossy(&err));

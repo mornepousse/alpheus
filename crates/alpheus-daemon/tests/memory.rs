@@ -3679,6 +3679,41 @@ fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
     window("the timer paused");
 }
 
+/// A scheduled shutdown arms one deadline at its next chip minute: the loop sleeps in between (no
+/// wake-up in a 5 s window away from both the clock's minute and the chip's own), and over a minute
+/// it wakes about once for the chip and once for the clock, never each second. The window starts
+/// within seconds of the verb, so the chip's first change (a minute after it) falls outside.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_a_shutdown_scheduled() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("shutdown-rest");
+    let (sway, _hypr, d) = start("shutdown-rest", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(5);
+    // The verb, a second to settle and the window: ten seconds clear of the clock's tick, and the
+    // chip's first change comes a full minute after the verb.
+    away_from_the_minute(Duration::from_secs(10));
+    timer(&sway, TimerVerb::Shutdown(10_800));
+    assert!(d.wait_for("timer: shutdown scheduled (180 min)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "a shutdown scheduled");
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with a shutdown scheduled (5 s): {delta}");
+    assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s with a shutdown scheduled: {:?}", d.log());
+    // Over a minute: the chip's change and the clock's tick, a few at most.
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(65));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with a shutdown scheduled (65 s): {delta}");
+    assert!(delta <= 6, "{delta} loop-thread wake-ups in 65 s: the shutdown ticks faster than the minute: {:?}", d.log());
+    timer(&sway, TimerVerb::ShutdownCancel);
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+}
+
 /// A running countdown wakes the loop about once a minute (the chip's change), the
 /// clock's own tick aside, never each second.
 #[test]

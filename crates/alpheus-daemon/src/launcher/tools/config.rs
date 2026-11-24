@@ -26,7 +26,7 @@ pub const CHOICE_PLACEHOLDER: &str = "{choice}";
 /// The one element of `run` replaced by the typed text (`ask`), whole: never part of an argument.
 pub const TEXT_PLACEHOLDER: &str = "{text}";
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
-pub const BUILTIN_CATEGORIES: [&str; 5] = ["Quick settings", "Control center", "Utilities", "Session", "Diagnostics"];
+pub const BUILTIN_CATEGORIES: [&str; 6] = ["Quick settings", "Control center", "Utilities", "System", "Session", "Diagnostics"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]

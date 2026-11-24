@@ -13,7 +13,7 @@ use crate::launcher::history::{app_key, command_key, source_key};
 use crate::launcher::model::{Activation, Launcher};
 use crate::launcher::scan::has_program;
 use crate::launcher::sources::run_argv;
-use crate::launcher::tools::catalog::{BUILTINS, Choices, EntryKind};
+use crate::launcher::tools::catalog::{BUILTINS, BuiltinAction, Choices, EntryKind};
 use crate::launcher::tools::config::{CHOICE_PLACEHOLDER, EntryConfig, TEXT_PLACEHOLDER};
 use crate::launcher::tools::nav::ToolAction;
 use crate::log::write as log;
@@ -110,6 +110,8 @@ pub enum Done {
     /// A built-in of the Tools menu (an index into `BUILTINS`): the box closes, then the glue
     /// replays its verb.
     Builtin(usize),
+    /// A built-in with fixed choices, and the label chosen: replayed the same way.
+    BuiltinChoice(usize, String),
 }
 
 fn spawn(exec: &dyn Executor, argv: &[String]) -> Result<(), ExecError> {
@@ -171,12 +173,24 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
         // A built-in's fixed choice is kept as `tool:builtin:<id>/<choice>` (the catalog's own key);
         // what was typed never is.
         ToolAction::Builtin { index, choice, text: _ } => {
-            let id = BUILTINS.get(index).ok_or_else(gone)?.id;
+            let b = BUILTINS.get(index).ok_or_else(gone)?;
+            let id = b.id;
             match choice {
-                Some(c) => remember(l, ctx, &format!("tool:builtin:{id}/{c}")),
-                None => remember(l, ctx, &format!("tool:builtin:{id}")),
+                // The shutdown's choice (a time) is not worth ranking by: recorded under the
+                // built-in alone, and replayed through the timer's verbs.
+                Some(c) if b.action == BuiltinAction::Shutdown => {
+                    remember(l, ctx, &format!("tool:builtin:{id}"));
+                    Ok(Done::BuiltinChoice(index, c))
+                }
+                Some(c) => {
+                    remember(l, ctx, &format!("tool:builtin:{id}/{c}"));
+                    Ok(Done::Builtin(index))
+                }
+                None => {
+                    remember(l, ctx, &format!("tool:builtin:{id}"));
+                    Ok(Done::Builtin(index))
+                }
             }
-            Ok(Done::Builtin(index))
         }
         ToolAction::User { entry, choice, text } => {
             let catalog = &l.tools().ok_or_else(gone)?.catalog;

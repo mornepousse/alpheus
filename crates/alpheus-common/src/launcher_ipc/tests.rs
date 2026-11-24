@@ -556,17 +556,28 @@ fn timer_words_round_trip_and_bad_ones_are_refused() {
         (TimerVerb::Stop, "timer stop"),
         (TimerVerb::Skip, "timer skip"),
         (TimerVerb::Popup, "timer popup"),
+        (TimerVerb::Shutdown(5400), "timer shutdown 5400"),
+        (TimerVerb::Shutdown(TIMER_MIN_SECS), "timer shutdown 1"),
+        (TimerVerb::Shutdown(TIMER_MAX_SECS), "timer shutdown 86400"),
+        (TimerVerb::ShutdownCancel, "timer shutdown-cancel"),
     ] {
         let bytes = encode_request(&Request::Timer(v));
         assert_eq!(bytes, format!("{MAGIC} {wire}\n").into_bytes(), "{v:?}");
         assert_eq!(decode(&bytes), Ok(Some(Request::Timer(v))), "{v:?}");
-        if !matches!(v, TimerVerb::Start(_)) {
+        if !matches!(v, TimerVerb::Start(_) | TimerVerb::Shutdown(_)) {
             assert_eq!(TimerVerb::parse_word(v.word()), Some(v), "{v:?}");
         }
     }
     assert_eq!(TimerVerb::parse_word("start"), None, "start carries a duration");
+    assert_eq!(TimerVerb::parse_word("shutdown"), None, "shutdown carries a duration");
     for h in [
         "timer start 0",
+        "timer shutdown 0",
+        "timer shutdown 86401",
+        "timer shutdown x",
+        "timer shutdown",
+        "timer shutdown 60 now",
+        "timer shutdown-cancel now",
         "timer start 86401",
         "timer start x",
         "timer start -5",

@@ -1654,9 +1654,11 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
         // forget question is.
         ("quick/app.rs", "Timer::", 1),
-        // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
-        // runs (at its end, and at each minute of the chip).
-        ("timer/app.rs", "Timer::", 1),
+        // The focus timer's DeadlineTimers, built in `TimerApp::new`: the timer's, armed only
+        // while a timer runs (at its end, and at each minute of the chip), and the scheduled
+        // shutdown's, armed only while a shutdown is scheduled (at its warning, its end and each
+        // minute of the chip).
+        ("timer/app.rs", "Timer::", 2),
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
@@ -2155,6 +2157,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "resources/mod.rs",
     "timer/mod.rs",
     "timer/popup.rs",
+    "timer/shutdown.rs",
     "notes/text.rs",
     "notes/lines.rs",
     "notes/keys.rs",
@@ -3660,12 +3663,66 @@ fn the_timer_is_wired_through_one_path() {
     assert!(!body.contains(".apply("), "timer_do applies no change but through change_step: {body}");
 }
 
+/// The scheduled shutdown's wiring (decision "A scheduled shutdown always warns a minute before,
+/// even when its time has passed"): the deadline's callback calls `fired()` before the check; the
+/// clock's minute tick (through `timer_check_clock`) and the load both check it, so a laptop that
+/// wakes late warns first; the power-off command is spawned in the `PowerOff` step alone, which only
+/// `shutdown_step` yields after a warning; and the state is written whenever it changes.
+#[test]
+fn the_shutdown_is_wired_through_one_path() {
+    let app =
+        production_code_without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/timer/app.rs")).unwrap());
+    let tick = function_body(&app, "fn shutdown_tick(");
+    let (fired, check) = (tick.find(".fired()"), tick.find("shutdown_check_clock"));
+    assert!(fired.is_some() && check.is_some() && fired < check, "fired() before the check: {tick}");
+    let clock = function_body(&app, "pub(crate) fn timer_check_clock(");
+    assert!(clock.contains("shutdown_check_clock()"), "the clock tick re-checks the shutdown: {clock}");
+    let load = function_body(&app, "pub(crate) fn timer_load(");
+    assert!(load.contains("shutdown_check_clock()"), "a late shutdown is noticed at load: {load}");
+    let check = function_body(&app, "pub(crate) fn shutdown_check_clock(");
+    assert!(check.contains("shutdown_step("), "the check goes through the pure step: {check}");
+    let power = check.find("spawn_poweroff(").expect("the power off");
+    let arm = check.find("Some(ShutdownStep::PowerOff) =>").expect("its arm");
+    let warn = check.find("Some(ShutdownStep::Warn").expect("the warning's arm");
+    assert!(warn < arm && arm < power, "the power off is spawned in its own arm, after the warning's: {check}");
+    assert_eq!(app.matches("spawn_poweroff(self.").count(), 1, "one place powers off");
+    let step = function_body(&app, "pub(crate) fn shutdown_step(");
+    assert!(step.contains("warned_at(now)"), "a warning moves the end a minute away at least: {step}");
+    let do_ = function_body(&app, "pub(crate) fn shutdown_do(");
+    assert!(do_.contains("self.timer_save()"), "a change is saved: {do_}");
+    // The open popup follows (timer_chip redraws it) after a change and after a step.
+    assert!(do_.contains("self.timer_chip()"), "the popup follows a change: {do_}");
+    assert!(check.contains("self.timer_chip()"), "the popup follows a step: {check}");
+    // A warning nobody can see never starts the minute: it waits for the server's name, at most the
+    // grace, and the name's arrival re-runs the check.
+    assert!(check.contains("warning_waits("), "a due warning may wait for the server: {check}");
+    let waits = check.find("warning_waits(").unwrap_or(usize::MAX);
+    assert!(waits < check.find("self.timer.warned = warned").unwrap_or(0), "the wait comes before `warned` is set: {check}");
+    let notify = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap(),
+    );
+    let view = function_body(&notify, "pub(crate) fn notify_view(");
+    assert!(view.contains("shutdown_check_clock()"), "the server's arrival re-runs the check: {view}");
+    // A shutdown saved by an earlier boot is dropped at load, and one with no command to run never
+    // starts: the verb is refused and a pending one is dropped before any warning.
+    let load = function_body(&app, "pub(crate) fn timer_load(");
+    assert!(load.contains("boot_time_secs()"), "the boot time is read at load: {load}");
+    assert!(check.contains("shutdown_refusal("), "no poweroff command: dropped before a warning: {check}");
+    // The warning is set apart from the user's rules (a drop or a mute must never hide it), and a
+    // sleep is told from a watched minute by the monotonic clock beside the wall one.
+    assert!(app.contains("c.notify_exempt(shutdown::warning()"), "the warning ignores the rules");
+    assert!(check.contains("self.warned_elapsed()"), "the check weighs the wall clock against the monotonic one: {check}");
+    assert!(check.contains("deferral_after("), "a wait for the server never outlives its warning: {check}");
+    let verb = function_body(&app, "pub(crate) fn timer_verb(");
+    assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
+}
+
 /// No panic in the focus timer's production code (it parses a file it did not
 /// write, and does arithmetic on wall-clock times).
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs"] {
+    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

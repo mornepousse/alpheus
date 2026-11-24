@@ -8,12 +8,17 @@
 //! This file also sends the end's notification and plays its sound, and reads and writes the state
 //! file.
 //!
+//! The scheduled shutdown (`shutdown.rs`) lives beside the timer here: its own deadline, armed only
+//! while a shutdown is scheduled, its warning notice (critical, with a Cancel action) and, at its
+//! end, the `[quick] poweroff` command through the executor. It never touches the timer's model.
+//!
 //! Never:
 //! - start a thread: everything runs on the event loop;
 //! - wait for the end's sound: it is started through the daemon's executor (the object every
 //!   program the daemon runs goes through, which tests replace with a fake) and never waited for;
-//! - log the sound's command or a path: logs carry fixed words and numbers only (the command may
-//!   name the user).
+//! - log the sound's or the power-off command, or a path: logs carry fixed words and numbers only
+//!   (a command may name the user);
+//! - power off before the warning: a late end warns first (`shutdown_step`).
 //!
 //! See: docs/features/timer.md, and
 //! docs/decisions.md ("One deadline, armed only while a timer runs", "A change applies a due end
@@ -25,13 +30,15 @@ use crate::deadline::DeadlineTimer;
 use crate::grid::Target;
 use crate::keys::Key;
 use crate::log::write as log;
+use crate::notify::CloseReason;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::quick::app::verb_debounced;
 use crate::session_bus::notifications::minute_now;
 use crate::state::Msg;
 use crate::state_file;
 use crate::timer::popup::{TimerAction, TimerPopup};
-use crate::timer::{Change, End, Lengths, Phase, Timer as Model, incoming, length_text};
+use crate::timer::shutdown::{self, Shutdown, ShutdownChoice, ShutdownStep, warning_holds};
+use crate::timer::{Change, End, Lengths, Phase, Timer as Model, chip_with_shutdown, incoming, length_text, saved_pair};
 use crate::wayland::App;
 use alpheus_common::exec::Executor;
 use alpheus_common::launcher_ipc::{Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb};
@@ -62,6 +69,22 @@ pub(crate) struct TimerApp {
     /// When a `--timer popup` verb opened the popup. A second one within 250 ms is ignored: some
     /// compositors fire a key bind twice.
     pub(crate) verb_opened: Option<Instant>,
+    /// The scheduled shutdown, beside the timer (never replacing it, never replaced by it).
+    pub(crate) shutdown: Option<Shutdown>,
+    /// When the warning was given (Unix ms), for the shutdown scheduled. Never saved: a restart
+    /// warns again. A warning the machine slept through, or that the clock went back before, no
+    /// longer counts (`shutdown::warning_holds`).
+    pub(crate) warned: Option<u64>,
+    /// The monotonic moment of that warning: with the wall-clock one it tells a sleep (the wall
+    /// clock runs through it, this one does not) from a warning really watched to its end.
+    pub(crate) warned_mono: Option<Instant>,
+    /// When a due warning first waited for the notification server to own its name. It waits at
+    /// most `SERVER_GRACE`: a warning nobody can see must not start the minute.
+    pub(crate) deferred_since: Option<Instant>,
+    /// The warning notice's id in the notification server, while it is shown.
+    pub(crate) warn_id: Option<u32>,
+    /// Armed only while a shutdown is scheduled.
+    pub(crate) shutdown_deadline: DeadlineTimer,
 }
 
 impl TimerApp {
@@ -73,6 +96,12 @@ impl TimerApp {
             deadline: DeadlineTimer::new(),
             minutes: config.timer.countdown,
             verb_opened: None,
+            shutdown: None,
+            warned: None,
+            warned_mono: None,
+            deferred_since: None,
+            warn_id: None,
+            shutdown_deadline: DeadlineTimer::new(),
         }
     }
 }
@@ -222,21 +251,126 @@ pub(crate) fn change_step(model: Model, c: Change, l: &Lengths, now: u64) -> (Mo
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Loaded {
     pub model: Model,
+    /// The shutdown on file, even one whose end has passed: the wiring warns first.
+    pub shutdown: Option<Shutdown>,
+    /// Why a shutdown on file was dropped, if it was.
+    pub dropped: Option<Dropped>,
     /// The file was there and unreadable (to be dropped).
     pub unreadable: bool,
     /// An end passed while the daemon was not running (applied once, silently).
     pub ended: bool,
 }
 
+/// Why a shutdown on file is not kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dropped {
+    /// Saved by an earlier boot (the state directory outlives a reboot), or of an unknown age.
+    BeforeBoot,
+    /// `[quick] poweroff` is empty: there is nothing to run at the end.
+    NoPoweroff,
+}
+
+impl Dropped {
+    /// The log line, a fixed word.
+    pub(crate) fn line(self) -> &'static str {
+        match self {
+            Dropped::BeforeBoot => "timer: shutdown from before this boot, dropped",
+            Dropped::NoPoweroff => "timer: shutdown dropped (no poweroff command)",
+        }
+    }
+}
+
+/// What `load` needs to know about the machine, read by the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LoadCtx {
+    /// This boot's start, in Unix seconds (`/proc/stat`'s `btime`); None when unreadable, which
+    /// drops any shutdown on file.
+    pub boot_secs: Option<u64>,
+    /// `[quick] poweroff` is set.
+    pub has_poweroff: bool,
+}
+
+/// `/proc/stat`'s `btime` line: the boot time in Unix seconds.
+pub(crate) fn parse_btime(text: &str) -> Option<u64> {
+    text.lines().find_map(|l| l.strip_prefix("btime ")).and_then(|v| v.trim().parse().ok())
+}
+
+/// This boot's start in Unix seconds, read once at load; None when `/proc/stat` cannot be read.
+pub(crate) fn boot_time_secs() -> Option<u64> {
+    std::fs::read_to_string("/proc/stat").ok().as_deref().and_then(parse_btime)
+}
+
+/// What a `--timer shutdown` verb is refused for, if it is: no command to run at the end.
+pub(crate) fn shutdown_refusal(poweroff: &[String]) -> Option<&'static str> {
+    poweroff.is_empty().then_some("no [quick] poweroff command is set")
+}
+
+/// How long a due warning waits for the notification server to own its name, at most.
+pub(crate) const SERVER_GRACE: Duration = Duration::from_secs(10);
+
+/// Whether a due warning must wait: the notifications module is on, its server does not hold the
+/// name yet, and the grace is not spent. Past it the warning goes out anyway (the chip and the log
+/// still say it), so a missing server never stops the power off from being announced.
+pub(crate) fn warning_waits(module_on: bool, serving: bool, waited: Duration) -> bool {
+    module_on && !serving && waited < SERVER_GRACE
+}
+
+/// The wait of a due warning for the server, after a check: kept while a warning is due, gone
+/// otherwise. The grace deadline is armed from it, so one left behind would re-arm a past instant
+/// forever.
+pub(crate) fn deferral_after(since: Option<Instant>, warn_due: bool) -> Option<Instant> {
+    since.filter(|_| warn_due)
+}
+
 /// Reads the state file's text (None when there is no file) into the timer to start with.
-pub(crate) fn load(text: Option<&str>, l: &Lengths, now: u64) -> Loaded {
+pub(crate) fn load(text: Option<&str>, l: &Lengths, now: u64, ctx: &LoadCtx) -> Loaded {
     // No file, or a file we cannot read: start idle.
     let idle = Model::Idle { done: false };
-    let Some(text) = text else { return Loaded { model: idle, unreadable: false, ended: false } };
-    let Some(model) = Model::parse_saved(text, now) else { return Loaded { model: idle, unreadable: true, ended: false } };
+    let Some(text) = text else { return Loaded { model: idle, shutdown: None, dropped: None, unreadable: false, ended: false } };
+    let Some((model, shutdown)) = Model::parse_pair(text, now) else {
+        return Loaded { model: idle, shutdown: None, dropped: None, unreadable: true, ended: false };
+    };
+    // A shutdown is kept only if it can run and was scheduled during this boot: a file left by an
+    // earlier session must never power the machine off after the next login.
+    let (shutdown, dropped) = match shutdown {
+        Some(_) if !ctx.has_poweroff => (None, Some(Dropped::NoPoweroff)),
+        Some(s) if ctx.boot_secs.is_none_or(|b| s.set < b.saturating_mul(1000)) => (None, Some(Dropped::BeforeBoot)),
+        other => (other, None),
+    };
     // An end that passed while the daemon was not running is applied now, once.
     let (model, end, _) = step(model, l, now);
-    Loaded { model, unreadable: false, ended: end.is_some() }
+    Loaded { model, shutdown, dropped, unreadable: false, ended: end.is_some() }
+}
+
+/// What a clock check does to the shutdown `s` (`warned` or not) at `now`: the shutdown after it
+/// (None once it powers off), whether it is warned, and the step due. A warning moves the end to a
+/// minute from now when it is nearer, so the power off is never sooner than a minute after the
+/// warning, and never before it.
+pub(crate) fn shutdown_step(
+    s: Shutdown,
+    warned: Option<u64>,
+    mono_elapsed: Duration,
+    now: u64,
+) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
+    // A warning the machine slept through, even briefly, or that the clock went back before is as
+    // good as none: it is given again, and its minute starts over.
+    let holds = warning_holds(&s, warned, mono_elapsed, now);
+    match shutdown::next(&s, now, holds).1 {
+        Some(step @ ShutdownStep::Warn { .. }) => (Some(s.warned_at(now)), Some(now), Some(step)),
+        Some(ShutdownStep::PowerOff) => (None, None, Some(ShutdownStep::PowerOff)),
+        None => (Some(s), warned.filter(|_| holds), None),
+    }
+}
+
+/// Runs the `[quick] poweroff` command `argv`, never through a shell and never waited for, and
+/// returns the log line: a fixed word, with the kind of a failure. The line never holds the command.
+pub(crate) fn spawn_poweroff(exec: &dyn Executor, argv: &[String]) -> String {
+    let Some((program, args)) = argv.split_first() else { return "timer: shutdown has no poweroff command".into() };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match exec.spawn(program, &args) {
+        Ok(()) => "timer: shutdown power off".into(),
+        Err(e) => format!("timer: shutdown power off could not start ({})", crate::log::exec_word(&e)),
+    }
 }
 
 /// Whether two instants are within `SAME_DEADLINE` of each other, in either order.
@@ -305,6 +439,27 @@ impl App {
             self.timer_toggle(&qh, None);
             return Reply::Done;
         }
+        // Nothing would run at the end: a shutdown is refused up front, never scheduled.
+        if matches!(verb, TimerVerb::Shutdown(_))
+            && let Some(refusal) = shutdown_refusal(&self.bar.config.quick.poweroff)
+        {
+            return Reply::Error(refusal.into());
+        }
+        // The shutdown is a slot of its own: its verbs never touch the timer, and dismiss no `done`.
+        match *verb {
+            TimerVerb::Shutdown(secs) if (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(&secs) => {
+                self.shutdown_do(ShutdownChoice::After(u64::from(secs) * 1000));
+                return Reply::Done;
+            }
+            TimerVerb::Shutdown(_) => return Reply::Error("timer seconds out of range".into()),
+            TimerVerb::ShutdownCancel => {
+                if !self.shutdown_do(ShutdownChoice::Cancel) {
+                    log("timer: nothing to shutdown-cancel");
+                }
+                return Reply::Done;
+            }
+            _ => {}
+        }
         let change = match *verb {
             TimerVerb::Start(secs) if (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(&secs) => Change::Countdown(u64::from(secs) * 1000),
             // The request comes from a socket, so it is not trusted: the decoder checks the range
@@ -318,7 +473,7 @@ impl App {
             TimerVerb::Stop => Change::Stop,
             TimerVerb::Skip => Change::Skip,
             // Handled above; kept so that adding a verb forces a decision here.
-            TimerVerb::Popup => return Reply::Done,
+            TimerVerb::Popup | TimerVerb::Shutdown(_) | TimerVerb::ShutdownCancel => return Reply::Done,
         };
         let seen = self.timer_do(Change::Seen);
         if !self.timer_do(change) && !seen {
@@ -373,6 +528,10 @@ impl App {
                 self.timer_do(c);
                 self.timer_refresh();
             }
+            TimerAction::CancelShutdown => {
+                self.shutdown_do(ShutdownChoice::Cancel);
+                self.timer_refresh();
+            }
         }
     }
 
@@ -383,6 +542,7 @@ impl App {
         let App { popup, timer, .. } = self;
         let rows = match popup.as_mut().map(|p| &mut p.body) {
             Some(PopupBody::Timer(p)) => {
+                p.set_shutdown(timer.shutdown.is_some());
                 p.follow(&timer.model);
                 p.render(&timer.model, &timer.lengths, unix_ms())
             }
@@ -423,7 +583,9 @@ impl App {
         };
         // `Seen` is applied once the popup is open, and the rows and the chip are made again after
         // it. The place was read before, as said above.
-        let popup = TimerPopup::new(self.timer.minutes, &self.timer.model);
+        let mut popup = TimerPopup::new(self.timer.minutes, &self.timer.model);
+        popup.set_shutdown(self.timer.shutdown.is_some());
+        popup.follow(&self.timer.model);
         let rows = popup.render(&self.timer.model, &self.timer.lengths, unix_ms());
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Timer(popup), columns, height, input) {
@@ -466,7 +628,12 @@ impl App {
     /// deadline that fires early finds no end and only arms the next one. See docs/decisions.md,
     /// "The clock's minute tick re-checks the timer".
     pub(crate) fn timer_check_clock(&mut self) {
-        if !self.timer.enabled || !self.timer.model.running() {
+        if !self.timer.enabled {
+            return;
+        }
+        // The shutdown has its own end, whatever the timer does (or does not run).
+        self.shutdown_check_clock();
+        if !self.timer.model.running() {
             return;
         }
         let (next, end, save) = step(self.timer.model, &self.timer.lengths, unix_ms());
@@ -512,7 +679,8 @@ impl App {
 
     /// Sends the bar the chip as it reads now; the bar repaints only when the chip changed.
     fn timer_chip(&mut self) {
-        let chip = self.timer.model.chip(unix_ms(), self.bar.config.timer.idle);
+        let now = unix_ms();
+        let chip = chip_with_shutdown(self.timer.model.chip(now, self.bar.config.timer.idle), self.timer.shutdown.as_ref(), now);
         if self.bar.apply(Msg::Timer(chip)) {
             self.dirty = true;
         }
@@ -551,7 +719,7 @@ impl App {
 
     /// Writes the state file, or removes it when idle. A failure is logged by its kind only.
     fn timer_save(&self) {
-        let text = self.timer.model.saved();
+        let text = saved_pair(&self.timer.model, self.timer.shutdown.as_ref());
         if let Err(e) = state_file::save_timer(&paths::state_dir(), text.as_deref()) {
             log(&format!("timer: state could not be saved ({:?})", e.kind()));
         }
@@ -565,8 +733,15 @@ impl App {
             return;
         }
         let text = state_file::read_timer(&paths::state_dir());
-        let loaded = load(text.as_deref(), &self.timer.lengths, now_ms);
+        let ctx = LoadCtx { boot_secs: boot_time_secs(), has_poweroff: shutdown_refusal(&self.bar.config.quick.poweroff).is_none() };
+        let loaded = load(text.as_deref(), &self.timer.lengths, now_ms, &ctx);
         self.timer.model = loaded.model;
+        self.timer.shutdown = loaded.shutdown;
+        self.timer.warned = None;
+        if let Some(why) = loaded.dropped {
+            self.timer_save();
+            log(why.line());
+        }
         if loaded.unreadable {
             log("timer: saved state unreadable, dropped");
             self.timer_save();
@@ -577,6 +752,11 @@ impl App {
         if !matches!(loaded.model, Model::Idle { .. }) {
             log(&format!("timer: restored {}", loaded.model.word()));
         }
+        if loaded.shutdown.is_some() {
+            log("timer: shutdown restored");
+        }
+        // A shutdown whose end passed while the daemon was off warns first, now.
+        self.shutdown_check_clock();
         self.timer_chip();
         self.timer_sync();
     }
@@ -590,6 +770,165 @@ impl App {
             _ => Change::Toggle,
         };
         self.timer_do(c);
+    }
+}
+
+impl App {
+    /// Schedules or cancels the shutdown. A duration replaces the one pending (and its warning
+    /// starts over); a cancel with none pending changes nothing and returns false. The timer is
+    /// never touched.
+    pub(crate) fn shutdown_do(&mut self, choice: ShutdownChoice) -> bool {
+        if !self.timer.enabled {
+            return false;
+        }
+        let now = unix_ms();
+        let after = shutdown::apply(self.timer.shutdown, choice, now);
+        if after == self.timer.shutdown {
+            return false;
+        }
+        self.timer.shutdown = after;
+        self.timer.warned = None;
+        self.timer.deferred_since = None;
+        self.shutdown_notice_close();
+        self.timer_save();
+        match choice {
+            ShutdownChoice::Cancel => log("timer: shutdown cancelled"),
+            ShutdownChoice::After(ms) => log(&format!("timer: shutdown scheduled ({})", length_text(ms))),
+        }
+        self.timer_chip();
+        self.shutdown_sync();
+        true
+    }
+
+    /// The deadline fired: `fired` first (the loop has dropped it), then the clock decides.
+    fn shutdown_tick(app: &mut App, _: Instant) {
+        app.timer.shutdown_deadline.fired();
+        app.shutdown_check_clock();
+    }
+
+    /// The monotonic time since the warning was given; zero when none was (it then holds nothing).
+    fn warned_elapsed(&self) -> Duration {
+        self.timer.warned_mono.map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
+    /// Takes the one step due, if any: the warning, or the power off. Called by the deadline, the
+    /// clock's minute tick (a suspended laptop's deadline is late) and at load. The warning always
+    /// comes first and a minute before the power off, even when the end is long past.
+    pub(crate) fn shutdown_check_clock(&mut self) {
+        let Some(s) = self.timer.shutdown else { return };
+        // Nothing to run at the end: the shutdown goes before any warning.
+        if shutdown_refusal(&self.bar.config.quick.poweroff).is_some() {
+            self.timer.shutdown = None;
+            self.timer.warned = None;
+            self.timer.deferred_since = None;
+            self.shutdown_notice_close();
+            self.timer_save();
+            log(Dropped::NoPoweroff.line());
+            self.timer_chip();
+            self.shutdown_sync();
+            return;
+        }
+        let (after, warned, due) = shutdown_step(s, self.timer.warned, self.warned_elapsed(), unix_ms());
+        let warn_due = matches!(due, Some(ShutdownStep::Warn { .. }));
+        // Only a warning that is due waits for the server: anything else leaves no wait behind (a
+        // clock that stepped back must not keep a past grace deadline armed).
+        self.timer.deferred_since = deferral_after(self.timer.deferred_since, warn_due);
+        if warn_due {
+            // The notice must be seen before its minute starts: while the server has not yet taken
+            // its name (the check runs at load, before it can), the warning waits for it, at most
+            // `SERVER_GRACE`. The server's arrival re-runs this check.
+            let module_on = self.bar.config.modules.contains(&ModuleId::Notifications);
+            let serving = self.notifications().is_some_and(|n| n.held());
+            let waited = self.timer.deferred_since.map_or(Duration::ZERO, |t| t.elapsed());
+            if warning_waits(module_on, serving, waited) {
+                self.timer.deferred_since.get_or_insert_with(Instant::now);
+                self.timer_chip();
+                self.shutdown_sync();
+                return;
+            }
+        }
+        self.timer.shutdown = after;
+        self.timer.warned = warned;
+        match due {
+            Some(ShutdownStep::Warn { .. }) => {
+                self.timer.deferred_since = None;
+                self.timer.warned_mono = Some(Instant::now());
+                self.timer_save();
+                log("timer: shutdown warning");
+                // A warning given again replaces the old notice.
+                self.shutdown_notice_close();
+                self.shutdown_warn();
+            }
+            Some(ShutdownStep::PowerOff) => {
+                self.timer_save();
+                self.shutdown_notice_close();
+                log(&spawn_poweroff(self.exec.as_ref(), &self.bar.config.quick.poweroff));
+            }
+            None => {}
+        }
+        self.timer_chip();
+        self.shutdown_sync();
+    }
+
+    /// Sends the warning through alpheus's own notification server, and keeps its id to close it or
+    /// to know its click. With no server serving the chip still shows the last minute, and one log
+    /// line says the warning was not shown.
+    fn shutdown_warn(&mut self) {
+        let serving = self.notifications().is_some_and(|s| s.held());
+        if !serving {
+            log("timer: shutdown warning not shown (not serving)");
+            return;
+        }
+        let mut id = 0;
+        self.notify_act(|s| {
+            s.act(|c| {
+                id = c.notify_exempt(shutdown::warning(), Instant::now(), minute_now());
+                c.take_effects()
+            });
+        });
+        self.timer.warn_id = (id != 0).then_some(id);
+    }
+
+    /// Closes the warning notice when it is shown: the shutdown was cancelled or went.
+    fn shutdown_notice_close(&mut self) {
+        let Some(id) = self.timer.warn_id.take() else { return };
+        let now = Instant::now();
+        self.notify_act(|s| s.act(|c| c.close(id, CloseReason::Dismissed, now)));
+    }
+
+    /// A click on notification `id`: the warning's Cancel. Anything else is not ours.
+    pub(crate) fn shutdown_notice_clicked(&mut self, id: u32) {
+        if self.timer.warn_id != Some(id) {
+            return;
+        }
+        // The click already closed the notice: only the shutdown is left to cancel.
+        self.timer.warn_id = None;
+        self.shutdown_do(ShutdownChoice::Cancel);
+    }
+
+    /// Sets the shutdown's one deadline: the next step or chip minute while a shutdown is scheduled,
+    /// none otherwise.
+    fn shutdown_sync(&mut self) {
+        let now = unix_ms();
+        let at = match self.timer.shutdown {
+            Some(s) => {
+                let holds = warning_holds(&s, self.timer.warned, self.warned_elapsed(), now);
+                shutdown::wake(&s, now, holds).and_then(|t| Instant::now().checked_add(wait_for(t, now)))
+            }
+            None => None,
+        };
+        // A warning waiting for the server wakes once more when the grace is spent.
+        let grace = self.timer.deferred_since.map(|t| t + SERVER_GRACE).filter(|_| self.timer.shutdown.is_some());
+        let at = match (at, grace) {
+            (Some(a), Some(g)) => Some(a.min(g)),
+            (a, g) => a.or(g),
+        };
+        if let (Some(armed), Some(at)) = (self.timer.shutdown_deadline.deadline(), at)
+            && same_deadline(armed, at)
+        {
+            return;
+        }
+        self.timer.shutdown_deadline.sync_opt(self.loop_handle.as_ref(), at, App::shutdown_tick);
     }
 }
 
