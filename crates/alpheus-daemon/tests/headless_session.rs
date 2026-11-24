@@ -8814,3 +8814,17 @@ fn a_start_clears_the_capture_files_a_killed_daemon_left() {
     assert!(!private.join(".capture.png.4242").exists());
     assert!(private.join("kept.png").exists(), "only the capture's own files are cleared");
 }
+
+/// An area capture asked while the debug selector is open replaces it: the debug selector's close
+/// is not the capture's answer, so the new selector's drag is captured and copied.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_area_capture_replaces_the_debug_selector_and_still_copies() {
+    let (sway, d, _shots) = capture_session("capture-over-debug", None);
+    open_capture_selector(&sway, &d, "select", 1);
+    open_capture_selector(&sway, &d, "area", 2);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: copied", DELAY), "the capture's own selector answers: {:?}", d.log());
+    assert_eq!(d.count("capture: cancelled"), 0, "{:?}", d.log());
+}

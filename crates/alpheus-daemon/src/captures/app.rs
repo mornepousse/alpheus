@@ -178,7 +178,7 @@ impl App {
         match step {
             Step::Select => {
                 let qh = self.qh.clone();
-                self.select_open(&qh);
+                self.select_open(&qh, true);
             }
             Step::Settle => self.capture_settle(),
             Step::Grab(area) => self.capture_grab(area),
