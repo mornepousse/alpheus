@@ -528,7 +528,7 @@ fn startup_pss_per_source() {
     // Another build under test (`ALPHEUS_DEMON_UNDER_TEST`, a base from before the module) does
     // not know its name.
     if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none() {
-        // `[failed]` at its defaults: `subscribe = false`.
+        // `[failed]` at its defaults: `subscribe = true`.
         cases.push(("+ failed", concat!(every_module!(), ", \"failed\""), ""));
     }
     let mut report = Vec::new();
@@ -3806,7 +3806,7 @@ fn start_figures(r: &FailedRig) -> (u64, u64, usize, usize) {
 }
 
 /// The default bar, then the same list with and without `failed`, at start, count 0 on both
-/// managers, with `subscribe` stated each way (it defaults to false): PSS printed, the anonymous
+/// managers, with `subscribe` stated each way (it defaults to true): PSS printed, the anonymous
 /// memory bounded (+ 256 KB), threads and sockets printed (does a bar without a session bus, or
 /// with one, open a link it did not before?).
 #[test]
@@ -3845,7 +3845,7 @@ fn failed_module_pss_at_start() {
     }
 }
 
-/// The default bar (no `modules`, so `[failed]` at its defaults: `subscribe = false`, the base build
+/// The default bar (no `modules`, so `[failed]` at its defaults: `subscribe = true`, the base build
 /// knowing no such table) at start, a system manager and a user manager at count 0 on
 /// their buses: PSS, anonymous PSS, threads and sockets printed. The same test runs against a base
 /// build (`ALPHEUS_DEMON_UNDER_TEST`), which has no failed module: the difference is what the

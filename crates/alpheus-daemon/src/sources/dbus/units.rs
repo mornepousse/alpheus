@@ -5,8 +5,9 @@
 //!
 //! Systemd sends the Manager's `PropertiesChanged` only while some client has called `Subscribe`,
 //! so the session subscribes once after its first successful read (`UnitsLink`), only when
-//! `[failed] subscribe` is on (it is off by default). The triggers that hold whatever the subscription (resume, a poke,
-//! a piggyback on another domain's wake-up) re-read it all the same.
+//! `[failed] subscribe` is on (it is on by default). The triggers that hold whatever the subscription
+//! (resume, a poke) re-read it all the same; the piggyback on another domain's wake-up is skipped
+//! while subscribed.
 //!
 //! Never:
 //! - ask for the whole interface: one `Get` of one property, never a `GetAll`
@@ -19,8 +20,8 @@
 //!   are.
 //!
 //! See: docs/features/failed.md, docs/features/control-center.md (the Diag tab),
-//! docs/decisions.md ("The failed-units count is read on triggers, and `Subscribe` is off by
-//! default").
+//! docs/decisions.md ("The failed-units count is pushed by a subscription, and read on triggers
+//! when it is off").
 
 use super::{Bus, SYSTEMD1};
 use crate::log::write as log;
@@ -38,7 +39,7 @@ pub const PIGGYBACK: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitsOptions {
     /// Call `Subscribe` once per owner so that systemd sends the change at once (`[failed]
-    /// subscribe`, off by default).
+    /// subscribe`, on by default).
     pub subscribe: bool,
     /// The piggyback interval.
     pub piggyback: Duration,
@@ -46,7 +47,7 @@ pub struct UnitsOptions {
 
 impl Default for UnitsOptions {
     fn default() -> Self {
-        UnitsOptions { subscribe: false, piggyback: PIGGYBACK }
+        UnitsOptions { subscribe: true, piggyback: PIGGYBACK }
     }
 }
 
