@@ -1,4 +1,4 @@
-//! Activation → argv → the executor (spec § 1, "Launching"): the only place
+//! Activation → argv → the executor: the only place
 //! the launcher builds a command line. Apps start in their own systemd
 //! scope when a user manager exists (they never die with the bar), fully
 //! detached otherwise; `Exec` is expanded per the Desktop Entry spec and
@@ -69,7 +69,7 @@ pub fn shell_argv(text: &str, terminal: Option<&[String]>) -> Vec<String> {
     terminal.unwrap_or(&[]).iter().cloned().chain(shell).collect()
 }
 
-/// A user entry's argv (tools spec § 5): `run` with `terminal` or `terminal_hold` in front, and the
+/// A user entry's argv: `run` with `terminal` or `terminal_hold` in front, and the
 /// one element that is exactly `{choice}` replaced by the chosen line, whole: a space, a quote, `-rf`
 /// or `{choice}` in the line stays inside that one argument.
 pub fn tool_argv(e: &EntryConfig, choice: Option<&str>, terminal: &[String], terminal_hold: &[String]) -> Vec<String> {
@@ -127,7 +127,7 @@ pub(crate) fn failure(program: &str, e: ExecError) -> String {
 /// A program for the user: in its systemd scope, or bare when systemd-run
 /// itself is missing. Looked up first (argv[0], the terminal for
 /// Terminal=true): `systemd-run` starts detached, so a program it cannot
-/// find would fail after the launcher closed, silently (spec § 3: the box
+/// find would fail after the launcher closed, silently (the box
 /// says so instead, and stays open).
 pub(crate) fn launch(ctx: &RunContext, argv: Vec<String>) -> Result<(), String> {
     let program = argv.first().cloned().unwrap_or_default();
@@ -147,7 +147,7 @@ pub(crate) fn launch(ctx: &RunContext, argv: Vec<String>) -> Result<(), String> 
     }
 }
 
-/// Ids only, never typed text (spec § 3); a save error is logged, not shown.
+/// Ids only, never typed text; a save error is logged, not shown.
 /// On the event loop: one small write and a rename, no fsync (`History::save`;
 /// a crash may lose the last use, never the file).
 fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
@@ -158,7 +158,7 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
     }
 }
 
-/// A Tools menu row (tools spec § 5). A built-in is recorded under `tool:builtin:<id>` and handed
+/// A Tools menu row. A built-in is recorded under `tool:builtin:<id>` and handed
 /// back for the glue to replay; a user entry is launched through the scope, recorded under its
 /// key (a fixed choice under its own; a `choices_cmd` line never), and logged by position only.
 // one row per kind of choices: each case reads on its own.
@@ -205,7 +205,7 @@ fn perform_tool(l: &mut Launcher, action: ToolAction, ctx: &RunContext) -> Resul
 pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match a {
-        // Never recorded (spec § 3: no typed text, and a dmenu line is not an app).
+        // Never recorded.
         Activation::Choose { mut text, line } if l.index => {
             wipe(&mut text);
             return Ok(Done::Reply(Reply::Index(line)));

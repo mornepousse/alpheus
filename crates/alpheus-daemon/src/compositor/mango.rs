@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// Spec § 2 bounds: what is past them is dropped, never an error.
+/// Bounds: what is past them is dropped, never an error.
 pub const MAX_OUTPUTS: usize = 16;
 pub const MAX_TAGS: u32 = 32;
 pub const MAX_CLIENTS: usize = 512;
@@ -100,7 +100,7 @@ fn label(s: &Option<String>) -> String {
 
 impl Model {
     /// Takes one line of `watch`. Mango's refusal, a line that is not a JSON object, or one without
-    /// the list its watch sends is an error: the source ends the session on it (spec § 2), and the
+    /// the list its watch sends is an error: the source ends the session on it, and the
     /// model keeps what it had.
     pub fn apply(&mut self, watch: Watch, line: &str) -> Result<(), String> {
         // Refused before serde_json recurses into it: deep nesting would overflow the compositor
@@ -267,7 +267,7 @@ mod tests {
         (selector.into(), class.into(), title.into(), workspace.into(), focused)
     }
 
-    /// Spec § 2: one workspace per (output, tag) in the monitors' order, an empty tag that is
+    /// One workspace per (output, tag) in the monitors' order, an empty tag that is
     /// neither active nor urgent hidden, `reference` the index; on the real capture.
     #[test]
     fn tags_per_output_from_the_real_capture() {
@@ -300,7 +300,7 @@ mod tests {
         );
     }
 
-    /// Spec § 2: `active_tags` [0] or empty is the overview: no tag visible, tag 0 never listed.
+    /// `active_tags` [0] or empty is the overview: no tag visible, tag 0 never listed.
     #[test]
     fn the_overview_shows_no_tag_visible_and_never_tag_0() {
         let expected = [w("1", "HDMI-A-1", 2, false, false, false), w("2", "HDMI-A-1", 1, false, false, false)];
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(summary(&model(&none, CLIENTS).state()), expected, "absent: empty");
     }
 
-    /// Spec § 2: in the overview, an output with no window and
+    /// In the overview, an output with no window and
     /// nothing urgent keeps its lowest tag as a placeholder (not visible, empty), so its bar never
     /// falls back to the other output's tags (`workspaces_of`), where a click would act there.
     #[test]
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(names("HDMI-A-1").len(), 2);
     }
 
-    /// Spec § 2: several active tags on the focused output are all visible and all focused.
+    /// Several active tags on the focused output are all visible and all focused.
     #[test]
     fn several_active_tags_on_the_focused_output_are_all_focused() {
         let focused = MULTI
@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(e.window.unwrap().title, "Notes");
     }
 
-    /// Spec § 2: the window is the active client of the output with `active: true`, or none.
+    /// The window is the active client of the output with `active: true`, or none.
     #[test]
     fn the_title_is_the_focused_outputs_active_client() {
         let swapped = MONITORS
@@ -373,7 +373,7 @@ mod tests {
         format!(r#"{{"clients":[{}]}}"#, ids.iter().map(one).collect::<Vec<_>>().join(","))
     }
 
-    /// Spec § 2: Mango gives no focus history; the model keeps one and orders as
+    /// Mango gives no focus history; the model keeps one and orders as
     /// Hyprland does: the previous window first, older ones next, never-focused windows after
     /// them in the snapshot's order, the focused one last. While nothing is focused (the launcher holds the keyboard), the most recent stays last.
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(toplevels(&e), [t("id:3", "org.example.Editor", "Editor", "1", true)]);
     }
 
-    /// Spec § 2: an `{"error":…}` reply or a line that is not JSON is an error (the source ends
+    /// An `{"error":…}` reply or a line that is not JSON is an error (the source ends
     /// the session on it); the model keeps what it had.
     #[test]
     fn error_replies_and_unreadable_lines_are_errors() {
@@ -491,7 +491,7 @@ mod tests {
         assert!(m.ready());
     }
 
-    /// Spec § 2 bounds: 16 outputs, 32 tags per output, 512 clients; labels cleaned and capped.
+    /// Bounds: 16 outputs, 32 tags per output, 512 clients; labels cleaned and capped.
     #[test]
     fn bounds_and_labels() {
         let tag = |i: u32| format!(r#"{{"index":{i},"is_active":{},"is_urgent":false,"client_count":1}}"#, i == 1);

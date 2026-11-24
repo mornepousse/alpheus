@@ -1,4 +1,4 @@
-//! `[tools]`, `[[tools.category]]` and `[[tools.entry]]` of launcher.toml (spec § 4): the
+//! `[tools]`, `[[tools.category]]` and `[[tools.entry]]` of launcher.toml: the
 //! structure, its validation and its bounds. Pure: no thread, no command, no log (the bound
 //! notes go through a callback the caller logs).
 
@@ -23,7 +23,7 @@ pub const ORDER_MAX: u16 = 1000;
 pub const DEFAULT_ORDER: u16 = 50;
 /// The one element of `run` replaced by the chosen line, whole: never part of an argument.
 pub const CHOICE_PLACEHOLDER: &str = "{choice}";
-/// The built-in categories (spec § 3); an entry may name one, a `[[tools.category]]` may restyle one.
+/// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
 pub const BUILTIN_CATEGORIES: [&str; 4] = ["Quick settings", "Control center", "Utilities", "Session"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -115,7 +115,7 @@ fn check_text(at: &str, what: &str, s: &str, max: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// A name: `check_text`, and no `/` (it separates the parts of a history key: spec § 5).
+/// A name: `check_text`, and no `/` (it separates the parts of a history key).
 fn check_name(at: &str, s: &str) -> Result<(), String> {
     check_text(at, "name", s, TOOL_NAME_MAX)?;
     if s.contains('/') {
@@ -146,7 +146,7 @@ fn check_argv(at: &str, key: &str, argv: &[String]) -> Result<(), String> {
     }
 }
 
-/// The spec's § 4 rules. A message names the key and `tools.entry <i>` / `tools.category <i>`
+/// The rules of a valid `[tools]` table. A message names the key and `tools.entry <i>` / `tools.category <i>`
 /// (1-based), never the text of a name, command or choice.
 pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     if !t.reload.is_empty() {
@@ -215,7 +215,7 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Cuts what is past a bound, with one `note` per bound (counts only, spec § 4): categories
+/// Cuts what is past a bound, with one `note` per bound (counts only): categories
 /// (an entry of a category cut is dropped, not moved to the root, and counted in the same
 /// note), entries, the fixed choices past `MAX_CHOICES` (one note for all the entries), and the
 /// `state` past the 16th entry that has one. Run after `validate`: what is cut was checked.

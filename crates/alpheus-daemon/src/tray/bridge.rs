@@ -13,7 +13,7 @@
 //! - route an answer from inside the call that sent it: the answers a flush drained are routed from
 //!   an idle callback (`tray_sync` queues it), so no callback runs inside another.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
+//! See: docs/features/tray.md, and docs/decisions.md
 //! ("A burst of tray changes is redrawn once per frame callback", "A closed session bus is never
 //! reconnected", "A failed Activate opens the menu of the icon that was pressed").
 

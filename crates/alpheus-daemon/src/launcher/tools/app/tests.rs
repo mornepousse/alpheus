@@ -204,8 +204,8 @@ fn the_states_the_daemon_knows_are_dnd_and_the_toggles_that_answer() {
     assert_eq!(known_builtin_states(&entries, true, &toggles), expected);
 }
 
-/// Decision 10: everything a built-in spawns is in its own scope, so a reload outlives the daemon's
-/// cgroup; detached only when there is no systemd.
+/// Everything a built-in spawns is in its own scope (docs/decisions.md,
+/// "Everything a built-in spawns runs in its own scope"), so a reload outlives the daemon's cgroup; detached only when there is no systemd.
 #[test]
 fn a_built_in_that_spawns_runs_in_its_own_scope() {
     let bin = Bin::new("wrap", &["shell-ctl", "loginctl", "alpheus-toggle"]);

@@ -45,7 +45,7 @@ impl Locale {
         ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().filter_map(&var).find(|v| !v.is_empty()).and_then(|v| Locale::parse(&v))
     }
 
-    /// Keys to try for `key`, in the spec's order: key[lang_COUNTRY@MOD], key[lang_COUNTRY],
+    /// Keys to try for `key`, in the Desktop Entry spec's order: key[lang_COUNTRY@MOD], key[lang_COUNTRY],
     /// key[lang@MOD], key[lang], then key.
     pub fn keys(&self, key: &str) -> Vec<String> {
         let l = &self.lang;
@@ -353,7 +353,7 @@ pub struct ExecContext<'a> {
 /// the whole file is treated as invalid instead (the scan skips it and logs it, rather than
 /// risk running something other than what was asked for).
 /// An argument that was only removed codes (quoted or not) disappears.
-/// The spec forbids field codes inside quotes; real files have them and GLib expands them
+/// The Desktop Entry spec forbids field codes inside quotes; real files have them and GLib expands them
 /// there too. `%i` must be an unquoted argument of its own.
 pub fn exec_argv(exec: &str, ctx: &ExecContext) -> Result<Vec<String>, BadExec> {
     let bad = |m: &str| Err(BadExec(m.to_string()));

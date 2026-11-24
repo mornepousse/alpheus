@@ -57,7 +57,7 @@ pub struct CompositorState {
     /// Mapped windows; the focused one LAST (the first is the previously
     /// focused one, alt-tab style). Read by the launcher's window list.
     pub toplevels: Vec<Toplevel>,
-    /// The compositor says a screen is being cast (privacy spec § 3). Never names the app.
+    /// The compositor says a screen is being cast. Never names the app.
     pub casting: bool,
     /// How long a release of `casting` still counts as casting: Hyprland's `0` comes about
     /// 500 ms after the last frame and a screenshot blips, niri's events are exact (zero).

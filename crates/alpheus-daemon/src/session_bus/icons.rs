@@ -1,4 +1,4 @@
-//! What the bar draws for a tray item (spec § 1, Icons): a Nerd Font glyph
+//! What the bar draws for a tray item: a Nerd Font glyph
 //! from a small built-in table, or `[tray.icons]` overrides, matched against
 //! what the item says about itself; an application nobody knows gets the
 //! first letter of its name. Never an image: the item's pixmaps are never

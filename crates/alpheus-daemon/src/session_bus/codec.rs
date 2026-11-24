@@ -145,7 +145,7 @@ fn variant(it: &mut Iter<'_>) -> Option<Value> {
     Some(value(&mut v, true))
 }
 
-/// One property value at `it`, inside its variant (media spec § 3, Tolerance): `s` and `o` as
+/// One property value at `it`, inside its variant: `s` and `o` as
 /// cleaned strings, every integer type as `Int` (a `t` beyond i64::MAX is `Other`), `d` as `Float`,
 /// `b`, `as` (at most MAX_LIST, cleaned), and `a{sv}` as a `Map` only where `maps` allows it (the
 /// `Metadata` property, one level down, nothing else); anything else `Other`, never an error.
@@ -469,7 +469,7 @@ fn properties_updated(it: &mut Iter<'_>) -> Option<(Vec<(i32, MenuProps)>, Vec<(
     Some((updated, removed))
 }
 
-/// A method call to the notification server, decoded raw (notifications spec § 1, amended): never
+/// A method call to the notification server, decoded raw: never
 /// through crossroads' typed handlers, which would decode `image-data` into dynamic values.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inbound {
@@ -574,7 +574,7 @@ fn actions(it: &mut Iter<'_>) -> Option<Vec<Action>> {
     Some(out)
 }
 
-/// The hints alpheus reads (spec § 2).
+/// The hints alpheus reads.
 struct Hints {
     urgency: Urgency,
     category: Option<String>,
@@ -656,7 +656,7 @@ pub enum Toggle {
 /// The dbusmenu property names the tray reads (and resets).
 const MENU_PROPERTY_NAMES: [&str; 7] = ["label", "enabled", "visible", "type", "toggle-type", "toggle-state", "children-display"];
 
-/// A dbusmenu item's properties; None = absent (the spec default applies).
+/// A dbusmenu item's properties; None = absent (the dbusmenu default applies).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MenuProps {
     pub label: Option<String>,

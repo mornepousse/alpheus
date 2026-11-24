@@ -1,7 +1,7 @@
 //! The pad as one feature of the App: the toggle decided purely (`decide`), its guard (a pad error
 //! saves what was typed and closes the pad, never the bar), the outcomes of its keys, the autosave
 //! timer (armed only while the pad is open and edited) and the copy command. Logs carry fixed words
-//! only, never the note (spec § 5).
+//! only, never the note.
 
 use crate::deadline::DeadlineTimer;
 use crate::launcher::host::TOGGLE_DEBOUNCE;

@@ -1,4 +1,4 @@
-//! The launcher's state and every key rule, pure (spec § 2): the query,
+//! The launcher's state and every key rule, pure: the query,
 //! the mode (and the prefixes that jump to one), the selection and the
 //! visible window of results, what Enter and Ctrl+Enter activate.
 //! Wayland feeds it keys and clicks and applies the `Outcome`;
@@ -52,7 +52,7 @@ pub enum Activation {
         text: String,
         line: Option<usize>,
     },
-    /// A command-source entry (sources spec § 3): its source's `run` with the whole line.
+    /// A command-source entry: its source's `run` with the whole line.
     Entry(usize),
     /// The calculator's text (small features 1) for the clipboard: handed to `Config::copy` on its
     /// stdin, never on an argv.
@@ -68,7 +68,7 @@ pub enum Activation {
     Clip {
         id: u64,
     },
-    /// A Tools menu row (tools spec § 5): what the glue runs after the box closed.
+    /// A Tools menu row: what the glue runs after the box closed.
     Tool(ToolAction),
 }
 
@@ -93,7 +93,7 @@ pub enum Outcome {
     Edit(ClipEdit),
     /// The Tools mode was entered by the `/` prefix: the host reads the built-ins' states and the
     /// reader reads the entries' (the job, when any has a `state`). A drill or a confirm from a
-    /// Mod+Space hit reads none (the rows show no switch there; spec § 1 allows it).
+    /// Mod+Space hit reads none (the rows show no switch there).
     EnterTools(Option<Job>),
     /// A `choices_cmd` level was opened: the reader reads its lines.
     ReadChoices(Job),
@@ -103,7 +103,7 @@ pub enum Outcome {
     Asked,
 }
 
-/// How the launcher was opened: what scan deliveries and window lists it takes (tools spec § 1).
+/// How the launcher was opened: what scan deliveries and window lists it takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
     /// Mod+Space: the apps, the windows, the sources' entries, the catalog; the Tools mode is a jump.
@@ -148,7 +148,7 @@ pub struct Launcher {
     /// Changed only through `set_catalog`: assigning it directly would leave the ranker's
     /// per-catalog facts (and the selection) stale — same reason as `windows` below.
     pub catalog: Option<Catalog>,
-    /// Command-source entries (sources spec § 3): None until the scan delivers them (never with no
+    /// Command-source entries: None until the scan delivers them (never with no
     /// source configured). Changed only through `set_entries`, for the reason `catalog` is.
     pub entries: Option<Entries>,
     /// Changed only through `set_windows`: a direct assignment skips `ranker.forget_windows()`
@@ -161,7 +161,7 @@ pub struct Launcher {
     pub index: bool,
     /// Script mode, `--password`: no list, the query drawn as dots, wiped on drop (`Drop`).
     pub password: bool,
-    /// Script mode, `--visible N`: an empty query lists the first N lines only (sources spec § 4).
+    /// Script mode, `--visible N`: an empty query lists the first N lines only.
     pub visible: Option<usize>,
     /// $PATH directories, in order, for the preview's "full path" of a command (the host sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
@@ -174,7 +174,7 @@ pub struct Launcher {
     /// `Mode::Calc`, for a query that is no expression, or in All for one that does not look like
     /// math. Set by `rank`, with the row it makes.
     pub calc: Option<Calc>,
-    /// The clipboard history's rows, a snapshot at open (clipboard spec): empty unless the history
+    /// The clipboard history's rows, a snapshot at open: empty unless the history
     /// is on. Changed through `set_clips` and the keys only; wiped when the box drops.
     pub clips: Vec<ClipRow>,
     /// The `"` prefix is claimed in All (the history is on and a protocol bound).
@@ -446,7 +446,7 @@ impl Launcher {
         self.refilter_keeping(kept);
     }
 
-    /// The sources' entries, the open's second delivery (sources spec § 6): refilters, keeping the
+    /// The sources' entries, the open's second delivery: refilters, keeping the
     /// selection by identity like `set_catalog` (back on top unless the user moved).
     pub fn set_entries(&mut self, entries: Entries) {
         let kept = self.selected_hit().and_then(|h| self.identity(h.source));
@@ -495,7 +495,7 @@ impl Launcher {
     /// `key`, told whether it is an auto-repeat. On a history row a held Enter (Clear), Ctrl+Enter
     /// (pin) or Delete does nothing: like the power menu, a held key repeats only to move.
     pub fn key_repeat(&mut self, k: Key, repeat: bool) -> Outcome {
-        // A held Enter in the Tools menu does nothing (tools spec § 2): it neither drills, runs
+        // A held Enter in the Tools menu does nothing: it neither drills, runs
         // nor asks, so a key held past the box's closing never acts in what it opened.
         if repeat && k == Key::Enter && self.mode == Mode::Tools {
             self.at = None;
@@ -618,7 +618,7 @@ impl Launcher {
         self.query_changed();
     }
 
-    /// The keys that mean something else in the Tools mode (spec § 2); the rest (editing, moving)
+    /// The keys that mean something else in the Tools mode; the rest (editing, moving)
     /// is the common handling.
     // Left in a typed query is spelled out, so it never falls to a later arm.
     #[allow(clippy::match_same_arms)]
@@ -736,7 +736,7 @@ impl Launcher {
         self.refilter();
     }
 
-    /// A Mod+Space hit on a tool (tools spec § 1): runs it as the Tools box would; one that
+    /// A Mod+Space hit on a tool: runs it as the Tools box would; one that
     /// drills or must ask switches the box to the Tools mode, at its level.
     fn tool_from_all(&mut self, i: usize) -> Outcome {
         use crate::launcher::tools::catalog::Choices;
@@ -766,7 +766,7 @@ impl Launcher {
             };
         }
         // A confirm entry or choice: the box goes to its level with its question asked, so the
-        // question, its expiry and its timer are the Tools mode's only (tools menu spec, decision 20).
+        // question, its expiry and its timer are the Tools mode's only.
         match choice {
             Some(_) => {
                 t.goto_choices(&self.config.tools, entry);
@@ -857,7 +857,7 @@ impl Launcher {
             Some(e) => (&e.items[..], &e.sources[..]),
             None => (&[][..], &[][..]),
         };
-        // Mod+Space's typed search ranks the flat rows (tools spec § 1).
+        // Mod+Space's typed search ranks the flat rows.
         self.tool_flat_shown = true;
         let tools = match &self.tools {
             Some(t) => t.flat().1,
@@ -1243,8 +1243,8 @@ fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig, clipboar
     prefix::split(query, config.search_enabled(), clipboard)
 }
 
-/// The history rows' text is overwritten before it is freed, previews included (clipboard spec § 4,
-/// "Never a password").
+/// The history rows' text is overwritten before it is freed, previews included (docs/decisions.md, "The clipboard history
+/// is off by default, kept in memory, and wiped when removed").
 fn wipe_clips(clips: &mut [ClipRow]) {
     for c in clips {
         wipe(&mut c.preview);

@@ -1,4 +1,4 @@
-//! The MPRIS consumer (media spec § 3–4). It finds the players on the session bus, follows their
+//! The MPRIS consumer. It finds the players on the session bus, follows their
 //! state into `media::Players` (pure), and sends them PlayPause, Next or Previous.
 //!
 //! It owns no connection. It rides whichever `Outbox` hosts it: the tray's, or the bar's own
@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
-/// Error replies meaning the player is gone or is no MPRIS player (spec § 3): its entry goes. Our own
+/// Error replies meaning the player is gone or is no MPRIS player: its entry goes. Our own
 /// 2 s timeout is not among them: a player busy for 2 s keeps its place, and its next
 /// PropertiesChanged fills it in.
 const GONE: [&str; 3] =
@@ -353,7 +353,7 @@ impl Mpris {
         }
     }
 
-    /// PlayPause, Next or Previous to the active player, if it can (spec § 1, `Player::can`): sent
+    /// PlayPause, Next or Previous to the active player, if it can: sent
     /// with no reply expected, so nothing is pending and no timer arms. The destination is the
     /// owner table's unique name.
     pub fn control(&mut self, out: &mut impl Outbox, c: Control) {
@@ -370,7 +370,7 @@ impl Mpris {
         }
     }
 
-    /// The popup opened (spec § 3): `Seeked` is followed from now on (once), and the active player's
+    /// The popup opened: `Seeked` is followed from now on (once), and the active player's
     /// position is read — never trusted from an earlier open, since a seek in the player's own
     /// window may have sent no Seeked at all.
     pub fn popup_opened(&mut self, out: &mut impl Outbox) {

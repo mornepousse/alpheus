@@ -14,7 +14,7 @@
 //! - talk to a bus, start a thread or run a command;
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 4 and docs/features/notifications.md.
+//! See: docs/features/notifications.md.
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style};

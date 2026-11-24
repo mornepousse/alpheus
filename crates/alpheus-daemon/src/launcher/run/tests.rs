@@ -505,7 +505,7 @@ fn the_dollar_text_never_reaches_history_or_log() {
     assert!(!h.exists(), "the typed text is never recorded");
 }
 
-// -- The Tools menu's entries (tools spec § 5) --
+// -- The Tools menu's entries --
 
 fn tools_launcher(text: &str) -> Launcher {
     use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};

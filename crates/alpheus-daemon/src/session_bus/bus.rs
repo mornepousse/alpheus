@@ -3,7 +3,7 @@
 //! remembered by serial, answers matched when they arrive, each call gives
 //! up after `TIMEOUT` (`expire`, driven by a `DeadlineTimer` armed only
 //! while something is pending). Every call is a typed `Call` from the
-//! allowlist (spec § 3), built in ONE place, `message`, with auto-start off:
+//! allowlist, built in ONE place, `message`, with auto-start off:
 //! nothing outside the list can reach an application, and no call can
 //! start a service.
 //!
@@ -49,7 +49,7 @@ const DBUS: &str = BUS_DRIVER;
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const PROPERTIES: &str = PROPERTIES_INTERFACE;
 
-/// The call allowlist (spec § 3): nothing else can be built.
+/// The call allowlist: nothing else can be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
@@ -69,7 +69,7 @@ pub enum Method {
     RegisterStatusNotifierHost,
     /// The portal's color-scheme.
     ReadOne,
-    /// A player's Player properties, at once (media spec § 3).
+    /// A player's Player properties, at once.
     GetAll,
     /// The media controls, sent without a reply.
     PlayPause,
@@ -210,7 +210,7 @@ pub enum Call {
     },
     /// org.kde.StatusNotifierWatcher with DO_NOT_QUEUE.
     RequestName,
-    /// `RequestName(NOTIFICATIONS_NAME, 0)`: queued behind any owner (notifications spec § 1).
+    /// `RequestName(NOTIFICATIONS_NAME, 0)`: queued behind any owner.
     RequestNotifications,
     GetNameOwner {
         name: String,
@@ -232,7 +232,7 @@ pub enum Call {
     },
     /// `ReadOne(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY)` on the portal: nothing else of the portal can be read.
     ReadOne,
-    /// `GetAll(MPRIS_PLAYER_INTERFACE)` on a player's MPRIS object (media spec § 3).
+    /// `GetAll(MPRIS_PLAYER_INTERFACE)` on a player's MPRIS object.
     PlayerGetAll {
         dest: String,
     },
@@ -426,7 +426,7 @@ pub fn refusal(call: &Message) -> Message {
     call.error(&ErrorName::from("org.freedesktop.DBus.Error.UnknownMethod"), c"alpheus serves no such call")
 }
 
-/// Notify's answer: the id (notifications spec § 1), sent even when no bubble shows.
+/// Notify's answer: the id, sent even when no bubble shows.
 pub fn notify_reply(call: &Message, id: u32) -> Message {
     call.method_return().append1(id)
 }

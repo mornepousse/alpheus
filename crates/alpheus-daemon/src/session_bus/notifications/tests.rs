@@ -223,7 +223,7 @@ fn the_view_and_the_bubbles_are_reported_only_when_they_change() {
     assert!(!n.take_bubbles_change(), "a normal one under do not disturb: no bubble, nothing to repaint");
 }
 
-/// Constraints, Lightness: the bubble timer follows every live bubble with
+/// The bubble timer follows every live bubble with
 /// a finite timeout, hidden by do-not-disturb or not. A hidden one replaced moves the earliest
 /// expiry without changing what shows: still a change for the host, which re-arms the timer.
 #[test]

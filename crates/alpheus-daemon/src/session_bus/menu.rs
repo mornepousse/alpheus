@@ -1,4 +1,4 @@
-//! A tray item's menu as the bar draws it (spec § 1 Menus, § 2): rows of
+//! A tray item's menu as the bar draws it: rows of
 //! cells inside a pixel frame (the painter's), the launcher's list rendering and keys
 //! (`crate::list`, `crate::keys`), one level at a time — a submenu replaces
 //! the list in the same popup, its first row `◂ <parent>` (drill-down; see

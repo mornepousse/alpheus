@@ -8,16 +8,16 @@
 //! `clock`). `popup.rs` builds the popup's rows from it, `app.rs` is the wiring (the popup, its
 //! timer, the clicks), and `session_bus/mpris.rs` talks to the bus and feeds this file.
 //!
-//! Bounded, so that a hostile player cannot grow memory (media spec § 5): at most 16 players, strings
+//! Bounded, so that a hostile player cannot grow memory: at most 16 players, strings
 //! cleaned and cut at 256 characters, at most 8 artists.
 //!
 //! Never:
 //! - name D-Bus: `session_bus/codec.rs` turns what a player sends into this file's `Value`;
 //! - read the clock: the caller passes `now` as an `Instant`, so a test can choose any time;
 //! - start a thread or a process, or write anything: the module never writes a player's volume,
-//!   never seeks, and never raises or launches a player (media spec § 5).
+//!   never seeks, and never raises or launches a player.
 //!
-//! See: docs/specs/2026-10-08-alpheus-media-design.md, docs/features/media.md, and docs/decisions.md
+//! See: docs/features/media.md, and docs/decisions.md
 //! ("The active media player is the pinned one, else the best status", "One connection owning two
 //! MPRIS names keeps the first", "The media popup computes the position, and reads it only while
 //! open", "A player is labelled by its identity, else by its name", "A paused player's module is
@@ -30,7 +30,7 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Every MPRIS player's well-known name starts with this.
 pub const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
-/// Players tracked at most: a 17th is refused (media spec § 3, Bounds).
+/// Players tracked at most: a 17th is refused.
 pub const MAX_PLAYERS: usize = 16;
 /// `xesam:artist` entries kept.
 pub const MAX_ARTISTS: usize = 8;
@@ -61,7 +61,7 @@ impl Status {
         }
     }
 
-    /// The active player's score (media spec § 3): playing 2, paused 1, stopped never shown.
+    /// The active player's score: playing 2, paused 1, stopped never shown.
     fn score(self) -> u8 {
         match self {
             Status::Playing => 2,
@@ -71,7 +71,7 @@ impl Status {
     }
 }
 
-/// What a click or a key asks the active player (media spec § 1, § 2).
+/// What a click or a key asks the active player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     PlayPause,
@@ -105,7 +105,7 @@ pub struct Track {
 }
 
 impl Track {
-    /// An MPRIS `Metadata` map (media spec § 3, Tolerance): `xesam:artist` as `as` or `s`,
+    /// An MPRIS `Metadata` map: `xesam:artist` as `as` or `s`,
     /// `mpris:length` as any integer or a float; every string cleaned and capped (`text::clean`), a
     /// blank one absent; unknown keys and unexpected types ignored (never an error).
     pub fn from_metadata(entries: &[(String, Value)]) -> Track {
@@ -173,7 +173,7 @@ impl Player {
         }
     }
 
-    /// Whether the player says it can do `c` now (media spec § 1): PlayPause needs `CanPause` while
+    /// Whether the player says it can do `c` now: PlayPause needs `CanPause` while
     /// playing and `CanPlay` otherwise; a capability it lacks makes the action a no-op.
     pub fn can(&self, c: Control) -> bool {
         match c {
@@ -220,7 +220,7 @@ pub struct Players {
 }
 
 impl Players {
-    /// Never queried (media spec § 3): playerctld always (`playerctld`, or `playerctld.` followed by
+    /// Never queried: playerctld always (`playerctld`, or `playerctld.` followed by
     /// anything; `playerctldx` is another player), then any player whose bus name contains one of
     /// `ignore`'s substrings (an empty one matches nothing).
     pub fn is_ignored(bus_name: &str, ignore: &[String]) -> bool {
@@ -386,7 +386,7 @@ impl Players {
     }
 }
 
-/// What the bar shows (media spec § 1): `▶`/`⏸` and the title, already truncated.
+/// What the bar shows: `▶`/`⏸` and the title, already truncated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaView {
     pub playing: bool,
@@ -402,7 +402,7 @@ pub fn view(players: &Players, title_max: u16) -> Option<MediaView> {
 }
 
 /// The title, else the last path segment of the url (percent-decoded), else the player's name
-/// (media spec § 1).
+///.
 pub fn display_title(track: &Track, identity: Option<&str>, bus_name: &str) -> String {
     if let Some(title) = &track.title {
         return title.clone();
@@ -439,7 +439,7 @@ pub fn player_name(identity: Option<&str>, bus_name: &str) -> String {
 /// never inside a cluster (a combining mark, a variation selector or a skin tone after its base, a
 /// ZWJ sequence, a flag's two regional indicators). The text is first put in NFC form (composed
 /// characters), as `Grid::write` does. The cut counts width the way the grid does and splits no
-/// cluster (media spec § 1, amended: done by hand on `unicode-width`, with no new dependency); see
+/// cluster; see
 /// docs/decisions.md, "Media titles are cut by display width, never inside a cluster".
 pub fn truncate_title(s: &str, max: u16) -> String {
     let chars: Vec<char> = s.nfc().collect();
@@ -507,7 +507,7 @@ fn is_regional(c: char) -> bool {
     matches!(c, '\u{1f1e6}'..='\u{1f1ff}')
 }
 
-/// Where the track is now (media spec § 2, Time): the last position read, plus the time since × Rate
+/// Where the track is now: the last position read, plus the time since × Rate
 /// while Playing, clamped to [0, length]. None when the position or the length is unknown. MPRIS
 /// does not signal the position, so it is computed; see docs/decisions.md, "The media popup
 /// computes the position, and reads it only while open".

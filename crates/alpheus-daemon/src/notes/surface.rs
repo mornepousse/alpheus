@@ -2,7 +2,7 @@
 //! centred `Overlay` layer surface with exclusive keyboard focus (the box), one transparent scrim
 //! per output on the same layer to catch a click outside, the App's keyboard, buffers from a pool
 //! of its own coalesced while the compositor holds both. Everything lives in `OpenNotes`, dropped
-//! whole on close: nothing of the pad stays resident (spec § 1).
+//! whole on close: nothing of the pad stays resident.
 
 use crate::actions::{self, Button};
 use crate::launcher::host::read_config;

@@ -25,7 +25,7 @@ pub enum Event {
     Urgent(String),
     /// `closewindow>>address` (also structure).
     Closed(String),
-    /// `screencast>>1,…` / `screencastv2>>0,…`: a screen cast started or stopped (privacy spec § 3).
+    /// `screencast>>1,…` / `screencastv2>>0,…`: a screen cast started or stopped.
     Screencast(bool),
     Ignore,
 }

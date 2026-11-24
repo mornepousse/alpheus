@@ -11,7 +11,7 @@
 //!   docs/decisions.md, "The calendar's first day comes from the locale, read at each open");
 //! - start a thread or a process.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md ("Calendar", § 2), docs/features/calendar.md.
+//! See: docs/features/calendar.md.
 
 use crate::calendar::{Calendar, locale_first_day};
 use crate::clock::LocalTime;
@@ -52,7 +52,7 @@ impl App {
         }
     }
 
-    /// ← and → change the month, Escape closes (tray spec § 2). Any other key does nothing.
+    /// ← and → change the month, Escape closes. Any other key does nothing.
     fn calendar_key(&mut self, k: Key) {
         match k {
             Key::Left => self.calendar_scroll(-1),

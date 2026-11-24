@@ -1,7 +1,9 @@
-//! The application launcher (spec docs/specs/2026-10-05-alpheus-launcher-design.md):
-//! one more pair of layer-shell surfaces of the daemon, built at open and
+//! The application launcher: one more pair of layer-shell surfaces of the daemon, built at open and
 //! freed at close. Pure parts first (configuration, history, sources,
 //! matching, model, view), the Wayland side last.
+//!
+//! See: docs/features/launcher.md and docs/decisions.md ("Nothing of the launcher stays resident while it
+//! is closed", "A launched program is never a child of the bar").
 
 pub mod calc;
 pub mod config;

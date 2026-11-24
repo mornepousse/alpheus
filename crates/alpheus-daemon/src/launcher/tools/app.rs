@@ -27,8 +27,7 @@
 //!   in this folder's other files for the names of those functions and types);
 //! - keep a thread, a timer or a catalog while the menu is closed.
 //!
-//! See: docs/specs/2026-11-21-alpheus-tools-menu-design.md (§§ 1, 5, 6, 8, 9),
-//! docs/features/tools-menu.md, and docs/decisions.md ("A built-in replays the daemon's own verb
+//! See: docs/features/tools-menu.md, and docs/decisions.md ("A built-in replays the daemon's own verb
 //! after the box has closed", "A tab opens through `[actions] open_tab`, else in the terminal",
 //! "Everything a built-in spawns runs in its own scope", "The Tools menu reads states and choices one
 //! job at a time on a short-lived thread").
@@ -64,7 +63,7 @@ pub struct Join {
     pub diagnostics: bool,
 }
 
-/// What decides which built-ins show (tools spec § 3), from the configs and what the app knows.
+/// What decides which built-ins show, from the configs and what the app knows.
 pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Join) -> Context {
     Context {
         quick: bar.modules.contains(&ModuleId::Quick),

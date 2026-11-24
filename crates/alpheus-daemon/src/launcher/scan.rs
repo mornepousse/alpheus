@@ -1,5 +1,5 @@
 //! The launcher's catalog, rebuilt at each open on a short-lived thread
-//! (spec § 1): `.desktop` files from the XDG data dirs — no cache, a NixOS
+//!: `.desktop` files from the XDG data dirs — no cache, a NixOS
 //! rebuild changes every path — and the executables on $PATH. Bounded
 //! everywhere (files, depth, counts); nothing outlives the delivery.
 //! Then, with sources configured, their lines (`sources.rs`), delivered second.
@@ -235,7 +235,7 @@ pub fn has_program(path_dirs: &[PathBuf], program: &str) -> bool {
     !program.is_empty() && !program.contains('/') && path_dirs.iter().any(|d| is_executable_file(&d.join(program)))
 }
 
-/// What one open reads after its apps (sources spec § 2): its configured sources, and the
+/// What one open reads after its apps: its configured sources, and the
 /// executor that runs their `list` (the daemon's own).
 pub struct SourcePlan {
     pub sources: Vec<SourceConfig>,
@@ -279,7 +279,7 @@ impl Drop for SourcesRunning {
     }
 }
 
-/// One open's second delivery (sources spec § 6): its sources, unless another open's are still
+/// One open's second delivery: its sources, unless another open's are still
 /// being read (then nothing: this open adopts those). A panic is caught and logged; the entries
 /// are then empty, the apps already delivered.
 fn read_sources_after(plan: &SourcePlan, run_sources: fn(&SourcePlan) -> Entries, deliver: impl FnOnce(Entries)) {

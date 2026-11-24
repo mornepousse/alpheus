@@ -11,7 +11,7 @@
 //! - read a clock: the caller always passes `now`, so a test can pick any time it likes;
 //! - read or write a file, or start anything (a thread, a process, a timer).
 //!
-//! See: docs/specs/2026-11-15-alpheus-timer-design.md, docs/features/timer.md, and
+//! See: docs/features/timer.md, and
 //! docs/decisions.md ("The timer counts wall-clock time", "A late end is applied once").
 
 use crate::config::{TimerConfig, TimerIdle};
@@ -429,7 +429,7 @@ impl Timer {
         Some(TimerChip { glyph, text: Some(minutes_text(minutes)), look })
     }
 
-    /// The state file's line (see the timer spec, § 6); None while idle: nothing is kept, and
+    /// The state file's line (docs/features/timer.md); None while idle: nothing is kept, and
     /// `done` is not kept either.
     pub fn saved(&self) -> Option<String> {
         // Each arm writes the kind of timer, `running` or `paused`, then the numbers `parse_saved`
@@ -452,7 +452,7 @@ impl Timer {
 
     /// A state file's text read back, treated as hostile (docs/decisions.md, "The state file is
     /// hostile input"): the file may be stale, edited by hand or not ours at all. Exact fields,
-    /// digits only, and every bound of the spec: lengths from one second to a day, a running end
+    /// digits only, and every bound: lengths from one second to a day, a running end
     /// at most 25 hours ahead, a stopwatch started ahead of now clamped to now, rounds 1 to 12.
     /// None for anything else.
     pub fn parse_saved(text: &str, now: u64) -> Option<Self> {
@@ -542,7 +542,7 @@ pub fn length_text(ms: u64) -> String {
     }
 }
 
-/// The notification an end becomes (timer spec § 5, shaped like `battery_alert::incoming`).
+/// The notification an end becomes.
 ///
 /// Normal urgency, the notification server's own timeout, and one tag (`timer`) so that a
 /// Pomodoro's next notice replaces the last while it is still on screen. None for the stopwatch's

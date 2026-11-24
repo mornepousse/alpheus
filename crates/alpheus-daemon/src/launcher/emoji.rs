@@ -1,4 +1,4 @@
-//! The emoji table behind the `:` prefix (launcher 2 spec): one `&'static str` of
+//! The emoji table behind the `:` prefix: one `&'static str` of
 //! `<emoji>\t<name>\n` lines generated once from Unicode's `emoji-test.txt` (see `table.rs`),
 //! so it costs one read-only section and no allocation (1,906 entries: Unicode emoji 16.0's
 //! fully-qualified lines without skin tones). The data is Unicode's, under the Unicode License v3:

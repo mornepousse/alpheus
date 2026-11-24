@@ -1,5 +1,4 @@
-//! The system tray (spec docs/specs/2026-10-05-alpheus-tray-design.md):
-//! StatusNotifierItem watcher and host, dbusmenu menus, on a second
+//! The system tray: StatusNotifierItem watcher and host, dbusmenu menus, on a second
 //! dbus-rs connection, to the session bus, driven by the bar's own calloop
 //! loop (no thread). This file is the tray's vocabulary; it knows no D-Bus
 //! library.
@@ -40,7 +39,7 @@ pub const COLOR_SCHEME_KEY: &str = "color-scheme";
 pub const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
 /// The properties interface: `Get`, `GetAll`, `PropertiesChanged`.
 pub const PROPERTIES_INTERFACE: &str = crate::sources::dbus::PROPERTIES;
-/// MPRIS (media spec § 3): every player's object, its root and player interfaces.
+/// MPRIS: every player's object, its root and player interfaces.
 pub const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 pub const MPRIS_INTERFACE: &str = "org.mpris.MediaPlayer2";
 pub const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
@@ -51,7 +50,7 @@ pub const MPRIS_PROPERTIES_RULE: &str = "type='signal',interface='org.freedeskto
 /// Seeked, added only while the media popup is open.
 pub const MPRIS_SEEKED_RULE: &str =
     "type='signal',interface='org.mpris.MediaPlayer2.Player',member='Seeked',path='/org/mpris/MediaPlayer2'";
-/// The user's systemd manager (diagnostics spec § 6): its name, object and Manager interface on the session
+/// The user's systemd manager: its name, object and Manager interface on the session
 /// bus; only `NFailedUnits` is read and only `Subscribe` is called.
 pub const SYSTEMD_NAME: &str = "org.freedesktop.systemd1";
 pub const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
@@ -60,7 +59,7 @@ pub const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
 pub const SYSTEMD_OWNER_RULE: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.systemd1'";
 /// Its Manager properties, which carry the count (and only while a client has subscribed).
 pub const SYSTEMD_PROPERTIES_RULE: &str = "type='signal',sender='org.freedesktop.systemd1',path='/org/freedesktop/systemd1',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.systemd1.Manager'";
-/// The notification server (notifications spec § 1): its well-known name, object and interface.
+/// The notification server: its well-known name, object and interface.
 pub const NOTIFICATIONS_NAME: &str = "org.freedesktop.Notifications";
 pub const NOTIFICATIONS_PATH: &str = "/org/freedesktop/Notifications";
 pub const NOTIFICATIONS_INTERFACE: &str = "org.freedesktop.Notifications";
@@ -68,13 +67,13 @@ pub const NOTIFICATIONS_INTERFACE: &str = "org.freedesktop.Notifications";
 /// with `persistence`, it sends -1 rather than its own 25 s. Markup, hyperlinks, images, icons,
 /// sound and inline reply are not advertised.
 pub const CAPABILITIES: [&str; 4] = ["actions", "body", "persistence", "x-canonical-private-synchronous"];
-/// `GetServerInformation`: name, vendor, (the crate's version), the spec version.
+/// `GetServerInformation`: name, vendor, (the crate's version), the notifications spec version.
 pub const SERVER_NAME: &str = "alpheus";
 pub const SERVER_VENDOR: &str = "alpheus";
 pub const SPEC_VERSION: &str = "1.3";
 /// Well-known name prefixes the startup inventory probes.
 pub const ITEM_NAME_PREFIXES: [&str; 2] = ["org.kde.StatusNotifierItem-", "org.freedesktop.StatusNotifierItem-"];
-/// Bounds against misbehaving applications (spec § 3).
+/// Bounds against misbehaving applications.
 pub const MAX_ITEMS: usize = 64;
 /// Items one connection may register (an application with more is misbehaving).
 pub const MAX_ITEMS_PER_OWNER: usize = 16;
@@ -197,7 +196,7 @@ impl Orientation {
     }
 }
 
-/// What the pointer did on a tray icon (spec § 2).
+/// What the pointer did on a tray icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
     Left,
@@ -245,7 +244,7 @@ mod tests {
         assert_eq!(format!("{MPRIS_INTERFACE}."), crate::media::MPRIS_PREFIX, "the namespace is the prefix without its dot");
     }
 
-    /// The server's identity (notifications spec § 1): one name, object and interface; what it
+    /// The server's identity: one name, object and interface; what it
     /// advertises; what it says it is.
     #[test]
     fn the_notification_server_names_and_capabilities() {

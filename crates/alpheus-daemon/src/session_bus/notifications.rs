@@ -1,4 +1,4 @@
-//! The `org.freedesktop.Notifications` server's D-Bus side (notifications spec § 1). It owns no
+//! The `org.freedesktop.Notifications` server's D-Bus side. It owns no
 //! connection: it rides whichever `Outbox` hosts it, the tray's or the bar's own session link.
 //!
 //! The name is requested with flags 0: queued behind mako, never replacing it, never allowing

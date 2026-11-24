@@ -18,7 +18,7 @@
 //!   starts serving;
 //! - panic (a guardrail, `the_notification_server_has_no_panicking_path`, covers this file).
 //!
-//! See: docs/specs/2026-10-09-alpheus-notifications-design.md § 5, docs/features/notifications.md, and
+//! See: docs/features/notifications.md, and
 //! docs/decisions.md ("The user's choice wins over a capture", "A timed do-not-disturb ends on the
 //! wall clock", "A battery alert is given only while the server serves").
 
@@ -117,7 +117,7 @@ pub fn bell_lines(before: Option<NotifyView>, after: NotifyView) -> Vec<&'static
 impl App {
     /// The notifications server, once, at startup (`wanted`: in `modules`). It goes on the tray's
     /// connection when the tray runs; otherwise on the bar's link, opened here or joined. Without the
-    /// module: nothing, no RequestName (spec § 6).
+    /// module: nothing, no RequestName.
     pub(crate) fn start_notifications(&mut self, wanted: bool) {
         match host(wanted, self.buses()) {
             Host::Nothing => {}
@@ -214,7 +214,7 @@ impl App {
         if self.notifications().is_none() && self.bar.notifications.is_some() {
             self.bell_without_server();
         }
-        // The quick panel's row follows, whichever of the paths changed it (quick spec § 2).
+        // The quick panel's row follows, whichever of the paths changed it.
         self.quick_refresh();
         self.dnd_timer_sync();
     }
@@ -342,7 +342,7 @@ impl App {
         log("failed: notice");
     }
 
-    /// A Shield notice (shield spec § 8), through the server only while it serves: app `alpheus`,
+    /// A Shield notice, through the server only while it serves: app `alpheus`,
     /// normal urgency; under do-not-disturb it goes to the history like every notice.
     pub(crate) fn shield_notice(&mut self, kind: crate::shield::NoticeKind) {
         let Some(sh) = self.shield.as_ref() else { return };

@@ -99,7 +99,8 @@ impl MenuSession {
         self.pending.iter().any(|(c, _)| *c == id)
     }
 
-    /// Any timeout → Close (spec: no answer within 2 s closes the menu). A GetLayout answer is the
+    /// Any timeout → Close (no answer within 2 s closes the menu: docs/decisions.md,
+    /// "A tray menu is shown only once its layout has arrived"). A GetLayout answer is the
     /// layout (root) or grafted (submenu) → Changed.
     pub fn answer(&mut self, id: CallId, result: Result<Reply, CallError>, out: &mut dyn Outbox) -> MenuUpdate {
         let Some(i) = self.pending.iter().position(|(c, _)| *c == id) else { return MenuUpdate::Nothing };

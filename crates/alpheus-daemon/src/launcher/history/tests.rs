@@ -26,7 +26,7 @@ fn weight_buckets() {
     assert_eq!(ages.map(weight), [100, 100, 70, 70, 50, 50, 30, 30, 10, 10]);
 }
 
-/// Sources spec § 3: a source line at its limit (512 bytes), under a name of 32 four-byte
+/// A source line at its limit (512 bytes), under a name of 32 four-byte
 /// characters, is a valid id — recorded, saved, read back.
 #[test]
 fn a_source_key_holds_a_whole_line_at_its_limits() {
@@ -42,7 +42,7 @@ fn a_source_key_holds_a_whole_line_at_its_limits() {
     assert_eq!(ids(&History::parse(&h.to_text(), 10, NOW)), [key.as_str()], "and survives the file");
 }
 
-/// Tools spec § 5: a user entry's key at its limits, four-byte characters throughout (48-character
+/// A user entry's key at its limits, four-byte characters throughout (48-character
 /// category and entry names, a 64-character fixed choice), is a valid id: recorded, saved, read back.
 #[test]
 fn a_tool_key_holds_its_longest_form() {

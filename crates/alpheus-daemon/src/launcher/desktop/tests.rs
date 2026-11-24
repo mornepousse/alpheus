@@ -164,7 +164,7 @@ fn exec_keeps_quoted_empty_arguments_and_splits_on_tabs() {
     assert_eq!(exec_argv("prog ''", &c), Ok(strings(&["prog", ""])), "an explicit empty argument stays");
 }
 
-/// The spec's quoting is stricter than what GLib and KDE accept; real files
+/// The Desktop Entry spec's quoting is stricter than what GLib and KDE accept; real files
 /// follow the latter (g_shell_parse_argv), so does the launcher.
 #[test]
 fn exec_follows_glib_quoting_and_field_codes_in_double_quotes() {

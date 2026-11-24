@@ -1,4 +1,4 @@
-//! The query prefixes of the All mode (launcher 2 spec): `?` searches the web, `:` finds an
+//! The query prefixes of the All mode: `?` searches the web, `:` finds an
 //! emoji, `$` runs a shell command. Pure: the query in, the prefix and its text out. The text is
 //! never logged (it is what the user typed), and nothing here can panic.
 
@@ -9,7 +9,7 @@ pub enum Prefix {
     Search,
     Emoji,
     Shell,
-    /// `"`: the clipboard history (clipboard spec), only while it is available.
+    /// `"`: the clipboard history, only while it is available.
     Clipboard,
 }
 

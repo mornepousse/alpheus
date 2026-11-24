@@ -3,7 +3,7 @@
 //! delivers — answers to whoever asked (the host, or the router's own calls
 //! for the watcher's name), signals to the host or the name-takeover logic,
 //! incoming calls to the watcher or refused. The protocol around the name
-//! (spec § 1): try to own `org.kde.StatusNotifierWatcher` without replacing
+//!: try to own `org.kde.StatusNotifierWatcher` without replacing
 //! anyone; if another watcher has it, be a host only and follow its list;
 //! when it leaves, take the name.
 //!
@@ -590,7 +590,7 @@ impl Tray {
         match &s {
             Signal::NameOwnerChanged { name, new, .. } if name == WATCHER_NAME => match self.role.clone() {
                 Role::Watcher => {}
-                // Takeover (spec § 1): the other watcher left; applications re-register with us.
+                // Takeover: the other watcher left; applications re-register with us.
                 Role::HostOnly { watcher } if new.is_empty() => {
                     self.call(Call::RemoveMatch { rule: watcher_rule(&watcher) }, Own::Ignore);
                     self.request_name();

@@ -1,4 +1,4 @@
-//! The only file that speaks `zwlr_output_manager_v1` (displays spec § 1, § 2): heads and modes
+//! The only file that speaks `zwlr_output_manager_v1`: heads and modes
 //! followed as the compositor announces them, handed to the controller as one `Vec<Head>` at
 //! each manager `done`, whose serial is the only one a configuration is ever created with. A
 //! configuration is built and applied in one call (`send`), never across a dispatch, and checked

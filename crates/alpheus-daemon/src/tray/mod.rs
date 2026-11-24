@@ -14,7 +14,7 @@
 //!   applications act on their own (the bar only asks them);
 //! - talk to D-Bus directly: every call to an item goes through `Tray`.
 //!
-//! See: docs/specs/2026-10-05-alpheus-tray-design.md, docs/features/tray.md, and docs/decisions.md
+//! See: docs/features/tray.md, and docs/decisions.md
 //! ("A tray menu is shown only once its layout has arrived", "A failed Activate opens the menu of
 //! the icon that was pressed", "A closed session bus is never reconnected").
 
