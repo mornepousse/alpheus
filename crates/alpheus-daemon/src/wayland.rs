@@ -455,6 +455,8 @@ pub struct App {
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
+    /// wlr-screencopy, if the compositor has it (captures/screencopy.rs); None hides the captures.
+    pub(crate) screencopy: Option<crate::captures::screencopy::Screencopy>,
     /// The screens through the output management protocol (outputs/app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
@@ -640,6 +642,8 @@ impl App {
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {}", crate::log::error_word(&e)))?;
         // Optional: without it, the launcher has no click-outside scrim (logged at open).
         let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
+        // Bound only as a global: nothing is allocated until a capture is asked for.
+        let screencopy = crate::captures::screencopy::Screencopy::bind(globals, qh);
         // Only with the module: otherwise the global is not bound at all.
         let displays = bar
             .config
@@ -681,6 +685,7 @@ impl App {
             seat: None,
             data_devices: DataDeviceManagerState::bind(globals, qh).ok(),
             viewporter,
+            screencopy,
             displays,
             clipboard,
             loop_handle: None,

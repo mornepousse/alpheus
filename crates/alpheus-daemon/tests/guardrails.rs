@@ -399,6 +399,25 @@ fn outputs_protocol_only_in_wlr_rs() {
     assert!(seen, "the protocol file names the protocol");
 }
 
+/// The only file that speaks `zwlr_screencopy_manager_v1`.
+const SCREENCOPY_PROTOCOL_FILE: &str = "captures/screencopy.rs";
+
+/// One file speaks the screencopy protocol; the rest of the daemon only sees a `Frame`.
+#[test]
+fn screencopy_only_in_screencopy_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["zwlr_screencopy", "ZwlrScreencopy"] {
+            if t.contains(token) {
+                assert_eq!(name, SCREENCOPY_PROTOCOL_FILE, "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
 /// No output power management anywhere in alpheus,
 /// never a screen powered off (`dpms` is already a forbidden word in the daemon).
 #[test]

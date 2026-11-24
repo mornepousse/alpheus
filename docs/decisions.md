@@ -1700,3 +1700,14 @@ bar and rows. The sizes were set after measuring a real 87 by 26 window, and the
 cover the classic layout.
 
 Date: 2026-11-15 · Source: tests `the_rail_needs_84_columns_and_26_rows`, `an_87_by_26_window_shows_the_rail` and `resizing_across_the_threshold_keeps_hits_honest` (`ui/rail/tests.rs`), `the_dashboard_needs_a_64x20_body` and `an_87_by_26_window_shows_the_whole_dashboard` (`ui/home`)
+
+### Screenshots are encoded by the `png` crate, on a short-lived thread, and nothing of a capture is kept
+
+The only new dependency of the captures is `png` with its default features off (its backend is
+`flate2` over `miniz_oxide`; no image-format zoo, no `image` crate): about 78 KB in the stripped
+daemon, measured back to back against the commit before it. A capture lives in its own shm pool,
+dropped the moment the compositor answers, so the bar's pool never grows by a screenshot and a cycle
+leaves the anonymous memory where it was. One file, `captures/screencopy.rs`, speaks the screencopy
+protocol.
+
+Date: 2026-11-24 · Source: tests `encode_png_round_trips_a_small_image`, `a_wrong_size_is_refused` (`captures/encode.rs`), `a_capture_cycle_gives_its_memory_back` and `capture_output_returns_a_frame_of_the_output_size` (`tests/screencopy_headless.rs`), `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)

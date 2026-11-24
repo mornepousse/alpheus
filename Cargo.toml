@@ -33,6 +33,9 @@ dbus = "0.9"
 # The tray's own StatusNotifierWatcher object (2026-10-05): dbus-rs's own object
 # server, no further dependency. Daemon only, in src/session_bus/watcher.rs.
 dbus-crossroads = "0.5"
+# PNG writer of the captures (2026-11-24), on the short-lived capture thread. Default features
+# off: the crate has none beyond its (miniz_oxide) backend. Daemon only, in captures/encode.rs.
+png = { version = "0.18", default-features = false }
 
 [profile.release]
 lto = true
