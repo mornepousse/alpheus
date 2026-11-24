@@ -426,8 +426,8 @@ fn battery_tint_boundary_at_19_and_20() {
 
 #[test]
 fn peripheral_tint_boundary_at_19_and_20() {
-    // Same threshold as the laptop battery, on each peripheral
-    // independently: the first (19 %) errs, the second (20 %) doesn't.
+    // Same thresholds as the laptop battery, on each peripheral independently: the first (19 %)
+    // warns (`w`), the second (20 %) is drawn plain.
     let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
     let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(19), mouse(20)] });
     assert_eq!(draw(&battery(&s, &BatteryConfig::default()).unwrap()).1, "wwwww......");

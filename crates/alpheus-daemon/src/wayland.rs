@@ -984,7 +984,8 @@ impl App {
             self.set_dnd(!self.dnd);
             return;
         }
-        // The timer chip's middle button: pause or resume, or dismiss `done`.
+        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec § 2, and
+        // docs/decisions.md, "`done` is cleared by looking, and is never saved").
         if timer {
             self.timer_middle_click();
             return;

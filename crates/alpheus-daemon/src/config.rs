@@ -196,7 +196,7 @@ pub struct FontConfig {
     /// loaded) shipped alongside alpheus specifically to cover the symbols
     /// a Nerd Font window manager or terminal likes to put in a title (✳,
     /// ◐◓◑◒…) that JetBrainsMono Nerd Font Mono itself does not have; each
-    /// added or removed family changes memory by its own faces,
+    /// added or removed family costs at most its regular and bold faces (`useful_faces`),
     /// `[]` disables fallback entirely. A character that still has no
     /// glyph anywhere (checked family then every fallback) is masked
     /// rather than drawn as a `.notdef` box (`painter.rs`).
@@ -390,7 +390,7 @@ impl Default for ResourcesConfig {
     }
 }
 
-/// How a battery segment shows up (settled 2026-10-05): every peripheral
+/// How a battery segment shows up (reason not recorded): every peripheral
 /// with a real percentage defaults to "always" (today's behaviour); one that
 /// only reports a coarse UPower `BatteryLevel` defaults to "low" (today's
 /// behaviour: hidden unless Low, Critical or Action).
@@ -405,8 +405,8 @@ pub enum BatteryVisibility {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatteryConfig {
-    /// Peripherals with a real percentage (always shown,
-    /// error tint below 20 %).
+    /// Peripherals with a real percentage: shown always by default, warn below 20 % and error
+    /// below 10 %, as the laptop's own battery (`segments::charge_state`).
     pub peripherals: BatteryVisibility,
     /// Peripherals that only report a coarse level: "always" shows the bare
     /// icon (error tint when low, normal otherwise), "low" (default) shows

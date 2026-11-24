@@ -32,8 +32,8 @@ use crate::segments::{CPU, DOWNLOAD, GPU, HARDDISK, HOT, MEMORY, THERMOMETER, UP
 use crate::system::{HISTORY, History, Resources};
 use alpheus_common::theme::settings::ModuleColors;
 
-/// A row's cells, its pad cell at each end included: 40 cells, as the spec sets. Where the columns
-/// sit inside the row is this file's own doing.
+/// A row's cells, its pad cell at each end included: 40 cells, as the spec sets, which leaves the
+/// column positions inside them to this file (resources popup spec, "Left to the builder").
 pub const WIDTH: u16 = 40;
 /// Rows each graph takes, under its figure's row.
 pub const GRAPH_ROWS: u16 = 2;

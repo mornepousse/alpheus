@@ -1243,7 +1243,8 @@ fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig, clipboar
     prefix::split(query, config.search_enabled(), clipboard)
 }
 
-/// The history rows' text is overwritten before it is freed: a copied line never lingers in freed memory.
+/// The history rows' text is overwritten before it is freed, previews included (clipboard spec § 4,
+/// "Never a password").
 fn wipe_clips(clips: &mut [ClipRow]) {
     for c in clips {
         wipe(&mut c.preview);
