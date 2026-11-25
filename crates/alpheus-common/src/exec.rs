@@ -260,20 +260,22 @@ fn group_target(pgid: u32) -> Option<libc::pid_t> {
     (p > 1).then_some(-p)
 }
 
-/// Sends `signal` to the process group `pid` leads, or to `pid` alone when that group is gone
-/// (ESRCH: the program moved to another group): a stop still reaches it. Only for our own child not
-/// yet reaped, whose pid therefore cannot be another process's. True when the signal was sent.
-fn signal_group_else_pid(pid: u32, signal: libc::c_int) -> bool {
+/// Sends `signal` to the process group `pid` leads, and to `pid` itself when it left that group
+/// (the group may outlive it through a helper, so a group kill that succeeds proves nothing about
+/// the program): a stop reaches both. Only for our own child not yet reaped, whose pid therefore
+/// cannot be another process's. True when a signal was sent.
+fn signal_group_and_pid(pid: u32, signal: libc::c_int) -> bool {
     let Some(target) = group_target(pid) else { return false };
     // SAFETY: kill(2) towards the group our child leads, created at its launch; no pointer.
-    if unsafe { libc::kill(target, signal) } == 0 {
-        return true;
+    let group = unsafe { libc::kill(target, signal) } == 0;
+    // Still in its own group: the signal above reached it, a second one would be a second SIGINT.
+    // SAFETY: getpgid(2) on our unreaped child (`-target` is its pid, above 1); no pointer.
+    if unsafe { libc::getpgid(-target) } == -target {
+        return group;
     }
-    if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-        return false;
-    }
-    // SAFETY: kill(2) towards our unreaped child itself (`-target` is its pid, above 1); no pointer.
-    unsafe { libc::kill(-target, signal) == 0 }
+    // SAFETY: kill(2) towards our unreaped child itself; no pointer.
+    let direct = unsafe { libc::kill(-target, signal) } == 0;
+    group || direct
 }
 
 /// Kills the whole process group `pgid` (a child launched with
@@ -996,7 +998,7 @@ impl Watched for WatchedChild {
             return false;
         }
         // Not reaped (try_exit just saw it running): its pid, its group's, is still ours.
-        signal_group_else_pid(self.child.id(), libc::SIGINT)
+        signal_group_and_pid(self.child.id(), libc::SIGINT)
     }
 
     fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>> {
@@ -1023,7 +1025,7 @@ impl Drop for WatchedChild {
         if !self.released && self.try_exit().is_none() {
             // Not reaped: the group is still the program's own, and its pid too if it left the group,
             // so the wait below never waits for a program the kill missed.
-            signal_group_else_pid(self.child.id(), libc::SIGKILL);
+            signal_group_and_pid(self.child.id(), libc::SIGKILL);
             let _ = self.child.wait();
         }
     }

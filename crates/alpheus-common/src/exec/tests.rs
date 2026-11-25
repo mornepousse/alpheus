@@ -49,7 +49,7 @@ fn pid_written(f: &std::path::Path) -> i32 {
         if let Some(p) = std::fs::read_to_string(f).ok().and_then(|s| s.trim().parse().ok()) {
             return p;
         }
-        assert!(t.elapsed() < Duration::from_secs(2), "grandchild PID never written");
+        assert!(t.elapsed() < Duration::from_secs(10), "grandchild PID never written");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -927,7 +927,7 @@ fn an_interrupt_is_never_sent_to_a_reaped_pid() {
     let start = source.find("    fn interrupt(&mut self) -> bool {").expect("the watched interrupt");
     let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
     let checked = body.find("if self.try_exit().is_some() {").expect("the end is checked first");
-    let signalled = body.find("signal_group_else_pid(self.child.id(), libc::SIGINT)").expect("then the group is signalled");
+    let signalled = body.find("signal_group_and_pid(self.child.id(), libc::SIGINT)").expect("then the group is signalled");
     assert!(checked < signalled, "{body}");
     assert!(body[checked..signalled].contains("return false;"), "an ended program gets nothing");
 }
@@ -951,8 +951,8 @@ fn a_released_watched_program_is_not_killed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A signal for a watched program goes to its process group, else, when that group is gone (the
-/// program left it), to the program itself: a recorder that moved out of its group can still be
+/// A signal for a watched program goes to its process group and, when the program left it, to the
+/// program itself: a recorder that moved out of its group can still be
 /// stopped. A background job of a shell stands in for it here: its pid leads no group.
 #[test]
 fn a_program_outside_its_group_is_signalled_by_its_pid() {
@@ -963,7 +963,7 @@ fn a_program_outside_its_group_is_signalled_by_its_pid() {
     let pid = pid_written(&pid_file);
     // SAFETY: getpgid(2) on the process this test started; no pointer.
     assert_ne!(unsafe { libc::getpgid(pid) }, pid, "it leads no group: the group signal cannot reach it");
-    assert!(signal_group_else_pid(u32::try_from(pid).unwrap(), libc::SIGTERM), "sent to the pid");
+    assert!(signal_group_and_pid(u32::try_from(pid).unwrap(), libc::SIGTERM), "sent to the pid");
     wait_for_death(pid);
     assert!(parent.wait_exit(Duration::from_secs(3)).is_some(), "its shell ends once it is gone");
     let _ = std::fs::remove_dir_all(&dir);
@@ -980,8 +980,86 @@ fn a_watched_program_s_signals_fall_back_to_its_pid() {
         let at = rest.find(name).expect(name);
         &rest[at..at + rest[at..].find("\n    }\n").expect("its end")]
     };
-    assert!(body("    fn interrupt(&mut self) -> bool {").contains("signal_group_else_pid(self.child.id(), libc::SIGINT)"));
-    assert!(body("    fn drop(&mut self) {").contains("signal_group_else_pid(self.child.id(), libc::SIGKILL)"));
+    assert!(body("    fn interrupt(&mut self) -> bool {").contains("signal_group_and_pid(self.child.id(), libc::SIGINT)"));
+    assert!(body("    fn drop(&mut self) {").contains("signal_group_and_pid(self.child.id(), libc::SIGKILL)"));
+}
+
+/// A program that moved to another group of the session while a helper stays in its original one:
+/// the original group still exists, so a group kill succeeds and misses the program itself. A group
+/// leader cannot `setsid`, but it can `setpgid` into a group that exists: this test binary starts
+/// itself (`left_group_program_entry`) to do it, with no outside tool. Its helpers die with it
+/// (PDEATHSIG), so nothing is left to kill by pid. Returns the handle and the program's pid.
+fn left_group_child(dir: &std::path::Path) -> (Box<dyn Watched>, i32) {
+    let file = dir.join("pid");
+    let exe = std::env::current_exe().unwrap();
+    let exe = exe.to_str().unwrap();
+    let var = format!("{LEFT_GROUP_FILE}={}", file.display());
+    let child = exec().spawn_watched("env", &[&var, exe, "--exact", "exec::tests::left_group_program_entry"], None).unwrap();
+    let pid = pid_written(&file);
+    // SAFETY: getpgid(2) on the process this test started; no pointer.
+    assert_ne!(unsafe { libc::getpgid(pid) }, pid, "it left its own group, which the helper keeps alive");
+    (child, pid)
+}
+
+const LEFT_GROUP_FILE: &str = "ALPHEUS_TEST_LEFT_GROUP_FILE";
+
+/// Not a test of its own: the program `left_group_child` runs (this binary, told by the variable).
+/// It starts a helper in its group and a sleeper in a group of its own, joins that group, writes its
+/// pid and waits to be killed (ten seconds at most, should nobody).
+#[test]
+#[allow(clippy::zombie_processes)] // killed with this program (PDEATHSIG), which is killed by its handle
+fn left_group_program_entry() {
+    let Some(file) = std::env::var_os(LEFT_GROUP_FILE).map(std::path::PathBuf::from) else { return };
+    let sleeper = |own_group: bool| {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        if own_group {
+            command.process_group(0);
+        }
+        // SAFETY: the closure only makes an async-signal-safe call (prctl).
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        command.spawn().unwrap()
+    };
+    let _helper = sleeper(false);
+    let other = sleeper(true);
+    // SAFETY: setpgid(2) into the group of the child just started, which exists once spawn returned.
+    assert_eq!(unsafe { libc::setpgid(0, libc::pid_t::try_from(other.id()).unwrap()) }, 0);
+    let tmp = file.with_extension("tmp");
+    std::fs::write(&tmp, std::process::id().to_string()).unwrap();
+    std::fs::rename(&tmp, &file).unwrap();
+    std::thread::sleep(Duration::from_secs(10));
+}
+
+/// A drop never waits for a program its group kill missed: the program left its group, a helper
+/// keeps the group alive, and the daemon's loop thread would block forever in the wait.
+#[test]
+fn a_drop_signals_a_program_that_left_a_group_a_helper_keeps() {
+    let dir = scratch("left-group-drop");
+    let (child, _) = left_group_child(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(child);
+        let _ = tx.send(());
+    });
+    let dropped = rx.recv_timeout(Duration::from_secs(3)).is_ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(dropped, "the drop is still waiting for the program");
+}
+
+/// A stop reaches such a program too, not only the helper left in its old group.
+#[test]
+fn an_interrupt_reaches_a_program_that_left_a_group_a_helper_keeps() {
+    let dir = scratch("left-group-int");
+    let (mut child, _) = left_group_child(&dir);
+    assert!(child.interrupt());
+    let ended = child.wait_exit(Duration::from_secs(3)).is_some();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ended, "the program never saw the interrupt");
 }
 
 /// The output file is never reached through a link: a link put where the output goes is refused,
