@@ -597,7 +597,7 @@ impl Center {
     /// `notify` with the user's rules set aside: neither a drop, a mute nor an urgency rule touches
     /// it. For the one notice that must always be seen, the scheduled shutdown's warning, as
     /// do-not-disturb never hides a critical one (docs/decisions.md, "A scheduled shutdown always
-    /// warns a minute before").
+    /// warns a minute before, even when its time has passed").
     pub fn notify_exempt(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
         self.take_in(n, now, at, false)
     }

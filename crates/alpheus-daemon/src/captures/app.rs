@@ -31,9 +31,10 @@
 //!   `the_recording_signal_reaches_only_the_recorder_alpheus_started`).
 //!
 //! See: docs/features/captures.md, docs/decisions.md ("A capture never touches the clipboard unless
-//! it succeeded", "A capture waits for the selector's removal", "The capture's PNG is encoded on a
-//! short-lived thread", "An external capture tool runs as a watched child of the daemon", "Recording
-//! is the external tool's, driven and stopped by alpheus").
+//! it succeeded", "A capture waits for the selector's removal", "Screenshots are encoded by the
+//! `png` crate, on a short-lived thread, and nothing of a capture is kept", "An external capture tool
+//! runs as a watched child of the daemon", "Recording is the external tool's, driven and stopped by
+//! alpheus").
 
 use super::deliver::{Delivery, Work, remove_unrun, run};
 use super::paths::{file_name, geometry, save_dir, user_dir, video_name, videos_dir};

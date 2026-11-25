@@ -269,12 +269,12 @@ picker opens over it → a click → the picker closes, its frame with it → th
   and one file speaks the screencopy protocol (`screencopy_only_in_screencopy_rs`).
 
 See [decisions.md](../decisions.md): "A capture never touches the clipboard unless it succeeded",
-"The colour picker picks from a frozen frame and copies text through `copy`, as written",
-"A capture waits for the selector's removal", "A screenshot reaches the copy command as a file on its
-standard input", "A frame that never comes fails the capture", "Screenshots are encoded by the `png`
-crate, on a short-lived thread, and nothing of a capture is kept", "Only screencopy.rs names the capture
-protocol", "An external capture tool runs as a watched child of the daemon", "Recording is the
-external tool's, driven and stopped by alpheus".
+"The colour picker picks from a frozen frame and copies text through `copy`, as written", "A capture
+waits for the selector's removal", "A screenshot reaches the copy command as a file on its standard
+input", "A frame that never comes fails the capture, and a late frame is never the next one's",
+"Screenshots are encoded by the `png` crate, on a short-lived thread, and nothing of a capture is
+kept", "Only screencopy.rs names the capture protocol", "An external capture tool runs as a watched
+child of the daemon", "Recording is the external tool's, driven and stopped by alpheus".
 
 ## What it costs
 

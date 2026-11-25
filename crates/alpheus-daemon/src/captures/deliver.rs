@@ -22,8 +22,8 @@
 //! - keep a frame, a buffer or a file once it has ended;
 //! - panic or log: the glue logs one fixed word per ending.
 //!
-//! See: docs/features/captures.md, docs/decisions.md ("A custom copy command must accept PNG on
-//! its standard input").
+//! See: docs/features/captures.md, docs/decisions.md ("A screenshot reaches the copy command as a
+//! file on its standard input").
 
 use super::encode::{EncodeError, encode_png};
 use super::paths::numbered;
