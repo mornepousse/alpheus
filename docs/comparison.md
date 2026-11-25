@@ -25,7 +25,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Shield mode (public-network security: state, toggle, blocked USB devices) | ✅ `[shield]` in `bar.toml`: a green glyph while the mode is on, a quick-panel row and a blocked-USB detail, `alpheus-launch --shield on\|off\|toggle\|status\|allow`, notices, a hook; the root work stays in your system configuration (alpheus runs the argv you give it, nothing else); nothing exists unconfigured | ❌ | ❌ | ❌ | ❌ |
 | Focus timer (countdown, Pomodoro, stopwatch) | ✅ a chip in the bar (`󰔛` idle, `󰔛 25m` running, `󰔟`/`󰅶` work and break, `󱎫` stopwatch, `󰏤` paused, `󰂞 done`), a popup under it, `alpheus-launch --timer start 25m\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup`; the end through the notification server and an optional sound; kept across a restart; no seconds on the chip, so one wake-up a minute | ❌ | ➖ a countdown plugin | ❌ | ❌ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
-| Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is still invisible | ✅ | ➖ | ✅ | ✅ |
+| Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is invisible unless alpheus started it | ✅ | ➖ | ✅ | ✅ |
 | Failed units (systemd) | ✅ `󰀦 N` in the bar, only above 0: `NFailedUnits` of the system and the user manager, pushed at once by systemd (`[failed] subscribe`, on by default: systemd then signals every client) or, with `subscribe = false`, read on triggers (start, resume, a refresh, a piggyback), a left click opens the Diag tab; a `failed_units` hook; an optional notification (`[failed] notify`) | — | — | — | ➖ a custom module of your own |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
@@ -63,7 +63,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Settings GUI | ➖ TUI + TOML | ✅ | ✅ | ❌ | ❌ |
 | Dock, desktop widgets | 💭 | ➖ | ✅ | ❌ | ❌ |
-| Screenshots, recording | 💭 | ➖ | ➖ | ❌ | ❌ |
+| Screenshots, recording | ✅ native screenshots (screen, area, saved), a colour picker; annotation, OCR and recording through configurable tools (satty, tesseract, wf-recorder by default), stopped by alpheus | ➖ | ➖ | ❌ | ❌ |
 | Idle and power management | ❌ left to hypridle (DisplayLink safety) | ✅ | ✅ | ✅ | ➖ |
 | Shows on (layer-shell compositors: Hyprland, niri, sway, river, labwc…) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Workspaces and windows read from | Hyprland, Sway, Mango, niri | 7 compositors | 6 compositors | Hyprland, niri, sway, Mango | many (one module each) |

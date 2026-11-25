@@ -103,6 +103,65 @@ impl OsdVerb {
     }
 }
 
+/// `--capture`'s word: what to capture and what to do with it. `select` is the debug verb: it
+/// runs the area selector alone and captures nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureVerb {
+    /// The focused output, copied.
+    Full,
+    /// An area picked with the selector, copied.
+    Area,
+    /// An area, saved to the pictures folder.
+    AreaSave,
+    /// The colour of one pixel, copied.
+    Pick,
+    /// An area, handed to the annotation tool.
+    Annotate,
+    /// An area's text, copied.
+    Ocr,
+    /// The focused output, recorded.
+    Record,
+    /// An area, recorded.
+    RecordArea,
+    /// Ends the recording.
+    Stop,
+    Select,
+}
+
+impl CaptureVerb {
+    pub const ALL: [CaptureVerb; 10] = [
+        CaptureVerb::Full,
+        CaptureVerb::Area,
+        CaptureVerb::AreaSave,
+        CaptureVerb::Pick,
+        CaptureVerb::Annotate,
+        CaptureVerb::Ocr,
+        CaptureVerb::Record,
+        CaptureVerb::RecordArea,
+        CaptureVerb::Stop,
+        CaptureVerb::Select,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            CaptureVerb::Full => "full",
+            CaptureVerb::Area => "area",
+            CaptureVerb::AreaSave => "area-save",
+            CaptureVerb::Pick => "pick",
+            CaptureVerb::Annotate => "annotate",
+            CaptureVerb::Ocr => "ocr",
+            CaptureVerb::Record => "record",
+            CaptureVerb::RecordArea => "record-area",
+            CaptureVerb::Stop => "stop",
+            CaptureVerb::Select => "select",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<CaptureVerb> {
+        CaptureVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
 /// `--shield`'s word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldVerb {
@@ -186,6 +245,11 @@ pub enum TimerVerb {
     Skip,
     /// Opens or closes the popup.
     Popup,
+    /// Schedules a shutdown this many seconds from now (`TIMER_MIN_SECS..=TIMER_MAX_SECS`),
+    /// replacing any pending one. It runs alongside the timer.
+    Shutdown(u32),
+    /// Cancels the scheduled shutdown.
+    ShutdownCancel,
 }
 
 impl TimerVerb {
@@ -201,10 +265,12 @@ impl TimerVerb {
             TimerVerb::Stop => "stop",
             TimerVerb::Skip => "skip",
             TimerVerb::Popup => "popup",
+            TimerVerb::Shutdown(_) => "shutdown",
+            TimerVerb::ShutdownCancel => "shutdown-cancel",
         }
     }
 
-    /// Every word but `start`, which carries a duration.
+    /// Every word but `start` and `shutdown`, which carry a duration.
     pub fn parse_word(s: &str) -> Option<TimerVerb> {
         [
             TimerVerb::Pomodoro,
@@ -215,6 +281,7 @@ impl TimerVerb {
             TimerVerb::Stop,
             TimerVerb::Skip,
             TimerVerb::Popup,
+            TimerVerb::ShutdownCancel,
         ]
         .into_iter()
         .find(|v| v.word() == s)
@@ -255,6 +322,9 @@ pub enum Request {
     /// Opens the Tools menu in the launcher, or closes it. An older daemon refuses
     /// it as an unknown request.
     Tools,
+    /// Opens the kill list (the user's processes) in the launcher, or closes it. An older daemon
+    /// refuses it as an unknown request.
+    Kill,
     /// Toggles the ⏻ power menu under the bar's right end: answered Done, or an
     /// error when no `[quick]` session command is set. An older daemon refuses it as an unknown request.
     Power,
@@ -295,6 +365,9 @@ pub enum Request {
     /// Shield mode: answered Done, `Reply::Shield` for `status`, Cancelled for an
     /// escaped picker. An older daemon refuses it as an unknown request.
     Shield(ShieldVerb),
+    /// The captures: answered Done, also when the selector could not open. An older daemon
+    /// refuses it as an unknown request.
+    Capture(CaptureVerb),
 }
 
 impl Request {
@@ -372,7 +445,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 failed-refresh\n"
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
-///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup\n"
+///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup|shutdown-cancel\n" | "alpheus-launcher/1 timer shutdown <secs>\n"
 ///   "alpheus-launcher/1 clipboard\n" | "alpheus-launcher/1 clipboard-clear\n"
 ///   "alpheus-launcher/1 shield on|off|toggle|status|allow\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
@@ -399,6 +472,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Clipboard => format!("{MAGIC} clipboard\n").into_bytes(),
         Request::ClipboardClear => format!("{MAGIC} clipboard-clear\n").into_bytes(),
         Request::Tools => format!("{MAGIC} tools\n").into_bytes(),
+        Request::Kill => format!("{MAGIC} kill\n").into_bytes(),
         Request::Power => format!("{MAGIC} power\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
@@ -411,8 +485,10 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
             None => format!("{MAGIC} quick\n").into_bytes(),
         },
         Request::Timer(TimerVerb::Start(secs)) => format!("{MAGIC} timer start {secs}\n").into_bytes(),
+        Request::Timer(TimerVerb::Shutdown(secs)) => format!("{MAGIC} timer shutdown {secs}\n").into_bytes(),
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
+        Request::Capture(v) => format!("{MAGIC} capture {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -447,6 +523,7 @@ enum Header {
     Clipboard,
     ClipboardClear,
     Tools,
+    Kill,
     Power,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
@@ -461,6 +538,7 @@ enum Header {
     OutputsKeep,
     OutputsRevert,
     Shield(ShieldVerb),
+    Capture(CaptureVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -604,6 +682,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Clipboard => Some(Request::Clipboard),
         Header::ClipboardClear => Some(Request::ClipboardClear),
         Header::Tools => Some(Request::Tools),
+        Header::Kill => Some(Request::Kill),
         Header::Power => Some(Request::Power),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::DndOn(end) => Some(Request::DndOn(end)),
@@ -616,6 +695,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::OutputsKeep => Some(Request::OutputsKeep),
         Header::OutputsRevert => Some(Request::OutputsRevert),
         Header::Shield(v) => Some(Request::Shield(v)),
+        Header::Capture(v) => Some(Request::Capture(v)),
         Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
@@ -635,6 +715,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["clipboard"] => Ok(Header::Clipboard),
         ["clipboard-clear"] => Ok(Header::ClipboardClear),
         ["tools"] => Ok(Header::Tools),
+        ["kill"] => Ok(Header::Kill),
         ["power"] => Ok(Header::Power),
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
@@ -662,12 +743,23 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
                 .map(|s| Header::Timer(TimerVerb::Start(s)))
                 .ok_or_else(|| IpcError::Malformed(format!("timer seconds out of range: {secs}")))
         }
+        ["timer", "shutdown", secs] => {
+            let secs = number(secs, "timer seconds")?;
+            u32::try_from(secs)
+                .ok()
+                .filter(|s| (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(s))
+                .map(|s| Header::Timer(TimerVerb::Shutdown(s)))
+                .ok_or_else(|| IpcError::Malformed(format!("timer seconds out of range: {secs}")))
+        }
         ["timer", word] => {
             TimerVerb::parse_word(word).map(Header::Timer).ok_or_else(|| IpcError::Malformed(format!("unknown timer word {:?}", cut(word))))
         }
         ["shield", word] => {
             ShieldVerb::parse(word).map(Header::Shield).ok_or_else(|| IpcError::Malformed(format!("unknown shield word {:?}", cut(word))))
         }
+        ["capture", word] => CaptureVerb::parse(word)
+            .map(Header::Capture)
+            .ok_or_else(|| IpcError::Malformed(format!("unknown capture word {:?}", cut(word)))),
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),
         ["outputs-revert"] => Ok(Header::OutputsRevert),

@@ -19,7 +19,7 @@
 
 use alpheus_common::launcher_ipc::{Reply, Request, socket_path};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::wl_registry;
+use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
@@ -51,6 +51,7 @@ pub struct Sway {
 /// seat its pointer; the cursor itself is moved and pressed by `swaymsg`.
 /// Connected through sway's socket path, never WAYLAND_DISPLAY.
 struct VirtualPointer {
+    born: Instant,
     _connection: Connection,
     _queue: EventQueue<NoEvents>,
     _pointer: ZwlrVirtualPointerV1,
@@ -82,9 +83,31 @@ impl VirtualPointer {
         let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).expect("zwlr_virtual_pointer_manager_v1");
         let pointer = manager.create_virtual_pointer(None, &qh, ());
         queue.roundtrip(&mut NoEvents).unwrap();
-        VirtualPointer { _connection: connection, _queue: queue, _pointer: pointer }
+        VirtualPointer { _connection: connection, _queue: queue, _pointer: pointer, born: Instant::now() }
+    }
+
+    /// The pointer moved to (x, y) of the output at the layout's origin (`OUTPUT_SIZE`): a real
+    /// motion event, which `seat - cursor set` is not while a button is held (sway sends none
+    /// during the implicit grab).
+    fn motion(&self, x: u32, y: u32) {
+        let time = self.born.elapsed().as_millis() as u32;
+        self._pointer.motion_absolute(time, x, y, OUTPUT_SIZE.0, OUTPUT_SIZE.1);
+        self._pointer.frame();
+        let _ = self._connection.flush();
+    }
+
+    /// Button `code` (evdev, 0x110 is the left one) down or up.
+    fn button(&self, code: u32, down: bool) {
+        let time = self.born.elapsed().as_millis() as u32;
+        let state = if down { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released };
+        self._pointer.button(time, code, state);
+        self._pointer.frame();
+        let _ = self._connection.flush();
     }
 }
+
+/// The headless output's size in px: what `VirtualPointer::motion` maps its coordinates onto.
+pub const OUTPUT_SIZE: (u32, u32) = (1280, 720);
 
 impl Sway {
     pub fn start(name: &str, outputs: u32) -> Sway {
@@ -196,6 +219,31 @@ impl Sway {
         self.command(&format!("seat - cursor set {x} {y}"));
         self.command(&format!("seat - cursor press {button}"));
         self.command(&format!("seat - cursor release {button}"));
+    }
+
+    /// A drag with the left button, through the virtual pointer: down at `from`, up at `to`, the
+    /// motion in between a real event. `hold` ends the drag with the button still down.
+    pub fn drag(&self, from: (u32, u32), to: (u32, u32), hold: bool) {
+        self.ensure_pointer();
+        let Some(pointer) = self.pointer.get() else { return };
+        pointer.motion(from.0, from.1);
+        thread::sleep(Duration::from_millis(60));
+        pointer.button(0x110, true);
+        thread::sleep(Duration::from_millis(60));
+        pointer.motion((from.0 + to.0) / 2, (from.1 + to.1) / 2);
+        thread::sleep(Duration::from_millis(60));
+        pointer.motion(to.0, to.1);
+        thread::sleep(Duration::from_millis(60));
+        if !hold {
+            pointer.button(0x110, false);
+        }
+    }
+
+    /// Lets go of the left button a `drag(.., hold = true)` kept down.
+    pub fn release_drag(&self) {
+        if let Some(pointer) = self.pointer.get() {
+            pointer.button(0x110, false);
+        }
     }
 
     /// `seat - cursor set <x> <y>` only: the pointer rests there (motion, no button).
@@ -644,6 +692,12 @@ pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     if !text.contains("dev_dir") {
         text = under_table(&text, "privacy", &format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display()));
     }
+    // The shutdown's lock lookup reads this folder, never the machine's /proc; a test fakes a locker
+    // by writing `<pid>/comm` and `<pid>/status` in it. A base build predates `[timer] proc_dir`.
+    if !base && !text.contains("timer-proc") {
+        let timer = runtime.join("timer-proc");
+        text = under_table(&text, "timer", &format!("proc_dir = \"{}\"\n", timer.display()));
+    }
     if !base && !text.contains("drm_dir") {
         text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
     }
@@ -691,7 +745,7 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    for empty in ["privacy-dev", "privacy-proc", "displays-drm"] {
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc"] {
         fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
     fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();

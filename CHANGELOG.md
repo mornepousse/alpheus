@@ -18,6 +18,35 @@ delivered before it, by the month it was merged.
 
 #### Added
 
+- **Native captures** (25): `alpheus-launch --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop`
+  and a Captures category in the Tools menu: a screenshot of the focused output or of an area dragged
+  over a live dim, copied through `copy` or saved to `[captures] dir`; a colour picker with a zoom lens
+  over the frozen output; an area handed to an annotation editor (satty) or a text recognizer
+  (tesseract), whose result alpheus copies; a recording of the output or an area through
+  `[captures] record` (wf-recorder), stopped with SIGINT. The clipboard is touched only on success, a
+  cancel is silent, and nothing stays resident after a capture. [Page](docs/features/captures.md),
+  [configuration](docs/configuration.md#captures).
+- **Privacy glyph while alpheus records** (25): the privacy module's screen glyph shows `alpheus`
+  while its own recorder runs, which no other source sees on Sway or Mango. [Page](docs/features/privacy.md).
+- **Kill list** (25): `alpheus-launch --kill`, or Tools › System › Kill a process, lists your
+  own processes, by memory at open and by CPU 300 ms later; Enter asks one to quit, Ctrl+Enter then
+  Enter kills it. The compositor, alpheus and the session's ancestors are never offered, and a
+  reused pid is never signalled. [Page](docs/features/tools-menu.md#kill-a-process).
+- **Scheduled shutdown** (25): Tools › System › Schedule shutdown or `alpheus-launch --timer shutdown
+  <duration>` powers off through `[quick] poweroff`, beside any timer (`⏻ 1h20 · 󰔛 25m`), always after
+  a one-minute warning that a click cancels, even when the end is noticed late;
+  `--timer shutdown-cancel` cancels it. Nothing powers off while a screen locker runs: once the
+  session is unlocked the warning is given fresh, a whole minute. A power off that cannot start or
+  ends with an error shows a critical `Shutdown failed` notice. [Page](docs/features/timer.md#the-scheduled-shutdown).
+- **Typed text in the Tools menu** (25): a `[[tools.entry]]` with `ask` asks for a text and passes it
+  as the one whole argument `{text}`, never through a shell, never logged nor kept in the history.
+  [Page](docs/features/tools-menu.md), [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
+- **Diagnostics tools** (25): a Diagnostics category in the Tools menu with ten nmap scans (a target
+  typed in the box, except the subnet sweep), USB events, a USB reset (`[tools.builtin] usb_reset`)
+  and the Diag tab's eight journal presets, opened by the control center's new `--preset <slug>`;
+  the scans, USB events and USB reset run in the held terminal, and a preset opens the control
+  center in `terminal`. [Page](docs/features/tools-menu.md#the-diagnostics-tools), [control
+  center](docs/features/control-center.md).
 - **Tools menu** (22): `alpheus-launch --tools` opens one launcher-style box of categories and
   entries to do something to the session, with your own entries from `launcher.toml`. [Page](docs/features/tools-menu.md).
 - **Diagnostics** (22): a Diag tab in the control center (failed units, crash list, journal, a
@@ -52,6 +81,10 @@ delivered before it, by the month it was merged.
 
 #### Changed
 
+- **glibc's mmap threshold pinned** (25): the daemon sets `M_MMAP_THRESHOLD` to 128 KiB at start, so a
+  large block (a capture's frame) is unmapped when freed instead of staying in an arena; the launcher
+  keeps 56 to 148 KB less after closing, and a user's `GLIBC_TUNABLES` threshold is overridden.
+  [Decision](docs/decisions.md#large-blocks-are-always-mapped-on-their-own).
 - **smithay-client-toolkit 0.21** (24): the Wayland toolkit moves from 0.20; memory, binary size and
   wake-ups are unchanged. [Measurements](docs/measurements.md).
 - **cosmic-text 0.19** (24): the bar's text library moves from 0.12 to 0.19, so the

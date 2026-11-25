@@ -1700,3 +1700,240 @@ bar and rows. The sizes were set after measuring a real 87 by 26 window, and the
 cover the classic layout.
 
 Date: 2026-11-15 · Source: tests `the_rail_needs_84_columns_and_26_rows`, `an_87_by_26_window_shows_the_rail` and `resizing_across_the_threshold_keeps_hits_honest` (`ui/rail/tests.rs`), `the_dashboard_needs_a_64x20_body` and `an_87_by_26_window_shows_the_whole_dashboard` (`ui/home`)
+
+### Screenshots are encoded by the `png` crate, on a short-lived thread, and nothing of a capture is kept
+
+The only new dependency of the captures is `png` with its default features off (its backend is
+`flate2` over `miniz_oxide`; no image-format zoo, no `image` crate): about 78 KB in the stripped
+daemon, measured back to back against the commit before it. A capture lives in its own shm pool,
+dropped the moment the compositor answers, so the bar's pool never grows by a screenshot and a cycle
+leaves the anonymous memory where it was. One file, `captures/screencopy.rs`, speaks the screencopy
+protocol.
+
+Date: 2026-11-24 · Source: tests `encode_png_round_trips_a_small_image`, `a_wrong_size_is_refused` (`captures/encode.rs`), `a_capture_cycle_gives_its_memory_back` and `capture_output_returns_a_frame_of_the_output_size` (`tests/screencopy_headless.rs`), `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)
+
+### A capture never touches the clipboard unless it succeeded
+
+A cancelled selection is silent and leaves the clipboard as it was; a capture that failed gives one
+critical notice and leaves it too; the success notice follows a capture that happened. The clipboard is
+only reached by the worker with PNG bytes in hand, and a copy command that cannot start is a failure,
+not a success. A custom `copy` command must accept a PNG on its standard input: the default `wl-copy`
+alone is told `--type image/png`. The external tools keep the rule: alpheus copies what an
+annotation tool wrote back or the text a recognizer printed, only after the tool exited 0 with a
+result; the default satty flags turn its own copy into a save (`--copy-command "cat >/dev/null"
+--save-after-copy --early-exit`, checked against satty 0.20.1), so it never reaches the clipboard by
+itself. The copy command reads the whole image and throws it away: satty saves only once its write
+to the command succeeded, and a command that does not read (`true`) breaks that write for any image
+past the pipe's 64 KiB, which would lose the annotation as a silent cancel.
+
+Date: 2026-11-24, tools 2026-11-25 · Source: tests `the_default_annotate_copy_command_reads_a_whole_large_image` (`config/tests.rs`), `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one`, `a_tool_closed_without_output_is_silent_and_a_failed_one_is_critical` (`captures/tests.rs`), `a_tool_failure_is_critical_and_never_copies`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel` (`captures/tools/tests.rs`), `captures_default_to_the_external_tools_and_no_folder` (`config/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
+
+### A capture waits for the selector's removal
+
+The selector's surface is destroyed before its answer is used, but the compositor must deal with the
+removal before a frame is asked, or the dim is in the capture. The flow therefore waits for a
+`wl_display.sync` sent after the destruction (`Step::Settle`, then `Flow::settled`); the selector's
+answer never asks for the frame itself. On the harness's sway the dim stays out even without the wait
+(requests are handled in order), so the rule is pinned on the flow and by a guardrail, and the headless
+test checks the pixels.
+
+Date: 2026-11-24 · Source: tests `a_selection_waits_for_the_compositor_before_the_frame_is_asked`, `every_scope_waits_for_the_compositor_before_its_frame` (`captures/tests.rs`), `a_frame_is_asked_only_after_the_selectors_removal_is_settled` (`tests/guardrails.rs`), `an_area_capture_has_no_dim_tint` (`tests/headless_session.rs`)
+
+### A screenshot reaches the copy command as a file on its standard input
+
+`Executor::spawn_with_input` carries at most one page, which a PNG far exceeds. The worker writes the
+PNG to a private file (`$XDG_RUNTIME_DIR/alpheus/capture.png`, owner only, atomic), starts the copy
+command with that file as its standard input (`Executor::run_with_stdin_file`: no pipe to fill) and waits at most 5 s for the command's own exit,
+the foreground of `wl-copy` ending once it has read the file; "copied" means that exit was 0, as
+`screenshot.sh` checks `wl-copy`'s. A non-zero exit, a signal or the timeout (the command is killed,
+never what it left behind) is a copy failure. The file is removed afterwards, also when the worker
+panics (a panic ends the capture as a failure), and a start clears one a killed daemon left. The cut,
+the encoding and this run on a short-lived `alpheus-capture` thread, one at a time.
+
+Date: 2026-11-24 · Source: tests `run_with_stdin_file_feeds_a_big_file_and_reports_the_exit`, `run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit` (`alpheus-common/src/exec/tests.rs`), `the_png_reaches_the_default_copy_command_as_a_file_on_its_stdin`, `a_copy_command_that_exits_badly_or_hangs_is_a_copy_failure`, `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`, `stale_private_files_are_removed_at_start_and_nothing_else` (`captures/deliver/tests.rs`), `the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file`, `the_capture_worker_always_mails_its_ending` (`tests/guardrails.rs`), `a_start_clears_the_capture_files_a_killed_daemon_left` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
+### A frame that never comes fails the capture, and a late frame is never the next one's
+
+One capture runs at a time, so a compositor that never answered a frame request would hold the slot
+until the daemon restarted. A one-shot timer, armed only while a frame is awaited (5 s), fails the
+capture, destroys the frame object and frees the slot. Every answer (the round trip, the frame, the
+deadline) carries the number of the capture it is for, so the late answer of a capture that has ended
+is dropped unread and never taken for the next one's.
+
+Date: 2026-11-24 · Source: tests `a_frame_that_never_comes_fails_the_capture`, `a_late_frame_from_an_old_generation_is_ignored` (`captures/tests.rs`), `a_capture_that_ends_gives_up_its_frame_and_its_deadline`, `the_frame_deadline_is_armed_only_while_a_frame_is_awaited` and the `Timer::` entry of `nothing_resident_while_the_launcher_is_closed` (`tests/guardrails.rs`)
+
+### The colour picker picks from a frozen frame and copies text through `copy`, as written
+
+The picker captures the focused output once, through the same flow as a whole screen (the settle
+round trip first, so a closing menu is not in it), and shows that frame on its own Overlay surface:
+moving content stands still, and the lens reads the very pixels the click picks. The frame belongs
+to the open picker and goes with it at close; nothing of it stays. The value is text: `{hex}` is
+`#RRGGBB` in upper case, `[captures] pick_format` may fill `{r}`, `{g}`, `{b}` and `{hex}` instead.
+It reaches `launcher.toml`'s `copy` the way a screenshot does (a private file, `pick.txt`, on its
+standard input, from the `alpheus-capture` thread), so "copied" is the command's exit 0; the command
+is run as written, with no image type, and a custom one must accept text on its standard input. Esc,
+a right click, focus taken or another surface opened is a silent cancel; the compositor taking the
+surface away, or no buffer to open it, is a critical failure; the clipboard is touched only by a pick.
+
+Date: 2026-11-24 · Source: tests `a_pick_settles_grabs_the_screen_then_opens_the_picker`, `a_picker_that_fails_ends_the_pick_as_a_critical_failure` (`captures/tests.rs`), `esc_picks_nothing_and_copies_nothing`, `the_value_is_uppercase_hex_by_default`, `pick_format_fills_r_g_b_hex` (`captures/pick/tests.rs`), `a_picked_value_reaches_the_copy_command_as_text`, `a_picked_value_the_copy_command_refuses_is_a_copy_failure` (`captures/deliver/tests.rs`), `the_picker_frame_is_kept_only_while_the_picker_is_open`, `a_picker_that_cannot_open_fails_its_capture` (`tests/guardrails.rs`), `colour_picker_copies_the_pixel_under_the_pointer` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_colour_pick` (`tests/memory.rs`)
+
+### Only screencopy.rs names the capture protocol
+
+`zwlr_screencopy_manager_v1` is named in one file, `captures/screencopy.rs`, which captures one
+output into its own short-lived shm pool and answers ready or failed; everything else of the
+captures sees a `Frame`. The external recorder speaks the protocol itself, in its own process: alpheus
+never records through it. A later move to `ext-image-copy-capture` then touches one file.
+
+Date: 2026-11-25 · Source: test `screencopy_only_in_screencopy_rs` (`tests/guardrails.rs`)
+
+### An external capture tool runs as a watched child of the daemon
+
+An annotation editor stays open as long as the user works in it, so it cannot run on the
+`alpheus-capture` worker, whose waits are bounded in seconds. The daemon starts the tool as its own
+child (`Executor::spawn_watched`: its own process group, standard input `/dev/null`, SIGINT if the
+daemon dies) and puts the child's pidfd on the event loop: the descriptor turns readable only when the
+process ends, so nothing polls, no thread waits and no timer is armed while it runs, and the watch is
+removed with the end. The image is a private `capture-<n>.png` in `$XDG_RUNTIME_DIR/alpheus` (owner
+only); the tool's output is a private file made by alpheus before the tool starts (`capture-<n>-out.png`
+for the editor to write into, `capture-<n>.txt` as the recognizer's standard output), so it stays
+owner-only whatever the tool's umask; `{file}` and `{out}` are whole arguments, never inside a longer
+one (`[captures]` is refused otherwise). Exit 0 with an image or a text is the result, exit 0 with
+nothing is a silent cancel, anything else (another code, a signal, a tool that cannot start, more
+than 256 KiB of text) is a critical failure. Every file goes on every path, and a start clears what a
+killed daemon left. One capture at a time includes the tool's run: a screenshot asked while the
+editor is open is ignored, as during any capture. A kernel without pidfds (before Linux 5.3) cannot
+run the tools: the child is killed at once and the capture fails.
+
+Date: 2026-11-25 · Source: tests `a_watched_program_signals_its_end_on_its_descriptor_and_gives_its_code`, `a_watched_program_writes_its_output_to_the_file_given`, `a_watched_program_is_interrupted_when_its_thread_ends` (`alpheus-common/src/exec/tests.rs`), `annotate_passes_whole_file_and_out_and_copies_the_result`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel`, `a_tool_failure_is_critical_and_never_copies`, `temp_files_are_0600_and_removed` (`captures/tools/tests.rs`), `an_annotation_runs_the_tool_then_copies_what_it_wrote` (`captures/tests.rs`), `the_tool_placeholders_are_whole_arguments_where_each_tool_needs_them` (`config/tests.rs`), the `Generic::new` entry of `nothing_resident_while_the_launcher_is_closed` and `a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it` (`tests/guardrails.rs`), `annotate_copies_what_the_tool_wrote`, `ocr_copies_the_text_the_tool_printed` (`tests/headless_session.rs`)
+
+### Recording is the external tool's, driven and stopped by alpheus
+
+alpheus encodes no video: `[captures] record` (wf-recorder by default) records, as a watched child
+of the daemon. alpheus chooses what and where: the whole focused output or a selected area, given as
+`{geometry}` (`x,y wxh` in the compositor's logical pixels, as slurp prints it; the whole output is
+its own geometry, since wf-recorder asks on its standard input which output to record when there are
+several and it has neither `-g` nor `-o`), and a free `screenrecord-%Y%m%d-%H%M%S.mp4` in
+`$XDG_VIDEOS_DIR` (else the videos entry of `user-dirs.dirs`, else `~/Videos`), never over a file.
+`--capture stop` or the Stop row sends SIGINT to the recorder's own process group, and to nothing
+else: no pattern, no other group, only the child alpheus is still the parent of. A recorder that left
+its group (the group signal finds nobody) gets the signal by its pid, still only while it is our
+unreaped child; what it started is then out of reach, so the recorder must stay in its group.
+The recording ends when the recorder does: exit 0 with a non-empty file is "Recording saved" (the file's name in the
+notice, never in a log), anything else is critical. One recording at a time; captures may run while it
+records. The privacy module's screen glyph shows `alpheus` while it runs (a recorder that bypasses
+PipeWire is seen by no other source on Sway or Mango). At the daemon's shutdown the recorder gets
+SIGINT and at most 2 s to finish its file, and the signal guard leaves that time; a recorder still
+running then is let go, never killed (a kill would leave its file unplayable), and its ending is
+logged as not confirmed. An ending at shutdown is a log word only, never a notice: the notification
+server is alpheus's own and stops with the daemon, so nobody would see it. Nothing is persisted: a recording is never adopted after a restart.
+
+Date: 2026-11-25 · Source: tests `record_spawns_with_the_geometry_and_stop_sends_sigint_to_it_only`, `the_daemon_stop_ends_the_recording_with_sigint`, `a_recording_never_writes_over_a_file`, `a_recording_that_fails_or_leaves_nothing_is_a_failure` (`captures/record/tests.rs`), `a_released_watched_program_is_not_killed` (`alpheus-common/src/exec/tests.rs`), `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`), `the_shutdown_grace_covers_the_recorders_stop_while_recording` (`startup/tests.rs`), `the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording` (`launcher/tools/catalog/tests.rs`), `interrupt_reaches_the_watched_program_only`, `an_interrupt_is_never_sent_to_a_reaped_pid`, `a_program_outside_its_group_is_signalled_by_its_pid`, `a_watched_program_s_signals_fall_back_to_its_pid` (`alpheus-common/src/exec/tests.rs`), `the_recording_signal_reaches_only_the_recorder_alpheus_started`, `the_shutdown_ends_the_recording_before_anything_goes` (`tests/guardrails.rs`), `record_then_stop_notifies_saved`, `recording_lights_the_privacy_screen_glyph_on_the_bar`, `a_recording_running_at_the_daemon_stop_is_finished` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_recording` (`tests/memory.rs`)
+
+### Large blocks are always mapped on their own
+
+glibc raises its mmap threshold to the size of the first large block a program frees, and from then
+on serves blocks of that size from an arena's heap. In the daemon the first such block is a
+capture's frame (3.6 MB at 1280 × 720): after it, the worker's image and PNG came from the second
+arena (`M_ARENA_MAX` is 2), where a freed block at the heap's top is never returned by
+`malloc_trim`, and one frame's worth of anonymous memory stayed resident from the third capture on
+(1,080 → 4,740 KB over ten captures, three runs out of three). The daemon now sets
+`M_MMAP_THRESHOLD` to glibc's own default, 128 KiB, at start, next to `M_ARENA_MAX`: setting it
+turns the dynamic adjustment off, so every block of 128 KiB or more has its own mapping and is
+unmapped when freed. The cost is one `mmap` and one `munmap` per such block: a few per capture,
+and elsewhere only where a block that large is allocated. The memory suite is the check that no
+other figure rose with it: `startup_pss_per_source` reads the same on both sides, 3 runs each. A
+user's `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=…` is overridden by this call.
+
+Date: 2026-11-24 · Source: `limit_malloc_arenas` (`startup.rs`), test `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
+### Only the user's own processes are offered, and a reused pid is never signalled
+
+The kill list (`alpheus-launch --kill`) lists the processes of the user alpheus runs as, and never
+PID 1, alpheus, the session leader, the compositor (found by the kernel's peer credentials of its
+socket, since a wrapped compositor runs under another name, and by its name), any ancestor of
+alpheus or of the compositor (the script that started the session, the shell that started the bar),
+or the user manager (`systemd`): ending one of those ends the session. The exclusions are worked
+out once per open and checked again when a signal is sent. A pid alone can name another program
+by the time Enter is pressed, so the list keys every row on its pid and its start time (field 22 of
+`/proc/<pid>/stat`); before a signal, a pidfd is opened on the pid, the start time is read again,
+and the signal goes through that pidfd, which names the process it was opened on for ever. A start
+time that differs sends nothing; `kill(2)` by pid is the fallback only for a kernel without
+`pidfd_open`. Enter sends SIGTERM; SIGKILL takes Ctrl+Enter and a second Enter 0.4 s to 3 s later,
+as the power menu asks. The outcome is said in the box only: no log line or notification carries a
+name, a pid or a command line.
+
+Date: 2026-11-24 · Source: tests `only_the_users_processes_are_listed`, `pid_1_alpheus_and_the_session_leader_are_never_offered`, `the_compositor_and_the_user_manager_are_never_offered_by_name`, `a_reused_pid_is_never_signalled`, `a_pid_that_could_reach_a_group_or_init_is_refused`, `an_excluded_pid_is_refused_even_when_asked_for` (`launcher/processes/tests.rs`), `ctrl_enter_asks_then_a_second_enter_kills`, `a_reused_pid_says_so_and_sends_nothing`, `every_ancestor_of_the_compositor_and_of_alpheus_is_excluded`, `only_a_kernel_without_pidfd_falls_back_to_kill`, `a_signal_without_a_pinned_process_sends_nothing` (`launcher/processes_app/tests.rs`), `the_pid_is_the_peer_of_the_socket`, `a_wedged_compositor_never_blocks_the_caller` (`sources/peer/tests.rs`), `the_kill_list_has_no_panicking_path_and_logs_fixed_words` (`tests/guardrails.rs`), `kill_list_opens_and_signals_by_enter` (`tests/headless_session.rs`)
+
+### A scheduled shutdown always warns a minute before, even when its time has passed
+
+A power off the user did not see coming is the one outcome the shutdown must never have. So the
+step after "scheduled" is always the warning (a critical notice with no timeout, `Click to cancel`,
+set apart from the notification rules), and the power off comes only after it, at the later of the
+end and the warning + 60 s: a laptop that wakes up past the end, or a bar restarted after it, warns
+first. A warning the machine slept through (more wall time than monotonic time since it, by over a
+second) or one the clock went back before no longer counts and is given again. At start a due
+warning waits for alpheus's notification server to own its name, at most 10 s; with no server the
+chip still shows the last minute and one log line says the warning was not shown. A shutdown saved
+by an earlier boot is dropped at load (the state directory outlives a reboot), as is one with no
+`[quick] poweroff` to run. Dismissing the notice does not cancel; its click does. The shutdown is a
+slot of the timer, not a timer: a Pomodoro never cancels it and it never ends one.
+
+A warning under a lock screen is not a warning: a notice sits on an overlay layer, below the
+locker, so a user who takes over a minute to unlock would be powered off unwarned (the laptop that
+slept past the end and woke under hyprlock). So a step due while the session is locked is held, the
+warning given before the lock stops counting, and the first check that finds the session unlocked
+gives the warning fresh, with its whole minute. The lock is told by a screen locker's process
+(`hyprlock`, `swaylock`, `gtklock`, `waylock`, `i3lock`, `xsecurelock`, the user's own), looked up
+when a step is due and, during the warning's minute only, every 5 s (a lock that starts and ends
+inside the minute would otherwise be missed, and the user powered off with a few seconds of
+warning left), once a minute while held, on the shutdown's existing deadline. Logind's `LockedHint`
+was set aside because the hyprlock and hypridle 0.1.7 binaries, the only ones read, never mention
+it, and its `Lock`/`Unlock` signals because hyprlock, left by its password, sends no `Unlock` (it
+does not call `loginctl unlock-session`): a state kept from them would hold the shutdown for ever.
+An unknown locker, a zombie or an unreadable `/proc` reads as unlocked, which is how the shutdown
+behaved before; the list is in `timer/lockscreen.rs`, the folder read is `[timer] proc_dir`.
+
+A power off that does not happen is not left to a log line either: the shutdown has already left
+the chip and the warning when its command runs, so a command that cannot start or ends with an error
+(a polkit refusal, an inhibitor, a missing program) would look, to the user, like a machine that
+simply did not obey. Only a non-zero exit (or a failure to start) is a failure: an end by a signal
+is the session's teardown reaching a power off that is happening. A critical notice, `Shutdown` with `Shutdown failed`, set apart from the rules
+like the warning, says so, and the shutdown is not retried. The summary names the feature and the
+body the outcome, as the captures' failures do. The command runs as a watched child whose pidfd the
+event loop hears at its end (nothing polls), the way the recorder does, but started free (no
+PDEATHSIG) and let run on when dropped: a custom command that ends the session before it returns,
+a crash or a pending polkit prompt must never cancel a power off.
+
+Date: 2026-11-24, amended 2026-11-25 · Source: tests `the_warning_comes_sixty_seconds_before_the_end`, `a_past_shutdown_warns_first_then_powers_off`, `a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one`, `the_warning_is_a_sticky_critical_notice_with_a_cancel_action` (`timer/shutdown/tests.rs`), `a_timer_change_never_touches_the_shutdown` (`timer/tests.rs`), `the_shutdown_check_warns_then_powers_off_and_never_at_once`, `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`, `a_short_suspend_in_the_warning_minute_warns_again`, `a_shutdown_from_before_this_boot_is_dropped`, `no_poweroff_command_refuses_the_verb_and_drops_a_pending_shutdown`, `a_warning_waits_for_the_server_but_never_for_long` (`timer/app/tests.rs`), `the_failure_notice_is_critical_and_says_the_shutdown_failed` (`timer/shutdown/tests.rs`), `only_a_non_zero_exit_is_a_failed_power_off`, `a_power_off_still_running_is_released_never_killed_when_dropped`, `a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock`, `a_free_watched_program_outlives_its_launching_thread_and_a_watched_one_does_not` (`alpheus-common/src/exec/tests.rs`), `the_power_off_runs_the_configured_command_and_logs_no_command`, `a_locked_session_is_never_warned_or_powered_off_until_it_unlocks`, `the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force`, `the_lock_is_sampled_only_while_the_warning_minute_runs` (`timer/app/tests.rs`), `the_known_lockers_are_told_by_name`, `a_running_locker_of_the_user_is_found`, `a_zombie_locker_holds_no_lock`, `another_users_locker_is_not_ours`, `only_numeric_folders_are_processes`, `an_unreadable_proc_is_not_locked` (`timer/lockscreen/tests.rs`), `the_shutdown_is_wired_through_one_path` (`tests/guardrails.rs`), `shutdown_warns_then_runs_poweroff`, `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`, `a_shutdown_due_while_locked_waits_for_the_unlock_then_warns`, `a_failed_power_off_shows_a_critical_notice`, `a_shutdown_and_a_timer_run_side_by_side` (`tests/headless_session.rs`)
+
+### A typed text is one argv element and is never logged
+
+An entry with `ask` takes what is typed in the box as an answer, not a filter, and hands it to `run`
+as the one whole element `{text}`, as `{choice}` is: spaces, quotes, `;` or a leading `-` stay inside
+that argument, and no shell is put in front. A leading `-` is still an option to the program it
+reaches, so an entry of the user's own puts `--` before `{text}` (`run = ["ping", "--", "{text}"]`). `{text}` may not be the program, nor appear in `state`
+or `choices_cmd`, and `ask` and `confirm` are refused together (the typed text is the
+confirmation). The text can be a host or a path, and it is no place for a secret: the box shows it and the argv is
+readable by every user in `/proc/<pid>/cmdline`. It is never in a log line, the history
+(which keeps the entry and its fixed choice), a `{:?}` of the action, or another mode's query when
+the prompt is left by a click.
+
+Date: 2026-11-24 · Source: tests `the_typed_text_is_one_whole_argv_element`, `text_is_never_recorded_in_history_nor_shown_by_debug`, `a_built_ins_choice_is_recorded_under_its_key_and_its_text_never` (`launcher/run/tests.rs`), `invalid_rules_make_the_file_invalid` (`launcher/tools/config/tests.rs`), `a_typed_scan_target_never_shows_in_debug_output`, `an_empty_text_runs_nothing` (`launcher/tools/nav/tests.rs`), `a_mode_click_from_the_prompt_drops_the_typed_text` (`launcher/model/tests.rs`), `the_tools_logs_are_fixed_words` (`tests/guardrails.rs`)
+
+### The diagnostics tools run in the held terminal, and the scan's target is typed
+
+The network scans, the USB events and the USB reset run in `terminal_hold`: the output stays
+readable, and `sudo` (the UDP, OS and aggressive scans, the `modprobe` pair) asks for its password
+there, so alpheus itself never runs as root and never sees a password. A scan's target, and the
+ports of "Specific ports", are typed in the box through `ask`; each is one whole element, the target
+comes after `--` (one starting with `-` is a host, never an option), and ports are digits, commas and
+dashes only. The host discovery sweeps the subnet of the default route's interface, read from
+`/proc/net/route` (nothing parses `ip`'s output), and only a local net from /16 to /30. The USB reset
+asks a second Enter and its command is configurable (`[tools.builtin] usb_reset`, `[]` hides it). The
+two shell scripts (the USB events' two streams in one terminal, the reset's chained `modprobe`) are
+fixed, the reset's being only the default of its configurable command; nothing typed goes into them. A journal preset is no diagnostics tool of this kind:
+it opens the control center on that preset (`alpheus --tab diagnostics --preset <slug>`) in
+`launcher.toml`'s plain `terminal`, never through `[actions] open_tab`, whose command takes a tab and
+nothing else.
+
+Date: 2026-11-24 · Source: tests `each_scan_builds_its_nmap_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_fixed_one` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)

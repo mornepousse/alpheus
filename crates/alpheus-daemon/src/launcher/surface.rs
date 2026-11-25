@@ -402,6 +402,9 @@ impl App {
         if self.notes_is_open() {
             self.notes_guarded("replaced", |app| app.notes_close(CloseReason::Replaced));
         }
+        // Never open together with the capture selector or the colour picker: they cancel and go.
+        self.select_close(crate::captures::select_app::SelectClose::Replaced);
+        self.pick_close(crate::captures::pick_app::PickClose::Replaced);
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
         // A failed Activate answered after the launcher opened must not open a menu over it.
@@ -564,8 +567,10 @@ impl App {
         }
         reply_on_close(open.reply.take(), reason);
         drop(open);
-        // The Tools question's timer goes with the box (nothing is armed at rest).
+        // The Tools question's timer goes with the box (nothing is armed at rest), and the kill
+        // list's second sample and timer with it.
         self.tools_timer_sync();
+        self.processes_timer_sync();
         self.tools_reads_stop();
         self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
@@ -680,14 +685,18 @@ impl App {
     /// Ok(Done::Close) → close Activated).
     pub fn launcher_outcome(&mut self, o: Outcome) {
         self.launcher_outcome_inner(o);
-        // A question asked, answered or cancelled by this outcome: the timer follows it.
+        // A question asked, answered or cancelled by this outcome: the timers follow it.
         self.tools_timer_sync();
+        self.processes_timer_sync();
     }
 
     fn launcher_outcome_inner(&mut self, o: Outcome) {
         match o {
             Outcome::Nothing => {}
             Outcome::Redraw | Outcome::BackToAll | Outcome::Asked => self.launcher_redraw(),
+            // The kill list's key: the signal goes if the pid is still the listed process, and the
+            // box stays open to say what happened (launcher/processes_app.rs).
+            Outcome::Signal { pid, start, sig } => self.processes_signal(pid, start, sig),
             // The `/` jump into the Tools mode: the daemon's own states are read now (never at a
             // plain Mod+Space open), the reader starts the entries' (launcher/tools/app.rs).
             Outcome::EnterTools(job) => {
@@ -729,16 +738,18 @@ impl App {
                 // A built-in that spawns has its program checked while the box is still open: a
                 // missing one is said in the box, which stays.
                 let prepared = match &a {
-                    Activation::Tool(ToolAction::Builtin(i)) => match self.tools_prepare(*i) {
-                        Ok(argv) => argv,
-                        Err(m) => {
-                            if let Some(open) = self.launcher.as_mut() {
-                                open.model.show_message(m);
+                    Activation::Tool(ToolAction::Builtin { index, choice, text }) => {
+                        match self.tools_prepare(*index, choice.as_deref(), text.as_deref()) {
+                            Ok(argv) => argv,
+                            Err(m) => {
+                                if let Some(open) = self.launcher.as_mut() {
+                                    open.model.show_message(m);
+                                }
+                                self.launcher_redraw();
+                                return;
                             }
-                            self.launcher_redraw();
-                            return;
                         }
-                    },
+                    }
                     _ => None,
                 };
                 let App { launcher, exec, .. } = self;
@@ -789,6 +800,10 @@ impl App {
                         self.launcher_close(CloseReason::Activated);
                         let qh = self.qh.clone();
                         self.run_builtin(&qh, i, prepared);
+                    }
+                    Ok(Done::BuiltinChoice(i, choice)) => {
+                        self.launcher_close(CloseReason::Activated);
+                        self.run_builtin_choice(i, &choice);
                     }
                 }
             }

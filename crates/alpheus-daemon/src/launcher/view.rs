@@ -17,6 +17,7 @@ use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
+use crate::launcher::processes::Sig;
 use crate::launcher::tools::catalog::Choices;
 use crate::launcher::tools::nav::{RowId, Trail};
 use crate::list::{self, Boxed, Row, tail, wrap};
@@ -37,6 +38,8 @@ pub const SEARCH_ICON: char = '\u{f0349}';
 pub const PIN_ICON: char = '\u{f0403}';
 /// The history mode's empty input line (a bare `"` in All lists everything instead).
 const CLIPBOARD_PLACEHOLDER: &str = "type to filter the clipboard history";
+/// The kill list's empty input line.
+const PROCESSES_PLACEHOLDER: &str = "type to filter the processes";
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +130,9 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     if l.mode == Mode::Clipboard && l.query.is_empty() {
         g.write(x + 1, end, CLIPBOARD_PLACEHOLDER, Style::MUTED);
     }
+    if l.mode == Mode::Processes && l.query.is_empty() {
+        g.write(x + 1, end, PROCESSES_PLACEHOLDER, Style::MUTED);
+    }
 }
 
 /// A window's title, or its class when the title is empty — or made only of
@@ -167,6 +173,8 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, Cow<'_, str>, String) {
         },
         Source::ClipClear => (None, "Clear history".into(), "pins kept".into()),
         // Reached only if the row vanished: `result_row` draws the real row.
+        Source::Proc(i) => (None, l.procs.get(i).map_or("", |p| p.name.as_str()).into(), String::new()),
+        // Reached only if the row vanished: `result_row` draws the real row.
         Source::Tool(i) => (None, l.tool_rows().get(i).map_or("", |r| r.text.as_str()).into(), String::new()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or("", |e| e.entry.as_str()).into(), String::new()),
@@ -192,7 +200,8 @@ fn calc_text(l: &Launcher) -> String {
 }
 
 fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
-    let selected = index == l.selected;
+    // The kill list can have nothing selected (the selected process went from it).
+    let selected = index == l.selected && !l.selection_lost();
     if let Source::Entry(i) = l.results[index].source
         && let Some(e) = l.entries.as_ref().and_then(|e| e.items.get(i))
     {
@@ -203,6 +212,12 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         && l.tool_rows().get(i).is_some()
     {
         tool_row(l, b, g, i, selected);
+        return;
+    }
+    if let Source::Proc(i) = l.results[index].source
+        && l.procs.get(i).is_some()
+    {
+        proc_row(l, b, g, i, selected);
         return;
     }
     let (icon, name, kind) = describe(l, l.results[index].source);
@@ -221,6 +236,55 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         selected,
     };
     list::row(g, 1, b.pane_end(), &row);
+}
+
+/// A process's memory as a short word: `148 MB`, `1.2 GB`, `640 KB`.
+fn memory_text(kb: u64) -> String {
+    match kb {
+        0..1024 => format!("{kb} KB"),
+        1024..1_048_576 => format!("{} MB", kb / 1024),
+        _ => format!("{:.1} GB", kb as f64 / 1_048_576.0),
+    }
+}
+
+/// A kill-list row: the name, the command line dim after it, and at the right edge the pid, the CPU
+/// (`-` before the second sample) and the memory. While its force kill is asked, the row says so in warn.
+fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
+    let Some(p) = l.procs.get(i) else { return };
+    let end = b.pane_end();
+    if l.proc_question_key() == Some((p.pid, p.start)) {
+        let text = format!("Force kill {}? Enter again", p.name);
+        list::row(g, 1, end, &Row { icon: None, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
+        return;
+    }
+    // A process that was sent a signal stays listed, dim, with what it was sent, until the next read.
+    if let Some(sig) = l.proc_mark(p.pid) {
+        let right = if sig == Sig::Kill { "killed" } else { "asked to quit" };
+        list::row(g, 1, end, &Row { icon: None, icon_style: Style::ACCENT, text: &p.name, right, style: Style::MUTED, selected });
+        return;
+    }
+    let cpu = match p.cpu_pct {
+        Some(c) => format!("{c:.1} %"),
+        None => "-".to_string(),
+    };
+    let stats = format!("{:>7}  {cpu:>6}  {:>6}", p.pid, memory_text(p.rss_kb));
+    let stats_width = text_width(&stats);
+    let pick = |s: Style| if selected { Style::SELECTED } else { s };
+    if selected {
+        g.write(1, end, &" ".repeat(usize::from(end.saturating_sub(1))), Style::SELECTED);
+    }
+    // The stats first, from the right; the name and the command line take what is left.
+    let stats_at = end.saturating_sub(stats_width + 1);
+    let stop = stats_at.saturating_sub(1);
+    let x = 2;
+    let x = g.write(x, stop, &truncate(&p.name, stop.saturating_sub(x)), pick(Style::NORMAL));
+    if stop.saturating_sub(x) > 3 && !p.cmdline.is_empty() {
+        let x = g.write(x, stop, "  ", pick(Style::NORMAL));
+        g.write(x, stop, &truncate(&p.cmdline, stop.saturating_sub(x)), pick(Style::MUTED));
+    }
+    if stats_at > 2 {
+        g.write(stats_at, end, &stats, pick(Style::MUTED));
+    }
 }
 
 /// A Tools row: `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
@@ -281,6 +345,16 @@ fn clips_help(l: &Launcher) -> &'static str {
     if l.clips.is_empty() { "esc close" } else { "enter copy · ctrl+enter pin · del forget · esc close" }
 }
 
+fn processes_help(l: &Launcher) -> &'static str {
+    if l.proc_question() {
+        "enter again to force kill · any other key cancels"
+    } else if l.procs.is_empty() {
+        "esc close"
+    } else {
+        "enter quit · ctrl+enter force kill · esc close"
+    }
+}
+
 fn help_text(l: &Launcher) -> &'static str {
     match l.prefixed() {
         Some((Prefix::Search, _)) => return "enter search · esc close",
@@ -297,9 +371,11 @@ fn help_text(l: &Launcher) -> &'static str {
         // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
         Mode::Tools if l.tools().is_some_and(|t| t.at_root()) && l.origin == Origin::Apps => "⏎ open/run · ⌫ all · esc close",
         Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · esc close",
+        Mode::Tools if l.tools().is_some_and(|t| t.prompting()) => "⏎ run · esc back",
         Mode::Tools => "⏎ open/run · ← esc back",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
+        Mode::Processes => processes_help(l),
         Mode::Calc if l.config.copy.is_empty() => "esc close",
         Mode::Calc => "enter copy · ctrl+enter copy expression · esc close",
         Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
@@ -474,19 +550,21 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((String::new(), Style::NORMAL));
                 let opens = match row.id {
                     RowId::Category(_) => true,
-                    RowId::Entry(e) => {
-                        l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(|e| !matches!(e.choices, Choices::None))
-                    }
-                    RowId::Choice(..) => false,
+                    RowId::Entry(e) => l
+                        .tools()
+                        .and_then(|t| t.catalog.entries.get(e))
+                        .is_some_and(|e| !matches!(e.choices, Choices::None) || e.ask.is_some()),
+                    RowId::Choice(..) | RowId::Prompt(_) => false,
                 };
                 out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
             }
         }
-        // Unreachable in practice: a `Source::Line` hit only exists in Script mode, where
-        // `layout()` never reserves a preview panel (`preview` is always `!script`, see
-        // `layout`'s doc comment) — this function is never even called with one. Kept empty,
-        // not removed, for `Source`'s match exhaustiveness.
-        Source::Line(_) => {}
+        // Unreachable in practice: a `Source::Line` hit only exists in Script mode, and a
+        // `Source::Proc` one in the kill list, where `layout()` never reserves a preview panel
+        // (`preview` is always `!script`, see `layout`'s doc comment, and both are bare) — this
+        // function is never even called with one. Kept empty, not removed, for `Source`'s match
+        // exhaustiveness.
+        Source::Line(_) | Source::Proc(_) => {}
     }
     out
 }
@@ -524,6 +602,8 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                 Mode::Calc => "type an expression",
                 Mode::Clipboard if l.query.trim().is_empty() => prefix::hint(Prefix::Clipboard),
                 Mode::Clipboard => "no match",
+                Mode::Processes if l.procs.is_empty() => "no process",
+                Mode::Processes => "no match",
                 Mode::Tools if l.tools().is_some_and(|t| t.reading) => "reading…",
                 Mode::Tools if l.query.trim().is_empty() => "nothing here",
                 Mode::Tools => "no match",

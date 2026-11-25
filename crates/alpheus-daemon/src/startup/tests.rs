@@ -515,3 +515,13 @@ fn settings_carries_the_shield_warning() {
     assert!(w.iter().any(|m| m.starts_with("shield:")), "{w:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The guard leaves the loop its usual second after a signal, and the recorder's two seconds more
+/// while alpheus records: the shutdown waits for the recorder to finish its file, and the forced
+/// exit never cuts that wait short.
+#[test]
+fn the_shutdown_grace_covers_the_recorders_stop_while_recording() {
+    assert_eq!(shutdown_grace(false), GRACE);
+    assert_eq!(shutdown_grace(true), GRACE + crate::captures::record::STOP_LIMIT);
+    assert!(shutdown_grace(true) > crate::captures::record::STOP_LIMIT, "the wait ends before the forced exit");
+}

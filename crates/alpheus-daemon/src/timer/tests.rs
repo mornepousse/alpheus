@@ -385,3 +385,104 @@ fn the_notifications_say_what_ended() {
     assert_eq!(n(End::SetDone { rounds: 1 }).unwrap().body, "1 round");
     assert_eq!(n(End::StopwatchCap), None);
 }
+
+/// The shutdown chip's own time: ends `minutes` from `T0`.
+fn shutdown_in(minutes: u64) -> Shutdown {
+    Shutdown { end: T0 + minutes * MINUTE_MS, set: T0 }
+}
+
+#[test]
+fn the_chip_shows_the_shutdown_before_the_timer() {
+    let s = shutdown_in(80);
+    let c = running_countdown(T0 + 25 * MINUTE_MS, 30 * MINUTE_MS).chip(T0, TimerIdle::Glyph);
+    let both = chip_with_shutdown(c, Some(&s), T0).expect("a chip");
+    assert_eq!(format!("{} {}", both.glyph, both.text.as_deref().unwrap_or("")), format!("\u{23fb} 1h20 \u{b7} {TIMER} 25m"));
+    assert_eq!(both.look, ChipLook::Running);
+    // An idle timer adds nothing: the shutdown alone.
+    let idle = Timer::Idle { done: false }.chip(T0, TimerIdle::Glyph);
+    let alone = chip_with_shutdown(idle, Some(&s), T0).expect("a chip");
+    assert_eq!((alone.glyph, alone.text.as_deref()), ('\u{23fb}', Some("1h20")));
+    // Even a hidden idle chip shows a pending shutdown.
+    assert!(chip_with_shutdown(None, Some(&s), T0).is_some());
+    // A paused timer keeps its pause glyph in the second part.
+    let p = Timer::Countdown { run: Run::Paused(60_000), total: 120_000 }.chip(T0, TimerIdle::Glyph);
+    assert_eq!(chip_with_shutdown(p, Some(&s), T0).and_then(|c| c.text).as_deref(), Some(&*format!("1h20 \u{b7} {PAUSE} 1m")));
+    // No shutdown: the timer's chip as it was.
+    let c = running_countdown(T0 + 25 * MINUTE_MS, 30 * MINUTE_MS).chip(T0, TimerIdle::Glyph);
+    assert_eq!(chip_with_shutdown(c.clone(), None, T0), c);
+    // The warn colour only in the last minute.
+    let late = chip_with_shutdown(None, Some(&s), s.end - 30_000).expect("a chip");
+    assert_eq!(late.look, ChipLook::Warn);
+    let early = chip_with_shutdown(None, Some(&s), s.end - 61_000).expect("a chip");
+    assert_eq!(early.look, ChipLook::Running);
+}
+
+#[test]
+fn a_timer_change_never_touches_the_shutdown() {
+    let s = shutdown_in(80);
+    let mut t = Timer::Idle { done: false };
+    for c in [
+        Change::Countdown(60_000),
+        Change::Pause,
+        Change::Resume,
+        Change::Add(60_000),
+        Change::Pomodoro,
+        Change::Skip,
+        Change::Stopwatch,
+        Change::Stop,
+    ] {
+        t = t.apply(c, &L, T0);
+        // Whatever the timer is, the saved pair keeps the shutdown and reads back both.
+        let text = saved_pair(&t, Some(&s)).expect("saved");
+        let (back, kept) = Timer::parse_pair(&text, T0).expect("read back");
+        assert_eq!(kept, Some(s), "{c:?}");
+        assert_eq!(back, t, "{c:?}");
+    }
+    // And cancelling the shutdown leaves the timer.
+    let running = running_countdown(T0 + 60_000, 60_000);
+    let text = saved_pair(&running, None).expect("saved");
+    assert_eq!(Timer::parse_pair(&text, T0), Some((running, None)));
+}
+
+#[test]
+fn the_state_file_round_trips_both() {
+    let s = shutdown_in(80);
+    for t in a_timer_in_every_state() {
+        let text = saved_pair(&t, Some(&s)).expect("saved");
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert_eq!(Timer::parse_pair(&text, T0), Some((t, Some(s))), "{text}");
+        assert_eq!(Timer::parse_pair(&format!("{text}\n"), T0), Some((t, Some(s))), "with its newline");
+        // The shutdown first reads the same.
+        let swapped: Vec<&str> = text.lines().rev().collect();
+        assert_eq!(Timer::parse_pair(&swapped.join("\n"), T0), Some((t, Some(s))));
+    }
+    let idle = Timer::Idle { done: false };
+    assert_eq!(saved_pair(&idle, Some(&s)), Some(s.saved()), "the shutdown alone");
+    assert_eq!(Timer::parse_pair(&s.saved(), T0), Some((idle, Some(s))));
+    assert_eq!(saved_pair(&idle, None), None, "nothing to keep: the file goes");
+    assert_eq!(saved_pair(&Timer::Idle { done: true }, None), None);
+}
+
+#[test]
+fn an_old_state_file_loads_without_a_shutdown() {
+    for t in a_timer_in_every_state() {
+        let line = t.saved().expect("saved");
+        assert_eq!(Timer::parse_pair(&line, T0), Some((t, None)), "{line}");
+    }
+}
+
+#[test]
+fn a_hostile_pair_is_refused_whole() {
+    let line = running_countdown(T0 + 5, 7).saved().expect("saved");
+    for bad in [
+        String::new(),
+        "shutdown".to_string(),
+        format!("{line}\n{line}"),
+        format!("shutdown {T0}\nshutdown {T0}"),
+        format!("{line}\nshutdown x"),
+        format!("{line}\nshutdown {T0}\n{line}"),
+        format!("{line}\nrubbish"),
+    ] {
+        assert_eq!(Timer::parse_pair(&bad, T0), None, "{bad:?}");
+    }
+}

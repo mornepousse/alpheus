@@ -15,6 +15,18 @@ fn v(s: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn the_usb_reset_command_is_configurable_and_empty_hides_it() {
+    let d = ToolsConfig::default();
+    assert_eq!(d.builtin.usb_reset, v(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]));
+    let mine = parse("[tools.builtin]\nusb_reset = [\"my-reset\", \"--now\"]\n").unwrap().tools;
+    assert_eq!(mine.builtin.usb_reset, v(&["my-reset", "--now"]));
+    assert!(parse("[tools.builtin]\nusb_reset = []\n").unwrap().tools.builtin.usb_reset.is_empty(), "[] is valid: it hides the entry");
+    let e = parse("[tools.builtin]\nusb_reset = [\" \"]\n").unwrap_err();
+    assert!(e.contains("tools.builtin.usb_reset"), "{e}");
+    assert!(parse("[tools.builtin]\nnope = 1\n").is_err(), "an unknown key is refused");
+}
+
+#[test]
 fn defaults_are_builtins_on_and_nothing_else() {
     let d = ToolsConfig::default();
     assert!(d.builtins);
@@ -173,6 +185,28 @@ fn invalid_rules_make_the_file_invalid() {
             "tools.entry 1",
             "control character or U+FFFD",
         ),
+        // `ask` and `{text}` go together, `{text}` whole and once, as `{choice}` is.
+        (entry("ask = \"Target\"\n"), "tools.entry 1", "ask needs run to hold \"{text}\" exactly once"),
+        (entry("").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "no ask"),
+        (entry("").replace("run = [\"x\"]", "run = [\"x\", \"a{text}\"]"), "tools.entry 1", "no ask"),
+        (entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"x\", \"a{text}\"]"), "tools.entry 1", "exactly once, as a whole"),
+        (
+            entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\", \"{text}\"]"),
+            "tools.entry 1",
+            "exactly once, as a whole",
+        ),
+        (entry("ask = \"T\"\n").replace("run = [\"x\"]", "run = [\"{text}\"]"), "tools.entry 1", "run's program"),
+        (entry("ask = \"T\"\nconfirm = true\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask and confirm"),
+        (entry("ask = \" \"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must not be blank"),
+        (entry("ask = \"\"\n").replace("run = [\"x\"]", "run = [\"x\", \"{text}\"]"), "tools.entry 1", "ask must be 1 to 48 characters"),
+        // Only `run` may hold `{text}`: a read runs before anything is typed.
+        (entry("state = [\"x\", \"{text}\"]\n"), "tools.entry 1", "state must not hold \"{text}\""),
+        (entry("state = [\"x\", \"a{text}\"]\n"), "tools.entry 1", "state must not hold \"{text}\""),
+        (
+            entry("choices_cmd = [\"x\", \"{text}\"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"),
+            "tools.entry 1",
+            "choices_cmd must not hold \"{text}\"",
+        ),
         (entry("state = [\" \"]\n"), "tools.entry 1", "state empty"),
         (entry("choices_cmd = [\" \"]\n").replace("run = [\"x\"]", "run = [\"x\", \"{choice}\"]"), "tools.entry 1", "choices_cmd empty"),
         (cat(""), "tools.category 1", "name must be 1 to 48 characters"),
@@ -183,6 +217,7 @@ fn invalid_rules_make_the_file_invalid() {
         ("[[tools.category]]\nname = \"Zeta\"\nicon = \"ab\"\n".into(), "tools.category 1", "icon must be one character"),
         ("[[tools.category]]\nname = \"Zeta\"\norder = 1001\n".into(), "tools.category 1", "order 1001 past 1000"),
         ("[tools]\nreload = [\" \"]\n".into(), "tools.reload", "empty program"),
+        ("[tools.builtin]\nusb_reset = [\" \"]\n".into(), "tools.builtin.usb_reset", "empty program"),
     ];
     for (text, at, rule) in cases {
         let e = parse(&text).unwrap_err();
@@ -190,7 +225,7 @@ fn invalid_rules_make_the_file_invalid() {
         assert!(!e.contains("Zeta"), "the message must not name the entry or category: {e}");
     }
     for (text, needle) in [
-        ("[tools]\nbuiltin = true\n", "unknown field"),
+        ("[tools]\nbuiltinz = true\n", "unknown field"),
         ("[[tools.entry]]\nname = \"Zeta\"\nrun = [\"x\"]\nicons = \"a\"\n", "unknown field"),
         ("[[tools.category]]\nname = \"Zeta\"\nrun = [\"x\"]\n", "unknown field"),
     ] {
@@ -422,4 +457,25 @@ fn a_toml_error_names_its_line_and_never_the_value() {
     let err = parse("[[tools.entry]]\nname = \"x\"\nrun = \"hunter2 --flag\"\n").unwrap_err();
     assert!(err.ends_with("line 3"), "{err}");
     assert!(!err.contains("hunter2"), "{err}");
+}
+
+#[test]
+fn an_ask_entry_parses_with_or_without_choices() {
+    let text = r#"
+[[tools.entry]]
+name = "Scan"
+run = ["nmap", "-sS", "{text}"]
+ask = "Target"
+
+[[tools.entry]]
+name = "Pick"
+run = ["probe", "{choice}", "--", "{text}"]
+choices = ["a", "b"]
+ask = "Value"
+"#;
+    let t = parse(text).unwrap().tools;
+    assert_eq!(t.entries[0].ask.as_deref(), Some("Target"));
+    assert_eq!(t.entries[1].ask.as_deref(), Some("Value"));
+    assert_eq!(t.entries[1].choices, v(&["a", "b"]));
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].ask, None, "no ask by default");
 }

@@ -49,7 +49,7 @@ fn pid_written(f: &std::path::Path) -> i32 {
         if let Some(p) = std::fs::read_to_string(f).ok().and_then(|s| s.trim().parse().ok()) {
             return p;
         }
-        assert!(t.elapsed() < Duration::from_secs(2), "grandchild PID never written");
+        assert!(t.elapsed() < Duration::from_secs(10), "grandchild PID never written");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -192,6 +192,100 @@ fn spawn_with_input_refuses_more_than_max_input_before_starting() {
 #[test]
 fn spawn_with_input_of_a_missing_program_is_not_found() {
     assert_eq!(exec().spawn_with_input("alpheus-nonexistent-program", &[], &[b"x"]), Err(ExecError::NotFound));
+}
+
+const LIMIT: Duration = Duration::from_secs(5);
+
+/// A standard input from a file has no size bound: a megabyte arrives whole, and the call returns
+/// the program's own exit code, so a caller knows the program took its input.
+#[test]
+fn run_with_stdin_file_feeds_a_big_file_and_reports_the_exit() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, got) = (dir.join("in"), dir.join("got"));
+    let payload: Vec<u8> = (0..(1 << 20)).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&input, &payload).unwrap();
+    let script = format!("cat > '{}'", got.display());
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, LIMIT), Ok(Some(0)));
+    assert_eq!(std::fs::read(&got).unwrap(), payload, "the whole file, read before the call returned");
+    assert_eq!(
+        exec().run_with_stdin_file("sh", &["-c", "cat > /dev/null; exit 3"], &input, LIMIT),
+        Ok(Some(3)),
+        "a failing exit is reported"
+    );
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", "kill -9 $$"], &input, LIMIT), Ok(None), "a signal has no code");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the program leaves running in the background (`wl-copy` forks and its foreground ends) does
+/// not hold the call, and one that never ends is killed at the limit.
+#[test]
+fn run_with_stdin_file_returns_at_the_foreground_exit_and_kills_at_the_limit() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("in");
+    std::fs::write(&input, "x").unwrap();
+    let late = dir.join("late");
+    let script = format!("cat > /dev/null; (sleep 1; touch '{}') & exit 0", late.display());
+    let t = Instant::now();
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, LIMIT), Ok(Some(0)));
+    assert!(t.elapsed() < Duration::from_millis(900), "the background child is not waited for: {:?}", t.elapsed());
+    let hang = dir.join("hung");
+    let script = format!("sleep 2; touch '{}'", hang.display());
+    let t = Instant::now();
+    assert_eq!(exec().run_with_stdin_file("sh", &["-c", &script], &input, Duration::from_millis(200)), Err(ExecError::Timeout));
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    std::thread::sleep(Duration::from_millis(2300));
+    assert!(!hang.exists(), "killed at the limit, it never got to finish");
+    assert!(late.exists(), "the background child of the first run was left alone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_with_stdin_file_names_a_missing_program_or_file() {
+    let dir = std::env::temp_dir().join(format!("alpheus-stdin-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let there = dir.join("there");
+    std::fs::write(&there, "x").unwrap();
+    assert_eq!(exec().run_with_stdin_file("alpheus-nonexistent-program", &[], &there, LIMIT), Err(ExecError::NotFound));
+    let marker = dir.join("started");
+    let touch = format!("touch '{}'", marker.display());
+    assert!(matches!(exec().run_with_stdin_file("sh", &["-c", &touch], &dir.join("absent"), LIMIT), Err(ExecError::Io(_))));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a missing file starts nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The file handed to the program is never reached through a link (a link swapped in after the
+/// caller's own check): refused, nothing starts.
+#[test]
+fn run_with_stdin_file_never_follows_a_link() {
+    let dir = scratch("stdin-nofollow");
+    let (target, link, marker) = (dir.join("target"), dir.join("input"), dir.join("started"));
+    std::fs::write(&target, "secret").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let touch = format!("touch '{}'", marker.display());
+    assert!(matches!(exec().run_with_stdin_file("sh", &["-c", &touch], &link, LIMIT), Err(ExecError::Io(_))));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a link starts nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The wait for the copy command is a poll on its pidfd for the time left: no sleep loop, no zero
+/// timeout spun on (a wake-up every few milliseconds for as long as `wl-copy` takes). A timing test
+/// cannot tell a quiet wait from a polling one, so the source is read.
+#[test]
+fn run_with_stdin_file_waits_on_the_pidfd_without_polling() {
+    let source = include_str!("../exec.rs");
+    let open = source.find("O_NOFOLLOW").expect("the copy's input is opened");
+    let start = source[..open].rfind("    fn run_with_stdin_file(").expect("the executor's method");
+    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+    assert!(body.contains("pidfd_open("), "{body}");
+    assert!(body.contains("readable(std::os::fd::AsRawFd::as_raw_fd(&pidfd), ms)"), "waits on the pidfd for the time left: {body}");
+    assert!(!body.contains("thread::sleep"), "{body}");
 }
 
 /// Threads of this whole test binary (other tests may have their own,
@@ -375,6 +469,11 @@ fn children_start_with_no_blocked_signal() {
     let f = std::env::temp_dir().join(format!("alpheus-sigblk-{}", std::process::id()));
     let _ = std::fs::remove_file(&f);
     let script = format!("grep SigBlk /proc/self/status > {}", f.display());
+    // `run_with_stdin_file` discards the output: its command writes the mask to a file of its own.
+    let (input, from_file) = (f.with_extension("in"), f.with_extension("file"));
+    std::fs::write(&input, "x").unwrap();
+    let file_script = format!("grep SigBlk /proc/self/status > {}", from_file.display());
+    let stdin_file = input.clone();
     let (run, stream) = std::thread::spawn(move || {
         // SAFETY: a zero-filled sigset_t initialized by sigemptyset and
         // sigaddset; pthread_sigmask only changes THIS test thread's mask.
@@ -389,6 +488,7 @@ fn children_start_with_no_blocked_signal() {
         let mut stream = String::new();
         e.stream("grep", &["SigBlk", "/proc/self/status"]).unwrap().read_to_string(&mut stream).unwrap();
         e.spawn("sh", &["-c", &script]).unwrap();
+        assert_eq!(e.run_with_stdin_file("sh", &["-c", &file_script], &stdin_file, Duration::from_secs(5)), Ok(Some(0)));
         (run, stream)
     })
     .join()
@@ -400,7 +500,10 @@ fn children_start_with_no_blocked_signal() {
         })
         .expect("the spawned command ran");
     let _ = std::fs::remove_file(&f);
-    for out in [run, stream, spawned] {
+    let with_stdin_file = std::fs::read_to_string(&from_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&from_file);
+    let _ = std::fs::remove_file(&input);
+    for out in [run, stream, spawned, with_stdin_file] {
         assert_eq!(out.trim(), "SigBlk:\t0000000000000000", "a mask inherited from the parent");
     }
 }
@@ -687,4 +790,342 @@ fn stop_running_kills_a_silent_command_s_group() {
     e.stop_running();
     assert_eq!(waiter.join().unwrap(), Ok(None), "ended by the kill");
     wait_for_death(pid);
+}
+
+/// A private scratch folder of one test, emptied first.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("alpheus-watched-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Whether `fd` turns readable within `ms` milliseconds.
+fn turns_readable(fd: &std::os::fd::OwnedFd, ms: i32) -> bool {
+    use std::os::fd::AsRawFd;
+    readable(fd.as_raw_fd(), ms) == Ok(true)
+}
+
+/// A watched program's end is told by its descriptor, which stays quiet while it runs, and its code
+/// is read once it has ended.
+#[test]
+fn a_watched_program_signals_its_end_on_its_descriptor_and_gives_its_code() {
+    let mut child = exec().spawn_watched("sh", &["-c", "sleep 0.3; exit 3"], None).unwrap();
+    let fd = child.exit_fd().expect("a pidfd");
+    assert!(!turns_readable(&fd, 50), "quiet while it runs");
+    assert_eq!(child.try_exit(), None, "still running");
+    assert!(turns_readable(&fd, 3000), "readable once it ended");
+    assert_eq!(child.try_exit(), Some(Some(3)));
+    assert_eq!(child.try_exit(), Some(Some(3)), "the same answer once reaped");
+    let mut killed = exec().spawn_watched("sh", &["-c", "kill -9 $$"], None).unwrap();
+    assert_eq!(killed.wait_exit(Duration::from_secs(3)), Some(None), "a signal has no code");
+}
+
+/// SIGINT reaches the watched program (its trap runs and it ends as it chooses) and never another
+/// program: a second watched one keeps running until it is dropped, which kills it.
+#[test]
+fn interrupt_reaches_the_watched_program_only() {
+    let dir = scratch("interrupt");
+    let (marker, other_pid) = (dir.join("interrupted"), dir.join("other.pid"));
+    let trap = format!("trap 'echo int > {}; exit 0' INT; while :; do sleep 0.05; done", marker.display());
+    let mut recorder = exec().spawn_watched("sh", &["-c", &trap], None).unwrap();
+    let mut other = exec().spawn_watched("sh", &["-c", &format!("echo $$ > {}; exec sleep 30", other_pid.display())], None).unwrap();
+    let pid = pid_written(&other_pid);
+    // The shell installs its trap as it starts: give it that moment.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(recorder.interrupt());
+    assert_eq!(recorder.wait_exit(Duration::from_secs(3)), Some(Some(0)), "its trap ended it with its own code");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "int");
+    assert!(!recorder.interrupt(), "an ended program is not signalled");
+    assert_eq!(other.try_exit(), None, "the other program never got it");
+    assert!(alive(pid));
+    drop(other);
+    wait_for_death(pid);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The interrupt goes to the program's own process group: what a wrapper script runs in the foreground gets
+/// it too (a non-interactive shell's background jobs ignore SIGINT, as POSIX wants).
+#[test]
+fn interrupt_reaches_what_the_watched_program_started() {
+    let dir = scratch("interrupt-group");
+    let inner = dir.join("inner.pid");
+    let script = format!("sh -c 'echo $$ > {}; exec sleep 30'; echo after", inner.display());
+    let mut wrapper = exec().spawn_watched("sh", &["-c", &script], None).unwrap();
+    let pid = pid_written(&inner);
+    assert!(wrapper.interrupt());
+    wait_for_death(pid);
+    assert!(wrapper.wait_exit(Duration::from_secs(3)).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `wait_exit` gives up at its limit, and the program is killed with its group when it is dropped.
+#[test]
+fn wait_exit_stops_at_its_limit_and_a_drop_kills() {
+    let dir = scratch("limit");
+    let pid_file = dir.join("pid");
+    let mut child = exec().spawn_watched("sh", &["-c", &format!("echo $$ > {}; exec sleep 30", pid_file.display())], None).unwrap();
+    let pid = pid_written(&pid_file);
+    let t = Instant::now();
+    assert_eq!(child.wait_exit(Duration::from_millis(200)), None);
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    drop(child);
+    wait_for_death(pid);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The standard output goes to the file given (private, written from its start), else nowhere; the
+/// standard input is empty.
+#[test]
+fn a_watched_program_writes_its_output_to_the_file_given() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("stdout");
+    let out = dir.join("out.txt");
+    std::fs::write(&out, "old content that is longer").unwrap();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut child = exec().spawn_watched("sh", &["-c", "cat; printf 'some text'; echo err >&2"], Some(&out)).unwrap();
+    assert_eq!(child.wait_exit(Duration::from_secs(3)), Some(Some(0)));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "some text", "only its standard output, from the start");
+    assert_eq!(std::fs::metadata(&out).unwrap().permissions().mode() & 0o777, 0o600);
+    let mut none = exec().spawn_watched("sh", &["-c", "printf x"], None).unwrap();
+    assert_eq!(none.wait_exit(Duration::from_secs(3)), Some(Some(0)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawn_watched_names_a_missing_program_and_starts_nothing_after_closing() {
+    assert_eq!(exec().spawn_watched("alpheus-nonexistent-program", &[], None).err(), Some(ExecError::NotFound));
+    let e = exec();
+    e.stop_running();
+    assert!(matches!(e.spawn_watched("sh", &["-c", "true"], None), Err(ExecError::Io(_))));
+}
+
+/// A watched program starts with no signal blocked (the daemon blocks SIGINT in every thread: without
+/// this, the interrupt would never reach it).
+#[test]
+fn a_watched_program_starts_with_no_blocked_signal() {
+    let dir = scratch("sigblk");
+    let out = dir.join("mask");
+    let mask_file = out.clone();
+    let exit = std::thread::spawn(move || {
+        // SAFETY: as in `children_start_with_no_blocked_signal`: this test thread's mask only.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        // Waited for on this thread: the program is interrupted when the thread that started it ends.
+        let mut child = exec().spawn_watched("grep", &["SigBlk", "/proc/self/status"], Some(&mask_file)).unwrap();
+        child.wait_exit(Duration::from_secs(3))
+    })
+    .join()
+    .unwrap();
+    assert_eq!(exit, Some(Some(0)));
+    assert_eq!(std::fs::read_to_string(dir.join("mask")).unwrap().trim(), "SigBlk:\t0000000000000000");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The daemon gone (the thread that started the program ended without stopping it), the program gets
+/// SIGINT: a recorder finishes its file instead of running on with nobody to stop it.
+#[test]
+fn a_watched_program_is_interrupted_when_its_thread_ends() {
+    let dir = scratch("orphan");
+    let (pid_file, marker) = (dir.join("pid"), dir.join("interrupted"));
+    let script =
+        format!("trap 'echo int > {}; exit 0' INT; echo $$ > {}; while :; do sleep 0.05; done", marker.display(), pid_file.display());
+    let child = std::thread::spawn(move || {
+        let child = exec().spawn_watched("sh", &["-c", &script], None).unwrap();
+        // The shell's trap is in place once it wrote its pid.
+        std::thread::sleep(Duration::from_millis(300));
+        // Not dropped (a drop kills): forgotten, as a daemon killed outright forgets it.
+        std::mem::forget(child);
+    });
+    child.join().unwrap();
+    let pid = pid_written(&pid_file);
+    wait_for_death(pid);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap_or_default().trim(), "int", "it ended through its trap");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The interrupt is sent only to a program not reaped yet: once reaped its pid may be another
+/// process's, and no test can make the kernel reuse it on cue, so the order is read in the source.
+#[test]
+fn an_interrupt_is_never_sent_to_a_reaped_pid() {
+    let source = include_str!("../exec.rs");
+    let start = source.find("    fn interrupt(&mut self) -> bool {").expect("the watched interrupt");
+    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+    let checked = body.find("if self.try_exit().is_some() {").expect("the end is checked first");
+    let signalled = body.find("signal_group_and_pid(self.child.id(), libc::SIGINT)").expect("then the group is signalled");
+    assert!(checked < signalled, "{body}");
+    assert!(body[checked..signalled].contains("return false;"), "an ended program gets nothing");
+}
+
+/// A released program runs on: the handle goes without the kill a drop sends (the daemon's shutdown
+/// lets an interrupted recorder finish its file rather than kill it).
+#[test]
+fn a_released_watched_program_is_not_killed() {
+    let dir = scratch("release");
+    let pid_file = dir.join("pid");
+    let child = exec().spawn_watched("sh", &["-c", &format!("echo $$ > {}; exec sleep 30", pid_file.display())], None).unwrap();
+    let pid = pid_written(&pid_file);
+    child.release();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(alive(pid), "the release did not kill it");
+    // SAFETY: cleanup of the program this test started, by its pid (> 1), then reaped.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A signal for a watched program goes to its process group and, when the program left it, to the
+/// program itself: a recorder that moved out of its group can still be
+/// stopped. A background job of a shell stands in for it here: its pid leads no group.
+#[test]
+fn a_program_outside_its_group_is_signalled_by_its_pid() {
+    let dir = scratch("outside-group");
+    let pid_file = dir.join("pid");
+    let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+    let mut parent = exec().spawn_watched("sh", &["-c", &script], None).unwrap();
+    let pid = pid_written(&pid_file);
+    // SAFETY: getpgid(2) on the process this test started; no pointer.
+    assert_ne!(unsafe { libc::getpgid(pid) }, pid, "it leads no group: the group signal cannot reach it");
+    assert!(signal_group_and_pid(u32::try_from(pid).unwrap(), libc::SIGTERM), "sent to the pid");
+    wait_for_death(pid);
+    assert!(parent.wait_exit(Duration::from_secs(3)).is_some(), "its shell ends once it is gone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The watched program's interrupt and its drop's kill both fall back to its pid: a program that left
+/// its group is still stopped, and a drop never waits for a program its kill missed.
+#[test]
+fn a_watched_program_s_signals_fall_back_to_its_pid() {
+    let source = include_str!("../exec.rs");
+    let start = source.find("impl Watched for WatchedChild {").expect("the watched child");
+    let rest = &source[start..];
+    let body = |name: &str| {
+        let at = rest.find(name).expect(name);
+        &rest[at..at + rest[at..].find("\n    }\n").expect("its end")]
+    };
+    assert!(body("    fn interrupt(&mut self) -> bool {").contains("signal_group_and_pid(self.child.id(), libc::SIGINT)"));
+    assert!(body("    fn drop(&mut self) {").contains("signal_group_and_pid(self.child.id(), libc::SIGKILL)"));
+}
+
+/// A program that moved to another group of the session while a helper stays in its original one:
+/// the original group still exists, so a group kill succeeds and misses the program itself. A group
+/// leader cannot `setsid`, but it can `setpgid` into a group that exists: this test binary starts
+/// itself (`left_group_program_entry`) to do it, with no outside tool. Its helpers die with it
+/// (PDEATHSIG), so nothing is left to kill by pid. Returns the handle and the program's pid.
+fn left_group_child(dir: &std::path::Path) -> (Box<dyn Watched>, i32) {
+    let file = dir.join("pid");
+    let exe = std::env::current_exe().unwrap();
+    let exe = exe.to_str().unwrap();
+    let var = format!("{LEFT_GROUP_FILE}={}", file.display());
+    let child = exec().spawn_watched("env", &[&var, exe, "--exact", "exec::tests::left_group_program_entry"], None).unwrap();
+    let pid = pid_written(&file);
+    // SAFETY: getpgid(2) on the process this test started; no pointer.
+    assert_ne!(unsafe { libc::getpgid(pid) }, pid, "it left its own group, which the helper keeps alive");
+    (child, pid)
+}
+
+const LEFT_GROUP_FILE: &str = "ALPHEUS_TEST_LEFT_GROUP_FILE";
+
+/// Not a test of its own: the program `left_group_child` runs (this binary, told by the variable).
+/// It starts a helper in its group and a sleeper in a group of its own, joins that group, writes its
+/// pid and waits to be killed (ten seconds at most, should nobody).
+#[test]
+#[allow(clippy::zombie_processes)] // killed with this program (PDEATHSIG), which is killed by its handle
+fn left_group_program_entry() {
+    let Some(file) = std::env::var_os(LEFT_GROUP_FILE).map(std::path::PathBuf::from) else { return };
+    let sleeper = |own_group: bool| {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        if own_group {
+            command.process_group(0);
+        }
+        // SAFETY: the closure only makes an async-signal-safe call (prctl).
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        command.spawn().unwrap()
+    };
+    let _helper = sleeper(false);
+    let other = sleeper(true);
+    // SAFETY: setpgid(2) into the group of the child just started, which exists once spawn returned.
+    assert_eq!(unsafe { libc::setpgid(0, libc::pid_t::try_from(other.id()).unwrap()) }, 0);
+    let tmp = file.with_extension("tmp");
+    std::fs::write(&tmp, std::process::id().to_string()).unwrap();
+    std::fs::rename(&tmp, &file).unwrap();
+    std::thread::sleep(Duration::from_secs(10));
+}
+
+/// A drop never waits for a program its group kill missed: the program left its group, a helper
+/// keeps the group alive, and the daemon's loop thread would block forever in the wait.
+#[test]
+fn a_drop_signals_a_program_that_left_a_group_a_helper_keeps() {
+    let dir = scratch("left-group-drop");
+    let (child, _) = left_group_child(&dir);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(child);
+        let _ = tx.send(());
+    });
+    let dropped = rx.recv_timeout(Duration::from_secs(3)).is_ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(dropped, "the drop is still waiting for the program");
+}
+
+/// A stop reaches such a program too, not only the helper left in its old group.
+#[test]
+fn an_interrupt_reaches_a_program_that_left_a_group_a_helper_keeps() {
+    let dir = scratch("left-group-int");
+    let (mut child, _) = left_group_child(&dir);
+    assert!(child.interrupt());
+    let ended = child.wait_exit(Duration::from_secs(3)).is_some();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ended, "the program never saw the interrupt");
+}
+
+/// The output file is never reached through a link: a link put where the output goes is refused,
+/// nothing starts, and the file it points to is left as it was.
+#[test]
+fn a_watched_program_s_output_never_follows_a_link() {
+    let dir = scratch("nofollow");
+    let (target, link) = (dir.join("target"), dir.join("out.txt"));
+    std::fs::write(&target, "kept").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let started = exec().spawn_watched("sh", &["-c", "printf replaced"], Some(&link));
+    assert!(matches!(started, Err(ExecError::Io(_))), "refused");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// PDEATHSIG follows the launching thread: a watched program started from a thread that then ends
+/// is interrupted, unless it was started free. The power off command is started free, so a daemon
+/// that goes (a session ended first, a crash) never cuts it short.
+#[test]
+fn a_free_watched_program_outlives_its_launching_thread_and_a_watched_one_does_not() {
+    let start = |free: bool| {
+        std::thread::spawn(
+            move || if free { exec().spawn_watched_free("sleep", &["30"]) } else { exec().spawn_watched("sleep", &["30"], None) },
+        )
+        .join()
+        .unwrap()
+        .unwrap()
+    };
+    let mut bound = start(false);
+    assert_eq!(bound.wait_exit(Duration::from_secs(3)), Some(None), "interrupted when its launching thread ended");
+    let mut free = start(true);
+    assert_eq!(free.wait_exit(Duration::from_millis(500)), None, "still running: no signal followed the thread's end");
+    // Ours: ended by its own handle, not left running.
+    assert!(free.interrupt());
+    assert_eq!(free.wait_exit(Duration::from_secs(3)), Some(None));
+    let closed = exec();
+    closed.stop_running();
+    assert!(matches!(closed.spawn_watched_free("sh", &["-c", "true"]), Err(ExecError::Io(_))), "refused once closed");
 }

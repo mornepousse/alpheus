@@ -53,6 +53,7 @@ fn requests() -> Vec<Request> {
         Request::Clipboard,
         Request::ClipboardClear,
         Request::Tools,
+        Request::Kill,
         Request::Power,
         Request::Outputs,
         Request::OutputsTry(String::new()),
@@ -65,6 +66,9 @@ fn requests() -> Vec<Request> {
         Request::Shield(ShieldVerb::Toggle),
         Request::Shield(ShieldVerb::Status),
         Request::Shield(ShieldVerb::Allow),
+        Request::Capture(CaptureVerb::Select),
+        Request::Capture(CaptureVerb::AreaSave),
+        Request::Capture(CaptureVerb::RecordArea),
     ]
 }
 
@@ -116,6 +120,7 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Clipboard), b"alpheus-launcher/1 clipboard\n");
     assert_eq!(encode_request(&Request::ClipboardClear), b"alpheus-launcher/1 clipboard-clear\n");
     assert_eq!(encode_request(&Request::Tools), b"alpheus-launcher/1 tools\n");
+    assert_eq!(encode_request(&Request::Kill), b"alpheus-launcher/1 kill\n");
     assert_eq!(encode_request(&Request::Power), b"alpheus-launcher/1 power\n");
     assert_eq!(
         encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
@@ -153,6 +158,7 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 windows now\n",
         b"alpheus-launcher/1 notes now\n",
         b"alpheus-launcher/1 tools now\n",
+        b"alpheus-launcher/1 kill now\n",
         b"alpheus-launcher/1 power now\n",
         b"alpheus-launcher/1 clipboard now\n",
         b"alpheus-launcher/1 clipboard-clear now\n",
@@ -556,17 +562,28 @@ fn timer_words_round_trip_and_bad_ones_are_refused() {
         (TimerVerb::Stop, "timer stop"),
         (TimerVerb::Skip, "timer skip"),
         (TimerVerb::Popup, "timer popup"),
+        (TimerVerb::Shutdown(5400), "timer shutdown 5400"),
+        (TimerVerb::Shutdown(TIMER_MIN_SECS), "timer shutdown 1"),
+        (TimerVerb::Shutdown(TIMER_MAX_SECS), "timer shutdown 86400"),
+        (TimerVerb::ShutdownCancel, "timer shutdown-cancel"),
     ] {
         let bytes = encode_request(&Request::Timer(v));
         assert_eq!(bytes, format!("{MAGIC} {wire}\n").into_bytes(), "{v:?}");
         assert_eq!(decode(&bytes), Ok(Some(Request::Timer(v))), "{v:?}");
-        if !matches!(v, TimerVerb::Start(_)) {
+        if !matches!(v, TimerVerb::Start(_) | TimerVerb::Shutdown(_)) {
             assert_eq!(TimerVerb::parse_word(v.word()), Some(v), "{v:?}");
         }
     }
     assert_eq!(TimerVerb::parse_word("start"), None, "start carries a duration");
+    assert_eq!(TimerVerb::parse_word("shutdown"), None, "shutdown carries a duration");
     for h in [
         "timer start 0",
+        "timer shutdown 0",
+        "timer shutdown 86401",
+        "timer shutdown x",
+        "timer shutdown",
+        "timer shutdown 60 now",
+        "timer shutdown-cancel now",
         "timer start 86401",
         "timer start x",
         "timer start -5",
@@ -586,6 +603,21 @@ fn timer_words_round_trip_and_bad_ones_are_refused() {
         "an unknown word is named"
     );
     assert_eq!(Request::Timer(TimerVerb::Stop).reply_timeout(), Some(Duration::from_secs(2)));
+}
+
+#[test]
+fn the_capture_words_round_trip_and_nothing_else_parses() {
+    let words: Vec<&str> = CaptureVerb::ALL.iter().map(|v| v.word()).collect();
+    assert_eq!(words, ["full", "area", "area-save", "pick", "annotate", "ocr", "record", "record-area", "stop", "select"]);
+    for v in CaptureVerb::ALL {
+        assert_eq!(encode_request(&Request::Capture(v)), format!("alpheus-launcher/1 capture {}\n", v.word()).into_bytes());
+        assert_eq!(CaptureVerb::parse(v.word()), Some(v));
+        assert_eq!(decode(&encode_request(&Request::Capture(v))), Ok(Some(Request::Capture(v))));
+    }
+    assert_eq!(CaptureVerb::parse("Select"), None, "the words are exact");
+    assert_eq!(CaptureVerb::parse("area_save"), None);
+    assert!(matches!(decode(b"alpheus-launcher/1 capture\n"), Err(IpcError::Malformed(_))), "a bare capture is not a request");
+    assert!(matches!(decode(b"alpheus-launcher/1 capture sideways\n"), Err(IpcError::Malformed(_))));
 }
 
 #[test]

@@ -70,7 +70,10 @@ Three programs from one Cargo workspace: `alpheus-demon` (the resident daemon), 
   and the [⏻ menu](docs/features/power.md).
 - [**The launcher**](docs/features/launcher.md): apps, windows, commands, a calculator, emoji, web search,
   a window switcher, your own command sources, and a `--dmenu` mode for scripts.
-- [**The Tools menu**](docs/features/tools-menu.md): one box for "do something to my session".
+- [**The Tools menu**](docs/features/tools-menu.md): one box for "do something to my session", with a
+  kill list, a scheduled shutdown and diagnostics tools.
+- [**Captures**](docs/features/captures.md): screenshots of the screen or an area, a colour picker,
+  annotation, OCR and screen recording through external tools.
 - [**Notifications**](docs/features/notifications.md): alpheus's own server, bubbles, a bell, a history panel.
 - [**The OSD**](docs/features/osd.md): a pill for volume, microphone and brightness.
 - [**Quick settings**](docs/features/quick-settings.md): volume, brightness, Wi-Fi, Bluetooth, VPN,

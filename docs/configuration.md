@@ -68,7 +68,7 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
@@ -250,6 +250,7 @@ button there too). See
 | `rounds` | integer | `4` | 1 to 12 | Work sessions before the long break. |
 | `sound` | command | `[]` | non-blank program, no NUL | Run at each end (not under do-not-disturb), for example `["pw-play", "/path/bell.oga"]`; `[]`: none. |
 | `idle` | `"glyph"` or `"hidden"` | `"glyph"` | | The chip when nothing runs: a dim glyph, or nothing drawn. |
+| `proc_dir` | absolute path | `"/proc"` | absolute | Where the scheduled shutdown lists processes to tell a locked session (a screen locker running). Only a test changes it. |
 
 See [the focus timer](features/timer.md).
 
@@ -288,6 +289,18 @@ at start.
 | `off_text` | string | `"Back to the usual settings."` | same | The "off" notice's body. |
 
 See [Shield mode](features/shield.md).
+
+### `[captures]`
+
+Screenshots and recordings, driven by `alpheus-launch --capture` and the Tools menu's Captures category. Read at start. The copy command is `launcher.toml`'s `copy`.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `dir` | path | `""` | absolute or `~/…`, no NUL | Where `area-save` writes `%Y%m%d-%H%M%S.png`. Empty: `$XDG_PICTURES_DIR/screenshots` (else the pictures entry of `user-dirs.dirs`), else `~/Pictures/screenshots`. |
+| `annotate` | command | `["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit", "--copy-command", "cat >/dev/null", "--save-after-copy", "--disable-notifications"]` | non-blank program, no NUL; `{file}` and `{out}` once each, whole arguments, not the program; `[]` turns it off | The annotation tool of `--capture annotate`: `{file}` is the area's private PNG, `{out}` the private PNG it writes back, which alpheus copies (exit 0 with nothing written: a silent cancel; another exit: critical). The default flags make satty's own copy a save to `{out}` (its copy command reads the image and throws it away: a command that does not read its input breaks satty's pipe and nothing is saved), so only alpheus copies. |
+| `ocr` | command | `["tesseract", "{file}", "-", "-l", "eng"]` | same rules; `{file}` once, no `{out}` | The text recognizer of `--capture ocr`: its standard output, trimmed, is copied as text (empty: a silent cancel; another exit than 0, or more than 256 KiB: critical). |
+| `record` | command | `["wf-recorder", "-g", "{geometry}", "-f", "{out}"]` | same rules; `{out}` once, `{geometry}` at most once, no `{file}` | The recorder of `--capture record` and `record-area`: `{geometry}` is `x,y wxh` in the compositor's logical pixels (the whole focused output for `record`, the area for `record-area`), `{out}` a free `screenrecord-%Y%m%d-%H%M%S.mp4` in `$XDG_VIDEOS_DIR` (else `user-dirs.dirs`, else `~/Videos`). `--capture stop` sends SIGINT to its process group; exit 0 with a non-empty file is saved. The recorder must stay in that group (no `setsid`): a program that leaves it gets the signal alone, without what it started. Without `{geometry}` the area is not passed: `record-area` records whatever the tool picks (wf-recorder with several outputs and neither `-g` nor `-o` asks which output on its standard input, which is `/dev/null`). |
+| `pick_format` | string | `"{hex}"` | at least one placeholder, only `{r}`, `{g}`, `{b}`, `{hex}` between braces, no control character, at most 256 bytes | The colour picker's copied text: `{r}`, `{g}`, `{b}` are 0 to 255, `{hex}` is `#RRGGBB` in upper case. Any other `{…}` is refused, so the text cannot hold a literal brace pair. |
 
 ### `[hooks]`
 
@@ -420,6 +433,7 @@ long_break = 15
 rounds = 4           # work sessions before the long break (1 to 12)
 sound = []           # an argv run at each end (not under do-not-disturb), e.g. ["pw-play", "/path/bell.oga"]; [] none
 idle = "glyph"       # "glyph" | "hidden": the chip when nothing runs
+proc_dir = "/proc"     # where the scheduled shutdown looks for a screen locker
 
 [displays]
 auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change
@@ -428,6 +442,12 @@ auto = true                          # apply the displays.toml profile that matc
 [clipboard]
 enabled = false           # true: follow the clipboard and keep a text history in memory (50 x 4 KiB, never a copy with a password-manager hint); read at start
 
+# [captures]              # screenshots and recordings (see the table above); read at start
+# dir = ""                # empty: $XDG_PICTURES_DIR/screenshots, else ~/Pictures/screenshots
+# annotate = ["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit", "--copy-command", "cat >/dev/null", "--save-after-copy", "--disable-notifications"]   # [] turns it off
+# ocr = ["tesseract", "{file}", "-", "-l", "eng"]          # its standard output is copied; [] turns it off
+# record = ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]   # stopped by SIGINT to its group; [] turns it off
+# pick_format = "{hex}"   # the colour picker's text: {r}, {g}, {b}, {hex}
 # [shield]                # Shield mode: none set, no Shield anywhere; read at start (restart the daemon after a change)
 # flag = "/var/lib/shield/on"      # absolute: the mode is on while this file exists (not in alpheus's config directory)
 # on = ["pkexec", "/usr/local/bin/shield-root", "on"]     # argv, run as given; their program asks for authorisation itself
@@ -459,6 +479,7 @@ setting both of the first two.
 | `terminal_hold` | command | `["foot", "--hold", "-e"]` | non-empty, non-blank program | A command or typed shell text on Enter: the terminal stays open to read the output (`Ctrl+Enter` runs detached instead). |
 | `rows` | integer | `10` | 3 to 30 | Result rows. |
 | `history` | integer | `200` | 0 to 1000 | Entries kept; 0: no history file (never read, never written). |
+| `proc_dir` | path | `"/proc"` | absolute | A testing seam for the kill list (`alpheus-launch --kill`): it decides only which pids are listed (a folder of links to `/proc/<pid>` narrows the list). Start times, ancestors and signals always use the real `/proc`. Leave it alone: the headless tests point it at a folder of their own so that they can never list a real process. |
 | `focus` | command | `["wm-set", "focus-window", "{window}"]` | non-empty, non-blank program that does not contain `{window}`; some element must contain `{window}` | Run to focus a window; `{window}` is `address:0x…` on Hyprland, `id:N` elsewhere. `wm-set` is an external script, see [compositors.md](compositors.md#external-commands). |
 | `copy` | command | `["wl-copy"]` | non-blank program when set | The calculator's Enter, the emoji copy, the notepad's Ctrl+C/X: the text on its standard input; `[]` hides the action. |
 | `search` | string (URL) | `"https://duckduckgo.com/?q={query}"` | `""`, or `<scheme>://…` holding `{query}` | The `?` prefix's URL; `{query}` is percent-encoded; `""` turns `?` off. |
@@ -510,11 +531,17 @@ bound the first ones are kept, with one log line of counts.
 | `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
 
+`[tools.builtin]`:
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `usb_reset` | command | `["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]` | non-blank program | The "Reset USB (xHCI)" built-in's command, run in `terminal_hold` after a second Enter (so `sudo` can ask there; alpheus never runs as root); `[]` hides the entry. |
+
 `[[tools.category]]`, **at most 16**:
 
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `name` | string | required | 1 to 48 characters, unique, no `/`, no control character | May be a built-in category's name (`Quick settings`, `Control center`, `Utilities`, `Session`): it then restyles it. |
+| `name` | string | required | 1 to 48 characters, unique, no `/`, no control character | May be a built-in category's name (`Quick settings` 10, `Control center` 20, `Utilities` 30, `Captures` 40, `Diagnostics` 70, `System` 80, `Session` 90): it then restyles it, its `icon` and `order` replacing the built-in ones. |
 | `icon` | one character | a generic folder glyph | exactly 1 character | The row's glyph. |
 | `order` | integer | `50` | 0 to 1000 | Root rows sort by `order`, then name. |
 
@@ -526,10 +553,11 @@ bound the first ones are kept, with one log line of counts.
 | `category` | string | the root | a `[[tools.category]]` or a built-in category | Where the entry lives. |
 | `icon` | one character | none | exactly 1 character | The row's glyph. |
 | `order` | integer | `50` | 0 to 1000 | Sort order among its siblings. |
-| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}` | What the entry runs (no shell). |
+| `run` | command | required | non-blank program; with choices, `{choice}` exactly once as a whole element (not the program); without choices, no `{choice}`; with `ask`, `{text}` exactly once as a whole element (not the program), and without `ask`, no `{text}`; `{text}` never in `state` or `choices_cmd` | What the entry runs (no shell). |
 | `terminal` | bool | `false` | not with `hold` | `true`: the launcher's `terminal` is put in front. |
 | `hold` | bool | `false` | not with `terminal` | `true`: `terminal_hold` instead (the output stays readable). |
-| `confirm` | bool | `false` | | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
+| `confirm` | bool | `false` | not with `ask` | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
+| `ask` | string | none | 1 to 48 characters, not blank; `run` must hold `{text}` | A label: the entry asks for a text (after its choice, if it has choices) and runs with it as the one element `{text}`. Never logged, never kept in the history. |
 | `state` | command | `[]` | not with choices; read for at most 16 entries | Run when the box opens: exit 0 shows the switch on, any other exit off; a hung one is killed at 1 s. |
 | `choices` | list of strings | `[]` | at most 32, each 1 to 64 characters; not with `choices_cmd` | Fixed choices for `{choice}`. |
 | `choices_cmd` | command | `[]` | non-blank program; not with `choices` | A command whose output lines are the choices, run when the entry is opened (1 s, 2,000 lines, 256 KiB). |
@@ -542,6 +570,7 @@ terminal = ["foot", "-e"]                        # Terminal=true apps, plain
 terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text on Enter: the terminal stays open
 rows = 10                                        # result rows (3 to 30)
 history = 200                                    # entries kept (0 to 1000; 0: no history file)
+proc_dir = "/proc"                               # testing seam: only narrows which pids the kill list shows; leave it
 focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
 copy = ["wl-copy"]                               # the calculator's Enter, the emoji copy, the notepad's Ctrl+C/X: the text on its standard input; [] hides the action
 search = "https://duckduckgo.com/?q={query}"    # the ? prefix's URL; {query} is required, percent-encoded; "" turns ? off
@@ -558,6 +587,9 @@ hide = []            # built-in ids never shown ("tab.power", "quick.shield", �
 root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
 
+[tools.builtin]
+usb_reset = ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]   # "Reset USB (xHCI)", in terminal_hold after a second Enter; [] hides it
+
 # --- example, not a default: no category or entry exists unless you write one ---
 [[tools.category]]   # at most 16
 name = "Nix"         # 1 to 48 characters, unique; may be a built-in category's name (it then restyles it)
@@ -572,6 +604,7 @@ run = ["my-update", "--now"]   # argv, no shell; required
 terminal = false     # true: `terminal` is put in front
 hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
 confirm = false      # true: asks "Update? ⏎", runs on a second Enter 0.4 s to 3 s later
+# ask = "Host"       # instead of confirm: asks for a text (after the choice, if any); run then holds "{text}" once, as a whole element
 
 [[tools.entry]]
 name = "Generation"

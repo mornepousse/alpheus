@@ -187,6 +187,8 @@ impl App {
         if self.launcher_is_open() {
             self.launcher_guarded("replaced", |app| app.launcher_close(CloseReason::Replaced));
         }
+        self.select_close(crate::captures::select_app::SelectClose::Replaced);
+        self.pick_close(crate::captures::pick_app::PickClose::Replaced);
         self.popup_close(PopupClose::Launcher);
         self.menu.last_icon = None;
         let c = self.hover.cancel();

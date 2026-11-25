@@ -7,7 +7,7 @@ mod common;
 
 use alpheus_common::displays::wire::{self, Snapshot, Status, TrialEnd, TrialState};
 use alpheus_common::displays::{Active, Mode, Scale, Step};
-use alpheus_common::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
+use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_common::theme::Rgb;
 use alpheus_common::theme::presets::preset;
 use alpheus_daemon::quick::{BAR, BAR_START};
@@ -28,7 +28,7 @@ use common::{
     start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy, wl_paste, write_atomically, wtype,
     wtype_spawn,
 };
-use common::{FakeSystemd, FakeVpn, shield_record, shield_stub, vpn_uuid};
+use common::{FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -60,6 +60,11 @@ fn the_harness_leaves_displays_out_for_a_base_build() {
         let text = harness_bar_toml("modules = [\"clock\"]\n", runtime, base);
         assert!(text.contains("dev_dir = \"/run/test/privacy-dev\"") && text.contains("proc_dir = \"/run/test/privacy-proc\""), "{text}");
         assert_eq!(text.contains("[displays]"), !base, "{text}");
+        assert_eq!(
+            text.contains("proc_dir = \"/run/test/timer-proc\""),
+            !base,
+            "the shutdown's lock lookup never reads the machine's /proc: {text}"
+        );
         assert!(alpheus_daemon::config::BarConfig::from_text(&text).is_ok(), "{text}");
     }
     let own = harness_bar_toml("[displays]\ndrm_dir = \"/x\"\n", runtime, false);
@@ -707,6 +712,34 @@ fn tools_tab_builtin_runs_open_tab_or_falls_back() {
     tools_open_and_type(&sway, &d, 1, &["Displays", "-k", "Return"]);
     assert!(wait_until(|| recorded_argv(&sway, "term-rec").len() == 1), "{:?}", d.log());
     assert_eq!(recorded_argv(&sway, "term-rec")[0], ["alpheus", "--tab", "displays"]);
+}
+
+/// A Diagnostics preset built-in runs the launcher's terminal with `alpheus --tab diagnostics
+/// --preset <slug>`, and "USB events" the fixed script in `terminal_hold`; both through recorders,
+/// argument by argument, and the log names the built-in by id only.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_diag_preset_entry_opens_the_tab_on_it() {
+    let sway = Sway::start("tools-diag-presets", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let term = fake_argv_recorder(&sway, "term-rec");
+    fake_recorder(&sway, "alpheus"); // a preset runs `alpheus`, which must be on the PATH
+    let hold = fake_argv_recorder(&sway, "hold-rec");
+    let toml = format!("terminal = [\"{}\", \"-e\"]\nterminal_hold = [\"{}\", \"--hold\"]\n", term.display(), hold.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["Out of memory", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "term-rec").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "term-rec")[0], ["-e", "alpheus", "--tab", "diagnostics", "--preset", "oom"]);
+    assert!(d.wait_for("tools: built-in diag.preset.oom", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["USB events", "-k", "Return"]);
+    assert!(wait_until(|| recorded_argv(&sway, "hold-rec").len() == 1), "{:?}", d.log());
+    let argv = &recorded_argv(&sway, "hold-rec")[0];
+    assert_eq!(&argv[..3], ["--hold", "sh", "-c"]);
+    assert!(argv[3].contains("udevadm monitor --udev --subsystem-match=usb"), "{argv:?}");
+    assert!(d.wait_for("tools: built-in diag.usb_events", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("udevadm") && !l.contains("--preset")), "never the command: {:?}", d.log());
 }
 
 /// The Shield built-in opens the quick panel on the Shield detail when `[shield]` is configured
@@ -6831,13 +6864,19 @@ const TIMER_AT: (u32, u32) = (12, 10);
 /// private path), `extra` appended. Never the real state directory: `XDG_STATE_HOME` is the
 /// runtime's.
 fn timer_daemon(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    timer_daemon_in(name, modules, |_| extra.to_string())
+}
+
+/// `timer_daemon` with `extra` made from the running sway (its runtime directory, for a command
+/// that must write inside it).
+fn timer_daemon_in(name: &str, modules: &str, extra: impl Fn(&Sway) -> String) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     let bus = PrivateBus::start(name);
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    let toml = timer_toml(&sway, modules, extra);
+    let toml = timer_toml(&sway, modules, &extra(&sway));
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
@@ -6979,6 +7018,187 @@ fn timer_survives_a_daemon_restart() {
     let toml = timer_toml(&sway, TIMER_END_MODULES, "");
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("timer: restored countdown", DELAY), "{:?}", d.log());
+}
+
+/// A shutdown whose end is inside its last minute warns at once (a critical bubble) and powers off
+/// a minute after the warning, never before. The `[quick] poweroff` command is a `touch` of a file
+/// in the test's own runtime directory: nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn shutdown_warns_then_runs_poweroff() {
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-warn", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (2 s)", DELAY), "{:?}", d.log());
+    // The end is inside the last minute: the warning comes at once, as a sticky critical bubble.
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("shutdown "), "kept in the state file: {file:?}");
+    // Never at once: past the original end, still nothing.
+    thread::sleep(Duration::from_secs(5));
+    let shown = d.count("bubbles shown: 1");
+    assert!(!sway.runtime.join("off").exists(), "powered off before its minute: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "{:?}", d.log());
+    // A minute after the warning it runs the command, once, and the file goes.
+    assert!(d.wait_for("timer: shutdown power off", Duration::from_secs(75)), "{:?}", d.log());
+    assert_eq!(d.count("could not start"), 0, "{:?}", d.log());
+    wait_for_file(&sway.runtime.join("off"), DELAY);
+    assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 1, "{:?}", d.log());
+    // The command's end is heard and it was clean: nothing is said to the user but the warning.
+    assert!(d.wait_for("timer: shutdown command ended", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("power off failed"), 0, "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles shown: 1"), shown, "no bubble after the warning's: {:?}", d.log());
+}
+
+/// A power off that does not happen must not vanish: the command ends with an error (a polkit
+/// refusal, an inhibitor), or cannot start (a missing program), and a second critical bubble says
+/// so after the warning's. The `[quick] poweroff` is `false`, or a program that is not there:
+/// nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_failed_power_off_shows_a_critical_notice() {
+    for (name, argv, line) in [
+        ("shutdown-fails", "\"false\"", "timer: shutdown power off failed (exit 1)"),
+        ("shutdown-missing", "\"/nonexistent/alpheus-test-off\"", "timer: shutdown power off could not start (not found)"),
+    ] {
+        let (_bus, sway, _hypr, d) = timer_daemon_in(name, TIMER_END_MODULES, |_| format!("[quick]\npoweroff = [{argv}]\n"));
+        assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+        ready(&d);
+        assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+        assert!(d.wait_for("bubbles shown: 1", DELAY), "the warning: {:?}", d.log());
+        thread::sleep(Duration::from_secs(2));
+        let shown = d.count("bubbles shown: 1");
+        assert_eq!(d.count("power off"), 0, "never before its minute: {:?}", d.log());
+        // A minute after the warning the command runs and fails; the user is told, once.
+        assert!(d.wait_for(line, Duration::from_secs(75)), "{name}: {:?}", d.log());
+        // The warning went with the power off, so the failure is the bubble that shows next.
+        assert!(wait_until(|| d.count("bubbles shown: 1") > shown), "{name}: the failure is a bubble: {:?}", d.log());
+        assert_eq!(d.count("not shown"), 0, "{name}: {:?}", d.log());
+        assert!(!sway.runtime.join("state/alpheus/timer").exists(), "{name}: the shutdown is gone, not retried");
+    }
+}
+
+/// A shutdown left on file with its end already past (the daemon started late, after a login or a
+/// sleep) warns first, and the warning is a visible bubble: the check at load must wait for the
+/// notification server to own its name instead of warning into the void. Nothing powers off before
+/// the bubble, and the log never says the warning was not shown.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off() {
+    let (bus, sway, _hypr, mut d) = timer_daemon_in("shutdown-late", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    ready(&d);
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    // The file a previous session left: an end ten seconds ago, scheduled just now (after the boot).
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let dir = sway.runtime.join("state/alpheus");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(dir.join("timer"), format!("shutdown {} {now}", now - 10_000)).unwrap();
+    let toml =
+        timer_toml(&sway, TIMER_END_MODULES, &format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", sway.runtime.join("off").display()));
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("timer: shutdown restored", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the warning must be seen: {:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "no power off before the bubble: {:?}", d.log());
+    assert_eq!(d.count("not shown"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+}
+
+/// A screen locker that stands in for the real one: an entry of the daemon's own fake `/proc`
+/// (`[timer] proc_dir`, the harness's `timer-proc`), which the lookup reads instead of the machine's.
+/// Returns the entry's folder; removing it is the unlock. No process runs, never the real locker.
+fn fake_locker(sway: &Sway) -> PathBuf {
+    let dir = sway.runtime.join("timer-proc/4242");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("comm"), "hyprlock\n").unwrap();
+    // SAFETY: getuid(2) takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    std::fs::write(dir.join("status"), format!("Name:\thyprlock\nState:\tS (sleeping)\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")).unwrap();
+    dir
+}
+
+/// A shutdown that falls due while the session is locked gives no warning (it would sit under the
+/// lock screen) and powers nothing off; once the locker is gone the warning comes, fresh, and the
+/// power off a minute after it. The locker is an entry of the test's own fake `/proc` folder.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_due_while_locked_waits_for_the_unlock_then_warns() {
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-locked", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let locker = fake_locker(&sway);
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (2 s)", DELAY), "{:?}", d.log());
+    // Due at once (inside the last minute), and held: no warning, no bubble, nothing powered off.
+    assert!(d.wait_for("timer: shutdown waits for the unlock", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(d.count("timer: shutdown warning"), 0, "no warning under the lock: {:?}", d.log());
+    assert_eq!(d.count("bubbles shown"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+    assert!(std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap().starts_with("shutdown "), "still pending");
+    // The unlock: the locker ends. The check that comes next (within a minute) warns, fresh.
+    std::fs::remove_dir_all(&locker).unwrap();
+    assert!(d.wait_for("timer: shutdown goes on after the unlock", Duration::from_secs(75)), "{:?}", d.log());
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "the warning comes first: {:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+}
+
+/// With no `[quick] poweroff` command the shutdown verb is refused (an error, named) and nothing is
+/// scheduled; the cancel stays harmless.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_is_refused_without_a_poweroff_command() {
+    let (_bus, sway, _hypr, d) = timer_daemon("shutdown-nocmd", TIMER_END_MODULES, "[quick]\npoweroff = []\n");
+    ready(&d);
+    let (code, out, err) = timer_verb(&sway, &["--timer", "shutdown", "30m"]);
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("no [quick] poweroff command is set"), "{err}");
+    assert!(!sway.runtime.join("state/alpheus/timer").exists(), "nothing scheduled");
+    assert_eq!(d.count("timer: shutdown scheduled"), 0, "{:?}", d.log());
+}
+
+/// A shutdown and a timer coexist: starting and stopping the timer leaves the shutdown on file,
+/// and cancelling the shutdown leaves the timer.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_and_a_timer_run_side_by_side() {
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-both", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    ready(&d);
+    let file = || std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap_or_default();
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2h"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (120 min)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "pomodoro"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: pomodoro started", DELAY), "{:?}", d.log());
+    let both = file();
+    assert!(both.contains("pomodoro running ") && both.contains("shutdown "), "both on file: {both:?}");
+    assert_eq!(timer_verb(&sway, &["--timer", "stop"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: stopped", DELAY), "{:?}", d.log());
+    let only = file();
+    assert!(only.starts_with("shutdown ") && !only.contains("pomodoro"), "the shutdown survives the stop: {only:?}");
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "30m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown-cancel"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+    let timer_only = file();
+    assert!(timer_only.starts_with("countdown running ") && !timer_only.contains("shutdown"), "{timer_only:?}");
+    // Nothing pending: the cancel has nothing to act on, and says so.
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown-cancel"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to shutdown-cancel", DELAY), "{:?}", d.log());
 }
 
 /// Without the module the verbs are an error (exit 2, named); with it, a verb with nothing to act
@@ -8490,4 +8710,729 @@ fn shield_the_hook_fires_on_a_change_past_the_quiet_window() {
     std::fs::write(&w.flag, "").unwrap();
     assert!(w.d.wait_for("hook: shield", DELAY), "{:?}", w.d.log());
     assert_eq!(recorded(&w.sway, "hook-rec"), ["hook-rec up|ALPHEUS_EVENT=shield ALPHEUS_SHIELD=on "]);
+}
+
+/// The kill list, `--kill`: Enter sends SIGTERM to a `sleep` the test started (it exits by that
+/// signal); a second child that ignores SIGTERM takes Ctrl+Enter then Enter and dies of SIGKILL.
+/// The daemon reads `proc_dir`, a folder of the test's own holding only a symlink to each child's
+/// `/proc/<pid>`, never the real `/proc`: the list can show nothing else, so no process of the
+/// person running the test can be signalled. Each open logs how many rows it has, and the test
+/// asserts exactly one before each Enter. No log line holds a name, a pid or a command line.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn kill_list_opens_and_signals_by_enter() {
+    use std::os::unix::process::ExitStatusExt;
+    let sway = Sway::start("kill-list", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let proc_dir = sway.runtime.join("proc");
+    std::fs::create_dir_all(&proc_dir).unwrap();
+    std::os::unix::fs::symlink("/proc/uptime", proc_dir.join("uptime")).unwrap();
+    let toml = format!("proc_dir = {:?}\n", proc_dir.display().to_string());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    // Lists a child of the test, and only it: the folder's one entry.
+    let list = |child: &GroupChild| {
+        std::os::unix::fs::symlink(format!("/proc/{}", child.id()), proc_dir.join(child.id().to_string())).unwrap();
+    };
+    let mut sleeper = GroupChild::spawn(Command::new("sleep").arg("600"));
+    list(&sleeper);
+    // A program that ignores SIGTERM: the shell traps it.
+    let mut stubborn = GroupChild::spawn(Command::new("sh").args(["-c", "trap '' TERM; while :; do sleep 1; done"]));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the kill list scans no application: {:?}", d.log());
+    assert!(d.wait_for("kill list: 1 listed", DELAY), "exactly one row before Enter: {:?}", d.log());
+    // Enter: SIGTERM to the one row.
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    let status = wait_for_exit(&mut sleeper);
+    assert_eq!(status.signal(), Some(15), "ended by SIGTERM: {status:?} {:?}", d.log());
+    assert!(d.wait_for("kill list: signal", DELAY), "{:?}", d.log());
+    // wtype's keyboard goes with its process: the box closes on the lost focus; open it again on
+    // the other child alone.
+    assert!(d.wait_for("launcher closed (focus lost)", DELAY), "{:?}", d.log());
+    std::fs::remove_file(proc_dir.join(sleeper.id().to_string())).unwrap();
+    list(&stubborn);
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("kill list: 1 listed", 2, DELAY), "exactly one row before Enter: {:?}", d.log());
+    // Ctrl+Enter asks; Enter 0.6 s later kills.
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "600", "-k", "Return"]).success());
+    let status = wait_for_exit(&mut stubborn);
+    assert_eq!(status.signal(), Some(9), "ended by SIGKILL: {status:?} {:?}", d.log());
+    assert!(
+        d.log().iter().all(|l| !l.contains("sleep") && !l.contains("trap")),
+        "never a name or a command line in the log: {:?}",
+        d.log()
+    );
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// Waits (at most `DELAY`) for the harness's own child to exit; its status.
+fn wait_for_exit(child: &mut GroupChild) -> std::process::ExitStatus {
+    let t = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(t.elapsed() < DELAY, "the child was never signalled");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// `alpheus-launch --capture select` end to end, on the Sway backend: the area selector alone.
+// Nothing is captured; the log says only that an area was selected or that nothing was (never the
+// geometry), so a geometry is pinned by the model's own tests.
+
+const SELECTOR_SHOWN: &str = "capture: selector shown";
+
+fn selector_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    // The pointer exists on the seat before the surface does.
+    sway.hover(50, 50);
+    (sway, d)
+}
+
+/// Sends the verb and waits for the selector's surface to be drawn.
+fn open_selector(sway: &Sway, d: &Daemon, nth: usize) {
+    assert_eq!(script(sway, &["--capture", "select"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(SELECTOR_SHOWN, nth, DELAY), "{:?}", d.log());
+    // A motion over the new surface, so the pointer has entered it.
+    sway.hover(60, 60);
+}
+
+/// Dragging with the left button selects, and the release closes the selector with an area.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn area_capture_by_drag_selects_the_area() {
+    let (sway, d) = selector_daemon("select-drag");
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: nothing selected"), 0, "{:?}", d.log());
+}
+
+/// A click without a drag, and a click of the right button, select nothing.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_click_without_a_drag_and_a_right_click_cancel() {
+    let (sway, d) = selector_daemon("select-click");
+    open_selector(&sway, &d, 1);
+    sway.hover(100, 100);
+    sway.command("seat - cursor press button1");
+    sway.command("seat - cursor release button1");
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    open_selector(&sway, &d, 2);
+    sway.hover(120, 120);
+    sway.click(120, 120, "button3");
+    assert!(d.wait_for_count("capture: selector closed (cancelled)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("capture: area selected"), 0, "{:?}", d.log());
+}
+
+/// Escape cancels with nothing selected, and the clipboard is left as it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn esc_cancels_silently_and_leaves_the_clipboard() {
+    let (sway, d) = selector_daemon("select-esc");
+    let _selection = wl_copy(&sway, "kept text 31", None, false);
+    let t = Instant::now();
+    while wl_paste(&sway).as_deref() != Some("kept text 31") {
+        assert!(t.elapsed() < DELAY, "the clipboard never held the text");
+        thread::sleep(Duration::from_millis(20));
+    }
+    open_selector(&sway, &d, 1);
+    sway.drag((100, 100), (220, 180), true);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: nothing selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert_eq!(wl_paste(&sway).as_deref(), Some("kept text 31"), "a cancel never touches the clipboard: {:?}", d.log());
+}
+
+/// Enter confirms the rectangle while the button is still down.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn enter_confirms_the_rectangle_being_dragged() {
+    let (sway, d) = selector_daemon("select-enter");
+    open_selector(&sway, &d, 1);
+    // One continuous wtype: its keyboard leaving would close the selector as `focus lost`.
+    let keys = wtype_spawn(&sway, &["-s", "1800", "-k", "Return"]);
+    sway.drag((100, 100), (260, 200), true);
+    assert!(d.wait_for("capture: selector closed (done)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("capture: area selected", DELAY), "{:?}", d.log());
+    sway.release_drag();
+    assert!(keys.wait().unwrap().success());
+}
+
+/// The verb a second time cancels the open selector; the launcher and the pad give way to it, and
+/// it to them: one box at a time.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_selector_is_one_box_at_a_time() {
+    let (sway, d) = selector_daemon("select-exclusive");
+    open_selector(&sway, &d, 1);
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (cancelled)", DELAY), "{:?}", d.log());
+    // The pad replaces an open selector.
+    open_selector(&sway, &d, 2);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    // The selector replaces an open launcher box: its dmenu client is cancelled.
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+    let menu = script(&sway, &["--dmenu"], "a\nb\n");
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert_eq!(menu.join().unwrap().0, 1, "the dmenu client is cancelled");
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SELECTOR_SHOWN, 3, DELAY), "{:?}", d.log());
+}
+
+// The captures end to end, on the Sway backend and the harness's own sway only: `--capture full`
+// copies the output through a fake `copy` that records its standard input, `area-save` writes the
+// area into a temporary `[captures] dir`. The output's background is a known colour, so a pixel of
+// the PNG says whether the selector's dim was in it. Nothing here touches a real clipboard.
+
+/// The background the harness's output is painted with, and what a capture of it must hold.
+const CAPTURE_BG: [u8; 4] = [0x33, 0x66, 0x99, 0xFF];
+
+/// A daemon on the harness's sway with the `copy` of launcher.toml being a fake that records its
+/// standard input (`fake-copy`), the captures' folder `<runtime>/shots`, and the notifications module
+/// when `bus` is given. Returns the sway, the daemon and the folder.
+fn capture_session(name: &str, bus: Option<&PrivateBus>) -> (Sway, Daemon, PathBuf) {
+    capture_session_with(name, bus, false, "", |_| {})
+}
+
+/// `capture_session`, with the `privacy` module when `privacy`, `captures` (lines of `[captures]`) in
+/// bar.toml, and `before` run once sway is up, before the daemon starts (to write the fake tools).
+fn capture_session_with(
+    name: &str,
+    bus: Option<&PrivateBus>,
+    privacy: bool,
+    captures: &str,
+    before: impl FnOnce(&Sway),
+) -> (Sway, Daemon, PathBuf) {
+    let sway = Sway::start(name, 1);
+    sway.command("output * bg #336699 solid_color");
+    fake_stdin_recorder(&sway, "fake-copy");
+    before(&sway);
+    let shots = sway.runtime.join("shots");
+    let modules = if privacy { "\"notifications\", \"clock\", \"privacy\"" } else { "\"notifications\", \"clock\"" };
+    let bar = format!("modules = [{modules}]\n[captures]\ndir = \"{}\"\n{captures}", shots.display());
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(&bar),
+            launcher_toml: Some("copy = [\"fake-copy\"]\n"),
+            session_bus: bus.map(|b| b.address.as_str()),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    ready(&d);
+    // The background is drawn before the first capture, as in the screencopy tests.
+    thread::sleep(Duration::from_millis(300));
+    sway.hover(50, 50);
+    (sway, d, shots)
+}
+
+/// `png` decoded to (width, height, RGBA rows).
+fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().expect("a PNG");
+    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut buf).expect("a PNG frame");
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, buf)
+}
+
+/// The pixel (x, y) of an RGBA image `width` wide.
+fn rgba_at(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * width + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+}
+
+/// The one file of `dir`, once it is there.
+fn the_one_file(dir: &Path) -> PathBuf {
+    let t = Instant::now();
+    loop {
+        let files: Vec<PathBuf> = std::fs::read_dir(dir).map(|d| d.map(|e| e.unwrap().path()).collect()).unwrap_or_default();
+        if let [only] = files.as_slice() {
+            return only.clone();
+        }
+        assert!(t.elapsed() < DELAY, "{} never held exactly one file: {files:?}", dir.display());
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Sends `--capture <verb>` and waits for the selector to be drawn, the pointer over it.
+fn open_capture_selector(sway: &Sway, d: &Daemon, verb: &str, nth: usize) {
+    assert_eq!(script(sway, &["--capture", verb], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(SELECTOR_SHOWN, nth, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+}
+
+/// The whole output is captured and copied: a PNG of the output's size, the background colour in it.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn capture_full_writes_a_png_of_the_output() {
+    let (sway, d, _shots) = capture_session("capture-full-png", None);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
+    let t = Instant::now();
+    while recorded_stdin(&sway, "fake-copy").is_empty() {
+        assert!(t.elapsed() < DELAY, "the copy command never read the image");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (w, h, rgba) = decode_png(&recorded_stdin(&sway, "fake-copy"));
+    assert_eq!((w, h), OUTPUT_SIZE, "the output's own size");
+    // The bar covers the top rows: the middle and the bottom corner are the background.
+    assert_eq!(rgba_at(&rgba, w, w / 2, h / 2), CAPTURE_BG);
+    assert_eq!(rgba_at(&rgba, w, w - 1, h - 1), CAPTURE_BG);
+    // The daemon's private file is gone once the copy took it.
+    let left: Vec<_> = std::fs::read_dir(sway.runtime.join("alpheus")).into_iter().flatten().flatten().map(|e| e.file_name()).collect();
+    assert!(left.iter().all(|n| !n.to_string_lossy().contains("capture.png")), "{left:?}");
+}
+
+/// A whole-screen capture is copied once, through the configured command, and says so: one notice
+/// bubble, never "not serving".
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn capture_full_copies_and_notifies() {
+    let bus = PrivateBus::start("capture-full-notify");
+    let (sway, d, _shots) = capture_session("capture-full-notify", Some(&bus));
+    wait_for_the_server(&bus);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the success notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy").len(), 1, "the copy command ran once");
+    let png = recorded_stdin(&sway, "fake-copy");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "a PNG on its standard input");
+    assert_eq!(d.count("capture: no notification"), 0, "{:?}", d.log());
+    assert_eq!(d.count("capture: failed") + d.count("capture: copy failed"), 0, "{:?}", d.log());
+}
+
+/// The area is saved under the dated name in the configured folder, holds exactly the background:
+/// the selector's dim is not in it (the frame is asked once the compositor has dealt with the
+/// selector's removal), nor its border.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_area_capture_has_no_dim_tint() {
+    let (sway, d, shots) = capture_session("capture-area-dim", None);
+    open_capture_selector(&sway, &d, "area-save", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: saved", DELAY), "{:?}", d.log());
+    let file = the_one_file(&shots);
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    assert!(
+        name.len() == 19 && name.ends_with(".png") && digits(&name[..8]) && &name[8..9] == "-" && digits(&name[9..15]),
+        "a dated name: {name}"
+    );
+    let (w, h, rgba) = decode_png(&std::fs::read(&file).unwrap());
+    assert_eq!((w, h), (400, 300), "the selected area");
+    for (x, y) in [(0, 0), (399, 0), (0, 299), (399, 299), (200, 150), (10, 290)] {
+        assert_eq!(rgba_at(&rgba, w, x, y), CAPTURE_BG, "({x}, {y}) is the output's own colour, not dimmed");
+    }
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| *p == CAPTURE_BG), "every pixel of the area is the background");
+    // A save copies nothing.
+    assert!(recorded(&sway, "fake-copy").is_empty(), "{:?}", d.log());
+}
+
+/// A cancelled selection is silent: nothing is copied, nothing saved, no notice, the clipboard is as
+/// it was.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_cancelled_capture_is_silent_and_copies_nothing() {
+    let bus = PrivateBus::start("capture-cancel");
+    let (sway, d, shots) = capture_session("capture-cancel", Some(&bus));
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "area", 1);
+    sway.click(120, 120, "button3");
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-copy").is_empty(), "no copy: {:?}", d.log());
+    assert!(!shots.exists(), "no save");
+    assert_eq!(d.count("bubbles shown"), 0, "no notice: {:?}", d.log());
+    assert_eq!(d.count("capture: copied"), 0, "{:?}", d.log());
+}
+
+/// One capture at a time: a verb sent while the selector is open is ignored with a log word, and the
+/// capture still finishes as asked.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_second_capture_while_one_runs_is_ignored() {
+    let (sway, d, _shots) = capture_session("capture-busy", None);
+    open_capture_selector(&sway, &d, "area", 1);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0, "ignored, not an error");
+    assert_eq!(script(&sway, &["--capture", "area-save"], "").join().unwrap().0, 0);
+    // The debug selector is not toggled under a capture's selector either.
+    assert_eq!(script(&sway, &["--capture", "select"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: busy", 3, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SELECTOR_SHOWN), 1, "no second selector: {:?}", d.log());
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: copied", DELAY), "the first capture goes on as asked: {:?}", d.log());
+    assert_eq!(d.count("capture: copied"), 1, "{:?}", d.log());
+    // Free again: the next one runs.
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: copied", 2, DELAY), "{:?}", d.log());
+}
+
+/// A tool set to `[]` refuses its verbs with a fixed message and exit 2, and `stop` with nothing
+/// recording does too; nothing starts.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_capture_tool_set_to_nothing_and_a_stop_with_nothing_recording_exit_2() {
+    let (sway, d, _shots) = capture_session_with("capture-notool", None, false, "annotate = []\nocr = []\nrecord = []\n", |_| {});
+    for verb in ["annotate", "ocr", "record", "record-area"] {
+        let (code, out, err) = script(&sway, &["--capture", verb], "").join().unwrap();
+        assert_eq!((code, out.as_str()), (2, ""), "{verb}");
+        assert!(err.contains("no tool configured"), "{verb}: {err}");
+    }
+    let (code, _, err) = script(&sway, &["--capture", "stop"], "").join().unwrap();
+    assert_eq!(code, 2);
+    assert!(err.contains("no recording is running"), "{err}");
+    assert_eq!(d.count("capture: busy") + d.count("capture: selector shown"), 0, "{:?}", d.log());
+}
+
+/// A fake external tool `<runtime>/bin/<name>`: records its arguments to `<runtime>/calls-<name>`,
+/// then runs `body` (sh). Never a real tool: the daemon's PATH is the runtime's `bin` and coreutils.
+fn fake_capture_tool(sway: &Sway, name: &str, body: &str) {
+    let bin = sway.runtime.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the capture tests: records its arguments, then plays the tool.\nprintf '%s\\n' \"{name} $*\" >> '{}'\n{body}\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The names in the daemon's private folder.
+fn private_files(sway: &Sway) -> Vec<String> {
+    std::fs::read_dir(sway.runtime.join("alpheus"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// An annotation: the selected area goes to the tool as a private PNG (`{file}`), the tool writes its
+/// result to `{out}` (here a copy of what it got), and alpheus copies that image through `copy` and
+/// says so; the private files are gone afterwards.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn annotate_copies_what_the_tool_wrote() {
+    let bus = PrivateBus::start("capture-annotate");
+    let tool = "annotate = [\"fake-annotate\", \"--in\", \"{file}\", \"--out\", \"{out}\"]\n";
+    let (sway, d, shots) = capture_session_with("capture-annotate", Some(&bus), false, tool, |sway| {
+        fake_capture_tool(sway, "fake-annotate", "cp \"$2\" \"$4\"");
+    });
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "annotate", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: annotated image copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the notice: {:?}", d.log());
+    let calls = recorded(&sway, "fake-annotate");
+    let private = sway.runtime.join("alpheus");
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let input = private.join("capture-1.png");
+    let output = private.join("capture-1-out.png");
+    assert_eq!(calls[0], format!("fake-annotate --in {} --out {}", input.display(), output.display()));
+    assert_eq!(recorded(&sway, "fake-copy"), ["fake-copy "], "the custom copy, as written");
+    let (w, h, rgba) = decode_png(&recorded_stdin(&sway, "fake-copy"));
+    assert_eq!((w, h), (400, 300), "the tool's image: the selected area");
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| *p == CAPTURE_BG));
+    assert!(private_files(&sway).iter().all(|n| !n.starts_with("capture")), "{:?}", private_files(&sway));
+    assert!(!shots.exists(), "nothing saved");
+    assert!(d.log().iter().all(|l| !l.contains("capture-1")), "no path in the log: {:?}", d.log());
+}
+
+/// A text recognition: the tool's standard output, trimmed, is copied as text; the text is never in
+/// the log. A tool that prints nothing is a silent cancel, and one that fails is critical; neither
+/// copies.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn ocr_copies_the_text_the_tool_printed() {
+    let bus = PrivateBus::start("capture-ocr");
+    let tool = "ocr = [\"fake-ocr\", \"{file}\"]\n";
+    let (sway, d, _shots) = capture_session_with("capture-ocr", Some(&bus), false, tool, |sway| {
+        // The first run prints a text, the second nothing, the third fails.
+        let count = sway.runtime.join("ocr-runs");
+        fake_capture_tool(
+            sway,
+            "fake-ocr",
+            &format!(
+                "n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '{0}'\ncase $n in 1) printf '  Hello from the area\\n' ;; 2) ;; *) exit 3 ;; esac",
+                count.display()
+            ),
+        );
+    });
+    wait_for_the_server(&bus);
+    open_capture_selector(&sway, &d, "ocr", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: text copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(recorded_stdin(&sway, "fake-copy"), b"Hello from the area", "trimmed, as text");
+    assert_eq!(recorded(&sway, "fake-ocr")[0], format!("fake-ocr {}", sway.runtime.join("alpheus/capture-1.png").display()));
+    open_capture_selector(&sway, &d, "ocr", 2);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    open_capture_selector(&sway, &d, "ocr", 3);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for("capture: tool failed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 2", DELAY), "the failure's critical notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy").len(), 1, "only the text was copied: {:?}", d.log());
+    assert!(private_files(&sway).iter().all(|n| !n.starts_with("capture") && n != "ocr.txt"), "{:?}", private_files(&sway));
+    assert!(d.log().iter().all(|l| !l.contains("Hello")), "the text is never logged: {:?}", d.log());
+}
+
+/// The fake recorder: writes its pid next to its calls, records until SIGINT, then writes the file
+/// given after `-f` and exits 0, as wf-recorder finishes its file.
+const FAKE_RECORD: &str = "out=''; prev=''\nfor a in \"$@\"; do [ \"$prev\" = -f ] && out=$a; prev=$a; done\n\
+trap 'printf frames > \"$out\"; exit 0' INT\necho $$ > \"$0.pid\"\nwhile :; do sleep 0.1; done";
+
+/// A recording of the screen: the recorder gets the whole output's geometry and a dated file in the
+/// videos folder; `stop` interrupts it, and once it finished its file the notice says it is saved,
+/// naming the file (the log never does). One recording at a time; a second stop has nothing to stop.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn record_then_stop_notifies_saved() {
+    let bus = PrivateBus::start("capture-record");
+    let tool = "record = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, d, _shots) = capture_session_with("capture-record", Some(&bus), false, tool, |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    wait_for_the_server(&bus);
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    let calls = recorded(&sway, "fake-record");
+    let videos = sway.runtime.join("Videos");
+    let (w, h) = OUTPUT_SIZE;
+    let prefix = format!("fake-record -g 0,0 {w}x{h} -f {}/screenrecord-", videos.display());
+    assert!(calls.len() == 1 && calls[0].starts_with(&prefix) && calls[0].ends_with(".mp4"), "{calls:?}");
+    // One at a time: a second recording is ignored; a screenshot is not.
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: already recording", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: copied", DELAY), "a screenshot while it records: {:?}", d.log());
+    assert_eq!(script(&sway, &["--capture", "stop"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for("capture: recording saved", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 2", DELAY), "the screenshot's and the recording's notices: {:?}", d.log());
+    let file = the_one_file(&videos);
+    assert_eq!(std::fs::read(&file).unwrap(), b"frames", "the recorder finished its file");
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(d.log().iter().all(|l| !l.contains(&name) && !l.contains("Videos")), "no file in the log: {:?}", d.log());
+    let (code, _, err) = script(&sway, &["--capture", "stop"], "").join().unwrap();
+    assert!(code == 2 && err.contains("no recording is running"), "{code} {err}");
+    // An area recording gets the area, in the layout's logical pixels.
+    open_capture_selector(&sway, &d, "record-area", 1);
+    sway.drag((100, 100), (500, 400), false);
+    assert!(d.wait_for_count("capture: recording started", 2, DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "fake-record")[1].starts_with("fake-record -g 100,100 400x300 -f "), "{:?}", recorded(&sway, "fake-record"));
+    assert_eq!(script(&sway, &["--capture", "stop"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count("capture: recording saved", 2, DELAY), "{:?}", d.log());
+    assert_eq!(std::fs::read_dir(&videos).unwrap().count(), 2, "a second file, never over the first");
+}
+
+/// While alpheus records, the privacy module's screen glyph is lit in red; it goes once the recording
+/// ends.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn recording_lights_the_privacy_screen_glyph_on_the_bar() {
+    let tool = "[captures]\nrecord = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, _hypr, d) = privacy_daemon_before("capture-record-privacy", PRIVACY_REST_BAR, tool, &[privacy_red()], |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    let stopped = Instant::now();
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for("capture: recording saved", DELAY), "{:?}", d.log());
+    assert!(glyph_gone_after(&sway, privacy_red(), stopped).is_some(), "the glyph goes with the recording: {:?}", d.log());
+}
+
+/// The daemon asked to stop while it records: the recorder gets SIGINT and finishes its file before
+/// the daemon exits (well within its grace), and the recording ends as saved.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_recording_running_at_the_daemon_stop_is_finished() {
+    let tool = "record = [\"fake-record\", \"-g\", \"{geometry}\", \"-f\", \"{out}\"]\n";
+    let (sway, mut d, _shots) = capture_session_with("capture-record-stop", None, false, tool, |sway| {
+        fake_capture_tool(sway, "fake-record", FAKE_RECORD);
+    });
+    assert_eq!(script(&sway, &["--capture", "record"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: recording started", DELAY), "{:?}", d.log());
+    let pid: i32 = {
+        let pid_file = sway.runtime.join("bin/fake-record.pid");
+        let t = Instant::now();
+        loop {
+            if let Some(p) = std::fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+                break p;
+            }
+            assert!(t.elapsed() < DELAY, "the recorder never wrote its pid");
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(Duration::from_secs(5)), Some(0), "a clean stop: {:?}", d.log());
+    let log = d.log();
+    let saved = log.iter().position(|l| l.contains("capture: recording saved")).expect("the recording ended as saved");
+    let down = log.iter().position(|l| l.contains("shutdown")).expect("then the shutdown");
+    assert!(saved < down, "{log:?}");
+    let file = the_one_file(&sway.runtime.join("Videos"));
+    assert_eq!(std::fs::read(&file).unwrap(), b"frames", "the recorder finished its file");
+    assert!(!Path::new(&format!("/proc/{pid}")).exists(), "the recorder is gone");
+}
+
+/// A daemon killed between writing the copy's private file and removing it leaves `capture.png`
+/// (or the writer's `.capture.png.<pid>`) in `$XDG_RUNTIME_DIR/alpheus`: the next start clears
+/// those, and leaves every other file of the folder alone.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_start_clears_the_capture_files_a_killed_daemon_left() {
+    let sway = Sway::start("capture-stale", 1);
+    let private = sway.runtime.join("alpheus");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for name in ["capture.png", ".capture.png.4242", "kept.png"] {
+        std::fs::write(private.join(name), b"stale").unwrap();
+    }
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(!private.join("capture.png").exists(), "{:?}", d.log());
+    assert!(!private.join(".capture.png.4242").exists());
+    assert!(private.join("kept.png").exists(), "only the capture's own files are cleared");
+}
+
+/// An area capture asked while the debug selector is open replaces it: the debug selector's close
+/// is not the capture's answer, so the new selector's drag is captured and copied.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_area_capture_replaces_the_debug_selector_and_still_copies() {
+    let (sway, d, _shots) = capture_session("capture-over-debug", None);
+    open_capture_selector(&sway, &d, "select", 1);
+    open_capture_selector(&sway, &d, "area", 2);
+    assert!(d.wait_for("capture: selector closed (replaced)", DELAY), "{:?}", d.log());
+    sway.drag((100, 100), (300, 250), false);
+    assert!(d.wait_for("capture: copied", DELAY), "the capture's own selector answers: {:?}", d.log());
+    assert_eq!(d.count("capture: cancelled"), 0, "{:?}", d.log());
+}
+
+const PICKER_SHOWN: &str = "capture: picker shown";
+
+/// Sends `--capture pick` and waits for the picker to be drawn over the frozen output.
+fn open_picker(sway: &Sway, d: &Daemon, nth: usize) {
+    assert_eq!(script(sway, &["--capture", "pick"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for_count(PICKER_SHOWN, nth, DELAY), "{:?}", d.log());
+}
+
+/// The colour picker copies the pixel under the pointer as `#RRGGBB`: the output's background is a
+/// known colour, the copy command (a fake that records its standard input) gets that value as text,
+/// with no image type, and one notice says it; no private file is left.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn colour_picker_copies_the_pixel_under_the_pointer() {
+    let bus = PrivateBus::start("capture-pick");
+    let (sway, d, shots) = capture_session("capture-pick", Some(&bus));
+    wait_for_the_server(&bus);
+    // A background with letters in its value, so the case of the hex is seen.
+    let bg = [0x2B, 0x4C, 0x9E];
+    sway.command("output * bg #2b4c9e solid_color");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(100, 600) == Some(bg)), "the new background: {:?}", d.log());
+    open_picker(&sway, &d, 1);
+    sway.hover(400, 300);
+    // The frozen output shows, and the lens beside the pointer: past the 24 px gap, its centre cell
+    // (cells of 10 px) holds the background, outlined in white since the background is dark.
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(100, 600) == Some(bg)), "the frame is shown: {:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| s.at(469, 369) == Some(bg) && s.at(464, 369) == Some([255, 255, 255])),
+        "the lens: {:?}",
+        d.log()
+    );
+    // The lens's and the swatch's frames are both 2 px, outside them: the lens's left edge at x 424,
+    // the swatch's below it (from y 420), so x 422 is frame for both.
+    let screen = sway.screenshot("HEADLESS-1").expect("a screenshot");
+    let frame = screen.at(422, 360);
+    assert_ne!(frame, Some(bg), "the lens's frame");
+    assert_eq!(screen.at(422, 430), frame, "the swatch's frame, as wide as the lens's");
+    assert_eq!(screen.at(421, 430), Some(bg), "and no wider");
+    sway.click(400, 300, "button1");
+    assert!(d.wait_for("capture: colour copied", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "the notice: {:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-copy"), ["fake-copy "], "the copy command as written: no image type");
+    assert_eq!(recorded_stdin(&sway, "fake-copy"), b"#2B4C9E", "the background's value, as text, in upper case");
+    assert!(d.wait_for("capture: picker closed (picked)", DELAY), "{:?}", d.log());
+    assert!(!shots.exists(), "a pick saves nothing");
+    let left: Vec<_> = std::fs::read_dir(sway.runtime.join("alpheus")).into_iter().flatten().flatten().map(|e| e.file_name()).collect();
+    assert!(left.iter().all(|n| !n.to_string_lossy().contains("pick.txt")), "{left:?}");
+    assert_eq!(d.count("capture: failed") + d.count("capture: copy failed"), 0, "{:?}", d.log());
+    // The value is the notice's alone: never in the log.
+    assert!(d.log().iter().all(|l| !l.to_ascii_uppercase().contains("2B4C9E")), "{:?}", d.log());
+}
+
+/// Escape ends the picker with nothing picked: nothing is copied, no notice, and the slot is free
+/// for the next capture.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_cancelled_pick_is_silent_and_copies_nothing() {
+    let bus = PrivateBus::start("capture-pick-cancel");
+    let (sway, d, _shots) = capture_session("capture-pick-cancel", Some(&bus));
+    wait_for_the_server(&bus);
+    open_picker(&sway, &d, 1);
+    sway.hover(300, 300);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(recorded(&sway, "fake-copy").is_empty(), "no copy: {:?}", d.log());
+    assert_eq!(d.count("bubbles shown"), 0, "no notice: {:?}", d.log());
+    // A right click cancels too, and one capture at a time holds while the picker is open.
+    open_picker(&sway, &d, 2);
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0, "ignored, not an error");
+    assert!(d.wait_for("capture: busy", DELAY), "{:?}", d.log());
+    sway.click(300, 300, "button3");
+    assert!(d.wait_for_count("capture: cancelled", 2, DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "fake-copy").is_empty(), "{:?}", d.log());
+    // Free again.
+    assert_eq!(script(&sway, &["--capture", "full"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("capture: copied", DELAY), "{:?}", d.log());
+}
+
+/// The picker's two buffers alternate: what the screen shows is the last committed one, so each
+/// draw damages the lens it wipes in the buffer it draws into, the lens on screen now (drawn in the
+/// other buffer) and the new one. With only the first and the last, the middle lens stayed on the
+/// screen of a compositor that uploads only the damaged region of a buffer.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_picker_leaves_no_old_lens_on_the_screen() {
+    let (sway, d, _shots) = capture_session("capture-pick-damage", None);
+    open_picker(&sway, &d, 1);
+    let bg = [0x33, 0x66, 0x99];
+    let white = Some([255, 255, 255]);
+    // The centre cell's white outline sits 24 + 40 px right and below the pointer.
+    let mark = |(x, y): (u32, u32)| (x + 64, y + 69);
+    let points = [(200, 200), (700, 200), (200, 450), (700, 450), (400, 300)];
+    for p in points {
+        sway.hover(p.0, p.1);
+        let (mx, my) = mark(p);
+        assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(mx, my) == white), "the lens at {p:?}: {:?}", d.log());
+    }
+    // Every lens but the last is gone from the screen.
+    let screen = sway.screenshot("HEADLESS-1").expect("a screenshot");
+    for p in &points[..points.len() - 1] {
+        let (mx, my) = mark(*p);
+        assert_eq!(screen.at(mx, my), Some(bg), "the lens at {p:?} is still on the screen");
+    }
+    assert!(wtype(&sway, &["-k", "Escape"]).success());
+    assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
 }

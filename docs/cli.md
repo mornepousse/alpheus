@@ -8,13 +8,16 @@ read from their parsers.
 ```
 alpheus [--tab <name>]
 alpheus [--tab=<name>]
+alpheus --tab diagnostics --preset <slug>
 ```
 
 Opens the TUI in the current terminal, on the Home tab unless told otherwise.
 `<name>` is one of `home`, `sound`, `network`, `bluetooth`, `power`,
 `displays`, `appearance`, `diagnostics` (`theme` is accepted for `appearance`
 and `diag` for `diagnostics`; case is ignored). The tabs are also reached with
-`1` to `8` once open.
+`1` to `8` once open. `--preset <slug>` (`errors`, `usb`, `suspend`, `oom`, `thermal`, `network`,
+`live`, `service`; only with `--tab diagnostics`) opens the Diag tab on that journal view, as the
+Tools menu's Diagnostics entries do.
 
 There is no `--help`; the usage appears in the error text.
 
@@ -23,7 +26,7 @@ There is no `--help`; the usage appears in the error text.
 | 0 | ended with `q`, or stopped cleanly by SIGTERM/SIGHUP |
 | 1 | a terminal I/O error |
 | 128 + signal | a stop signal the loop did not honour within 0.3 s (e.g. a closed terminal) |
-| 2 | an unknown option, a missing `--tab` value or an unknown tab name (message on standard error) |
+| 2 | an unknown option, a missing `--tab` or `--preset` value, an unknown tab or preset name, or a preset without `--tab diagnostics` (message on standard error) |
 
 Configuration: `~/.config/alpheus/config.toml`, see the
 [configuration reference](configuration.md).
@@ -47,7 +50,8 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
   `alpheus-launch` talks to.
 - **Signals.** SIGTERM, SIGHUP and SIGINT stop it: the loop ends normally
   (a waiting `--dmenu` gets "cancelled"), and if it does not finish within a
-  grace period (1 second) the process exits with 128 + the signal number.
+  grace period (1 second; 3 seconds while alpheus records, so the recorder gets SIGINT and up to
+  2 s to finish its file) the process exits with 128 + the signal number.
 - **Logs.** One line per event on standard error, prefixed `alpheus-demon:`
   (under systemd: `journalctl --user -u <your unit>`). Configuration
   warnings and the detected compositor are logged at start.
@@ -73,9 +77,12 @@ alpheus-launch [--toggle | --close
                | --quick [sound|wifi|bluetooth|vpn]
                | --calc | --windows | --notes
                | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+               | --timer shutdown DURATION | --timer shutdown-cancel
                | --shield on|off|toggle|status|allow
+               | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
                | --clipboard | --clipboard-clear
                | --tools
+               | --kill
                | --power
                | -h|--help]
 ```
@@ -98,10 +105,18 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--windows` | open the window switcher with the previous window selected; a second `--windows` while it is open steps to the next window; it replaces any other open launcher and cancels a waiting `--dmenu` (a password prompt included); only a `--windows` within 250 ms of the switcher's own open is ignored |
 | `--notes` | open or close the quick notepad ([notes](features/notes.md)); a `--notes` less than 250 ms after the one that opened it is ignored |
 | `--timer start <duration>\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup` | drive the focus timer: a duration is `90s`, `25m`, `1h30m` or a bare number of minutes, 1 second to 24 hours; `pause`... `skip` act on whatever runs (nothing to act on is no error); `popup` opens or closes the popup under the chip, the keyboard taken without a grab (a second within 250 ms of its own open is ignored); exit 2 without the `timer` module |
+| `--timer shutdown <duration>\|shutdown-cancel` | schedule a power off that long from now (the same forms, 1 second to 24 hours), alongside any timer and replacing the shutdown pending, or cancel it: a minute before the end a critical notice says so, and a click on it cancels; at the end `[quick] poweroff` runs. An end noticed late (a laptop that woke up, a restarted bar) still warns first and powers off a minute later at the earliest ([the focus timer](features/timer.md#the-scheduled-shutdown)). Exit 2 without the `timer` module or, for `shutdown`, with `[quick] poweroff` empty; nothing to cancel is not an error |
 | `--shield on\|off\|toggle\|status\|allow` | drive [Shield mode](features/shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run |
+| `--capture full\|area\|area-save` | take a screenshot: `full` copies the focused output, `area` lets you drag an area (release or Enter confirms; Esc, a right click or a click without a drag cancels, silently) and copies it, `area-save` saves it as `%Y%m%d-%H%M%S.png` in `[captures] dir`. The copy goes through `launcher.toml`'s `copy` (PNG on its standard input; the default `wl-copy` is given `--type image/png`). One notice per capture; a failure is critical and leaves the clipboard untouched. A copy counts only when the copy command exits 0 within 5 s. A verb sent while a capture runs is ignored. Exit 2 when the compositor has no screencopy |
+| `--capture pick` | the colour picker: the focused output is frozen under a zoom lens; a left click or Enter copies the pixel's colour as text (`#RRGGBB`, or `[captures] pick_format`) through `launcher.toml`'s `copy`, run as written, and one notice gives the value; Esc or a right click cancels, silently. Exit 2 when the compositor has no screencopy |
+| `--capture annotate\|ocr` | drag an area (as `area`), then hand its PNG to `[captures] annotate` or `ocr`: alpheus copies the image the annotation tool wrote back, or the text the recognizer printed, through `launcher.toml`'s `copy`, and says so. A tool closed with nothing is a silent cancel; a tool that fails is critical; neither touches the clipboard. One capture at a time: while the tool is open, other captures are ignored. Exit 2 when the tool is `[]` or the compositor has no screencopy |
+| `--capture record\|record-area` | start `[captures] record` on the focused output, or on a dragged area, into `screenrecord-%Y%m%d-%H%M%S.mp4` in the videos folder; the privacy screen glyph shows while it records. One recording at a time (a second is ignored); screenshots may be taken meanwhile. Exit 2 when the tool is `[]` or the compositor has no screencopy |
+| `--capture stop` | end the recording: SIGINT to the recorder alpheus started, and once it finished its file a notice `Recording saved: <file name>` (a failure is critical). Exit 2 when nothing records |
+| `--capture select` | debug: run the area selector alone, nothing is captured; a second call cancels it |
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
+| `--kill` | open the kill list (your own processes, sorted by memory at open and by CPU 300 ms later), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
 | `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
 
@@ -124,11 +139,11 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--clipboard`, `--clipboard-clear`, `--tools`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
-`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard` and
-`--tools` exists so that a compositor that re-fires a press bind does not close
+`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard`, `--tools` and
+`--kill` exists so that a compositor that re-fires a press bind does not close
 what it just opened.
 
 Examples:

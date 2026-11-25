@@ -86,6 +86,7 @@
 //! rounds = 4                                                # work sessions before the long break, 1 to 12
 //! sound = []                                                # argv run at each end (not under do-not-disturb); [] none
 //! idle = "glyph"                                            # "glyph" | "hidden": the chip when nothing runs
+//! proc_dir = "/proc"                                        # where the scheduled shutdown looks for a screen locker (an absolute path)
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -483,6 +484,141 @@ impl Default for FailedConfig {
     fn default() -> Self {
         FailedConfig { user_units: true, subscribe: true, notify: false }
     }
+}
+
+/// `[captures]`: where a screenshot is saved and the external tools of the captures.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapturesConfig {
+    /// Absolute or `~/…`; empty: `$XDG_PICTURES_DIR/screenshots`, else `~/Pictures/screenshots`.
+    pub dir: String,
+    /// `{file}` and `{out}` are whole elements, once each; empty: no annotation.
+    pub annotate: Vec<String>,
+    /// `{file}` once; the text on its standard output is what is copied; empty: no OCR.
+    pub ocr: Vec<String>,
+    /// `{out}` once and `{geometry}` at most once, whole elements; `{geometry}` is the area, or the
+    /// whole focused output for `record`; empty: no recording. The recorder must stay in the process
+    /// group alpheus starts it in: a stop goes to that group, and a program that leaves it
+    /// (`setsid`) gets the signal alone, without what it started. Without `{geometry}` the area is
+    /// not passed: `record-area` records whatever the tool picks, and wf-recorder with several
+    /// outputs asks on its standard input, which is `/dev/null`, so it would not record as asked.
+    pub record: Vec<String>,
+    /// The colour picker's text, with `{r}`, `{g}`, `{b}` and `{hex}`.
+    pub pick_format: String,
+}
+
+impl Default for CapturesConfig {
+    fn default() -> Self {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
+        CapturesConfig {
+            dir: String::new(),
+            // satty 0.20.1, flags read in its `--help` and its source: `--early-exit` ends it at the
+            // first copy or save; its own copy writes the whole image to `sh -c <--copy-command>`
+            // and saves to `{out}` (`--save-after-copy`) only if that succeeded. The command here,
+            // `cat >/dev/null`, reads the image to its end and throws it away: one that does not
+            // read (`true`) breaks the pipe of any image past 64 KiB, satty then saves nothing and
+            // the annotation is lost as a silent cancel. So a copy or a save in satty comes back to
+            // alpheus, which copies it; the notice is alpheus's (`--disable-notifications`). See
+            // docs/decisions.md, "A capture never touches the clipboard unless it succeeded".
+            annotate: argv(&[
+                "satty",
+                "--filename",
+                "{file}",
+                "--output-filename",
+                "{out}",
+                "--early-exit",
+                "--copy-command",
+                "cat >/dev/null",
+                "--save-after-copy",
+                "--disable-notifications",
+            ]),
+            ocr: argv(&["tesseract", "{file}", "-", "-l", "eng"]),
+            record: argv(&["wf-recorder", "-g", "{geometry}", "-f", "{out}"]),
+            pick_format: "{hex}".into(),
+        }
+    }
+}
+
+/// `[captures]` checked: the hard errors of the file.
+fn check_captures(c: &CapturesConfig) -> Result<(), String> {
+    if !c.dir.is_empty() && (!(c.dir.starts_with('/') || c.dir.starts_with("~/")) || c.dir.contains('\0')) {
+        return Err("captures.dir: must be an absolute path (\"/…\" or \"~/…\")".into());
+    }
+    for (key, command) in [("captures.annotate", &c.annotate), ("captures.ocr", &c.ocr), ("captures.record", &c.record)] {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("{key}: the program is blank"));
+        }
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("{key}: an argument holds a NUL"));
+        }
+    }
+    // How many times each tool must name each placeholder, as (at least, at most).
+    let rules = [
+        ("captures.annotate", &c.annotate, [("{file}", 1, 1), ("{out}", 1, 1), ("{geometry}", 0, 0)]),
+        ("captures.ocr", &c.ocr, [("{file}", 1, 1), ("{out}", 0, 0), ("{geometry}", 0, 0)]),
+        ("captures.record", &c.record, [("{file}", 0, 0), ("{out}", 1, 1), ("{geometry}", 0, 1)]),
+    ];
+    for (key, command, placeholders) in rules {
+        check_placeholders(key, command, &placeholders)?;
+    }
+    check_pick_format(&c.pick_format)
+}
+
+/// A tool's placeholders: each a whole argument, never the program, never inside a longer argument,
+/// and named between its `(least, most)` times. An empty command (the tool off) has none to check.
+/// The message names the key and the placeholder, never the command.
+fn check_placeholders(key: &str, command: &[String], placeholders: &[(&str, usize, usize)]) -> Result<(), String> {
+    let Some(program) = command.first() else { return Ok(()) };
+    for (placeholder, least, most) in placeholders {
+        if program == placeholder {
+            return Err(format!("{key}: the program must not be \"{placeholder}\""));
+        }
+        if command.iter().any(|a| a.contains(placeholder) && a != placeholder) {
+            return Err(format!("{key}: \"{placeholder}\" must be a whole argument"));
+        }
+        let count = command.iter().filter(|a| a == placeholder).count();
+        if count < *least || count > *most {
+            let wanted = match (least, most) {
+                (0, 0) => "not at all".to_string(),
+                (1, 1) => "exactly once".to_string(),
+                _ => format!("at most {most} time"),
+            };
+            return Err(format!("{key}: \"{placeholder}\" must be there {wanted}"));
+        }
+    }
+    Ok(())
+}
+
+/// The longest `[captures] pick_format`, in bytes: one short line on the clipboard.
+pub const PICK_FORMAT_MAX: usize = 256;
+
+/// `pick_format`: one line of at most `PICK_FORMAT_MAX` bytes holding at least one placeholder, and
+/// only `{r}`, `{g}`, `{b}` and `{hex}` between braces, so a mistyped one is said, never copied as is.
+fn check_pick_format(format: &str) -> Result<(), String> {
+    const KEY: &str = "captures.pick_format";
+    if format.len() > PICK_FORMAT_MAX {
+        return Err(format!("{KEY}: longer than {PICK_FORMAT_MAX} bytes"));
+    }
+    if format.chars().any(char::is_control) {
+        return Err(format!("{KEY}: holds a control character"));
+    }
+    let mut rest = format;
+    let mut placeholders = 0;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return Err(format!("{KEY}: a '{{' is never closed"));
+        };
+        if !matches!(&after[..close], "r" | "g" | "b" | "hex") {
+            return Err(format!("{KEY}: unknown placeholder (expected {{r}}, {{g}}, {{b}} or {{hex}})"));
+        }
+        placeholders += 1;
+        rest = &after[close + 1..];
+    }
+    if placeholders == 0 {
+        return Err(format!("{KEY}: no placeholder (expected {{r}}, {{g}}, {{b}} or {{hex}})"));
+    }
+    Ok(())
 }
 
 /// The longest `[shield] on_text` or `off_text`, in bytes.
@@ -988,11 +1124,23 @@ pub struct TimerConfig {
     /// Run as given at each end, never through a shell; empty: no sound.
     pub sound: Vec<String>,
     pub idle: TimerIdle,
+    /// Where the scheduled shutdown lists processes to tell a locked session (`timer/lockscreen.rs`);
+    /// only a test changes it.
+    pub proc_dir: PathBuf,
 }
 
 impl Default for TimerConfig {
     fn default() -> Self {
-        TimerConfig { countdown: 10, work: 25, short_break: 5, long_break: 15, rounds: 4, sound: Vec::new(), idle: TimerIdle::Glyph }
+        TimerConfig {
+            countdown: 10,
+            work: 25,
+            short_break: 5,
+            long_break: 15,
+            rounds: 4,
+            sound: Vec::new(),
+            idle: TimerIdle::Glyph,
+            proc_dir: PathBuf::from("/proc"),
+        }
     }
 }
 
@@ -1014,6 +1162,9 @@ fn check_timer(t: &TimerConfig) -> Result<(), String> {
     }
     if t.sound.iter().any(|a| a.contains('\0')) {
         return Err("timer.sound: an argument holds a NUL".into());
+    }
+    if !t.proc_dir.is_absolute() {
+        return Err("timer.proc_dir must be an absolute path".into());
     }
     Ok(())
 }
@@ -1043,6 +1194,7 @@ pub struct BarConfig {
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
     pub shield: ShieldConfig,
+    pub captures: CapturesConfig,
 }
 
 impl Default for BarConfig {
@@ -1068,6 +1220,7 @@ impl Default for BarConfig {
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
             shield: ShieldConfig::default(),
+            captures: CapturesConfig::default(),
         }
     }
 }
@@ -1119,6 +1272,8 @@ struct Raw {
     hooks: HooksConfig,
     #[serde(default)]
     shield: ShieldConfig,
+    #[serde(default)]
+    captures: CapturesConfig,
 }
 
 impl BarConfig {
@@ -1246,6 +1401,7 @@ impl BarConfig {
         check_quick(&b.quick)?;
         check_hooks(&b.hooks)?;
         check_shield(&b.shield)?;
+        check_captures(&b.captures)?;
         check_timer(&b.timer)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
@@ -1281,6 +1437,7 @@ impl BarConfig {
             displays: b.displays,
             hooks: b.hooks,
             shield: b.shield,
+            captures: b.captures,
         })
     }
 }

@@ -19,7 +19,7 @@ mod common;
 
 use alpheus_common::displays::wire::{self, TrialState};
 use alpheus_common::displays::{Active, Step};
-use alpheus_common::launcher_ipc::{DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
+use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
 use alpheus_common::theme::presets::preset;
 use common::bluez::FakeBluez;
 use common::displays::{displays, output, outputs_snapshot, snapshot_until};
@@ -3583,6 +3583,8 @@ const TIMER_BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n";
 /// The chip alone before the clock, so it sits at cell 1 (the headless tests' `TIMER_AT`).
 const TIMER_CHIP_FIRST_BAR: &str = "modules = [\"timer\", \"clock\"]\n";
 const TIMER_CHIP: (u32, u32) = (12, 10);
+/// `TIMER_BAR` with a harmless `[quick] poweroff` (a daemon on the default would run the real one).
+const TIMER_POWEROFF_BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n[quick]\npoweroff = [\"true\"]\n";
 const NO_TIMER_BAR: &str = "modules = [\"workspaces\", \"clock\"]\n";
 
 /// One `alpheus-launch --timer <verb>` on the socket (no key is ever pressed: SCTK's repeat timer,
@@ -3677,6 +3679,76 @@ fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
     assert!(d.wait_for("timer: paused", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1));
     window("the timer paused");
+}
+
+/// A scheduled shutdown arms one deadline at its next chip minute: the loop sleeps in between (no
+/// wake-up in a 5 s window away from both the clock's minute and the chip's own), and over a minute
+/// it wakes about once for the chip and once for the clock, never each second. The window starts
+/// within seconds of the verb, so the chip's first change (a minute after it) falls outside.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_a_shutdown_scheduled() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("shutdown-rest");
+    let (sway, _hypr, d) = start("shutdown-rest", 1, &bus, None, Some(TIMER_POWEROFF_BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(5);
+    // The verb, a second to settle and the window: ten seconds clear of the clock's tick, and the
+    // chip's first change comes a full minute after the verb.
+    away_from_the_minute(Duration::from_secs(10));
+    timer(&sway, TimerVerb::Shutdown(10_800));
+    assert!(d.wait_for("timer: shutdown scheduled (180 min)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let (before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "a shutdown scheduled");
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with a shutdown scheduled (5 s): {delta}");
+    assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s with a shutdown scheduled: {:?}", d.log());
+    // Over a minute: the chip's change and the clock's tick, a few at most.
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(65));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups with a shutdown scheduled (65 s): {delta}");
+    assert!(delta <= 6, "{delta} loop-thread wake-ups in 65 s: the shutdown ticks faster than the minute: {:?}", d.log());
+    timer(&sway, TimerVerb::ShutdownCancel);
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+}
+
+/// The warning's minute looks at the lock every 5 s (twelve a minute at most), and only that
+/// minute: a few more wake-ups than the chip's minute, never one a second, and none once the
+/// shutdown is cancelled. `[quick] poweroff` is `true`, and the shutdown is cancelled well before its
+/// minute ends: nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_warning_minute_samples_the_lock_every_five_seconds_then_rests() {
+    require_release(cfg!(debug_assertions));
+    const BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n[quick]\npoweroff = [\"true\"]\n";
+    let bus = PrivateBus::start("shutdown-warning");
+    let (sway, _hypr, d) = start("shutdown-warning", 1, &bus, None, Some(BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    timer(&sway, TimerVerb::Shutdown(2));
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(30));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups in 30 s of the warning's minute: {delta}");
+    // Six looks, the clock's tick, slack; a one-second tick would read 30.
+    assert!((3..=12).contains(&delta), "{delta} loop-thread wake-ups in 30 s of the warning's minute: {:?}", d.log());
+    timer(&sway, TimerVerb::ShutdownCancel);
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "{:?}", d.log());
+    // Away from the clock's tick: nothing wakes once there is no shutdown.
+    away_from_the_minute(Duration::from_secs(10));
+    std::thread::sleep(Duration::from_secs(1));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups after the cancel (5 s): {delta}");
+    assert_eq!(delta, 0, "{delta} loop-thread wake-ups at rest after the warning's minute: {:?}", d.log());
 }
 
 /// A running countdown wakes the loop about once a minute (the chip's change), the
@@ -4681,4 +4753,368 @@ fn shield_threads_back_to_baseline() {
     }
     eprintln!("shield threads: baseline {baseline}, {last} {:?} after the switch and the listing", t.elapsed());
     assert_eq!(last, baseline, "threads {last} vs the baseline {baseline} 3 s after a switch and a listing");
+}
+
+// ---- the kill list ----
+//
+// The list shows the real processes of the user running the test, so these tests only ever open
+// it, filter nothing and press nothing that signals: Ctrl+Enter asks, and no Enter is ever sent.
+
+/// One `--kill` cycle, closed by the verb: the n-th open is shown and its second sample (300 ms
+/// after the open) is taken before the reading. Returns (PSS, anonymous) in KB with the list open.
+fn kill_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
+    let open = (d.pss_kb(), anon_kb(d));
+    assert_eq!(launcher(sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    open
+}
+
+/// Once the kill list closed, however it was left (the verb, a force-kill question pending, a
+/// question expired), no timer, no wake-up, no spin, no thread.
+#[test]
+#[ignore = "headless sway, wtype and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_kill_list() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kill-rest");
+    let (sway, _hypr, d) = start_launcher("kill-rest", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    // Closed by the verb, after the second sample.
+    kill_cycle(&sway, &d, 1);
+    // A force-kill question pending (Ctrl+Enter asks and sends nothing), the box closed by the verb
+    // inside its 3 s; wtype keeps its keyboard up meanwhile, so nothing but the verb closes the box.
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 2, DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "20000"]);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", 2, DELAY), "{:?}", d.log());
+    drop(held);
+    // A question left to run out (3.5 s), the box then closed by Escape.
+    assert_eq!(launcher(&sway, &Request::Kill), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 3, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "-k", "Return", "-m", "ctrl", "-s", "3500", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("launcher closed (", 3, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("kill list: signal"), 0, "nothing was ever signalled: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a kill list");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!(
+        "wake-ups at rest after a kill list (5 s): {delta} whole daemon, {main_delta} loop thread; threads {} -> {}",
+        threads,
+        d.threads()
+    );
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a kill list");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after a kill list");
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// The cost of the list: PSS and anonymous memory with it open on this machine's own processes,
+/// closed again, and after 20 more cycles. Total PSS moves with the page cache, so the bounds are
+/// on anonymous memory, as the Tools menu's.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn kill_list_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kill-cost");
+    let (sway, _hypr, d) = start_launcher("kill-cost", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let cold = (d.pss_kb(), anon_kb(&d));
+    let first_open = kill_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let open = kill_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    for n in 3..=22 {
+        kill_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "kill list PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
+        cold.0,
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "kill list anonymous (KB): cold {}, closed {}, open {} (+{}), closed again {} ({:+}), after 20 more {} ({:+}); threads {threads} -> {}",
+        cold.1,
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64,
+        d.threads()
+    );
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// One selection of the area selector through the socket: the verb, a drag that confirms (`n` odd)
+/// or a typed Escape (`n` even), and the n-th close of any reason.
+fn selection(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Select)), Reply::Done);
+    assert!(d.wait_for_count("capture: selector shown", n, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+    if n % 2 == 1 {
+        sway.drag((100, 100), (500, 400), false);
+    } else {
+        assert!(wtype(sway, &["-s", "300", "-k", "Escape"]).success());
+    }
+    assert!(d.wait_for_count("capture: selector closed (", n, DELAY), "{:?}", d.log());
+}
+
+/// The area selector: the daemon's own memory is back within 64 KB after 10 more selections (its
+/// two full-output frames live in an shm pool that goes with the surface), no thread is left, and
+/// nothing wakes the loop at rest afterwards. The cost while open is printed for
+/// docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_an_area_capture() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("selector-rest");
+    let (sway, _hypr, d) = start_launcher("selector-rest", &bus, Some(AT_REST), &[], None);
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first selection warms the glyph cache and the keymap: the baseline is after it.
+    selection(&sway, &d, 1);
+    selection(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // The cost while open, a drag held down.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Select)), Reply::Done);
+    assert!(d.wait_for_count("capture: selector shown", 3, DELAY), "{:?}", d.log());
+    sway.hover(60, 60);
+    sway.drag((100, 100), (500, 400), true);
+    std::thread::sleep(Duration::from_millis(500));
+    let (open, open_shm) = d.pss_and_shm_kb();
+    sway.release_drag();
+    assert!(d.wait_for_count("capture: selector closed (", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        selection(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "area selector: PSS {at_rest} KB at rest, {open} KB open (+{} KB, of which the shm pool {open_shm} KB); \
+         anonymous {baseline} KB after 2 selections, {end} KB after 10 more; threads {} (before: {threads})",
+        open.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 selections grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the selector");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after an area selection");
+    eprintln!("wake-ups at rest after an area selection (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the selector was used");
+}
+
+/// One colour pick through the socket, the n-th: the picker opens over the frozen output, a click
+/// picks, and its value goes to the copy command (`cat`, its output discarded).
+fn colour_pick(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Pick)), Reply::Done);
+    assert!(d.wait_for_count("capture: picker shown", n, DELAY), "{:?}", d.log());
+    sway.hover(300 + n as u32, 300);
+    sway.click(300 + n as u32, 300, "button1");
+    assert!(d.wait_for_count("capture: colour copied", n, DELAY), "{:?}", d.log());
+}
+
+/// The colour picker: the daemon's own anonymous memory is back within 64 KB after 10 more picks
+/// (the frozen frame, the surface's pool and the worker go with each), no thread is left, and nothing
+/// wakes the loop at rest afterwards. The cost while open is printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_colour_pick() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("pick-rest");
+    let (sway, _hypr, d) = start_launcher("pick-rest", &bus, Some(AT_REST), &[], Some(&|_| "copy = [\"cat\"]\n".to_string()));
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first picks warm the allocator, the glyph cache and the keymap: the baseline is after two.
+    colour_pick(&sway, &d, 1);
+    colour_pick(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // The cost while open, the lens drawn.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Pick)), Reply::Done);
+    assert!(d.wait_for_count("capture: picker shown", 3, DELAY), "{:?}", d.log());
+    sway.hover(400, 300);
+    std::thread::sleep(Duration::from_millis(500));
+    let (open, open_shm) = d.pss_and_shm_kb();
+    sway.click(400, 300, "button1");
+    assert!(d.wait_for_count("capture: colour copied", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        colour_pick(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "colour picker: PSS {at_rest} KB at rest, {open} KB open (+{} KB, of which shm {open_shm} KB); \
+         anonymous {baseline} KB after 2 picks, {end} KB after 10 more; threads {} (before: {threads})",
+        open.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 picks grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the picker");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a colour pick");
+    eprintln!("wake-ups at rest after a colour pick (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the picker was used");
+}
+
+/// One capture through the socket, the n-th: a whole screen when `n` is odd, an area picked with a
+/// drag when it is even; returns once its n-th ending is logged. The copy command is `cat` (its
+/// output is discarded): nothing reaches a clipboard.
+fn screen_capture_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    if n % 2 == 1 {
+        assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Full)), Reply::Done);
+    } else {
+        assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Area)), Reply::Done);
+        assert!(d.wait_for_count("capture: selector shown", n / 2, DELAY), "{:?}", d.log());
+        sway.hover(60, 60);
+        sway.drag((100, 100), (500, 400), false);
+    }
+    assert!(d.wait_for_count("capture: copied", n, DELAY), "{:?}", d.log());
+}
+
+/// The captures: the daemon's own anonymous memory is back within 64 KB after 10 more captures (the
+/// frame, the image and the worker's arena are all gone with each), no thread is left, and nothing
+/// wakes the loop at rest afterwards. The cost of a capture is printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_screen_capture() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("capture-rest");
+    let (sway, _hypr, d) = start_launcher("capture-rest", &bus, Some(AT_REST), &[], Some(&|_| "copy = [\"cat\"]\n".to_string()));
+    std::thread::sleep(Duration::from_secs(2));
+    sway.hover(50, 50);
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    let anonymous_at_rest = d.anonymous_kb();
+    // The first captures warm the allocator, the glyph cache and the keymap: the baseline is after two.
+    screen_capture_cycle(&sway, &d, 1);
+    screen_capture_cycle(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    for n in 3..=12 {
+        screen_capture_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "captures: PSS {at_rest} KB at rest; anonymous {anonymous_at_rest} KB before the first, {baseline} KB after 2, {end} KB after 10 more; \
+         threads {} (before: {threads})",
+        d.threads()
+    );
+    assert!(end <= baseline + 64, "10 captures grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the captures");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a capture");
+    eprintln!("wake-ups at rest after a capture (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after captures were taken");
+}
+
+/// The fake recorder of the recording tests: records until SIGINT, then writes the file given after
+/// `-f` and exits 0, as wf-recorder finishes its file. Its own wake-ups (a sleep loop) are not the
+/// daemon's.
+fn fake_recorder_script(runtime: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = runtime.join("bin/fake-record");
+    std::fs::create_dir_all(runtime.join("bin")).unwrap();
+    let body = "#!/bin/sh\n# Fake recorder of the memory tests.\nout=''; prev=''\nfor a in \"$@\"; do [ \"$prev\" = -f ] && out=$a; prev=$a; done\n\
+trap 'printf frames > \"$out\"; exit 0' INT\nwhile :; do sleep 0.1; done\n";
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// One recording through the socket, the n-th: started, then stopped once it runs; returns once its
+/// n-th saved ending is logged.
+fn recording_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording started", n, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording saved", n, DELAY), "{:?}", d.log());
+}
+
+/// The recording: while the recorder runs nothing wakes the daemon (its end is a pidfd on the loop,
+/// readable only when it exits: no thread, no timer, no poll); afterwards the daemon's anonymous
+/// memory is back within 64 KB after 10 more recordings, no thread is left, and nothing wakes it at
+/// rest. The figures are printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_recording() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("record-rest");
+    let bar = format!("{AT_REST}[captures]\nrecord = [\"fake-record\", \"-g\", \"{{geometry}}\", \"-f\", \"{{out}}\"]\n");
+    let (sway, _hypr, d) = start_launcher("record-rest", &bus, Some(&bar), &[], None);
+    fake_recorder_script(&sway.runtime);
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    let at_rest = d.pss_kb();
+    // The first recordings warm the allocator: the baseline is after two.
+    recording_cycle(&sway, &d, 1);
+    recording_cycle(&sway, &d, 2);
+    std::thread::sleep(Duration::from_secs(1));
+    let baseline = d.anonymous_kb();
+    // While it records: the cost, and what wakes the daemon.
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Record)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording started", 3, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    let recording = d.pss_kb();
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let while_recording = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon while it records");
+    assert_eq!(d.threads(), threads, "no thread while it records");
+    assert_eq!(launcher(&sway, &Request::Capture(CaptureVerb::Stop)), Reply::Done);
+    assert!(d.wait_for_count("capture: recording saved", 3, DELAY), "{:?}", d.log());
+    for n in 4..=13 {
+        recording_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.anonymous_kb();
+    eprintln!(
+        "recording: PSS {at_rest} KB at rest, {recording} KB while recording (+{} KB); wake-ups while recording (5 s): \
+         {while_recording}; anonymous {baseline} KB after 2 recordings, {end} KB after 10 more; threads {} (before: {threads})",
+        recording.saturating_sub(at_rest),
+        d.threads()
+    );
+    assert!(while_recording <= 4, "{while_recording} wake-ups in 5 s while the recorder ran");
+    assert!(end <= baseline + 64, "10 recordings grew the daemon's anonymous memory: {baseline} -> {end} KB");
+    assert_eq!(d.threads(), threads, "no thread left by the recordings");
+    std::thread::sleep(Duration::from_secs(3));
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a recording");
+    eprintln!("wake-ups at rest after a recording (5 s): {delta}");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after recordings");
 }

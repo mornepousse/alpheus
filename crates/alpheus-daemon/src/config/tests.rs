@@ -807,6 +807,9 @@ fn timer_defaults_and_bounds() {
     assert_eq!((d.countdown, d.work, d.short_break, d.long_break, d.rounds), (10, 25, 5, 15, 4));
     assert!(d.sound.is_empty());
     assert_eq!(d.idle, TimerIdle::Glyph);
+    assert_eq!(d.proc_dir, PathBuf::from("/proc"));
+    let c = BarConfig::from_text("[timer]\nproc_dir = \"/tmp/y\"\n").unwrap();
+    assert_eq!(c.timer.proc_dir, PathBuf::from("/tmp/y"));
     let c = BarConfig::from_text("[timer]\nwork = 50\nidle = \"hidden\"\n").unwrap();
     assert_eq!((c.timer.work, c.timer.idle), (50, TimerIdle::Hidden));
     assert_eq!(c.timer.countdown, 10, "the rest keeps its default");
@@ -825,6 +828,7 @@ fn timer_defaults_and_bounds() {
     ] {
         assert!(err(text).contains(key), "{text}: {}", err(text));
     }
+    assert!(err("[timer]\nproc_dir = \"proc\"").contains("timer.proc_dir must be an absolute path"));
     assert!(err("[timer]\nidle = \"dim\"").contains("unknown variant"));
     assert!(err("[timer]\nbeep = true").contains("beep"), "unknown key refused");
 }
@@ -926,4 +930,131 @@ fn shield_hard_checks_refuse_the_file() {
             .contains("shield.on")
     );
     assert!(err(shield_text().replace("\"off\"]", "\"o\\u0000ff\"]")).contains("shield.off"), "NUL");
+}
+
+// ---- [captures] ----
+
+#[test]
+fn captures_default_to_the_external_tools_and_no_folder() {
+    let c = BarConfig::from_text("").unwrap().captures;
+    assert_eq!(c, CapturesConfig::default());
+    assert_eq!(c.dir, "", "empty: $XDG_PICTURES_DIR/screenshots");
+    // satty 0.20: `--early-exit` ends it at the first copy or save; `--copy-command "cat >/dev/null"`
+    // and `--save-after-copy` turn its own copy into a save to `{out}` (alpheus copies that file), and
+    // `--disable-notifications` leaves the notice to alpheus.
+    assert_eq!(
+        c.annotate,
+        [
+            "satty",
+            "--filename",
+            "{file}",
+            "--output-filename",
+            "{out}",
+            "--early-exit",
+            "--copy-command",
+            "cat >/dev/null",
+            "--save-after-copy",
+            "--disable-notifications"
+        ]
+    );
+    assert_eq!(c.ocr, ["tesseract", "{file}", "-", "-l", "eng"]);
+    assert_eq!(c.record, ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]);
+    assert_eq!(c.pick_format, "{hex}");
+}
+
+/// satty writes the whole PNG to `sh -c <copy-command>` and saves to `{out}` only if that write and
+/// the command succeeded: the default command must read all its standard input, or an image past the
+/// pipe's 64 KiB breaks the pipe, nothing is saved and the annotation is lost as a silent cancel.
+/// Here a writer stands in for satty, a megabyte into the default command, and the writer's own
+/// exit is the answer (`sh` only, never satty).
+#[test]
+fn the_default_annotate_copy_command_reads_a_whole_large_image() {
+    let annotate = CapturesConfig::default().annotate;
+    let at = annotate.iter().position(|a| a == "--copy-command").expect("the default sets satty's copy command");
+    let copy_command = annotate.get(at + 1).expect("its value");
+    // fd 3 carries the writer's exit out of the pipe; fd 4 is the script's own standard output.
+    let script = "exec 4>&1; s=$( { { head -c 1048576 /dev/zero; echo $? >&3; } | sh -c \"$1\" >&4; } 3>&1 ); exit \"$s\"";
+    let exec = alpheus_common::exec::SystemExecutor::new(std::time::Duration::from_secs(10));
+    let ended = alpheus_common::exec::Executor::run_silent(&exec, "sh", &["-c", script, "sh", copy_command]);
+    assert_eq!(ended, Ok(Some(0)), "the writer of a 1 MB image never meets a broken pipe");
+}
+
+#[test]
+fn the_captures_table_is_read_and_checked() {
+    let c =
+        BarConfig::from_text("[captures]\ndir = \"~/Shots\"\nocr = [\"tesseract\", \"{file}\", \"-\"]\npick_format = \"{r} {g} {b}\"\n")
+            .unwrap()
+            .captures;
+    assert_eq!((c.dir.as_str(), c.pick_format.as_str()), ("~/Shots", "{r} {g} {b}"));
+    assert_eq!(c.ocr, ["tesseract", "{file}", "-"]);
+    assert_eq!(c.record, CapturesConfig::default().record, "a key left out keeps its default");
+    for (text, key) in [
+        ("[captures]\ndir = \"relative/shots\"", "captures.dir"),
+        ("[captures]\ndir = \"/a\\u0000b\"", "captures.dir"),
+        ("[captures]\nannotate = [\" \"]", "captures.annotate"),
+        ("[captures]\nocr = [\"tesseract\", \"a\\u0000\"]", "captures.ocr"),
+        ("[captures]\nrecord = [\"\"]", "captures.record"),
+        ("[captures]\nbogus = 1", "bogus"),
+    ] {
+        let e = BarConfig::from_text(text).unwrap_err();
+        assert!(e.contains(key), "{text}: {e}");
+    }
+    assert!(BarConfig::from_text("[captures]\nannotate = []").unwrap().captures.annotate.is_empty(), "[] turns the tool off");
+}
+
+/// `pick_format` is the colour picker's text: one line of at most 256 bytes, with at least one of
+/// `{r}`, `{g}`, `{b}`, `{hex}`, and no other `{…}` (a mistyped placeholder would be copied as is).
+#[test]
+fn pick_format_is_checked() {
+    for good in ["{hex}", "rgb({r}, {g}, {b})", "{r} {g} {b} {hex}", "#{hex} }"] {
+        assert_eq!(BarConfig::from_text(&format!("[captures]\npick_format = \"{good}\"")).unwrap().captures.pick_format, good);
+    }
+    let long = format!("{{hex}}{}", "x".repeat(252));
+    for bad in ["", "colour", "{red}", "{hex", "{hex} {x}", "{hex}\\n", "{hex}\\u0000", long.as_str()] {
+        let e = BarConfig::from_text(&format!("[captures]\npick_format = \"{bad}\"")).unwrap_err();
+        assert!(e.contains("captures.pick_format"), "{bad}: {e}");
+    }
+}
+
+/// `{file}`, `{out}` and `{geometry}` are whole arguments, each where its tool needs it: the
+/// annotation tool both `{file}` and `{out}` once, the recognizer `{file}` once, the recorder `{out}`
+/// once and `{geometry}` at most once; never inside a longer argument, never as the program, never a
+/// placeholder another tool's.
+#[test]
+fn the_tool_placeholders_are_whole_arguments_where_each_tool_needs_them() {
+    let read = |key: &str, argv: &str| BarConfig::from_text(&format!("[captures]\n{key} = {argv}"));
+    for (key, argv) in [
+        ("annotate", r#"["swappy", "-f", "{file}", "-o", "{out}"]"#),
+        ("ocr", r#"["tesseract", "{file}", "stdout"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["gpu-screen-recorder", "-o", "{out}"]"#),
+        ("annotate", "[]"),
+        ("ocr", "[]"),
+        ("record", "[]"),
+    ] {
+        assert!(read(key, argv).is_ok(), "{key} = {argv}: {:?}", read(key, argv));
+    }
+    for (key, argv) in [
+        ("annotate", r#"["satty", "--filename", "{file}"]"#),
+        ("annotate", r#"["satty", "--output-filename", "{out}"]"#),
+        ("annotate", r#"["satty", "{file}", "{file}", "{out}"]"#),
+        ("annotate", r#"["satty", "--filename={file}", "{file}", "{out}"]"#),
+        ("annotate", r#"["satty", "{file}", "{out}", "{geometry}"]"#),
+        ("annotate", r#"["{file}", "{out}"]"#),
+        ("ocr", r#"["tesseract", "-"]"#),
+        ("ocr", r#"["tesseract", "{file}", "{out}"]"#),
+        ("ocr", r#"["tesseract", "in={file}"]"#),
+        ("ocr", r#"["tesseract", "{file}", "{file}"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}"]"#),
+        ("record", r#"["wf-recorder", "-f", "{out}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "-g", "{geometry}", "-g", "{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "--file={out}"]"#),
+        ("record", r#"["wf-recorder", "-g", "x{geometry}", "-f", "{out}"]"#),
+        ("record", r#"["wf-recorder", "{file}", "-f", "{out}"]"#),
+        ("record", r#"["{out}", "-f", "{out}"]"#),
+    ] {
+        let e = read(key, argv).unwrap_err();
+        assert!(e.contains(&format!("captures.{key}")), "{key} = {argv}: {e}");
+        assert!(!e.contains("satty") && !e.contains("tesseract") && !e.contains("wf-recorder"), "no command in the message: {e}");
+    }
 }

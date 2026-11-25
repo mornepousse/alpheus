@@ -519,7 +519,7 @@ fn tool_entry(l: &Launcher, name: &str) -> usize {
 }
 
 fn user(entry: usize, choice: Option<&str>) -> Activation {
-    Activation::Tool(ToolAction::User { entry, choice: choice.map(String::from) })
+    Activation::Tool(ToolAction::User { entry, choice: choice.map(String::from), text: None })
 }
 
 const TOOLS: &str = r#"
@@ -552,26 +552,26 @@ choices_cmd = ["lines"]
 fn tool_argv_keeps_the_choice_whole() {
     let config = LauncherConfig::from_text(TOOLS).unwrap();
     let e = |i: usize| &config.tools.entries[i];
-    assert_eq!(tool_argv(e(0), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])), v(&["atool", "update", "--all"]));
+    assert_eq!(tool_argv(e(0), None, None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])), v(&["atool", "update", "--all"]));
     assert_eq!(
-        tool_argv(e(1), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
+        tool_argv(e(1), None, None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
         v(&["foot", "--hold", "-e", "atool", "hold"]),
         "hold: terminal_hold"
     );
     assert_eq!(
-        tool_argv(e(2), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
+        tool_argv(e(2), None, None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"])),
         v(&["foot", "-e", "atool", "term"]),
         "terminal: the plain one"
     );
     for choice in ["50%", "a b", "it's", "{choice}", "-rf", "--flag=\"x\"", "x;rm -rf ~", "$(id)", "two\tcells"] {
         assert_eq!(
-            tool_argv(e(3), Some(choice), &[], &[]),
+            tool_argv(e(3), Some(choice), None, &[], &[]),
             vec!["atool".to_string(), choice.to_string(), "--".to_string()],
             "{choice:?} stays one argument, replaced as it is"
         );
     }
     // A terminal in front never splits it either.
-    let held = tool_argv(e(4), Some("a b"), &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"]));
+    let held = tool_argv(e(4), Some("a b"), None, &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"]));
     assert_eq!(held, v(&["atool", "pick", "a b"]));
 }
 
@@ -608,10 +608,20 @@ fn perform_runs_through_the_scope_and_records() {
     assert_eq!(ids, ["tool:user:Nix/Update", "tool:user:Nix/Gen/50%", "tool:user:/Hold"], "no dynamic line, no typed text");
     // A built-in is recorded and handed back for the glue.
     let notes = BUILTINS.iter().position(|b| b.id == "notes").unwrap();
-    assert_eq!(perform(&mut l, Activation::Tool(ToolAction::Builtin(notes)), &c), Ok(Done::Builtin(notes)));
+    assert_eq!(
+        perform(&mut l, Activation::Tool(ToolAction::Builtin { index: notes, choice: None, text: None }), &c),
+        Ok(Done::Builtin(notes))
+    );
     assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:notes"));
     assert!(std::fs::read_to_string(&h).unwrap().contains("tool:builtin:notes"), "saved");
     assert_eq!(f.calls().len(), 4, "a built-in runs nothing here");
+    // A built-in's choice is handed back whole, and recorded under the built-in only.
+    let shutdown = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let a = Activation::Tool(ToolAction::Builtin { index: shutdown, choice: Some("1 h 30".into()), text: None });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::BuiltinChoice(shutdown, "1 h 30".into())));
+    assert!(l.history.entries().iter().any(|u| u.id == "tool:builtin:shutdown"));
+    assert!(l.history.entries().iter().all(|u| !u.id.contains("1 h")), "the duration is never kept");
+    assert_eq!(f.calls().len(), 4, "and runs nothing here");
 }
 
 #[test]
@@ -633,4 +643,92 @@ fn a_missing_program_is_said_and_the_box_stays() {
     assert_eq!(r, Err("foot: program not found".to_string()));
     // An entry that went with a reloaded catalog is "gone", never a panic.
     assert!(perform(&mut l, user(99, None), &ctx(&f, Spawner::Detached, None, &dirs)).is_err());
+}
+
+// -- The typed text (`ask`) --
+
+const ASKS: &str = r#"
+[[tools.entry]]
+name = "Scan"
+run = ["atool", "scan", "{text}"]
+ask = "Target"
+[[tools.entry]]
+name = "Pick"
+run = ["atool", "{choice}", "--", "{text}"]
+choices = ["quick", "full"]
+ask = "Target"
+hold = true
+"#;
+
+#[test]
+fn the_typed_text_is_one_whole_argv_element() {
+    let config = LauncherConfig::from_text(ASKS).unwrap();
+    let e = |i: usize| &config.tools.entries[i];
+    for text in ["a b; rm -rf /", "$(id)", "`id`", "-rf", "{text}", "{choice}", "it's \"x\"", "two\tcells", "x && y | z", "50%"] {
+        assert_eq!(
+            tool_argv(e(0), None, Some(text), &[], &[]),
+            vec!["atool".to_string(), "scan".to_string(), text.to_string()],
+            "{text:?} stays one argument, as typed"
+        );
+    }
+    // Beside a choice, behind a terminal: still one element each, and no shell is put in front.
+    let held = tool_argv(e(1), Some("full"), Some("a b; c"), &v(&["foot", "-e"]), &v(&["foot", "--hold", "-e"]));
+    assert_eq!(held, v(&["foot", "--hold", "-e", "atool", "full", "--", "a b; c"]));
+    // Through the executor: the one call the fake sees is the entry's program, not a shell.
+    let bin = stubs("ask-whole", &["atool"]);
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    f.ok(&format!("{SCOPE} atool scan a b; rm -rf /"), "");
+    let mut l = tools_launcher(ASKS);
+    let scan = tool_entry(&l, "Scan");
+    let a = Activation::Tool(ToolAction::User { entry: scan, choice: None, text: Some("a b; rm -rf /".into()) });
+    assert_eq!(perform(&mut l, a, &ctx(&f, Spawner::SystemdScope, None, &dirs)), Ok(Done::Close));
+    assert_eq!(f.calls(), [format!("{SCOPE} atool scan a b; rm -rf /")]);
+    assert!(!f.calls().iter().any(|c| c.contains(" sh ")), "no shell in between");
+}
+
+#[test]
+fn text_is_never_recorded_in_history_nor_shown_by_debug() {
+    let d = TempDir::new("run-ask-history");
+    let h = d.join("launcher-history");
+    let bin = stubs("ask-history", &["atool", "foot"]);
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    f.ok(&format!("{SCOPE} atool scan secret-target.example"), "");
+    f.ok(&format!("{SCOPE} foot --hold -e atool quick -- secret-target.example"), "");
+    let mut l = tools_launcher(ASKS);
+    let (scan, pick) = (tool_entry(&l, "Scan"), tool_entry(&l, "Pick"));
+    let text = Some("secret-target.example".to_string());
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
+    let a = Activation::Tool(ToolAction::User { entry: scan, choice: None, text: text.clone() });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::Close));
+    let a = Activation::Tool(ToolAction::User { entry: pick, choice: Some("quick".into()), text });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::Close));
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:user:/Scan", "tool:user:/Pick/quick"], "the entry and its choice, never the text");
+    let saved = std::fs::read_to_string(&h).unwrap();
+    assert!(!saved.contains("secret-target"), "the history file holds no text");
+    // Neither Debug output (a panic message, an assertion) shows it.
+    let a = ToolAction::User { entry: 0, choice: None, text: Some("secret-target.example".into()) };
+    assert!(!format!("{a:?}").contains("secret-target"));
+}
+
+#[test]
+fn a_built_ins_choice_is_recorded_under_its_key_and_its_text_never() {
+    let d = TempDir::new("run-builtin-choice");
+    let h = d.join("launcher-history");
+    let f = FakeExecutor::new();
+    let mut l = tools_launcher("");
+    let scan = BUILTINS.iter().position(|b| b.id == "diag.scan").unwrap();
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &[]);
+    let a = Activation::Tool(ToolAction::Builtin {
+        index: scan,
+        choice: Some("Full scan (all ports)".into()),
+        text: Some("secret-host.example".into()),
+    });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::Builtin(scan)));
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:builtin:diag.scan/Full scan (all ports)"]);
+    assert!(!std::fs::read_to_string(&h).unwrap().contains("secret-host"));
+    assert!(f.calls().is_empty(), "perform runs nothing for a built-in: the glue replays it");
 }

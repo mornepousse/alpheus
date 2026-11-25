@@ -8,10 +8,15 @@
 //!
 //! See: CONTRIBUTING.md (fakes), AGENTS.md ("Rules for agents"), docs/ARCHITECTURE.md ("Tests").
 
-use super::{CaptureEnd, CaptureLimits, Captured, ExecError, Executor, Output, Stream};
+use super::{CaptureEnd, CaptureLimits, Captured, ExecError, Executor, Output, Stream, Watched};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// How the fake answers a `spawn_watched` of one program: started (ending with this code when
+/// interrupted, or not by itself), or the error.
+type WatchAnswer = Result<Option<Option<i32>>, ExecError>;
 
 /// A `spawn_with_env` as recorded: its line and its variables.
 pub type EnvCall = (String, Vec<(String, String)>);
@@ -28,6 +33,10 @@ pub struct FakeExecutor {
     unsets: Mutex<Vec<Vec<String>>>,
     delay: Duration,
     limits: Mutex<Vec<(String, CaptureLimits)>>,
+    /// Per program: how a `spawn_watched` of it answers (Ok: started, ending with this code on an
+    /// interrupt, or not by itself).
+    watched: Mutex<HashMap<String, WatchAnswer>>,
+    children: Mutex<Vec<FakeChild>>,
 }
 
 impl FakeExecutor {
@@ -55,7 +64,8 @@ impl FakeExecutor {
         self.calls.lock().unwrap().clone()
     }
 
-    /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only).
+    /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only); a
+    /// `run_with_stdin_file`'s too, with the file's content.
     pub fn inputs(&self) -> Vec<(String, Vec<u8>)> {
         self.inputs.lock().unwrap().clone()
     }
@@ -104,6 +114,120 @@ impl FakeExecutor {
     pub fn capture_err(&self, cmdline: &str, e: ExecError) {
         self.captures.lock().unwrap().insert(cmdline.to_string(), Err(e));
     }
+
+    /// Lets `spawn_watched` start the program `prog`, whatever its arguments (they hold temporary
+    /// paths): the child runs until the test ends it (`FakeChild::end`), or until an interrupt when
+    /// `on_interrupt` is the end it then comes to.
+    pub fn watch_ok(&self, prog: &str, on_interrupt: Option<Option<i32>>) {
+        self.watched.lock().unwrap().insert(prog.to_string(), Ok(on_interrupt));
+    }
+
+    /// Programs a failure to start the watched program `prog`.
+    pub fn watch_err(&self, prog: &str, e: ExecError) {
+        self.watched.lock().unwrap().insert(prog.to_string(), Err(e));
+    }
+
+    /// The children `spawn_watched` started, in order.
+    pub fn children(&self) -> Vec<FakeChild> {
+        self.children.lock().unwrap().clone()
+    }
+}
+
+/// One child of the fake's `spawn_watched`: what it was started with, and what was done to it. The
+/// test ends it; nothing runs.
+#[derive(Clone, Default)]
+pub struct FakeChild(Arc<Mutex<FakeChildState>>);
+
+#[derive(Default)]
+struct FakeChildState {
+    line: String,
+    stdout: Option<PathBuf>,
+    ended: Option<Option<i32>>,
+    on_interrupt: Option<Option<i32>>,
+    interrupts: usize,
+    waits: Vec<Duration>,
+    dropped: bool,
+    released: bool,
+}
+
+impl FakeChild {
+    /// "prog arg1 arg2", as started.
+    pub fn line(&self) -> String {
+        self.0.lock().unwrap().line.clone()
+    }
+
+    /// The file its standard output went to.
+    pub fn stdout(&self) -> Option<PathBuf> {
+        self.0.lock().unwrap().stdout.clone()
+    }
+
+    /// The program ends: `code`, None for a signal.
+    pub fn end(&self, code: Option<i32>) {
+        self.0.lock().unwrap().ended = Some(code);
+    }
+
+    /// How many interrupts reached it while it ran.
+    pub fn interrupts(&self) -> usize {
+        self.0.lock().unwrap().interrupts
+    }
+
+    /// The limit of each `wait_exit`, in order.
+    pub fn waits(&self) -> Vec<Duration> {
+        self.0.lock().unwrap().waits.clone()
+    }
+
+    /// Whether its owner dropped it while it still ran without releasing it (the real one is then
+    /// killed).
+    pub fn killed(&self) -> bool {
+        let s = self.0.lock().unwrap();
+        s.dropped && s.ended.is_none() && !s.released
+    }
+
+    /// Whether its owner let it run on (`Watched::release`).
+    pub fn released(&self) -> bool {
+        self.0.lock().unwrap().released
+    }
+}
+
+/// The handle `spawn_watched` returns: a `FakeChild` seen from its owner.
+struct FakeWatched(FakeChild);
+
+impl Watched for FakeWatched {
+    fn exit_fd(&self) -> Option<std::os::fd::OwnedFd> {
+        None
+    }
+
+    fn try_exit(&mut self) -> Option<Option<i32>> {
+        self.0.0.lock().unwrap().ended
+    }
+
+    fn interrupt(&mut self) -> bool {
+        let mut s = self.0.0.lock().unwrap();
+        if s.ended.is_some() {
+            return false;
+        }
+        s.interrupts += 1;
+        if let Some(code) = s.on_interrupt {
+            s.ended = Some(code);
+        }
+        true
+    }
+
+    fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>> {
+        let mut s = self.0.0.lock().unwrap();
+        s.waits.push(limit);
+        s.ended
+    }
+
+    fn release(self: Box<Self>) {
+        self.0.0.lock().unwrap().released = true;
+    }
+}
+
+impl Drop for FakeWatched {
+    fn drop(&mut self) {
+        self.0.0.lock().unwrap().dropped = true;
+    }
 }
 
 fn line(prog: &str, args: &[&str]) -> String {
@@ -136,6 +260,18 @@ impl Executor for FakeExecutor {
         self.inputs.lock().unwrap().push((l.clone(), input.concat()));
         match self.responses.lock().unwrap().get(&l).cloned() {
             Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn run_with_stdin_file(&self, prog: &str, args: &[&str], file: &Path, _limit: Duration) -> Result<Option<i32>, ExecError> {
+        let bytes = std::fs::read(file).map_err(|e| ExecError::Io(e.to_string()))?;
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        self.inputs.lock().unwrap().push((l.clone(), bytes));
+        match self.responses.lock().unwrap().get(&l).cloned() {
+            Some(Ok(output)) => Ok(output.code),
             Some(Err(e)) => Err(e),
             None => Err(ExecError::NotFound),
         }
@@ -192,6 +328,31 @@ impl Executor for FakeExecutor {
 
     fn stop_running(&self) {
         *self.stops.lock().unwrap() += 1;
+    }
+
+    /// Answers as `watch_ok` or `watch_err` programmed the program; an unprogrammed one is not found.
+    fn spawn_watched(&self, prog: &str, args: &[&str], stdout: Option<&Path>) -> Result<Box<dyn Watched>, ExecError> {
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        let on_interrupt = match self.watched.lock().unwrap().get(prog).cloned() {
+            Some(Ok(on_interrupt)) => on_interrupt,
+            Some(Err(e)) => return Err(e),
+            None => return Err(ExecError::NotFound),
+        };
+        let child = FakeChild::default();
+        {
+            let mut s = child.0.lock().unwrap();
+            s.line = l;
+            s.stdout = stdout.map(Path::to_path_buf);
+            s.on_interrupt = on_interrupt;
+        }
+        self.children.lock().unwrap().push(child.clone());
+        Ok(Box::new(FakeWatched(child)))
+    }
+
+    /// As `spawn_watched` (programmed with `watch_ok` or `watch_err`), recorded the same way.
+    fn spawn_watched_free(&self, prog: &str, args: &[&str]) -> Result<Box<dyn Watched>, ExecError> {
+        self.spawn_watched(prog, args, None)
     }
 }
 
@@ -311,5 +472,58 @@ mod tests {
             [("nmcli --ask device wifi connect Bureau-Test".to_string(), b"fake-pass\n".to_vec()), ("nmcli x".to_string(), b"y".to_vec())]
         );
         assert!(f.calls().iter().all(|c| !c.contains("fake-pass")), "the input is not on the line");
+    }
+
+    #[test]
+    fn spawn_watched_records_the_line_and_the_test_ends_the_child() {
+        let f = FakeExecutor::new();
+        f.watch_ok("recorder", Some(Some(0)));
+        f.watch_ok("editor", None);
+        f.watch_err("broken", ExecError::Io("boom".into()));
+        let out = Path::new("/tmp/x.txt");
+        let mut rec = f.spawn_watched("recorder", &["-f", "a.mp4"], Some(out)).unwrap();
+        let mut ed = f.spawn_watched("editor", &["b.png"], None).unwrap();
+        assert!(f.spawn_watched("broken", &[], None).is_err());
+        assert_eq!(f.spawn_watched("other", &[], None).err(), Some(ExecError::NotFound), "never a real tool");
+        assert_eq!(f.calls(), ["recorder -f a.mp4", "editor b.png", "broken", "other"]);
+        let children = f.children();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].stdout().as_deref(), Some(out));
+        assert!(rec.exit_fd().is_none());
+        assert_eq!(rec.try_exit(), None);
+        assert!(rec.interrupt(), "it ran");
+        assert_eq!(rec.try_exit(), Some(Some(0)), "its programmed end on an interrupt");
+        assert!(!rec.interrupt(), "ended: nothing sent");
+        assert_eq!(children[0].interrupts(), 1);
+        assert!(ed.interrupt());
+        assert_eq!(ed.wait_exit(Duration::from_secs(2)), None, "an editor ends when the test says");
+        children[1].end(Some(3));
+        assert_eq!(ed.try_exit(), Some(Some(3)));
+        assert_eq!(children[1].waits(), [Duration::from_secs(2)]);
+        drop(rec);
+        assert!(!children[0].killed(), "it had ended");
+        let running = f.spawn_watched("editor", &[], None).unwrap();
+        drop(running);
+        assert!(f.children()[2].killed());
+        let released = f.spawn_watched("editor", &[], None).unwrap();
+        released.release();
+        assert!(f.children()[3].released() && !f.children()[3].killed(), "let run on, never killed");
+    }
+
+    #[test]
+    fn run_with_stdin_file_records_the_line_and_the_file_content_and_answers_the_exit() {
+        let f = FakeExecutor::new();
+        let path = std::env::temp_dir().join(format!("alpheus-fake-stdin-{}", std::process::id()));
+        std::fs::write(&path, b"\x89PNG fake").unwrap();
+        let limit = Duration::from_secs(5);
+        f.ok("wl-copy --type image/png", "");
+        f.respond("wl-copy bad", Ok(Output { code: Some(1), stdout: String::new(), stderr: String::new() }));
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["--type", "image/png"], &path, limit), Ok(Some(0)));
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["bad"], &path, limit), Ok(Some(1)), "the programmed exit code");
+        assert_eq!(f.run_with_stdin_file("wl-copy", &["x"], &path, limit), Err(ExecError::NotFound), "never a real tool");
+        assert_eq!(f.inputs().len(), 3);
+        assert_eq!(f.inputs()[0], ("wl-copy --type image/png".to_string(), b"\x89PNG fake".to_vec()));
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(f.run_with_stdin_file("wl-copy", &[], &path, limit), Err(ExecError::Io(_))), "a missing file is an error");
     }
 }

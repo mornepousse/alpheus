@@ -5,7 +5,8 @@ use super::*;
 use crate::config::{BarConfig, ModuleId};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::run::{self, RunContext, Spawner, launch};
-use crate::launcher::tools::catalog::{BUILTINS, Builtin};
+use crate::launcher::tools::catalog::{BUILTINS, Builtin, Catalog, Context};
+use crate::launcher::tools::diag::Subnet;
 use crate::launcher::tools::nav::{Counts, StateJob};
 use crate::launcher::tools::read::{JobEvent, run_job};
 use alpheus_common::exec::fake::FakeExecutor;
@@ -47,7 +48,7 @@ impl Drop for Bin {
 }
 
 fn join_answers(shield: bool, clipboard: bool, diagnostics: bool) -> Join {
-    Join { shield, clipboard, diagnostics }
+    Join { shield, clipboard, diagnostics, nmap: false }
 }
 
 #[test]
@@ -74,6 +75,28 @@ fn the_context_reads_the_configs() {
     bar.modules = vec![ModuleId::Quick, ModuleId::Notifications];
     let c = context(&bar, &launcher, true, join_answers(false, false, false));
     assert!(c.quick && c.notifications);
+    // The USB reset follows `[tools.builtin] usb_reset`, nmap follows the open's `$PATH` (the join).
+    assert!(!c.usb_reset == launcher.tools.builtin.usb_reset.is_empty());
+    assert!(context(&bar, &launcher, true, join_answers(false, false, false)).usb_reset, "set by default");
+    launcher.tools.builtin.usb_reset = Vec::new();
+    assert!(!context(&bar, &launcher, true, join_answers(false, false, false)).usb_reset, "[] hides it");
+    let with_nmap = Join { nmap: true, ..join_answers(false, false, false) };
+    assert!(context(&bar, &launcher, true, with_nmap).nmap);
+    assert!(!context(&bar, &launcher, true, join_answers(false, false, false)).nmap);
+}
+
+/// The shutdown built-in needs the timer module (it is a mode of the timer) and a poweroff command.
+#[test]
+fn the_shutdown_needs_the_timer_and_a_poweroff_command() {
+    let mut bar = BarConfig::default();
+    let launcher = LauncherConfig::default();
+    let join = || join_answers(false, false, false);
+    assert!(!bar.quick.poweroff.is_empty(), "the default has a poweroff command");
+    assert!(context(&bar, &launcher, true, join()).shutdown);
+    assert!(!context(&bar, &launcher, false, join()).shutdown, "no timer module");
+    bar.quick.poweroff = Vec::new();
+    assert!(!context(&bar, &launcher, true, join()).shutdown, "no poweroff command: the entry is hidden");
+    assert_eq!(context(&bar, &launcher, true, join()).shutdown_left, None, "no shutdown pending by itself");
 }
 
 #[test]
@@ -102,8 +125,29 @@ fn commands_with<'a>(
     terminal: &'a [String],
     dirs: &'a [PathBuf],
 ) -> Commands<'a> {
-    Commands { quick, reload, open_tab, terminal, path_dirs: dirs }
+    Commands {
+        quick,
+        reload,
+        open_tab,
+        terminal,
+        terminal_hold: &[],
+        usb_reset: &[],
+        subnet: &NO_SUBNET,
+        choice: None,
+        text: None,
+        path_dirs: dirs,
+    }
 }
+
+struct FixedSubnet(Option<&'static str>);
+
+impl Subnet for FixedSubnet {
+    fn default_v4(&self) -> Option<String> {
+        self.0.map(String::from)
+    }
+}
+
+const NO_SUBNET: FixedSubnet = FixedSubnet(None);
 
 #[test]
 fn builtin_argv_is_only_the_configured_command() {
@@ -123,7 +167,7 @@ fn builtin_argv_is_only_the_configured_command() {
     // A program that is not there: said in the box, never spawned.
     assert_eq!(builtin_argv(builtin_by_id("night_light"), &c), Err("no-such-toggle: program not found".into()));
     // The others spawn nothing of their own.
-    for id in ["quick.sound", "dnd", "notes", "timer", "clipboard", "emoji", "power", "quick.shield"] {
+    for id in ["quick.sound", "dnd", "notes", "timer", "clipboard", "emoji", "power", "quick.shield", "process.kill"] {
         assert_eq!(builtin_argv(builtin_by_id(id), &c), Ok(None), "{id}");
     }
     let empty_reload: Vec<String> = Vec::new();
@@ -392,4 +436,149 @@ fn the_clipboard_builtin_needs_the_history_on_and_bound() {
     assert!(shows(true, true));
     assert!(!shows(true, false), "enabled with no protocol bound");
     assert!(!shows(false, true) && !shows(false, false));
+}
+
+/// The diagnostics' commands: the held terminal, a reset command, a fixed subnet.
+fn diag_with<'a>(
+    quick: &'a QuickConfig,
+    hold: &'a [String],
+    reset: &'a [String],
+    subnet: &'a FixedSubnet,
+    dirs: &'a [PathBuf],
+    choice: Option<&'a str>,
+    text: Option<&'a str>,
+) -> Commands<'a> {
+    Commands { terminal_hold: hold, usb_reset: reset, subnet, choice, text, ..commands_with(quick, &[], &[], &[], dirs) }
+}
+
+#[test]
+fn each_scan_runs_in_the_held_terminal_with_its_target_whole() {
+    use crate::launcher::tools::diag::Scan;
+    let bin = Bin::new("scan", &["foot"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["foot", "--hold", "-e"]);
+    let net = FixedSubnet(Some("192.168.1.0/24"));
+    let scan = builtin_by_id("diag.scan");
+    let run =
+        |choice: Scan, text: Option<&str>| builtin_argv(scan, &diag_with(&quick, &hold, &[], &net, &dirs, Some(choice.label()), text));
+    assert_eq!(run(Scan::HostDiscovery, None), Ok(Some(strings(&["foot", "--hold", "-e", "nmap", "-sn", "192.168.1.0/24"]))));
+    assert_eq!(
+        run(Scan::Udp, Some("a b; rm -rf /")),
+        Ok(Some(strings(&["foot", "--hold", "-e", "sudo", "nmap", "-sU", "--top-ports", "20", "--", "a b; rm -rf /"]))),
+        "the target is one element, behind `--`, and no shell is put in front"
+    );
+    assert_eq!(
+        run(Scan::Ports, Some("10.0.0.5 22,80")),
+        Ok(Some(strings(&["foot", "--hold", "-e", "nmap", "-p", "22,80", "--", "10.0.0.5"])))
+    );
+    assert!(run(Scan::Ports, Some("10.0.0.5")).unwrap_err().contains("ports"), "ports missing: said in the box");
+    for bad in ["10.0.0.5 -oN /tmp/x", "10.0.0.5 --script=x", "10.0.0.5 22;ls"] {
+        assert!(run(Scan::Ports, Some(bad)).unwrap_err().contains("digits, commas, dashes"), "{bad}");
+    }
+    assert!(run(Scan::Quick, None).is_err(), "a scan without a target runs nothing");
+    // An unknown choice (a list that changed) runs nothing.
+    let stale = builtin_argv(scan, &diag_with(&quick, &hold, &[], &net, &dirs, Some("gone"), Some("h")));
+    assert!(stale.is_err());
+}
+
+#[test]
+fn host_discovery_without_a_subnet_says_so_and_runs_nothing() {
+    use crate::launcher::tools::diag::Scan;
+    let bin = Bin::new("nosubnet", &["foot"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["foot", "--hold", "-e"]);
+    let c = diag_with(&quick, &hold, &[], &NO_SUBNET, &dirs, Some(Scan::HostDiscovery.label()), None);
+    assert_eq!(builtin_argv(builtin_by_id("diag.scan"), &c), Err("no network".into()));
+}
+
+#[test]
+fn a_diagnostics_terminal_run_needs_the_held_terminal() {
+    let bin = Bin::new("noterm", &[]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["no-such-terminal", "-e"]);
+    let c = diag_with(&quick, &hold, &[], &NO_SUBNET, &dirs, None, None);
+    assert_eq!(builtin_argv(builtin_by_id("diag.usb_events"), &c), Err("no-such-terminal: program not found".into()));
+    let c = diag_with(&quick, &[], &[], &NO_SUBNET, &dirs, None, None);
+    assert_eq!(builtin_argv(builtin_by_id("diag.usb_events"), &c), Err("terminal_hold: program not found".into()));
+}
+
+#[test]
+fn usb_reset_runs_the_configured_command_in_the_terminal_after_confirm() {
+    let bin = Bin::new("reset", &["foot"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["foot", "--hold", "-e"]);
+    let reset = strings(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]);
+    let c = diag_with(&quick, &hold, &reset, &NO_SUBNET, &dirs, None, None);
+    assert_eq!(
+        builtin_argv(builtin_by_id("diag.usb_reset"), &c),
+        Ok(Some(strings(&["foot", "--hold", "-e", "sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"])))
+    );
+    // Its own command, whatever it is: alpheus never builds a sudo line of its own.
+    let mine = strings(&["my-reset"]);
+    let c = diag_with(&quick, &hold, &mine, &NO_SUBNET, &dirs, None, None);
+    assert_eq!(builtin_argv(builtin_by_id("diag.usb_reset"), &c), Ok(Some(strings(&["foot", "--hold", "-e", "my-reset"]))));
+    // The second Enter that confirms it is the navigation's (`the_usb_reset_asks_for_a_second_enter`).
+    assert!(
+        Catalog::build(&LauncherConfig::default().tools, &Context { usb_reset: true, ..Default::default() }, &mut |_| {})
+            .entries
+            .iter()
+            .any(|e| e.name == "Reset USB (xHCI)" && e.confirm)
+    );
+}
+
+#[test]
+fn an_empty_usb_reset_command_runs_nothing() {
+    let bin = Bin::new("noreset", &["foot"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["foot", "-e"]);
+    let c = diag_with(&quick, &hold, &[], &NO_SUBNET, &dirs, None, None);
+    assert!(builtin_argv(builtin_by_id("diag.usb_reset"), &c).is_err());
+}
+
+#[test]
+fn the_usb_events_run_the_fixed_script_in_the_held_terminal() {
+    let bin = Bin::new("events", &["foot"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let hold = strings(&["foot", "-e"]);
+    let c = diag_with(&quick, &hold, &[], &NO_SUBNET, &dirs, None, None);
+    let argv = builtin_argv(builtin_by_id("diag.usb_events"), &c).unwrap().unwrap();
+    assert_eq!(&argv[..4], &strings(&["foot", "-e", "sh", "-c"])[..]);
+    assert!(
+        argv[4].starts_with("trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb &"),
+        "{}",
+        argv[4]
+    );
+}
+
+#[test]
+fn a_preset_opens_the_diag_tab_on_it_in_the_terminal() {
+    use alpheus_common::diagnostics::query::Preset;
+    let bin = Bin::new("preset", &["foot", "alpheus-toggle", "alpheus"]);
+    let dirs = [bin.0.clone()];
+    let quick = QuickConfig::default();
+    let terminal = strings(&["foot", "-e"]);
+    // `open_tab` cannot carry a preset (its script takes a tab only): the terminal runs alpheus itself.
+    let open_tab = strings(&["alpheus-toggle", "{tab}"]);
+    for p in Preset::ALL {
+        let c = Commands { open_tab: &open_tab, ..commands_with(&quick, &[], &open_tab, &terminal, &dirs) };
+        let b = builtin_by_id(&format!("diag.preset.{}", p.slug()));
+        assert_eq!(
+            builtin_argv(b, &c),
+            Ok(Some(strings(&["foot", "-e", "alpheus", "--tab", "diagnostics", "--preset", p.slug()]))),
+            "{p:?}"
+        );
+    }
+    let c = commands_with(&quick, &[], &open_tab, &[], &dirs);
+    assert_eq!(builtin_argv(builtin_by_id("diag.preset.usb"), &c), Err("terminal: program not found".into()));
+    // `alpheus` itself missing from the `$PATH`: refused like any other program, never spawned.
+    let bare = Bin::new("preset-bare", &["foot"]);
+    let dirs = [bare.0.clone()];
+    let c = commands_with(&quick, &[], &open_tab, &terminal, &dirs);
+    assert_eq!(builtin_argv(builtin_by_id("diag.preset.usb"), &c), Err("alpheus: program not found".into()));
 }

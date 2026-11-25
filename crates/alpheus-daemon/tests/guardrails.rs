@@ -399,6 +399,25 @@ fn outputs_protocol_only_in_wlr_rs() {
     assert!(seen, "the protocol file names the protocol");
 }
 
+/// The only file that speaks `zwlr_screencopy_manager_v1`.
+const SCREENCOPY_PROTOCOL_FILE: &str = "captures/screencopy.rs";
+
+/// One file speaks the screencopy protocol; the rest of the daemon only sees a `Frame`.
+#[test]
+fn screencopy_only_in_screencopy_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["zwlr_screencopy", "ZwlrScreencopy"] {
+            if t.contains(token) {
+                assert_eq!(name, SCREENCOPY_PROTOCOL_FILE, "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
 /// No output power management anywhere in alpheus,
 /// never a screen powered off (`dpms` is already a forbidden word in the daemon).
 #[test]
@@ -550,7 +569,14 @@ fn shutting_down_closes_and_saves_the_pad() {
 #[test]
 fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     let files = source_files();
-    for (name, create) in [("osd/surface.rs", "fn osd_create("), ("notify/bubbles_surface.rs", "fn bubbles_create(")] {
+    for (name, create) in [
+        ("osd/surface.rs", "fn osd_create("),
+        ("notify/bubbles_surface.rs", "fn bubbles_create("),
+        // The capture selector: on Overlay too, or a fullscreen game on Hyprland would hide it.
+        ("captures/select_app.rs", "fn select_open("),
+        // The colour picker: the same, over the frozen output.
+        ("captures/pick_app.rs", "fn pick_open("),
+    ] {
         let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code_without_comments(text);
         assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
@@ -896,7 +922,7 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_common::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -907,6 +933,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Clipboard => "clipboard",
             Request::ClipboardClear => "clipboard-clear",
             Request::Tools => "tools",
+            Request::Kill => "kill",
             Request::Power => "power",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
@@ -921,6 +948,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsKeep => "outputs-keep",
             Request::OutputsRevert => "outputs-revert",
             Request::Shield(_) => "shield",
+            Request::Capture(_) => "capture",
         }
     }
     let all = [
@@ -932,6 +960,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Clipboard,
         Request::ClipboardClear,
         Request::Tools,
+        Request::Kill,
         Request::Power,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
@@ -946,6 +975,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsKeep,
         Request::OutputsRevert,
         Request::Shield(ShieldVerb::Status),
+        Request::Capture(CaptureVerb::Select),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -958,6 +988,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "clipboard",
             "clipboard-clear",
             "tools",
+            "kill",
             "power",
             "dmenu",
             "dnd",
@@ -971,7 +1002,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs-try",
             "outputs-keep",
             "outputs-revert",
-            "shield"
+            "shield",
+            "capture"
         ]
     );
 }
@@ -1654,9 +1686,11 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
         // forget question is.
         ("quick/app.rs", "Timer::", 1),
-        // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
-        // runs (at its end, and at each minute of the chip).
-        ("timer/app.rs", "Timer::", 1),
+        // The focus timer's DeadlineTimers, built in `TimerApp::new`: the timer's, armed only
+        // while a timer runs (at its end, and at each minute of the chip), and the scheduled
+        // shutdown's, armed only while a shutdown is scheduled (at its warning, its end and each
+        // minute of the chip).
+        ("timer/app.rs", "Timer::", 2),
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
@@ -1665,6 +1699,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The Tools menu's confirmation timer, built in `ToolsApp::new`: armed only while a
         // confirm question is pending, disarmed by `launcher_close` and `launcher_fail`.
         ("launcher/tools/app.rs", "Timer::", 1),
+        // The kill list's timer, built in `ProcessesApp::new`: armed only while the list is open and its
+        // second sample (300 ms after the open) or a force-kill question (3 s) is pending, disarmed
+        // by `launcher_close` and `launcher_fail`.
+        ("launcher/processes_app.rs", "Timer::", 1),
         // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
         // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
@@ -1715,6 +1753,22 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // switch waits for its flag (the 5 s grace or the 60 s bound).
         ("shield/run.rs", "thread::Builder", 1),
         ("shield/app.rs", "Timer::", 1),
+        // A capture's worker: the short-lived `alpheus-capture` thread that cuts, encodes and
+        // copies or saves one frame, started when the frame arrives and ending with its report
+        // (one capture at a time, so one thread at most).
+        ("captures/app.rs", "thread::Builder", 1),
+        // The awaited frame's deadline (5 s), built in `CaptureApp::new`: armed only while a frame is
+        // awaited, disarmed by every way a capture ends; a compositor that never answers cannot hold
+        // the one capture slot for ever.
+        ("captures/app.rs", "Timer::", 1),
+        // A watched child's pidfd: the external tool of a capture (annotation, text recognition) while
+        // it runs, and the recorder while it records, each removed with the child's end. A pidfd turns
+        // readable only when its process ends, so it never wakes the loop before.
+        ("captures/app.rs", "Generic::new", 1),
+        // The scheduled shutdown's power off command (`[quick] poweroff`), a watched child: its pidfd
+        // is on the loop from the command's start to its end, so an error exit or a refusal is told
+        // to the user instead of vanishing. Readable only when the command ends.
+        ("timer/app.rs", "Generic::new", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -2155,6 +2209,8 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "resources/mod.rs",
     "timer/mod.rs",
     "timer/popup.rs",
+    "timer/shutdown.rs",
+    "timer/lockscreen.rs",
     "notes/text.rs",
     "notes/lines.rs",
     "notes/keys.rs",
@@ -3660,18 +3716,238 @@ fn the_timer_is_wired_through_one_path() {
     assert!(!body.contains(".apply("), "timer_do applies no change but through change_step: {body}");
 }
 
+/// The scheduled shutdown's wiring (decision "A scheduled shutdown always warns a minute before,
+/// even when its time has passed"): the deadline's callback calls `fired()` before the check; the
+/// clock's minute tick (through `timer_check_clock`) and the load both check it, so a laptop that
+/// wakes late warns first; the power-off command is spawned in the `PowerOff` step alone, which only
+/// `shutdown_step` yields after a warning; and the state is written whenever it changes.
+#[test]
+fn the_shutdown_is_wired_through_one_path() {
+    let app =
+        production_code_without_comments(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/timer/app.rs")).unwrap());
+    let tick = function_body(&app, "fn shutdown_tick(");
+    let (fired, check) = (tick.find(".fired()"), tick.find("shutdown_check_clock"));
+    assert!(fired.is_some() && check.is_some() && fired < check, "fired() before the check: {tick}");
+    let clock = function_body(&app, "pub(crate) fn timer_check_clock(");
+    assert!(clock.contains("shutdown_check_clock()"), "the clock tick re-checks the shutdown: {clock}");
+    let load = function_body(&app, "pub(crate) fn timer_load(");
+    assert!(load.contains("shutdown_check_clock()"), "a late shutdown is noticed at load: {load}");
+    let check = function_body(&app, "pub(crate) fn shutdown_check_clock(");
+    assert!(check.contains("shutdown_step("), "the check goes through the pure step: {check}");
+    let power = check.find("spawn_poweroff(").expect("the power off");
+    let arm = check.find("Some(ShutdownStep::PowerOff) =>").expect("its arm");
+    let warn = check.find("Some(ShutdownStep::Warn").expect("the warning's arm");
+    assert!(warn < arm && arm < power, "the power off is spawned in its own arm, after the warning's: {check}");
+    assert_eq!(app.matches("spawn_poweroff(self.").count(), 1, "one place powers off");
+    let step = function_body(&app, "pub(crate) fn shutdown_step(");
+    assert!(step.contains("warned_at(now)"), "a warning moves the end a minute away at least: {step}");
+    let do_ = function_body(&app, "pub(crate) fn shutdown_do(");
+    assert!(do_.contains("self.timer_save()"), "a change is saved: {do_}");
+    // The open popup follows (timer_chip redraws it) after a change and after a step.
+    assert!(do_.contains("self.timer_chip()"), "the popup follows a change: {do_}");
+    assert!(check.contains("self.timer_chip()"), "the popup follows a step: {check}");
+    // A warning nobody can see never starts the minute: it waits for the server's name, at most the
+    // grace, and the name's arrival re-runs the check.
+    assert!(check.contains("warning_waits("), "a due warning may wait for the server: {check}");
+    let waits = check.find("warning_waits(").unwrap_or(usize::MAX);
+    assert!(waits < check.find("self.timer.warned = warned").unwrap_or(0), "the wait comes before `warned` is set: {check}");
+    let notify = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify/app.rs")).unwrap(),
+    );
+    let view = function_body(&notify, "pub(crate) fn notify_view(");
+    assert!(view.contains("shutdown_check_clock()"), "the server's arrival re-runs the check: {view}");
+    // A shutdown saved by an earlier boot is dropped at load, and one with no command to run never
+    // starts: the verb is refused and a pending one is dropped before any warning.
+    let load = function_body(&app, "pub(crate) fn timer_load(");
+    assert!(load.contains("boot_time_secs()"), "the boot time is read at load: {load}");
+    assert!(check.contains("shutdown_refusal("), "no poweroff command: dropped before a warning: {check}");
+    // The warning is set apart from the user's rules (a drop or a mute must never hide it), and a
+    // sleep is told from a watched minute by the monotonic clock beside the wall one.
+    assert!(app.contains("c.notify_exempt(shutdown::warning()"), "the warning ignores the rules");
+    assert!(check.contains("self.warned_elapsed()"), "the check weighs the wall clock against the monotonic one: {check}");
+    assert!(check.contains("deferral_after("), "a wait for the server never outlives its warning: {check}");
+    let verb = function_body(&app, "pub(crate) fn timer_verb(");
+    assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
+    // A step is never taken under a lock screen: the check asks the lookup, and the pure step asks
+    // it only once a step is due (never at rest).
+    assert!(check.contains("lockscreen::session_locked(root)"), "the check looks for a locker: {check}");
+    assert!(check.contains("timer.proc_dir"), "in the configured folder, never a fixed /proc: {check}");
+    assert_eq!(app.matches("session_locked(").count(), 1, "one place looks at the lock");
+    assert_eq!(app.matches("\"/proc").count(), 1, "no /proc of its own but the boot time's");
+    assert!(step.contains("locked()"), "the step holds what is due under the lock: {step}");
+    // A power off that did not happen is told: a command that cannot start, and one that ends with
+    // an error, both end at the failure notice, and the end is heard on the loop, never waited for.
+    let arm = &check[check.find("Some(ShutdownStep::PowerOff) =>").unwrap_or(0)..];
+    assert!(arm.contains("Err(line)") && arm.contains("self.shutdown_failed()"), "a command that cannot start is told: {arm}");
+    assert!(arm.contains("self.shutdown_watch("), "the command's end is heard: {arm}");
+    let ready = function_body(&app, "fn shutdown_command_ready(");
+    assert!(ready.contains("poweroff_end(") && ready.contains("self.shutdown_failed()"), "an error exit is told: {ready}");
+    let failed = function_body(&app, "fn shutdown_failed(");
+    assert!(failed.contains("notify_exempt(shutdown::failure()"), "the failure ignores the rules: {failed}");
+    // The power off command never dies with the daemon: started free (no signal when its launcher
+    // ends), and let run on when its owner is dropped.
+    let spawn = function_body(&app, "pub(crate) fn spawn_poweroff(");
+    assert!(spawn.contains("spawn_watched_free("), "the power off is started free: {spawn}");
+    let drop_run = function_body(&app, "fn drop(&mut self)");
+    assert!(drop_run.contains(".release()") && !drop_run.contains("kill"), "dropped, it is released: {drop_run}");
+    let watch = function_body(&app, "fn shutdown_watch(");
+    assert!(watch.contains("Interest::READ") && !watch.contains(".wait_exit("), "a pidfd on the loop, never a wait: {watch}");
+    // What the lookup reads is a process's name, the user's business: it logs nothing.
+    let lock = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/timer/lockscreen.rs")).unwrap(),
+    );
+    for p in ["log(", "log::write", "println!", "dbg!"] {
+        assert!(!lock.contains(p), "{p} in the lock lookup: it logs nothing");
+    }
+}
+
+/// The names of the test functions of `source` that schedule a shutdown without configuring
+/// `[quick] poweroff` in their own code. Each function is its lines from its `fn` line to the next
+/// one, minus every comment (`without_comments`: a trailing one and the next item's doc comment are
+/// out too); the `fn` line itself (the name) is not searched. A function sends the verb by
+/// `"--timer", "shutdown", ...` or `TimerVerb::Shutdown(` (whitespace aside), and configures the
+/// command by a `poweroff = [` (a harmless argv, or `[]`: refused) or the shared bar constant.
+fn shutdown_tests_without_a_poweroff(source: &str) -> Vec<String> {
+    let mut bodies: Vec<(String, Vec<&str>)> = Vec::new();
+    for line in source.lines() {
+        if let Some(rest) = line.strip_prefix("fn ") {
+            bodies.push((rest.split('(').next().unwrap_or("").to_string(), Vec::new()));
+        } else if let Some((_, lines)) = bodies.last_mut() {
+            lines.push(line);
+        }
+    }
+    let mut missing = Vec::new();
+    for (name, lines) in bodies {
+        let code = without_comments(&lines.join("\n"));
+        let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        let sends = squeezed.contains("\"--timer\",\"shutdown\",") || squeezed.contains("TimerVerb::Shutdown(");
+        let configures = squeezed.contains("poweroff=[") || squeezed.contains("TIMER_POWEROFF_BAR");
+        if sends && !configures {
+            missing.push(name);
+        }
+    }
+    missing
+}
+
+/// Whether the `TIMER_POWEROFF_BAR` constant of `source` sets a harmless `[quick] poweroff`: a
+/// non-empty argv that is neither `systemctl` nor `loginctl`.
+fn the_poweroff_bar_is_harmless(source: &str) -> bool {
+    let Some(at) = source.find("const TIMER_POWEROFF_BAR") else { return false };
+    let value = source[at..].lines().next().unwrap_or("").split_once(" = ").map_or("", |(_, v)| v);
+    let squeezed: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some(argv) = squeezed.split("poweroff=[").nth(1) else { return false };
+    let argv = argv.split(']').next().unwrap_or("");
+    !argv.is_empty() && !argv.contains("systemctl") && !argv.contains("loginctl")
+}
+
+/// A headless or memory test that schedules a shutdown configures `[quick] poweroff` with a
+/// harmless command (defence in depth: the harness PATH has no `systemctl`, but a daemon left on
+/// the default would try a real `systemctl poweroff` on a machine that has it on the path).
+#[test]
+fn a_test_that_schedules_a_shutdown_configures_a_harmless_poweroff() {
+    let mut scheduling = 0;
+    for source in [include_str!("headless_session.rs"), include_str!("memory.rs")] {
+        let all = shutdown_tests_without_a_poweroff(source);
+        assert!(all.is_empty(), "tests that schedule a shutdown on the default poweroff command: {all:?}");
+        scheduling += source.matches("\"--timer\", \"shutdown\", \"").count() + source.matches("TimerVerb::Shutdown(").count();
+    }
+    assert!(the_poweroff_bar_is_harmless(include_str!("memory.rs")), "TIMER_POWEROFF_BAR must set a harmless poweroff");
+    assert!(scheduling >= 4, "the scan finds the tests that schedule a shutdown: {scheduling}");
+}
+
+/// The scan is not fooled: a name, a doc comment, a comment, a log line or a `poweroff` word that
+/// is not the config; and it sees every spelling of the verb.
+#[test]
+fn the_shutdown_scan_is_not_fooled() {
+    let bad = |src: &str| shutdown_tests_without_a_poweroff(src).len();
+    let verb = "    timer_verb(&sway, &[\"--timer\", \"shutdown\", \"2h\"]);\n";
+    // The name carries the word.
+    assert_eq!(bad(&format!("fn shutdown_runs_poweroff() {{\n{verb}}}\n")), 1);
+    // The next test's doc comment carries the config.
+    assert_eq!(bad(&format!("fn a() {{\n{verb}}}\n\n/// poweroff = [\"touch\"]\n#[test]\nfn b() {{\n}}\n")), 1);
+    // A comment and a log line carry the word.
+    assert_eq!(
+        bad(&format!(
+            "fn a() {{\n    // poweroff = [\"x\"]\n{verb}    d.wait_for(\"timer: shutdown power off\");\n    \"poweroff\";\n}}\n"
+        )),
+        1
+    );
+    // Another spelling of the verb: split across lines, or the typed verb.
+    assert_eq!(bad("fn a() {\n    timer_verb(&sway, &[\"--timer\",\n        \"shutdown\", \"2h\"]);\n}\n"), 1);
+    assert_eq!(bad("fn a() {\n    timer(&sway, TimerVerb::Shutdown(10_800));\n}\n"), 1);
+    // A trailing comment on a code line carries the key.
+    assert_eq!(bad(&format!("fn a() {{\n{verb}    let t = 1; // poweroff = [\"x\"]\n}}\n")), 1);
+    // The shared bar constant must itself be harmless.
+    let bar = |argv: &str| format!("const TIMER_POWEROFF_BAR: &str = \"[quick]\\npoweroff = [{argv}]\\n\";\n");
+    assert!(the_poweroff_bar_is_harmless(&bar("\\\"true\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("\\\"systemctl\\\", \\\"poweroff\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("\\\"loginctl\\\", \\\"poweroff\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("")));
+    assert!(!the_poweroff_bar_is_harmless("const OTHER: &str = \"x\";\n"));
+    // Configured: the key, or the shared constant; a test that never schedules is out of scope.
+    assert_eq!(bad(&format!("fn a() {{\n    let t = \"[quick]\\npoweroff = [\\\"true\\\"]\";\n{verb}}}\n")), 0);
+    assert_eq!(bad(&format!("fn a() {{\n    start(TIMER_POWEROFF_BAR);\n{verb}}}\n")), 0);
+    assert_eq!(bad("fn a() {\n    timer_verb(&sway, &[\"--timer\", \"stop\"]);\n}\n"), 0);
+}
+
 /// No panic in the focus timer's production code (it parses a file it did not
 /// write, and does arithmetic on wall-clock times).
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs"] {
+    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs", "timer/lockscreen.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }
+}
+
+/// The kill list shows other programs' names and command lines, which are hostile text: its files
+/// never panic (a boundary panic's message would embed them) and log nothing that names a process.
+/// The pure files and the peer lookup log nothing at all; the glue logs fixed words only.
+#[test]
+fn the_kill_list_has_no_panicking_path_and_logs_fixed_words() {
+    let files = source_files();
+    let production_of =
+        |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    for name in ["launcher/processes.rs", "launcher/processes_app.rs", "sources/peer.rs"] {
+        let production = production_of(name);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+    for name in ["launcher/processes.rs", "sources/peer.rs"] {
+        let production = production_of(name);
+        for p in ["log(", "log::write", "crate::log", "println!", "dbg!"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code: it logs nothing");
+        }
+    }
+    let glue =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "launcher/processes_app.rs").expect("glue").1);
+    // The one count line: how many rows the list opened with, a number and never a name.
+    let count_line = "log(&format!(\"kill list: {count} listed\", count = rows.len()));";
+    assert_eq!(glue.matches(count_line).count(), 1, "the kill list's one count line");
+    let glue = glue.replace(count_line, "");
+    assert_eq!(clipboard_unfixed_log(&glue), None, "a log line of the kill list's glue is not fixed words");
+    assert!(glue.contains("log(\"kill list: signal\")"), "the one log line the glue writes about a signal");
+    // Spawns nothing and sends no signal of its own: the one `kill(2)` is the signaller's.
+    assert_eq!(glue.matches("libc::kill(").count(), 1, "one kill(2) in the glue");
+    // The signal goes through a pidfd, kill(2) being the fallback only; the compositor's pid is asked once per open.
+    assert!(glue.contains("SYS_pidfd_open") && glue.contains("SYS_pidfd_send_signal"), "the signal is pinned by a pidfd");
+    assert_eq!(glue.matches("peer_pid(").count(), 1, "the compositor's socket is asked in one place");
+    // `proc_dir` only narrows the list: start times and ancestors always come from the real `/proc`.
+    assert!(glue.contains("RealSignaller::new(PathBuf::from(REAL_PROC))"), "the signaller reads the real /proc");
+    assert!(
+        !glue.contains("RealSignaller::new(config") && !glue.contains("signaller = Box::new"),
+        "a configured folder never reaches the signaller"
+    );
+    assert!(glue.contains("excluded_in(Path::new(REAL_PROC)"), "the ancestors are walked in the real /proc");
+    // kill(2) by pid only where the kernel has no pidfd_open; any other failure to pin sends nothing.
+    assert!(glue.contains("Err(libc::ENOSYS) => PidfdOpen::Unsupported"), "ENOSYS is the one fallback");
+    assert!(glue.contains("Pin::Fallback(pinned_pid) if pinned_pid == pid => unsafe { libc::kill("), "kill(2) only in the fallback arm");
+    assert!(!glue.contains("Command::new") && !glue.contains("thread::"), "no process, no thread");
 }
 
 /// The calculator's evaluator runs on each keystroke of the launcher's
@@ -3776,7 +4052,7 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The Tools menu's pure parts: no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
 /// range. Production code only.
-const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs"];
+const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs", "launcher/tools/diag.rs"];
 
 #[test]
 fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -4564,6 +4840,252 @@ fn the_notes_spawn_only_the_copy_command() {
         }
     }
     assert!(seen >= 8, "the notes files were found: {seen}");
+}
+
+/// The capture selector's model is pure: no log, no panicking path, no slicing by range (a
+/// selection is arithmetic on coordinates the pointer hands in). Production code only.
+#[test]
+fn the_selector_model_is_pure_and_cannot_panic() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select.rs").expect("captures/select.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "Instant", "SystemTime"] {
+        assert!(!production.contains(p), "{p} in captures/select.rs's production code");
+    }
+    for code in production_code_without_comments(t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in captures/select.rs's production code");
+        }
+    }
+}
+
+/// The selector's surface logs fixed words only: never the rectangle, an output's name or a key.
+/// The two variable parts are a close reason's word and the guard's `what`, themselves fixed.
+fn selector_unfixed_log(code: &str) -> Option<String> {
+    for call in log_calls(code) {
+        let mut text = call.to_string();
+        // The one placeholder filled by a variable: the close reason's word.
+        if text.contains(", reason.text()") {
+            text = text.replace(", reason.text()", "").replacen("{}", "", 1);
+        }
+        text = text.replace("{what}", "");
+        let arg = call["log(".len()..call.len().saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        if !arg.starts_with('"') || text.contains('{') {
+            return Some(call.to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn the_selector_logs_fixed_words_only() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "captures/select_app.rs").expect("select_app.rs").1;
+    let code = production_code_without_comments(t);
+    assert_eq!(selector_unfixed_log(&code), None);
+    assert!(code.matches("log(").count() >= 6, "the log calls were found");
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production_code(t).contains(p), "{p} in captures/select_app.rs's production code");
+    }
+}
+
+#[test]
+fn the_selector_log_guardrail_helper_bites() {
+    assert_eq!(selector_unfixed_log("log(\"capture: selector shown\");"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture: selector closed ({})\", reason.text()));"), None);
+    assert_eq!(selector_unfixed_log("log(&format!(\"capture error in {what}\"));"), None);
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {rect:?}\"));").is_some(), "a geometry");
+    assert!(selector_unfixed_log("log(&format!(\"capture: area {}x{}\", r.width, r.height));").is_some(), "a bare placeholder");
+    assert!(selector_unfixed_log("log(&label);").is_some(), "a variable");
+}
+
+/// One capture file's text, by its path under `src/`.
+fn captures_file(name: &str) -> String {
+    let files = source_files();
+    files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone()
+}
+
+/// The capture glue logs fixed words only: never a path, a file name, a geometry or an output name
+/// (the notice carries the file's name, the log never does).
+#[test]
+fn the_capture_logs_fixed_words_only() {
+    for name in
+        ["captures/app.rs", "captures/deliver.rs", "captures/mod.rs", "captures/paths.rs", "captures/tools.rs", "captures/record.rs"]
+    {
+        let t = captures_file(name);
+        let code = production_code_without_comments(&t);
+        assert_eq!(selector_unfixed_log(&code), None, "{name}");
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production_code(&t).contains(p), "{p} in {name}'s production code");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.matches("log(").count() >= 10, "the log calls were found");
+    // The worker, the protocol, the encoder and the pure files never log at all: the glue says one
+    // word per ending, and a frame or a buffer never reaches a log line.
+    for name in [
+        "captures/deliver.rs",
+        "captures/mod.rs",
+        "captures/paths.rs",
+        "captures/screencopy.rs",
+        "captures/encode.rs",
+        "captures/pick.rs",
+        "captures/tools.rs",
+        "captures/record.rs",
+    ] {
+        let code = production_code_without_comments(&captures_file(name));
+        for p in ["log(", "log::", "eprintln!", "println!", "eprint!", "dbg!("] {
+            assert!(!code.contains(p), "{p} in {name}");
+        }
+    }
+}
+
+/// The flow and the paths are pure: no clock, no environment, no file, no thread.
+#[test]
+fn the_capture_flow_and_paths_are_pure() {
+    for name in ["captures/mod.rs", "captures/paths.rs"] {
+        let code = production_code_without_comments(&captures_file(name));
+        for p in ["Instant", "SystemTime", "std::env", "std::fs", "File::", "thread::", "Command"] {
+            assert!(!code.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// A selector that cannot open (no shared buffer) fails its capture, critical: it is never answered
+/// as the user's silent cancel.
+#[test]
+fn a_selector_that_cannot_open_fails_its_capture() {
+    let select = production_code_without_comments(&captures_file("captures/select_app.rs"));
+    let open = function_body(&select, "pub(crate) fn select_open(");
+    let refused = open.find("SlotPool::new(").expect("the pool is made at open");
+    let answer = open[refused..].find("select_finished(").map(|i| &open[refused + i..]).expect("a refused pool is answered");
+    assert!(answer.starts_with("select_finished(None, SelectorAnswer::Failed,"), "{}", &answer[..60.min(answer.len())]);
+}
+
+/// A capture's frame is asked of the compositor in one place, after the round trip that waits for
+/// the selector's removal: the selector's answer never asks for it itself, or the dim could be in
+/// the capture (docs/decisions.md, "A capture waits for the selector's removal").
+#[test]
+fn a_frame_is_asked_only_after_the_selectors_removal_is_settled() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("capture_output(").count(), 1, "one place asks for a frame");
+    assert!(function_body(&app, "fn capture_grab(").contains("capture_output("));
+    let selected = function_body(&app, "pub(crate) fn capture_selected(");
+    for p in ["capture_grab", "capture_output", "Step::Grab"] {
+        assert!(!selected.contains(p), "the selector's answer reaches {p} directly");
+    }
+    assert!(function_body(&app, "fn capture_settle(").contains(".sync("), "the settle is a round trip");
+    // The step that follows the round trip is the only other way to a grab.
+    let settled = function_body(&app, "fn event(");
+    assert!(settled.contains("flow.settled("), "the round trip's answer is what lets the flow go on");
+    let flow = production_code_without_comments(&captures_file("captures/mod.rs"));
+    assert!(function_body(&flow, "pub fn selected(").contains("Step::Settle"), "a selection waits");
+    assert!(!function_body(&flow, "pub fn selected(").contains("Step::Grab"), "and never grabs in the same turn");
+    // A whole screen waits too: it is asked as a menu may be closing.
+    assert!(function_body(&flow, "pub fn begin(").contains("Step::Settle"), "a whole screen waits");
+    assert!(!function_body(&flow, "pub fn begin(").contains("Step::Grab"), "and never grabs at the verb");
+}
+
+/// The Tools menu shows the Captures entries only when the compositor has screencopy.
+#[test]
+fn the_tools_menu_hides_the_captures_without_screencopy() {
+    let app = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
+    assert!(function_body(&app, "fn tools_context(").contains("captures: self.screencopy.is_some()"));
+}
+
+/// A capture that ends gives its frame up and disarms the deadline, and an answer carries the
+/// capture it is for.
+#[test]
+fn a_capture_that_ends_gives_up_its_frame_and_its_deadline() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let reset = function_body(&app, "fn capture_reset(");
+    assert!(reset.contains("pending.cancel()") && reset.contains("due = None") && reset.contains("capture_timer_sync"));
+    assert!(function_body(&app, "fn capture_finish(").contains("capture_reset()"), "every ending resets");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("generation != self.capture.flow.generation()"), "a late frame is told by its generation");
+    let screencopy = production_code_without_comments(&captures_file("captures/screencopy.rs"));
+    assert!(function_body(&screencopy, "pub fn cancel(self)").contains(".destroy()"), "the frame object is destroyed");
+}
+
+/// The frame's deadline is armed only while a frame is awaited: it is set in one place, right
+/// after the frame was asked, and its expiry goes through the flow (`grab_expired`, which ignores
+/// a capture that no longer waits) and gives the asked frame up.
+#[test]
+fn the_frame_deadline_is_armed_only_while_a_frame_is_awaited() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert_eq!(app.matches("due = Some(").count(), 1, "one place arms the deadline");
+    let grab = function_body(&app, "fn capture_grab(");
+    let asked = grab.find("Some(pending) =>").expect("the frame was asked");
+    assert!(grab[asked..].contains("due = Some(Instant::now() + GRAB_LIMIT)"), "armed only once a frame request exists");
+    let frame = function_body(&app, "fn capture_frame(");
+    assert!(frame.contains("due = None"), "an answer disarms it");
+    let tick = function_body(&app, "fn capture_tick(");
+    assert!(tick.contains("flow.grab_expired(") && tick.contains("pending.cancel()") && tick.contains("due = None"));
+}
+
+/// The worker always mails its ending: `run` returns a `Finish` whatever happens in it (a panic is
+/// caught there), and the closure sends it after `run`, unconditionally.
+#[test]
+fn the_capture_worker_always_mails_its_ending() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let deliver_fn = function_body(&app, "fn capture_deliver(");
+    let run = deliver_fn.find("let finish = run(").expect("the worker runs the job");
+    let after_run = run + deliver_fn[run..].find(';').expect("the job is one statement") + 1;
+    let send =
+        deliver_fn.find("let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));").expect("the ending is mailed");
+    assert!(after_run <= send, "after the job");
+    assert_eq!(deliver_fn[after_run..send].trim(), "", "the next statement, under no condition");
+    // The one place that starts the worker serves the frames, the picked values and the tools' results.
+    assert_eq!(app.matches("capture_deliver(").count(), 5, "defined once, called by the frame, the value, the image and the text");
+    assert!(function_body(&app, "fn capture_step(").contains("Step::CopyText(text) => self.capture_deliver(Work::Recognised(text))"));
+    assert!(function_body(&app, "fn capture_tool_ended(").contains("self.capture_deliver(Work::Annotated("));
+    assert!(function_body(&app, "fn capture_encode(").contains("self.capture_deliver(Work::Image {"));
+    assert!(function_body(&app, "fn capture_copy_value(").contains("self.capture_deliver(Work::Text("));
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(function_body(&deliver, "pub fn run(").contains("catch_unwind("), "a panic in the job is caught");
+}
+
+/// The annotated image handed to the worker is removed on each path where the worker never runs it:
+/// no job or no mail (the early return), and a thread that cannot start. A panic in the job removes it
+/// too (`a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`).
+#[test]
+fn an_annotated_image_the_worker_never_runs_is_removed() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let deliver_fn = function_body(&app, "fn capture_deliver(");
+    let named = deliver_fn.find("let owned = work.private_file().map(str::to_owned);").expect("the work's file is named first");
+    let remove = "remove_unrun(&temp_dir, owned.as_deref());";
+    assert_eq!(deliver_fn.matches(remove).count(), 2, "{deliver_fn}");
+    let early = deliver_fn.find("return self.capture_finish(Finish::CaptureFailed);").expect("the early return");
+    let first = deliver_fn.find(remove).expect("removed");
+    assert!(named < first && first < early, "removed before the early return");
+    let unstarted = deliver_fn.find("if started.is_err() {").expect("the thread that cannot start");
+    assert!(deliver_fn[unstarted..].contains(remove), "removed when the thread cannot start");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(function_body(&deliver, "pub fn run(").contains("remove_unrun(d.temp_dir, owned.as_deref());"), "and on a panic");
+}
+
+/// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
+/// standard input (a PNG does not fit the page of `spawn_with_input`).
+#[test]
+fn the_png_is_encoded_on_the_capture_thread_and_copied_through_a_file() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        if name != "captures/encode.rs" && name != "captures/deliver.rs" {
+            assert!(!code.contains("encode_png("), "{name} encodes a PNG");
+        }
+    }
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.contains(".name(\"alpheus-capture\".into())"), "the worker is named");
+    assert!(app.contains("run(exec.as_ref(), work"), "the frame is encoded in the worker's closure");
+    assert_eq!(app.matches("Work::Image {").count(), 1, "the frame becomes the worker's work in one place");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(deliver.contains("run_with_stdin_file("));
+    assert!(deliver.contains("catch_unwind("), "a panic in the worker ends the capture as a failure");
+    for p in ["spawn_with_input(", ".spawn(", "Command::new", ".run(", ".capture("] {
+        assert!(!deliver.contains(p), "{p} in deliver.rs");
+    }
 }
 
 /// The pad's glue never panics on its own either: no unwrap, expect, panic or
@@ -5419,17 +5941,28 @@ fn the_tools_glue_spawns_only_through_launch() {
 }
 
 /// Every built-in's argv is the configured command, `[actions] open_tab` with the tab, or the
-/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell.
+/// terminal running `alpheus --tab <tab>`, nothing else, never through a shell. The diagnostics are
+/// the only ones that name a program of their own, each in the one form pinned below: the fixed USB
+/// events script and the default USB reset (the only two `sh -c`, both in the held terminal), the
+/// control center with `--preset`, and the ten nmap lines, each target behind `--`.
 #[test]
 fn every_builtin_argv_stays_on_the_allowlist() {
     use alpheus_daemon::config::QuickConfig;
     use alpheus_daemon::launcher::tools::app::{Commands, builtin_argv};
     use alpheus_daemon::launcher::tools::catalog::{BUILTINS, BuiltinAction};
+    use alpheus_daemon::launcher::tools::config::BuiltinCommands;
+    use alpheus_daemon::launcher::tools::diag::Subnet;
+    struct Net;
+    impl Subnet for Net {
+        fn default_v4(&self) -> Option<String> {
+            Some("192.168.1.0/24".to_string())
+        }
+    }
     use std::os::unix::fs::PermissionsExt;
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot"];
+    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot", "alpheus"];
     for p in programs {
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -5442,9 +5975,45 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let terminal = vec!["foot".to_string()];
     // `open_tab`'s program is missing: the terminal fallback is what runs.
     let open_tab = vec!["missing-opener".to_string(), "{tab}".to_string()];
-    let c = Commands { quick: &quick, reload: &reload, open_tab: &open_tab, terminal: &terminal, path_dirs: &dirs };
+    let hold = vec!["foot".to_string(), "--hold".to_string(), "-e".to_string()];
+    let usb_reset = BuiltinCommands::default().usb_reset;
+    let c = Commands {
+        quick: &quick,
+        reload: &reload,
+        open_tab: &open_tab,
+        terminal: &terminal,
+        terminal_hold: &hold,
+        usb_reset: &usb_reset,
+        subnet: &Net,
+        choice: None,
+        text: None,
+        path_dirs: &dirs,
+    };
+    let strings = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    // The nmap lines, one per scan label; the `choice` and `text` are the box's answers.
+    let held = |rest: &[&str]| strings(&["foot", "--hold", "-e"]).into_iter().chain(strings(rest)).collect::<Vec<String>>();
+    let scans: [(&str, Option<&str>, Vec<String>); 10] = [
+        ("Host discovery (ping sweep)", None, held(&["nmap", "-sn", "192.168.1.0/24"])),
+        ("Quick scan (common ports)", Some("t"), held(&["nmap", "-F", "--", "t"])),
+        ("Full scan (all ports)", Some("t"), held(&["nmap", "-p-", "--", "t"])),
+        ("Services and versions", Some("t"), held(&["nmap", "-sV", "--", "t"])),
+        ("Default scripts and versions", Some("t"), held(&["nmap", "-sC", "-sV", "--", "t"])),
+        ("Specific ports", Some("t 22,80"), held(&["nmap", "-p", "22,80", "--", "t"])),
+        ("UDP scan (top 20, sudo)", Some("t"), held(&["sudo", "nmap", "-sU", "--top-ports", "20", "--", "t"])),
+        ("Vulnerabilities (--script vuln)", Some("t"), held(&["nmap", "--script", "vuln", "--", "t"])),
+        ("OS detection (sudo)", Some("t"), held(&["sudo", "nmap", "-O", "--", "t"])),
+        ("Aggressive scan -A (sudo)", Some("t"), held(&["sudo", "nmap", "-A", "--", "t"])),
+    ];
+    let scan = BUILTINS.iter().find(|b| b.id == "diag.scan").expect("the scan built-in");
+    for (label, text, expected) in scans {
+        let c = Commands { choice: Some(label), text, ..c };
+        assert_eq!(builtin_argv(scan, &c), Ok(Some(expected)), "{label}");
+    }
     let mut spawned = 0;
     for b in &BUILTINS {
+        if b.action == BuiltinAction::Scan {
+            continue;
+        }
         let got = builtin_argv(b, &c).unwrap_or_else(|e| panic!("{}: {e}", b.id));
         let expected: Option<Vec<String>> = match b.action {
             BuiltinAction::Lock => Some(quick.lock.clone()),
@@ -5454,11 +6023,20 @@ fn every_builtin_argv_stays_on_the_allowlist() {
                 let slug = b.id.strip_prefix("tab.").expect("a tab id");
                 Some(["foot", "alpheus", "--tab", slug].map(String::from).to_vec())
             }
+            BuiltinAction::UsbEvents => Some(held(&[
+                "sh",
+                "-c",
+                "trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM; udevadm monitor --udev --subsystem-match=usb & journalctl -kf -n 30 --grep=usb",
+            ])),
+            BuiltinAction::UsbReset => Some(held(&["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"])),
+            BuiltinAction::Preset(p) => Some(strings(&["foot", "alpheus", "--tab", "diagnostics", "--preset", p.slug()])),
             _ => None,
         };
         assert_eq!(got, expected, "{}", b.id);
         if let Some(argv) = got {
-            assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
+            // The two pinned scripts above are the only shell lines.
+            let shell = matches!(b.action, BuiltinAction::UsbEvents | BuiltinAction::UsbReset);
+            assert!(shell || !argv.iter().any(|a| a == "sh" || a == "-c"), "{}: {argv:?}", b.id);
             spawned += 1;
         }
     }
@@ -5673,4 +6251,249 @@ fn the_quick_panels_timer_follows_the_view_from_the_open() {
     for f in ["pub(crate) fn quick_toggle(", "pub(crate) fn quick_refresh("] {
         assert!(function_body(&quick_app, f).contains("self.quick_timer_sync()"), "{f} must sync the panel's timer");
     }
+}
+
+/// The colour picker's model is pure: no log, no clock, no panicking path, no slicing by range (the
+/// frame is read through `screencopy::pixel`, which answers None past its end). Production code only.
+#[test]
+fn the_picker_model_is_pure_and_cannot_panic() {
+    let t = captures_file("captures/pick.rs");
+    let production = production_code(&t);
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "Instant", "SystemTime", "std::fs", "std::env"] {
+        assert!(!production.contains(p), "{p} in captures/pick.rs's production code");
+    }
+    for code in production_code_without_comments(&t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in captures/pick.rs's production code");
+        }
+    }
+}
+
+/// The picker's surface logs fixed words only: never a colour, a position, an output's name or a
+/// key. The two variable parts are a close reason's word and the guard's `what`, themselves fixed.
+#[test]
+fn the_picker_logs_fixed_words_only() {
+    let t = captures_file("captures/pick_app.rs");
+    let code = production_code_without_comments(&t);
+    assert_eq!(selector_unfixed_log(&code), None);
+    assert!(code.matches("log(").count() >= 5, "the log calls were found");
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production_code(&t).contains(p), "{p} in captures/pick_app.rs's production code");
+    }
+    // The value's text is the notice's, never a log's: the glue's ending word is fixed.
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(app.contains("Finish::Picked(_) => log(\"capture: colour copied\")"));
+}
+
+/// A picker that cannot open (no shared buffer) fails its capture, critical: it is never answered as
+/// the user's silent cancel.
+#[test]
+fn a_picker_that_cannot_open_fails_its_capture() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let open = function_body(&pick, "pub(crate) fn pick_open(");
+    let refused = open.find("SlotPool::new(").expect("the pool is made at open");
+    let answer = open[refused..].find("capture_picked(").map(|i| &open[refused + i..]).expect("a refused pool is answered");
+    assert!(answer.starts_with("capture_picked(generation, PickAnswer::Failed)"), "{}", &answer[..60.min(answer.len())]);
+}
+
+/// The frozen frame lives in the open picker only: it is made into a `Shot` in one place, the
+/// picker's open, and goes with the picker at its close, which gives the pages back. The picker's
+/// answer never asks for a frame.
+#[test]
+fn the_picker_frame_is_kept_only_while_the_picker_is_open() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        let n = code.matches("Shot::new(").count();
+        if name == "captures/pick_app.rs" {
+            assert_eq!(n, 1, "one Shot, made at the picker's open");
+            assert!(function_body(&code, "pub(crate) fn pick_open(").contains("Shot::new("));
+        } else if name != "captures/pick.rs" {
+            assert_eq!(n, 0, "a Shot made in {name}");
+        }
+    }
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let close = function_body(&pick, "pub(crate) fn pick_close(");
+    let dropped = close.find("drop(open)").expect("the picker, its frame with it, is dropped");
+    let released = close.find("release_memory()").expect("the pages are given back");
+    let answered = close.find("capture_picked(").expect("the capture is told");
+    assert!(dropped < released && released < answered, "dropped, given back, then answered");
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let picked = function_body(&app, "pub(crate) fn capture_picked(");
+    for p in ["capture_grab", "capture_output", "Step::Grab"] {
+        assert!(!picked.contains(p), "the picker's answer reaches {p}");
+    }
+    assert!(function_body(&app, "fn capture_frame(").contains("Step::Pick => self.pick_open(frame, generation)"));
+}
+
+/// The notice of an ending is told the capture that ended (its scope and its goal), so a pick's failure
+/// says "Colour picker" and a recognition's "Text from area", not "Screenshot"; a recording's notice
+/// is always the recording's, whatever capture ran while it recorded.
+#[test]
+fn a_capture_notice_is_told_its_scope() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(function_body(&app, "fn capture_finish(").contains("notice(&finish, self.capture.flow.last_job())"));
+    assert!(function_body(&app, "fn capture_recording_notify(").contains("notice(&finish, RECORD_JOB)"));
+    assert_eq!(app.matches("notice(&").count(), 2, "one place makes a capture's notice, one a recording's");
+}
+
+/// A picker never outlives its capture, nor is replaced while open: a capture reset (a panic in the
+/// capture's glue) drops an open picker and its frame without answering the flow it is resetting,
+/// and a picker opened over another closes the old one first (its answer is the old capture's,
+/// which the flow ignores).
+#[test]
+fn a_picker_never_outlives_its_capture() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(function_body(&app, "fn capture_reset(").contains("self.pick_discard()"), "the reset drops the picker");
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let discard = function_body(&pick, "pub(crate) fn pick_discard(");
+    assert!(discard.contains("self.pick.take()") && discard.contains("release_memory()"), "{discard}");
+    for p in ["capture_picked", "capture_guarded", "flow"] {
+        assert!(!discard.contains(p), "the discard reaches {p}: the reset would re-enter the flow");
+    }
+    let open = function_body(&pick, "pub(crate) fn pick_open(");
+    let closed = open.find("self.pick_close(PickClose::Replaced)").expect("an open picker is closed first");
+    let set = open.find("self.pick = Some(").expect("the new picker is set");
+    assert!(closed < set);
+}
+
+/// A pick always ends: a picker that cannot get a buffer to draw into closes as a failure (else the
+/// flow would wait for it for ever, the slot taken), and a panic in a picker entry point, even one
+/// in the close after the picker was taken, still answers the flow with a failure (an answer the
+/// flow ignores once the capture has ended).
+#[test]
+fn a_pick_always_ends() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let draw = function_body(&pick, "fn pick_draw(");
+    assert!(draw.contains("self.pick_close(PickClose::Error)"), "{draw}");
+    let paint = function_body(&pick, "fn pick_paint(");
+    let failed = paint.find("Pick::Failed =>").expect("the buffer failure is handled");
+    assert!(paint[failed..].trim_start_matches("Pick::Failed =>").trim_start().starts_with("return Painted::Failed"), "{paint}");
+    let guard = function_body(&pick, "pub(crate) fn pick_guarded<R>(");
+    let close = guard.find("self.pick_close(PickClose::Error)").expect("a panic closes the picker");
+    let answer = guard.find("self.capture_picked(generation, PickAnswer::Failed)").expect("and answers the flow");
+    assert!(close < answer, "{guard}");
+}
+
+/// What a picker's buffer holds is recorded as soon as it is painted, before the attach: an attach
+/// that fails must not leave the buffer listed with its old overlay, or the next draw into it would
+/// wipe the wrong area and leave a lens behind.
+#[test]
+fn a_picker_buffer_is_recorded_before_its_attach() {
+    let pick = production_code_without_comments(&captures_file("captures/pick_app.rs"));
+    let paint = function_body(&pick, "fn pick_paint(");
+    let recorded = paint.find("overlays.push((mark, drawn))").expect("the buffer's overlay is recorded");
+    let attach = paint.find(".attach_to(").expect("the buffer is attached");
+    assert!(recorded < attach, "recorded before the attach");
+    let committed = paint.find("*committed = drawn").expect("the screen's overlay is recorded");
+    assert!(paint.find("layer.commit()").is_some_and(|c| c < committed), "only once committed");
+}
+
+/// alpheus signals only the external program it started itself: the recorder's stop and the
+/// shutdown go through `Watched::interrupt` (the program's own process group, by the pid alpheus is
+/// still the parent of), in `record.rs` only. No capture file sends a signal of its own, names a
+/// process by a pattern or reads another process; only the tools and the recorder start a watched
+/// child.
+#[test]
+fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let code = production_code_without_comments(&t);
+        if code.contains(".interrupt()") {
+            assert_eq!(name, "captures/record.rs", "a watched child interrupted outside the recorder");
+        }
+        // The free start (no signal at its launcher's end) is the power off command's alone; this
+        // crate's executor wrapper only forwards it.
+        if code.contains("spawn_watched_free(") {
+            assert!(["timer/app.rs", "nonblocking.rs"].contains(&name.as_str()), "a free watched child in {name}");
+        }
+        if code.contains("spawn_watched(") {
+            assert!(["captures/tools.rs", "captures/record.rs", "nonblocking.rs"].contains(&name.as_str()), "a watched child in {name}");
+        }
+        if name.starts_with("captures/") {
+            for p in ["kill(", "SIGINT", "SIGTERM", "SIGKILL", "pkill", "killall", "pgrep", "pidof", "/proc/"] {
+                assert!(!code.contains(p), "{p} in {name}");
+            }
+        }
+    }
+    let record = production_code_without_comments(&captures_file("captures/record.rs"));
+    assert_eq!(record.matches(".interrupt()").count(), 2, "the stop and the shutdown");
+    assert!(function_body(&record, "pub fn stop(").contains("self.child.interrupt()"));
+    let end = function_body(&record, "pub fn end_at_shutdown(");
+    let interrupt = end.find("self.child.interrupt()").expect("the shutdown interrupts the recorder");
+    let wait = end.find("self.child.wait_exit(limit)").expect("then waits for it, at most the limit");
+    assert!(interrupt < wait);
+    // Past the limit the interrupted recorder is let go, never dropped (a drop kills its group).
+    assert!(end[wait..].contains("self.child.release()"), "a recorder still finishing its file is never killed");
+}
+
+/// The daemon's stop ends a recording before anything else goes: the tool or the recorder is ended
+/// (SIGINT and at most `STOP_LIMIT` for the recorder) before the executor's commands are killed and
+/// before the app is dropped, and the signal guard leaves that time while a recording runs.
+#[test]
+fn the_shutdown_ends_the_recording_before_anything_goes() {
+    let startup = production_code_without_comments(&captures_file("startup.rs"));
+    let shut = function_body(&startup, "fn shut_down(");
+    let captures = shut.find("core.state.capture_shutdown();").expect("the shutdown ends the captures' children");
+    for later in ["stop_running()", "drop(core.state)"] {
+        assert!(captures < shut.find(later).expect(later), "the recording ends before {later}");
+    }
+    assert!(function_body(&startup, "fn start_guard(").contains("shutdown_grace(crate::captures::record::LIVE.load("));
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    assert!(
+        function_body(&app, "pub(crate) fn capture_shutdown(").contains("capture_guarded(\"shutdown\""),
+        "a panic never turns a stop into a crash"
+    );
+    let end_all = function_body(&app, "fn capture_end_all(");
+    assert!(end_all.contains("end_at_shutdown(STOP_LIMIT)"));
+    // The notification server is alpheus's own and stops with it: a notice sent now is never seen,
+    // so the ending at shutdown is a log word only.
+    for never in ["capture_recording_notify(", "capture_notify(", "notice("] {
+        assert!(!end_all.contains(never), "{never} at shutdown");
+    }
+    assert!(end_all.contains("log(\"capture: recording saved (daemon stopping)\")"), "{end_all}");
+}
+
+/// While alpheus records, the privacy screen glyph is lit and the guard knows it; both go when the
+/// recording ends, however it ends. A child's pidfd is watched only while the child runs.
+#[test]
+fn a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let record = function_body(&app, "fn capture_record(");
+    let stored = record.find("self.capture.recording = Some(").expect("the recording is kept");
+    assert!(record[stored..].contains("LIVE.store(true") && record[stored..].contains("self.capture_privacy(true)"));
+    let over = function_body(&app, "fn capture_recording_notify(");
+    assert!(over.contains("LIVE.store(false") && over.contains("self.capture_privacy(false)"));
+    assert_eq!(app.matches("LIVE.store(true").count(), 1, "lit in one place, once the recorder runs");
+    // The end only sets a pending off: the off-delay's timer must follow it, as `privacy_feed` does.
+    let privacy = function_body(&app, "fn capture_privacy(");
+    assert!(privacy.contains("self.privacy_changed()") && privacy.contains("self.privacy_timer_sync()"), "{privacy}");
+    assert!(function_body(&app, "fn capture_watch(").contains("Generic::new(fd, Interest::READ, Mode::Level)"));
+    let ready = function_body(&app, "fn capture_child_ready(");
+    assert!(ready.contains("PostAction::Remove"), "the watch goes with the child's end");
+    // Every way a tool run ends outside its own callback takes its watch off the loop.
+    for f in ["fn capture_reset(", "fn capture_end_all("] {
+        assert!(function_body(&app, f).contains("self.capture_unwatch(run.watch)"), "{f}");
+    }
+    let tools = production_code_without_comments(&captures_file("launcher/tools/app.rs"));
+    assert!(
+        function_body(&tools, "fn tools_context(").contains("recording: self.capture.is_recording()"),
+        "Stop shows from the real state"
+    );
+}
+
+/// A panic while the recorder's end is read removes its watch (the callback answers `Remove`), so
+/// nothing would ever hear that recording again: the recording is ended there, not live, its glyph
+/// off and judged failed, instead of staying lit with a Stop that reaches nobody.
+#[test]
+fn a_panic_reading_the_recorders_end_ends_the_recording() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let ready = function_body(&app, "fn capture_child_ready(");
+    let guarded = ready.find("self.capture_guarded(\"child\"").expect("the read is guarded");
+    let lost = ready.find("if ended.is_none() && child == Child::Recorder {").expect("a panic for the recorder is handled");
+    assert!(guarded < lost && ready[lost..].contains("self.capture_recording_lost()"), "{ready}");
+    let body = function_body(&app, "fn capture_recording_lost(");
+    let taken = body.find("self.capture.recording.take()").expect("the recording is dropped");
+    let over = body.find("app.capture_recording_notify(Finish::RecordFailed)").expect("not live, glyph off, failed");
+    assert!(taken < over, "{body}");
 }

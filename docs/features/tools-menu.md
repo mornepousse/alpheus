@@ -13,16 +13,21 @@ too, so typing a path that starts with `/` does as well, from its first characte
 gives the key back). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
-  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, Lock,
-  the Power menu and an optional "Reload the bar". There are 23.
+  disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji, the
+  captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
+  picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
+  Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a
+  process, Lock, the Power menu, an optional "Reload the bar", and the Diagnostics entries (network
+  scan, USB events and reset, the journal presets). The table has 45.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
-  with a confirmation, an on/off state, or choices.
+  with a confirmation, an on/off state, choices, or a text typed in the box.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.
 
 ## Using it
 
-**Browsing.** With the query empty the box lists categories (`Quick settings`, `Control center`,
-`Utilities`, `Session`, and your own). Enter or → opens one; ← or Esc goes back up; Esc at the root
+**Browsing.** With the query empty the box lists categories by their order (`Quick settings` 10,
+`Control center` 20, `Utilities` 30, `Captures` 40 (only with screencopy), `Diagnostics` 70, `System` 80,
+`Session` 90, and your own, 50 by default; a category with nothing to show is not listed). Enter or → opens one; ← or Esc goes back up; Esc at the root
 closes. Every action closes the box: a run, a built-in opening its feature, a toggle. Only opening a
 level, going up, a confirmation question and a program not on the `$PATH` (said in the box) keep it open.
 
@@ -33,8 +38,94 @@ choices, that level only. Entries also rank in Mod+Space's normal search.
 **Confirming.** An entry with `confirm = true` turns into `Name? ⏎` on the first Enter and runs on a
 second one between 0.4 s and 3 s later. A double Enter never runs it.
 
+**Typing a value.** An entry with `ask = "Target"` has a prompt step: Enter on it (or, when it has
+choices, on one of its choices) opens a level with one row, the label, and what you type goes in the
+box's own input line, not into a filter. Enter runs with the text; Esc goes back (dropping the text, empty or not), and ← or ⌫ does
+the same on an empty line: to the choices, or to the category (the root for an entry with none). A blank text runs nothing
+and the prompt stays. Clicking another mode with the prompt open drops the text and the prompt. The text
+reaches `run` as the one whole element `{text}`, the same rule as `{choice}`: spaces, quotes and `;`
+stay inside that one argument, and alpheus never passes it through a shell. A leading `-` is still
+an option to the program it reaches, so an entry of your own should put `--` before it
+(`run = ["ping", "--", "{text}"]`). It is never logged and
+never kept in the history (the history records the entry, and its fixed choice if it has one). A
+launch that fails keeps the box open, but the typed text is gone: type it again. An
+entry with `ask` and `confirm` is refused: the typed text is the confirmation.
+
 **A held Enter** does nothing in the Tools mode, so the repeat of the key that ran a built-in does not
 act in the popup it just opened.
+
+### Kill a process
+
+`alpheus-launch --kill`, or Tools › System › Kill a process, opens the box on a list of your own
+processes: the name, the command line (dim), the pid, the CPU and the memory. At open the rows are
+sorted by memory; 300 ms later one more read of `/proc` fills in the CPU and sorts by it, then by
+memory, and the highlighted process stays highlighted (by its pid, not its place). Nothing more is
+read while the list is open. Typing filters on the name and the whole command line (its first 512
+bytes).
+
+- **Enter** asks the process to quit (SIGTERM).
+- **Ctrl+Enter** asks `Force kill <name>? Enter again`; a second Enter between 0.4 s and 3 s later
+  sends SIGKILL, and any other key cancels the question.
+- A held key never signals, and keys within 0.4 s of a signal do nothing: a double tap signals once.
+- What the signal did is said in the box only (`asked <name> to quit`, `killed <name>`,
+  `<name>: already gone`, `<name>: not allowed`, `<name>: pid reused, nothing sent`,
+  `<name>: could not signal`). A signalled row stays, marked, so a process that ignored the request
+  stays reachable and no neighbour slides under the highlight; a process that is gone leaves the
+  list, and then no row is selected until a key moves.
+- **Never offered:** another user's process, PID 1, alpheus, the session leader, the compositor (by
+  the pid of its socket's peer, and by its name), every ancestor of alpheus and of the compositor,
+  and a process named `systemd` (the user manager). At most 4,096 processes are read.
+- **A reused pid is never hit.** Before a signal, a pidfd is opened on the pid and its start time
+  (field 22 of `/proc/<pid>/stat`) is read again: a start time that differs from the listed one
+  sends nothing, and the signal goes through that pidfd, which names the process it was opened on
+  for ever. `kill(2)` by pid is used only on a kernel without `pidfd_open`.
+- No log line and no notification carries a name, a pid or a command line.
+
+A second `--kill` less than 250 ms after the one that opened it is ignored; an older daemon exits 3.
+
+### Schedule shutdown
+
+Tools › System › Schedule shutdown (shown when `timer` is in `modules` and `[quick] poweroff` is
+set) has the choices `30 min`, `1 h`, `1 h 30`, `2 h` and `3 h`; while a shutdown is pending, a first
+choice `Cancel shutdown (in 1h20)` cancels it. A duration replaces the shutdown pending. The rest (the
+chip, the warning a minute before, the state file, `--timer shutdown`) is the timer's: see
+[the focus timer](timer.md#the-scheduled-shutdown).
+
+### The diagnostics tools
+
+The scans, the USB events and the USB reset run in `terminal_hold`, so `sudo` can ask there and the
+output stays readable; alpheus itself never runs as root.
+
+- **Network scan** (only with `nmap` on the `$PATH`): ten fixed choices, in this order:
+  `Host discovery (ping sweep)`, `Quick scan (common ports)`, `Full scan (all ports)`,
+  `Services and versions`, `Default scripts and versions`, `Specific ports`,
+  `UDP scan (top 20, sudo)`, `Vulnerabilities (--script vuln)`, `OS detection (sudo)`,
+  `Aggressive scan -A (sudo)`. Every scan but the sweep asks `Target (IP or host)`; `Specific ports`
+  asks `Target, then ports (host 22,80,443)`, the first word being the target and the rest the ports
+  (digits, commas and dashes only). The target comes after `--`, so one that starts with `-` is a host,
+  never an option. The sweep (`nmap -sn`) takes the subnet of the default route's interface from
+  `/proc/net/route`; with no connected route, a link-local one, or a net narrower than /30 or wider
+  than /16, the box says `no network` and nothing runs.
+- **USB events:** `udevadm monitor --udev --subsystem-match=usb` and `journalctl -kf -n 30 --grep=usb`
+  side by side in one held terminal (a fixed `sh -c` script whose trap stops both together).
+- **Reset USB (xHCI):** asks `Reset USB (xHCI)? ⏎` and runs `[tools.builtin] usb_reset` on a second
+  Enter (default `sudo modprobe -r xhci_pci && sudo modprobe xhci_pci`); `[]` hides it.
+- **The journal presets** (`Errors this boot`, `USB`, `Suspend and resume`, `Out of memory`,
+  `Thermal and throttling`, `NetworkManager`, `Live journal`, `Logs of a service…`), shown when the
+  control center's Diag tab is: each runs `alpheus --tab diagnostics --preset <slug>` in
+  launcher.toml's `terminal` (never through `[actions] open_tab`, which takes only a tab; see
+  [the control center](control-center.md)).
+
+### Captures
+
+The Captures category (only when the compositor offers screencopy) replays
+`alpheus-launch --capture <word>` after the box has closed: Screenshot (`full`), Area, Area (save),
+Annotate, Record screen, Record area, Stop recording, Colour picker (`pick`) and Text from area
+(OCR). Annotate, OCR and the two Record rows show only when their `[captures]` program is set and
+on the `$PATH`; the Record rows hide while a recording runs, and Stop shows only then. What each does
+is on [the captures page](captures.md).
+
+### From a key
 
 **`alpheus-launch --tools`** replaces any other open launcher mode, then toggles; it exits 3 when the
 bar is not running or is older than the verb, the one code on which a script falls back to another menu.
@@ -51,6 +142,7 @@ and `[prefixes] tools` (default `/`; `""` turns the prefix off).
 | `hide` | `[]` | Built-in ids never shown (`"tab.power"`, `"quick.shield"`, …); an unknown id is logged and ignored |
 | `root` | `[]` | Built-in ids also listed at the root, first, in this order |
 | `reload` | `[]` | The argv of "Reload the bar"; empty hides the entry |
+| `[tools.builtin] usb_reset` | `sh -c 'sudo modprobe -r xhci_pci && …'` | The argv of "Reset USB (xHCI)", run in `terminal_hold`; `[]` hides the entry |
 
 `[[tools.category]]` (at most 16) has `name`, `icon` (one character) and `order`. `[[tools.entry]]` (at
 most 128) has:
@@ -58,9 +150,10 @@ most 128) has:
 | Key | What it does |
 | --- | --- |
 | `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root |
-| `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}` |
+| `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}`; with `ask`, exactly one element is `{text}` |
 | `terminal`, `hold` | Run in launcher.toml's `terminal`, or its `terminal_hold` |
-| `confirm` | Ask `Name? ⏎` first (see above) |
+| `confirm` | Ask `Name? ⏎` first (see above); not with `ask` |
+| `ask` | A label: the entry asks for a text first, after its choice if it has choices (see "Typing a value") |
 | `state` | An argv run once when the Tools mode is entered; exit 0 is on, any other exit off. At most 16 entries have one |
 | `choices` | Fixed choices, at most 32 |
 | `choices_cmd` | An argv whose output lines are the choices, run at each drill-in |
@@ -88,9 +181,9 @@ twice in Mod+Space's search: drop the source once the menu is yours).
 
 In `crates/alpheus-daemon/src/launcher/tools/`:
 
-- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 23
+- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 45
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
-  entries; the levels, rows and confirmation question.
+  entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
   `choices_cmd`, through the executor's `capture`.
 - `app.rs`: the wiring on the daemon's state. `context` builds the `Context` from the configuration and
@@ -101,6 +194,25 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 - `join.rs`: the only file of the folder that calls the clipboard's, the shield's and the diagnostics
   tab's own functions and types; `app.rs` still has a `Join` struct carrying their three answers and
   reads `join::DIAGNOSTICS_TAB`.
+- `diag.rs`: pure. The ten scans (`Scan`), the argv of each (`scan_argv`), the check of a typed port
+  list, the USB events script, and the `Subnet` seam whose real form (`ProcSubnet`) reads
+  `/proc/net/route` once, when the sweep is chosen.
+
+The kill list is a mode of the launcher (`Mode::Processes`), not a file of the Tools folder:
+
+- `launcher/processes.rs`: pure. The snapshot of one user's processes from a `/proc`-shaped folder,
+  the rows built from one or two snapshots, the exclusions, and `send`, the one way a signal leaves,
+  through the `Signaller` seam (a test records the signal instead of sending it).
+- `launcher/processes_app.rs`: the wiring. The first read at open, the second 300 ms later, the
+  exclusions worked out once per open, the real `Signaller` (pidfd, start time, signal), and one
+  `DeadlineTimer` that follows the earlier of the second sample and the end of a force-kill question,
+  removed whenever no kill list is open. `launcher.toml`'s `proc_dir` only narrows which pids are
+  listed (the headless test's seam); start times, ancestors and signals always use the real `/proc`.
+- `sources/peer.rs`: the compositor's pid, from the kernel's peer credentials of a connection to its
+  socket made and dropped at once (non-blocking: a wedged compositor answers "no" at once). It lives
+  under `sources/` because only there may the compositor's sockets be opened.
+
+The Schedule shutdown entry only maps a choice to `timer/shutdown.rs` (see the timer's page).
 
 **The path of a built-in.** Enter on its row; `tools_prepare` checks, while the box is still open, that
 the program it would spawn is on the `$PATH` (a missing one is said in the box, which stays open).
@@ -125,10 +237,28 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
   never panic and log nothing.
 - `the_tools_logs_are_fixed_words`: a log line of the menu is a fixed word, a built-in's id, an entry's
   position or counts, never a name, a command, a choice or a line.
+- `the_typed_text_is_one_whole_argv_element`, `text_is_never_recorded_in_history_nor_shown_by_debug`,
+  `a_built_ins_choice_is_recorded_under_its_key_and_its_text_never`,
+  `a_typed_scan_target_never_shows_in_debug_output`, `a_mode_click_from_the_prompt_drops_the_typed_text`:
+  a typed text is one argv element, neither the history nor a `{:?}` of the action shows it, and it
+  never becomes another mode's query. The log lines are held to fixed words by
+  `the_tools_logs_are_fixed_words`.
+- `the_kill_list_has_no_panicking_path_and_logs_fixed_words`: `processes.rs`, `processes_app.rs` and
+  `sources/peer.rs` never panic (a panic's message would carry a process's name); the pure files and
+  the peer lookup log nothing, the glue fixed words only. `pid_1_alpheus_and_the_session_leader_are_never_offered`,
+  `every_ancestor_of_the_compositor_and_of_alpheus_is_excluded`,
+  `an_excluded_pid_is_refused_even_when_asked_for`, `a_reused_pid_is_never_signalled`,
+  `a_pid_that_could_reach_a_group_or_init_is_refused` and `only_a_kernel_without_pidfd_falls_back_to_kill`
+  pin what may be signalled; `closing_the_list_drops_its_timer`, that nothing stays.
+- `the_shutdown_is_wired_through_one_path`: see [the focus timer](timer.md#rules-it-keeps).
+- `the_tools_menu_hides_the_captures_without_screencopy`: no Captures row without the protocol.
 - `the_tools_glue_spawns_only_through_launch`: `app.rs` starts no process itself and calls the
   launcher's start function exactly once.
 - `every_builtin_argv_stays_on_the_allowlist`: a built-in's argv is the configured command,
-  `[actions] open_tab`, or the terminal running `alpheus --tab`, never through a shell.
+  `[actions] open_tab`, the terminal running `alpheus --tab` (with `--preset <slug>` for a journal
+  preset), or one of the scans' exact `nmap` lines, never through a shell except two `sh -c` scripts in the held terminal: the USB events (two streams
+  share one terminal, fixed) and the USB reset (`modprobe -r` then `modprobe`, chained; the default of
+  `[tools.builtin] usb_reset`, which the owner may replace). Nothing typed ever goes into either.
 - `the_parallel_branches_are_named_only_in_tools_join`, `the_join_hooks_are_filled_in`: the folder's other
   files never name `clipboard_availability`, `launcher_open_clipboard`, `shield_open_detail`,
   `ShieldConfig` or the `"diagnostics"` slug, so `join.rs` is the one file that calls the clipboard's and
@@ -141,14 +271,18 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 - The headless tests (`tools_opens_and_a_builtin_runs_after_the_box_closed`,
   `tools_drills_runs_and_keeps_argv_whole`, `tools_confirm_needs_a_second_enter_after_0_4_s`,
   `tools_states_are_read_and_a_hung_one_killed`, `tools_choices_cmd_filters_and_runs`,
-  `tools_a_held_enter_drills_once_and_runs_nothing`, `tools_at_rest_no_wakeups_after_a_cycle` and the
-  built-in tests for Wi-Fi, clipboard, emoji, the tabs, the shield and diagnostics) use a recorder
+  `tools_a_held_enter_drills_once_and_runs_nothing`, `tools_at_rest_no_wakeups_after_a_cycle`,
+  `kill_list_opens_and_signals_by_enter` (its `proc_dir` lists only the test's own children),
+  `a_diag_preset_entry_opens_the_tab_on_it` and the built-in tests for Wi-Fi, clipboard, emoji, the
+  tabs, the shield and diagnostics) use a recorder
   script on a private `PATH`; none runs a real command of the session.
 - The reasons are in [decisions.md](../decisions.md): "The Tools menu reaches the clipboard, the shield
   and the diagnostics tab through one file", "A built-in replays the daemon's own verb after the box has
   closed", "A tab opens through `[actions] open_tab`, else in the terminal", "Everything a built-in
   spawns runs in its own scope", "The Tools menu reads states and choices one job at a time on a short-lived
-  thread".
+  thread", "Only the user's own processes are offered, and a reused pid is never signalled", "A typed
+  text is one argv element and is never logged", "The diagnostics tools run in the held terminal, and
+  the scan's target is typed".
 
 ## What it costs
 
@@ -161,3 +295,10 @@ One release run on the branch, with no back-to-back base (the [memory tables](..
   (`tools_choices_2000_lines`).
 - **At rest:** 0 loop wake-ups in 5 s after a cycle, with a question pending and closed and after one
   left to expire (`at_rest_no_wakeups_after_tools`).
+- **The kill list**, 3 release runs on the branch with no base (new code): PSS +990…+994 KB at the
+  first open, +418…+422 KB over cold once closed (the first open's code and glyph pages); the daemon's
+  own anonymous memory +4…+24 KB closed again and −8…+20 KB after 20 more cycles; 5 threads before
+  and after (`kill_list_pss_open_and_closed`); 0 wake-ups in 5 s at rest after
+  (`at_rest_no_wakeups_after_a_kill_list`).
+- **The diagnostics entries** add rows to the table and nothing resident: their commands run in the
+  terminal, outside the daemon.

@@ -455,6 +455,8 @@ pub struct App {
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
+    /// wlr-screencopy, if the compositor has it (captures/screencopy.rs); None hides the captures.
+    pub(crate) screencopy: Option<crate::captures::screencopy::Screencopy>,
     /// The screens through the output management protocol (outputs/app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs::app::OutputsApp>,
@@ -504,6 +506,12 @@ pub struct App {
     pub(crate) launcher_generation: u64,
     /// The quick notepad: its pad while open (None at rest) and its save timer.
     pub(crate) notes: crate::notes::app::NotesApp,
+    /// The capture area selector while open; None at rest (nothing of it resident).
+    pub(crate) select: Option<crate::captures::select_app::OpenSelect>,
+    /// The colour picker while open, with its frozen frame; None at rest (nothing of it resident).
+    pub(crate) pick: Option<crate::captures::pick_app::OpenPick>,
+    /// The capture flow: idle at rest, one capture at a time (nothing else of it resident).
+    pub(crate) capture: crate::captures::app::CaptureApp,
     /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
     /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
@@ -544,6 +552,9 @@ pub struct App {
     /// The Tools menu's question timer and reader schedule (launcher/tools/app.rs); nothing armed or
     /// running while the menu is closed.
     pub(crate) tools: crate::launcher::tools::app::ToolsApp,
+    /// The kill list's timer, first sample and signal seam (launcher/processes_app.rs); nothing armed or
+    /// held while the list is closed.
+    pub(crate) processes: crate::launcher::processes_app::ProcessesApp,
     /// When `alpheus-launch --power` opened the menu (its re-fired press is ignored); None for a click.
     pub(crate) power_verb_opened: Option<Instant>,
     /// The focus timer's model, lengths and deadline (timer/app.rs); the deadline is armed only
@@ -640,6 +651,8 @@ impl App {
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {}", crate::log::error_word(&e)))?;
         // Optional: without it, the launcher has no click-outside scrim (logged at open).
         let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
+        // Bound only as a global: nothing is allocated until a capture is asked for.
+        let screencopy = crate::captures::screencopy::Screencopy::bind(globals, qh);
         // Only with the module: otherwise the global is not bound at all.
         let displays = bar
             .config
@@ -681,6 +694,7 @@ impl App {
             seat: None,
             data_devices: DataDeviceManagerState::bind(globals, qh).ok(),
             viewporter,
+            screencopy,
             displays,
             clipboard,
             loop_handle: None,
@@ -699,6 +713,9 @@ impl App {
             launcher: None,
             launcher_generation: 0,
             notes: crate::notes::app::NotesApp::new(),
+            select: None,
+            pick: None,
+            capture: crate::captures::app::CaptureApp::new(),
             mail: None,
             xdg,
             popup: None,
@@ -716,6 +733,7 @@ impl App {
             units_tap: None,
             power_timer: DeadlineTimer::new(),
             tools: crate::launcher::tools::app::ToolsApp::new(),
+            processes: crate::launcher::processes_app::ProcessesApp::new(),
             power_verb_opened: None,
             timer,
             privacy_timer: DeadlineTimer::new(),
@@ -1078,6 +1096,14 @@ impl CompositorHandler for App {
             self.notes_guarded("scale", |app| app.notes_scale(surface, f));
             return;
         }
+        if self.select_owns_surface(surface) {
+            self.select_guarded("scale", |app| app.select_scale(f));
+            return;
+        }
+        if self.pick_owns_surface(surface) {
+            self.pick_guarded("scale", |app| app.pick_scale(f));
+            return;
+        }
         if self.bubbles_scale(surface, f) {
             return;
         }
@@ -1138,6 +1164,8 @@ impl OutputHandler for App {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
         self.notes_guarded("output", |app| app.notes_output_gone(&output));
+        self.select_guarded("output", |app| app.select_output_gone(&output));
+        self.pick_guarded("output", |app| app.pick_output_gone(&output));
         self.bubbles_output_gone(&output);
         self.osd_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
@@ -1168,6 +1196,14 @@ impl LayerShellHandler for App {
         if self.notes_owns_surface(layer.wl_surface()) {
             self.notes_guarded("closed", |app| app.notes_layer_closed(layer.wl_surface()));
             return; // the pad's surface: the bar's restore logic is not involved
+        }
+        if self.select_owns_surface(layer.wl_surface()) {
+            self.select_guarded("closed", |app| app.select_layer_closed());
+            return; // the selector's surface: the bar's restore logic is not involved
+        }
+        if self.pick_owns_surface(layer.wl_surface()) {
+            self.pick_guarded("closed", |app| app.pick_layer_closed());
+            return; // the picker's surface: the bar's restore logic is not involved
         }
         if self.bubbles_owns(layer.wl_surface()) {
             self.bubbles_layer_closed();
@@ -1220,6 +1256,14 @@ impl LayerShellHandler for App {
         }
         if self.notes_owns_surface(layer.wl_surface()) {
             self.notes_guarded("configure", |app| app.notes_configured(layer.wl_surface(), c.new_size));
+            return;
+        }
+        if self.select_owns_surface(layer.wl_surface()) {
+            self.select_guarded("configure", |app| app.select_configured(c.new_size));
+            return;
+        }
+        if self.pick_owns_surface(layer.wl_surface()) {
+            self.pick_guarded("configure", |app| app.pick_configured(c.new_size));
             return;
         }
         if self.bubbles_owns(layer.wl_surface()) {
@@ -1326,6 +1370,12 @@ impl PointerHandler for App {
                 continue;
             }
             if self.notes_guarded("pointer", |app| app.notes_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.select_guarded("pointer", |app| app.select_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.pick_guarded("pointer", |app| app.pick_pointer(conn, ev)).unwrap_or(true) {
                 continue;
             }
             if self.bubbles_pointer(conn, ev) {

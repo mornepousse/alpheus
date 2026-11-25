@@ -20,8 +20,8 @@
 //! See: docs/cli.md (every verb, option and exit code), docs/features/launcher.md.
 
 use alpheus_common::launcher_ipc::{
-    DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
-    Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
+    CaptureVerb, DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb,
+    REPLY_TIMEOUT, Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
 };
 use alpheus_common::local_time;
 pub use alpheus_common::local_time::parse_clock;
@@ -45,8 +45,9 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
-                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup | --notes
-                      | --clipboard | --clipboard-clear | --tools | --power | --shield on|off|toggle|status|allow | --help]
+                      | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+                      | --timer shutdown DURATION | --timer shutdown-cancel | --notes
+                      | --clipboard | --clipboard-clear | --tools | --kill | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -73,6 +74,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   --windows               open the window switcher (the previous window selected), or select the next window when it is open
   --timer start DURATION  start the bar's focus timer: 90s, 25m, 1h30m or a bare number of minutes (1 s to 24 h)
+  --timer shutdown DURATION  power off after DURATION (same forms), alongside the timer; shutdown-cancel cancels it
   --timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
                           start a Pomodoro or a stopwatch, pause, resume, toggle or stop the timer,
                           skip to a Pomodoro's next phase, open or close its popup
@@ -80,16 +82,23 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --clipboard             open or close the clipboard history (with [clipboard] enabled in bar.toml)
   --clipboard-clear       empty the clipboard history (pinned entries stay)
   --tools                 open the Tools menu, or close it
+  --kill                  open the kill list (your processes), or close it
   --power                 open the power menu (lock, log out, reboot, power off), or close it
   --shield on|off|toggle  switch Shield mode (the commands of [shield] in bar.toml; the password prompt is theirs)
   --shield status         print the state, and the blocked USB devices while it is on
   --shield allow          pick a blocked USB device in the launcher's box and allow it
+  --capture full          copy a screenshot of the focused output
+  --capture area          pick an area (drag, Enter or release to confirm, Esc to cancel), copy its screenshot
+  --capture area-save     pick an area, save its screenshot to the pictures folder
+  --capture pick|annotate|ocr|record|record-area|stop
+                          colour picker, annotate an area, text of an area, record the screen or an area, stop recording
+  --capture select        debug: run the area selector alone; nothing is captured
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--power/--shield (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--kill/--power/--shield/--capture (restarted since the upgrade? until then, use another menu).
 
 --shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -120,8 +129,10 @@ pub enum Invocation {
     Clipboard,
     ClipboardClear,
     Tools,
+    Kill,
     Power,
     Shield(ShieldVerb),
+    Capture(CaptureVerb),
     Help,
 }
 
@@ -175,11 +186,13 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--clipboard" => choose(&mut mode, Invocation::Clipboard)?,
             "--clipboard-clear" => choose(&mut mode, Invocation::ClipboardClear)?,
             "--tools" => choose(&mut mode, Invocation::Tools)?,
+            "--kill" => choose(&mut mode, Invocation::Kill)?,
             "--power" => choose(&mut mode, Invocation::Power)?,
             "--shield" => choose(
                 &mut mode,
                 Invocation::Shield(verb_arg(&mut it, "--shield", "on, off, toggle, status or allow", ShieldVerb::parse)?),
             )?,
+            "--capture" => choose(&mut mode, Invocation::Capture(verb_arg(&mut it, "--capture", CAPTURE_WORDS, CaptureVerb::parse)?))?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -307,8 +320,10 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Clipboard => Request::Clipboard,
         Invocation::ClipboardClear => Request::ClipboardClear,
         Invocation::Tools => Request::Tools,
+        Invocation::Kill => Request::Kill,
         Invocation::Power => Request::Power,
         Invocation::Shield(v) => Request::Shield(v),
+        Invocation::Capture(v) => Request::Capture(v),
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -379,13 +394,19 @@ fn units(s: &str) -> Option<u64> {
 
 /// The words after `--timer`: `start DURATION`, or one of `TimerVerb::parse_word`'s.
 fn timer_arg<'a>(it: &mut impl Iterator<Item = &'a OsString>) -> Result<TimerVerb, String> {
-    const WORDS: &str = "start, pomodoro, stopwatch, pause, resume, toggle, stop, skip or popup";
+    const WORDS: &str = "start, pomodoro, stopwatch, pause, resume, toggle, stop, skip, popup, shutdown or shutdown-cancel";
     let word = utf8(it.next().ok_or_else(|| format!("--timer needs {WORDS}"))?)?;
     if word == "start" {
         let value = utf8(it.next().ok_or("--timer start needs a duration (90s, 25m, 1h30m or minutes)")?)?;
         return parse_timer_duration(value)
             .map(TimerVerb::Start)
             .ok_or_else(|| format!("--timer start takes 90s, 25m, 1h30m or minutes, from 1 second to 24 hours, not {value:?}"));
+    }
+    if word == "shutdown" {
+        let value = utf8(it.next().ok_or("--timer shutdown needs a duration (90s, 25m, 1h30m or minutes)")?)?;
+        return parse_timer_duration(value)
+            .map(TimerVerb::Shutdown)
+            .ok_or_else(|| format!("--timer shutdown takes 90s, 25m, 1h30m or minutes, from 1 second to 24 hours, not {value:?}"));
     }
     TimerVerb::parse_word(word).ok_or_else(|| format!("--timer takes {WORDS}, not {word:?}"))
 }
@@ -408,7 +429,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help"
                 .into(),
         );
     }
@@ -516,8 +537,10 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Clipboard
             | Invocation::ClipboardClear
             | Invocation::Tools
+            | Invocation::Kill
             | Invocation::Power
-            | Invocation::Shield(_)),
+            | Invocation::Shield(_)
+            | Invocation::Capture(_)),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -578,11 +601,13 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Clipboard
             | Request::ClipboardClear
             | Request::Tools
+            | Request::Kill
             | Request::Power
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert
-            | Request::Shield(_),
+            | Request::Shield(_)
+            | Request::Capture(_),
             Reply::Done,
         ) => EXIT_OK,
         // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
@@ -618,12 +643,17 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
+        // `timer shutdown <secs>` has one field too many for an old daemon's `timer` headers, so
+        // even one that has the timer refuses it as an unknown request "timer".
+        Request::Timer(TimerVerb::Shutdown(_)) if error == "malformed request: unknown request \"timer\"" => Some("--timer shutdown"),
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         Request::Tools if error == "malformed request: unknown request \"tools\"" => Some("--tools"),
+        Request::Kill if error == OLD_KILL[0].0 => Some(OLD_KILL[0].1),
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
         Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
         Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
+        Request::Capture(_) if error == OLD_CAPTURE || error.starts_with(OLD_CAPTURE_WORD) => Some("--capture"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
@@ -635,6 +665,15 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The words `--capture` takes, for the usage errors.
+const CAPTURE_WORDS: &str = "full, area, area-save, pick, annotate, ocr, record, record-area or stop";
+
+/// What a daemon from before the captures answers `--capture` (an unknown request), and the start
+/// of what one that has only the area selector answers any other word (an unknown capture word,
+/// which the refusal then names): exit 3, as for the other verbs.
+const OLD_CAPTURE: &str = "malformed request: unknown request \"capture\"";
+const OLD_CAPTURE_WORD: &str = "malformed request: unknown capture word ";
 
 /// What a daemon from before the clipboard history answers its two verbs (an unknown request,
 /// `socket::describe`): the refusal and the flag. Exit 3, as for the other verbs.
@@ -671,7 +710,17 @@ const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
 /// What a daemon too old for `--timer` answers (`socket::describe` of an unknown request) and the
 /// name for the message; exit 3, so a key bound to it can fall back. A word added later adds a row,
 /// as `OLD_QUICK`'s.
-const OLD_TIMER: [(&str, &str); 1] = [("malformed request: unknown request \"timer\"", "--timer")];
+const OLD_TIMER: [(&str, &str); 2] = [
+    ("malformed request: unknown request \"timer\"", "--timer"),
+    // A daemon with the timer but not the shutdown knows `timer <word>` and `timer start <secs>`:
+    // the cancel is an unknown word to it (the 3-field `timer shutdown <secs>` is handled in
+    // `too_old_for`, because the same refusal text means a daemon with no timer at all there).
+    ("malformed request: unknown timer word \"shutdown-cancel\"", "--timer shutdown-cancel"),
+];
+
+/// What a daemon from before the kill list answers `--kill` (an unknown request) and the name for
+/// the message; exit 3, so a key bound to it can fall back, as `OLD_TIMER`'s.
+const OLD_KILL: [(&str, &str); 1] = [("malformed request: unknown request \"kill\"", "--kill")];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
@@ -729,6 +778,8 @@ mod tests {
         assert_eq!(parse_args(&args(&["--clipboard"])), Ok(Invocation::Clipboard));
         assert_eq!(parse_args(&args(&["--clipboard-clear"])), Ok(Invocation::ClipboardClear));
         assert_eq!(parse_args(&args(&["--tools"])), Ok(Invocation::Tools));
+        assert_eq!(parse_args(&args(&["--kill"])), Ok(Invocation::Kill));
+        assert_eq!(request_of(Invocation::Kill, 0), Ok(Request::Kill));
         assert_eq!(parse_args(&args(&["--power"])), Ok(Invocation::Power));
         assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
         assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
@@ -793,11 +844,14 @@ mod tests {
             (&["--quick", "--close"], "only one of"),
             (
                 &["--calc", "--toggle"],
-                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help",
+                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help",
             ),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
-            (&["--clipboard", "--toggle"], "--notes, --clipboard, --clipboard-clear, --tools, --power, --shield, --help"),
+            (
+                &["--clipboard", "--toggle"],
+                "--notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help",
+            ),
             (&["--tools", "--power"], "only one of"),
             (&["--tools", "--toggle"], "--tools"),
             (&["--power", "--clipboard"], "only one of"),
@@ -884,6 +938,9 @@ mod tests {
             (&["--timer", "stopwatch"], TimerVerb::Stopwatch),
             (&["--timer", "popup"], TimerVerb::Popup),
             (&["--timer", "skip"], TimerVerb::Skip),
+            (&["--timer", "shutdown", "1h30m"], TimerVerb::Shutdown(5400)),
+            (&["--timer", "shutdown", "90"], TimerVerb::Shutdown(5400)),
+            (&["--timer", "shutdown-cancel"], TimerVerb::ShutdownCancel),
         ] {
             assert_eq!(parse_args(&args(a)), Ok(Invocation::Timer(v)), "{a:?}");
             assert_eq!(request_of(Invocation::Timer(v), 0), Ok(Request::Timer(v)));
@@ -893,6 +950,9 @@ mod tests {
             (&["--timer", "start"], "needs a duration"),
             (&["--timer", "start", "0s"], "from 1 second to 24 hours"),
             (&["--timer", "start", "25h"], "from 1 second to 24 hours"),
+            (&["--timer", "shutdown"], "--timer shutdown needs a duration"),
+            (&["--timer", "shutdown", "0s"], "--timer shutdown takes"),
+            (&["--timer", "shutdown", "25h"], "--timer shutdown takes"),
             (&["--timer", "nap"], "--timer takes start"),
             (&["--timer", "stop", "--close"], "only one of"),
             (&["--toggle", "--timer", "stop"], "only one of"),
@@ -913,6 +973,16 @@ mod tests {
         assert_eq!(reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
         assert!(String::from_utf8_lossy(&err).contains("--timer"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
+        // A daemon with the timer but without the shutdown names the verb it lacks.
+        for (verb, word, refusal) in [
+            (TimerVerb::Shutdown(60), "--timer shutdown", "malformed request: unknown request \"timer\""),
+            (TimerVerb::ShutdownCancel, "--timer shutdown-cancel", "malformed request: unknown timer word \"shutdown-cancel\""),
+        ] {
+            let mut err = Vec::new();
+            let code = reply_to_exit(&Request::Timer(verb), Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err);
+            assert_eq!(code, EXIT_UNREACHABLE, "{word}");
+            assert!(String::from_utf8_lossy(&err).contains(word), "{}", String::from_utf8_lossy(&err));
+        }
         let other = "the timer module is not in modules";
         assert_eq!(reply_to_exit(&request, Reply::Error(other.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
         assert!(String::from_utf8_lossy(&err).contains(other), "{}", String::from_utf8_lossy(&err));
@@ -970,11 +1040,13 @@ mod tests {
         }
     }
 
-    /// A daemon from before the Tools menu refuses `tools` and `power` as unknown requests: exit 3,
+    /// A daemon from before the Tools menu (or the kill list) refuses `tools`, `kill` and `power` as unknown requests: exit 3,
     /// naming the flag; a current daemon's error (no session command) stays exit 2.
     #[test]
     fn a_daemon_without_tools_and_power_is_too_old() {
-        for (request, word, flag) in [(Request::Tools, "tools", "--tools"), (Request::Power, "power", "--power")] {
+        for (request, word, flag) in
+            [(Request::Tools, "tools", "--tools"), (Request::Kill, "kill", "--kill"), (Request::Power, "power", "--power")]
+        {
             let refusal = format!("malformed request: unknown request \"{word}\"");
             let mut err = Vec::new();
             assert_eq!(reply_to_exit(&request, Reply::Error(refusal), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
@@ -1134,5 +1206,36 @@ mod tests {
             reply_to_exit(&Request::DndOn(DndEnd::For(60)), Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err),
             EXIT_ERROR
         );
+    }
+
+    /// Every `--capture` word parses to its verb, and any other word is refused naming the choices.
+    #[test]
+    fn the_verbs_parse_and_an_old_daemon_exits_3() {
+        for v in CaptureVerb::ALL {
+            assert_eq!(parse_args(&args(&["--capture", v.word()])), Ok(Invocation::Capture(v)));
+            assert_eq!(request_of(Invocation::Capture(v), 0), Ok(Request::Capture(v)));
+        }
+        let e = parse_args(&args(&["--capture", "sideways"])).unwrap_err();
+        assert!(e.contains("area-save") && e.contains("record-area"), "{e}");
+        assert!(parse_args(&args(&["--capture"])).unwrap_err().contains("needs"));
+        // A daemon from before the captures knows no `capture` request; one that has the selector
+        // alone refuses each other word as unknown. Both are exit 3, naming the flag.
+        for refusal in ["malformed request: unknown request \"capture\"", "malformed request: unknown capture word \"area-save\""] {
+            let mut err = Vec::new();
+            let request = Request::Capture(CaptureVerb::AreaSave);
+            assert_eq!(
+                reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err),
+                EXIT_UNREACHABLE,
+                "{refusal}"
+            );
+            assert!(String::from_utf8_lossy(&err).contains("--capture"), "{}", String::from_utf8_lossy(&err));
+        }
+        // A current daemon's own refusals (no screencopy, not yet) are plain errors: exit 2, said.
+        let mut err = Vec::new();
+        let no_screencopy = "the compositor offers no screencopy";
+        let request = Request::Capture(CaptureVerb::Full);
+        assert_eq!(reply_to_exit(&request, Reply::Error(no_screencopy.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        assert!(String::from_utf8_lossy(&err).contains(no_screencopy), "{}", String::from_utf8_lossy(&err));
+        assert_eq!(reply_to_exit(&request, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
     }
 }

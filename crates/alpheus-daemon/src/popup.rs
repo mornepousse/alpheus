@@ -939,7 +939,11 @@ impl App {
 
     /// Whether the keyboard is needed: the launcher, the quick notepad, or a grabbing popup.
     pub(crate) fn keyboard_wanted(&self) -> bool {
-        self.launcher_is_open() || self.notes_is_open() || self.popup.as_ref().is_some_and(|p| p.grab)
+        self.launcher_is_open()
+            || self.notes_is_open()
+            || self.select_is_open()
+            || self.pick_is_open()
+            || self.popup.as_ref().is_some_and(|p| p.grab)
     }
 
     /// Binds the keyboard (with repeat on the event loop) on the seat if none: the launcher is open, or a
@@ -1029,6 +1033,17 @@ impl App {
     /// A key (press or repeat): to the launcher when it is open, else to a grabbing popup.
     pub(crate) fn key_event(&mut self, event: KeyEvent) {
         self.keyboard.time = event.time;
+        // The capture selector is never open with the launcher, the pad or a popup (it closes them
+        // as it opens): it takes the keys first, whatever `key_to` says.
+        if self.select_is_open() {
+            self.select_guarded("key", move |app| app.select_key(event));
+            return;
+        }
+        // The colour picker likewise.
+        if self.pick_is_open() {
+            self.pick_guarded("key", move |app| app.pick_key(event));
+            return;
+        }
         match key_to(self.launcher_is_open(), self.notes_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
             KeyTo::Launcher => {
                 self.launcher_guarded("key", move |app| app.launcher_key(event));
@@ -1073,6 +1088,12 @@ impl KeyboardHandler for App {
         if self.notes_owns_box(surface) {
             self.notes_guarded("focus", |app| app.notes_close(crate::launcher::surface::CloseReason::FocusLost));
         }
+        if self.select_owns_surface(surface) {
+            self.select_guarded("focus", |app| app.select_focus_lost());
+        }
+        if self.pick_owns_surface(surface) {
+            self.pick_guarded("focus", |app| app.pick_focus_lost());
+        }
         self.keyboard_release_deferred();
     }
 
@@ -1091,6 +1112,9 @@ impl KeyboardHandler for App {
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         self.keyboard.keys_down.released(event.raw_code);
+        if self.select_is_open() {
+            self.select_guarded("key", move |app| app.select_key_released(event));
+        }
         self.keyboard_release_deferred();
     }
 

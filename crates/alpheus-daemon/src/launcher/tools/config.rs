@@ -23,8 +23,10 @@ pub const ORDER_MAX: u16 = 1000;
 pub const DEFAULT_ORDER: u16 = 50;
 /// The one element of `run` replaced by the chosen line, whole: never part of an argument.
 pub const CHOICE_PLACEHOLDER: &str = "{choice}";
+/// The one element of `run` replaced by the typed text (`ask`), whole: never part of an argument.
+pub const TEXT_PLACEHOLDER: &str = "{text}";
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
-pub const BUILTIN_CATEGORIES: [&str; 4] = ["Quick settings", "Control center", "Utilities", "Session"];
+pub const BUILTIN_CATEGORIES: [&str; 7] = ["Quick settings", "Control center", "Utilities", "Captures", "System", "Session", "Diagnostics"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -37,6 +39,8 @@ pub struct ToolsConfig {
     pub root: Vec<String>,
     /// The "Reload the bar" built-in's argv; empty hides it.
     pub reload: Vec<String>,
+    /// The commands of the built-ins that run one (`[tools.builtin]`).
+    pub builtin: BuiltinCommands,
     #[serde(rename = "category")]
     pub categories: Vec<CategoryConfig>,
     #[serde(rename = "entry")]
@@ -45,7 +49,29 @@ pub struct ToolsConfig {
 
 impl Default for ToolsConfig {
     fn default() -> Self {
-        ToolsConfig { builtins: true, hide: Vec::new(), root: Vec::new(), reload: Vec::new(), categories: Vec::new(), entries: Vec::new() }
+        ToolsConfig {
+            builtins: true,
+            hide: Vec::new(),
+            root: Vec::new(),
+            reload: Vec::new(),
+            builtin: BuiltinCommands::default(),
+            categories: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+/// `[tools.builtin]`: the commands of built-ins that run a command of the machine's, not the daemon's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BuiltinCommands {
+    /// "Reset USB (xHCI)": run in the held terminal, so `sudo` can ask there; empty hides the entry.
+    pub usb_reset: Vec<String>,
+}
+
+impl Default for BuiltinCommands {
+    fn default() -> Self {
+        BuiltinCommands { usb_reset: ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"].map(String::from).to_vec() }
     }
 }
 
@@ -78,6 +104,8 @@ pub struct EntryConfig {
     pub choices: Vec<String>,
     /// Argv whose output lines are the choices, run at drill-in.
     pub choices_cmd: Vec<String>,
+    /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
+    pub ask: Option<String>,
     /// 1-based position in the file (what logs name an entry by); set after parsing.
     #[serde(skip)]
     pub position: usize,
@@ -146,12 +174,40 @@ fn check_argv(at: &str, key: &str, argv: &[String]) -> Result<(), String> {
     }
 }
 
+/// `ask` and `{text}` go together: the label is a name's text, `confirm` is not offered (the typed
+/// text is the confirmation), and `{text}` is one whole argument, never the program, as `{choice}` is.
+fn check_ask(at: &str, e: &EntryConfig) -> Result<(), String> {
+    let whole = e.run.iter().filter(|a| a.as_str() == TEXT_PLACEHOLDER).count();
+    let partial = e.run.iter().any(|a| a.contains(TEXT_PLACEHOLDER) && a.as_str() != TEXT_PLACEHOLDER);
+    let Some(label) = &e.ask else {
+        if whole != 0 || partial {
+            return Err(format!("{at}: run holds \"{TEXT_PLACEHOLDER}\" but the entry has no ask"));
+        }
+        return Ok(());
+    };
+    check_text(at, "ask", label, TOOL_NAME_MAX)?;
+    if e.confirm {
+        return Err(format!("{at}: ask and confirm are both set"));
+    }
+    if e.run.first().is_some_and(|p| p.as_str() == TEXT_PLACEHOLDER) {
+        return Err(format!("{at}: run's program must not be \"{TEXT_PLACEHOLDER}\""));
+    }
+    if whole != 1 || partial {
+        return Err(format!("{at}: ask needs run to hold \"{TEXT_PLACEHOLDER}\" exactly once, as a whole argument"));
+    }
+    Ok(())
+}
+
 /// The rules of a valid `[tools]` table. A message names the key and `tools.entry <i>` / `tools.category <i>`
 /// (1-based), never the text of a name, command or choice.
 pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     if !t.reload.is_empty() {
         check_argv("tools.reload", "reload", &t.reload)
             .map_err(|_| "tools.reload: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
+    }
+    if !t.builtin.usb_reset.is_empty() {
+        check_argv("tools.builtin", "usb_reset", &t.builtin.usb_reset)
+            .map_err(|_| "tools.builtin.usb_reset: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
     }
     // Called before `bounded`: what a bound would cut is checked all the same (the sets keep it linear).
     let mut category_names = HashSet::new();
@@ -196,9 +252,16 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         if !e.choices_cmd.is_empty() {
             check_argv(&at, "choices_cmd", &e.choices_cmd)?;
         }
+        // Those two run before anything is typed: only `run` has a text to receive.
+        for (key, argv) in [("state", &e.state), ("choices_cmd", &e.choices_cmd)] {
+            if argv.iter().any(|a| a.contains(TEXT_PLACEHOLDER)) {
+                return Err(format!("{at}: {key} must not hold \"{TEXT_PLACEHOLDER}\" (only run takes the typed text)"));
+            }
+        }
         for (k, choice) in e.choices.iter().enumerate() {
             check_text(&at, &format!("choice {}", k + 1), choice, CHOICE_MAX)?;
         }
+        check_ask(&at, e)?;
         let whole = e.run.iter().filter(|a| a.as_str() == CHOICE_PLACEHOLDER).count();
         let partial = e.run.iter().any(|a| a.contains(CHOICE_PLACEHOLDER) && a.as_str() != CHOICE_PLACEHOLDER);
         if e.has_choices() {
