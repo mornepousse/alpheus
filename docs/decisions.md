@@ -1949,3 +1949,13 @@ reaches the bar only through a rule whose `sender=` the bus itself resolves to t
 owner, so a second table of owners kept by the bar would only copy the bus's own check.
 
 Date: 2026-11-25 · Source: tests `a_unicast_signal_is_never_heard` (`sources/dbus/dbusrs_bus.rs`), `a_unicast_signal_to_the_bar_is_never_heard` (`tests/dbus_private_bus.rs`, private bus), guardrail `d_bus_is_confined_to_sources_and_read_only`
+
+### A Bluetooth removal is confirmed by a read
+
+An `InterfacesRemoved` for a listed device is not taken as the device's word: the panel reads the
+device once, as it does for an addition, and drops the row only when BlueZ no longer has the
+object. A removal nobody confirms would end a pairing in progress, since the panel finishes the
+action of a device that left the list and BlueZ's pending confirmation is then rejected. The signal
+of a device the panel does not list reads nothing.
+
+Date: 2026-11-25 · Source: tests `removed_device_goes`, `a_removal_the_service_denies_keeps_the_device` (`sources/dbus/bt.rs`)

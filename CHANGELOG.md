@@ -117,6 +117,9 @@ delivered before it, by the month it was merged.
   so another user could forge a Bluetooth removal or a wake and make the bar re-read every
   service. Only a broadcast, which a sender-filtered rule matched, is heard now, as on the session
   bus. [Decision](docs/decisions.md#a-system-bus-signal-is-heard-only-when-it-is-a-broadcast).
+- **A Bluetooth removal is confirmed** (25): the quick panel reads a device again when BlueZ says it
+  left, and drops it only when it is really gone, so a forged or stray signal no longer hides a
+  device or ends a pairing. [Decision](docs/decisions.md#a-bluetooth-removal-is-confirmed-by-a-read).
 
 ### 2026-10
 

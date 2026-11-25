@@ -8,6 +8,8 @@
 //! Never:
 //! - read while the panel is closed: the scope is what bounds this, and the tap follows the panel
 //!   (`the_bluetooth_connection_goes_with_the_panel`);
+//! - drop a device on a signal alone: a removal is confirmed by a read of the device, as an addition
+//!   is (`removed_device_goes`, `a_removal_the_service_denies_keeps_the_device`);
 //! - name a device in a log line (`the_bluetooth_logs_name_no_device`), or read its address;
 //! - act: every change goes through `bt_act.rs`
 //!   (`the_bluetooth_connection_acts_only_through_act_method`,
@@ -178,9 +180,10 @@ impl BtReader {
                 }
                 return self.read_device(bus, &owner, path);
             }
-            BtChange::Removed(path) if detail && self.devices.remove(path).is_some() => {
-                self.order.retain(|p| p != path);
-            }
+            // Confirmed by a read, as an addition is: the signal alone could be anyone's, and a
+            // device dropped on a forged one would end a pairing in progress. BlueZ having removed
+            // the object, the read finds it gone and `read_device` drops the row.
+            BtChange::Removed(path) if detail && self.devices.contains_key(path) => return self.read_device(bus, &owner, path),
             _ => return Ok(None),
         }
         Ok(self.publish())
@@ -493,11 +496,26 @@ mod tests {
         let calls = bus.calls.len();
         let v = r.changed(&mut bus, &BtChange::Removed(dev(0x10))).unwrap().unwrap();
         assert!(v.nearby.is_empty());
-        assert_eq!(bus.calls.len(), calls, "a removal reads nothing");
+        assert_eq!(bus.calls.len(), calls + 1, "a removal is confirmed by one read of the device");
+        bus.bluez.remove(HEADSET);
         let v = r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap().unwrap();
         assert!(v.paired.is_empty());
+        let calls = bus.calls.len();
         assert_eq!(r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap(), None, "already gone: nothing to publish");
-        assert_eq!(bus.calls.len(), calls);
+        assert_eq!(bus.calls.len(), calls, "a device not listed is not read");
+    }
+
+    #[test]
+    fn a_removal_the_service_denies_keeps_the_device() {
+        let mut bus = FakeBus::workstation();
+        bus.nearby(&dev(0x10), "Keyboard-Test", Some(-50));
+        let (mut r, v) = detail(&mut bus);
+        // The object is still there: the signal was not BlueZ's.
+        let again = r.changed(&mut bus, &BtChange::Removed(dev(0x10))).unwrap().unwrap();
+        assert_eq!(again, v, "listed as before");
+        assert_eq!(labels(&again.nearby), ["Keyboard-Test"]);
+        let again = r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap().unwrap();
+        assert_eq!(again, v, "a paired device too");
     }
 
     #[test]
