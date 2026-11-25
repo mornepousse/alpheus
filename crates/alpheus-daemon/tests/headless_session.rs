@@ -7064,10 +7064,10 @@ fn shutdown_warns_then_runs_poweroff() {
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_failed_power_off_shows_a_critical_notice() {
     for (name, argv, line) in [
-        ("shutdown-fails", "[\"false\"]".to_string(), "timer: shutdown power off failed (exit 1)"),
-        ("shutdown-missing", "[\"/nonexistent/alpheus-test-off\"]".to_string(), "timer: shutdown power off could not start (not found)"),
+        ("shutdown-fails", "\"false\"", "timer: shutdown power off failed (exit 1)"),
+        ("shutdown-missing", "\"/nonexistent/alpheus-test-off\"", "timer: shutdown power off could not start (not found)"),
     ] {
-        let (_bus, sway, _hypr, d) = timer_daemon_in(name, TIMER_END_MODULES, |_| format!("[quick]\npoweroff = {argv}\n"));
+        let (_bus, sway, _hypr, d) = timer_daemon_in(name, TIMER_END_MODULES, |_| format!("[quick]\npoweroff = [{argv}]\n"));
         assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
         ready(&d);
         assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
