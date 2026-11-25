@@ -49,6 +49,12 @@ fn a_target_starting_with_a_dash_is_a_host_never_an_option() {
 }
 
 #[test]
+fn a_typed_target_is_trimmed_before_it_reaches_nmap() {
+    let a = scan_argv(Scan::Quick, Some("  10.0.0.5 \t"), None, None).unwrap();
+    assert_eq!(a, v(&["nmap", "-F", "--", "10.0.0.5"]), "no space around the host");
+}
+
+#[test]
 fn host_discovery_without_a_subnet_runs_nothing() {
     assert_eq!(scan_argv(Scan::HostDiscovery, None, None, None), None);
     // A scan that needs a target or ports and has none builds nothing either.

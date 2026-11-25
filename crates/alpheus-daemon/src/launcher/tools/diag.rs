@@ -107,7 +107,7 @@ pub fn scan_argv(scan: Scan, target: Option<&str>, ports: Option<&str>, subnet: 
     if scan == Scan::HostDiscovery {
         return Some(vec!["nmap".to_string(), "-sn".to_string(), subnet?.to_string()]);
     }
-    let target = target.filter(|t| !t.trim().is_empty())?;
+    let target = target.map(str::trim).filter(|t| !t.is_empty())?;
     Some(match scan {
         Scan::HostDiscovery => return None,
         Scan::Quick => nmap(false, &["-F"], target),
