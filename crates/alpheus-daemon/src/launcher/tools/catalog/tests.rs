@@ -627,7 +627,8 @@ fn no_screencopy_hides_the_captures() {
         names(&cat, &cat.category_rows(at)),
         ["Screenshot", "Area", "Area (save)", "Annotate", "Stop recording", "Colour picker", "Text from area (OCR)"]
     );
-    // The category sits between Utilities and Session.
+    // The category comes after Utilities (30) and before Session (90): at 40 it is right after
+    // Utilities, ahead of Diagnostics (70) and System (80), which this check does not look at.
     let root = category_names(&cat, &cat.root_rows());
     let place = |n: &str| root.iter().position(|r| r == n).unwrap();
     assert!(place("[Utilities]") < place("[Captures]") && place("[Captures]") < place("[Session]"), "{root:?}");
