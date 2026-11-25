@@ -715,7 +715,12 @@ impl Executor for SystemExecutor {
         if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
             return Err(ExecError::Io("alpheus is shutting down".into()));
         }
-        let input = std::fs::File::open(file).map_err(|e| ExecError::Io(e.to_string()))?;
+        // Never through a link: the caller checked the file by its path, a link swapped in since must
+        // not hand the program another file.
+        let input = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(file).map_err(|e| ExecError::Io(e.to_string()))?
+        };
         let mut command = Command::new(prog);
         command
             .args(args)
@@ -730,6 +735,11 @@ impl Executor for SystemExecutor {
         // SAFETY: `unblock_signals` only makes async-signal-safe calls.
         unsafe { command.pre_exec(unblock_signals) };
         let mut child = command.spawn().map_err(io_err)?;
+        let Some(pidfd) = pidfd_open(child.id()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ExecError::Io("no pidfd for the program".into()));
+        };
         let start = Instant::now();
         loop {
             match child.try_wait() {
@@ -741,12 +751,18 @@ impl Executor for SystemExecutor {
                     return Err(ExecError::Io(e.to_string()));
                 }
             }
-            if start.elapsed() >= limit {
+            let Some(left) = limit.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) else {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(ExecError::Timeout);
+            };
+            let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
+            // Readable means ended, quiet means the limit passed: no polling.
+            if readable(std::os::fd::AsRawFd::as_raw_fd(&pidfd), ms).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ExecError::Io("the program could not be waited for".into()));
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 

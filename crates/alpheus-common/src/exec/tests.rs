@@ -259,6 +259,35 @@ fn run_with_stdin_file_names_a_missing_program_or_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The file handed to the program is never reached through a link (a link swapped in after the
+/// caller's own check): refused, nothing starts.
+#[test]
+fn run_with_stdin_file_never_follows_a_link() {
+    let dir = scratch("stdin-nofollow");
+    let (target, link, marker) = (dir.join("target"), dir.join("input"), dir.join("started"));
+    std::fs::write(&target, "secret").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let touch = format!("touch '{}'", marker.display());
+    assert!(matches!(exec().run_with_stdin_file("sh", &["-c", &touch], &link, LIMIT), Err(ExecError::Io(_))));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a link starts nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The wait for the copy command is a poll on its pidfd for the time left: no sleep loop, no zero
+/// timeout spun on (a wake-up every few milliseconds for as long as `wl-copy` takes). A timing test
+/// cannot tell a quiet wait from a polling one, so the source is read.
+#[test]
+fn run_with_stdin_file_waits_on_the_pidfd_without_polling() {
+    let source = include_str!("../exec.rs");
+    let open = source.find("O_NOFOLLOW").expect("the copy's input is opened");
+    let start = source[..open].rfind("    fn run_with_stdin_file(").expect("the executor's method");
+    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+    assert!(body.contains("pidfd_open("), "{body}");
+    assert!(body.contains("readable(std::os::fd::AsRawFd::as_raw_fd(&pidfd), ms)"), "waits on the pidfd for the time left: {body}");
+    assert!(!body.contains("thread::sleep"), "{body}");
+}
+
 /// Threads of this whole test binary (other tests may have their own,
 /// transient ones): a regression that brings back a reaper thread per
 /// `spawn` shows up as a jump of (about) N, held for as long as the N
