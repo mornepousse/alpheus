@@ -28,18 +28,20 @@ delivered before it, by the month it was merged.
   [configuration](docs/configuration.md#captures).
 - **Privacy glyph while alpheus records** (25): the privacy module's screen glyph shows `alpheus`
   while its own recorder runs, which no other source sees on Sway or Mango. [Page](docs/features/privacy.md).
-- **Kill list** (24): `alpheus-launch --kill`, or Tools › System › Kill a process, lists your
+- **Kill list** (25): `alpheus-launch --kill`, or Tools › System › Kill a process, lists your
   own processes, by memory at open and by CPU 300 ms later; Enter asks one to quit, Ctrl+Enter then
   Enter kills it. The compositor, alpheus and the session's ancestors are never offered, and a
   reused pid is never signalled. [Page](docs/features/tools-menu.md#kill-a-process).
-- **Scheduled shutdown** (24): Tools › System › Schedule shutdown or `alpheus-launch --timer shutdown
+- **Scheduled shutdown** (25): Tools › System › Schedule shutdown or `alpheus-launch --timer shutdown
   <duration>` powers off through `[quick] poweroff`, beside any timer (`⏻ 1h20 · 󰔛 25m`), always after
   a one-minute warning that a click cancels, even when the end is noticed late;
-  `--timer shutdown-cancel` cancels it. [Page](docs/features/timer.md#the-scheduled-shutdown).
-- **Typed text in the Tools menu** (24): a `[[tools.entry]]` with `ask` asks for a text and passes it
+  `--timer shutdown-cancel` cancels it. Nothing powers off while a screen locker runs: once the
+  session is unlocked the warning is given fresh, a whole minute. A power off that cannot start or
+  ends with an error shows a critical `Shutdown failed` notice. [Page](docs/features/timer.md#the-scheduled-shutdown).
+- **Typed text in the Tools menu** (25): a `[[tools.entry]]` with `ask` asks for a text and passes it
   as the one whole argument `{text}`, never through a shell, never logged nor kept in the history.
   [Page](docs/features/tools-menu.md), [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
-- **Diagnostics tools** (24): a Diagnostics category in the Tools menu with ten nmap scans (a target
+- **Diagnostics tools** (25): a Diagnostics category in the Tools menu with ten nmap scans (a target
   typed in the box, except the subnet sweep), USB events, a USB reset (`[tools.builtin] usb_reset`)
   and the Diag tab's eight journal presets, opened by the control center's new `--preset <slug>`;
   the scans, USB events and USB reset run in the held terminal, and a preset opens the control
@@ -79,22 +81,6 @@ delivered before it, by the month it was merged.
 
 #### Changed
 
-- **Scheduled shutdown waits for the unlock** (25): a shutdown that falls due while a screen locker
-  (hyprlock, swaylock, gtklock, waylock, i3lock, xsecurelock) runs gives no warning and powers
-  nothing off; once the session is unlocked the one-minute warning is given fresh, and the power
-  off comes a minute after it. A laptop that slept past the end and woke under the lock screen is
-  no longer powered off unwarned, and a lock that starts and ends inside the warning's minute gives
-  a fresh whole minute (the lock is looked at every 5 s during that minute only). Looked up only
-  then and once a minute while held; the folder read is `[timer] proc_dir`.
-  [Page](docs/features/timer.md#the-scheduled-shutdown),
-  [decision](docs/decisions.md#a-scheduled-shutdown-always-warns-a-minute-before-even-when-its-time-has-passed).
-- **A failed power off is told** (25): when `[quick] poweroff` cannot start or ends with an error (a
-  polkit refusal, an inhibitor, a missing program), a critical notice, `Shutdown` / `Shutdown failed`,
-  says so; before, only a log line did, and the shutdown had already gone from the chip and the
-  warning. The command's end is heard on its pidfd, so nothing polls or wakes while it runs; it is
-  started free and never killed with the daemon, and only a non-zero exit is a failure.
-  [Page](docs/features/timer.md#the-scheduled-shutdown),
-  [decision](docs/decisions.md#a-scheduled-shutdown-always-warns-a-minute-before-even-when-its-time-has-passed).
 - **glibc's mmap threshold pinned** (25): the daemon sets `M_MMAP_THRESHOLD` to 128 KiB at start, so a
   large block (a capture's frame) is unmapped when freed instead of staying in an arena; the launcher
   keeps 56 to 148 KB less after closing, and a user's `GLIBC_TUNABLES` threshold is overridden.
