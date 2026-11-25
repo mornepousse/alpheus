@@ -577,8 +577,22 @@ impl App {
                 true
             }
         });
-        // A panic was caught and the capture reset: the watch goes, whatever it was for.
+        // A panic was caught and the capture reset: the watch goes, whatever it was for. The reset
+        // leaves a recording alone, but without its watch nobody would hear it end: it goes too.
+        if ended.is_none() && child == Child::Recorder {
+            self.capture_recording_lost();
+        }
         if ended.unwrap_or(true) { PostAction::Remove } else { PostAction::Continue }
+    }
+
+    /// A panic while the recorder's end was read: the recording is dropped and judged failed, so it
+    /// is not live any more and the glyph goes off, rather than stay lit with a Stop that reaches
+    /// nobody. Its pidfd turned readable, so the recorder has ended and the drop only reaps it. The
+    /// notice is guarded as well: a second panic must not turn a lost recording into a crash.
+    fn capture_recording_lost(&mut self) {
+        let lost = self.capture.recording.take();
+        drop(lost);
+        self.capture_guarded("recording lost", |app| app.capture_recording_notify(Finish::RecordFailed));
     }
 
     /// The external tool ended with `exit`: what it left decides (`tools::judge`), and the flow says

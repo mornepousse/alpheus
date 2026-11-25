@@ -250,7 +250,9 @@ picker opens over it → a click → the picker closes, its frame with it → th
   (`a_recording_that_fails_or_leaves_nothing_is_a_failure`); it leaves the capture slot free
   (`a_recording_starts_once_settled_and_leaves_the_slot_free`); it lights the privacy glyph
   (`recording_lights_the_privacy_screen_glyph`, headless
-  `recording_lights_the_privacy_screen_glyph_on_the_bar`); the daemon's stop ends it with SIGINT,
+  `recording_lights_the_privacy_screen_glyph_on_the_bar`), and a panic while its end is read ends
+  the recording rather than leave the glyph lit
+  (`a_panic_reading_the_recorders_end_ends_the_recording`); the daemon's stop ends it with SIGINT,
   waits at most 2 s and never kills it (`the_daemon_stop_ends_the_recording_with_sigint`,
   `a_released_watched_program_is_not_killed`,
   `the_shutdown_grace_covers_the_recorders_stop_while_recording`,

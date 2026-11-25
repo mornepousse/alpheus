@@ -6351,3 +6351,19 @@ fn a_recording_lights_the_privacy_glyph_while_it_runs_and_its_watch_goes_with_it
         "Stop shows from the real state"
     );
 }
+
+/// A panic while the recorder's end is read removes its watch (the callback answers `Remove`), so
+/// nothing would ever hear that recording again: the recording is ended there, not live, its glyph
+/// off and judged failed, instead of staying lit with a Stop that reaches nobody.
+#[test]
+fn a_panic_reading_the_recorders_end_ends_the_recording() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let ready = function_body(&app, "fn capture_child_ready(");
+    let guarded = ready.find("self.capture_guarded(\"child\"").expect("the read is guarded");
+    let lost = ready.find("if ended.is_none() && child == Child::Recorder {").expect("a panic for the recorder is handled");
+    assert!(guarded < lost && ready[lost..].contains("self.capture_recording_lost()"), "{ready}");
+    let body = function_body(&app, "fn capture_recording_lost(");
+    let taken = body.find("self.capture.recording.take()").expect("the recording is dropped");
+    let over = body.find("app.capture_recording_notify(Finish::RecordFailed)").expect("not live, glyph off, failed");
+    assert!(taken < over, "{body}");
+}
