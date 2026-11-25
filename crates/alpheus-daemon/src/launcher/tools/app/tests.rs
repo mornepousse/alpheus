@@ -559,7 +559,7 @@ fn the_usb_events_run_the_fixed_script_in_the_held_terminal() {
 #[test]
 fn a_preset_opens_the_diag_tab_on_it_in_the_terminal() {
     use alpheus_common::diagnostics::query::Preset;
-    let bin = Bin::new("preset", &["foot", "alpheus-toggle"]);
+    let bin = Bin::new("preset", &["foot", "alpheus-toggle", "alpheus"]);
     let dirs = [bin.0.clone()];
     let quick = QuickConfig::default();
     let terminal = strings(&["foot", "-e"]);
@@ -576,4 +576,9 @@ fn a_preset_opens_the_diag_tab_on_it_in_the_terminal() {
     }
     let c = commands_with(&quick, &[], &open_tab, &[], &dirs);
     assert_eq!(builtin_argv(builtin_by_id("diag.preset.usb"), &c), Err("terminal: program not found".into()));
+    // `alpheus` itself missing from the `$PATH`: refused like any other program, never spawned.
+    let bare = Bin::new("preset-bare", &["foot"]);
+    let dirs = [bare.0.clone()];
+    let c = commands_with(&quick, &[], &open_tab, &terminal, &dirs);
+    assert_eq!(builtin_argv(builtin_by_id("diag.preset.usb"), &c), Err("alpheus: program not found".into()));
 }

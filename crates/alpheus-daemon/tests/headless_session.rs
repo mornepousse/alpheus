@@ -718,6 +718,7 @@ fn a_diag_preset_entry_opens_the_tab_on_it() {
     let sway = Sway::start("tools-diag-presets", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     let term = fake_argv_recorder(&sway, "term-rec");
+    fake_recorder(&sway, "alpheus"); // a preset runs `alpheus`, which must be on the PATH
     let hold = fake_argv_recorder(&sway, "hold-rec");
     let toml = format!("terminal = [\"{}\", \"-e\"]\nterminal_hold = [\"{}\", \"--hold\"]\n", term.display(), hold.display());
     let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });

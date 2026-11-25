@@ -232,6 +232,9 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         // `open_tab`'s script takes a tab and nothing else, so a preset always runs the TUI itself.
         BuiltinAction::Preset(preset) => {
             let Some(tab) = tools::join::DIAGNOSTICS_TAB else { return Err("nothing to run".to_string()) };
+            if !has_program(c.path_dirs, "alpheus") {
+                return Err(run::failure("alpheus", not_found()));
+            }
             let rest = ["alpheus", "--tab", tab, "--preset", preset.slug()].map(String::from).to_vec();
             return in_terminal(c.terminal, "terminal", rest, c.path_dirs);
         }

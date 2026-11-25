@@ -5926,7 +5926,7 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot"];
+    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot", "alpheus"];
     for p in programs {
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
