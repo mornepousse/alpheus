@@ -1943,7 +1943,7 @@ Date: 2026-11-24 · Source: tests `each_scan_builds_its_nmap_command`, `a_target
 A signal with a destination (a unicast to the bar's unique name) is delivered whatever the match
 rules say, and the system bus's default policy lets any local user send one: another user could
 forge `InterfacesRemoved` or `PrepareForSleep(false)` and make the bar drop a Bluetooth device or
-re-read every service. `next_signal` drops it before it reads it, as the session bus's codec does.
+re-read every service. `next_signal` drops it before it reads it. (The session bus's codec drops the unicast portal and MPRIS signals the same way; it accepts a tray signal sent unicast, and requires only `NameAcquired` and `NameLost` to come unicast from the bus driver.)
 No sender check is added on top: every service the bar listens to broadcasts, and a broadcast
 reaches the bar only through a rule whose `sender=` the bus itself resolves to the name's current
 owner, so a second table of owners kept by the bar would only copy the bus's own check.
