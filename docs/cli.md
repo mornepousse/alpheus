@@ -77,6 +77,7 @@ alpheus-launch [--toggle | --close
                | --quick [sound|wifi|bluetooth|vpn]
                | --calc | --windows | --notes
                | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
+               | --timer shutdown DURATION | --timer shutdown-cancel
                | --shield on|off|toggle|status|allow
                | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
                | --clipboard | --clipboard-clear
@@ -104,6 +105,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--windows` | open the window switcher with the previous window selected; a second `--windows` while it is open steps to the next window; it replaces any other open launcher and cancels a waiting `--dmenu` (a password prompt included); only a `--windows` within 250 ms of the switcher's own open is ignored |
 | `--notes` | open or close the quick notepad ([notes](features/notes.md)); a `--notes` less than 250 ms after the one that opened it is ignored |
 | `--timer start <duration>\|pomodoro\|stopwatch\|pause\|resume\|toggle\|stop\|skip\|popup` | drive the focus timer: a duration is `90s`, `25m`, `1h30m` or a bare number of minutes, 1 second to 24 hours; `pause`... `skip` act on whatever runs (nothing to act on is no error); `popup` opens or closes the popup under the chip, the keyboard taken without a grab (a second within 250 ms of its own open is ignored); exit 2 without the `timer` module |
+| `--timer shutdown <duration>\|shutdown-cancel` | schedule a power off that long from now (the same forms, 1 second to 24 hours), alongside any timer and replacing the shutdown pending, or cancel it: a minute before the end a critical notice says so, and a click on it cancels; at the end `[quick] poweroff` runs. An end noticed late (a laptop that woke up, a restarted bar) still warns first and powers off a minute later at the earliest ([the focus timer](features/timer.md#the-scheduled-shutdown)). Exit 2 without the `timer` module or, for `shutdown`, with `[quick] poweroff` empty; nothing to cancel is not an error |
 | `--shield on\|off\|toggle\|status\|allow` | drive [Shield mode](features/shield.md); exit 2 when `[shield]` is not set, the state cannot be read, a command is already running, or `allow` is asked with the mode off or nothing to run |
 | `--capture full\|area\|area-save` | take a screenshot: `full` copies the focused output, `area` lets you drag an area (release or Enter confirms; Esc, a right click or a click without a drag cancels, silently) and copies it, `area-save` saves it as `%Y%m%d-%H%M%S.png` in `[captures] dir`. The copy goes through `launcher.toml`'s `copy` (PNG on its standard input; the default `wl-copy` is given `--type image/png`). One notice per capture; a failure is critical and leaves the clipboard untouched. A copy counts only when the copy command exits 0 within 5 s. A verb sent while a capture runs is ignored. Exit 2 when the compositor has no screencopy |
 | `--capture pick` | the colour picker: the focused output is frozen under a zoom lens; a left click or Enter copies the pixel's colour as text (`#RRGGBB`, or `[captures] pick_format`) through `launcher.toml`'s `copy`, run as written, and one notice gives the value; Esc or a right click cancels, silently. Exit 2 when the compositor has no screencopy |
@@ -137,11 +139,11 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer`, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
-`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard` and
-`--tools` exists so that a compositor that re-fires a press bind does not close
+`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard`, `--tools` and
+`--kill` exists so that a compositor that re-fires a press bind does not close
 what it just opened.
 
 Examples:

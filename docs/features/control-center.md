@@ -36,7 +36,11 @@ after it are one per tab.
 
 `alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`, `bluetooth`, `power`,
 `displays`, `appearance`, `diagnostics`; `theme` is accepted for `appearance`, `diag` for
-`diagnostics`; see [../cli.md](../cli.md)).
+`diagnostics`; see [../cli.md](../cli.md)). `alpheus --tab diagnostics --preset <slug>` opens the Diag
+tab on one journal preset, as Enter on its row would: the slugs are `errors`, `usb`, `suspend`, `oom`,
+`thermal`, `network`, `live` and `service` (`Preset::slug` in `alpheus-common/src/diagnostics/query.rs`;
+the Tools menu's Diagnostics entries use them). A preset without `--tab diagnostics`, or an unknown
+one, is refused (exit 2).
 
 **Rail and hues.** In a terminal of at least 84 columns and 26 rows (an 87×26 window is enough) the
 tabs become a left rail: the brand, then icon, name and number per tab, the active one filled with the
@@ -77,10 +81,10 @@ serial numbers are not touched**. Read the report before copying it.
 The pieces, from the process outwards. Everything named here is in `crates/alpheus/src/`.
 
 **One loop, one worker thread.** `app/run.rs` starts the program: it reads the command line
-(`alpheus [--tab <name>]`), builds the `App` from the files in the config directory (`build_app`:
-config.toml, the theme, the keys, displays.toml; a file that cannot be read gives its default and
-a startup warning, never an error), starts the worker thread (`worker::spawn_with`) and a guard
-thread, then runs `event_loop`. Each turn of the loop:
+(`alpheus [--tab <name>] [--preset <slug>]`; a preset is opened once the `App` is built), builds the
+`App` from the files in the config directory (`build_app`: config.toml, the theme, the keys,
+displays.toml; a file that cannot be read gives its default and a startup warning, never an error),
+starts the worker thread (`worker::spawn_with`) and a guard thread, then runs `event_loop`. Each turn of the loop:
 
 0. at the top of each turn it checks `should_exit` (a stop signal) and, if set, closes;
 1. it sends the worker the requests the `App` has queued (`take_requests`);

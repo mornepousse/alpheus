@@ -1845,3 +1845,64 @@ other figure rose with it: `startup_pss_per_source` reads the same on both sides
 user's `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=…` is overridden by this call.
 
 Date: 2026-11-24 · Source: `limit_malloc_arenas` (`startup.rs`), test `at_rest_no_wakeups_after_a_screen_capture` (`tests/memory.rs`)
+
+### Only the user's own processes are offered, and a reused pid is never signalled
+
+The kill list (`alpheus-launch --kill`) lists the processes of the user alpheus runs as, and never
+PID 1, alpheus, the session leader, the compositor (found by the kernel's peer credentials of its
+socket, since a wrapped compositor runs under another name, and by its name), any ancestor of
+alpheus or of the compositor (the script that started the session, the shell that started the bar),
+or the user manager (`systemd`): ending one of those ends the session. The exclusions are worked
+out once per open and checked again when a signal is sent. A pid alone can name another program
+by the time Enter is pressed, so the list keys every row on its pid and its start time (field 22 of
+`/proc/<pid>/stat`); before a signal, a pidfd is opened on the pid, the start time is read again,
+and the signal goes through that pidfd, which names the process it was opened on for ever. A start
+time that differs sends nothing; `kill(2)` by pid is the fallback only for a kernel without
+`pidfd_open`. Enter sends SIGTERM; SIGKILL takes Ctrl+Enter and a second Enter 0.4 s to 3 s later,
+as the power menu asks. The outcome is said in the box only: no log line or notification carries a
+name, a pid or a command line.
+
+Date: 2026-11-24 · Source: tests `only_the_users_processes_are_listed`, `pid_1_alpheus_and_the_session_leader_are_never_offered`, `the_compositor_and_the_user_manager_are_never_offered_by_name`, `a_reused_pid_is_never_signalled`, `a_pid_that_could_reach_a_group_or_init_is_refused`, `an_excluded_pid_is_refused_even_when_asked_for` (`launcher/processes/tests.rs`), `ctrl_enter_asks_then_a_second_enter_kills`, `a_reused_pid_says_so_and_sends_nothing`, `every_ancestor_of_the_compositor_and_of_alpheus_is_excluded`, `only_a_kernel_without_pidfd_falls_back_to_kill`, `a_signal_without_a_pinned_process_sends_nothing` (`launcher/processes_app/tests.rs`), `the_pid_is_the_peer_of_the_socket`, `a_wedged_compositor_never_blocks_the_caller` (`sources/peer/tests.rs`), `the_kill_list_has_no_panicking_path_and_logs_fixed_words` (`tests/guardrails.rs`), `kill_list_opens_and_signals_by_enter` (`tests/headless_session.rs`)
+
+### A scheduled shutdown always warns a minute before, even when its time has passed
+
+A power off the user did not see coming is the one outcome the shutdown must never have. So the
+step after "scheduled" is always the warning (a critical notice with no timeout, `Click to cancel`,
+set apart from the notification rules), and the power off comes only after it, at the later of the
+end and the warning + 60 s: a laptop that wakes up past the end, or a bar restarted after it, warns
+first. A warning the machine slept through (more wall time than monotonic time since it, by over a
+second) or one the clock went back before no longer counts and is given again. At start a due
+warning waits for alpheus's notification server to own its name, at most 10 s; with no server the
+chip still shows the last minute and one log line says the warning was not shown. A shutdown saved
+by an earlier boot is dropped at load (the state directory outlives a reboot), as is one with no
+`[quick] poweroff` to run. Dismissing the notice does not cancel; its click does. The shutdown is a
+slot of the timer, not a timer: a Pomodoro never cancels it and it never ends one.
+
+Date: 2026-11-24 · Source: tests `the_warning_comes_sixty_seconds_before_the_end`, `a_past_shutdown_warns_first_then_powers_off`, `a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one`, `the_warning_is_a_sticky_critical_notice_with_a_cancel_action` (`timer/shutdown/tests.rs`), `a_timer_change_never_touches_the_shutdown` (`timer/tests.rs`), `the_shutdown_check_warns_then_powers_off_and_never_at_once`, `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`, `a_short_suspend_in_the_warning_minute_warns_again`, `a_shutdown_from_before_this_boot_is_dropped`, `no_poweroff_command_refuses_the_verb_and_drops_a_pending_shutdown`, `a_warning_waits_for_the_server_but_never_for_long` (`timer/app/tests.rs`), `the_shutdown_is_wired_through_one_path` (`tests/guardrails.rs`), `shutdown_warns_then_runs_poweroff`, `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`, `a_shutdown_and_a_timer_run_side_by_side` (`tests/headless_session.rs`)
+
+### A typed text is one argv element and is never logged
+
+An entry with `ask` takes what is typed in the box as an answer, not a filter, and hands it to `run`
+as the one whole element `{text}`, as `{choice}` is: spaces, quotes, `;` or a leading `-` stay inside
+that argument, and no shell is put in front. `{text}` may not be the program, nor appear in `state`
+or `choices_cmd`, and `ask` and `confirm` are refused together (the typed text is the
+confirmation). The text can be a host, a path or a secret, so it is never in a log line, the history
+(which keeps the entry and its fixed choice), a `{:?}` of the action, or another mode's query when
+the prompt is left by a click.
+
+Date: 2026-11-24 · Source: tests `the_typed_text_is_one_whole_argv_element`, `text_is_never_recorded_in_history_nor_shown_by_debug`, `a_built_ins_choice_is_recorded_under_its_key_and_its_text_never` (`launcher/run/tests.rs`), `invalid_rules_make_the_file_invalid` (`launcher/tools/config/tests.rs`), `a_typed_scan_target_never_shows_in_debug_output`, `an_empty_text_runs_nothing` (`launcher/tools/nav/tests.rs`), `a_mode_click_from_the_prompt_drops_the_typed_text` (`launcher/model/tests.rs`), `the_tools_logs_are_fixed_words` (`tests/guardrails.rs`)
+
+### The diagnostics tools run in the held terminal, and the scan's target is typed
+
+The network scans, the USB events and the USB reset run in `terminal_hold`: the output stays
+readable, and `sudo` (the UDP, OS and aggressive scans, the `modprobe` pair) asks for its password
+there, so alpheus itself never runs as root and never sees a password. A scan's target, and the
+ports of "Specific ports", are typed in the box through `ask`; each is one whole element, the target
+comes after `--` (one starting with `-` is a host, never an option), and ports are digits, commas and
+dashes only. The host discovery sweeps the subnet of the default route's interface, read from
+`/proc/net/route` (nothing parses `ip`'s output), and only a local net from /16 to /30. The USB reset
+asks a second Enter and its command is configurable (`[tools.builtin] usb_reset`, `[]` hides it). The
+two shell scripts (the USB events' two streams in one terminal, the reset's chained `modprobe`) are
+fixed and pinned; nothing typed goes into them.
+
+Date: 2026-11-24 · Source: tests `each_scan_builds_the_scripts_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_scripts` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)

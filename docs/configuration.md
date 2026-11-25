@@ -440,8 +440,12 @@ auto = true                          # apply the displays.toml profile that matc
 [clipboard]
 enabled = false           # true: follow the clipboard and keep a text history in memory (50 x 4 KiB, never a copy with a password-manager hint); read at start
 
-# [captures]              # screenshots (see the table above; `dir` empty: $XDG_PICTURES_DIR/screenshots)
-# dir = ""
+# [captures]              # screenshots and recordings (see the table above); read at start
+# dir = ""                # empty: $XDG_PICTURES_DIR/screenshots, else ~/Pictures/screenshots
+# annotate = ["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit", "--copy-command", "cat >/dev/null", "--save-after-copy", "--disable-notifications"]   # [] turns it off
+# ocr = ["tesseract", "{file}", "-", "-l", "eng"]          # its standard output is copied; [] turns it off
+# record = ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]   # stopped by SIGINT to its group; [] turns it off
+# pick_format = "{hex}"   # the colour picker's text: {r}, {g}, {b}, {hex}
 # [shield]                # Shield mode: none set, no Shield anywhere; read at start (restart the daemon after a change)
 # flag = "/var/lib/shield/on"      # absolute: the mode is on while this file exists (not in alpheus's config directory)
 # on = ["pkexec", "/usr/local/bin/shield-root", "on"]     # argv, run as given; their program asks for authorisation itself
@@ -535,7 +539,7 @@ bound the first ones are kept, with one log line of counts.
 
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `name` | string | required | 1 to 48 characters, unique, no `/`, no control character | May be a built-in category's name (`Quick settings`, `Control center`, `Utilities`, `Session`): it then restyles it. |
+| `name` | string | required | 1 to 48 characters, unique, no `/`, no control character | May be a built-in category's name (`Quick settings` 10, `Control center` 20, `Utilities` 30, `Captures` 40, `Diagnostics` 70, `System` 80, `Session` 90): it then restyles it, its `icon` and `order` replacing the built-in ones. |
 | `icon` | one character | a generic folder glyph | exactly 1 character | The row's glyph. |
 | `order` | integer | `50` | 0 to 1000 | Root rows sort by `order`, then name. |
 
@@ -581,6 +585,9 @@ hide = []            # built-in ids never shown ("tab.power", "quick.shield", ‚Ä
 root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
 
+[tools.builtin]
+usb_reset = ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]   # "Reset USB (xHCI)", in terminal_hold after a second Enter; [] hides it
+
 # --- example, not a default: no category or entry exists unless you write one ---
 [[tools.category]]   # at most 16
 name = "Nix"         # 1 to 48 characters, unique; may be a built-in category's name (it then restyles it)
@@ -595,6 +602,7 @@ run = ["my-update", "--now"]   # argv, no shell; required
 terminal = false     # true: `terminal` is put in front
 hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
 confirm = false      # true: asks "Update? ‚èé", runs on a second Enter 0.4 s to 3 s later
+# ask = "Host"       # instead of confirm: asks for a text (after the choice, if any); run then holds "{text}" once, as a whole element
 
 [[tools.entry]]
 name = "Generation"

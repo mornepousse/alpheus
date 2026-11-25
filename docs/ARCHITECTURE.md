@@ -80,8 +80,11 @@ outright read the comments too — and fails on a forbidden pattern.
    connection's files name no acting method (`d_bus_is_confined_to_sources_and_read_only`).
 5. **No command by hand.** `alpheus-common::exec::Executor` is the **only** way alpheus launches a
    system tool (`run`, `spawn`, `stream`, `capture`, `run_silent`, `spawn_with_input`,
-   `spawn_with_env`). `SystemExecutor` takes argument vectors, never a shell, and kills and reaps
-   the process group on timeout; tests use `FakeExecutor`, which records the command lines, so no
+   `run_with_stdin_file`, `spawn_with_env`, `spawn_watched`). `SystemExecutor` takes argument
+   vectors, never a shell, and kills and reaps the process group on timeout; `spawn_watched` starts a
+   long-running program (a capture's annotation editor or recognizer, the recorder) as the daemon's
+   own child and hands the loop its pidfd, which turns readable only when the program ends, so
+   nothing polls or waits for it; tests use `FakeExecutor`, which records the command lines, so no
    test calls a real `wpctl`, `nmcli` or `systemctl`. In the daemon it is wrapped in `NonBlocking`,
    which refuses `run` (it would freeze every bar).
    **Architecture invariant:** only the source runners and Shield's runner call `capture`, and
@@ -118,8 +121,9 @@ in the daemon (`dbus_stays_in_the_daemon`, `neither_zbus_nor_blocking_is_in_the_
 ## Entry points
 
 **The daemon.** `main.rs` calls `startup::run`, which installs the panic hook, limits glibc's
-malloc arenas, blocks the terminating signals before any thread exists, takes the single-instance
-lock (`lock::acquire`), binds the launcher socket and reads the configuration (`load_settings`).
+malloc arenas and pins its mmap threshold at 128 KiB (decisions: "Large blocks are always mapped on
+their own", so a capture's frame is unmapped when freed instead of staying in an arena), blocks
+the terminating signals before any thread exists, takes the single-instance lock (`lock::acquire`), binds the launcher socket and reads the configuration (`load_settings`).
 Then `build_app` loads the fonts, connects to Wayland and builds `wayland::App` and the calloop
 `EventLoop`; `insert_core_sources` adds the [mail](GLOSSARY.md#mail) channel, the clock and the
 resources timer; `start_modules` and `start_sources` start what the configured modules
@@ -192,9 +196,10 @@ does for the user.
   `spawn_source` gives a source its own small-stack thread, a backoff (1 s doubling to 30 s) and a
   "-" on a panic. Here live the compositor sessions (`hypr.rs`, `niri.rs`, `mango.rs`, `sway.rs`),
   the sound source (`sound.rs`, which reads a `pw-dump -m -N -R` child), the resources reader
-  (`resources.rs`, no thread: it runs on the loop) and the system D-Bus thread (`dbus/`, one file
-  per [domain](GLOSSARY.md#domain) plus the taps the panels use, see
-  [scope and tap](GLOSSARY.md#scope-and-tap)). Compositor detection is `alpheus-common::compositor`;
+  (`resources.rs`, no thread: it runs on the loop), the compositor's pid for the kill list
+  (`peer.rs`: the kernel's peer credentials of a connection made and dropped at once, on the loop)
+  and the system D-Bus thread (`dbus/`, one file per [domain](GLOSSARY.md#domain) plus the taps the
+  panels use, see [scope and tap](GLOSSARY.md#scope-and-tap)). Compositor detection is `alpheus-common::compositor`;
   see [`compositors.md`](compositors.md).
   **Architecture invariant:** the compositor's requests are fixed lists and read-only
   (`compositor_requests_are_read_only`, `mango_writes_only_its_request_lines`,
@@ -237,12 +242,17 @@ Each has a page in [`features/`](features/README.md) unless noted.
   The application launcher: a centred Overlay box created at open and freed at close. `host.rs`
   decides the socket's requests; `surface.rs` is the Wayland side; `socket.rs` and `socket_glue.rs`
   the socket; `scan.rs` the catalog built on a short-lived thread at each open; `tools/` (the
-  [Tools menu](features/tools-menu.md)) is a mode of the box, and `tools/join.rs` is the one file
-  that names the clipboard, Shield and diagnostics for it.
+  [Tools menu](features/tools-menu.md)) is a mode of the box, `tools/join.rs` is the one file
+  that names the clipboard, Shield and diagnostics for it, and `tools/diag.rs` builds the
+  diagnostics tools' argv (the scans, the USB events). The kill list (`alpheus-launch --kill`) is
+  another mode: `processes.rs` is pure (the `/proc` snapshot, the rows, the exclusions, the one
+  `send`, through a `Signaller` seam) and `processes_app.rs` the wiring, with one `DeadlineTimer`
+  armed only while the list is open and its second sample or a force-kill question is pending.
   **Architecture invariant:** `the_launcher_socket_is_bound_only_in_socket_rs`,
   `every_launcher_activation_stays_on_the_allowlist`,
   `every_tool_run_is_a_configured_argv_with_the_choice_whole`,
-  `the_parallel_branches_are_named_only_in_tools_join`.
+  `the_parallel_branches_are_named_only_in_tools_join`,
+  `the_kill_list_has_no_panicking_path_and_logs_fixed_words`.
 - **`notify/`** ([notifications](features/notifications.md)). The model of alpheus's own
   `org.freedesktop.Notifications` server, the bubbles (`bubbles_surface.rs`), the panel under the
   bell and the battery alerts; the server itself is `session_bus/notifications.rs`. It never
@@ -263,10 +273,27 @@ Each has a page in [`features/`](features/README.md) unless noted.
   **Architecture invariant:** `the_camera_watch_opens_nothing_under_dev`,
   `the_camera_logs_name_no_process`, `the_privacy_module_has_no_panicking_path`.
 - **`timer/`** ([the focus timer](features/timer.md), the reference feature: `mod.rs` model,
-  `app.rs` glue, `popup.rs`). One `DeadlineTimer`, armed only while a timer runs; the model reads no
-  clock.
+  `app.rs` glue, `popup.rs`) and the scheduled shutdown beside it (`shutdown.rs`, pure). Two
+  `DeadlineTimer`s: the timer's, armed only while a timer runs, and the shutdown's, armed only while a
+  shutdown is scheduled; the models read no clock.
   **Architecture invariant:** `the_timer_is_wired_through_one_path`,
-  `the_timer_has_no_panicking_path`.
+  `the_shutdown_is_wired_through_one_path`, `the_timer_has_no_panicking_path`.
+- **`captures/`** ([captures](features/captures.md)). Screenshots, the area selector, the colour
+  picker, and the external annotation, OCR and recording tools. `mod.rs` is the pure flow (one
+  capture at a time); `screencopy.rs` the only file that speaks `zwlr_screencopy_manager_v1`;
+  `select.rs` and `select_app.rs` the area selector (model and layer surface), `pick.rs` and
+  `pick_app.rs` the colour picker; `encode.rs` writes the PNG, `deliver.rs` copies or saves it,
+  `paths.rs` names the files; `tools.rs` runs the annotation and OCR tools and `record.rs` the
+  recorder, each as a watched child; `app.rs` wires it to the daemon. Nothing is held at rest: the
+  frame, the buffers and the surfaces live only while their capture does, the short-lived
+  `alpheus-capture` thread only while it encodes and copies, the frame's 5 s `DeadlineTimer` only
+  while a frame is awaited, and a watched child's pidfd only while the child runs. The clipboard is
+  touched only when the capture succeeded.
+  **Architecture invariant:** `screencopy_only_in_screencopy_rs`,
+  `the_frame_deadline_is_armed_only_while_a_frame_is_awaited`,
+  `the_capture_worker_always_mails_its_ending`,
+  `the_recording_signal_reaches_only_the_recorder_alpheus_started`,
+  `the_capture_logs_fixed_words_only`.
 - **`resources/`** ([resources](features/resources.md)). The popup's rows and graphs, from the ring
   of the last 60 samples in `system::Resources`.
   **Architecture invariant:** `the_resources_popup_has_no_panicking_path`,
@@ -349,8 +376,8 @@ The daemon is one event loop plus a few threads that block without a timeout:
 
 | Thread | What it does | Started in | Lives |
 |---|---|---|---|
-| main (the loop) | calloop: Wayland, mail, deadline timers, the socket, inotify | `startup::main_loop` | always |
-| `guard` | waits for SIGTERM, SIGHUP and SIGINT; asks the loop to stop; forces the exit after 1 s | `startup::start_guard` | always |
+| main (the loop) | calloop: Wayland, mail, deadline timers, the socket, inotify, a watched child's pidfd | `startup::main_loop` | always |
+| `guard` | waits for SIGTERM, SIGHUP and SIGINT; asks the loop to stop; forces the exit after 1 s (3 s while alpheus records) | `startup::start_guard` | always |
 | `compositor` | one compositor session, read-only | `sources::start` (`spawn_source`) | always |
 | `sound` | reads the `pw-dump -m -N -R` child's output | `sources/sound.rs` (`spawn_source`) | when the sound source is needed |
 | `D-Bus` | the system bus, one connection, blocked on it | `sources/dbus/mod.rs` | when a domain is needed |
@@ -358,6 +385,7 @@ The daemon is one event loop plus a few threads that block without a timeout:
 | the launcher's scan | applications, `$PATH`, then the command sources | `launcher/scan.rs` (`SCAN_THREAD`) | one per open, ends after delivering |
 | `alpheus-tools` | one Tools entry's state or choices | `launcher/tools/read.rs` | only while the Tools box is open |
 | `alpheus-shield` | one Shield command or device read | `shield/run.rs` | until it has reported |
+| `alpheus-capture` | cuts, encodes and copies or saves one capture's frame (or copies a tool's result) | `captures/app.rs` | until it has reported (one capture at a time) |
 | pipe readers | drain a command's output so a full pipe cannot block it | `alpheus-common/src/exec.rs` (`drain`) | until the command ends |
 
 At rest, with every module on, the daemon has **six threads**: the loop, `guard`, `compositor`, the
