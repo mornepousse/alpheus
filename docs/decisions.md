@@ -1878,7 +1878,33 @@ by an earlier boot is dropped at load (the state directory outlives a reboot), a
 `[quick] poweroff` to run. Dismissing the notice does not cancel; its click does. The shutdown is a
 slot of the timer, not a timer: a Pomodoro never cancels it and it never ends one.
 
-Date: 2026-11-24 · Source: tests `the_warning_comes_sixty_seconds_before_the_end`, `a_past_shutdown_warns_first_then_powers_off`, `a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one`, `the_warning_is_a_sticky_critical_notice_with_a_cancel_action` (`timer/shutdown/tests.rs`), `a_timer_change_never_touches_the_shutdown` (`timer/tests.rs`), `the_shutdown_check_warns_then_powers_off_and_never_at_once`, `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`, `a_short_suspend_in_the_warning_minute_warns_again`, `a_shutdown_from_before_this_boot_is_dropped`, `no_poweroff_command_refuses_the_verb_and_drops_a_pending_shutdown`, `a_warning_waits_for_the_server_but_never_for_long` (`timer/app/tests.rs`), `the_shutdown_is_wired_through_one_path` (`tests/guardrails.rs`), `shutdown_warns_then_runs_poweroff`, `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`, `a_shutdown_and_a_timer_run_side_by_side` (`tests/headless_session.rs`)
+A warning under a lock screen is not a warning: a notice sits on an overlay layer, below the
+locker, so a user who takes over a minute to unlock would be powered off unwarned (the laptop that
+slept past the end and woke under hyprlock). So a step due while the session is locked is held, the
+warning given before the lock stops counting, and the first check that finds the session unlocked
+gives the warning fresh, with its whole minute. The lock is told by a screen locker's process
+(`hyprlock`, `swaylock`, `gtklock`, `waylock`, `i3lock`, `xsecurelock`, the user's own), looked up
+when a step is due and, during the warning's minute only, every 5 s (a lock that starts and ends
+inside the minute would otherwise be missed, and the user powered off with a few seconds of
+warning left), once a minute while held, on the shutdown's existing deadline. Logind's `LockedHint`
+was set aside because the hyprlock and hypridle 0.1.7 binaries, the only ones read, never mention
+it, and its `Lock`/`Unlock` signals because hyprlock, left by its password, sends no `Unlock` (it
+does not call `loginctl unlock-session`): a state kept from them would hold the shutdown for ever.
+An unknown locker, a zombie or an unreadable `/proc` reads as unlocked, which is how the shutdown
+behaved before; the list is in `timer/lockscreen.rs`, the folder read is `[timer] proc_dir`.
+
+A power off that does not happen is not left to a log line either: the shutdown has already left
+the chip and the warning when its command runs, so a command that cannot start or ends with an error
+(a polkit refusal, an inhibitor, a missing program) would look, to the user, like a machine that
+simply did not obey. Only a non-zero exit (or a failure to start) is a failure: an end by a signal
+is the session's teardown reaching a power off that is happening. A critical notice, `Shutdown` with `Shutdown failed`, set apart from the rules
+like the warning, says so, and the shutdown is not retried. The summary names the feature and the
+body the outcome, as the captures' failures do. The command runs as a watched child whose pidfd the
+event loop hears at its end (nothing polls), the way the recorder does, but started free (no
+PDEATHSIG) and let run on when dropped: a custom command that ends the session before it returns,
+a crash or a pending polkit prompt must never cancel a power off.
+
+Date: 2026-11-24, amended 2026-11-25 · Source: tests `the_warning_comes_sixty_seconds_before_the_end`, `a_past_shutdown_warns_first_then_powers_off`, `a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one`, `the_warning_is_a_sticky_critical_notice_with_a_cancel_action` (`timer/shutdown/tests.rs`), `a_timer_change_never_touches_the_shutdown` (`timer/tests.rs`), `the_shutdown_check_warns_then_powers_off_and_never_at_once`, `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`, `a_short_suspend_in_the_warning_minute_warns_again`, `a_shutdown_from_before_this_boot_is_dropped`, `no_poweroff_command_refuses_the_verb_and_drops_a_pending_shutdown`, `a_warning_waits_for_the_server_but_never_for_long` (`timer/app/tests.rs`), `the_failure_notice_is_critical_and_says_the_shutdown_failed` (`timer/shutdown/tests.rs`), `only_a_non_zero_exit_is_a_failed_power_off`, `a_power_off_still_running_is_released_never_killed_when_dropped`, `a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock`, `a_free_watched_program_outlives_its_launching_thread_and_a_watched_one_does_not` (`alpheus-common/src/exec/tests.rs`), `the_power_off_runs_the_configured_command_and_logs_no_command`, `a_locked_session_is_never_warned_or_powered_off_until_it_unlocks`, `the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force`, `the_lock_is_sampled_only_while_the_warning_minute_runs` (`timer/app/tests.rs`), `the_known_lockers_are_told_by_name`, `a_running_locker_of_the_user_is_found`, `a_zombie_locker_holds_no_lock`, `another_users_locker_is_not_ours`, `only_numeric_folders_are_processes`, `an_unreadable_proc_is_not_locked` (`timer/lockscreen/tests.rs`), `the_shutdown_is_wired_through_one_path` (`tests/guardrails.rs`), `shutdown_warns_then_runs_poweroff`, `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`, `a_shutdown_due_while_locked_waits_for_the_unlock_then_warns`, `a_failed_power_off_shows_a_critical_notice`, `a_shutdown_and_a_timer_run_side_by_side` (`tests/headless_session.rs`)
 
 ### A typed text is one argv element and is never logged
 

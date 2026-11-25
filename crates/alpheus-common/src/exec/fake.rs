@@ -349,6 +349,11 @@ impl Executor for FakeExecutor {
         self.children.lock().unwrap().push(child.clone());
         Ok(Box::new(FakeWatched(child)))
     }
+
+    /// As `spawn_watched` (programmed with `watch_ok` or `watch_err`), recorded the same way.
+    fn spawn_watched_free(&self, prog: &str, args: &[&str]) -> Result<Box<dyn Watched>, ExecError> {
+        self.spawn_watched(prog, args, None)
+    }
 }
 
 #[cfg(test)]

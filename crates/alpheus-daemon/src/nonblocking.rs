@@ -75,6 +75,10 @@ impl<E: Executor> Executor for NonBlocking<E> {
     fn spawn_watched(&self, prog: &str, args: &[&str], stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
         self.0.spawn_watched(prog, args, stdout)
     }
+
+    fn spawn_watched_free(&self, prog: &str, args: &[&str]) -> Result<Box<dyn Watched>, ExecError> {
+        self.0.spawn_watched_free(prog, args)
+    }
 }
 
 #[cfg(test)]

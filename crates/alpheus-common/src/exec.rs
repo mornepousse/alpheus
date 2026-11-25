@@ -187,6 +187,15 @@ pub trait Executor: Send + Sync {
     fn spawn_watched(&self, _prog: &str, _args: &[&str], _stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
         Err(ExecError::Io("watched programs are not supported".into()))
     }
+
+    /// `spawn_watched` for a program that must outlive its launcher: no PDEATHSIG (it is not
+    /// interrupted when the launching thread, or the daemon, ends), standard output `/dev/null`.
+    /// For the scheduled shutdown's power off command, which may end the session before it returns
+    /// and must never be cut short by it. Its owner lets it run on (`Watched::release`) rather than
+    /// drop it. Same refusal once `stop_running` was called. Not supported by default.
+    fn spawn_watched_free(&self, _prog: &str, _args: &[&str]) -> Result<Box<dyn Watched>, ExecError> {
+        Err(ExecError::Io("watched programs are not supported".into()))
+    }
 }
 
 /// A program started by `spawn_watched`. It is our child until it is reaped here, so its pid, which
@@ -922,6 +931,24 @@ impl Executor for SystemExecutor {
     }
 
     fn spawn_watched(&self, prog: &str, args: &[&str], stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
+        self.spawn_watched_as(prog, args, stdout, true)
+    }
+
+    fn spawn_watched_free(&self, prog: &str, args: &[&str]) -> Result<Box<dyn Watched>, ExecError> {
+        self.spawn_watched_as(prog, args, None, false)
+    }
+}
+
+impl SystemExecutor {
+    /// The one start of a watched program: `die_with_parent` asks for SIGINT when the launching
+    /// thread dies (`Executor::spawn_watched`), none for `spawn_watched_free`.
+    fn spawn_watched_as(
+        &self,
+        prog: &str,
+        args: &[&str],
+        stdout: Option<&std::path::Path>,
+        die_with_parent: bool,
+    ) -> Result<Box<dyn Watched>, ExecError> {
         if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
             return Err(ExecError::Io("alpheus is shutting down".into()));
         }
@@ -949,11 +976,13 @@ impl Executor for SystemExecutor {
         unsafe {
             command.pre_exec(move || {
                 unblock_signals()?;
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGINT) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::getppid() as u32 != parent {
-                    libc::_exit(1);
+                if die_with_parent {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGINT) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() as u32 != parent {
+                        libc::_exit(1);
+                    }
                 }
                 Ok(())
             });

@@ -166,11 +166,17 @@ fn closing_the_popup_dismisses_a_done_chip_only() {
     assert_eq!(seen_at_close(&Model::Stopwatch { run: Run::Paused(5) }), None);
 }
 
-/// What a shutdown at `end` does at `now`: after one clock check (warned or not before).
+/// What a shutdown at `end` does at `now`: after one clock check (warned or not before), the
+/// session not locked.
 fn check(end: u64, warned: Option<u64>, now: u64) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
+    check_locked(end, warned, now, false)
+}
+
+/// The same check, the session `locked` or not.
+fn check_locked(end: u64, warned: Option<u64>, now: u64, locked: bool) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
     // No sleep: the monotonic clock ran as long as the wall clock since the warning.
     let mono = Duration::from_millis(warned.map_or(0, |w| now.saturating_sub(w)));
-    shutdown_step(Shutdown { end, set: T0 }, warned, mono, now)
+    shutdown_step(Shutdown { end, set: T0 }, warned, mono, now, || locked)
 }
 
 #[test]
@@ -196,18 +202,47 @@ fn the_shutdown_check_warns_then_powers_off_and_never_at_once() {
 #[test]
 fn the_power_off_runs_the_configured_command_and_logs_no_command() {
     let fake = FakeExecutor::new();
-    fake.ok("systemctl poweroff", "");
+    fake.watch_ok("systemctl", None);
     let argv = vec!["systemctl".to_string(), "poweroff".to_string()];
-    assert_eq!(spawn_poweroff(&fake, &argv), "timer: shutdown power off");
+    assert!(spawn_poweroff(&fake, &argv).is_ok());
     assert_eq!(fake.calls(), ["systemctl poweroff"]);
+    // A command that cannot start: the line says the kind, never the command.
     let mine = vec!["/home/someone/bin/off".to_string()];
     let fail = FakeExecutor::new();
-    let line = spawn_poweroff(&fail, &mine);
+    let Err(line) = spawn_poweroff(&fail, &mine) else { panic!("an unknown program cannot start") };
     assert_eq!(line, "timer: shutdown power off could not start (not found)");
     assert!(!line.contains("someone"), "{line}");
+    let io = FakeExecutor::new();
+    io.watch_err("off", ExecError::Io("/home/someone/x: busy".into()));
+    let Err(line) = spawn_poweroff(&io, &["off".to_string()]) else { panic!("a refused start") };
+    assert_eq!(line, "timer: shutdown power off could not start (io)", "a kind word, never the error's text");
     let none = FakeExecutor::new();
-    assert_eq!(spawn_poweroff(&none, &[]), "timer: shutdown has no poweroff command");
+    let Err(line) = spawn_poweroff(&none, &[]) else { panic!("no command") };
+    assert_eq!(line, "timer: shutdown has no poweroff command");
     assert!(none.calls().is_empty(), "nothing set: nothing spawned");
+}
+
+#[test]
+fn only_a_non_zero_exit_is_a_failed_power_off() {
+    assert_eq!(poweroff_end(Some(0)), ("timer: shutdown command ended".to_string(), false), "accepted: nothing to tell");
+    // A refusal, a missing program under a shell: the user is told, with a number in the log.
+    assert_eq!(poweroff_end(Some(1)), ("timer: shutdown power off failed (exit 1)".to_string(), true));
+    assert_eq!(poweroff_end(Some(127)), ("timer: shutdown power off failed (exit 127)".to_string(), true));
+    // A signal is the session's teardown reaching a power off that is really happening: not told.
+    assert_eq!(poweroff_end(None), ("timer: shutdown command ended by a signal".to_string(), false));
+}
+
+/// The power off command may end the session before it returns: when its owner goes (the daemon
+/// ends, a new power off replaces it), it is let run on, never killed.
+#[test]
+fn a_power_off_still_running_is_released_never_killed_when_dropped() {
+    let fake = FakeExecutor::new();
+    fake.watch_ok("systemctl", None);
+    let child = spawn_poweroff(&fake, &["systemctl".to_string(), "poweroff".to_string()]).unwrap_or_else(|_| panic!("it starts"));
+    let run = PowerOffRun { child: Some(child), watch: None };
+    drop(run);
+    let children = fake.children();
+    assert!(children[0].released() && !children[0].killed(), "let run on, never killed");
 }
 
 #[test]
@@ -317,17 +352,17 @@ fn a_short_suspend_in_the_warning_minute_warns_again() {
     // monotonic clock, the wall clock says end + 11.9 s. The monotonic time since the warning is
     // the minute; the wall time is 12 s more.
     let now = end + 11_900;
-    let (_, w, due) = shutdown_step(s, Some(warned), ms(60_000), now);
+    let (_, w, due) = shutdown_step(s, Some(warned), ms(60_000), now, || false);
     assert_eq!(due, Some(ShutdownStep::Warn { at: now }), "never a power off right after the resume");
     assert_eq!(w, Some(now));
     // A 3 s sleep lands inside `end + 5 s`, where the wall clock alone would power off at once.
     let now = end + 3_000;
-    assert!(matches!(shutdown_step(s, Some(warned), ms(60_000), now).2, Some(ShutdownStep::Warn { .. })));
+    assert!(matches!(shutdown_step(s, Some(warned), ms(60_000), now, || false).2, Some(ShutdownStep::Warn { .. })));
     // The same wake-up with no sleep (the deadline merely late): the two clocks agree.
-    assert_eq!(shutdown_step(s, Some(warned), ms(63_000), now).2, Some(ShutdownStep::PowerOff));
+    assert_eq!(shutdown_step(s, Some(warned), ms(63_000), now, || false).2, Some(ShutdownStep::PowerOff));
     // A second of drift between the clocks still counts as the same warning.
-    assert_eq!(shutdown_step(s, Some(warned), ms(62_000), now).2, Some(ShutdownStep::PowerOff));
-    assert!(matches!(shutdown_step(s, Some(warned), ms(61_999), now).2, Some(ShutdownStep::Warn { .. })));
+    assert_eq!(shutdown_step(s, Some(warned), ms(62_000), now, || false).2, Some(ShutdownStep::PowerOff));
+    assert!(matches!(shutdown_step(s, Some(warned), ms(61_999), now, || false).2, Some(ShutdownStep::Warn { .. })));
 }
 
 #[test]
@@ -342,4 +377,72 @@ fn a_stepped_back_clock_leaves_no_wait_behind() {
     // A warning still due keeps its wait.
     assert_eq!(deferral_after(since, true), since);
     assert_eq!(deferral_after(None, true), None);
+}
+
+/// The scenario: the laptop slept past the end, the locker came up on resume, and the user takes
+/// more than a minute to unlock. The step that is due waits for the unlock, then the warning is
+/// given fresh and the power off comes a minute after it, never before.
+#[test]
+fn a_locked_session_is_never_warned_or_powered_off_until_it_unlocks() {
+    let end = T0 + 10 * MINUTE_MS;
+    let s = Shutdown { end, set: T0 };
+    // The warning is due and the session is locked: nothing is given, the end is not moved.
+    let late = end + 3_600_000;
+    assert_eq!(check_locked(end, None, late, true), (Some(s), None, None));
+    // Still locked two minutes on, whatever the warning's minute would have been: nothing again.
+    assert_eq!(check_locked(end, None, late + 2 * MINUTE_MS, true), (Some(s), None, None));
+    // The power off is due (warned before the lock, its minute up) and the session locked since:
+    // it does not run, and the warning given before the lock no longer counts.
+    assert_eq!(check_locked(end, Some(end - 30_000), end, true), (Some(s), None, None));
+    // Unlocked at last, long after the end: the warning first, with a fresh minute.
+    let unlocked = late + 5 * MINUTE_MS;
+    let (after, warned, due) = check_locked(end, None, unlocked, false);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: unlocked }));
+    assert_eq!((after, warned), (Some(Shutdown { end: unlocked + WARN_MS, set: T0 }), Some(unlocked)));
+    // The minute after that warning, the session still unlocked: it powers off.
+    assert_eq!(check_locked(unlocked + WARN_MS, warned, unlocked + WARN_MS, false).2, Some(ShutdownStep::PowerOff));
+}
+
+/// The lookup reads `/proc`: it is made when a step is due or a warning's minute runs, and never
+/// otherwise.
+#[test]
+fn the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force() {
+    use std::cell::Cell;
+    let end = T0 + 10 * MINUTE_MS;
+    let asked = Cell::new(0);
+    let look = || {
+        asked.set(asked.get() + 1);
+        false
+    };
+    let s = Shutdown { end, set: T0 };
+    // Not warned and nothing due (the warning is minutes away): no lookup.
+    assert_eq!(shutdown_step(s, None, Duration::ZERO, T0, look).2, None);
+    assert_eq!(asked.get(), 0, "at rest, nothing is read");
+    // Warned, its minute running: one look each time the wiring asks (every few seconds).
+    assert_eq!(shutdown_step(s, Some(end - 30_000), Duration::from_secs(10), end - 20_000, look).2, None);
+    assert_eq!(asked.get(), 1, "the warning's minute is looked at");
+    // The warning, then the power off: one lookup each.
+    assert!(shutdown_step(s, None, Duration::ZERO, end - 30_000, look).2.is_some());
+    assert_eq!(asked.get(), 2);
+    assert_eq!(shutdown_step(s, Some(end - 30_000), Duration::from_secs(30), end, look).2, Some(ShutdownStep::PowerOff));
+    assert_eq!(asked.get(), 3);
+}
+
+/// A lock that starts and ends inside the warning's minute: warned at T, locked at T+5 s, unlocked
+/// at T+58 s. The lock is seen (a look in the minute), the warning stops counting, and the unlock
+/// finds a fresh whole minute, never the two seconds left of the first.
+#[test]
+fn a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock() {
+    let warned_at = T0 + 600_000;
+    let s = Shutdown { end: warned_at + WARN_MS, set: T0 };
+    // Locked five seconds in: held, and the warning is voided.
+    let (after, warned, due) = check_locked(s.end, Some(warned_at), warned_at + 5_000, true);
+    assert_eq!((after, warned, due), (Some(s), None, None));
+    // Unlocked at T+58 s, where the first minute has two seconds left: warned again, a whole minute.
+    let now = warned_at + 58_000;
+    let (after, warned, due) = check_locked(s.end, warned, now, false);
+    assert_eq!(due, Some(ShutdownStep::Warn { at: now }));
+    assert_eq!((after, warned), (Some(Shutdown { end: now + WARN_MS, set: T0 }), Some(now)));
+    // Never locked: the same minute runs to its power off.
+    assert_eq!(check_locked(s.end, Some(warned_at), s.end, false).2, Some(ShutdownStep::PowerOff));
 }

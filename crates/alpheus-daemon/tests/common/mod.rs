@@ -692,6 +692,12 @@ pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     if !text.contains("dev_dir") {
         text = under_table(&text, "privacy", &format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display()));
     }
+    // The shutdown's lock lookup reads this folder, never the machine's /proc; a test fakes a locker
+    // by writing `<pid>/comm` and `<pid>/status` in it. A base build predates `[timer] proc_dir`.
+    if !base && !text.contains("timer-proc") {
+        let timer = runtime.join("timer-proc");
+        text = under_table(&text, "timer", &format!("proc_dir = \"{}\"\n", timer.display()));
+    }
     if !base && !text.contains("drm_dir") {
         text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
     }
@@ -739,7 +745,7 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    for empty in ["privacy-dev", "privacy-proc", "displays-drm"] {
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc"] {
         fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
     fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();

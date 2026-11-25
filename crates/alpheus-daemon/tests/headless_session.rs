@@ -60,6 +60,11 @@ fn the_harness_leaves_displays_out_for_a_base_build() {
         let text = harness_bar_toml("modules = [\"clock\"]\n", runtime, base);
         assert!(text.contains("dev_dir = \"/run/test/privacy-dev\"") && text.contains("proc_dir = \"/run/test/privacy-proc\""), "{text}");
         assert_eq!(text.contains("[displays]"), !base, "{text}");
+        assert_eq!(
+            text.contains("proc_dir = \"/run/test/timer-proc\""),
+            !base,
+            "the shutdown's lock lookup never reads the machine's /proc: {text}"
+        );
         assert!(alpheus_daemon::config::BarConfig::from_text(&text).is_ok(), "{text}");
     }
     let own = harness_bar_toml("[displays]\ndrm_dir = \"/x\"\n", runtime, false);
@@ -7035,6 +7040,7 @@ fn shutdown_warns_then_runs_poweroff() {
     assert!(file.starts_with("shutdown "), "kept in the state file: {file:?}");
     // Never at once: past the original end, still nothing.
     thread::sleep(Duration::from_secs(5));
+    let shown = d.count("bubbles shown: 1");
     assert!(!sway.runtime.join("off").exists(), "powered off before its minute: {:?}", d.log());
     assert_eq!(d.count("timer: shutdown power off"), 0, "{:?}", d.log());
     // A minute after the warning it runs the command, once, and the file goes.
@@ -7043,6 +7049,39 @@ fn shutdown_warns_then_runs_poweroff() {
     wait_for_file(&sway.runtime.join("off"), DELAY);
     assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
     assert_eq!(d.count("timer: shutdown power off"), 1, "{:?}", d.log());
+    // The command's end is heard and it was clean: nothing is said to the user but the warning.
+    assert!(d.wait_for("timer: shutdown command ended", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("power off failed"), 0, "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles shown: 1"), shown, "no bubble after the warning's: {:?}", d.log());
+}
+
+/// A power off that does not happen must not vanish: the command ends with an error (a polkit
+/// refusal, an inhibitor), or cannot start (a missing program), and a second critical bubble says
+/// so after the warning's. The `[quick] poweroff` is `false`, or a program that is not there:
+/// nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_failed_power_off_shows_a_critical_notice() {
+    for (name, argv, line) in [
+        ("shutdown-fails", "[\"false\"]".to_string(), "timer: shutdown power off failed (exit 1)"),
+        ("shutdown-missing", "[\"/nonexistent/alpheus-test-off\"]".to_string(), "timer: shutdown power off could not start (not found)"),
+    ] {
+        let (_bus, sway, _hypr, d) = timer_daemon_in(name, TIMER_END_MODULES, |_| format!("[quick]\npoweroff = {argv}\n"));
+        assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+        ready(&d);
+        assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+        assert!(d.wait_for("bubbles shown: 1", DELAY), "the warning: {:?}", d.log());
+        thread::sleep(Duration::from_secs(2));
+        let shown = d.count("bubbles shown: 1");
+        assert_eq!(d.count("power off"), 0, "never before its minute: {:?}", d.log());
+        // A minute after the warning the command runs and fails; the user is told, once.
+        assert!(d.wait_for(line, Duration::from_secs(75)), "{name}: {:?}", d.log());
+        // The warning went with the power off, so the failure is the bubble that shows next.
+        assert!(wait_until(|| d.count("bubbles shown: 1") > shown), "{name}: the failure is a bubble: {:?}", d.log());
+        assert_eq!(d.count("not shown"), 0, "{name}: {:?}", d.log());
+        assert!(!sway.runtime.join("state/alpheus/timer").exists(), "{name}: the shutdown is gone, not retried");
+    }
 }
 
 /// A shutdown left on file with its end already past (the daemon started late, after a login or a
@@ -7071,6 +7110,49 @@ fn a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off() {
     assert!(d.wait_for("bubbles shown: 1", DELAY), "the warning must be seen: {:?}", d.log());
     assert_eq!(d.count("timer: shutdown power off"), 0, "no power off before the bubble: {:?}", d.log());
     assert_eq!(d.count("not shown"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+}
+
+/// A screen locker that stands in for the real one: an entry of the daemon's own fake `/proc`
+/// (`[timer] proc_dir`, the harness's `timer-proc`), which the lookup reads instead of the machine's.
+/// Returns the entry's folder; removing it is the unlock. No process runs, never the real locker.
+fn fake_locker(sway: &Sway) -> PathBuf {
+    let dir = sway.runtime.join("timer-proc/4242");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("comm"), "hyprlock\n").unwrap();
+    // SAFETY: getuid(2) takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    std::fs::write(dir.join("status"), format!("Name:\thyprlock\nState:\tS (sleeping)\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")).unwrap();
+    dir
+}
+
+/// A shutdown that falls due while the session is locked gives no warning (it would sit under the
+/// lock screen) and powers nothing off; once the locker is gone the warning comes, fresh, and the
+/// power off a minute after it. The locker is an entry of the test's own fake `/proc` folder.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_shutdown_due_while_locked_waits_for_the_unlock_then_warns() {
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-locked", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let locker = fake_locker(&sway);
+    assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: shutdown scheduled (2 s)", DELAY), "{:?}", d.log());
+    // Due at once (inside the last minute), and held: no warning, no bubble, nothing powered off.
+    assert!(d.wait_for("timer: shutdown waits for the unlock", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(d.count("timer: shutdown warning"), 0, "no warning under the lock: {:?}", d.log());
+    assert_eq!(d.count("bubbles shown"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
+    assert!(std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap().starts_with("shutdown "), "still pending");
+    // The unlock: the locker ends. The check that comes next (within a minute) warns, fresh.
+    std::fs::remove_dir_all(&locker).unwrap();
+    assert!(d.wait_for("timer: shutdown goes on after the unlock", Duration::from_secs(75)), "{:?}", d.log());
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "the warning comes first: {:?}", d.log());
     assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
 }
 

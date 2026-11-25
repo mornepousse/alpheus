@@ -1104,3 +1104,28 @@ fn a_watched_program_s_output_never_follows_a_link() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// PDEATHSIG follows the launching thread: a watched program started from a thread that then ends
+/// is interrupted, unless it was started free. The power off command is started free, so a daemon
+/// that goes (a session ended first, a crash) never cuts it short.
+#[test]
+fn a_free_watched_program_outlives_its_launching_thread_and_a_watched_one_does_not() {
+    let start = |free: bool| {
+        std::thread::spawn(
+            move || if free { exec().spawn_watched_free("sleep", &["30"]) } else { exec().spawn_watched("sleep", &["30"], None) },
+        )
+        .join()
+        .unwrap()
+        .unwrap()
+    };
+    let mut bound = start(false);
+    assert_eq!(bound.wait_exit(Duration::from_secs(3)), Some(None), "interrupted when its launching thread ended");
+    let mut free = start(true);
+    assert_eq!(free.wait_exit(Duration::from_millis(500)), None, "still running: no signal followed the thread's end");
+    // Ours: ended by its own handle, not left running.
+    assert!(free.interrupt());
+    assert_eq!(free.wait_exit(Duration::from_secs(3)), Some(None));
+    let closed = exec();
+    closed.stop_running();
+    assert!(matches!(closed.spawn_watched_free("sh", &["-c", "true"]), Err(ExecError::Io(_))), "refused once closed");
+}

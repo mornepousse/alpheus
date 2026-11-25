@@ -807,6 +807,9 @@ fn timer_defaults_and_bounds() {
     assert_eq!((d.countdown, d.work, d.short_break, d.long_break, d.rounds), (10, 25, 5, 15, 4));
     assert!(d.sound.is_empty());
     assert_eq!(d.idle, TimerIdle::Glyph);
+    assert_eq!(d.proc_dir, PathBuf::from("/proc"));
+    let c = BarConfig::from_text("[timer]\nproc_dir = \"/tmp/y\"\n").unwrap();
+    assert_eq!(c.timer.proc_dir, PathBuf::from("/tmp/y"));
     let c = BarConfig::from_text("[timer]\nwork = 50\nidle = \"hidden\"\n").unwrap();
     assert_eq!((c.timer.work, c.timer.idle), (50, TimerIdle::Hidden));
     assert_eq!(c.timer.countdown, 10, "the rest keeps its default");
@@ -825,6 +828,7 @@ fn timer_defaults_and_bounds() {
     ] {
         assert!(err(text).contains(key), "{text}: {}", err(text));
     }
+    assert!(err("[timer]\nproc_dir = \"proc\"").contains("timer.proc_dir must be an absolute path"));
     assert!(err("[timer]\nidle = \"dim\"").contains("unknown variant"));
     assert!(err("[timer]\nbeep = true").contains("beep"), "unknown key refused");
 }

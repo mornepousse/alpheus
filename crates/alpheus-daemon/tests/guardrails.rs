@@ -1765,6 +1765,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // it runs, and the recorder while it records, each removed with the child's end. A pidfd turns
         // readable only when its process ends, so it never wakes the loop before.
         ("captures/app.rs", "Generic::new", 1),
+        // The scheduled shutdown's power off command (`[quick] poweroff`), a watched child: its pidfd
+        // is on the loop from the command's start to its end, so an error exit or a refusal is told
+        // to the user instead of vanishing. Readable only when the command ends.
+        ("timer/app.rs", "Generic::new", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),
@@ -2206,6 +2210,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "timer/mod.rs",
     "timer/popup.rs",
     "timer/shutdown.rs",
+    "timer/lockscreen.rs",
     "notes/text.rs",
     "notes/lines.rs",
     "notes/keys.rs",
@@ -3763,6 +3768,37 @@ fn the_shutdown_is_wired_through_one_path() {
     assert!(check.contains("deferral_after("), "a wait for the server never outlives its warning: {check}");
     let verb = function_body(&app, "pub(crate) fn timer_verb(");
     assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
+    // A step is never taken under a lock screen: the check asks the lookup, and the pure step asks
+    // it only once a step is due (never at rest).
+    assert!(check.contains("lockscreen::session_locked(root)"), "the check looks for a locker: {check}");
+    assert!(check.contains("timer.proc_dir"), "in the configured folder, never a fixed /proc: {check}");
+    assert_eq!(app.matches("session_locked(").count(), 1, "one place looks at the lock");
+    assert_eq!(app.matches("\"/proc").count(), 1, "no /proc of its own but the boot time's");
+    assert!(step.contains("locked()"), "the step holds what is due under the lock: {step}");
+    // A power off that did not happen is told: a command that cannot start, and one that ends with
+    // an error, both end at the failure notice, and the end is heard on the loop, never waited for.
+    let arm = &check[check.find("Some(ShutdownStep::PowerOff) =>").unwrap_or(0)..];
+    assert!(arm.contains("Err(line)") && arm.contains("self.shutdown_failed()"), "a command that cannot start is told: {arm}");
+    assert!(arm.contains("self.shutdown_watch("), "the command's end is heard: {arm}");
+    let ready = function_body(&app, "fn shutdown_command_ready(");
+    assert!(ready.contains("poweroff_end(") && ready.contains("self.shutdown_failed()"), "an error exit is told: {ready}");
+    let failed = function_body(&app, "fn shutdown_failed(");
+    assert!(failed.contains("notify_exempt(shutdown::failure()"), "the failure ignores the rules: {failed}");
+    // The power off command never dies with the daemon: started free (no signal when its launcher
+    // ends), and let run on when its owner is dropped.
+    let spawn = function_body(&app, "pub(crate) fn spawn_poweroff(");
+    assert!(spawn.contains("spawn_watched_free("), "the power off is started free: {spawn}");
+    let drop_run = function_body(&app, "fn drop(&mut self)");
+    assert!(drop_run.contains(".release()") && !drop_run.contains("kill"), "dropped, it is released: {drop_run}");
+    let watch = function_body(&app, "fn shutdown_watch(");
+    assert!(watch.contains("Interest::READ") && !watch.contains(".wait_exit("), "a pidfd on the loop, never a wait: {watch}");
+    // What the lookup reads is a process's name, the user's business: it logs nothing.
+    let lock = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/timer/lockscreen.rs")).unwrap(),
+    );
+    for p in ["log(", "log::write", "println!", "dbg!"] {
+        assert!(!lock.contains(p), "{p} in the lock lookup: it logs nothing");
+    }
 }
 
 /// The names of the test functions of `source` that schedule a shutdown without configuring
@@ -3859,7 +3895,7 @@ fn the_shutdown_scan_is_not_fooled() {
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs"] {
+    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs", "timer/lockscreen.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -6365,6 +6401,11 @@ fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
         let code = production_code_without_comments(&t);
         if code.contains(".interrupt()") {
             assert_eq!(name, "captures/record.rs", "a watched child interrupted outside the recorder");
+        }
+        // The free start (no signal at its launcher's end) is the power off command's alone; this
+        // crate's executor wrapper only forwards it.
+        if code.contains("spawn_watched_free(") {
+            assert!(["timer/app.rs", "nonblocking.rs"].contains(&name.as_str()), "a free watched child in {name}");
         }
         if code.contains("spawn_watched(") {
             assert!(["captures/tools.rs", "captures/record.rs", "nonblocking.rs"].contains(&name.as_str()), "a watched child in {name}");
