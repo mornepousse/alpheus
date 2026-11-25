@@ -6313,6 +6313,11 @@ fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
         if code.contains(".interrupt()") {
             assert_eq!(name, "captures/record.rs", "a watched child interrupted outside the recorder");
         }
+        // The free start (no signal at its launcher's end) is the power off command's alone; this
+        // crate's executor wrapper only forwards it.
+        if code.contains("spawn_watched_free(") {
+            assert!(["timer/app.rs", "nonblocking.rs"].contains(&name.as_str()), "a free watched child in {name}");
+        }
         if code.contains("spawn_watched(") {
             assert!(["captures/tools.rs", "captures/record.rs", "nonblocking.rs"].contains(&name.as_str()), "a watched child in {name}");
         }
