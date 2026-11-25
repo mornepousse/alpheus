@@ -3,7 +3,7 @@
 //! executor stands in for the real one, so no program is ever started.
 
 use super::*;
-use crate::timer::shutdown::WARN_MS;
+use crate::timer::shutdown::{LOCK_SAMPLE_MS, WARN_MS};
 use crate::timer::{MAX_MS, MINUTE_MS, Run};
 use alpheus_common::exec::ExecError;
 use alpheus_common::exec::fake::FakeExecutor;
@@ -445,4 +445,74 @@ fn a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock() {
     assert_eq!((after, warned), (Some(Shutdown { end: now + WARN_MS, set: T0 }), Some(now)));
     // Never locked: the same minute runs to its power off.
     assert_eq!(check_locked(s.end, Some(warned_at), s.end, false).2, Some(ShutdownStep::PowerOff));
+}
+
+/// The deadline of a shutdown at `end`, at `now` (not warned unless `warned`), the session last
+/// seen locked at `seen`, from the instant `mono`.
+fn at_for(end: u64, warned: Option<u64>, now: u64, mono: Instant, seen: Option<Instant>) -> Option<Instant> {
+    let elapsed = Duration::from_millis(warned.map_or(0, |w| now.saturating_sub(w)));
+    shutdown_at(Some(Shutdown { end, set: T0 }), warned, elapsed, now, mono, seen, None)
+}
+
+/// A held step is looked at again within a minute of the last real look, whatever the checks in
+/// between answered from the memo: they each move the deadline a minute on, and the clock's tick
+/// lands anywhere in the first half minute, so without a cap the unlock went unseen for up to 90 s.
+#[test]
+fn a_held_step_is_looked_at_again_a_minute_after_the_last_real_look() {
+    let mono = Instant::now() + Duration::from_secs(1000); // a base far from boot: `mono - secs(120)` below never underflows
+    let end = T0 + 10 * MINUTE_MS;
+    let now = end + 3_600_000; // the warning is due, held: it would come a minute from now
+    let secs = Duration::from_secs;
+    // The last real look 25 s ago, a check answered from the memo just now: it asks a minute on
+    // (85 s after the look), the cap brings it to a minute after the look.
+    let seen = mono - secs(25);
+    assert_eq!(at_for(end, None, now, mono, Some(seen)), Some(seen + secs(60)));
+    // Not held (no lock seen): the minute from now, uncapped.
+    assert_eq!(at_for(end, None, now, mono, None), Some(mono + secs(60)));
+    // A look already further than a minute back is due at once, never in the past.
+    assert_eq!(at_for(end, None, now, mono, Some(mono - secs(120))), Some(mono));
+}
+
+/// The wall clock steps back, far before the warning, while a step is held: nothing is due and no
+/// look is made, so the stale `seen` must not cap the deadline (it would name a past instant that
+/// no check could answer, and the deadline would spin). The bookkeeping lets go at that check.
+#[test]
+fn a_clock_stepped_back_while_held_neither_caps_nor_keeps_the_hold() {
+    let mono = Instant::now() + Duration::from_secs(1000); // never underflows below
+    let end = T0 + 10 * MINUTE_MS;
+    let back = end - 5 * MINUTE_MS;
+    let seen = mono - Duration::from_secs(50);
+    // Nothing due: the deadline is the chip's next minute, not the stale look's minute (10 s on).
+    assert_eq!(at_for(end, None, back, mono, Some(seen)), Some(mono + Duration::from_millis(MINUTE_MS)));
+    // The check that follows made no look: the hold is let go, without a line.
+    assert_eq!(hold_after(None, false, true, Some(seen), mono), Hold { held: false, seen: None, line: None });
+}
+
+/// The bookkeeping the check keeps: the first locked look says so and stamps the time, one answered
+/// from the memo keeps the stamp, the unlock says so once.
+#[test]
+fn the_lock_bookkeeping_follows_the_looks() {
+    let t = Instant::now();
+    let earlier = t - Duration::from_secs(20);
+    let waits = Some("timer: shutdown waits for the unlock");
+    assert_eq!(hold_after(Some(true), false, false, None, t), Hold { held: true, seen: Some(t), line: waits });
+    assert_eq!(hold_after(Some(true), false, true, Some(earlier), t), Hold { held: true, seen: Some(t), line: None });
+    assert_eq!(hold_after(Some(true), true, true, Some(earlier), t), Hold { held: true, seen: Some(earlier), line: None });
+    let goes = Some("timer: shutdown goes on after the unlock");
+    assert_eq!(hold_after(Some(false), false, true, Some(earlier), t), Hold { held: false, seen: None, line: goes });
+    assert_eq!(hold_after(Some(false), false, false, None, t), Hold { held: false, seen: None, line: None });
+}
+
+/// The warning's minute is looked at every `LOCK_SAMPLE_MS`, the lock not being held: unchanged.
+#[test]
+fn the_warning_minute_is_still_sampled_every_few_seconds() {
+    let mono = Instant::now();
+    let end = T0 + 10 * MINUTE_MS;
+    let warned = end - 30_000;
+    assert_eq!(at_for(end, Some(warned), warned + 10_000, mono, None), Some(mono + Duration::from_millis(LOCK_SAMPLE_MS)));
+    // And the server's grace still wins when it is nearer.
+    let grace = mono + Duration::from_secs(2);
+    let s = Some(Shutdown { end, set: T0 });
+    assert_eq!(shutdown_at(s, None, Duration::ZERO, T0, mono, None, Some(grace)), Some(grace));
+    assert_eq!(shutdown_at(None, None, Duration::ZERO, T0, mono, None, Some(grace)), None, "no shutdown, no grace");
 }

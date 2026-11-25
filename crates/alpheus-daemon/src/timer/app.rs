@@ -120,6 +120,68 @@ impl Drop for PowerOffRun {
 /// (the deadline and the clock's tick) land within a moment of each other, and read `/proc` once.
 const HELD_MEMO: Duration = Duration::from_secs(30);
 
+/// The most a held step waits for its next real look, counted from the last one: the once-a-minute
+/// recheck. Every check that finds the step held (the deadline, the clock's minute tick, answered
+/// from the memo) moves the deadline a minute on, so without this cap a check that lands inside
+/// `HELD_MEMO` pushes the next real look to its own time plus a minute: up to 90 s after the last
+/// look, and an unlock goes unseen for that long.
+const HELD_RECHECK: Duration = Duration::from_millis(shutdown::WARN_MS);
+
+/// The lock bookkeeping after a clock check: whether a step is held, when the session was last
+/// really looked at, and the log line the change calls for.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Hold {
+    pub(crate) held: bool,
+    pub(crate) seen: Option<Instant>,
+    pub(crate) line: Option<&'static str>,
+}
+
+/// What the check's lookup (`looked`: None when none was made, Some(locked) otherwise; `memo` says
+/// a locked answer came from the memo) does to the bookkeeping (`held`, `seen`) at `now`. A check
+/// that made no look has nothing due and nothing held (a wall clock stepped back before the
+/// warning): whatever was held is let go, silently.
+pub(crate) fn hold_after(looked: Option<bool>, memo: bool, held: bool, seen: Option<Instant>, now: Instant) -> Hold {
+    match looked {
+        Some(true) => {
+            Hold { held: true, seen: if memo { seen } else { Some(now) }, line: (!held).then_some("timer: shutdown waits for the unlock") }
+        }
+        Some(false) if held => Hold { held: false, seen: None, line: Some("timer: shutdown goes on after the unlock") },
+        Some(false) => Hold { held, seen, line: None },
+        None => Hold { held: false, seen: None, line: None },
+    }
+}
+
+/// When the shutdown's one deadline fires: the next step, the chip's minute or the warning's next
+/// look at the lock (`shutdown::wake`), the server grace of a deferred warning, and, while a step is
+/// held (`lock_seen`, Some only then), never later than `HELD_RECHECK` after the last real look.
+/// The cap applies only while a step is due or a warning in force, the cases where a check looks at
+/// the lock: with none (a wall clock stepped back) it would name an instant nothing can answer, and
+/// the deadline would spin. It is never in the past: `mono` at the earliest.
+pub(crate) fn shutdown_at(
+    s: Option<Shutdown>,
+    warned: Option<u64>,
+    warned_elapsed: Duration,
+    now: u64,
+    mono: Instant,
+    lock_seen: Option<Instant>,
+    grace: Option<Instant>,
+) -> Option<Instant> {
+    let at = s.and_then(|s| {
+        let holds = warning_holds(&s, warned, warned_elapsed, now);
+        let at = shutdown::wake(&s, now, holds).and_then(|t| mono.checked_add(wait_for(t, now)))?;
+        let looks = holds || shutdown::next(&s, now, holds).1.is_some();
+        Some(match lock_seen {
+            Some(seen) if looks => at.min((seen + HELD_RECHECK).max(mono)),
+            _ => at,
+        })
+    });
+    let grace = grace.filter(|_| s.is_some());
+    match (at, grace) {
+        (Some(a), Some(g)) => Some(a.min(g)),
+        (a, g) => a.or(g),
+    }
+}
+
 impl TimerApp {
     pub(crate) fn new(config: &crate::config::BarConfig) -> TimerApp {
         TimerApp {
@@ -899,22 +961,11 @@ impl App {
             locked
         });
         // A step held by the lock says so once; the unlock that lets it go, once.
-        match looked {
-            Some(true) => {
-                if !self.timer.lock_held {
-                    self.timer.lock_held = true;
-                    log("timer: shutdown waits for the unlock");
-                }
-                if !memo {
-                    self.timer.lock_seen = Some(Instant::now());
-                }
-            }
-            Some(false) if self.timer.lock_held => {
-                self.timer.lock_held = false;
-                self.timer.lock_seen = None;
-                log("timer: shutdown goes on after the unlock");
-            }
-            _ => {}
+        let hold = hold_after(looked, memo, self.timer.lock_held, self.timer.lock_seen, Instant::now());
+        self.timer.lock_held = hold.held;
+        self.timer.lock_seen = hold.seen;
+        if let Some(line) = hold.line {
+            log(line);
         }
         let warn_due = matches!(due, Some(ShutdownStep::Warn { .. }));
         // Only a warning that is due waits for the server: anything else leaves no wait behind (a
@@ -1064,20 +1115,10 @@ impl App {
     /// Sets the shutdown's one deadline: the next step or chip minute while a shutdown is scheduled,
     /// none otherwise.
     fn shutdown_sync(&mut self) {
-        let now = unix_ms();
-        let at = match self.timer.shutdown {
-            Some(s) => {
-                let holds = warning_holds(&s, self.timer.warned, self.warned_elapsed(), now);
-                shutdown::wake(&s, now, holds).and_then(|t| Instant::now().checked_add(wait_for(t, now)))
-            }
-            None => None,
-        };
         // A warning waiting for the server wakes once more when the grace is spent.
-        let grace = self.timer.deferred_since.map(|t| t + SERVER_GRACE).filter(|_| self.timer.shutdown.is_some());
-        let at = match (at, grace) {
-            (Some(a), Some(g)) => Some(a.min(g)),
-            (a, g) => a.or(g),
-        };
+        let grace = self.timer.deferred_since.map(|t| t + SERVER_GRACE);
+        let lock_seen = self.timer.lock_seen.filter(|_| self.timer.lock_held);
+        let at = shutdown_at(self.timer.shutdown, self.timer.warned, self.warned_elapsed(), unix_ms(), Instant::now(), lock_seen, grace);
         if let (Some(armed), Some(at)) = (self.timer.shutdown_deadline.deadline(), at)
             && same_deadline(armed, at)
         {

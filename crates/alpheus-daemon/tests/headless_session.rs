@@ -7147,7 +7147,10 @@ fn a_shutdown_due_while_locked_waits_for_the_unlock_then_warns() {
     assert_eq!(d.count("bubbles shown"), 0, "{:?}", d.log());
     assert!(!sway.runtime.join("off").exists(), "{:?}", d.log());
     assert!(std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap().starts_with("shutdown "), "still pending");
-    // The unlock: the locker ends. The check that comes next (within a minute) warns, fresh.
+    // The unlock: the locker ends. The check that comes next warns, fresh. The last real look was
+    // before the sleep above, and a held step is looked at again a minute after it at the latest
+    // (`HELD_RECHECK`, whatever the clock's tick answered from the memo meanwhile): at most 55 s
+    // from here, so 75 s is that and 20 s of a loaded runner's margin.
     std::fs::remove_dir_all(&locker).unwrap();
     assert!(d.wait_for("timer: shutdown goes on after the unlock", Duration::from_secs(75)), "{:?}", d.log());
     assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
