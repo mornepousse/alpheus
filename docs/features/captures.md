@@ -75,8 +75,9 @@ clipboard is touched only by a result.
 privacy module's screen glyph shows `alpheus` while it records. `--capture stop`, or `Stop recording`
 in the Tools menu, ends it: the recorder finishes its file and the notice names it. A recording still
 running when the daemon stops is ended the same way (the daemon waits up to 2 s for the recorder;
-one still running then is let go, never killed, and finishes its file on its own), then the notice
-is sent; nothing is resumed after a restart.
+one still running then is let go, never killed, and finishes its file on its own). That ending is
+logged only, with no notice: the notification server is alpheus's own and stops with it. Nothing is
+resumed after a restart.
 
 **The result.** A selection is clamped to the output; one with no area is a cancel. "The screen" is
 the output the selector would cover: the focused one, else the first the compositor listed. A

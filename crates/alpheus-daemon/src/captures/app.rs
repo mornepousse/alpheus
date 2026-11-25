@@ -678,8 +678,8 @@ impl App {
 
     /// The daemon stops (`startup.rs`, before the executor's commands are killed): a tool still open
     /// is closed with its files; a recording gets SIGINT and at most `STOP_LIMIT` to finish its
-    /// file, then its notice (docs/decisions.md, "Recording is the external tool's, driven and
-    /// stopped by alpheus").
+    /// file, and its ending is logged, never notified (docs/decisions.md, "Recording is the external
+    /// tool's, driven and stopped by alpheus").
     pub(crate) fn capture_shutdown(&mut self) {
         self.capture_guarded("shutdown", App::capture_end_all);
     }
@@ -694,14 +694,16 @@ impl App {
         }
         if let Some(run) = self.capture.recording.take() {
             self.capture_unwatch(run.watch);
-            match run.recording.end_at_shutdown(STOP_LIMIT) {
-                Some(finish) => self.capture_recording_notify(finish),
+            let ending = run.recording.end_at_shutdown(STOP_LIMIT);
+            LIVE.store(false, Ordering::SeqCst);
+            self.capture_privacy(false);
+            // No notice: it would go through alpheus's own notification server, which stops with the
+            // daemon, so nobody would see it. The log word is the ending.
+            match ending {
+                Some(Finish::Recorded(_)) => log("capture: recording saved (daemon stopping)"),
+                Some(_) => log("capture: recording failed (daemon stopping)"),
                 // Still running at the limit: let go, never killed, so its ending is not known.
-                None => {
-                    LIVE.store(false, Ordering::SeqCst);
-                    self.capture_privacy(false);
-                    log("capture: recording not confirmed (shutdown)");
-                }
+                None => log("capture: recording not confirmed (daemon stopping)"),
             }
         }
     }

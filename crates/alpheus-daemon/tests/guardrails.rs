@@ -6295,7 +6295,14 @@ fn the_shutdown_ends_the_recording_before_anything_goes() {
         function_body(&app, "pub(crate) fn capture_shutdown(").contains("capture_guarded(\"shutdown\""),
         "a panic never turns a stop into a crash"
     );
-    assert!(function_body(&app, "fn capture_end_all(").contains("end_at_shutdown(STOP_LIMIT)"));
+    let end_all = function_body(&app, "fn capture_end_all(");
+    assert!(end_all.contains("end_at_shutdown(STOP_LIMIT)"));
+    // The notification server is alpheus's own and stops with it: a notice sent now is never seen,
+    // so the ending at shutdown is a log word only.
+    for never in ["capture_recording_notify(", "capture_notify(", "notice("] {
+        assert!(!end_all.contains(never), "{never} at shutdown");
+    }
+    assert!(end_all.contains("log(\"capture: recording saved (daemon stopping)\")"), "{end_all}");
 }
 
 /// While alpheus records, the privacy screen glyph is lit and the guard knows it; both go when the

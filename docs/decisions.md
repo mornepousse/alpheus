@@ -1822,7 +1822,8 @@ records. The privacy module's screen glyph shows `alpheus` while it runs (a reco
 PipeWire is seen by no other source on Sway or Mango). At the daemon's shutdown the recorder gets
 SIGINT and at most 2 s to finish its file, and the signal guard leaves that time; a recorder still
 running then is let go, never killed (a kill would leave its file unplayable), and its ending is
-logged as not confirmed; one that ended in time gets its notice. Nothing is persisted: a recording is never adopted after a restart.
+logged as not confirmed. An ending at shutdown is a log word only, never a notice: the notification
+server is alpheus's own and stops with the daemon, so nobody would see it. Nothing is persisted: a recording is never adopted after a restart.
 
 Date: 2026-11-25 · Source: tests `record_spawns_with_the_geometry_and_stop_sends_sigint_to_it_only`, `the_daemon_stop_ends_the_recording_with_sigint`, `a_recording_never_writes_over_a_file`, `a_recording_that_fails_or_leaves_nothing_is_a_failure` (`captures/record/tests.rs`), `a_released_watched_program_is_not_killed` (`alpheus-common/src/exec/tests.rs`), `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`), `the_shutdown_grace_covers_the_recorders_stop_while_recording` (`startup/tests.rs`), `the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording` (`launcher/tools/catalog/tests.rs`), `interrupt_reaches_the_watched_program_only`, `an_interrupt_is_never_sent_to_a_reaped_pid` (`alpheus-common/src/exec/tests.rs`), `the_recording_signal_reaches_only_the_recorder_alpheus_started`, `the_shutdown_ends_the_recording_before_anything_goes` (`tests/guardrails.rs`), `record_then_stop_notifies_saved`, `recording_lights_the_privacy_screen_glyph_on_the_bar`, `a_recording_running_at_the_daemon_stop_is_finished` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_recording` (`tests/memory.rs`)
 
