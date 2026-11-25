@@ -446,3 +446,19 @@ fn a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock() {
     // Never locked: the same minute runs to its power off.
     assert_eq!(check_locked(s.end, Some(warned_at), s.end, false).2, Some(ShutdownStep::PowerOff));
 }
+
+/// A held step is looked at again within a minute of the last real look, whatever the checks in
+/// between answered from the memo: they each move the deadline a minute on, and the clock's tick
+/// lands anywhere in the first half minute, so without a cap the unlock went unseen for up to 90 s.
+#[test]
+fn a_held_step_is_looked_at_again_a_minute_after_the_last_real_look() {
+    let seen = Instant::now();
+    let at = |s: u64| seen + Duration::from_secs(s);
+    // A memo-answered check 25 s in moved the deadline to 85 s: capped to the minute.
+    assert_eq!(held_wake(at(85), true, Some(seen)), at(60));
+    // A wake already sooner (the chip's minute, a grace) is kept.
+    assert_eq!(held_wake(at(20), true, Some(seen)), at(20));
+    // Nothing held, nothing capped (a stale `lock_seen` never reaches the deadline).
+    assert_eq!(held_wake(at(85), false, Some(seen)), at(85));
+    assert_eq!(held_wake(at(85), true, None), at(85));
+}

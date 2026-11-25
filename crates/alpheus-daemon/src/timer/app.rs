@@ -120,6 +120,22 @@ impl Drop for PowerOffRun {
 /// (the deadline and the clock's tick) land within a moment of each other, and read `/proc` once.
 const HELD_MEMO: Duration = Duration::from_secs(30);
 
+/// The most a held step waits for its next real look, counted from the last one: the once-a-minute
+/// recheck. Every check that finds the step held (the deadline, the clock's minute tick, answered
+/// from the memo) moves the deadline a minute on, so without this cap a check that lands inside
+/// `HELD_MEMO` pushes the next real look to its own time plus a minute: up to 90 s after the last
+/// look, and an unlock goes unseen for that long.
+const HELD_RECHECK: Duration = Duration::from_millis(shutdown::WARN_MS);
+
+/// When the shutdown's deadline next fires while a step may be held: `wake`, but never later than
+/// `HELD_RECHECK` after the last look that found the session locked (`lock_seen`, set while held).
+fn held_wake(wake: Instant, lock_held: bool, lock_seen: Option<Instant>) -> Instant {
+    match lock_seen {
+        Some(seen) if lock_held => wake.min(seen + HELD_RECHECK),
+        _ => wake,
+    }
+}
+
 impl TimerApp {
     pub(crate) fn new(config: &crate::config::BarConfig) -> TimerApp {
         TimerApp {
@@ -1072,6 +1088,8 @@ impl App {
             }
             None => None,
         };
+        // A held step is looked at again within a minute of the last real look (`HELD_RECHECK`).
+        let at = at.map(|a| held_wake(a, self.timer.lock_held, self.timer.lock_seen));
         // A warning waiting for the server wakes once more when the grace is spent.
         let grace = self.timer.deferred_since.map(|t| t + SERVER_GRACE).filter(|_| self.timer.shutdown.is_some());
         let at = match (at, grace) {
