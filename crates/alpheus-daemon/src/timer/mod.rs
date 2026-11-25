@@ -626,6 +626,7 @@ pub fn incoming(end: End, l: &Lengths) -> Option<Incoming> {
 // The timer's other two files are folders of their own, declared here: the wiring (`app.rs`) and
 // the popup (`popup.rs`).
 pub mod app;
+pub mod lockscreen;
 pub mod popup;
 pub mod shutdown;
 

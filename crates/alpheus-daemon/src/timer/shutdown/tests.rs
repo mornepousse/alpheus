@@ -138,3 +138,17 @@ fn a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one() {
     // The end passed by more than the slack, however the clocks agree.
     assert!(!warning_holds(&s, warned, ms(66_000), s.end + 6_000));
 }
+
+/// While the warning's minute runs the lock is looked at every few seconds; at rest, and before the
+/// warning, the wake is what it was.
+#[test]
+fn the_lock_is_sampled_only_while_the_warning_minute_runs() {
+    let s = Shutdown { end: T0 + 80 * MINUTE_MS, set: T0 };
+    assert_eq!(wake(&s, T0, false), Some(T0 + MINUTE_MS), "far from the end: only the chip's minute");
+    let warned_at = s.end - 60_000;
+    let w = Shutdown { end: warned_at + WARN_MS, set: T0 };
+    assert_eq!(wake(&w, warned_at, true), Some(warned_at + LOCK_SAMPLE_MS));
+    assert_eq!(wake(&w, warned_at + 57_000, true), Some(w.end), "the end comes before the next look");
+    assert_eq!(wake(&w, w.end, true), None, "nothing left once the power off is due");
+    assert_eq!(LOCK_SAMPLE_MS * 12, WARN_MS, "twelve looks a minute at most");
+}

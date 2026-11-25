@@ -86,6 +86,7 @@
 //! rounds = 4                                                # work sessions before the long break, 1 to 12
 //! sound = []                                                # argv run at each end (not under do-not-disturb); [] none
 //! idle = "glyph"                                            # "glyph" | "hidden": the chip when nothing runs
+//! proc_dir = "/proc"                                        # where the scheduled shutdown looks for a screen locker (an absolute path)
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -1123,11 +1124,23 @@ pub struct TimerConfig {
     /// Run as given at each end, never through a shell; empty: no sound.
     pub sound: Vec<String>,
     pub idle: TimerIdle,
+    /// Where the scheduled shutdown lists processes to tell a locked session (`timer/lockscreen.rs`);
+    /// only a test changes it.
+    pub proc_dir: PathBuf,
 }
 
 impl Default for TimerConfig {
     fn default() -> Self {
-        TimerConfig { countdown: 10, work: 25, short_break: 5, long_break: 15, rounds: 4, sound: Vec::new(), idle: TimerIdle::Glyph }
+        TimerConfig {
+            countdown: 10,
+            work: 25,
+            short_break: 5,
+            long_break: 15,
+            rounds: 4,
+            sound: Vec::new(),
+            idle: TimerIdle::Glyph,
+            proc_dir: PathBuf::from("/proc"),
+        }
     }
 }
 
@@ -1149,6 +1162,9 @@ fn check_timer(t: &TimerConfig) -> Result<(), String> {
     }
     if t.sound.iter().any(|a| a.contains('\0')) {
         return Err("timer.sound: an argument holds a NUL".into());
+    }
+    if !t.proc_dir.is_absolute() {
+        return Err("timer.proc_dir must be an absolute path".into());
     }
     Ok(())
 }

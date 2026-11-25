@@ -130,7 +130,7 @@ fn read_process(dir: &Path, pid: i32, uid: u32, page_kb: u64, uptime_cs: u64) ->
 }
 
 /// The real user id of a `status` file: the first number of its `Uid:` line.
-fn owner(status: &str) -> Option<u32> {
+pub(crate) fn owner(status: &str) -> Option<u32> {
     let line = status.lines().find(|l| l.starts_with("Uid:"))?;
     line.split_whitespace().nth(1)?.parse().ok()
 }

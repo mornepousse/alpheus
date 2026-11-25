@@ -60,6 +60,17 @@ stopping or skipping a timer leaves it as it is. A new duration replaces the shu
   notification server to own its name, at most 10 s. With no server at all (the `notifications`
   module off, or the wait spent) the chip still shows the last minute and one log line says the
   warning was not shown.
+- **Never under a lock screen.** A warning or a power off that falls due while a screen locker runs
+  (hyprlock, swaylock, gtklock, waylock, i3lock or xsecurelock, one of your own processes) is held:
+  the notice would sit under the lock screen, unseen, and its minute would run out behind it. The
+  log says `timer: shutdown waits for the unlock` once. The end stays past, and the check comes back
+  once a minute; the first one that finds no locker gives the warning, fresh, with its whole minute,
+  and the power off comes after it (`timer: shutdown goes on after the unlock`). A lock that starts
+  and ends inside the warning's minute counts too: during that minute only, the lock is looked at
+  every 5 s, and one found drops the warning, so the unlock gives a whole fresh minute, never the
+  few seconds left of the first. The lock is told by the locker's process, because no locker
+  tells a bar when it ends (see "How it is built"); a locker this list does not know, a zombie, or
+  a `/proc` that cannot be read, reads as not locked, which is how the shutdown behaved before.
 - **Cancelling:** the `Cancel shutdown` row of the popup, the first choice of the Tools entry
   (`Cancel shutdown (in 1h20)`), a click on the warning, or `--timer shutdown-cancel`.
 - **A restart of alpheus keeps it** (the timer's state file has its line); a reboot does not. The line
@@ -129,6 +140,7 @@ yourself needs `"timer"` added.
 | `rounds` | `4` | work sessions before the long break, 1 to 12 |
 | `sound` | `[]` | a program and its arguments, run at each end (never through a shell, never waited for); empty means no sound |
 | `idle` | `"glyph"` | `"glyph"` draws the dim glyph when nothing runs; `"hidden"` draws nothing (the `popup` verb still works) |
+| `proc_dir` | `"/proc"` | an absolute path: where the scheduled shutdown lists processes to tell a locked session; only a test changes it |
 
 A value out of range, a blank sound program or an argument holding a NUL character is refused when
 the file is read, with a message naming the key. Example:
@@ -145,9 +157,9 @@ The scheduled shutdown has no key of its own: it runs `[quick] poweroff`
 
 ## How it is built
 
-Four files in `crates/alpheus-daemon/src/timer/`, split the way alpheus splits most features: a
+Five files in `crates/alpheus-daemon/src/timer/`, split the way alpheus splits most features: a
 pure model, a pure popup, and the wiring that touches the outside world, plus the shutdown's own pure
-model.
+model and its lock lookup.
 
 - `mod.rs`: the model. The `Timer` value, every `Change`, the `End` a timer comes to, the chip, the
   next moment the chip changes, the state file's line and the notification an end becomes. It
@@ -164,7 +176,10 @@ model.
   power off first), `warned_at` (a warning moves the end to a minute away at least), `warning_holds`
   (a warning slept through no longer counts), the Tools choices, the chip text, the warning's
   notification and the state line. Like `mod.rs` it reads no clock and starts nothing.
-- The tests sit next to each file (`tests.rs`, `app/tests.rs`, `popup/tests.rs`, `shutdown/tests.rs`).
+- `lockscreen.rs`: whether the session is locked, as whether a screen locker of the user's own
+  runs. It reads `/proc` (the `comm` of each process, then the owner of a match) and nothing else.
+- The tests sit next to each file (`tests.rs`, `app/tests.rs`, `popup/tests.rs`, `shutdown/tests.rs`,
+  `lockscreen/tests.rs`).
 
 **The one deadline.** The countdown owns a single `DeadlineTimer` (a one-shot timer on the event
 loop). It is armed only while a timer runs, at the next instant anything changes: the end, the next
@@ -178,6 +193,19 @@ is scheduled, at the earliest of its warning, its end and the chip's next minute
 clock's minute tick and the load at start all go through `shutdown_check_clock`, which asks
 `shutdown_step` (the pure step) what is due; the power off is spawned in one place, in the arm of
 the `PowerOff` step, which only comes after a warning.
+
+**The lock.** `shutdown_step` asks `lockscreen::session_locked` when a step is due, and while a
+warning is in force (its minute: the shutdown's own deadline then wakes every `LOCK_SAMPLE_MS`, 5 s,
+twelve looks at most), so nothing reads `/proc` at rest or before the warning. Logind has a session
+property for this (`LockedHint`) and signals (`Lock`, `Unlock`), and none was dependable where it
+was checked: the hyprlock and hypridle 0.1.7 binaries (the only ones read) never mention the hint,
+and hyprlock does not call `loginctl unlock-session`, so a `Lock` signal would have no `Unlock`
+and a state kept from the signals would stay locked until the next boot. A locker is a process
+exactly as long as it holds the lock, so its absence is the unlock (a zombie has let go). While a
+step is held, the same deadline wakes at the minute the warning would have made (the end moved to a
+minute from now), which is the once-a-minute recheck; the clock's minute tick lands on it, and a
+look that found the session locked answers the next 30 s, so a held minute reads `/proc` once. The
+folder read is `[timer] proc_dir`, `/proc` unless a test points it at a fake tree.
 
 **The state file** is `$XDG_STATE_HOME/alpheus/timer` (owner only), one line such as
 `countdown running <end> <total>` or `pomodoro paused <left> short 2`. It is written on each change
@@ -217,9 +245,9 @@ These are enforced by tests, so a change that breaks one fails the build.
   check; the clock's tick and the load both check the shutdown; the check goes through the pure step;
   one place powers off, in the `PowerOff` arm, after the warning's; a warning moves the end a minute
   away at least; every change is saved; a due warning may wait for the notification server, whose
-  arrival re-runs the check; the boot time is read at load; and with no `poweroff` command a shutdown
-  goes before any warning.
-- `the_timer_has_no_panicking_path`: no `unwrap`, `expect` or `panic!` in the four files' production
+  arrival re-runs the check; the boot time is read at load; with no `poweroff` command a shutdown
+  goes before any warning; and the check looks for a locker in one place, which logs nothing.
+- `the_timer_has_no_panicking_path`: no `unwrap`, `expect` or `panic!` in the five files' production
   code (the state file is not ours, and the arithmetic is on wall-clock times).
 - `the_tray_spawns_no_thread`: `timer/mod.rs`, `timer/popup.rs` and `timer/shutdown.rs` start no
   thread, process or command. The list it reads is itself checked: an entry that names no file fails
@@ -232,8 +260,14 @@ These are enforced by tests, so a change that breaks one fails the build.
   `the_chip_shows_the_shutdown_before_the_timer`, `an_old_state_file_loads_without_a_shutdown`
   (`tests.rs`); `the_shutdown_check_warns_then_powers_off_and_never_at_once`,
   `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`,
-  `a_shutdown_from_before_this_boot_is_dropped`, `a_warning_waits_for_the_server_but_never_for_long`
-  (`app/tests.rs`); and, headless, `shutdown_warns_then_runs_poweroff`,
+  `a_shutdown_from_before_this_boot_is_dropped`, `a_warning_waits_for_the_server_but_never_for_long`,
+  `a_locked_session_is_never_warned_or_powered_off_until_it_unlocks`,
+  `the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force`,
+  `a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock` (`app/tests.rs`); the lookup's own
+  (`lockscreen/tests.rs`: the names, the owner, numeric folders only, an unreadable `/proc` reads as
+  not locked); and, headless, `shutdown_warns_then_runs_poweroff`,
+  `a_shutdown_due_while_locked_waits_for_the_unlock_then_warns` (its locker is an entry of a fake
+  `/proc` folder, `[timer] proc_dir`, of the test's own),
   `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`,
   `a_shutdown_is_refused_without_a_poweroff_command` and `a_shutdown_and_a_timer_run_side_by_side`,
   where `[quick] poweroff` is a `touch` of a file in the test's own runtime folder.
@@ -260,4 +294,7 @@ Measured in release, back to back with the version before it, 3 runs each (the f
 - **A scheduled shutdown (on the branch, no base: new code):** no wake-up in 5 s away from the
   minute, 4 in 65 s (the chip's minute and the test bar's clock; bound 6), 3 release runs
   (`at_rest_no_wakeups_with_a_shutdown_scheduled`); no thread, and its state is one line and a chip
-  text.
+  text. A step held by a lock screen costs a wake-up a minute and one read of `/proc`'s process
+  names, until the unlock. The warning's minute costs a wake-up every 5 s for that minute only, one
+  look at `/proc` each (`the_warning_minute_samples_the_lock_every_five_seconds_then_rests`, release: 6 loop wake-ups in 30 s
+  of the minute, 0 in 5 s after the cancel; bound 3 to 12, where a one-second tick would read 30).

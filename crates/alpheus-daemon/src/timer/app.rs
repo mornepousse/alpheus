@@ -36,6 +36,7 @@ use crate::quick::app::verb_debounced;
 use crate::session_bus::notifications::minute_now;
 use crate::state::Msg;
 use crate::state_file;
+use crate::timer::lockscreen;
 use crate::timer::popup::{TimerAction, TimerPopup};
 use crate::timer::shutdown::{self, Shutdown, ShutdownChoice, ShutdownStep, warning_holds};
 use crate::timer::{Change, End, Lengths, Phase, Timer as Model, chip_with_shutdown, incoming, length_text, saved_pair};
@@ -53,6 +54,10 @@ const WAIT_MAX_MS: u64 = 25 * 3_600_000;
 /// than re-arm it for a few milliseconds' difference, so the clock tick does not re-arm a timer
 /// already set.
 const SAME_DEADLINE: Duration = Duration::from_millis(5);
+
+/// How long a look that found the session locked answers the next ones: the two checks of a minute
+/// (the deadline and the clock's tick) land within a moment of each other, and read `/proc` once.
+const HELD_MEMO: Duration = Duration::from_secs(30);
 
 /// The timer's state on the app: the model, the `[timer]` lengths, its one deadline.
 ///
@@ -81,6 +86,12 @@ pub(crate) struct TimerApp {
     /// When a due warning first waited for the notification server to own its name. It waits at
     /// most `SERVER_GRACE`: a warning nobody can see must not start the minute.
     pub(crate) deferred_since: Option<Instant>,
+    /// A step is held because the session is locked (`lockscreen`): says so in the log once, and
+    /// again once it is let go.
+    pub(crate) lock_held: bool,
+    /// When the last look found the session locked, while a step is held: a look answered that
+    /// recently is not repeated (the deadline and the clock's tick, a moment apart, share one).
+    pub(crate) lock_seen: Option<Instant>,
     /// The warning notice's id in the notification server, while it is shown.
     pub(crate) warn_id: Option<u32>,
     /// Armed only while a shutdown is scheduled.
@@ -100,6 +111,8 @@ impl TimerApp {
             warned: None,
             warned_mono: None,
             deferred_since: None,
+            lock_held: false,
+            lock_seen: None,
             warn_id: None,
             shutdown_deadline: DeadlineTimer::new(),
         }
@@ -346,16 +359,28 @@ pub(crate) fn load(text: Option<&str>, l: &Lengths, now: u64, ctx: &LoadCtx) -> 
 /// (None once it powers off), whether it is warned, and the step due. A warning moves the end to a
 /// minute from now when it is nearer, so the power off is never sooner than a minute after the
 /// warning, and never before it.
+///
+/// `locked` says whether the session is locked. It is asked when a step is due, and while a warning
+/// is in force (its minute runs: the wiring looks every `LOCK_SAMPLE_MS`), never at rest. A step due
+/// under the lock is held: the notice would sit under the lock screen, unseen, and its minute would
+/// run out behind it. A lock seen during the minute does the same: the warning stops counting, so
+/// that the unlock, however soon, finds the end near and gives the warning again, with its whole
+/// minute.
 pub(crate) fn shutdown_step(
     s: Shutdown,
     warned: Option<u64>,
     mono_elapsed: Duration,
     now: u64,
+    locked: impl FnOnce() -> bool,
 ) -> (Option<Shutdown>, Option<u64>, Option<ShutdownStep>) {
     // A warning the machine slept through, even briefly, or that the clock went back before is as
     // good as none: it is given again, and its minute starts over.
     let holds = warning_holds(&s, warned, mono_elapsed, now);
-    match shutdown::next(&s, now, holds).1 {
+    let step = shutdown::next(&s, now, holds).1;
+    if (step.is_some() || holds) && locked() {
+        return (Some(s), None, None);
+    }
+    match step {
         Some(step @ ShutdownStep::Warn { .. }) => (Some(s.warned_at(now)), Some(now), Some(step)),
         Some(ShutdownStep::PowerOff) => (None, None, Some(ShutdownStep::PowerOff)),
         None => (Some(s), warned.filter(|_| holds), None),
@@ -789,6 +814,7 @@ impl App {
         self.timer.shutdown = after;
         self.timer.warned = None;
         self.timer.deferred_since = None;
+        self.timer.lock_held = false;
         self.shutdown_notice_close();
         self.timer_save();
         match choice {
@@ -821,6 +847,7 @@ impl App {
             self.timer.shutdown = None;
             self.timer.warned = None;
             self.timer.deferred_since = None;
+            self.timer.lock_held = false;
             self.shutdown_notice_close();
             self.timer_save();
             log(Dropped::NoPoweroff.line());
@@ -828,7 +855,32 @@ impl App {
             self.shutdown_sync();
             return;
         }
-        let (after, warned, due) = shutdown_step(s, self.timer.warned, self.warned_elapsed(), unix_ms());
+        let memo = self.timer.lock_held && self.timer.lock_seen.is_some_and(|t| t.elapsed() < HELD_MEMO);
+        let root = &self.bar.config.timer.proc_dir;
+        let mut looked = None;
+        let (after, warned, due) = shutdown_step(s, self.timer.warned, self.warned_elapsed(), unix_ms(), || {
+            let locked = memo || lockscreen::session_locked(root);
+            looked = Some(locked);
+            locked
+        });
+        // A step held by the lock says so once; the unlock that lets it go, once.
+        match looked {
+            Some(true) => {
+                if !self.timer.lock_held {
+                    self.timer.lock_held = true;
+                    log("timer: shutdown waits for the unlock");
+                }
+                if !memo {
+                    self.timer.lock_seen = Some(Instant::now());
+                }
+            }
+            Some(false) if self.timer.lock_held => {
+                self.timer.lock_held = false;
+                self.timer.lock_seen = None;
+                log("timer: shutdown goes on after the unlock");
+            }
+            _ => {}
+        }
         let warn_due = matches!(due, Some(ShutdownStep::Warn { .. }));
         // Only a warning that is due waits for the server: anything else leaves no wait behind (a
         // clock that stepped back must not keep a past grace deadline armed).

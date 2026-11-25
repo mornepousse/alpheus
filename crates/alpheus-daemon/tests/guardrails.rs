@@ -2206,6 +2206,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "timer/mod.rs",
     "timer/popup.rs",
     "timer/shutdown.rs",
+    "timer/lockscreen.rs",
     "notes/text.rs",
     "notes/lines.rs",
     "notes/keys.rs",
@@ -3763,6 +3764,20 @@ fn the_shutdown_is_wired_through_one_path() {
     assert!(check.contains("deferral_after("), "a wait for the server never outlives its warning: {check}");
     let verb = function_body(&app, "pub(crate) fn timer_verb(");
     assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
+    // A step is never taken under a lock screen: the check asks the lookup, and the pure step asks
+    // it only once a step is due (never at rest).
+    assert!(check.contains("lockscreen::session_locked(root)"), "the check looks for a locker: {check}");
+    assert!(check.contains("timer.proc_dir"), "in the configured folder, never a fixed /proc: {check}");
+    assert_eq!(app.matches("session_locked(").count(), 1, "one place looks at the lock");
+    assert_eq!(app.matches("\"/proc").count(), 1, "no /proc of its own but the boot time's");
+    assert!(step.contains("locked()"), "the step holds what is due under the lock: {step}");
+    // What the lookup reads is a process's name, the user's business: it logs nothing.
+    let lock = production_code_without_comments(
+        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/timer/lockscreen.rs")).unwrap(),
+    );
+    for p in ["log(", "log::write", "println!", "dbg!"] {
+        assert!(!lock.contains(p), "{p} in the lock lookup: it logs nothing");
+    }
 }
 
 /// No panic in the focus timer's production code (it parses a file it did not
@@ -3770,7 +3785,7 @@ fn the_shutdown_is_wired_through_one_path() {
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs"] {
+    for name in ["timer/mod.rs", "timer/app.rs", "timer/popup.rs", "timer/shutdown.rs", "timer/lockscreen.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

@@ -3714,6 +3714,41 @@ fn at_rest_no_wakeups_with_a_shutdown_scheduled() {
     assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
 }
 
+/// The warning's minute looks at the lock every 5 s (twelve a minute at most), and only that
+/// minute: a few more wake-ups than the chip's minute, never one a second, and none once the
+/// shutdown is cancelled. `[quick] poweroff` is `true`, and the shutdown is cancelled well before its
+/// minute ends: nothing real is ever powered off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_warning_minute_samples_the_lock_every_five_seconds_then_rests() {
+    require_release(cfg!(debug_assertions));
+    const BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n[quick]\npoweroff = [\"true\"]\n";
+    let bus = PrivateBus::start("shutdown-warning");
+    let (sway, _hypr, d) = start("shutdown-warning", 1, &bus, None, Some(BAR), PwDump::Silent);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    timer(&sway, TimerVerb::Shutdown(2));
+    assert!(d.wait_for("timer: shutdown warning", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(30));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups in 30 s of the warning's minute: {delta}");
+    // Six looks, the clock's tick, slack; a one-second tick would read 30.
+    assert!((3..=12).contains(&delta), "{delta} loop-thread wake-ups in 30 s of the warning's minute: {:?}", d.log());
+    timer(&sway, TimerVerb::ShutdownCancel);
+    assert!(d.wait_for("timer: shutdown cancelled", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: shutdown power off"), 0, "{:?}", d.log());
+    // Away from the clock's tick: nothing wakes once there is no shutdown.
+    away_from_the_minute(Duration::from_secs(10));
+    std::thread::sleep(Duration::from_secs(1));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop-thread wake-ups after the cancel (5 s): {delta}");
+    assert_eq!(delta, 0, "{delta} loop-thread wake-ups at rest after the warning's minute: {:?}", d.log());
+}
+
 /// A running countdown wakes the loop about once a minute (the chip's change), the
 /// clock's own tick aside, never each second.
 #[test]

@@ -150,17 +150,21 @@ pub fn next(s: &Shutdown, now: u64, warned: bool) -> (Option<u64>, Option<Shutdo
     (Some(warn_at), None)
 }
 
-/// The next instant the wiring must look at the shutdown: a step, or the chip's next minute. None
-/// once the power off is due (nothing left to wait for).
+/// How often the lock is looked at while the warning's minute runs: a lock that starts and ends
+/// inside the minute would otherwise go unseen, and the user would be powered off with a few
+/// seconds of warning at the end of it. Twelve looks a minute, only during that minute.
+pub const LOCK_SAMPLE_MS: u64 = 5_000;
+
+/// The next instant the wiring must look at the shutdown: a step, the chip's next minute, and, while
+/// the warning's minute runs, the next look at the lock. None once the power off is due (nothing
+/// left to wait for).
 pub fn wake(s: &Shutdown, now: u64, warned: bool) -> Option<u64> {
     let (step, _) = next(s, now, warned);
     // The chip's text changes when the time left falls to one minute fewer. Past the end there is
     // nothing to show, and the step alone decides.
     let tick = (now < s.end).then(|| countdown_tick(s.end, now, MINUTE_MS));
-    match (step, tick) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    let sample = (warned && now < s.end).then(|| now.saturating_add(LOCK_SAMPLE_MS));
+    [step, tick, sample].into_iter().flatten().min()
 }
 
 /// The Tools menu's choices, in order: while a shutdown is pending, a first choice that cancels it

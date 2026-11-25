@@ -250,6 +250,7 @@ button there too). See
 | `rounds` | integer | `4` | 1 to 12 | Work sessions before the long break. |
 | `sound` | command | `[]` | non-blank program, no NUL | Run at each end (not under do-not-disturb), for example `["pw-play", "/path/bell.oga"]`; `[]`: none. |
 | `idle` | `"glyph"` or `"hidden"` | `"glyph"` | | The chip when nothing runs: a dim glyph, or nothing drawn. |
+| `proc_dir` | absolute path | `"/proc"` | absolute | Where the scheduled shutdown lists processes to tell a locked session (a screen locker running). Only a test changes it. |
 
 See [the focus timer](features/timer.md).
 
@@ -432,6 +433,7 @@ long_break = 15
 rounds = 4           # work sessions before the long break (1 to 12)
 sound = []           # an argv run at each end (not under do-not-disturb), e.g. ["pw-play", "/path/bell.oga"]; [] none
 idle = "glyph"       # "glyph" | "hidden": the chip when nothing runs
+proc_dir = "/proc"     # where the scheduled shutdown looks for a screen locker
 
 [displays]
 auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change
