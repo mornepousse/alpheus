@@ -1937,3 +1937,25 @@ it opens the control center on that preset (`alpheus --tab diagnostics --preset 
 nothing else.
 
 Date: 2026-11-24 · Source: tests `each_scan_builds_its_nmap_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_fixed_one` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)
+
+### A system-bus signal is heard only when it is a broadcast
+
+A signal with a destination (a unicast to the bar's unique name) is delivered whatever the match
+rules say, and the system bus's default policy lets any local user send one: another user could
+forge `InterfacesRemoved` or `PrepareForSleep(false)` and make the bar drop a Bluetooth device or
+re-read every service. `next_signal` drops it before it reads it. (The session bus's codec drops the unicast portal and MPRIS signals the same way; it accepts a tray signal sent unicast, and requires only `NameAcquired` and `NameLost` to come unicast from the bus driver.)
+No sender check is added on top: every service the bar listens to broadcasts, and a broadcast
+reaches the bar only through a rule whose `sender=` the bus itself resolves to the name's current
+owner, so a second table of owners kept by the bar would only copy the bus's own check.
+
+Date: 2026-11-25 · Source: tests `a_unicast_signal_is_never_heard` (`sources/dbus/dbusrs_bus.rs`), `a_unicast_signal_to_the_bar_is_never_heard` (`tests/dbus_private_bus.rs`, private bus), guardrail `d_bus_is_confined_to_sources_and_read_only`
+
+### A Bluetooth removal is confirmed by a read
+
+An `InterfacesRemoved` for a listed device is not taken as the device's word: the panel reads the
+device once, as it does for an addition, and drops the row only when BlueZ no longer has the
+object. A removal nobody confirms would end a pairing in progress, since the panel finishes the
+action of a device that left the list and BlueZ's pending confirmation is then rejected. The signal
+of a device the panel does not list reads nothing.
+
+Date: 2026-11-25 · Source: tests `removed_device_goes`, `a_removal_the_service_denies_keeps_the_device` (`sources/dbus/bt.rs`)

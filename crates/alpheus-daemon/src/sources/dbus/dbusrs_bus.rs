@@ -13,6 +13,8 @@
 //! - build a call outside `Method`: every one goes through `message` and `call`, which the counts
 //!   of that guardrail pin (one `send_with_reply_and_block`, one `new_method_call`, one `.send(`,
 //!   one `.error(`);
+//! - hear a signal that has a destination: only a broadcast, which a rule matched, is read
+//!   (`broadcast`; docs/decisions.md, "A system-bus signal is heard only when it is a broadcast");
 //! - request a name, add a match rule outside the pinned list, or serve a method: the daemon is a
 //!   client here, and the one reply it builds is the refusal of a call to the bar.
 //!
@@ -233,6 +235,9 @@ fn error(e: dbus::Error) -> io::Error {
         "org.freedesktop.DBus.Error.Disconnected" => io::ErrorKind::UnexpectedEof,
         // A profile NetworkManager will not show this user (GetSettings): not ours.
         "org.freedesktop.NetworkManager.Settings.PermissionDenied" => io::ErrorKind::PermissionDenied,
+        // GetAll of an interface the object no longer has (BlueZ, after InterfacesRemoved): the
+        // interface is gone, which `bt.rs` reads as the device gone. Never logged as an absence.
+        "org.freedesktop.DBus.Error.InvalidArgs" => io::ErrorKind::InvalidInput,
         _ => kind_of(name),
     };
     io::Error::new(kind, text)
@@ -514,6 +519,13 @@ pub fn signal(m: &Message) -> Signal {
     }
 }
 
+/// Whether a signal was broadcast, as every signal of a service the rules name is. One with a
+/// destination (a unicast to the bar's unique name) is delivered whatever the match rules say, and
+/// the bus's default policy lets any local user send one: it is dropped here, never read.
+fn broadcast(m: &Message) -> bool {
+    m.destination().is_none()
+}
+
 /// The message of a call, never allowed to auto-start its destination: a
 /// second lock on D-Bus activation, besides calling unique names only.
 /// `Message::new_method_call` takes its arguments through `Into<BusName>` /
@@ -702,6 +714,7 @@ impl Bus for DbusRsBus {
                     MessageType::Signal if m.interface().is_some_and(|i| &*i == "org.freedesktop.DBus.Local") => {
                         return Err(closed());
                     }
+                    MessageType::Signal if !broadcast(&m) => {}
                     MessageType::Signal => return Ok(signal(&m)),
                     // Refused at once, never left queued (the queue would only grow).
                     MessageType::MethodCall if !m.get_no_reply() => {
@@ -850,6 +863,7 @@ mod tests {
         assert_eq!(kind("org.freedesktop.DBus.Error.Disconnected"), io::ErrorKind::UnexpectedEof);
         assert_eq!(kind("org.freedesktop.DBus.Error.FileNotFound"), io::ErrorKind::Other, "no socket: an outage, not an absence");
         assert_eq!(kind("org.freedesktop.DBus.Error.AccessDenied"), io::ErrorKind::Other);
+        assert_eq!(kind("org.freedesktop.DBus.Error.InvalidArgs"), io::ErrorKind::InvalidInput, "no such interface on a live object");
         assert_eq!(kind("org.freedesktop.NetworkManager.Settings.PermissionDenied"), io::ErrorKind::PermissionDenied, "not ours");
         assert_eq!(kind("org.freedesktop.DBus.Error.MatchRuleNotFound"), io::ErrorKind::NotFound, "a rule already gone");
         let gone = |name: &str| super::super::is_service_gone(&error(dbus::Error::new_custom(name, "text")));
@@ -1168,6 +1182,18 @@ mod tests {
         );
         assert_eq!(removed.arg0.as_deref(), Some(DEV));
         assert_eq!(removed.names, ["org.bluez.Device1"]);
+    }
+
+    #[test]
+    fn a_unicast_signal_is_never_heard() {
+        let sent = |to: Option<&str>| {
+            let mut m = Message::new_signal("/org/bluez/hci0", "org.freedesktop.DBus.ObjectManager", "InterfacesRemoved").unwrap();
+            m.set_destination(to.map(|t| BusName::new(t).unwrap()));
+            m
+        };
+        assert!(broadcast(&sent(None)), "a broadcast, which a rule matched, is heard");
+        assert!(!broadcast(&sent(Some(":1.77"))), "a signal addressed to us bypassed the rules: dropped");
+        assert!(!broadcast(&sent(Some("org.example.Bar"))), "whatever the kind of destination");
     }
 
     #[test]

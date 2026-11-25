@@ -94,6 +94,38 @@ fn a_simulated_resume_is_recognized_as_a_wake() {
     assert!(wake, "PrepareForSleep(false), heard through LOGIN1_RULE");
 }
 
+/// Any local user may send the bar a signal addressed to its unique name, whatever its match rules
+/// say: it is never heard, while the broadcast that follows it is.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn a_unicast_signal_to_the_bar_is_never_heard() {
+    let b = PrivateBus::start("unicast");
+    let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
+    let me = bus.unique_name().to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(s) = bus.next_signal() {
+            if tx.send((s.is_wake(), s.member)).is_err() {
+                return;
+            }
+        }
+    });
+    let other = Peer::connect(&b);
+    other.own("org.freedesktop.login1");
+    let (path, interface) = ("/org/freedesktop/login1", "org.freedesktop.login1.Manager");
+    other.emit_to(&me, path, interface, "PrepareForSleep", false);
+    // The marker, broadcast after the forgery (the bus keeps their order): heard, and nothing before
+    // it was a wake.
+    other.emit(path, interface, "PrepareForSleep", true);
+    loop {
+        let (wake, member) = rx.recv_timeout(Duration::from_secs(5)).expect("the broadcast marker is heard");
+        assert!(!wake, "the unicast PrepareForSleep(false) was heard as a wake");
+        if member == "PrepareForSleep" {
+            break;
+        }
+    }
+}
+
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
 fn nothing_can_be_activated_on_the_private_bus() {

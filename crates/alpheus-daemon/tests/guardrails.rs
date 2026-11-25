@@ -1850,6 +1850,15 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert_eq!(code.matches("Message::new_method_call(").count(), 1, "every call is built by `message`, from a `Method`");
     assert_eq!(code.matches(".send(").count(), 1, "the only other message sent: the refusal of a call to the bar");
     assert_eq!(code.matches(".error(").count(), 1, "that refusal is an error reply");
+    // A unicast signal (a destination) bypasses the match rules and any local user may send one:
+    // `next_signal` drops it before `signal` ever reads it.
+    assert!(
+        code.contains("fn broadcast(m: &Message) -> bool {\n    m.destination().is_none()\n}"),
+        "a signal is heard only when broadcast"
+    );
+    let (dropped, read) =
+        (code.find("MessageType::Signal if !broadcast(&m) => {}"), code.find("MessageType::Signal => return Ok(signal(&m))"));
+    assert!(dropped.is_some() && dropped < read, "next_signal drops a unicast signal before it reads one");
     for never in [
         "new_signal(",
         "method_return(",

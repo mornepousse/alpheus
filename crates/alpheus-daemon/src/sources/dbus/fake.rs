@@ -84,6 +84,8 @@ pub struct FakeBus {
     /// out), to prove a domain's own read failing this way is tagged
     /// `Outage::Bus`, not `Outage::Domain`.
     pub disconnecting: BTreeSet<String>,
+    /// Paths whose interface is gone while the object stays: `InvalidArgs`, as BlueZ answers.
+    pub no_interface: BTreeSet<String>,
     pub bluez: Objects,
     pub devices: Vec<String>,
     /// NetworkManager's GetDevices answer; None: not there (the recording has none): NotFound.
@@ -134,6 +136,7 @@ impl FakeBus {
             props: BTreeMap::new(),
             failing: BTreeSet::new(),
             disconnecting: BTreeSet::new(),
+            no_interface: BTreeSet::new(),
             bluez: Objects::new(),
             devices: Vec::new(),
             nm_devices: None,
@@ -329,6 +332,9 @@ impl Bus for FakeBus {
         }
         if self.failing.contains(path) {
             return Err(io::Error::other(format!("timeout: {path}")));
+        }
+        if self.no_interface.contains(path) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("InvalidArgs: {path}")));
         }
         self.props
             .get(&(path.to_string(), interface.to_string()))
