@@ -257,7 +257,7 @@ Measured in release, back to back with the version before it, 3 runs each (the f
   65 s; a one-second tick would read 68); with the popup open, two per second (the tick and the
   previous buffer's release), and none after it closes by a click
   (`timer_popup_ticks_each_second_only_while_open`).
-- **A scheduled shutdown** (on the branch, no base: new code)**:** no wake-up in 5 s away from the
+- **A scheduled shutdown (on the branch, no base: new code):** no wake-up in 5 s away from the
   minute, 4 in 65 s (the chip's minute and the test bar's clock; bound 6), 3 release runs
   (`at_rest_no_wakeups_with_a_shutdown_scheduled`); no thread, and its state is one line and a chip
   text.

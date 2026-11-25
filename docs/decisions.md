@@ -1905,7 +1905,7 @@ asks a second Enter and its command is configurable (`[tools.builtin] usb_reset`
 two shell scripts (the USB events' two streams in one terminal, the reset's chained `modprobe`) are
 fixed and pinned; nothing typed goes into them. A journal preset is no diagnostics tool of this kind:
 it opens the control center on that preset (`alpheus --tab diagnostics --preset <slug>`) in
-`launcher.toml`'s plain `terminal`, never through `[actions] open_tab`, whose script takes a tab and
+`launcher.toml`'s plain `terminal`, never through `[actions] open_tab`, whose command takes a tab and
 nothing else.
 
 Date: 2026-11-24 · Source: tests `each_scan_builds_the_scripts_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_scripts` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)
