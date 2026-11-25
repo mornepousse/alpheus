@@ -7092,7 +7092,9 @@ fn a_shutdown_is_refused_without_a_poweroff_command() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_shutdown_and_a_timer_run_side_by_side() {
-    let (_bus, sway, _hypr, d) = timer_daemon("shutdown-both", TIMER_END_MODULES, "");
+    let (_bus, sway, _hypr, d) = timer_daemon_in("shutdown-both", TIMER_END_MODULES, |s| {
+        format!("[quick]\npoweroff = [\"touch\", \"{}\"]\n", s.runtime.join("off").display())
+    });
     ready(&d);
     let file = || std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap_or_default();
     assert_eq!(timer_verb(&sway, &["--timer", "shutdown", "2h"]), (EXIT_OK, String::new(), String::new()));

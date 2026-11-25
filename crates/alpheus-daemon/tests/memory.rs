@@ -3583,6 +3583,8 @@ const TIMER_BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n";
 /// The chip alone before the clock, so it sits at cell 1 (the headless tests' `TIMER_AT`).
 const TIMER_CHIP_FIRST_BAR: &str = "modules = [\"timer\", \"clock\"]\n";
 const TIMER_CHIP: (u32, u32) = (12, 10);
+/// `TIMER_BAR` with a harmless `[quick] poweroff` (a daemon on the default would run the real one).
+const TIMER_POWEROFF_BAR: &str = "modules = [\"workspaces\", \"timer\", \"clock\"]\n[quick]\npoweroff = [\"true\"]\n";
 const NO_TIMER_BAR: &str = "modules = [\"workspaces\", \"clock\"]\n";
 
 /// One `alpheus-launch --timer <verb>` on the socket (no key is ever pressed: SCTK's repeat timer,
@@ -3688,7 +3690,7 @@ fn at_rest_no_wakeups_with_the_timer_idle_or_paused() {
 fn at_rest_no_wakeups_with_a_shutdown_scheduled() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("shutdown-rest");
-    let (sway, _hypr, d) = start("shutdown-rest", 1, &bus, None, Some(TIMER_BAR), PwDump::Silent);
+    let (sway, _hypr, d) = start("shutdown-rest", 1, &bus, None, Some(TIMER_POWEROFF_BAR), PwDump::Silent);
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
     const REST: Duration = Duration::from_secs(5);
