@@ -238,7 +238,9 @@ picker opens over it → a click → the picker closes, its frame with it → th
   `a_tool_closed_without_output_is_silent_and_a_failed_one_is_critical`,
   `a_recognition_copies_the_text_and_its_notice_never_holds_it`; headless:
   `annotate_copies_what_the_tool_wrote`, `ocr_copies_the_text_the_tool_printed`); the private files are
-  owner-only and go on every path (`temp_files_are_0600_and_removed`); a tool runs as a watched child
+  owner-only and go on every path (`temp_files_are_0600_and_removed`; the annotated image too when the
+  worker panics or never starts: `a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`,
+  `an_annotated_image_the_worker_never_runs_is_removed`); a tool runs as a watched child
   (`a_watched_program_signals_its_end_on_its_descriptor_and_gives_its_code` and its neighbours in
   `alpheus-common/src/exec/tests.rs`).
 - The recording: the geometry and the free file are whole arguments, the stop reaches the recorder only

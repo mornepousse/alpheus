@@ -108,12 +108,33 @@ pub enum Work {
     Recognised(String),
 }
 
+impl Work {
+    /// The private file this work owns, which goes on every path once it is handed over: the
+    /// annotation tool's image. None for the others (they hold their bytes, not a file).
+    pub fn private_file(&self) -> Option<&str> {
+        match self {
+            Work::Annotated(name) => Some(name),
+            _ => None,
+        }
+    }
+}
+
+/// Removes the private file `name` (`Work::private_file`) of a work the worker never ran or gave up
+/// on: a thread that could not start, a panic.
+pub fn remove_unrun(temp_dir: &Path, name: Option<&str>) {
+    if let Some(name) = name {
+        let _ = remove_private(temp_dir, name);
+    }
+}
+
 /// The whole job: render, then deliver; or copy the picked value. A frame that renders to nothing
 /// is `CaptureFailed`, and then nothing is copied or saved.
 ///
 /// A panic anywhere in it (the executor included) is caught: the capture ends as `CaptureFailed`
 /// and the private file is removed, so the flow is never left waiting for a worker that is gone.
 pub fn run(exec: &dyn Executor, work: Work, d: &Delivery) -> Finish {
+    // Taken before the work goes into the job: a panic there must still remove it.
+    let owned = work.private_file().map(str::to_owned);
     let done = catch_unwind(AssertUnwindSafe(|| match work {
         Work::Image { frame, area } => {
             let png = render(&frame, area);
@@ -148,6 +169,7 @@ pub fn run(exec: &dyn Executor, work: Work, d: &Delivery) -> Finish {
         if let Some(input) = d.tool_input {
             let _ = remove_private(d.temp_dir, input);
         }
+        remove_unrun(d.temp_dir, owned.as_deref());
         Finish::CaptureFailed
     })
 }

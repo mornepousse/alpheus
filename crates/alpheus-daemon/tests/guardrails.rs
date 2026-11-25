@@ -4921,6 +4921,25 @@ fn the_capture_worker_always_mails_its_ending() {
     assert!(function_body(&deliver, "pub fn run(").contains("catch_unwind("), "a panic in the job is caught");
 }
 
+/// The annotated image handed to the worker is removed on each path where the worker never runs it:
+/// no job or no mail (the early return), and a thread that cannot start. A panic in the job removes it
+/// too (`a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file`).
+#[test]
+fn an_annotated_image_the_worker_never_runs_is_removed() {
+    let app = production_code_without_comments(&captures_file("captures/app.rs"));
+    let deliver_fn = function_body(&app, "fn capture_deliver(");
+    let named = deliver_fn.find("let owned = work.private_file().map(str::to_owned);").expect("the work's file is named first");
+    let remove = "remove_unrun(&temp_dir, owned.as_deref());";
+    assert_eq!(deliver_fn.matches(remove).count(), 2, "{deliver_fn}");
+    let early = deliver_fn.find("return self.capture_finish(Finish::CaptureFailed);").expect("the early return");
+    let first = deliver_fn.find(remove).expect("removed");
+    assert!(named < first && first < early, "removed before the early return");
+    let unstarted = deliver_fn.find("if started.is_err() {").expect("the thread that cannot start");
+    assert!(deliver_fn[unstarted..].contains(remove), "removed when the thread cannot start");
+    let deliver = production_code_without_comments(&captures_file("captures/deliver.rs"));
+    assert!(function_body(&deliver, "pub fn run(").contains("remove_unrun(d.temp_dir, owned.as_deref());"), "and on a panic");
+}
+
 /// The PNG is encoded on the capture thread only, and handed to the copy command as a file on its
 /// standard input (a PNG does not fit the page of `spawn_with_input`).
 #[test]

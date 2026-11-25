@@ -35,7 +35,7 @@
 //! short-lived thread", "An external capture tool runs as a watched child of the daemon", "Recording
 //! is the external tool's, driven and stopped by alpheus").
 
-use super::deliver::{Delivery, Work, run};
+use super::deliver::{Delivery, Work, remove_unrun, run};
 use super::paths::{file_name, geometry, save_dir, user_dir, video_name, videos_dir};
 use super::pick::value_text;
 use super::record::{LIVE, Recording, STOP_LIMIT};
@@ -445,7 +445,12 @@ impl App {
     /// saves a frame, or copies a value, and mails its ending back. A thread that cannot start ends
     /// the capture as failed.
     fn capture_deliver(&mut self, work: Work) {
+        let temp_dir = paths::runtime_dir().join("alpheus");
+        // The annotated image is the work's to remove: a worker that never runs it must not leave
+        // it in the private folder.
+        let owned = work.private_file().map(str::to_owned);
         let (Some(job), Some(tx)) = (self.capture.flow.job(), self.mail.clone()) else {
+            remove_unrun(&temp_dir, owned.as_deref());
             return self.capture_finish(Finish::CaptureFailed);
         };
         let generation = self.capture.flow.generation();
@@ -456,17 +461,17 @@ impl App {
         let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
         let dir = save_dir(&self.bar.config.captures.dir, user_folder("XDG_PICTURES_DIR").as_deref(), home.as_deref());
         let name = file_name(&LocalTime::now().0);
-        let temp_dir = paths::runtime_dir().join("alpheus");
         // An annotation or a recognition: the name of the image its tool will open.
         let tool_input = tool_of(job.goal).map(|tool| ToolFiles::new(&temp_dir, generation, tool).input);
         let exec = self.exec.clone();
+        let thread_dir = temp_dir.clone();
         let started = std::thread::Builder::new().name("alpheus-capture".into()).spawn(move || {
             let delivery = Delivery {
                 job,
                 copy: &launcher.copy,
                 save_dir: dir.as_deref(),
                 file_name: name,
-                temp_dir: &temp_dir,
+                temp_dir: &thread_dir,
                 tool_input: tool_input.as_deref(),
             };
             let finish = run(exec.as_ref(), work, &delivery);
@@ -474,6 +479,7 @@ impl App {
             let _ = tx.send(Mail::Capture(CaptureMail::Delivered(generation, finish)));
         });
         if started.is_err() {
+            remove_unrun(&temp_dir, owned.as_deref());
             self.capture_finish(Finish::CaptureFailed);
         }
     }

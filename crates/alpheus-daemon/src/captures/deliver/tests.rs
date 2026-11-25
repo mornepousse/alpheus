@@ -108,6 +108,12 @@ fn a_panicking_executor_ends_the_capture_as_a_failure_and_leaves_no_file() {
     let finish = run(&Panicking, Work::Text("#000000".into()), &delivery(pick_job(), &copy, &run_dir, &dir));
     assert_eq!(finish, Finish::CaptureFailed);
     assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "no pick.txt left");
+    // And for an annotated image: the tool's file goes too.
+    write_private(&run_dir, "capture-7-out.png", PNG).unwrap();
+    let annotate = Job { scope: Scope::Area, goal: Goal::Annotate };
+    let finish = run(&Panicking, Work::Annotated("capture-7-out.png".into()), &delivery(annotate, &copy, &run_dir, &dir));
+    assert_eq!(finish, Finish::CaptureFailed);
+    assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0, "no capture-<n>-out.png left");
 }
 
 #[test]
