@@ -40,11 +40,13 @@ second one between 0.4 s and 3 s later. A double Enter never runs it.
 
 **Typing a value.** An entry with `ask = "Target"` has a prompt step: Enter on it (or, when it has
 choices, on one of its choices) opens a level with one row, the label, and what you type goes in the
-box's own input line, not into a filter. Enter runs with the text; Esc, ← or ⌫ on an empty line goes
-back to the choices, or to the category (the root for an entry with none). A blank text runs nothing
+box's own input line, not into a filter. Enter runs with the text; Esc goes back (dropping the text, empty or not), and ← or ⌫ does
+the same on an empty line: to the choices, or to the category (the root for an entry with none). A blank text runs nothing
 and the prompt stays. Clicking another mode with the prompt open drops the text and the prompt. The text
 reaches `run` as the one whole element `{text}`, the same rule as `{choice}`: spaces, quotes and `;`
-stay inside that one argument, and alpheus never passes it through a shell. It is never logged and
+stay inside that one argument, and alpheus never passes it through a shell. A leading `-` is still
+an option to the program it reaches, so an entry of your own should put `--` before it
+(`run = ["ping", "--", "{text}"]`). It is never logged and
 never kept in the history (the history records the entry, and its fixed choice if it has one). A
 launch that fails keeps the box open, but the typed text is gone: type it again. An
 entry with `ask` and `confirm` is refused: the typed text is the confirmation.
@@ -254,9 +256,9 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
   launcher's start function exactly once.
 - `every_builtin_argv_stays_on_the_allowlist`: a built-in's argv is the configured command,
   `[actions] open_tab`, the terminal running `alpheus --tab` (with `--preset <slug>` for a journal
-  preset), or one of the scans' exact `nmap` lines, never through a shell except two fixed, pinned
-  `sh -c` scripts in the held terminal: the USB events (two streams share one terminal) and the USB
-  reset (`modprobe -r` then `modprobe`, chained). Nothing typed ever goes into either.
+  preset), or one of the scans' exact `nmap` lines, never through a shell except two `sh -c` scripts in the held terminal: the USB events (two streams
+  share one terminal, fixed) and the USB reset (`modprobe -r` then `modprobe`, chained; the default of
+  `[tools.builtin] usb_reset`, which the owner may replace). Nothing typed ever goes into either.
 - `the_parallel_branches_are_named_only_in_tools_join`, `the_join_hooks_are_filled_in`: the folder's other
   files never name `clipboard_availability`, `launcher_open_clipboard`, `shield_open_detail`,
   `ShieldConfig` or the `"diagnostics"` slug, so `join.rs` is the one file that calls the clipboard's and

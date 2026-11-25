@@ -1884,9 +1884,11 @@ Date: 2026-11-24 · Source: tests `the_warning_comes_sixty_seconds_before_the_en
 
 An entry with `ask` takes what is typed in the box as an answer, not a filter, and hands it to `run`
 as the one whole element `{text}`, as `{choice}` is: spaces, quotes, `;` or a leading `-` stay inside
-that argument, and no shell is put in front. `{text}` may not be the program, nor appear in `state`
+that argument, and no shell is put in front. A leading `-` is still an option to the program it
+reaches, so an entry of the user's own puts `--` before `{text}` (`run = ["ping", "--", "{text}"]`). `{text}` may not be the program, nor appear in `state`
 or `choices_cmd`, and `ask` and `confirm` are refused together (the typed text is the
-confirmation). The text can be a host, a path or a secret, so it is never in a log line, the history
+confirmation). The text can be a host or a path, and it is no place for a secret: the box shows it and the argv is
+readable by every user in `/proc/<pid>/cmdline`. It is never in a log line, the history
 (which keeps the entry and its fixed choice), a `{:?}` of the action, or another mode's query when
 the prompt is left by a click.
 
@@ -1903,9 +1905,9 @@ dashes only. The host discovery sweeps the subnet of the default route's interfa
 `/proc/net/route` (nothing parses `ip`'s output), and only a local net from /16 to /30. The USB reset
 asks a second Enter and its command is configurable (`[tools.builtin] usb_reset`, `[]` hides it). The
 two shell scripts (the USB events' two streams in one terminal, the reset's chained `modprobe`) are
-fixed and pinned; nothing typed goes into them. A journal preset is no diagnostics tool of this kind:
+fixed, the reset's being only the default of its configurable command; nothing typed goes into them. A journal preset is no diagnostics tool of this kind:
 it opens the control center on that preset (`alpheus --tab diagnostics --preset <slug>`) in
 `launcher.toml`'s plain `terminal`, never through `[actions] open_tab`, whose command takes a tab and
 nothing else.
 
-Date: 2026-11-24 · Source: tests `each_scan_builds_the_scripts_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_scripts` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)
+Date: 2026-11-24 · Source: tests `each_scan_builds_its_nmap_command`, `a_target_starting_with_a_dash_is_a_host_never_an_option`, `only_digits_commas_and_dashes_are_ports`, `host_discovery_without_a_subnet_runs_nothing`, `no_default_route_no_connected_route_or_a_tiny_or_huge_net_is_no_subnet`, `the_usb_events_script_is_the_fixed_one` (`launcher/tools/diag/tests.rs`), `each_scan_runs_in_the_held_terminal_with_its_target_whole`, `usb_reset_runs_the_configured_command_in_the_terminal_after_confirm`, `the_usb_events_run_the_fixed_script_in_the_held_terminal` (`launcher/tools/app/tests.rs`), `nmap_missing_hides_the_scan_entry`, `an_empty_usb_reset_hides_it` (`launcher/tools/catalog/tests.rs`), `every_builtin_argv_stays_on_the_allowlist` (`tests/guardrails.rs`), `a_diag_preset_entry_opens_the_tab_on_it` (`tests/headless_session.rs`)

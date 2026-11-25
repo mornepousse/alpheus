@@ -2,7 +2,8 @@
 //! the host discovery sweeps.
 //!
 //! This is the pure half of the Diagnostics built-ins (`catalog.rs` lists them, `app.rs` spawns them).
-//! `Scan` is the maintainer's ten nmap scans, in his order; `scan_argv` builds the exact argv of one,
+//! `Scan` is the ten nmap scans of the decision "The diagnostics tools run in the held terminal, and
+//! the scan's target is typed" (docs/decisions.md), in that order; `scan_argv` builds the exact argv of one,
 //! from a target and ports typed in the box, and the subnet when it is a sweep. `Subnet` is the seam
 //! to the network: its real form (`ProcSubnet`) reads `/proc/net/route` once, when the sweep is
 //! chosen, and takes the connected route of the default route's interface, so nothing parses the
@@ -11,8 +12,8 @@
 //! Never:
 //! - go through a shell for a scan: each value (target, ports, subnet) is one whole argv element,
 //!   and a target comes after `--`, so one that starts with `-` is a host, never an nmap option;
-//! - sweep what is not a local net: a route with no connected line, a /32 or a net wider than /16
-//!   gives no subnet, and the box says "no network";
+//! - sweep what is not a local net: a route with no connected line, or a net outside /16 to /30
+//!   (a /31, a /32, anything wider than /16), gives no subnet, and the box says "no network";
 //! - run anything or log anything: `app.rs` starts the argv, in the launcher's held terminal, and
 //!   logs a fixed word.
 //!
@@ -22,7 +23,8 @@
 use crate::sources::resources::default_route;
 use std::path::PathBuf;
 
-/// The scans of `tools-menu.sh`'s nmap entry, in its order.
+/// The ten nmap scans, in the order of the menu (docs/decisions.md, "The diagnostics tools run in the
+/// held terminal, and the scan's target is typed").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scan {
     HostDiscovery,
@@ -124,7 +126,7 @@ pub fn scan_argv(scan: Scan, target: Option<&str>, ports: Option<&str>, subnet: 
 
 /// The argv of the USB events built-in (`sh -c`, because two streams share one terminal; the
 /// script is fixed, nothing typed goes in it). The trap stops `udevadm` with the terminal. It differs
-/// from the original script's `trap "kill 0" EXIT INT TERM` on purpose: `kill 0` signals the whole
+/// from the plain `trap "kill 0" EXIT INT TERM` on purpose: `kill 0` signals the whole
 /// group, itself included, so the TERM re-ran the trap without end and bash crashed on every close;
 /// the trap is cleared first.
 pub fn usb_events_argv() -> Vec<String> {
