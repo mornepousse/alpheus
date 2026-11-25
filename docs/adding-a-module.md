@@ -111,7 +111,8 @@ The segment is what the module draws in the bar: `segments::timer(chip, module_c
 `src/timer/app.rs` ties the model to the daemon. Its header says what it never does (start a
 thread, wait for the sound, log a command). The pieces:
 
-- `TimerApp` holds the model, the lengths, the one `DeadlineTimer` and the popup's countdown row.
+- `TimerApp` holds the model, the lengths, two `DeadlineTimer`s (`deadline`, the countdown's, and
+  `shutdown_deadline`, the scheduled shutdown's) and the popup's countdown row.
   It is a field of `App` (`pub(crate) timer: crate::timer::app::TimerApp` in `src/wayland.rs`),
   built there with `TimerApp::new(&bar.config)`.
 - `App::timer_do(Change)`: the one place a change is made. It applies an end already due, then the

@@ -84,7 +84,8 @@ The pieces, from the process outwards. Everything named here is in `crates/alphe
 (`alpheus [--tab <name>] [--preset <slug>]`; a preset is opened once the `App` is built), builds the
 `App` from the files in the config directory (`build_app`: config.toml, the theme, the keys,
 displays.toml; a file that cannot be read gives its default and a startup warning, never an error),
-starts the worker thread (`worker::spawn_with`) and a guard thread, then runs `event_loop`. Each turn of the loop:
+starts the worker thread (`worker::spawn_with`) and a guard thread, then runs `event_loop`. Each turn
+of the loop:
 
 0. at the top of each turn it checks `should_exit` (a stop signal) and, if set, closes;
 1. it sends the worker the requests the `App` has queued (`take_requests`);

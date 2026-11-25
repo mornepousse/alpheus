@@ -91,8 +91,8 @@ chip, the warning a minute before, the state file, `--timer shutdown`) is the ti
 
 ### The diagnostics tools
 
-The Diagnostics category runs everything in `terminal_hold`, so `sudo` can ask there and the output
-stays readable; alpheus itself never runs as root.
+The scans, the USB events and the USB reset run in `terminal_hold`, so `sudo` can ask there and the
+output stays readable; alpheus itself never runs as root.
 
 - **Network scan** (only with `nmap` on the `$PATH`): ten fixed choices, in this order:
   `Host discovery (ping sweep)`, `Quick scan (common ports)`, `Full scan (all ports)`,
@@ -110,8 +110,9 @@ stays readable; alpheus itself never runs as root.
   Enter (default `sudo modprobe -r xhci_pci && sudo modprobe xhci_pci`); `[]` hides it.
 - **The journal presets** (`Errors this boot`, `USB`, `Suspend and resume`, `Out of memory`,
   `Thermal and throttling`, `NetworkManager`, `Live journal`, `Logs of a service…`), shown when the
-  control center's Diag tab is: each opens the control center as the tab entries do, with
-  `--tab diagnostics --preset <slug>` (see [the control center](control-center.md)).
+  control center's Diag tab is: each runs `alpheus --tab diagnostics --preset <slug>` in
+  launcher.toml's `terminal` (never through `[actions] open_tab`, which takes only a tab; see
+  [the control center](control-center.md)).
 
 ### Captures
 

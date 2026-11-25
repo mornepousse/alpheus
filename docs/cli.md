@@ -116,7 +116,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
-| `--kill` | open the kill list (your own processes, sorted by memory then by CPU), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
+| `--kill` | open the kill list (your own processes, sorted by memory at open and by CPU 300 ms later), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
 | `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
 | `-h`, `--help` | print the usage and exit 0 |
 

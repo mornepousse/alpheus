@@ -16,7 +16,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [The calendar](calendar.md): a month grid that opens under the clock.
 - [The media module](media.md): what is playing, and a popup to control the player.
 - [The resources popup](resources.md): each figure of the resources module with a graph of its last minutes.
-- [The focus timer](timer.md): a countdown, a Pomodoro and a stopwatch as a chip, with a popup.
+- [The focus timer](timer.md): a countdown, a Pomodoro and a stopwatch as a chip, with a popup, and a scheduled shutdown beside them.
 - [The privacy indicators](privacy.md): shows when the microphone, a camera or the screen is captured, and by which app.
 - [The failed-units count](failed.md): `󰀦 N` when systemd has units in the failed state.
 - [The power menu](power.md): the ⏻ button and its Lock, Log out, Reboot and Power off menu.
@@ -30,7 +30,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [Notifications](notifications.md): alpheus's own notification server, with bubbles, a bell, a history panel and do-not-disturb.
 - [The on-screen display](osd.md): a pill that shows a volume, microphone or brightness level for a moment.
 - [The Tools menu](tools-menu.md): one launcher-style box for "do something to my session".
-- [Captures](captures.md): screenshots of the screen or an area, copied or saved, from a key or the Tools menu.
+- [Captures](captures.md): screenshots of the screen or an area, copied or saved, a colour picker, an area annotated or read as text (OCR) by an external tool, and screen recording, from a key or the Tools menu.
 
 ## Behind the scenes
 

@@ -28,10 +28,10 @@ delivered before it, by the month it was merged.
   [configuration](docs/configuration.md#captures).
 - **Privacy glyph while alpheus records** (25): the privacy module's screen glyph shows `alpheus`
   while its own recorder runs, which no other source sees on Sway or Mango. [Page](docs/features/privacy.md).
-- **Kill list** (24): `alpheus-launch --kill`, or Tools › System › Kill a process, lists your own
-  processes by memory, then CPU; Enter asks one to quit, Ctrl+Enter then Enter kills it. The
-  compositor, alpheus and the session's ancestors are never offered, and a reused pid is never
-  signalled. [Page](docs/features/tools-menu.md#kill-a-process).
+- **Kill list** (24): `alpheus-launch --kill`, or Tools › System › Kill a process, lists your
+  own processes, by memory at open and by CPU 300 ms later; Enter asks one to quit, Ctrl+Enter then
+  Enter kills it. The compositor, alpheus and the session's ancestors are never offered, and a
+  reused pid is never signalled. [Page](docs/features/tools-menu.md#kill-a-process).
 - **Scheduled shutdown** (24): Tools › System › Schedule shutdown or `alpheus-launch --timer shutdown
   <duration>` powers off through `[quick] poweroff`, beside any timer (`⏻ 1h20 · 󰔛 25m`), always after
   a one-minute warning that a click cancels, even when the end is noticed late;
@@ -39,10 +39,12 @@ delivered before it, by the month it was merged.
 - **Typed text in the Tools menu** (24): a `[[tools.entry]]` with `ask` asks for a text and passes it
   as the one whole argument `{text}`, never through a shell, never logged nor kept in the history.
   [Page](docs/features/tools-menu.md), [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
-- **Diagnostics tools** (24): a Diagnostics category in the Tools menu with ten nmap scans (the target
-  typed in the box), USB events, a USB reset (`[tools.builtin] usb_reset`) and the Diag tab's eight
-  journal presets, opened by the control center's new `--preset <slug>`; all run in the held terminal.
-  [Page](docs/features/tools-menu.md#the-diagnostics-tools), [control center](docs/features/control-center.md).
+- **Diagnostics tools** (24): a Diagnostics category in the Tools menu with ten nmap scans (a target
+  typed in the box, except the subnet sweep), USB events, a USB reset (`[tools.builtin] usb_reset`)
+  and the Diag tab's eight journal presets, opened by the control center's new `--preset <slug>`;
+  the scans, USB events and USB reset run in the held terminal, and a preset opens the control
+  center in `terminal`. [Page](docs/features/tools-menu.md#the-diagnostics-tools), [control
+  center](docs/features/control-center.md).
 - **Tools menu** (22): `alpheus-launch --tools` opens one launcher-style box of categories and
   entries to do something to the session, with your own entries from `launcher.toml`. [Page](docs/features/tools-menu.md).
 - **Diagnostics** (22): a Diag tab in the control center (failed units, crash list, journal, a

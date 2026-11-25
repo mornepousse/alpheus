@@ -120,12 +120,13 @@ in the daemon (`dbus_stays_in_the_daemon`, `neither_zbus_nor_blocking_is_in_the_
 
 ## Entry points
 
-**The daemon.** `main.rs` calls `startup::run`, which installs the panic hook, limits glibc's
-malloc arenas and pins its mmap threshold at 128 KiB (decisions: "Large blocks are always mapped on
-their own", so a capture's frame is unmapped when freed instead of staying in an arena), blocks
-the terminating signals before any thread exists, takes the single-instance lock (`lock::acquire`), binds the launcher socket and reads the configuration (`load_settings`).
-Then `build_app` loads the fonts, connects to Wayland and builds `wayland::App` and the calloop
-`EventLoop`; `insert_core_sources` adds the [mail](GLOSSARY.md#mail) channel, the clock and the
+**The daemon.** `main.rs` calls `startup::run`, which installs the panic hook, limits glibc's malloc
+arenas and pins its mmap threshold at 128 KiB (decisions: "Large blocks are always mapped on their
+own", so a capture's frame is unmapped when freed instead of staying in an arena), blocks the
+terminating signals before any thread exists, takes the single-instance lock (`lock::acquire`),
+binds the launcher socket and reads the configuration (`load_settings`). Then `build_app` loads the
+fonts, connects to Wayland and builds `wayland::App` and the calloop `EventLoop`;
+`insert_core_sources` adds the [mail](GLOSSARY.md#mail) channel, the clock and the
 resources timer; `start_modules` and `start_sources` start what the configured modules
 [need](GLOSSARY.md#needs); `start_guard` starts the signal thread; `main_loop` dispatches until
 `App::stop` is set, then `shut_down`. The loop lives in `startup.rs`; `wayland.rs` holds `App` and
@@ -199,8 +200,8 @@ does for the user.
   (`resources.rs`, no thread: it runs on the loop), the compositor's pid for the kill list
   (`peer.rs`: the kernel's peer credentials of a connection made and dropped at once, on the loop)
   and the system D-Bus thread (`dbus/`, one file per [domain](GLOSSARY.md#domain) plus the taps the
-  panels use, see [scope and tap](GLOSSARY.md#scope-and-tap)). Compositor detection is `alpheus-common::compositor`;
-  see [`compositors.md`](compositors.md).
+  panels use, see [scope and tap](GLOSSARY.md#scope-and-tap)). Compositor detection is
+  `alpheus-common::compositor`; see [`compositors.md`](compositors.md).
   **Architecture invariant:** the compositor's requests are fixed lists and read-only
   (`compositor_requests_are_read_only`, `mango_writes_only_its_request_lines`,
   `sway_writes_only_its_three_messages`) and its sockets are opened only under `sources/`

@@ -166,10 +166,10 @@ model.
   notification and the state line. Like `mod.rs` it reads no clock and starts nothing.
 - The tests sit next to each file (`tests.rs`, `app/tests.rs`, `popup/tests.rs`, `shutdown/tests.rs`).
 
-**The one deadline.** The timer owns a single `DeadlineTimer` (a one-shot timer on the event loop).
-It is armed only while a timer runs, at the next instant anything changes: the end, the next minute
-of the chip's text, or, while the popup is open, the next second. An idle or paused timer arms
-nothing, so alpheus sleeps. When it fires, `timer_tick` asks the wall clock what happened. The
+**The one deadline.** The countdown owns a single `DeadlineTimer` (a one-shot timer on the event
+loop). It is armed only while a timer runs, at the next instant anything changes: the end, the next
+minute of the chip's text, or, while the popup is open, the next second. An idle or paused timer
+arms nothing, so alpheus sleeps. When it fires, `timer_tick` asks the wall clock what happened. The
 clock module's minute tick also calls `timer_check_clock`, because the deadline runs on the loop's
 own clock, which stops during a suspend.
 
@@ -257,6 +257,7 @@ Measured in release, back to back with the version before it, 3 runs each (the f
   65 s; a one-second tick would read 68); with the popup open, two per second (the tick and the
   previous buffer's release), and none after it closes by a click
   (`timer_popup_ticks_each_second_only_while_open`).
-- **A scheduled shutdown:** no wake-up in 5 s away from the minute, 4 in 65 s (the chip's minute and
-  the test bar's clock; bound 6), 3 release runs (`at_rest_no_wakeups_with_a_shutdown_scheduled`);
-  no thread, and its state is one line and a chip text.
+- **A scheduled shutdown** (on the branch, no base: new code)**:** no wake-up in 5 s away from the
+  minute, 4 in 65 s (the chip's minute and the test bar's clock; bound 6), 3 release runs
+  (`at_rest_no_wakeups_with_a_shutdown_scheduled`); no thread, and its state is one line and a chip
+  text.
