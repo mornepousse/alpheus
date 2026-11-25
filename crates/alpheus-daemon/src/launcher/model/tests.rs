@@ -1520,6 +1520,24 @@ fn a_mode_click_from_the_prompt_drops_the_typed_text() {
     assert!(l.query.is_empty());
 }
 
+/// Enter on a blank answer runs nothing, stays in the prompt, and redraws: the query was emptied,
+/// so the screen must show it.
+#[test]
+fn a_blank_answer_in_the_prompt_redraws() {
+    use crate::launcher::tools::catalog::{Catalog as ToolsCatalog, Context};
+    let text = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Scan\"\nrun = [\"x\", \"{text}\"]\nask = \"Target\"\n";
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = ToolsCatalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    typed(&mut l, "/");
+    l.key(Key::Enter);
+    typed(&mut l, "   ");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "the emptied line is shown");
+    assert!(l.query.is_empty());
+    assert!(l.tools().is_some_and(|t| t.prompting()), "still asking");
+}
+
 /// Leaving Tools by Backspace on an empty line (entered with `/`) resets a prompt like every other
 /// exit does: the next Tools entry is the list, not the old prompt.
 #[test]

@@ -861,8 +861,11 @@ impl Launcher {
         // The prompt's answer is the query, moved out whole: nothing of it stays in the box.
         if self.tools.as_ref().is_some_and(ToolsState::prompting) {
             let text = std::mem::take(&mut self.query);
+            let typed = !text.is_empty();
             return match self.tools.as_mut().and_then(|t| t.submit(text)) {
                 Some(Step::Run(action)) => Outcome::Activate(Activation::Tool(action)),
+                // A blank answer: a line of spaces was emptied, so the screen shows it.
+                _ if typed => Outcome::Redraw,
                 _ => Outcome::Nothing,
             };
         }

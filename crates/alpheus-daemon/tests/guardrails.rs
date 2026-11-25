@@ -3765,6 +3765,95 @@ fn the_shutdown_is_wired_through_one_path() {
     assert!(verb.contains("shutdown_refusal("), "the verb is refused without a command: {verb}");
 }
 
+/// The names of the test functions of `source` that schedule a shutdown without configuring
+/// `[quick] poweroff` in their own code. Each function is its lines from its `fn` line to the next
+/// one, minus every comment (`without_comments`: a trailing one and the next item's doc comment are
+/// out too); the `fn` line itself (the name) is not searched. A function sends the verb by
+/// `"--timer", "shutdown", ...` or `TimerVerb::Shutdown(` (whitespace aside), and configures the
+/// command by a `poweroff = [` (a harmless argv, or `[]`: refused) or the shared bar constant.
+fn shutdown_tests_without_a_poweroff(source: &str) -> Vec<String> {
+    let mut bodies: Vec<(String, Vec<&str>)> = Vec::new();
+    for line in source.lines() {
+        if let Some(rest) = line.strip_prefix("fn ") {
+            bodies.push((rest.split('(').next().unwrap_or("").to_string(), Vec::new()));
+        } else if let Some((_, lines)) = bodies.last_mut() {
+            lines.push(line);
+        }
+    }
+    let mut missing = Vec::new();
+    for (name, lines) in bodies {
+        let code = without_comments(&lines.join("\n"));
+        let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        let sends = squeezed.contains("\"--timer\",\"shutdown\",") || squeezed.contains("TimerVerb::Shutdown(");
+        let configures = squeezed.contains("poweroff=[") || squeezed.contains("TIMER_POWEROFF_BAR");
+        if sends && !configures {
+            missing.push(name);
+        }
+    }
+    missing
+}
+
+/// Whether the `TIMER_POWEROFF_BAR` constant of `source` sets a harmless `[quick] poweroff`: a
+/// non-empty argv that is neither `systemctl` nor `loginctl`.
+fn the_poweroff_bar_is_harmless(source: &str) -> bool {
+    let Some(at) = source.find("const TIMER_POWEROFF_BAR") else { return false };
+    let value = source[at..].lines().next().unwrap_or("").split_once(" = ").map_or("", |(_, v)| v);
+    let squeezed: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some(argv) = squeezed.split("poweroff=[").nth(1) else { return false };
+    let argv = argv.split(']').next().unwrap_or("");
+    !argv.is_empty() && !argv.contains("systemctl") && !argv.contains("loginctl")
+}
+
+/// A headless or memory test that schedules a shutdown configures `[quick] poweroff` with a
+/// harmless command (defence in depth: the harness PATH has no `systemctl`, but a daemon left on
+/// the default would try a real `systemctl poweroff` on a machine that has it on the path).
+#[test]
+fn a_test_that_schedules_a_shutdown_configures_a_harmless_poweroff() {
+    let mut scheduling = 0;
+    for source in [include_str!("headless_session.rs"), include_str!("memory.rs")] {
+        let all = shutdown_tests_without_a_poweroff(source);
+        assert!(all.is_empty(), "tests that schedule a shutdown on the default poweroff command: {all:?}");
+        scheduling += source.matches("\"--timer\", \"shutdown\", \"").count() + source.matches("TimerVerb::Shutdown(").count();
+    }
+    assert!(the_poweroff_bar_is_harmless(include_str!("memory.rs")), "TIMER_POWEROFF_BAR must set a harmless poweroff");
+    assert!(scheduling >= 4, "the scan finds the tests that schedule a shutdown: {scheduling}");
+}
+
+/// The scan is not fooled: a name, a doc comment, a comment, a log line or a `poweroff` word that
+/// is not the config; and it sees every spelling of the verb.
+#[test]
+fn the_shutdown_scan_is_not_fooled() {
+    let bad = |src: &str| shutdown_tests_without_a_poweroff(src).len();
+    let verb = "    timer_verb(&sway, &[\"--timer\", \"shutdown\", \"2h\"]);\n";
+    // The name carries the word.
+    assert_eq!(bad(&format!("fn shutdown_runs_poweroff() {{\n{verb}}}\n")), 1);
+    // The next test's doc comment carries the config.
+    assert_eq!(bad(&format!("fn a() {{\n{verb}}}\n\n/// poweroff = [\"touch\"]\n#[test]\nfn b() {{\n}}\n")), 1);
+    // A comment and a log line carry the word.
+    assert_eq!(
+        bad(&format!(
+            "fn a() {{\n    // poweroff = [\"x\"]\n{verb}    d.wait_for(\"timer: shutdown power off\");\n    \"poweroff\";\n}}\n"
+        )),
+        1
+    );
+    // Another spelling of the verb: split across lines, or the typed verb.
+    assert_eq!(bad("fn a() {\n    timer_verb(&sway, &[\"--timer\",\n        \"shutdown\", \"2h\"]);\n}\n"), 1);
+    assert_eq!(bad("fn a() {\n    timer(&sway, TimerVerb::Shutdown(10_800));\n}\n"), 1);
+    // A trailing comment on a code line carries the key.
+    assert_eq!(bad(&format!("fn a() {{\n{verb}    let t = 1; // poweroff = [\"x\"]\n}}\n")), 1);
+    // The shared bar constant must itself be harmless.
+    let bar = |argv: &str| format!("const TIMER_POWEROFF_BAR: &str = \"[quick]\\npoweroff = [{argv}]\\n\";\n");
+    assert!(the_poweroff_bar_is_harmless(&bar("\\\"true\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("\\\"systemctl\\\", \\\"poweroff\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("\\\"loginctl\\\", \\\"poweroff\\\"")));
+    assert!(!the_poweroff_bar_is_harmless(&bar("")));
+    assert!(!the_poweroff_bar_is_harmless("const OTHER: &str = \"x\";\n"));
+    // Configured: the key, or the shared constant; a test that never schedules is out of scope.
+    assert_eq!(bad(&format!("fn a() {{\n    let t = \"[quick]\\npoweroff = [\\\"true\\\"]\";\n{verb}}}\n")), 0);
+    assert_eq!(bad(&format!("fn a() {{\n    start(TIMER_POWEROFF_BAR);\n{verb}}}\n")), 0);
+    assert_eq!(bad("fn a() {\n    timer_verb(&sway, &[\"--timer\", \"stop\"]);\n}\n"), 0);
+}
+
 /// No panic in the focus timer's production code (it parses a file it did not
 /// write, and does arithmetic on wall-clock times).
 #[test]
@@ -5837,7 +5926,7 @@ fn every_builtin_argv_stays_on_the_allowlist() {
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-builtins", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot"];
+    let programs = ["loginctl", "keepawake", "nightlight", "shell-ctl", "foot", "alpheus"];
     for p in programs {
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();

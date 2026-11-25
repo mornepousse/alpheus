@@ -778,7 +778,7 @@ fn an_empty_text_runs_nothing() {
     l.key(Key::Enter);
     assert_eq!(l.key(Key::Enter), Outcome::Nothing);
     typed(&mut l, "   ");
-    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "blank is empty");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "blank is empty, and the emptied line is redrawn");
     assert_eq!(texts(&l), ["Host"], "still in the prompt");
 }
 

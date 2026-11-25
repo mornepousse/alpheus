@@ -8,7 +8,7 @@ fn v(a: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn each_scan_builds_the_scripts_command() {
+fn each_scan_builds_its_nmap_command() {
     let net = Some("192.168.1.0/24");
     let t = Some("10.0.0.5");
     let cases: [(Scan, Option<&str>, Vec<String>); 10] = [
@@ -29,7 +29,7 @@ fn each_scan_builds_the_scripts_command() {
 }
 
 #[test]
-fn the_scans_are_the_scripts_ten_in_its_order() {
+fn the_scans_are_ten_in_the_menus_order() {
     let labels: Vec<&str> = Scan::ALL.iter().map(|s| s.label()).collect();
     assert_eq!(labels.len(), 10);
     assert_eq!(labels[0], "Host discovery (ping sweep)");
@@ -46,6 +46,12 @@ fn the_scans_are_the_scripts_ten_in_its_order() {
 fn a_target_starting_with_a_dash_is_a_host_never_an_option() {
     let a = scan_argv(Scan::Quick, Some("-oN /tmp/x"), None, None).unwrap();
     assert_eq!(a, v(&["nmap", "-F", "--", "-oN /tmp/x"]), "after `--`, one element");
+}
+
+#[test]
+fn a_typed_target_is_trimmed_before_it_reaches_nmap() {
+    let a = scan_argv(Scan::Quick, Some("  10.0.0.5 \t"), None, None).unwrap();
+    assert_eq!(a, v(&["nmap", "-F", "--", "10.0.0.5"]), "no space around the host");
 }
 
 #[test]
@@ -131,7 +137,7 @@ fn the_real_subnet_reads_the_route_file_and_a_missing_one_is_none() {
 }
 
 #[test]
-fn the_usb_events_script_is_the_scripts() {
+fn the_usb_events_script_is_the_fixed_one() {
     assert_eq!(
         usb_events_argv(),
         v(&[
