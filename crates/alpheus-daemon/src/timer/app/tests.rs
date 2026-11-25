@@ -459,7 +459,7 @@ fn at_for(end: u64, warned: Option<u64>, now: u64, mono: Instant, seen: Option<I
 /// lands anywhere in the first half minute, so without a cap the unlock went unseen for up to 90 s.
 #[test]
 fn a_held_step_is_looked_at_again_a_minute_after_the_last_real_look() {
-    let mono = Instant::now();
+    let mono = Instant::now() + Duration::from_secs(1000); // a base far from boot: `mono - secs(120)` below never underflows
     let end = T0 + 10 * MINUTE_MS;
     let now = end + 3_600_000; // the warning is due, held: it would come a minute from now
     let secs = Duration::from_secs;
@@ -478,7 +478,7 @@ fn a_held_step_is_looked_at_again_a_minute_after_the_last_real_look() {
 /// no check could answer, and the deadline would spin). The bookkeeping lets go at that check.
 #[test]
 fn a_clock_stepped_back_while_held_neither_caps_nor_keeps_the_hold() {
-    let mono = Instant::now();
+    let mono = Instant::now() + Duration::from_secs(1000); // never underflows below
     let end = T0 + 10 * MINUTE_MS;
     let back = end - 5 * MINUTE_MS;
     let seen = mono - Duration::from_secs(50);
