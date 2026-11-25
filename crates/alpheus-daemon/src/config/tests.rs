@@ -935,8 +935,8 @@ fn captures_default_to_the_external_tools_and_no_folder() {
     let c = BarConfig::from_text("").unwrap().captures;
     assert_eq!(c, CapturesConfig::default());
     assert_eq!(c.dir, "", "empty: $XDG_PICTURES_DIR/screenshots");
-    // satty 0.20: `--early-exit` ends it at the first copy or save; `--copy-command true` and
-    // `--save-after-copy` turn its own copy into a save to `{out}` (alpheus copies that file), and
+    // satty 0.20: `--early-exit` ends it at the first copy or save; `--copy-command "cat >/dev/null"`
+    // and `--save-after-copy` turn its own copy into a save to `{out}` (alpheus copies that file), and
     // `--disable-notifications` leaves the notice to alpheus.
     assert_eq!(
         c.annotate,
@@ -948,7 +948,7 @@ fn captures_default_to_the_external_tools_and_no_folder() {
             "{out}",
             "--early-exit",
             "--copy-command",
-            "true",
+            "cat >/dev/null",
             "--save-after-copy",
             "--disable-notifications"
         ]
@@ -956,6 +956,23 @@ fn captures_default_to_the_external_tools_and_no_folder() {
     assert_eq!(c.ocr, ["tesseract", "{file}", "-", "-l", "eng"]);
     assert_eq!(c.record, ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]);
     assert_eq!(c.pick_format, "{hex}");
+}
+
+/// satty writes the whole PNG to `sh -c <copy-command>` and saves to `{out}` only if that write and
+/// the command succeeded: the default command must read all its standard input, or an image past the
+/// pipe's 64 KiB breaks the pipe, nothing is saved and the annotation is lost as a silent cancel.
+/// Here a writer stands in for satty, a megabyte into the default command, and the writer's own
+/// exit is the answer (`sh` only, never satty).
+#[test]
+fn the_default_annotate_copy_command_reads_a_whole_large_image() {
+    let annotate = CapturesConfig::default().annotate;
+    let at = annotate.iter().position(|a| a == "--copy-command").expect("the default sets satty's copy command");
+    let copy_command = annotate.get(at + 1).expect("its value");
+    // fd 3 carries the writer's exit out of the pipe; fd 4 is the script's own standard output.
+    let script = "exec 4>&1; s=$( { { head -c 1048576 /dev/zero; echo $? >&3; } | sh -c \"$1\" >&4; } 3>&1 ); exit \"$s\"";
+    let exec = alpheus_common::exec::SystemExecutor::new(std::time::Duration::from_secs(10));
+    let ended = alpheus_common::exec::Executor::run_silent(&exec, "sh", &["-c", script, "sh", copy_command]);
+    assert_eq!(ended, Ok(Some(0)), "the writer of a 1 MB image never meets a broken pipe");
 }
 
 #[test]

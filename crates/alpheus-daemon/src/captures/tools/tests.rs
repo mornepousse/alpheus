@@ -78,7 +78,7 @@ fn annotate_passes_whole_file_and_out_and_copies_the_result() {
     assert_eq!(
         exec.calls(),
         [format!(
-            "satty --filename {} --output-filename {} --early-exit --copy-command true --save-after-copy --disable-notifications",
+            "satty --filename {} --output-filename {} --early-exit --copy-command cat >/dev/null --save-after-copy --disable-notifications",
             input.display(),
             output.display()
         )]

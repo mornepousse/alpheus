@@ -98,9 +98,13 @@ area, or the whole focused output for `record`) at most once. Each placeholder i
 never inside a longer one and never the program. The defaults:
 
 - `annotate = ["satty", "--filename", "{file}", "--output-filename", "{out}", "--early-exit",
-  "--copy-command", "true", "--save-after-copy", "--disable-notifications"]`: satty 0.20 exits at the
-  first copy or save, its own copy runs `true` (copying nothing) and then saves to `{out}`, so the
-  image always comes back to alpheus, which copies it; the notice is alpheus's;
+  "--copy-command", "cat >/dev/null", "--save-after-copy", "--disable-notifications"]`: satty 0.20
+  exits at the first copy or save; its own copy writes the image to `sh -c "cat >/dev/null"`, which
+  reads it to the end and copies nothing, and only then saves to `{out}`. So a copy or a save in
+  satty brings the image back to alpheus, which copies it; closing satty with neither is a silent
+  cancel; the notice is alpheus's. A replacement copy command must read its whole standard input:
+  one that does not (`true`) breaks satty's pipe for any image past 64 KiB, satty then saves nothing
+  and the annotation is lost as a cancel;
 - `ocr = ["tesseract", "{file}", "-", "-l", "eng"]`: `-` prints the text;
 - `record = ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]`: the recording goes to a free
   `screenrecord-%Y%m%d-%H%M%S.mp4` in `$XDG_VIDEOS_DIR` (else the videos entry of `user-dirs.dirs`,

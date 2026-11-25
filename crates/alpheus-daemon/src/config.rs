@@ -508,11 +508,13 @@ impl Default for CapturesConfig {
         CapturesConfig {
             dir: String::new(),
             // satty 0.20.1, flags read in its `--help` and its source: `--early-exit` ends it at the
-            // first copy or save; its own copy runs `--copy-command` (here `true`, which copies
-            // nothing) and then saves to `{out}` (`--save-after-copy`), so whatever the user does
-            // the image comes back to alpheus, which copies it; the notice is alpheus's
-            // (`--disable-notifications`). See docs/decisions.md, "A capture never touches the
-            // clipboard unless it succeeded".
+            // first copy or save; its own copy writes the whole image to `sh -c <--copy-command>`
+            // and saves to `{out}` (`--save-after-copy`) only if that succeeded. The command here,
+            // `cat >/dev/null`, reads the image to its end and throws it away: one that does not
+            // read (`true`) breaks the pipe of any image past 64 KiB, satty then saves nothing and
+            // the annotation is lost as a silent cancel. So a copy or a save in satty comes back to
+            // alpheus, which copies it; the notice is alpheus's (`--disable-notifications`). See
+            // docs/decisions.md, "A capture never touches the clipboard unless it succeeded".
             annotate: argv(&[
                 "satty",
                 "--filename",
@@ -521,7 +523,7 @@ impl Default for CapturesConfig {
                 "{out}",
                 "--early-exit",
                 "--copy-command",
-                "true",
+                "cat >/dev/null",
                 "--save-after-copy",
                 "--disable-notifications",
             ]),

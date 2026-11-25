@@ -1720,11 +1720,13 @@ only reached by the worker with PNG bytes in hand, and a copy command that canno
 not a success. A custom `copy` command must accept a PNG on its standard input: the default `wl-copy`
 alone is told `--type image/png`. The external tools keep the rule: alpheus copies what an
 annotation tool wrote back or the text a recognizer printed, only after the tool exited 0 with a
-result; the default satty flags turn its own copy into a save (`--copy-command true
+result; the default satty flags turn its own copy into a save (`--copy-command "cat >/dev/null"
 --save-after-copy --early-exit`, checked against satty 0.20.1), so it never reaches the clipboard by
-itself.
+itself. The copy command reads the whole image and throws it away: satty saves only once its write
+to the command succeeded, and a command that does not read (`true`) breaks that write for any image
+past the pipe's 64 KiB, which would lose the annotation as a silent cancel.
 
-Date: 2026-11-24, tools 2026-11-25 · Source: tests `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one`, `a_tool_closed_without_output_is_silent_and_a_failed_one_is_critical` (`captures/tests.rs`), `a_tool_failure_is_critical_and_never_copies`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel` (`captures/tools/tests.rs`), `captures_default_to_the_external_tools_and_no_folder` (`config/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
+Date: 2026-11-24, tools 2026-11-25 · Source: tests `the_default_annotate_copy_command_reads_a_whole_large_image` (`config/tests.rs`), `a_cancel_is_silent_and_never_copies`, `the_notices_say_what_happened_and_only_a_success_is_a_calm_one`, `a_tool_closed_without_output_is_silent_and_a_failed_one_is_critical` (`captures/tests.rs`), `a_tool_failure_is_critical_and_never_copies`, `ocr_copies_stdout_text_and_an_empty_output_is_a_cancel` (`captures/tools/tests.rs`), `captures_default_to_the_external_tools_and_no_folder` (`config/tests.rs`), `an_area_outside_the_frame_is_a_capture_failure_and_nothing_is_copied`, `a_copy_that_cannot_start_is_a_copy_failure_and_no_file_stays`, `a_custom_copy_command_is_run_as_written` (`captures/deliver/tests.rs`), `a_cancelled_capture_is_silent_and_copies_nothing` (`tests/headless_session.rs`)
 
 ### A capture waits for the selector's removal
 
