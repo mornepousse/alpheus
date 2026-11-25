@@ -983,3 +983,17 @@ fn a_watched_program_s_signals_fall_back_to_its_pid() {
     assert!(body("    fn interrupt(&mut self) -> bool {").contains("signal_group_else_pid(self.child.id(), libc::SIGINT)"));
     assert!(body("    fn drop(&mut self) {").contains("signal_group_else_pid(self.child.id(), libc::SIGKILL)"));
 }
+
+/// The output file is never reached through a link: a link put where the output goes is refused,
+/// nothing starts, and the file it points to is left as it was.
+#[test]
+fn a_watched_program_s_output_never_follows_a_link() {
+    let dir = scratch("nofollow");
+    let (target, link) = (dir.join("target"), dir.join("out.txt"));
+    std::fs::write(&target, "kept").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let started = exec().spawn_watched("sh", &["-c", "printf replaced"], Some(&link));
+    assert!(matches!(started, Err(ExecError::Io(_))), "refused");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}

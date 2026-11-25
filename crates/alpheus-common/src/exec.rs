@@ -178,12 +178,12 @@ pub trait Executor: Send + Sync {
     /// editor, a screen recorder), and returns it without waiting: its end is told by a descriptor
     /// the caller's event loop watches (`Watched::exit_fd`), so no thread and no timer wait for it.
     /// Standard input `/dev/null`; standard output to the file `stdout` (created owner-only when
-    /// missing, emptied first) or `/dev/null`; standard error `/dev/null`; the caller's environment
-    /// as is (a program with a window needs the user's locale); its own process group; SIGINT when
-    /// the launching thread dies (PDEATHSIG), so a recorder finishes its file rather than run on
-    /// with nobody to stop it. Not registered in `Running`: `stop_running` does not reach it, its
-    /// owner ends it (a recorder deserves SIGINT and time to finish its file, not SIGKILL). Refused
-    /// once `stop_running` was called. Not supported by default.
+    /// missing, emptied first, never through a link) or `/dev/null`; standard error `/dev/null`; the
+    /// caller's environment as is (a program with a window needs the user's locale); its own process
+    /// group; SIGINT when the launching thread dies (PDEATHSIG), so a recorder finishes its file
+    /// rather than run on with nobody to stop it. Not registered in `Running`: `stop_running` does
+    /// not reach it, its owner ends it (a recorder deserves SIGINT and time to finish its file, not
+    /// SIGKILL). Refused once `stop_running` was called. Not supported by default.
     fn spawn_watched(&self, _prog: &str, _args: &[&str], _stdout: Option<&std::path::Path>) -> Result<Box<dyn Watched>, ExecError> {
         Err(ExecError::Io("watched programs are not supported".into()))
     }
@@ -915,6 +915,8 @@ impl Executor for SystemExecutor {
                     .create(true)
                     .truncate(true)
                     .mode(0o600)
+                    // Never through a link: one planted where the output goes is refused.
+                    .custom_flags(libc::O_NOFOLLOW)
                     .open(path)
                     .map_err(|e| ExecError::Io(e.to_string()))?;
                 Stdio::from(file)
