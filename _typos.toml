@@ -65,4 +65,6 @@ extend-ignore-re = [
     "skl_hda_dsp_generic",
     # `inh`: a temporary directory's name.
     "alpheus-env-inh-",
+    # `flate2`: the name of the deflate crate the `png` crate leaves out.
+    "\\bflate2\\b",
 ]
