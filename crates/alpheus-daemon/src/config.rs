@@ -498,7 +498,9 @@ pub struct CapturesConfig {
     /// `{out}` once and `{geometry}` at most once, whole elements; `{geometry}` is the area, or the
     /// whole focused output for `record`; empty: no recording. The recorder must stay in the process
     /// group alpheus starts it in: a stop goes to that group, and a program that leaves it
-    /// (`setsid`) gets the signal alone, without what it started.
+    /// (`setsid`) gets the signal alone, without what it started. Without `{geometry}` the area is
+    /// not passed: `record-area` records whatever the tool picks, and wf-recorder with several
+    /// outputs asks on its standard input, which is `/dev/null`, so it would not record as asked.
     pub record: Vec<String>,
     /// The colour picker's text, with `{r}`, `{g}`, `{b}` and `{hex}`.
     pub pick_format: String,

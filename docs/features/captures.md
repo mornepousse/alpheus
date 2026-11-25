@@ -113,6 +113,9 @@ never inside a longer one and never the program. The defaults:
   else `~/Videos`), never over a file. A recorder must finish its file on SIGINT and exit 0, and stay
   in the process group alpheus starts it in (no `setsid`): the stop goes to that group, and a program
   that leaves it gets SIGINT alone, without what it started.
+  A `record` without `{geometry}` is not given the area: `record-area` then records whatever the
+  tool picks, and wf-recorder with several outputs and neither `-g` nor `-o` asks which one on its
+  standard input, which is `/dev/null`.
 
 See [configuration.md](../configuration.md#captures).
 
