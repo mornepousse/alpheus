@@ -110,6 +110,14 @@ delivered before it, by the month it was merged.
   thread that panics logs `source down: panic` and no payload. A guardrail reads the whole daemon for
   it ([decisions](docs/decisions.md), "Logs carry fixed words and numbers only").
 
+#### Fixed
+
+- **System-bus signals addressed to the bar are dropped** (25): a signal with a destination reaches
+  a client whatever its match rules say, and the bus's default policy lets any local user send one,
+  so another user could forge a Bluetooth removal or a wake and make the bar re-read every
+  service. Only a broadcast, which a sender-filtered rule matched, is heard now, as on the session
+  bus. [Decision](docs/decisions.md#a-system-bus-signal-is-heard-only-when-it-is-a-broadcast).
+
 ### 2026-10
 
 #### Added

@@ -1600,6 +1600,15 @@ impl Peer {
         self.channel.flush();
     }
 
+    /// Sends a signal to `destination` alone (a unicast: the bus delivers it whatever the receiver's
+    /// match rules), whose only argument is `arg`.
+    pub fn emit_to<A: dbus::arg::Append>(&self, destination: &str, path: &str, interface: &str, member: &str, arg: A) {
+        let mut m = dbus::Message::new_signal(path, interface, member).unwrap().append1(arg);
+        m.set_destination(Some(destination.into()));
+        self.channel.send(m).unwrap();
+        self.channel.flush();
+    }
+
     /// The next method call addressed to this peer; None once the bus is gone.
     pub fn next_call(&self) -> Option<dbus::Message> {
         loop {

@@ -69,7 +69,9 @@ outright read the comments too — and fails on a forbidden pattern.
    timer, watch a descriptor (`Generic::new`) or bind a keyboard is listed with the reason it does
    not run at rest, and a new one fails until it is added with its reason.
 4. **The system D-Bus is read-only** and called through the owner's unique name, never the
-   well-known one (which would let D-Bus activation start the service). Two exceptions are named
+   well-known one (which would let D-Bus activation start the service). Only a broadcast signal is
+   heard: one with a destination is dropped (decisions: "A system-bus signal is heard only when it
+   is a broadcast"). Two exceptions are named
    and pinned. One: at a session's start, if the battery is wanted and UPower has no owner, one
    `StartServiceByName` goes to the bus driver (`upower::activate_if_absent`; decisions: "UPower is
    the one service the daemon may start"), and `start_service_by_name_names_upower_alone`
