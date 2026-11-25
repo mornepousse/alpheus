@@ -280,6 +280,10 @@ impl App {
     fn capture_begin(&mut self, job: Job) {
         let Some(step) = self.capture.flow.begin(job) else {
             log("capture: busy");
+            // The editor stays open as long as the user likes: say why the verb did nothing.
+            if let Some(n) = self.capture.flow.ignored_notice() {
+                self.capture_notify(n);
+            }
             return;
         };
         // A capture of the whole screen has no selector, but a menu may be closing: it waits too.
