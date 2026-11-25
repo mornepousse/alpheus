@@ -9436,6 +9436,8 @@ fn the_picker_leaves_no_old_lens_on_the_screen() {
         let (mx, my) = mark(*p);
         assert_eq!(screen.at(mx, my), Some(bg), "the lens at {p:?} is still on the screen");
     }
-    assert!(wtype(&sway, &["-k", "Escape"]).success());
+    // The seat has no keyboard until wtype's virtual one exists: a key sent at once can be gone
+    // before the picker's wl_keyboard is bound (sway 1.9), so the 300 ms every wtype test waits.
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
     assert!(d.wait_for("capture: cancelled", DELAY), "{:?}", d.log());
 }
