@@ -450,3 +450,30 @@ fn a_recording_notice_names_its_file_and_a_failed_one_is_critical() {
     assert_eq!((failed.summary, failed.body.as_str(), failed.critical), ("Screen recording", "Recording failed", true));
     assert!(!Finish::Recorded("x.mp4".into()).touches_the_clipboard());
 }
+
+/// A capture asked while the annotation editor is open says so, calmly: nothing else would show why
+/// the verb did nothing. Another busy stage (a selector, a recognizer) keeps to the log.
+#[test]
+fn a_capture_asked_during_an_annotation_is_answered_with_a_notice() {
+    let (flow, _) = tool_running(Goal::Annotate);
+    let n = flow.ignored_notice().expect("an annotation is open");
+    assert_eq!((n.summary, n.body.as_str(), n.critical), ("Screenshot", "Ignored: annotation in progress", false));
+    let (flow, _) = tool_running(Goal::Ocr);
+    assert_eq!(flow.ignored_notice(), None, "a recognizer is short");
+    assert_eq!(Flow::default().ignored_notice(), None, "nothing runs");
+}
+
+/// The ignored verb's notice is really sent: `capture_begin` hands the flow's answer to the
+/// notifications when it refuses a capture. Reading the source is what pins the wiring, as the
+/// notification server is not reachable from a unit test.
+#[test]
+fn a_refused_capture_sends_the_flows_ignored_notice() {
+    let source = include_str!("app.rs");
+    let start = source.find("    fn capture_begin(").expect("capture_begin");
+    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+    let refused = body.find("self.capture.flow.begin(job)").expect("the flow refuses");
+    let asked = body.find("if let Some(n) = self.capture.flow.ignored_notice()").expect("the notice is asked for");
+    let sent = body.find("self.capture_notify(n)").expect("and sent");
+    assert!(refused < asked && asked < sent, "{body}");
+    assert!(body[refused..asked].contains("return;") || body[asked..].contains("return;"), "a refused capture still ends there: {body}");
+}

@@ -36,8 +36,9 @@ category (`Screenshot`, `Area`, `Area (save)`, `Annotate`, `Record screen`, `Rec
 recording`, `Colour picker`, `Text from area (OCR)`; the category is hidden when the compositor has no
 screencopy, a tool's row when its `[captures]` program is `[]` or not on the `$PATH`, the two Record
 rows while a recording runs, and Stop while none does). One capture runs at a time, an annotation
-tool's or a recognizer's run included: a verb sent while one runs is ignored. A recording runs beside
-the captures: screenshots may be taken while it records, but only one recording runs at a time.
+tool's or a recognizer's run included: a verb sent while one runs is ignored (while the annotation
+editor is open it says so in a `Screenshot` notice, `Ignored: annotation in progress`). A recording
+runs beside the captures: screenshots may be taken while it records, but only one recording runs at a time.
 
 **The area selector.** A quarter-dark layer over the focused output, a 2 px border in the accent
 colour and a `W×H` label.

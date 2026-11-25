@@ -344,6 +344,16 @@ impl Flow {
         self.stage == Stage::Grabbing
     }
 
+    /// The notice for a verb ignored because the annotation editor is open: that run lasts as long as
+    /// the user keeps it, so a silent ignore would look like a dead key. None in any other stage.
+    pub fn ignored_notice(&self) -> Option<Notice> {
+        (self.stage == Stage::Tool && self.last.goal == Goal::Annotate).then(|| Notice {
+            summary: "Screenshot",
+            body: "Ignored: annotation in progress".to_string(),
+            critical: false,
+        })
+    }
+
     /// Whether the external tool runs and its end is awaited.
     pub fn waits_for_tool(&self) -> bool {
         self.stage == Stage::Tool
