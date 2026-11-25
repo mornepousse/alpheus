@@ -67,4 +67,6 @@ extend-ignore-re = [
     "alpheus-env-inh-",
     # `flate2`: the deflate crate the `png` crate encodes with (decisions.md, the png entry).
     "\\bflate2\\b",
+    # `wrapp`: a Nix `.x-wrapped` program name cut to the kernel's 15-byte comm.
+    "\\.(?:hypr|sway)lock-wrapp\\b",
 ]
