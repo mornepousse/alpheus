@@ -192,7 +192,7 @@ pub trait Executor: Send + Sync {
 /// A program started by `spawn_watched`. It is our child until it is reaped here, so its pid, which
 /// is also its process group's, cannot be reused while this lives: a signal sent through it never
 /// reaches a stranger. Dropping it while the program runs kills the program's group (SIGKILL) and
-/// reaps it.
+/// reaps it, unless it was released (`release`).
 pub trait Watched: Send {
     /// A descriptor that turns readable once the program has ended (a duplicate of its pidfd), for an
     /// event loop to watch; None where there is none (the fakes).
@@ -206,6 +206,11 @@ pub trait Watched: Send {
     /// Waits at most `limit` for the program's end (on its descriptor: no busy loop), then answers
     /// as `try_exit`. Blocks: only where blocking is the point (the daemon's shutdown).
     fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>>;
+    /// Lets the program run on with nobody watching: the handle goes without the kill a drop sends.
+    /// For the daemon's shutdown, once a recorder it interrupted has had its time and may still be
+    /// finishing its file: a kill would leave the file unplayable. The program is not reaped here; it
+    /// stays our child until it ends or we exit.
+    fn release(self: Box<Self>);
 }
 
 /// PIDs of the commands in progress — `run`s, and `stream`s not yet dropped —
@@ -926,7 +931,7 @@ impl Executor for SystemExecutor {
             let _ = child.wait();
             return Err(ExecError::Io("no pidfd for the program".into()));
         };
-        Ok(Box::new(WatchedChild { child, pidfd, ended: None }))
+        Ok(Box::new(WatchedChild { child, pidfd, ended: None, released: false }))
     }
 }
 
@@ -947,6 +952,8 @@ struct WatchedChild {
     child: Child,
     pidfd: std::os::fd::OwnedFd,
     ended: Option<Option<i32>>,
+    /// Let run on (`release`): the drop leaves it alone.
+    released: bool,
 }
 
 impl Watched for WatchedChild {
@@ -989,11 +996,15 @@ impl Watched for WatchedChild {
         }
         self.try_exit()
     }
+
+    fn release(mut self: Box<Self>) {
+        self.released = true;
+    }
 }
 
 impl Drop for WatchedChild {
     fn drop(&mut self) {
-        if self.try_exit().is_none() {
+        if !self.released && self.try_exit().is_none() {
             // Not reaped: the group is still the program's own.
             kill_group(self.child.id());
             let _ = self.child.wait();

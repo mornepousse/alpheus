@@ -74,8 +74,9 @@ clipboard is touched only by a result.
 **Recording.** `record` starts at once on the focused output, `record-area` after the drag. The
 privacy module's screen glyph shows `alpheus` while it records. `--capture stop`, or `Stop recording`
 in the Tools menu, ends it: the recorder finishes its file and the notice names it. A recording still
-running when the daemon stops is ended the same way (the daemon waits up to 2 s for the recorder),
-then the notice is sent; nothing is resumed after a restart.
+running when the daemon stops is ended the same way (the daemon waits up to 2 s for the recorder;
+one still running then is let go, never killed, and finishes its file on its own), then the notice
+is sent; nothing is resumed after a restart.
 
 **The result.** A selection is clamped to the output; one with no area is a cancel. "The screen" is
 the output the selector would cover: the focused one, else the first the compositor listed. A
@@ -146,8 +147,9 @@ On a compositor that fades layer surfaces, see
   tool ends, so nothing waits or polls while the editor is open, however long.
 - `captures/record.rs`: the recorder, a watched child too. `Recording::start` picks the free name and
   starts it, `stop` sends SIGINT to its own process group (nothing else), `finish` judges its end by
-  the file, `end_at_shutdown` interrupts it and waits at most 2 s. `LIVE` tells the signal guard a
-  recording runs, so the forced exit comes 2 s later.
+  the file, `end_at_shutdown` interrupts it and waits at most 2 s, then lets a recorder still running
+  go (`Watched::release`) rather than kill it: a kill would leave the file unplayable. `LIVE` tells
+  the signal guard a recording runs, so the forced exit comes 2 s later.
 - `captures/pick.rs` and `pick_app.rs`: the picker's model (the `Shot` that reads the frozen frame
   through the output's scale and rotation, the lens, the value's text, the gestures) and its Overlay
   layer surface. The surface owns the frame: it goes with the surface at close. The lens, its
@@ -245,8 +247,9 @@ picker opens over it → a click → the picker closes, its frame with it → th
   (`a_recording_that_fails_or_leaves_nothing_is_a_failure`); it leaves the capture slot free
   (`a_recording_starts_once_settled_and_leaves_the_slot_free`); it lights the privacy glyph
   (`recording_lights_the_privacy_screen_glyph`, headless
-  `recording_lights_the_privacy_screen_glyph_on_the_bar`); the daemon's stop ends it with SIGINT and
-  waits at most 2 s (`the_daemon_stop_ends_the_recording_with_sigint`,
+  `recording_lights_the_privacy_screen_glyph_on_the_bar`); the daemon's stop ends it with SIGINT,
+  waits at most 2 s and never kills it (`the_daemon_stop_ends_the_recording_with_sigint`,
+  `a_released_watched_program_is_not_killed`,
   `the_shutdown_grace_covers_the_recorders_stop_while_recording`,
   `the_shutdown_ends_the_recording_before_anything_goes`, headless
   `a_recording_running_at_the_daemon_stop_is_finished`); end to end: `record_then_stop_notifies_saved`.

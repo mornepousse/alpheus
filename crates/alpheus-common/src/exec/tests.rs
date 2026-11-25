@@ -931,3 +931,22 @@ fn an_interrupt_is_never_sent_to_a_reaped_pid() {
     assert!(checked < signalled, "{body}");
     assert!(body[checked..signalled].contains("return false;"), "an ended program gets nothing");
 }
+
+/// A released program runs on: the handle goes without the kill a drop sends (the daemon's shutdown
+/// lets an interrupted recorder finish its file rather than kill it).
+#[test]
+fn a_released_watched_program_is_not_killed() {
+    let dir = scratch("release");
+    let pid_file = dir.join("pid");
+    let child = exec().spawn_watched("sh", &["-c", &format!("echo $$ > {}; exec sleep 30", pid_file.display())], None).unwrap();
+    let pid = pid_written(&pid_file);
+    child.release();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(alive(pid), "the release did not kill it");
+    // SAFETY: cleanup of the program this test started, by its pid (> 1), then reaped.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

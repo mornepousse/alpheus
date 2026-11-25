@@ -694,8 +694,15 @@ impl App {
         }
         if let Some(run) = self.capture.recording.take() {
             self.capture_unwatch(run.watch);
-            let finish = run.recording.end_at_shutdown(STOP_LIMIT);
-            self.capture_recording_notify(finish);
+            match run.recording.end_at_shutdown(STOP_LIMIT) {
+                Some(finish) => self.capture_recording_notify(finish),
+                // Still running at the limit: let go, never killed, so its ending is not known.
+                None => {
+                    LIVE.store(false, Ordering::SeqCst);
+                    self.capture_privacy(false);
+                    log("capture: recording not confirmed (shutdown)");
+                }
+            }
         }
     }
 

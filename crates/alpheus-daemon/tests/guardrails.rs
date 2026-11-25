@@ -6274,6 +6274,8 @@ fn the_recording_signal_reaches_only_the_recorder_alpheus_started() {
     let interrupt = end.find("self.child.interrupt()").expect("the shutdown interrupts the recorder");
     let wait = end.find("self.child.wait_exit(limit)").expect("then waits for it, at most the limit");
     assert!(interrupt < wait);
+    // Past the limit the interrupted recorder is let go, never dropped (a drop kills its group).
+    assert!(end[wait..].contains("self.child.release()"), "a recorder still finishing its file is never killed");
 }
 
 /// The daemon's stop ends a recording before anything else goes: the tool or the recorder is ended

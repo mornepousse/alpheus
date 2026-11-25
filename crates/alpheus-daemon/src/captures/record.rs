@@ -8,7 +8,8 @@
 //! the recorder finishes its file and exits, and `finish` turns that exit into the notice's ending:
 //! saved when it exited 0 and the file holds something, failed otherwise. At the daemon's shutdown,
 //! `end_at_shutdown` does the same and waits at most `STOP_LIMIT` for it; a recorder still running
-//! after that is killed. One recording at a time, and nothing survives a restart: the daemon keeps
+//! after that is let go, never killed (a kill would leave its file unplayable), and its ending is
+//! not known. One recording at a time, and nothing survives a restart: the daemon keeps
 //! no state of it.
 //!
 //! Never:
@@ -109,13 +110,17 @@ impl Recording {
     }
 
     /// The daemon stops: SIGINT, then at most `limit` for the recorder to finish its file, then the
-    /// ending. A recorder still running past the limit is killed (with the recording, dropped here)
-    /// and the recording counts as failed.
-    pub fn end_at_shutdown(mut self, limit: Duration) -> Finish {
+    /// ending. None when the recorder still runs past the limit: it was interrupted and may still be
+    /// writing the end of its file, so it is let go (`Watched::release`), never killed, which would
+    /// leave the file unplayable; the file is left as it is.
+    pub fn end_at_shutdown(mut self, limit: Duration) -> Option<Finish> {
         self.child.interrupt();
         match self.child.wait_exit(limit) {
-            Some(exit) => self.finish(exit),
-            None => Finish::RecordFailed,
+            Some(exit) => Some(self.finish(exit)),
+            None => {
+                self.child.release();
+                None
+            }
         }
     }
 }

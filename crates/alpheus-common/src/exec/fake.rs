@@ -147,6 +147,7 @@ struct FakeChildState {
     interrupts: usize,
     waits: Vec<Duration>,
     dropped: bool,
+    released: bool,
 }
 
 impl FakeChild {
@@ -175,10 +176,16 @@ impl FakeChild {
         self.0.lock().unwrap().waits.clone()
     }
 
-    /// Whether its owner dropped it while it still ran (the real one is then killed).
+    /// Whether its owner dropped it while it still ran without releasing it (the real one is then
+    /// killed).
     pub fn killed(&self) -> bool {
         let s = self.0.lock().unwrap();
-        s.dropped && s.ended.is_none()
+        s.dropped && s.ended.is_none() && !s.released
+    }
+
+    /// Whether its owner let it run on (`Watched::release`).
+    pub fn released(&self) -> bool {
+        self.0.lock().unwrap().released
     }
 }
 
@@ -210,6 +217,10 @@ impl Watched for FakeWatched {
         let mut s = self.0.0.lock().unwrap();
         s.waits.push(limit);
         s.ended
+    }
+
+    fn release(self: Box<Self>) {
+        self.0.0.lock().unwrap().released = true;
     }
 }
 
@@ -489,6 +500,9 @@ mod tests {
         let running = f.spawn_watched("editor", &[], None).unwrap();
         drop(running);
         assert!(f.children()[2].killed());
+        let released = f.spawn_watched("editor", &[], None).unwrap();
+        released.release();
+        assert!(f.children()[3].released() && !f.children()[3].killed(), "let run on, never killed");
     }
 
     #[test]

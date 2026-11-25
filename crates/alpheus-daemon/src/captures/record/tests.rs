@@ -90,8 +90,9 @@ fn a_recording_that_fails_or_leaves_nothing_is_a_failure() {
 }
 
 /// The daemon stopping while it records sends SIGINT to the recorder, waits for it at most 2 s, and
-/// says how it ended: a recorder that finishes its file is a saved recording. One that ignores the
-/// signal is killed at the limit, and the recording counts as failed.
+/// says how it ended: a recorder that finishes its file is a saved recording. One still running at
+/// the limit is let go, never killed (a kill would leave its file unplayable): its ending is not
+/// known and its file is left as it is.
 #[test]
 fn the_daemon_stop_ends_the_recording_with_sigint() {
     assert_eq!(STOP_LIMIT, Duration::from_secs(2));
@@ -101,7 +102,7 @@ fn the_daemon_stop_ends_the_recording_with_sigint() {
     exec.watch_ok("wf-recorder", Some(Some(0)));
     let recording = Recording::start(&exec, &template, "0,0 1280x720", &root, NAME).unwrap();
     std::fs::write(root.join(NAME), b"frames").unwrap();
-    assert_eq!(recording.end_at_shutdown(STOP_LIMIT), Finish::Recorded(NAME.into()));
+    assert_eq!(recording.end_at_shutdown(STOP_LIMIT), Some(Finish::Recorded(NAME.into())));
     let child = &exec.children()[0];
     assert_eq!(child.interrupts(), 1, "SIGINT, not a kill");
     assert_eq!(child.waits(), [STOP_LIMIT], "waited for at most the limit");
@@ -109,7 +110,12 @@ fn the_daemon_stop_ends_the_recording_with_sigint() {
     let deaf = FakeExecutor::new();
     deaf.watch_ok("wf-recorder", None);
     let recording = Recording::start(&deaf, &template, "0,0 1280x720", &root, "deaf.mp4").unwrap();
-    assert_eq!(recording.end_at_shutdown(STOP_LIMIT), Finish::RecordFailed);
-    assert_eq!(deaf.children()[0].interrupts(), 1);
-    assert!(deaf.children()[0].killed(), "killed once the wait is over");
+    // The recorder has not written its file's end yet: what is there must stay.
+    std::fs::write(root.join("deaf.mp4"), b"").unwrap();
+    assert_eq!(recording.end_at_shutdown(STOP_LIMIT), None, "not confirmed");
+    assert_eq!(deaf.children()[0].interrupts(), 1, "SIGINT once");
+    assert_eq!(deaf.children()[0].waits(), [STOP_LIMIT]);
+    assert!(!deaf.children()[0].killed(), "never killed once interrupted");
+    assert!(deaf.children()[0].released(), "let go");
+    assert!(root.join("deaf.mp4").exists(), "its file is the recorder's to finish");
 }
