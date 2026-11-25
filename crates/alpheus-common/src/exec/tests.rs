@@ -927,7 +927,7 @@ fn an_interrupt_is_never_sent_to_a_reaped_pid() {
     let start = source.find("    fn interrupt(&mut self) -> bool {").expect("the watched interrupt");
     let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
     let checked = body.find("if self.try_exit().is_some() {").expect("the end is checked first");
-    let signalled = body.find("libc::kill(target, libc::SIGINT)").expect("then the group is signalled");
+    let signalled = body.find("signal_group_else_pid(self.child.id(), libc::SIGINT)").expect("then the group is signalled");
     assert!(checked < signalled, "{body}");
     assert!(body[checked..signalled].contains("return false;"), "an ended program gets nothing");
 }
@@ -949,4 +949,37 @@ fn a_released_watched_program_is_not_killed() {
         libc::waitpid(pid, std::ptr::null_mut(), 0);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A signal for a watched program goes to its process group, else, when that group is gone (the
+/// program left it), to the program itself: a recorder that moved out of its group can still be
+/// stopped. A background job of a shell stands in for it here: its pid leads no group.
+#[test]
+fn a_program_outside_its_group_is_signalled_by_its_pid() {
+    let dir = scratch("outside-group");
+    let pid_file = dir.join("pid");
+    let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+    let mut parent = exec().spawn_watched("sh", &["-c", &script], None).unwrap();
+    let pid = pid_written(&pid_file);
+    // SAFETY: getpgid(2) on the process this test started; no pointer.
+    assert_ne!(unsafe { libc::getpgid(pid) }, pid, "it leads no group: the group signal cannot reach it");
+    assert!(signal_group_else_pid(u32::try_from(pid).unwrap(), libc::SIGTERM), "sent to the pid");
+    wait_for_death(pid);
+    assert!(parent.wait_exit(Duration::from_secs(3)).is_some(), "its shell ends once it is gone");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The watched program's interrupt and its drop's kill both fall back to its pid: a program that left
+/// its group is still stopped, and a drop never waits for a program its kill missed.
+#[test]
+fn a_watched_program_s_signals_fall_back_to_its_pid() {
+    let source = include_str!("../exec.rs");
+    let start = source.find("impl Watched for WatchedChild {").expect("the watched child");
+    let rest = &source[start..];
+    let body = |name: &str| {
+        let at = rest.find(name).expect(name);
+        &rest[at..at + rest[at..].find("\n    }\n").expect("its end")]
+    };
+    assert!(body("    fn interrupt(&mut self) -> bool {").contains("signal_group_else_pid(self.child.id(), libc::SIGINT)"));
+    assert!(body("    fn drop(&mut self) {").contains("signal_group_else_pid(self.child.id(), libc::SIGKILL)"));
 }

@@ -1815,8 +1815,10 @@ its own geometry, since wf-recorder asks on its standard input which output to r
 several and it has neither `-g` nor `-o`), and a free `screenrecord-%Y%m%d-%H%M%S.mp4` in
 `$XDG_VIDEOS_DIR` (else the videos entry of `user-dirs.dirs`, else `~/Videos`), never over a file.
 `--capture stop` or the Stop row sends SIGINT to the recorder's own process group, and to nothing
-else: no pattern, no other group, only the child alpheus is still the parent of. The recording ends
-when the recorder does: exit 0 with a non-empty file is "Recording saved" (the file's name in the
+else: no pattern, no other group, only the child alpheus is still the parent of. A recorder that left
+its group (the group signal finds nobody) gets the signal by its pid, still only while it is our
+unreaped child; what it started is then out of reach, so the recorder must stay in its group.
+The recording ends when the recorder does: exit 0 with a non-empty file is "Recording saved" (the file's name in the
 notice, never in a log), anything else is critical. One recording at a time; captures may run while it
 records. The privacy module's screen glyph shows `alpheus` while it runs (a recorder that bypasses
 PipeWire is seen by no other source on Sway or Mango). At the daemon's shutdown the recorder gets
@@ -1825,7 +1827,7 @@ running then is let go, never killed (a kill would leave its file unplayable), a
 logged as not confirmed. An ending at shutdown is a log word only, never a notice: the notification
 server is alpheus's own and stops with the daemon, so nobody would see it. Nothing is persisted: a recording is never adopted after a restart.
 
-Date: 2026-11-25 · Source: tests `record_spawns_with_the_geometry_and_stop_sends_sigint_to_it_only`, `the_daemon_stop_ends_the_recording_with_sigint`, `a_recording_never_writes_over_a_file`, `a_recording_that_fails_or_leaves_nothing_is_a_failure` (`captures/record/tests.rs`), `a_released_watched_program_is_not_killed` (`alpheus-common/src/exec/tests.rs`), `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`), `the_shutdown_grace_covers_the_recorders_stop_while_recording` (`startup/tests.rs`), `the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording` (`launcher/tools/catalog/tests.rs`), `interrupt_reaches_the_watched_program_only`, `an_interrupt_is_never_sent_to_a_reaped_pid` (`alpheus-common/src/exec/tests.rs`), `the_recording_signal_reaches_only_the_recorder_alpheus_started`, `the_shutdown_ends_the_recording_before_anything_goes` (`tests/guardrails.rs`), `record_then_stop_notifies_saved`, `recording_lights_the_privacy_screen_glyph_on_the_bar`, `a_recording_running_at_the_daemon_stop_is_finished` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_recording` (`tests/memory.rs`)
+Date: 2026-11-25 · Source: tests `record_spawns_with_the_geometry_and_stop_sends_sigint_to_it_only`, `the_daemon_stop_ends_the_recording_with_sigint`, `a_recording_never_writes_over_a_file`, `a_recording_that_fails_or_leaves_nothing_is_a_failure` (`captures/record/tests.rs`), `a_released_watched_program_is_not_killed` (`alpheus-common/src/exec/tests.rs`), `recording_lights_the_privacy_screen_glyph` (`privacy/tests.rs`), `the_shutdown_grace_covers_the_recorders_stop_while_recording` (`startup/tests.rs`), `the_capture_rows_follow_their_tool_and_stop_shows_only_while_recording` (`launcher/tools/catalog/tests.rs`), `interrupt_reaches_the_watched_program_only`, `an_interrupt_is_never_sent_to_a_reaped_pid`, `a_program_outside_its_group_is_signalled_by_its_pid`, `a_watched_program_s_signals_fall_back_to_its_pid` (`alpheus-common/src/exec/tests.rs`), `the_recording_signal_reaches_only_the_recorder_alpheus_started`, `the_shutdown_ends_the_recording_before_anything_goes` (`tests/guardrails.rs`), `record_then_stop_notifies_saved`, `recording_lights_the_privacy_screen_glyph_on_the_bar`, `a_recording_running_at_the_daemon_stop_is_finished` (`tests/headless_session.rs`), `at_rest_no_wakeups_after_a_recording` (`tests/memory.rs`)
 
 ### Large blocks are always mapped on their own
 

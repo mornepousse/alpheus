@@ -9,8 +9,8 @@
 //! - write more than one page to a program's standard input (`MAX_INPUT`), so a write never waits
 //!   for the program to read (a payload that needs more goes through a file: `run_with_stdin_file`).
 //! - signal a program it did not start, or one already reaped: a watched program (`spawn_watched`) is
-//!   interrupted through its own process group only while it is still our unreaped child
-//!   (`an_interrupt_is_never_sent_to_a_reaped_pid`).
+//!   interrupted through its own process group (by its pid if it left that group) only while it is
+//!   still our unreaped child (`an_interrupt_is_never_sent_to_a_reaped_pid`).
 //!
 //! See: docs/ARCHITECTURE.md ("The foundation and the client"), docs/features/shield.md and
 //! docs/features/quick-settings.md (what runs through it), docs/decisions.md ("An external capture tool
@@ -258,6 +258,22 @@ impl SystemExecutor {
 fn group_target(pgid: u32) -> Option<libc::pid_t> {
     let p = libc::pid_t::try_from(pgid).ok()?;
     (p > 1).then_some(-p)
+}
+
+/// Sends `signal` to the process group `pid` leads, or to `pid` alone when that group is gone
+/// (ESRCH: the program moved to another group): a stop still reaches it. Only for our own child not
+/// yet reaped, whose pid therefore cannot be another process's. True when the signal was sent.
+fn signal_group_else_pid(pid: u32, signal: libc::c_int) -> bool {
+    let Some(target) = group_target(pid) else { return false };
+    // SAFETY: kill(2) towards the group our child leads, created at its launch; no pointer.
+    if unsafe { libc::kill(target, signal) } == 0 {
+        return true;
+    }
+    if std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+        return false;
+    }
+    // SAFETY: kill(2) towards our unreaped child itself (`-target` is its pid, above 1); no pointer.
+    unsafe { libc::kill(-target, signal) == 0 }
 }
 
 /// Kills the whole process group `pgid` (a child launched with
@@ -978,9 +994,7 @@ impl Watched for WatchedChild {
             return false;
         }
         // Not reaped (try_exit just saw it running): its pid, its group's, is still ours.
-        let Some(target) = group_target(self.child.id()) else { return false };
-        // SAFETY: kill(2) towards the program's own group, created at its launch; no pointer.
-        unsafe { libc::kill(target, libc::SIGINT) == 0 }
+        signal_group_else_pid(self.child.id(), libc::SIGINT)
     }
 
     fn wait_exit(&mut self, limit: Duration) -> Option<Option<i32>> {
@@ -1005,8 +1019,9 @@ impl Watched for WatchedChild {
 impl Drop for WatchedChild {
     fn drop(&mut self) {
         if !self.released && self.try_exit().is_none() {
-            // Not reaped: the group is still the program's own.
-            kill_group(self.child.id());
+            // Not reaped: the group is still the program's own, and its pid too if it left the group,
+            // so the wait below never waits for a program the kill missed.
+            signal_group_else_pid(self.child.id(), libc::SIGKILL);
             let _ = self.child.wait();
         }
     }

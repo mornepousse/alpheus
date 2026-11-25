@@ -110,7 +110,9 @@ never inside a longer one and never the program. The defaults:
 - `ocr = ["tesseract", "{file}", "-", "-l", "eng"]`: `-` prints the text;
 - `record = ["wf-recorder", "-g", "{geometry}", "-f", "{out}"]`: the recording goes to a free
   `screenrecord-%Y%m%d-%H%M%S.mp4` in `$XDG_VIDEOS_DIR` (else the videos entry of `user-dirs.dirs`,
-  else `~/Videos`), never over a file. A recorder must finish its file on SIGINT and exit 0.
+  else `~/Videos`), never over a file. A recorder must finish its file on SIGINT and exit 0, and stay
+  in the process group alpheus starts it in (no `setsid`): the stop goes to that group, and a program
+  that leaves it gets SIGINT alone, without what it started.
 
 See [configuration.md](../configuration.md#captures).
 
