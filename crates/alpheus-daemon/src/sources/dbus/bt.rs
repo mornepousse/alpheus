@@ -189,7 +189,9 @@ impl BtReader {
         Ok(self.publish())
     }
 
-    /// One device read again, listed or dropped; the view after.
+    /// One device read again, listed or dropped; the view after. Dropped when BlueZ no longer has
+    /// the object (NotFound) or its `Device1` (`InvalidArgs`, `InvalidInput` here: the object
+    /// stays while another interface does, after an `InterfacesRemoved` of `Device1` alone).
     fn read_device(&mut self, bus: &mut dyn Bus, owner: &str, path: &str) -> io::Result<Option<BtView>> {
         match bus.get_all(owner, path, DEVICE) {
             Ok(p) => {
@@ -197,7 +199,7 @@ impl BtReader {
                 self.devices.insert(path.to_string(), known);
                 self.relist(path);
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
                 self.devices.remove(path);
                 self.order.retain(|p| p != path);
             }
@@ -516,6 +518,17 @@ mod tests {
         assert_eq!(labels(&again.nearby), ["Keyboard-Test"]);
         let again = r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap().unwrap();
         assert_eq!(again, v, "a paired device too");
+    }
+
+    #[test]
+    fn a_removal_leaving_the_object_without_its_device_interface_drops_the_row() {
+        let mut bus = FakeBus::workstation();
+        bus.nearby(&dev(0x10), "Keyboard-Test", Some(-50));
+        let (mut r, _) = detail(&mut bus);
+        // Device1 removed while another interface stays on the object: BlueZ answers InvalidArgs.
+        bus.no_interface.insert(dev(0x10));
+        let v = r.changed(&mut bus, &BtChange::Removed(dev(0x10))).unwrap().unwrap();
+        assert!(v.nearby.is_empty(), "no Device1 any more: not listed");
     }
 
     #[test]

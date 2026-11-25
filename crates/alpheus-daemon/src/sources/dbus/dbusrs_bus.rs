@@ -235,6 +235,9 @@ fn error(e: dbus::Error) -> io::Error {
         "org.freedesktop.DBus.Error.Disconnected" => io::ErrorKind::UnexpectedEof,
         // A profile NetworkManager will not show this user (GetSettings): not ours.
         "org.freedesktop.NetworkManager.Settings.PermissionDenied" => io::ErrorKind::PermissionDenied,
+        // GetAll of an interface the object no longer has (BlueZ, after InterfacesRemoved): the
+        // interface is gone, which `bt.rs` reads as the device gone. Never logged as an absence.
+        "org.freedesktop.DBus.Error.InvalidArgs" => io::ErrorKind::InvalidInput,
         _ => kind_of(name),
     };
     io::Error::new(kind, text)
@@ -860,6 +863,7 @@ mod tests {
         assert_eq!(kind("org.freedesktop.DBus.Error.Disconnected"), io::ErrorKind::UnexpectedEof);
         assert_eq!(kind("org.freedesktop.DBus.Error.FileNotFound"), io::ErrorKind::Other, "no socket: an outage, not an absence");
         assert_eq!(kind("org.freedesktop.DBus.Error.AccessDenied"), io::ErrorKind::Other);
+        assert_eq!(kind("org.freedesktop.DBus.Error.InvalidArgs"), io::ErrorKind::InvalidInput, "no such interface on a live object");
         assert_eq!(kind("org.freedesktop.NetworkManager.Settings.PermissionDenied"), io::ErrorKind::PermissionDenied, "not ours");
         assert_eq!(kind("org.freedesktop.DBus.Error.MatchRuleNotFound"), io::ErrorKind::NotFound, "a rule already gone");
         let gone = |name: &str| super::super::is_service_gone(&error(dbus::Error::new_custom(name, "text")));
