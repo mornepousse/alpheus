@@ -50,7 +50,12 @@ stopping or skipping a timer leaves it as it is. A new duration replaces the shu
   `Click to cancel`, with no timeout; a click on it cancels the shutdown. It is set apart from the
   notification rules (a drop or a mute rule never hides it, and do-not-disturb never hides a critical
   notice). Closing it without the click does not cancel: the chip goes on counting.
-- **The end** runs `[quick] poweroff` through the executor. With `[quick] poweroff` empty the Tools
+- **The end** runs `[quick] poweroff` through the executor, as a child whose end the event loop hears
+  (no wait, no polling). A command that cannot start, or that ends with an error (a polkit refusal, an
+  inhibitor, a program that is not there), is not left to the log: a critical notice, `Shutdown` with
+  `Shutdown failed`, stays until it is read. It is set apart from the notification rules like the
+  warning, and the shutdown is gone (not retried; schedule another). With no notification server it
+  is one log line, `timer: shutdown failure not shown (not serving)`. With `[quick] poweroff` empty the Tools
   entry is hidden, the verb is refused (exit 2), and a shutdown already on file is dropped, with one
   log line, before any warning.
 - **Never a surprise.** An end noticed late (the laptop woke up after it, the bar restarted) gives the
@@ -192,7 +197,13 @@ own clock, which stops during a suspend.
 is scheduled, at the earliest of its warning, its end and the chip's next minute. Its callback, the
 clock's minute tick and the load at start all go through `shutdown_check_clock`, which asks
 `shutdown_step` (the pure step) what is due; the power off is spawned in one place, in the arm of
-the `PowerOff` step, which only comes after a warning.
+the `PowerOff` step, which only comes after a warning. The command is a watched child started free
+(`Executor::spawn_watched_free`: unlike the recorder's, no signal follows its launcher's end): its
+pidfd goes on the event loop and is readable only once it has ended, when `shutdown_command_ready`
+reads its exit and, for a non-zero one, shows the failure notice (an end by a signal is not one:
+the session's teardown signals a power off that is happening). Whoever drops it, the daemon
+stopping or a new power off, lets it run on (`Watched::release`), never kills it: a command that
+ends the session before it returns, a crash or a polkit prompt left pending must not cancel it.
 
 **The lock.** `shutdown_step` asks `lockscreen::session_locked` when a step is due, and while a
 warning is in force (its minute: the shutdown's own deadline then wakes every `LOCK_SAMPLE_MS`, 5 s,
@@ -262,12 +273,14 @@ These are enforced by tests, so a change that breaks one fails the build.
   `a_suspend_in_the_warning_minute_warns_again_and_never_powers_off_at_once`,
   `a_shutdown_from_before_this_boot_is_dropped`, `a_warning_waits_for_the_server_but_never_for_long`,
   `a_locked_session_is_never_warned_or_powered_off_until_it_unlocks`,
-  `the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force`,
-  `a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock` (`app/tests.rs`); the lookup's own
+  `the_lock_is_looked_at_only_when_a_step_is_due_or_a_warning_is_in_force`, `only_a_non_zero_exit_is_a_failed_power_off`, `a_power_off_still_running_is_released_never_killed_when_dropped`, `a_lock_inside_the_warning_minute_gives_a_fresh_minute_at_the_unlock`,
+  `the_power_off_runs_the_configured_command_and_logs_no_command` (`app/tests.rs`),
+  `the_failure_notice_is_critical_and_says_the_shutdown_failed` (`shutdown/tests.rs`); the lookup's own
   (`lockscreen/tests.rs`: the names, the owner, numeric folders only, an unreadable `/proc` reads as
   not locked); and, headless, `shutdown_warns_then_runs_poweroff`,
   `a_shutdown_due_while_locked_waits_for_the_unlock_then_warns` (its locker is an entry of a fake
-  `/proc` folder, `[timer] proc_dir`, of the test's own),
+  `/proc` folder, `[timer] proc_dir`, of the test's own), `a_failed_power_off_shows_a_critical_notice`
+  (`false`, then a program that is not there),
   `a_past_shutdown_at_start_warns_with_a_bubble_before_any_power_off`,
   `a_shutdown_is_refused_without_a_poweroff_command` and `a_shutdown_and_a_timer_run_side_by_side`,
   where `[quick] poweroff` is a `touch` of a file in the test's own runtime folder.
@@ -294,7 +307,8 @@ Measured in release, back to back with the version before it, 3 runs each (the f
 - **A scheduled shutdown (on the branch, no base: new code):** no wake-up in 5 s away from the
   minute, 4 in 65 s (the chip's minute and the test bar's clock; bound 6), 3 release runs
   (`at_rest_no_wakeups_with_a_shutdown_scheduled`); no thread, and its state is one line and a chip
-  text. A step held by a lock screen costs a wake-up a minute and one read of `/proc`'s process
-  names, until the unlock. The warning's minute costs a wake-up every 5 s for that minute only, one
-  look at `/proc` each (`the_warning_minute_samples_the_lock_every_five_seconds_then_rests`, release: 6 loop wake-ups in 30 s
+  text. The power off command's pidfd is on the loop only while the command runs, and wakes it once,
+  at the command's end. A step held by a lock screen costs a wake-up a minute and one read of
+  `/proc`'s process names, until the unlock. The warning's minute costs a wake-up every 5 s for
+  that minute only, one look at `/proc` each (`the_warning_minute_samples_the_lock_every_five_seconds_then_rests`, release: 6 loop wake-ups in 30 s
   of the minute, 0 in 5 s after the cancel; bound 3 to 12, where a one-second tick would read 30).

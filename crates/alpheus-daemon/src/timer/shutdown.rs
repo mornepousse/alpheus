@@ -207,5 +207,27 @@ pub fn warning() -> Incoming {
     }
 }
 
+/// The notice that says the power off did not happen (the command could not start, or ended with
+/// an error: a refusal, an inhibitor, a missing program). Critical, so it stays until it is read;
+/// no action, as the shutdown is gone.
+pub fn failure() -> Incoming {
+    Incoming {
+        app_name: "alpheus".into(),
+        replaces_id: 0,
+        summary: "Shutdown".into(),
+        body: "Shutdown failed".into(),
+        actions: Vec::new(),
+        urgency: Urgency::Critical,
+        // A negative value asks for the server's default; a critical notice has no timeout anyway.
+        expire_ms: -1,
+        desktop_entry: None,
+        category: None,
+        transient: false,
+        resident: false,
+        // Its own tag: the next warning (`shutdown`) never replaces it.
+        tag: Some("shutdown-failed".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests;

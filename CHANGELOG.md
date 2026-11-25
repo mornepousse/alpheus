@@ -88,6 +88,13 @@ delivered before it, by the month it was merged.
   then and once a minute while held; the folder read is `[timer] proc_dir`.
   [Page](docs/features/timer.md#the-scheduled-shutdown),
   [decision](docs/decisions.md#a-scheduled-shutdown-always-warns-a-minute-before-even-when-its-time-has-passed).
+- **A failed power off is told** (25): when `[quick] poweroff` cannot start or ends with an error (a
+  polkit refusal, an inhibitor, a missing program), a critical notice, `Shutdown` / `Shutdown failed`,
+  says so; before, only a log line did, and the shutdown had already gone from the chip and the
+  warning. The command's end is heard on its pidfd, so nothing polls or wakes while it runs; it is
+  started free and never killed with the daemon, and only a non-zero exit is a failure.
+  [Page](docs/features/timer.md#the-scheduled-shutdown),
+  [decision](docs/decisions.md#a-scheduled-shutdown-always-warns-a-minute-before-even-when-its-time-has-passed).
 - **glibc's mmap threshold pinned** (25): the daemon sets `M_MMAP_THRESHOLD` to 128 KiB at start, so a
   large block (a capture's frame) is unmapped when freed instead of staying in an arena; the launcher
   keeps 56 to 148 KB less after closing, and a user's `GLIBC_TUNABLES` threshold is overridden.

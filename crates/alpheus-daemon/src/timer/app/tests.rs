@@ -202,18 +202,47 @@ fn the_shutdown_check_warns_then_powers_off_and_never_at_once() {
 #[test]
 fn the_power_off_runs_the_configured_command_and_logs_no_command() {
     let fake = FakeExecutor::new();
-    fake.ok("systemctl poweroff", "");
+    fake.watch_ok("systemctl", None);
     let argv = vec!["systemctl".to_string(), "poweroff".to_string()];
-    assert_eq!(spawn_poweroff(&fake, &argv), "timer: shutdown power off");
+    assert!(spawn_poweroff(&fake, &argv).is_ok());
     assert_eq!(fake.calls(), ["systemctl poweroff"]);
+    // A command that cannot start: the line says the kind, never the command.
     let mine = vec!["/home/someone/bin/off".to_string()];
     let fail = FakeExecutor::new();
-    let line = spawn_poweroff(&fail, &mine);
+    let Err(line) = spawn_poweroff(&fail, &mine) else { panic!("an unknown program cannot start") };
     assert_eq!(line, "timer: shutdown power off could not start (not found)");
     assert!(!line.contains("someone"), "{line}");
+    let io = FakeExecutor::new();
+    io.watch_err("off", ExecError::Io("/home/someone/x: busy".into()));
+    let Err(line) = spawn_poweroff(&io, &["off".to_string()]) else { panic!("a refused start") };
+    assert_eq!(line, "timer: shutdown power off could not start (io)", "a kind word, never the error's text");
     let none = FakeExecutor::new();
-    assert_eq!(spawn_poweroff(&none, &[]), "timer: shutdown has no poweroff command");
+    let Err(line) = spawn_poweroff(&none, &[]) else { panic!("no command") };
+    assert_eq!(line, "timer: shutdown has no poweroff command");
     assert!(none.calls().is_empty(), "nothing set: nothing spawned");
+}
+
+#[test]
+fn only_a_non_zero_exit_is_a_failed_power_off() {
+    assert_eq!(poweroff_end(Some(0)), ("timer: shutdown command ended".to_string(), false), "accepted: nothing to tell");
+    // A refusal, a missing program under a shell: the user is told, with a number in the log.
+    assert_eq!(poweroff_end(Some(1)), ("timer: shutdown power off failed (exit 1)".to_string(), true));
+    assert_eq!(poweroff_end(Some(127)), ("timer: shutdown power off failed (exit 127)".to_string(), true));
+    // A signal is the session's teardown reaching a power off that is really happening: not told.
+    assert_eq!(poweroff_end(None), ("timer: shutdown command ended by a signal".to_string(), false));
+}
+
+/// The power off command may end the session before it returns: when its owner goes (the daemon
+/// ends, a new power off replaces it), it is let run on, never killed.
+#[test]
+fn a_power_off_still_running_is_released_never_killed_when_dropped() {
+    let fake = FakeExecutor::new();
+    fake.watch_ok("systemctl", None);
+    let child = spawn_poweroff(&fake, &["systemctl".to_string(), "poweroff".to_string()]).unwrap_or_else(|_| panic!("it starts"));
+    let run = PowerOffRun { child: Some(child), watch: None };
+    drop(run);
+    let children = fake.children();
+    assert!(children[0].released() && !children[0].killed(), "let run on, never killed");
 }
 
 #[test]

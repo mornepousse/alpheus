@@ -117,6 +117,21 @@ fn the_warning_is_a_sticky_critical_notice_with_a_cancel_action() {
     assert!(!n.transient);
 }
 
+/// A power off that did not happen must not vanish: the notice names the feature as its summary
+/// and says what happened as its body, like the captures' failures, and stays until it is read.
+#[test]
+fn the_failure_notice_is_critical_and_says_the_shutdown_failed() {
+    let n = failure();
+    assert_eq!((n.summary.as_str(), n.body.as_str()), ("Shutdown", "Shutdown failed"));
+    assert_eq!(n.urgency, Urgency::Critical, "critical notices have no timeout");
+    assert_eq!(n.expire_ms, -1);
+    assert!(n.actions.is_empty(), "nothing to click: the shutdown is gone");
+    // Its own tag: the next warning, which carries `shutdown`, never replaces it.
+    assert_eq!(n.tag.as_deref(), Some("shutdown-failed"));
+    assert_ne!(n.tag, warning().tag);
+    assert!(!n.transient && !n.resident);
+}
+
 #[test]
 fn a_warning_holds_only_if_the_wall_clock_did_not_outrun_the_monotonic_one() {
     let s = Shutdown { end: T0 + 600_000, set: T0 };

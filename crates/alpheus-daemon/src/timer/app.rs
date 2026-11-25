@@ -16,6 +16,8 @@
 //! - start a thread: everything runs on the event loop;
 //! - wait for the end's sound: it is started through the daemon's executor (the object every
 //!   program the daemon runs goes through, which tests replace with a fake) and never waited for;
+//! - wait for the power off command either: it is a watched child, its end heard on its pidfd by the
+//!   event loop, and a failure to start or an error exit is told to the user;
 //! - log the sound's or the power-off command, or a path: logs carry fixed words and numbers only
 //!   (a command may name the user);
 //! - power off before the warning: a late end warns first (`shutdown_step`).
@@ -41,9 +43,11 @@ use crate::timer::popup::{TimerAction, TimerPopup};
 use crate::timer::shutdown::{self, Shutdown, ShutdownChoice, ShutdownStep, warning_holds};
 use crate::timer::{Change, End, Lengths, Phase, Timer as Model, chip_with_shutdown, incoming, length_text, saved_pair};
 use crate::wayland::App;
-use alpheus_common::exec::Executor;
+use alpheus_common::exec::{Executor, Watched};
 use alpheus_common::launcher_ipc::{Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb};
 use alpheus_common::paths;
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::{Duration, Instant};
 
@@ -54,10 +58,6 @@ const WAIT_MAX_MS: u64 = 25 * 3_600_000;
 /// than re-arm it for a few milliseconds' difference, so the clock tick does not re-arm a timer
 /// already set.
 const SAME_DEADLINE: Duration = Duration::from_millis(5);
-
-/// How long a look that found the session locked answers the next ones: the two checks of a minute
-/// (the deadline and the clock's tick) land within a moment of each other, and read `/proc` once.
-const HELD_MEMO: Duration = Duration::from_secs(30);
 
 /// The timer's state on the app: the model, the `[timer]` lengths, its one deadline.
 ///
@@ -96,7 +96,29 @@ pub(crate) struct TimerApp {
     pub(crate) warn_id: Option<u32>,
     /// Armed only while a shutdown is scheduled.
     pub(crate) shutdown_deadline: DeadlineTimer,
+    /// The power off command, from its start until its end is heard.
+    pub(crate) poweroff: Option<PowerOffRun>,
 }
+
+/// The `[quick] poweroff` command while it runs: the watched child, and its pidfd's place on the
+/// event loop, which is quiet until the command ends. Dropped, it lets the command run on (never
+/// kills it): a power off that ends the session before it returns must not be cut short.
+pub(crate) struct PowerOffRun {
+    child: Option<Box<dyn Watched>>,
+    watch: Option<RegistrationToken>,
+}
+
+impl Drop for PowerOffRun {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            child.release();
+        }
+    }
+}
+
+/// How long a look that found the session locked answers the next ones: the two checks of a minute
+/// (the deadline and the clock's tick) land within a moment of each other, and read `/proc` once.
+const HELD_MEMO: Duration = Duration::from_secs(30);
 
 impl TimerApp {
     pub(crate) fn new(config: &crate::config::BarConfig) -> TimerApp {
@@ -115,6 +137,7 @@ impl TimerApp {
             lock_seen: None,
             warn_id: None,
             shutdown_deadline: DeadlineTimer::new(),
+            poweroff: None,
         }
     }
 }
@@ -387,14 +410,26 @@ pub(crate) fn shutdown_step(
     }
 }
 
-/// Runs the `[quick] poweroff` command `argv`, never through a shell and never waited for, and
-/// returns the log line: a fixed word, with the kind of a failure. The line never holds the command.
-pub(crate) fn spawn_poweroff(exec: &dyn Executor, argv: &[String]) -> String {
-    let Some((program, args)) = argv.split_first() else { return "timer: shutdown has no poweroff command".into() };
+/// Runs the `[quick] poweroff` command `argv`, never through a shell, as a watched child that does not die with
+/// the daemon: its end is heard on its pidfd, never waited for. Err holds the log line of a command that did not start:
+/// a fixed word, with the kind of the failure, never the command.
+pub(crate) fn spawn_poweroff(exec: &dyn Executor, argv: &[String]) -> Result<Box<dyn Watched>, String> {
+    let Some((program, args)) = argv.split_first() else { return Err("timer: shutdown has no poweroff command".into()) };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match exec.spawn(program, &args) {
-        Ok(()) => "timer: shutdown power off".into(),
-        Err(e) => format!("timer: shutdown power off could not start ({})", crate::log::exec_word(&e)),
+    exec.spawn_watched_free(program, &args)
+        .map_err(|e| format!("timer: shutdown power off could not start ({})", crate::log::exec_word(&e)))
+}
+
+/// How a power off command that ended with `exit` (`Watched::try_exit`: None when a signal ended
+/// it) is told: its log line, and whether the user is told too. Only a non-zero exit is a failure
+/// (a refusal by polkit or an inhibitor, a program that is not there). An end by a signal is not:
+/// the session's teardown signals the command of a power off that is really happening. The line
+/// holds a number or a word, never the command.
+pub(crate) fn poweroff_end(exit: Option<i32>) -> (String, bool) {
+    match exit {
+        Some(0) => ("timer: shutdown command ended".into(), false),
+        Some(code) => (format!("timer: shutdown power off failed (exit {code})"), true),
+        None => ("timer: shutdown command ended by a signal".into(), false),
     }
 }
 
@@ -914,7 +949,17 @@ impl App {
             Some(ShutdownStep::PowerOff) => {
                 self.timer_save();
                 self.shutdown_notice_close();
-                log(&spawn_poweroff(self.exec.as_ref(), &self.bar.config.quick.poweroff));
+                match spawn_poweroff(self.exec.as_ref(), &self.bar.config.quick.poweroff) {
+                    Ok(child) => {
+                        log("timer: shutdown power off");
+                        self.shutdown_watch(child);
+                    }
+                    // The shutdown is gone and nothing powers off: the user is told.
+                    Err(line) => {
+                        log(&line);
+                        self.shutdown_failed();
+                    }
+                }
             }
             None => {}
         }
@@ -939,6 +984,64 @@ impl App {
             });
         });
         self.timer.warn_id = (id != 0).then_some(id);
+    }
+
+    /// Puts the power off command's pidfd on the event loop: readable once it has ended, quiet until
+    /// then, so nothing wakes while it runs. A command nobody could hear is let go and logged.
+    fn shutdown_watch(&mut self, child: Box<dyn Watched>) {
+        // A command still running from an earlier power off goes first, its watch with it.
+        self.shutdown_unwatch();
+        let watch = match (self.loop_handle.clone(), child.exit_fd()) {
+            (Some(handle), Some(fd)) => handle
+                .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, app: &mut App| Ok(app.shutdown_command_ready()))
+                .ok(),
+            _ => None,
+        };
+        if watch.is_none() {
+            log("timer: shutdown power off not watched");
+            child.release();
+            return;
+        }
+        self.timer.poweroff = Some(PowerOffRun { child: Some(child), watch });
+    }
+
+    /// Takes the power off command, running or not, off the loop; it runs on (`PowerOffRun`'s drop).
+    fn shutdown_unwatch(&mut self) {
+        let Some(mut run) = self.timer.poweroff.take() else { return };
+        if let (Some(handle), Some(token)) = (self.loop_handle.as_ref(), run.watch.take()) {
+            handle.remove(token);
+        }
+    }
+
+    /// The command's pidfd turned readable: it has ended. Its end is read (which reaps it) and the
+    /// watch goes with this answer. A failing exit is told to the user.
+    fn shutdown_command_ready(&mut self) -> PostAction {
+        let Some(run) = self.timer.poweroff.as_mut() else { return PostAction::Remove };
+        let Some(exit) = run.child.as_mut().and_then(|c| c.try_exit()) else { return PostAction::Continue };
+        // The loop removes this watch on our answer: it must not be removed again.
+        self.timer.poweroff = None;
+        let (line, tell) = poweroff_end(exit);
+        log(&line);
+        if tell {
+            self.shutdown_failed();
+        }
+        PostAction::Remove
+    }
+
+    /// Tells the user the power off did not happen: a critical notice, set apart from the user's
+    /// rules like the warning (a drop or a mute must never hide it). With no server serving, one log
+    /// line says it was not shown.
+    fn shutdown_failed(&mut self) {
+        if !self.notifications().is_some_and(|s| s.held()) {
+            log("timer: shutdown failure not shown (not serving)");
+            return;
+        }
+        self.notify_act(|s| {
+            s.act(|c| {
+                c.notify_exempt(shutdown::failure(), Instant::now(), minute_now());
+                c.take_effects()
+            });
+        });
     }
 
     /// Closes the warning notice when it is shown: the shutdown was cancelled or went.
