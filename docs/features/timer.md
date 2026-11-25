@@ -73,7 +73,8 @@ stopping or skipping a timer leaves it as it is. A new duration replaces the shu
   and the power off comes after it (`timer: shutdown goes on after the unlock`). A lock that starts
   and ends inside the warning's minute counts too: during that minute only, the lock is looked at
   every 5 s, and one found drops the warning, so the unlock gives a whole fresh minute, never the
-  few seconds left of the first. The lock is told by the locker's process, because no locker
+  few seconds left of the first. A lock and its unlock both falling between two looks (under 5 s in
+  all) go unseen. The lock is told by the locker's process, because no locker
   tells a bar when it ends (see "How it is built"); a locker this list does not know, a zombie, or
   a `/proc` that cannot be read, reads as not locked, which is how the shutdown behaved before.
 - **Cancelling:** the `Cancel shutdown` row of the popup, the first choice of the Tools entry
