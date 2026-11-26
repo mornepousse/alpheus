@@ -43,7 +43,7 @@ pub struct ToolsConfig {
     pub reload: Vec<String>,
     /// `false`: Super+X opens on the category list instead of the command panel.
     pub panel: bool,
-    /// Built-in id to the letter that opens it (one lowercase ASCII letter); an unknown id is noted and ignored.
+    /// Built-in id to the letter that runs it from the panel (one lowercase ASCII letter); an unknown id is noted and ignored.
     #[serde(deserialize_with = "letter_map")]
     pub keys: BTreeMap<String, char>,
     /// The commands of the built-ins that run one (`[tools.builtin]`).
@@ -115,7 +115,7 @@ pub struct EntryConfig {
     pub choices_cmd: Vec<String>,
     /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
     pub ask: Option<String>,
-    /// The letter that opens the entry from the Tools menu's root: one lowercase ASCII letter.
+    /// The letter that runs the entry from the Tools panel: one lowercase ASCII letter.
     #[serde(deserialize_with = "letter")]
     pub key: Option<char>,
     /// One line on what the entry does, shown under its name; absent: its category's name.

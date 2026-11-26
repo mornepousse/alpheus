@@ -590,7 +590,7 @@ builtins = true      # false: no built-in entry
 hide = []            # built-in ids never shown ("tab.power", "quick.shield", …); an unknown one is logged and ignored
 root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
 panel = true         # false: Super+X opens on the category list, with no letters
-keys = {}            # built-in id to the letter that opens it, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
+keys = {}            # built-in id to the letter that runs it from the panel, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
 
 [tools.builtin]
