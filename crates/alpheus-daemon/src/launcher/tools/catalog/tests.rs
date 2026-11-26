@@ -67,6 +67,20 @@ fn every_builtin_has_a_short_description() {
     }
 }
 
+/// One style for every description: a verb phrase from the user's side ("Read NetworkManager's
+/// journal", not "NetworkManager's journal"). The verbs the table uses; a new one is added here.
+#[test]
+fn every_description_starts_with_a_verb() {
+    const VERBS: [&str; 20] = [
+        "Set", "Pick", "Connect", "Open", "Turn", "Keep", "Jot", "Find", "Copy", "Select", "Record", "End", "Power", "Lock", "Run", "Scan",
+        "Watch", "Restart", "Read", "Follow",
+    ];
+    for b in &BUILTINS {
+        let first = b.description.split([' ', ',']).next().unwrap_or_default();
+        assert!(VERBS.contains(&first), "{}: {:?} does not start with a verb", b.id, b.description);
+    }
+}
+
 /// A built-in's entry carries its table text, a user entry its own `description` (none: None).
 #[test]
 fn an_entry_carries_its_description() {
