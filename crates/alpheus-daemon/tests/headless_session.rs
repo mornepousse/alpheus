@@ -387,7 +387,7 @@ fn tools_a_letter_runs_its_builtin_after_the_box_closed() {
 /// runs it.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
-fn tools_overview_slash_then_letters_search() {
+fn tools_panel_slash_then_letters_search() {
     let sway = Sway::start("tools-slash-letters", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     let rec = fake_recorder(&sway, "fake-mine");
@@ -424,12 +424,42 @@ fn tools_overview_slash_then_letters_search() {
     assert_eq!(d.count("tools: built-in"), 1, "{:?}", d.log());
 }
 
+/// Tab changes the panel's tab: Enter on All's first tool runs Alpha's entry (the control); Tab
+/// twice opens Beta's tab and Enter runs its first tool; Shift+Tab from All wraps to the last tab.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_panel_tab_changes_the_tab() {
+    let sway = Sway::start("tools-panel-tab", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let a = fake_recorder(&sway, "fake-alpha");
+    let b = fake_recorder(&sway, "fake-beta");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Alpha\"\n[[tools.category]]\nname = \"Beta\"\n\
+         [[tools.entry]]\nname = \"First\"\ncategory = \"Alpha\"\nrun = [\"{}\"]\n\
+         [[tools.entry]]\nname = \"Second\"\ncategory = \"Beta\"\nrun = [\"{}\"]\n",
+        a.display(),
+        b.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-alpha").len() == 1), "All's first tool: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 1, DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["-k", "Tab", "-k", "Tab", "-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-beta").len() == 1), "Beta's tab: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 3, &["-M", "shift", "-k", "Tab", "-m", "shift", "-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-beta").len() == 2), "Shift+Tab wraps to Beta: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 3, DELAY), "{:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-alpha").len(), 1, "a tab change runs nothing: {:?}", d.log());
+}
+
 /// Nothing at rest after a cycle of moves: opened with every shown built-in, moved through the
 /// panel's rows (→ and ← on a tool without choices do nothing), closed by Escape; no loop wake-up in 5 s, the thread count where it was.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
-fn tools_overview_at_rest_no_wakeups_after_a_cycle() {
-    let sway = Sway::start("tools-overview-rest", 1);
+fn tools_panel_at_rest_no_wakeups_after_a_cycle() {
+    let sway = Sway::start("tools-panel-rest", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
     ready(&d);

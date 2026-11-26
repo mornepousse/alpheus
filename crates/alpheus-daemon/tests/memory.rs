@@ -4462,7 +4462,7 @@ fn at_rest_no_wakeups_after_tools() {
     let toml = format!(
         "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Danger\"\ncategory = \"Fake\"\n\
          run = [{:?}]\nconfirm = true\nstate = [{:?}]\n\
-         [[tools.entry]]\nname = \"Plain\"\nrun = [{:?}]\nkey = \"p\"\n",
+         [[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [{:?}]\nkey = \"p\"\n",
         run.display().to_string(),
         on.display().to_string(),
         run.display().to_string()
@@ -4491,8 +4491,8 @@ fn at_rest_no_wakeups_after_tools() {
         eprintln!("loop-thread wake-ups at rest {what} (5 s): {delta}");
         assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s {what}: {:?}", d.log());
     };
-    // A question asked (Enter on the category, Enter on the entry), the box closed by the verb
-    // with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The typist stays alive for 2.5 s so that no focus loss
+    // A question asked (Enter on Danger, the panel's first tool, then a second Enter inside 0.4 s
+    // that does not answer it), the box closed by the verb with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The typist stays alive for 2.5 s so that no focus loss
     // closes the box before the verb.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
@@ -4516,8 +4516,8 @@ fn at_rest_no_wakeups_after_tools() {
     );
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     rest("after an expired question");
-    // Moves through the root (Plain sits there, after the category), then Plain's letter runs it
-    // and closes the box.
+    // Moves through the panel's rows (Plain sits after Danger in Fake's section, its capsule
+    // shown), then Plain's letter runs it and closes the box.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 3, DELAY), "{:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "-k", "Down", "-k", "Right", "-k", "Up", "-k", "Left", "-s", "100", "p"]).success());
