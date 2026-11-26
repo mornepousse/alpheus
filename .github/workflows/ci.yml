@@ -157,3 +157,7 @@ jobs:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@v2.1.3
       - uses: crate-ci/typos@v1.52.2
+      # The site under site/: relative links that resolve, no outside resource,
+      # no script, sized images, within its budget (site/check.sh).
+      - name: Site check
+        run: sh site/check.sh

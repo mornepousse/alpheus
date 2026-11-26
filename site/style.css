@@ -1,0 +1,61 @@
+/* alpheus's site. Colours: the Ink preset, dark half (INK_DARK in
+   crates/alpheus-common/src/theme/presets.rs); no colour outside these tokens. */
+
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-display: swap;
+}
+
+:root {
+	--bg: #101010;
+	--pill: #1e1e1e;
+	--popup: #161616;
+	--raised: #2b2b2b;
+	--selection: #3b3b3b;
+	--fg: #e8e6e1;
+	--fg-dim: #8f8d88;
+	--accent: #ff5a3c;
+	--red: #ff5a3c;
+	--orange: #e8975c;
+	--yellow: #d9c27a;
+	--green: #a3b895;
+	--cyan: #8fb5b5;
+	--blue: #8da2c4;
+	--purple: #b49bb8;
+
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	background: var(--bg);
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: "JetBrains Mono", ui-monospace, monospace;
+	font-size: 15px;
+	line-height: 1.6;
+}
+
+.column {
+	max-width: 76ch;
+	margin-inline: auto;
+	padding-inline: 16px;
+}
