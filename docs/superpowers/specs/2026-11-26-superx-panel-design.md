@@ -56,8 +56,9 @@ today's menu): the branch is unreleased, so no migration.
 ### Tabs and sections
 
 - **All** (the tab at open): `PINNED` (the built-ins of `[tools] root` and the user entries with
-  no category), `RECENT` (the last 4 distinct tools run from this menu that still show, not
-  already pinned, from the launcher's existing history), then one section per category in
+  no category), `RECENT` (the last 4 distinct tools run that still show, not already pinned,
+  from the launcher's existing history, which does not tell a Mod+Space run apart, so those count
+  too), then one section per category in
   category order, its header the hue dot and the name in capitals. A tool may appear in Pinned or
   Recent and again in its category; it keeps the same letter in both places. An empty section is
   not shown.
@@ -82,8 +83,10 @@ today's menu): the branch is unreleased, so no migration.
   results inside a group by rank; each group has its section header.
 - The characters that matched are drawn in `Accent` in the name.
 - An entry with fixed choices shows them as chips on its second line instead of its
-  description; **←/→** pick a chip on the selected row, **Enter** runs the entry with the picked
-  chip; a search that matches a choice's text picks that chip. A dynamic `choices_cmd` entry keeps
+  description. No chip is picked by default: **←/→** pick a chip on the selected row, a click on a
+  chip picks it (never runs it), and a query whose every word is a case-insensitive substring of a
+  choice's own text picks that chip; **Enter** runs the entry with the picked chip, and with none
+  picked opens its choices as today. A dynamic `choices_cmd` entry keeps
   today's level (Enter or → opens it).
 - The detail card follows the selection in search as at home.
 

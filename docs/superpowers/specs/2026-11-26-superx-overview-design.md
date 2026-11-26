@@ -81,8 +81,9 @@ not in the repo): the P2a, P2b and P2c PNGs of the 2026-11-26 session.
 - **Box size** *(builder's call)*: the overview sizes the box once, at open, to fit the catalog:
   width for up to 3 cards (about 105 cells), height for the tallest band set, capped at 90 % of
   the output's width and 80 % of its height (`rows` in `launcher.toml` no longer caps the Tools
-  mode; it still caps the other modes). The box keeps that size for the whole open: search, levels
-  and the kill list draw inside it, so nothing resizes on the first key. With `overview = false`
+  mode; it still caps the other modes). The box keeps that size for the whole open: search and
+  levels draw inside it, so nothing resizes on the first key; a Kill picked from it reopens the box
+  at the kill list's own size. With `overview = false`
   the box keeps today's size.
 - **Root items** *(builder's call)*: built-ins listed in `[tools] root` and user entries with no
   `category` form a first card titled `Pinned` (accent dot), before every category card; it

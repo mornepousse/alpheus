@@ -1976,3 +1976,23 @@ daemon, for isolation and for the resident budget. It reuses the daemon's grid a
 shared crate. A command that needs a terminal still opens one.
 
 Date: 2026-11-26 · Source: none yet (its design comes after the Super+X overview)
+
+### The Tools menu opens on a command panel; a letter runs only a tool whose capsule shows, never after `/` or Space nor from Mod+Space; a choice runs only once the user picks it
+
+Super+X opens on a command panel: tabs (All, then each category), each tool on two lines with what it
+does, a detail card for the selected one, and a letter that runs a tool in one key. The owner chose
+this layout over a grid of category cards after seeing both drawn by the daemon: nothing is hidden
+(All scrolls through every category), and each tool says what it does. A key that runs something
+at once must never surprise, so a letter acts only on a tool whose capsule is drawn in the open tab;
+`/` or Space start the search, and every letter after them is text; a held key never acts twice;
+Mod+Space never shows the panel nor has live letters, since its users type to search. In the search,
+no choice is picked by default: with a first chip picked, one Enter on Schedule shutdown would
+schedule a 30-minute shutdown, and one on Network scan would start a sweep, actions the user never
+chose. A chip is picked by ←/→, by a click on it (which runs nothing), or by a query whose every word
+is a case-insensitive substring of the chip's own text (a fuzzy match could pick a chip the user never
+aimed at); Enter on a row with chips and none picked opens its choices. Recent is read from the
+launcher's existing history (no new file), so a tool run from Mod+Space counts too. The box is
+sized once per open and keeps that size, so nothing jumps on the first key; one font size only, so
+no second font is loaded. `[tools] panel = false` keeps the category list.
+
+Date: 2026-11-26 · Source: tests `a_letter_runs_the_tool_its_capsule_shows`, `a_letter_of_a_tool_not_in_the_tab_starts_the_search`, `a_held_letter_runs_nothing`, `a_mod_space_jump_into_tools_never_runs_a_letter`, `enter_without_a_picked_chip_opens_the_choices`, `a_click_on_a_chip_picks_it_and_runs_nothing`, `panel_off_keeps_today_s_root` (`launcher/model/tests.rs`), `a_chip_is_picked_only_by_words_found_in_its_text` (`launcher/matching/tests.rs`), `tools_panel_slash_then_letters_search`, `tools_panel_tab_changes_the_tab` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-26-superx-panel-design.md`

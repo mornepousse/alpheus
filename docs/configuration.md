@@ -528,7 +528,7 @@ bound the first ones are kept, with one log line of counts.
 |---|---|---|---|---|
 | `builtins` | bool | `true` | | `false`: no built-in entry. |
 | `hide` | list of ids | `[]` | | Built-in ids never shown (`"tab.power"`, `"quick.shield"`…); an unknown one is logged and ignored. |
-| `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
+| `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`): the command panel's Pinned section. |
 | `panel` | bool | `true` | | `false`: Super+X opens on the category list instead of the command panel, with no letters. |
 | `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that runs a built-in from the command panel, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
