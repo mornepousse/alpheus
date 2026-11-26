@@ -8,7 +8,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 
 | Feature | **alpheus** | DMS | Noctalia | ashell | waybar stack¹ |
 |---|---|---|---|---|---|
-| **Resident memory** | **≈ 14 MB** today (live: bar and sound source; to be re-measured), ≤ 120 MB target | ≈ 537 MB | ≈ 517 MB (4.7) | ≈ 194 MB² | ≈ 55 MB³ |
+| **Resident memory** | **≈ 12 MB** today (test harness: bar and sound source), ≤ 15 MB budget at rest (see `decisions.md`) | ≈ 537 MB | ≈ 517 MB (4.7) | ≈ 194 MB² | ≈ 55 MB³ |
 | **Bar** | | | | | |
 | Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Clock | ✅ | ✅ | ✅ | ✅ | ✅ |

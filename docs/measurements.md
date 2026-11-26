@@ -30,8 +30,9 @@ compares with other shells. Updated with every delivery that costs anything
   counts the loop's wake-ups; the target is zero, apart from planned timers
   (the clock's minute tick, the resources interval). Tests also count the
   D-Bus and sound threads' wake-ups and the whole daemon's.
-- **Startup budget.** PSS at start must stay under 15 MB (firm), and under
-  30 MB at steady state without growth, under a busy compositor and a busy
+- **Startup budget.** PSS at start must stay under 15 MB (firm), and the
+  steady state under 15 MB too (the resident budget of
+  [`decisions.md`](decisions.md#everything-alpheus-keeps-resident-fits-in-15-mb-at-rest)), without growth, under a busy compositor and a busy
   PipeWire (`STARTUP_MAX_KB` and the header of `tests/memory.rs`).
 - **No session involved.** The tests run a headless Sway with virtual
   outputs, a private D-Bus daemon replaying recorded NetworkManager, UPower
@@ -70,7 +71,7 @@ the tests and which from a real session. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | alpheus's live total ≈ 14 MB (bar and sound source) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live figure was measured before several deliveries and is to be re-measured |
+| **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 12 MB** (re-measured 2026-11-26) | the release memory suite's daemon (bar and sound source, busy compositor and PipeWire, 5 plug cycles): 10.5 MB at startup, 11.3 to 11.9 MB at steady state (3 runs of `pss_under_30mb_and_stable`, bound 15 MB) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the figure is the test harness's, not a live session's |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 15 MB budget at rest** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
