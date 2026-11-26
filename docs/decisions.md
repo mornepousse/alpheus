@@ -1959,3 +1959,20 @@ action of a device that left the list and BlueZ's pending confirmation is then r
 of a device the panel does not list reads nothing.
 
 Date: 2026-11-25 · Source: tests `removed_device_goes`, `a_removal_the_service_denies_keeps_the_device` (`sources/dbus/bt.rs`)
+
+### Everything alpheus keeps resident fits in 15 MB at rest
+
+With the menus closed, everything alpheus keeps in memory (bar, notifications, OSD, wallpaper)
+fits in 15 MB. What opens on demand may exceed it while it is open and gives the memory back when it
+closes. This replaces the 120 MB of the scope (`docs/SCOPE.md`, requirement 1): the measured
+resident total was already near 15 MB, so the larger figure no longer constrained anything.
+
+Date: 2026-11-26 · Source: `tests/memory.rs` (startup budget `STARTUP_MAX_KB`; the steady state is tightened by the measurement task of the Super+X overview plan)
+
+### The control center becomes its own layer-shell program
+
+The control center is launched on demand as its own layer-shell program, outside the resident
+daemon, for isolation and for the resident budget. It reuses the daemon's grid and painter through a
+shared crate. A command that needs a terminal still opens one.
+
+Date: 2026-11-26 · Source: none yet (its design comes after the Super+X overview)
