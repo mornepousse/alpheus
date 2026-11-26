@@ -19,14 +19,16 @@ text_budget=$((120 * 1024))       # everything but images/
 image_budget=$((400 * 1024))      # each image
 images_budget=$((2560 * 1024))    # images/ in all
 
-# One reference: refuse absolute paths, refuse another host's resource,
-# resolve the rest against the referring file's folder.
+# One reference: refuse absolute paths, refuse another host's resource (only
+# a link a visitor follows, <a href>, may leave the site), refuse a path that
+# climbs out of the site (only the site's folder is published), resolve the
+# rest against the referring file's folder.
 check_ref() {
 	file=$1 kind=$2 ref=$3
 	case $ref in
 	'#'* | mailto:* | data:*) return ;;
 	http://* | https://*)
-		[ "$kind" = href ] || fault "$file: external resource: $ref"
+		[ "$kind" = nav ] || fault "$file: external resource: $ref"
 		return
 		;;
 	/*) fault "$file: absolute link: $ref"; return ;;
@@ -34,6 +36,9 @@ check_ref() {
 	path=${ref%%#*}
 	path=${path%%\?*}
 	[ -n "$path" ] || return
+	case /$path/ in
+	*/../*) fault "$file: leaves the site: $path"; return ;;
+	esac
 	base=$(dirname "$file")
 	[ -e "$base/$path" ] || fault "$file: missing: $path"
 }
@@ -43,21 +48,30 @@ for f in $(find "$dir" -type f -name '*.html'); do
 	if printf '%s' "$flat" | grep -qi '<script'; then
 		fault "$f: script"
 	fi
-	printf '%s' "$flat" | grep -o '<img[^>]*>' | while IFS= read -r img; do
-		case $img in *' alt="'*) ;; *) echo "$f: img without alt/width/height: $img" ;; esac
-		case $img in *' width="'*) ;; *) echo "$f: img without alt/width/height: $img" ;; esac
-		case $img in *' height="'*) ;; *) echo "$f: img without alt/width/height: $img" ;; esac
-	done | sort -u >"${TMPDIR:-/tmp}/site-check.$$"
-	if [ -s "${TMPDIR:-/tmp}/site-check.$$" ]; then
-		cat "${TMPDIR:-/tmp}/site-check.$$"
-		faults=$((faults + $(wc -l <"${TMPDIR:-/tmp}/site-check.$$")))
-	fi
-	rm -f "${TMPDIR:-/tmp}/site-check.$$"
-	for kind in href src; do
-		for ref in $(printf '%s' "$flat" | grep -o " $kind=\"[^\"]*\"" | sed "s/^ $kind=\"//; s/\"\$//"); do
+	# Every tag, read in this shell (a here-document, not a pipe) so that
+	# fault() counts.
+	tags=$(printf '%s' "$flat" | grep -o '<[a-zA-Z][^>]*>')
+	while IFS= read -r tag; do
+		name=${tag#<}
+		name=${name%%[ >]*}
+		if [ "$name" = img ]; then
+			for attr in alt width height; do
+				case $tag in
+				*" $attr=\""*) ;;
+				*) fault "$f: img without alt/width/height: $tag"; break ;;
+				esac
+			done
+		fi
+		for attr in href src; do
+			ref=$(printf '%s' "$tag" | grep -o " $attr=\"[^\"]*\"" | sed "s/^ $attr=\"//; s/\"\$//")
+			[ -n "$ref" ] || continue
+			kind=resource
+			[ "$name" = a ] && [ "$attr" = href ] && kind=nav
 			check_ref "$f" "$kind" "$ref"
 		done
-	done
+	done <<TAGS
+$tags
+TAGS
 done
 
 for f in $(find "$dir" -type f -name '*.css'); do
