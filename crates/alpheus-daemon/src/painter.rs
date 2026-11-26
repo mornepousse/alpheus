@@ -960,7 +960,7 @@ impl Fonts {
     }
 
     /// Fills x ∈ [x.0, x.1) × y ∈ [y.0, y.1), cut to `clip` (x and y spans), with `fill` and
-    /// rounds its corners (`radius` logical px) onto the colour its top left pixel had before.
+    /// rounds its corners (`radius` logical px, fitted to its size) onto the colour its top left pixel had before.
     #[allow(clippy::too_many_arguments)]
     fn rounded(
         &mut self,
@@ -981,20 +981,27 @@ impl Fonts {
         let o = (y.0 as usize * width as usize + x.0 as usize) * 4;
         let Some(under) = px.get(o..o + 4).and_then(|p| <[u8; 4]>::try_from(p).ok()) else { return };
         rect(px, width, height, x, y, fill);
+        // A shape too small for its radius takes a smaller one, as the bar's blocks do.
+        let radius = blocks::fitted_radius(radius, x.1 - x.0, y.1 - y.0, scale);
         blocks::round_block(px, width, height, x, y, self.masks.get(radius, scale), under, None);
     }
 
     /// Row `i` of `b`'s glyphs, as `glyphs` draws a box's (no pills, no underline), each on the
     /// fill of the shape under its cell, `base` off every shape. A cell's own `Tint::Bg` is that
     /// fill: `cell_backgrounds` paints no `Tint::Bg` cell, so the shape stays behind it, and a
-    /// glyph in `Tint::Bg` is cut in the shape's colour.
+    /// glyph in `Tint::Bg` is cut in the shape's colour. A cell with a background of its own
+    /// cuts its glyph in that background, shape or not.
     #[allow(clippy::too_many_arguments)]
     fn boxed_glyphs(&mut self, b: &Boxed, i: usize, row: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32) {
         for (col, c) in row.cells().iter().enumerate() {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
-            let under = b.shapes.iter().rev().find(|sh| covers(sh, i, col)).map_or(base, |sh| shape_fill(roles, base, sh.kind));
+            let under = if c.style.bg != Tint::Bg {
+                color(roles, base, c.style.bg)
+            } else {
+                b.shapes.iter().rev().find(|sh| covers(sh, i, col)).map_or(base, |sh| shape_fill(roles, base, sh.kind))
+            };
             let x = x0 + self.edge(col);
             self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, height);
         }

@@ -1399,6 +1399,33 @@ mod shapes {
     }
 
     #[test]
+    fn a_shape_narrower_than_twice_its_radius_is_still_rounded() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(6, 3);
+        b.shapes.push(shape(0, 2, 1, 3, ShapeKind::Card));
+        let s = Painted::new(&mut p, &b, 2);
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 0, 2, 1, 3);
+        assert!(x1 - x0 < 2 * CARD_RADIUS * 2, "the card is narrower than twice its radius");
+        assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.raised, "the card is drawn");
+        assert_eq!(s.at(x0, y0), r.popup_bg, "its corner is rounded off, with a smaller radius");
+    }
+
+    #[test]
+    fn a_cell_with_its_own_background_cuts_its_glyph_in_it() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(20, 6);
+        b.rows[3].write(8, 20, "E", Style { fg: Tint::Bg, bg: Tint::Selection, bold: false });
+        b.shapes.push(shape(1, 5, 10, 4, ShapeKind::Card));
+        let s = Painted::new(&mut p, &b, 1);
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 3, 8, 1, 1);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                assert_eq!(s.at(x, y), r.selection, "the cut-out letter at ({x}, {y}): its cell's own background");
+            }
+        }
+    }
+
+    #[test]
     fn a_shape_on_a_card_rounds_onto_the_card() {
         let (mut p, r) = (fonts(), distinct());
         let mut b = blank(20, 6);
