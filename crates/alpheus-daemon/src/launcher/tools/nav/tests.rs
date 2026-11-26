@@ -1029,3 +1029,16 @@ fn a_panel_with_no_room_is_not_opened() {
     t.open_panel(104, 30, Vec::new());
     assert_eq!(t.panel_size(), Some((104, 30)));
 }
+
+/// With All the only tab, Tab and Shift+Tab change nothing: no rebuild, nothing to redraw.
+#[test]
+fn next_tab_with_one_tab_does_nothing() {
+    let (_, cat) = catalog("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Lone\"\nrun = [\"x\"]\n");
+    let mut t = ToolsState::new(cat);
+    t.open_panel(104, 30, Vec::new());
+    assert_eq!(t.panel().unwrap().tabs.len(), 1, "All alone");
+    let rev = t.rev();
+    assert!(!t.next_tab(1));
+    assert!(!t.next_tab(-1));
+    assert_eq!(t.rev(), rev, "the rows were not rebuilt");
+}

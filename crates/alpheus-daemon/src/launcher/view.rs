@@ -667,6 +667,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     }
     let unpaned = without_preview(l, b);
     let b = &unpaned;
+    // A level below the panel's root: its rows in the list pane, the entry's card at the right.
+    let level = if tools { panel::level_card(l, b) } else { None };
+    let listed = level.map_or(*b, |(_, end, _)| list_pane(b, end));
     let mut shapes = Vec::new();
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
@@ -686,9 +689,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
-            result_row(l, b, &mut g, index);
+            result_row(l, &listed, &mut g, index);
             if tools && index == l.selected && !l.selection_lost() {
-                let (from, to) = (1 + TOOLS_INSET, end.saturating_sub(TOOLS_INSET));
+                let (from, to) = (1 + TOOLS_INSET, listed.pane_end().saturating_sub(TOOLS_INSET));
                 shapes.push(ring_shape(rows.len(), from, to.saturating_sub(from), 1, ShapeKind::Band));
             }
         } else if r == 0 && l.results.is_empty() && !l.password {
@@ -724,6 +727,10 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     };
     rows.push(g);
     rows.push(blank(b));
+    if let Some((entry, _, card)) = level {
+        let top = usize::from(b.list_top);
+        panel::level_detail(l, entry, card, (top, usize::from(b.list_rows)), &mut rows, &mut shapes);
+    }
     // The panel is reserved for the whole open (2026-10-05: the box never
     // changes width with the selection) and, once reserved, always shows the selected
     // result (2026-10-05, after seeing the real rendering: never blank while one
@@ -754,6 +761,12 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut boxed = list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()));
     boxed.shapes = shapes;
     boxed
+}
+
+/// `b` with its results' pane ending where the panel's list pane does (`end`, exclusive): a level
+/// below the panel's root draws its rows there, its card at the right (`panel::level_card`).
+fn list_pane(b: &BoxLayout, end: u16) -> BoxLayout {
+    BoxLayout { preview_columns: b.columns.saturating_sub(end + TOOLS_INSET + 2), ..*b }
 }
 
 /// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
@@ -863,6 +876,8 @@ pub enum Click {
     Mode(Mode),
     /// A tab of the Super+X panel's strip: an index into `Panel::tabs`.
     Tab(usize),
+    /// A chip of a result's row in the Super+X panel's search: the result, the chip.
+    Chip(usize, usize),
     Inside,
 }
 
@@ -875,6 +890,9 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if l.mode == Mode::Tools && panel::shown(l) {
         return Some(panel::hit(l, b, column, row));
     }
+    // A level below the panel's root: the card right of its rows is no row.
+    let listed = if l.mode == Mode::Tools { panel::level_card(l, b).map(|(_, end, _)| list_pane(b, end)) } else { None };
+    let b = listed.as_ref().unwrap_or(b);
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
         let index = l.top + usize::from(row - b.list_top);

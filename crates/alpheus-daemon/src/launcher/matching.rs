@@ -711,12 +711,6 @@ impl Ranker {
         ranked
     }
 
-    /// Whether `text` (a query, parsed as `rank` parses it) matches `haystack`.
-    pub fn finds(&mut self, text: &str, haystack: &str) -> bool {
-        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
-        self.score(&pattern, haystack).is_some()
-    }
-
     /// The positions of the characters `text` (a query, parsed as `rank` parses it) matches in
     /// `name`, sorted and each once: none when it does not match. nucleo counts graphemes: a name
     /// with one of several characters (a decomposed `é`) gets none rather than misplaced ones.
@@ -737,7 +731,7 @@ impl Ranker {
 /// `ranked` hits with each choice folded into its entry, each entry once where its best hit ranks;
 /// then grouped by category, the groups in the order of their best hit, the entries of a group in
 /// rank order. A choice picks its chip, the best-ranked one of its entry, only when `found` (the
-/// query, `Ranker::finds`) finds the choice's own text: a hit on `Entry · choice` that needs the
+/// query, `holds_every_word`) finds the choice's own text: a hit on `Entry · choice` that needs the
 /// entry's name (`sh` across `Network scan · Host…`) picks nothing.
 pub fn group_by_category(ranked: &[Hit], tools: &[ToolHitRow], mut found: impl FnMut(&str) -> bool) -> ToolGroups {
     let tool = |h: &Hit| match h.source {
@@ -772,6 +766,14 @@ pub fn group_by_category(ranked: &[Hit], tools: &[ToolHitRow], mut found: impl F
     }
     let hits = groups.iter().flat_map(|g| entries.iter().filter(move |(c, _)| c == g).map(|(_, h)| *h)).collect();
     ToolGroups { hits, chips }
+}
+
+/// Whether `query` has a word and each of its words is in `text` as it stands, whatever the case:
+/// what picks a chip (a fuzzy match scattered over a choice would pick one the user did not name).
+pub fn holds_every_word(query: &str, text: &str) -> bool {
+    let text = text.to_lowercase();
+    let mut words = query.split_whitespace().peekable();
+    words.peek().is_some() && words.all(|w| text.contains(&w.to_lowercase()))
 }
 
 /// A choice row's own text: its name past its entry's and the ` · ` the flat search joins them with

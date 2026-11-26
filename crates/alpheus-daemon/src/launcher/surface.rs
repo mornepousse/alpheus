@@ -871,9 +871,10 @@ impl App {
                         let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout, open.size);
                         match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
-                            (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
+                            (Some(Click::Result(i) | Click::Chip(i, _)), Button::Right) => open.model.click(i, true),
                             (Some(Click::Mode(m)), Button::Left) => open.model.click_mode(m),
                             (Some(Click::Tab(tab)), Button::Left) => open.model.click_tab(tab),
+                            (Some(Click::Chip(i, k)), Button::Left) => open.model.click_chip(i, k),
                             _ => Outcome::Nothing,
                         }
                     }

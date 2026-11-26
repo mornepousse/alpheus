@@ -96,7 +96,7 @@ fn all_lists_pinned_recent_then_categories() {
     let nix = cat.categories.iter().position(|k| k.name == "Nix").unwrap();
     let zed = cat.categories.iter().position(|k| k.name == "Zed").unwrap();
     assert_eq!(panel.tabs, [Tab::All, Tab::Category(nix), Tab::Category(zed)]);
-    assert_eq!(names(&cat, &panel.tools()), ["Home thing", "Nixify", "Update", "Collect", "Pick", "Nixify"]);
+    assert_eq!(names(&cat, &panel.tools().collect::<Vec<_>>()), ["Home thing", "Nixify", "Update", "Collect", "Pick", "Nixify"]);
 }
 
 /// The built-in catalog: Pinned holds `[tools] root`, the categories follow their order.
@@ -168,7 +168,7 @@ fn a_category_tab_lists_its_tools_without_label() {
     let panel = Panel::build(&cat, &[entry(&cat, "Home thing")], at);
     assert_eq!(panel.active, at);
     assert_eq!(shown(&cat, &panel), ["Pick", "Nixify"]);
-    assert_eq!(names(&cat, &panel.tools()), ["Pick", "Nixify"]);
+    assert_eq!(names(&cat, &panel.tools().collect::<Vec<_>>()), ["Pick", "Nixify"]);
     // A tab past the last is the last.
     assert_eq!(Panel::build(&cat, &[], 99).active, 2);
 }
@@ -187,4 +187,12 @@ fn actions_are_derived_from_the_entry() {
     assert_eq!(of("Wi-Fi"), [Action::Open, Action::QuickKey('w')], "it opens the quick panel");
     assert_eq!(of("Screenshot"), [Action::Run, Action::QuickKey('f')]);
     assert_eq!(of("Plain"), [Action::Run, Action::QuickKey('g')]);
+}
+
+/// A toggle that asks first lists both: the flip, then the question, then its letter.
+#[test]
+fn a_toggle_with_confirm_lists_both_actions() {
+    let text = "[[tools.entry]]\nname = \"Guard\"\nrun = [\"x\"]\nstate = [\"y\"]\nconfirm = true\nkey = \"g\"\n";
+    let cat = catalog(text);
+    assert_eq!(actions(&cat.entries[entry(&cat, "Guard")]), [Action::Toggle, Action::Confirm, Action::QuickKey('g')]);
 }

@@ -1272,7 +1272,7 @@ fn list_text(b: &Boxed) -> Vec<String> {
 /// Selects the first row of the open tab showing `name`.
 fn select_tool(l: &mut Launcher, name: &str) {
     let e = entry_named(l, name);
-    let at = l.tools().unwrap().panel().unwrap().tools().iter().position(|&t| t == e).unwrap_or_else(|| panic!("{name} in the tab"));
+    let at = l.tools().unwrap().panel().unwrap().tools().position(|t| t == e).unwrap_or_else(|| panic!("{name} in the tab"));
     while l.selected != at {
         l.key(if l.selected < at { Key::Down } else { Key::Up });
     }
@@ -1332,7 +1332,7 @@ fn the_detail_card_of_a_toggle_a_confirm_and_a_choices_tool() {
     // Schedule shutdown: choices.
     let (mut l, b) = panel_box("");
     l.key(Key::Tab);
-    while !l.tools().unwrap().panel().unwrap().tools().contains(&entry_named(&l, "Schedule shutdown")) {
+    while !l.tools().unwrap().panel().unwrap().tools().any(|t| t == entry_named(&l, "Schedule shutdown")) {
         l.key(Key::Tab);
     }
     select_tool(&mut l, "Schedule shutdown");
@@ -1498,7 +1498,7 @@ fn the_list_scrolls_to_keep_the_selection_whole() {
     let rows = draw_in(&l, &b);
     let band = rows.shapes.iter().find(|s| s.kind == ShapeKind::Band).expect("the last tool is selected and drawn");
     assert_eq!(band.rows, 2);
-    let last = l.tools().unwrap().panel().unwrap().tools().last().copied().unwrap();
+    let last = l.tools().unwrap().panel().unwrap().tools().last().unwrap();
     let name = l.tools().unwrap().catalog.entries[last].name.clone();
     assert!(rows.rows[band.row].text().contains(name.as_str()), "{}", snapshot_with_shapes(&rows));
     // A click on its row selects it.
@@ -1598,9 +1598,10 @@ fn fixed_choices_show_as_chips_not_rows() {
     assert_eq!(picked, ["30 min"]);
     assert!(card_text(&rows).iter().any(|t| t == "Schedule shutdown"), "{:#?}", card_text(&rows));
     insta::assert_snapshot!("panel_search", snapshot_with_shapes(&rows));
-    // A click on a search row is its result.
+    // A click on a search row's name is its result (on a chip, that chip: `a_click_on_a_chip_maps_to_it`).
     let ring = |v: usize| u16::try_from(v + 1).unwrap();
-    assert_eq!(hit(&l, &b, ring(8), ring(y + 1)), Some(Click::Result(at)));
+    assert_eq!(hit(&l, &b, ring(8), ring(y)), Some(Click::Result(at)));
+    assert_eq!(hit(&l, &b, ring(8), ring(y + 1)), Some(Click::Chip(at, 0)));
     // A picked chip past the line's end: the line starts further right so it shows.
     let scan = entry_named(&l, "Network scan");
     let (sy, _) = find(&rows, "Network scan");
@@ -1816,4 +1817,121 @@ fn the_panel_pages_by_its_two_line_tools() {
     let mut apps = launcher();
     let (b, _) = draw(&mut apps, 100);
     assert_eq!(model_rows(&apps, &b), usize::from(b.list_rows));
+}
+
+// --- the panel's cleanup (Task 13b) ---
+
+/// Opens the tab that lists `name`, from All.
+fn tab_with(l: &mut Launcher, name: &str) {
+    let e = entry_named(l, name);
+    l.key(Key::Tab);
+    while !l.tools().unwrap().panel().unwrap().tools().any(|t| t == e) {
+        l.key(Key::Tab);
+    }
+}
+
+/// A level below the root (the choices of Schedule shutdown) lists its rows on one line each in
+/// the list pane and keeps the entry's detail card at the right; a click on the card is no row.
+#[test]
+fn a_level_below_keeps_the_detail_card() {
+    let (mut l, b) = panel_box("");
+    tab_with(&mut l, "Schedule shutdown");
+    select_tool(&mut l, "Schedule shutdown");
+    l.key(Key::Enter);
+    let shutdown = entry_named(&l, "Schedule shutdown");
+    assert_eq!(l.tools().unwrap().level(), crate::launcher::tools::nav::Level::Choices { entry: shutdown });
+    let rows = draw_in(&l, &b);
+    let text = card_text(&rows);
+    assert!(text.iter().any(|t| t == "Schedule shutdown"), "the entry's card: {}", snapshot_with_shapes(&rows));
+    let list = list_text(&rows);
+    let first = list.iter().position(|t| t.contains("30 min")).unwrap_or_else(|| panic!("{list:#?}"));
+    assert!(list[first + 1].contains("1 h"), "one line per choice: {list:#?}");
+    let c = card(&rows);
+    let band = rows.shapes.iter().find(|s| s.kind == ShapeKind::Band).expect("the selected choice");
+    assert!(band.col + band.width <= c.col, "the band stays left of the card: {band:?} {c:?}");
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(hit(&l, &b, ring(usize::from(c.col) + 3), ring(first)), Some(Click::Inside), "the card is no row");
+    assert_eq!(hit(&l, &b, ring(4), ring(first)), Some(Click::Result(0)));
+}
+
+/// A pinned tool's card says `Pinned` on a category tab too.
+#[test]
+fn the_pinned_hint_shows_on_a_category_tab() {
+    let (mut l, b) = panel_box(PINNED);
+    tab_with(&mut l, "Reset USB (xHCI)");
+    select_tool(&mut l, "Reset USB (xHCI)");
+    let text = card_text(&draw_in(&l, &b));
+    assert!(text.iter().any(|t| t == "Pinned"), "{text:#?}");
+}
+
+/// The rows of the list pane that hold a section label.
+fn label_rows(rows: &Boxed) -> Vec<usize> {
+    list_text(rows)
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            let t = t.trim_start();
+            t.starts_with('●') || t.starts_with("PINNED") || t.starts_with("RECENT")
+        })
+        .map(|(y, _)| y)
+        .collect()
+}
+
+/// Whatever the selection, a section label is drawn only with its first tool under it.
+#[test]
+fn a_section_label_never_sits_alone_at_the_bottom() {
+    let (mut l, b) = panel_box(PINNED);
+    loop {
+        let rows = draw_in(&l, &b);
+        let tiles: Vec<usize> = tiles(&rows).iter().filter(|s| s.col < card(&rows).col).map(|s| s.row).collect();
+        for y in label_rows(&rows) {
+            assert!(tiles.contains(&(y + 1)), "the label on row {y} with no tool under it: {}", snapshot_with_shapes(&rows));
+        }
+        if l.key(Key::Down) != crate::launcher::model::Outcome::Redraw {
+            break;
+        }
+    }
+}
+
+/// A cut strip that starts at the first tab draws it flush, with no room kept for a `‹`.
+#[test]
+fn a_cut_strip_starts_flush_at_the_first_tab() {
+    let (l, b) = panel_box(&many_categories());
+    let rows = draw_in(&l, &b);
+    let pills: Vec<&Shape> = rows.shapes.iter().filter(|s| s.row == 1 && matches!(s.kind, ShapeKind::Chip(_))).collect();
+    let first = pills.iter().map(|s| s.col).min().unwrap();
+    let field = rows.shapes.iter().find(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Pill)).expect("the search field");
+    assert_eq!(first, field.col, "flush with the search field: {}", snapshot_with_shapes(&rows));
+}
+
+/// On a search row with chips and none picked, Enter opens the choices: the footer says Open.
+#[test]
+fn the_footer_says_open_on_an_unpicked_chip_row() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/schedule");
+    let footer = |l: &Launcher| draw_in(l, &b).rows.last().unwrap().text();
+    let unpicked = footer(&l);
+    assert!(unpicked.contains("Open") && !unpicked.contains("Run"), "{unpicked:?}");
+    l.key(Key::Right);
+    let picked = footer(&l);
+    assert!(picked.contains("Run") && !picked.contains("Open"), "{picked:?}");
+}
+
+/// A click on a chip is that chip of that result; elsewhere on the chip line, the result.
+#[test]
+fn a_click_on_a_chip_maps_to_it() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/schedule");
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    let mut chips: Vec<&Shape> =
+        rows.shapes.iter().filter(|s| s.row == y + 1 && s.rows == 1 && matches!(s.kind, ShapeKind::Chip(_))).collect();
+    chips.sort_by_key(|s| s.col);
+    assert_eq!(chips.len(), 5, "{}", snapshot_with_shapes(&rows));
+    for (k, c) in chips.iter().enumerate() {
+        assert_eq!(hit(&l, &b, ring(usize::from(c.col) + 1), ring(y + 1)), Some(Click::Chip(0, k)), "chip {k}");
+    }
+    let past = chips.last().map(|c| c.col + c.width + 2).unwrap();
+    assert_eq!(hit(&l, &b, ring(usize::from(past)), ring(y + 1)), Some(Click::Result(0)));
 }

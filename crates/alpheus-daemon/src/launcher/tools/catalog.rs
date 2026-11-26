@@ -508,6 +508,12 @@ impl Catalog {
         self.entries.iter().filter(|e| e.letter.is_none() && wanted_letter(e, t).is_some()).count()
     }
 
+    /// Whether entry `e` is one of the root's (`[tools] root`, or a user entry with no category):
+    /// what the panel's Pinned section lists.
+    pub fn is_pinned(&self, e: usize) -> bool {
+        self.root.contains(&e) || self.entries.get(e).is_some_and(|x| x.category.is_none())
+    }
+
     /// The root's rows: the built-ins `[tools] root` lists, then the categories that hold an
     /// entry and the root user entries sorted together by `order`, then name.
     pub fn root_rows(&self) -> Vec<Item> {

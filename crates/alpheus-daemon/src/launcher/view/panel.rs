@@ -10,7 +10,7 @@ use crate::grid::{Grid, Style, Tint, text_width, truncate};
 use crate::launcher::matching::Source;
 use crate::launcher::model::Launcher;
 use crate::launcher::tools::catalog::{Choices, Entry, EntryKind};
-use crate::launcher::tools::nav::{RowId, ToolsState};
+use crate::launcher::tools::nav::{Level, RowId, ToolsState};
 use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions};
 use crate::list::{self, Boxed, Shape, ShapeKind, wrap};
 use std::borrow::Cow;
@@ -33,6 +33,8 @@ const HOME_HINTS: [Hint; 5] = [(&["⏎"], "Run"), (&["→"], "Options"), (&["Tab
 const HOME_HINTS_NO_LETTERS: [Hint; 4] = [(&["⏎"], "Run"), (&["→"], "Options"), (&["Tab"], "Category"), (&["Esc"], "Close")];
 const SEARCH_HINTS: [Hint; 2] = [(&["⏎"], "Run"), (&["Esc"], "Close")];
 const SEARCH_CHIP_HINTS: [Hint; 3] = [(&["⏎"], "Run"), (&["←", "→"], "Choose"), (&["Esc"], "Close")];
+/// A row with chips and none picked: Enter opens its choices.
+const SEARCH_UNPICKED_HINTS: [Hint; 3] = [(&["⏎"], "Open"), (&["←", "→"], "Choose"), (&["Esc"], "Close")];
 /// What a picked chip's and the open tab's text is drawn in: the surface's background kept under
 /// it (a filled cell would square the pill).
 const ON_ACCENT: Style = Style { fg: Tint::OnAccent, bg: Tint::Bg, bold: true };
@@ -66,6 +68,32 @@ fn geometry(b: &BoxLayout) -> Geometry {
 /// Whether `l` shows the panel: the Tools mode at an opened panel's root, its home or its search.
 pub(super) fn shown(l: &Launcher) -> bool {
     l.tools().and_then(ToolsState::panel).is_some()
+}
+
+/// The entry whose detail card a level below the panel's root keeps (its choices, or the text it
+/// asks for), the list pane's last column (exclusive) and the card's columns: none at the root,
+/// without the panel, or in a box too narrow for the card (spec "Box").
+pub(super) fn level_card(l: &Launcher, b: &BoxLayout) -> Option<(usize, u16, (u16, u16))> {
+    let t = l.tools()?;
+    t.panel_size()?;
+    let (Level::Choices { entry } | Level::Prompt { entry }) = t.level() else { return None };
+    let g = geometry(b);
+    Some((entry, g.list.1, g.card?))
+}
+
+/// `entry`'s detail card over `columns` and the rows `top..top + rows` of `grid` (a level below the
+/// root: its choices are rows there, not chips).
+pub(super) fn level_detail(
+    l: &Launcher,
+    entry: usize,
+    columns: (u16, u16),
+    rows: (usize, usize),
+    grid: &mut [Grid],
+    shapes: &mut Vec<Shape>,
+) {
+    if let Some(t) = l.tools() {
+        detail_card(t, entry, false, columns, rows, grid, shapes);
+    }
 }
 
 /// The list's rows: the open tab's at home; in the search one tool per result, in their order,
@@ -169,8 +197,9 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let selected = (!l.results.is_empty() && !l.selection_lost()).then_some(l.selected);
     for line in &lines {
         let Some(offset) = line.at.checked_sub(start) else { continue };
-        let height = if matches!(line.row, PanelRow::Tool(_)) { 2 } else { 1 };
-        // Only what shows whole: a tool cut by the pane's edge is left out.
+        // Only what shows whole: a tool cut by the pane's edge is left out, and a label with it
+        // (a label always has a tool under it: an empty section is not listed).
+        let height = if matches!(line.row, PanelRow::Tool(_)) { 2 } else { 3 };
         if offset + height > g.pane_rows {
             break;
         }
@@ -188,7 +217,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     }
     let chosen = selected.and_then(|k| row_tools(&list).nth(k));
     if let (Some(card), Some(e)) = (g.card, chosen) {
-        detail_card(t, panel, e, search, card, (g.pane_top, g.pane_rows), &mut grid, &mut shapes);
+        detail_card(t, e, search, card, (g.pane_top, g.pane_rows), &mut grid, &mut shapes);
     }
     let footer = rows.saturating_sub(2);
     if let Some(row) = grid.get_mut(footer) {
@@ -199,7 +228,8 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             }
             None => {
                 let hints: &[Hint] = match chosen {
-                    Some(e) if search && t.chips(e).is_some() => &SEARCH_CHIP_HINTS,
+                    Some(e) if search && t.chips(e).is_some() && t.chip(e).is_some() => &SEARCH_CHIP_HINTS,
+                    Some(e) if search && t.chips(e).is_some() => &SEARCH_UNPICKED_HINTS,
                     _ if search => &SEARCH_HINTS,
                     _ if l.letters_live() && t.root_letters() => &HOME_HINTS,
                     _ => &HOME_HINTS_NO_LETTERS,
@@ -215,21 +245,26 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
 
 /// The tabs a strip shows: each drawn tab's index, first column, width and name; whether tabs are
 /// cut off at the left and at the right.
-struct Strip {
-    tabs: Vec<(usize, u16, u16, String)>,
+struct Strip<'a> {
+    tabs: Vec<(usize, u16, u16, Cow<'a, str>)>,
     cut_left: bool,
     cut_right: bool,
 }
 
 /// The strip in box `b`: a pill per tab from the left; when they do not fit, it starts as far
-/// right as the open tab needs, two cells kept at each cut end for its mark.
-fn strip(t: &ToolsState, panel: &Panel, b: &BoxLayout) -> Strip {
-    let names: Vec<String> = panel
+/// right as the open tab needs, two cells kept at each cut end for its mark (at the left only
+/// once it starts past the first tab).
+fn strip<'a>(t: &'a ToolsState, panel: &Panel, b: &BoxLayout) -> Strip<'a> {
+    // A name that fits is borrowed: only a cut one is a new string.
+    let names: Vec<Cow<'a, str>> = panel
         .tabs
         .iter()
         .map(|tab| match *tab {
-            Tab::All => "All".to_string(),
-            Tab::Category(k) => truncate(t.catalog.categories.get(k).map_or("", |c| c.name.as_str()), TAB_MAX),
+            Tab::All => Cow::Borrowed("All"),
+            Tab::Category(k) => {
+                let name = t.catalog.categories.get(k).map_or("", |c| c.name.as_str());
+                if text_width(name) <= TAB_MAX { Cow::Borrowed(name) } else { Cow::Owned(truncate(name, TAB_MAX)) }
+            }
         })
         .collect();
     let widths: Vec<u16> = names.iter().map(|n| text_width(n) + 2).collect();
@@ -237,12 +272,13 @@ fn strip(t: &ToolsState, panel: &Panel, b: &BoxLayout) -> Strip {
     let span = |from: usize, to: usize| widths[from..=to].iter().map(|w| w + 1).sum::<u16>().saturating_sub(1);
     let last = widths.len().saturating_sub(1);
     let cut = !widths.is_empty() && span(0, last) > end.saturating_sub(start);
-    let (from, to) = if cut { (start + 2, end.saturating_sub(2)) } else { (start, end) };
+    let to = if cut { end.saturating_sub(2) } else { end };
+    let from = |first: usize| if first > 0 { start + 2 } else { start };
     let mut first = 0;
-    while cut && first < panel.active && span(first, panel.active) > to.saturating_sub(from) {
+    while cut && first < panel.active && span(first, panel.active) > to.saturating_sub(from(first)) {
         first += 1;
     }
-    let mut x = from;
+    let mut x = from(first);
     let mut tabs = Vec::new();
     for (i, (name, w)) in names.into_iter().zip(widths).enumerate().skip(first) {
         if x + w > to {
@@ -344,8 +380,8 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
         None if search => marked(&mut grid[y], x, stop, &entry.name, l.tool_marks(k)),
         None => grid[y].write(x, stop, &truncate(&entry.name, room), Style::NORMAL),
     };
-    if let Some((list, picked)) = chips {
-        chip_line(&mut grid[y + 1], shapes, y + 1, (x, stop), list, picked);
+    if let Some((chips, picked)) = chips {
+        chip_line(&mut grid[y + 1], shapes, y + 1, chip_columns(entry, list), chips, picked);
         return;
     }
     // No description: the category's name, dim, says where it lives.
@@ -353,6 +389,16 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
     if let Some(text) = second {
         grid[y + 1].write(x, stop, &truncate(text, room), Style::MUTED);
     }
+}
+
+/// The columns a row's chips take in the list pane `list`: from past its tile to before its switch
+/// and its letter's capsule (a row with chips shows no `›`), as `tool_row` lays them out.
+fn chip_columns(entry: &Entry, list: (u16, u16)) -> (u16, u16) {
+    let mut right = list.1.saturating_sub(1 + LETTER_CELLS);
+    if entry.has_state {
+        right = right.saturating_sub(SWITCH_CELLS);
+    }
+    (list.0 + 5, right.saturating_sub(1))
 }
 
 /// `name` from column `x`, cut before `stop`, the characters at `marks` (character positions) in
@@ -370,17 +416,26 @@ fn marked(g: &mut Grid, x: u16, stop: u16, name: &str, marks: &[u32]) -> u16 {
     x
 }
 
-/// A row's fixed choices as chips on row `y` within `columns`, one blank cell apart, the picked one
-/// filled: the line starts at the first chip, or as far right as the picked one needs to show;
-/// when they do not all fit, `‹` and `›` mark the cut ends, as on the tab strip.
-fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u16, u16), list: &[String], picked: Option<usize>) {
+/// The chips a row's line shows: each drawn chip's index, first column, width and text; whether
+/// chips are cut off at the left and at the right.
+struct ChipLine<'a> {
+    chips: Vec<(usize, u16, u16, Cow<'a, str>)>,
+    cut_left: bool,
+    cut_right: bool,
+}
+
+/// A row's fixed choices as chips within `columns`, one blank cell apart: the line starts at the
+/// first chip, or as far right as the picked one needs to show; when they do not all fit, two
+/// cells are kept at each cut end for its mark (at the left only once the line starts further right).
+fn chip_layout<'a>((start, stop): (u16, u16), list: &'a [String], picked: Option<usize>) -> ChipLine<'a> {
     let room = stop.saturating_sub(start);
-    // A chip never wider than the line, its cut marks kept.
-    let words: Vec<String> = list.iter().map(|c| truncate(c, room.saturating_sub(6))).collect();
+    // A chip never wider than the line, its cut marks kept; one that fits is borrowed.
+    let most = room.saturating_sub(6);
+    let words: Vec<Cow<'a, str>> =
+        list.iter().map(|c| if text_width(c) <= most { Cow::Borrowed(c.as_str()) } else { Cow::Owned(truncate(c, most)) }).collect();
     let widths: Vec<u16> = words.iter().map(|w| text_width(w) + 2).collect();
     let span = |from: usize, to: usize| widths.get(from..=to).map_or(0, |w| w.iter().map(|w| w + 1).sum::<u16>().saturating_sub(1));
     let cut = span(0, widths.len().saturating_sub(1)) > room;
-    // Two cells kept at each cut end for its mark: at the left only once the line starts further right.
     let to = if cut { stop.saturating_sub(2) } else { stop };
     let anchor = picked.unwrap_or(0);
     let mut first = 0;
@@ -388,21 +443,32 @@ fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u1
         first += 1;
     }
     let mut x = if first > 0 { start + 2 } else { start };
-    let mut drawn = first;
-    for (i, (word, w)) in words.iter().zip(&widths).enumerate().skip(first) {
+    let mut chips = Vec::new();
+    let n = words.len();
+    for (i, (word, w)) in words.into_iter().zip(widths).enumerate().skip(first) {
         if x + w > to {
             break;
         }
-        let on = Some(i) == picked;
-        shapes.push(ring_shape(y, x, *w, 1, ShapeKind::Chip(if on { Tint::AccentContainer } else { Tint::Pill })));
-        g.write(x + 1, x + w - 1, word, if on { ON_ACCENT } else { Style::NORMAL });
+        chips.push((i, x, w, word));
         x += w + 1;
-        drawn = i + 1;
     }
-    if first > 0 {
+    let drawn = chips.last().map_or(first, |(i, ..)| i + 1);
+    ChipLine { chips, cut_left: first > 0, cut_right: drawn < n }
+}
+
+/// A row's fixed choices as chips on row `y` within `columns` (`chip_layout`), the picked one
+/// filled, `‹` and `›` at the cut ends, as on the tab strip.
+fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u16, u16), list: &[String], picked: Option<usize>) {
+    let line = chip_layout((start, stop), list, picked);
+    for (i, x, w, word) in &line.chips {
+        let on = Some(*i) == picked;
+        shapes.push(ring_shape(y, *x, *w, 1, ShapeKind::Chip(if on { Tint::AccentContainer } else { Tint::Pill })));
+        g.write(x + 1, x + w - 1, word, if on { ON_ACCENT } else { Style::NORMAL });
+    }
+    if line.cut_left {
         g.write(start, start + 1, "‹", Style::MUTED);
     }
-    if drawn < words.len() {
+    if line.cut_right {
         g.write(stop.saturating_sub(1), stop, "›", Style::MUTED);
     }
 }
@@ -415,10 +481,8 @@ fn opens_level(e: &Entry) -> bool {
 /// The selected tool's card over `columns` and the pane's rows: its tile, its name in bold, its
 /// category and kind dim, its description wrapped, a thin line, its actions with their keys at
 /// the right, and `Pinned` for a pinned tool. A line that does not fit is left out.
-#[allow(clippy::too_many_arguments)]
 fn detail_card(
     t: &ToolsState,
-    panel: &Panel,
     e: usize,
     search: bool,
     columns: (u16, u16),
@@ -480,15 +544,11 @@ fn detail_card(
         grid[y].write(x, kx, &truncate(&label, kx.saturating_sub(x + 1)), Style::NORMAL);
         y += 1;
     }
-    if panel.rows.iter().position(|r| *r == PanelRow::Section(Label::Pinned)).is_some_and(|p| pinned_holds(panel, p, e)) {
+    // Whatever the open tab: All's Pinned section lists it.
+    if t.catalog.is_pinned(e) {
         y += 1;
         put(grid, &mut y, "Pinned", Style::MUTED);
     }
-}
-
-/// Whether the Pinned section starting at row `p` lists entry `e`.
-fn pinned_holds(panel: &Panel, p: usize, e: usize) -> bool {
-    panel.rows[p + 1..].iter().take_while(|r| matches!(r, PanelRow::Tool(_))).any(|r| *r == PanelRow::Tool(e))
 }
 
 /// An action's words and its keys (`chips`: the choices are the row's chips, picked by ← and →).
@@ -513,8 +573,8 @@ fn action_line(t: &ToolsState, e: usize, action: &Action, chips: bool) -> (Strin
     }
 }
 
-/// Cell (column, row) of the panel → what it hits: a tab of the strip, or a tool (its two lines
-/// are its result).
+/// Cell (column, row) of the panel → what it hits: a tab of the strip, a chip of a search row, or
+/// a tool (its two lines are its result).
 pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
     let (Some(t), g) = (l.tools(), geometry(b)) else { return Click::Inside };
     let Some(panel) = t.panel() else { return Click::Inside };
@@ -532,10 +592,20 @@ pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
     let list = list_rows(l, t, panel);
     let (lines, start) = window(l, &list, g.pane_rows);
     let line = start + row - g.pane_top;
-    lines
-        .iter()
-        .find(|x| {
-            matches!(x.row, PanelRow::Tool(_)) && (x.at..x.at + 2).contains(&line) && x.at >= start && x.at + 2 <= start + g.pane_rows
-        })
-        .map_or(Click::Inside, |x| Click::Result(x.tool))
+    let Some(found) = lines.iter().find(|x| {
+        matches!(x.row, PanelRow::Tool(_)) && (x.at..x.at + 2).contains(&line) && x.at >= start && x.at + 2 <= start + g.pane_rows
+    }) else {
+        return Click::Inside;
+    };
+    // The second line of a search row with chips: the chip under the pointer, if any.
+    if let PanelRow::Tool(e) = found.row
+        && line == found.at + 1
+        && l.panel_search()
+        && let (Some(chips), Some(entry)) = (t.chips(e), t.catalog.entries.get(e))
+        && let Some((k, ..)) =
+            chip_layout(chip_columns(entry, g.list), chips, t.chip(e)).chips.iter().find(|(_, x, w, _)| (*x..x + w).contains(&column))
+    {
+        return Click::Chip(found.tool, *k);
+    }
+    Click::Result(found.tool)
 }

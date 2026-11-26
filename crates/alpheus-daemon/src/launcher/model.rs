@@ -11,7 +11,7 @@ use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
-use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow, group_by_category, group_choices};
+use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow, group_by_category, group_choices, holds_every_word};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::{ProcRow, Sig, SignalError};
 use crate::launcher::scan::Catalog;
@@ -468,6 +468,33 @@ impl Launcher {
         self.message = None;
         self.ranker.forget();
         self.refilter();
+        Outcome::Redraw
+    }
+
+    /// A click on chip `chip` of result `index` in the panel's search: selects the row and picks
+    /// the chip, as ←/→ would; it never runs it (Enter does). Nothing off the search or on a row
+    /// without such a chip.
+    pub fn click_chip(&mut self, index: usize, chip: usize) -> Outcome {
+        if !self.panel_search() {
+            return Outcome::Nothing;
+        }
+        let Some(RowId::Entry(e)) = self.results.get(index).and_then(|h| match h.source {
+            Source::Tool(i) => self.tool_rows().get(i).map(|r| r.id),
+            _ => None,
+        }) else {
+            return Outcome::Nothing;
+        };
+        if !self.tools.as_mut().is_some_and(|t| t.pick_chip(e, chip)) {
+            return Outcome::Nothing;
+        }
+        // As any other key would: a pending question is dropped.
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel();
+        }
+        self.message = None;
+        self.moved = true;
+        self.selected = index;
+        self.keep_visible();
         Outcome::Redraw
     }
 
@@ -1281,8 +1308,7 @@ impl Launcher {
         };
         let ranked = self.ranker.rank(&q);
         if flat && t.panel().is_some() {
-            let ranker = &mut self.ranker;
-            let groups = group_by_category(&ranked, tools, |choice| ranker.finds(&self.query, choice));
+            let groups = group_by_category(&ranked, tools, |choice| holds_every_word(&self.query, choice));
             self.tool_marks = groups
                 .hits
                 .iter()

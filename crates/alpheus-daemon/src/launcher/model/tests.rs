@@ -2063,7 +2063,7 @@ fn assert_lists_the_tab(l: &Launcher) {
             other => panic!("not a tool row: {other:?}"),
         })
         .collect();
-    let tools: Vec<RowId> = panel_of(l).tools().into_iter().map(RowId::Entry).collect();
+    let tools: Vec<RowId> = panel_of(l).tools().map(RowId::Entry).collect();
     assert_eq!(listed, tools);
 }
 
@@ -2093,7 +2093,7 @@ fn tab_and_shift_tab_switch_tabs_and_wrap() {
 fn a_tool_shown_twice_keeps_one_letter() {
     let mut l = panel_box("[tools]\nroot = [\"notes\"]\n");
     let notes = builtin_entry(&l, "notes");
-    assert_eq!(panel_of(&l).tools().iter().filter(|&&e| e == notes).count(), 2, "Pinned and Utilities");
+    assert_eq!(panel_of(&l).tools().filter(|&e| e == notes).count(), 2, "Pinned and Utilities");
     assert_eq!(l.tools().unwrap().catalog.entries[notes].letter, Some('n'));
     let o = l.key(Key::Char('n'));
     assert!(runs_builtin(&o, "notes"), "{o:?}");
@@ -2396,6 +2396,27 @@ fn enter_without_a_picked_chip_opens_the_choices() {
         assert_eq!(o, Outcome::Redraw, "click: {click}");
         assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: shutdown }, "click: {click}");
     }
+}
+
+/// A click on a chip selects its row and picks that chip, never runs it: Enter then runs it.
+#[test]
+fn a_click_on_a_chip_picks_it_and_runs_nothing() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/a");
+    let beta = user_entry(&l, "Beta");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(beta))).unwrap();
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw);
+    assert_eq!(l.selected, at, "its row is selected");
+    assert_eq!(chip(&l, "Beta"), Some(1), "the clicked chip is picked");
+    assert_eq!((l.tools().unwrap().level(), l.query.as_str()), (Level::Root, "a"), "nothing opened");
+    assert_eq!(l.click_chip(at, 1), Outcome::Nothing, "already picked");
+    assert_eq!(l.click_chip(at, 9), Outcome::Nothing, "no such chip");
+    assert_eq!(chip(&l, "Beta"), Some(1));
+    let o = l.key(Key::Enter);
+    assert_eq!(o, Outcome::Activate(Activation::Tool(ToolAction::User { entry: beta, choice: Some("nine".into()), text: None })));
+    // At home no row has chips: nothing.
+    let mut l = panel_box(CHIPS);
+    assert_eq!(l.click_chip(0, 0), Outcome::Nothing);
 }
 
 /// A `choices_cmd` entry has no chips: Enter or → opens its level, which reads them.

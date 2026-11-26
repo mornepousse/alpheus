@@ -79,8 +79,8 @@ impl Panel {
     }
 
     /// The selectable rows' entries, in row order: a tool shown twice is there twice.
-    pub fn tools(&self) -> Vec<usize> {
-        self.rows.iter().filter_map(|r| if let PanelRow::Tool(e) = *r { Some(e) } else { None }).collect()
+    pub fn tools(&self) -> impl Iterator<Item = usize> + '_ {
+        self.rows.iter().filter_map(|r| if let PanelRow::Tool(e) = *r { Some(e) } else { None })
     }
 }
 
@@ -96,7 +96,6 @@ fn entry_of(catalog: &Catalog, key: &str) -> Option<usize> {
 /// The Recent section: the first `n` distinct entries `keys` (the launcher's history keys, newest
 /// first) name that still show and are not pinned. A key of no shown entry is skipped.
 pub fn recent_entries(catalog: &Catalog, keys: &[String], n: usize) -> Vec<usize> {
-    let pinned = pinned(catalog);
     let mut out: Vec<usize> = Vec::new();
     for key in keys {
         if out.len() >= n {
@@ -104,7 +103,7 @@ pub fn recent_entries(catalog: &Catalog, keys: &[String], n: usize) -> Vec<usize
         }
         if let Some(e) = entry_of(catalog, key)
             && !out.contains(&e)
-            && !pinned.contains(&e)
+            && !catalog.is_pinned(e)
         {
             out.push(e);
         }
@@ -148,9 +147,9 @@ fn opens(action: BuiltinAction) -> bool {
     )
 }
 
-/// The detail card's actions for `entry`: what Enter does first (choose, type, confirm, flip,
-/// open or run), what follows it (a prompt after a choice, a question after either), then its
-/// letter.
+/// The detail card's actions for `entry`: what Enter does first (choose, type, flip, confirm,
+/// open or run), what follows it (a prompt after a choice, a question after any of them: a toggle
+/// that asks lists the flip, then the question), then its letter.
 pub fn actions(entry: &Entry) -> Vec<Action> {
     let choices = !matches!(entry.choices, Choices::None);
     let mut out = Vec::new();
@@ -160,10 +159,8 @@ pub fn actions(entry: &Entry) -> Vec<Action> {
     if let Some(label) = &entry.ask {
         out.push(Action::Type(label.clone()));
     }
-    if entry.confirm {
-        out.push(Action::Confirm);
-    }
-    if out.is_empty() {
+    // A plain tool that asks: the question is what Enter does, no `Run` above it.
+    if out.is_empty() && (entry.has_state || !entry.confirm) {
         let builtin = match entry.kind {
             EntryKind::Builtin(b) => BUILTINS.get(b).map(|b| b.action),
             EntryKind::User(_) => None,
@@ -175,6 +172,9 @@ pub fn actions(entry: &Entry) -> Vec<Action> {
         } else {
             Action::Run
         });
+    }
+    if entry.confirm {
+        out.push(Action::Confirm);
     }
     out.extend(entry.letter.map(Action::QuickKey));
     out

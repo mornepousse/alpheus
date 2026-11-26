@@ -246,9 +246,10 @@ impl ToolsState {
         self.home.as_ref().filter(|_| self.level == Level::Root)
     }
 
-    /// Opens the tab `step` places from the open one, wrapping: false with no panel at the root.
+    /// Opens the tab `step` places from the open one, wrapping: false with no panel at the root or
+    /// with All the only tab (nothing to rebuild, nothing to redraw).
     pub fn next_tab(&mut self, step: i32) -> bool {
-        let Some(home) = self.panel() else { return false };
+        let Some(home) = self.panel().filter(|p| p.tabs.len() > 1) else { return false };
         let n = i64::try_from(home.tabs.len()).unwrap_or(1).max(1);
         let to = (i64::try_from(home.active).unwrap_or(0) + i64::from(step)).rem_euclid(n);
         self.open_tab(usize::try_from(to).unwrap_or(0))
@@ -318,6 +319,21 @@ impl ToolsState {
         true
     }
 
+    /// Picks chip `k` on `entry`'s row (a click on it): false when it has no such chip or it is
+    /// already the picked one.
+    pub fn pick_chip(&mut self, entry: usize, k: usize) -> bool {
+        if self.chips(entry).is_none_or(|list| k >= list.len()) || self.chip(entry) == Some(k) {
+            return false;
+        }
+        if self.picked.len() < self.catalog.entries.len() {
+            self.picked.resize(self.catalog.entries.len(), None);
+        }
+        if let Some(slot) = self.picked.get_mut(entry) {
+            *slot = Some(k);
+        }
+        true
+    }
+
     /// The cells the box was sized to at open, at any level: the box keeps its size for the whole open.
     pub fn panel_size(&self) -> Option<(u16, u16)> {
         self.panel
@@ -332,13 +348,12 @@ impl ToolsState {
     /// there; a tool listed twice is the one row). A tool not listed there leaves its letter inert
     /// (the key starts the search).
     pub fn letter(&self, c: char) -> Option<RowId> {
-        let tools = self.panel()?.tools();
-        tools.into_iter().find(|&e| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c))).map(RowId::Entry)
+        self.panel()?.tools().find(|&e| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c))).map(RowId::Entry)
     }
 
     /// Whether a letter runs anything at the panel's root: one of the open tab's tools carries a capsule.
     pub fn root_letters(&self) -> bool {
-        self.panel().is_some_and(|p| p.tools().into_iter().any(|e| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some())))
+        self.panel().is_some_and(|p| p.tools().any(|e| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some())))
     }
 
     /// The flat search's rows (every entry, then every fixed choice) and their candidates.
@@ -371,9 +386,7 @@ impl ToolsState {
     /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
-            Level::Root if self.home.is_some() => {
-                self.home.as_ref().map(Panel::tools).unwrap_or_default().into_iter().filter_map(|e| self.entry_row(e)).collect()
-            }
+            Level::Root if self.home.is_some() => self.home.iter().flat_map(Panel::tools).filter_map(|e| self.entry_row(e)).collect(),
             Level::Root => self
                 .catalog
                 .root_rows()

@@ -821,8 +821,7 @@ fn results_are_grouped_by_category_in_best_rank_order() {
 
 /// The panel's search of `text` over `l`'s tools, choices found by a ranker as the model finds them.
 fn grouped(l: &Lists, text: &str) -> ToolGroups {
-    let mut r = Ranker::new();
-    group_by_category(&l.rank(Mode::Tools, text), &l.tools, |choice| r.finds(text, choice))
+    group_by_category(&l.rank(Mode::Tools, text), &l.tools, |choice| holds_every_word(text, choice))
 }
 
 /// A hit on a choice stands for its entry (listed once, where its best hit ranks) and picks that
@@ -867,6 +866,25 @@ fn a_choice_matched_only_across_its_entry_picks_no_chip() {
     assert_eq!(grouped(&l, "host").chips, [(0, 0)]);
 }
 
+/// A query picks a chip only when each of its words is in the choice's own text, whatever the
+/// case: a fuzzy match scattered over it (`sn` in `Quick scan`) picks nothing.
+#[test]
+fn a_chip_is_picked_only_by_words_found_in_its_text() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str| ToolHitRow { category: Some(0), ..tool_row(n, "") };
+    let choice = |n: &str, k| ToolHitRow { parent: Some((0, k)), ..tool(n) };
+    l.tools = vec![tool("Probe"), choice("Probe · Quick scan (common ports)", 0), choice("Probe · Host discovery", 1)];
+    assert!(l.sources(Mode::Tools, "sn").contains(&Source::Tool(1)), "the fuzzy search finds it");
+    assert!(grouped(&l, "sn").chips.is_empty(), "{:?}", grouped(&l, "sn").chips);
+    assert_eq!(grouped(&l, "scan").chips, [(0, 0)]);
+    assert!(holds_every_word("SCAN", "Quick scan"), "whatever the case");
+    assert_eq!(grouped(&l, "quick ports").chips, [(0, 0)], "every word in it");
+    assert!(holds_every_word("Scan", "Quick scan"));
+    assert!(!holds_every_word("quick host", "Quick scan"), "one word missing");
+    assert!(!holds_every_word("  ", "Quick scan"), "no word, no pick");
+}
+
 /// The characters a query matched in a name, as character positions, sorted, each once.
 #[test]
 fn matched_positions_are_the_characters_the_query_found() {
@@ -877,7 +895,6 @@ fn matched_positions_are_the_characters_the_query_found() {
     assert_eq!(r.marks("cafe", "Café"), [0, 1, 2, 3], "folded as the ranking folds");
     // A decomposed `é` is one grapheme of two characters: no position rather than shifted ones.
     let decomposed = "Cafe\u{301} bar";
-    assert!(r.finds("bar", decomposed));
     let marks = r.marks("bar", decomposed);
     let chars: Vec<char> = decomposed.chars().collect();
     let found: String = marks.iter().map(|&i| chars[i as usize]).collect();
