@@ -5,11 +5,155 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>alpheus</title>
 <meta name="description" content="A lightweight, terminal-spirited Wayland desktop shell, written in Rust: a bar, a launcher, notifications, an on-screen display, quick settings and a terminal control center.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="alpheus">
+<meta property="og:description" content="A lightweight, terminal-spirited Wayland desktop shell, written in Rust: a bar, a launcher, notifications, an on-screen display, quick settings and a terminal control center.">
+<meta property="og:image" content="https://mornepousse.github.io/alpheus/images/bar.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="column"></header>
-<main class="column"></main>
-<footer class="column"></footer>
+
+<header class="column top">
+<a class="brand" href="./"><span class="mark" aria-hidden="true">◆</span> alpheus</a>
+<nav>
+<a href="#install">install</a>
+<a href="https://github.com/mornepousse/alpheus/tree/main/docs">docs</a>
+<a href="https://github.com/mornepousse/alpheus">source</a>
+</nav>
+</header>
+
+<main class="column">
+
+<section class="intro">
+<p class="lead">A lightweight, terminal-spirited Wayland desktop shell, written in Rust: a bar, a launcher, notifications, an on-screen display, quick settings and a terminal control center.</p>
+<p>Aimed at modest hardware with modern features, and light first: it keeps nothing resident that it does not need and wakes up for nothing at rest. Mouse and keyboard everywhere.</p>
+<p>A personal project, used daily by its author, who keeps adding to it; expect rough edges outside that setup.</p>
+<p class="meta"><a href="https://github.com/mornepousse/alpheus/releases/tag/v0.1.0">v0.1.0</a> · MIT · Mango, Sway, Hyprland, niri</p>
+<figure class="shot wide"><img src="images/bar.png" alt="The alpheus bar in the Ink theme, with sample data: workspaces, window title, media, sound, network, Bluetooth, battery, resources, notifications and clock" width="972" height="44"></figure>
+</section>
+
+<section id="inside">
+<h2>What is in it</h2>
+<p>Three programs from one Cargo workspace: <code>alpheus-demon</code> (the resident daemon), <code>alpheus-launch</code> (a tiny client that talks to it from a key bind or a script) and <code>alpheus</code> (the control center).</p>
+
+<article class="part">
+<h3>The bar</h3>
+<p>Workspaces, window title, media, sound, network, Bluetooth, battery, resources, tray, clock, one bar per screen; with the tray, calendar, media, resources, timer, privacy indicators, failed units and the power menu.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/bar.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>The launcher</h3>
+<figure class="shot"><img src="images/launcher.png" alt="The launcher open on a short query, with apps and windows in the results" width="810" height="306"></figure>
+<p>Apps, windows, commands, a calculator, emoji, web search, a window switcher, your own command sources, and a <code>--dmenu</code> mode for scripts.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/launcher.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>Notifications</h3>
+<figure class="shot"><img src="images/notifications.png" alt="Notification bubbles stacked in a corner of the screen" width="382" height="292"></figure>
+<p>alpheus's own server, bubbles, a bell, a history panel.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/notifications.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>The OSD</h3>
+<figure class="shot"><img src="images/osd.png" alt="The on-screen display pill showing the volume" width="314" height="54"></figure>
+<p>A pill for volume, microphone and brightness.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/osd.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>Quick settings</h3>
+<figure class="shot"><img src="images/quick.png" alt="The quick settings panel: volume, brightness, Wi-Fi, Bluetooth, do-not-disturb, power profile and session buttons" width="294" height="330"></figure>
+<p>Volume, brightness, Wi-Fi, Bluetooth, VPN, do-not-disturb, power profile, session buttons.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/quick-settings.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>The control center</h3>
+<figure class="shot"><img src="images/control-center.png" alt="The terminal control center on its Home tab: clock, volume, brightness, energy profile, switches, connections and devices" width="897" height="559"></figure>
+<p>A terminal program, eight tabs from Sound to Diag.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/control-center.md">docs →</a>
+</article>
+
+<article class="part">
+<h3>Themes and bar styles</h3>
+<figure class="shot"><img src="images/styles.png" alt="The bar in four styles, one above the other: flat, islands, powerline and underline" width="1062" height="200"></figure>
+<p>Fifteen presets or your wallpaper, light and dark, six bar shapes.</p>
+<a class="more" href="https://github.com/mornepousse/alpheus/blob/main/docs/features/themes.md">docs →</a>
+</article>
+
+<h3 class="also">Also</h3>
+<ul class="also-list">
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/tools-menu.md">The Tools menu</a>: one box for “do something to my session”, with a kill list, a scheduled shutdown and diagnostics tools.</li>
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/captures.md">Captures</a>: screenshots of the screen or an area, a colour picker, annotation, OCR and screen recording through external tools.</li>
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/displays.md">Displays</a>: screen layouts and profiles, with a “keep these settings?” trial.</li>
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/shield.md">Shield mode</a>: a public-network security mode, shown and switched by alpheus.</li>
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/hooks.md">Event hooks</a>: a command of your own when something changes.</li>
+<li><a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/clipboard.md">Clipboard history</a> (off unless enabled) and a <a href="https://github.com/mornepousse/alpheus/blob/main/docs/features/notes.md">quick notepad</a>.</li>
+</ul>
+</section>
+
+<section id="memory">
+<h2>Memory</h2>
+<p>What a desktop shell keeps resident, measured as PSS on release builds.</p>
+<div class="table">
+<table>
+<thead><tr><th>Shell</th><th>Toolkit</th><th class="num">Resident</th><th>What it covers</th></tr></thead>
+<tbody>
+<tr><td><strong>alpheus</strong></td><td>Rust, no toolkit</td><td class="num"><strong>≈ 15 MB</strong></td><td>the bar daemon and sound source, swaybg (optional); to be re-measured</td></tr>
+<tr><td>waybar + mako + swayosd + swaybg</td><td>GTK / C</td><td class="num">≈ 55 MB</td><td>bar, notifications, OSD, wallpaper</td></tr>
+<tr><td>HyprPanel</td><td>GJS</td><td class="num">≈ 151 MB</td><td>bar, notifications, OSD (Hyprland only)</td></tr>
+<tr><td>Wayle</td><td>Rust, GTK4</td><td class="num">≈ 168 MB</td><td>bar, panels</td></tr>
+<tr><td>ashell + swaync</td><td>Rust, iced</td><td class="num">≈ 194 MB</td><td>bar, notifications</td></tr>
+<tr><td>Noctalia 4.7</td><td>Quickshell (QML)</td><td class="num">≈ 517 MB</td><td>full shell</td></tr>
+<tr><td>DankMaterialShell</td><td>Quickshell (QML)</td><td class="num">≈ 537 MB</td><td>full shell</td></tr>
+<tr><td>Caelestia</td><td>Quickshell (QML)</td><td class="num">≈ 730 MB</td><td>full shell</td></tr>
+</tbody>
+</table>
+</div>
+<p class="dim">How each figure was taken, and alpheus component by component: <a href="https://github.com/mornepousse/alpheus/blob/main/docs/measurements.md">measurements</a>.</p>
+</section>
+
+<section id="limits">
+<h2>What it leaves to other tools</h2>
+<p>Idle, sleep and screen power-off (hypridle, swayidle…), the lock screen, file choosers and the wallpaper (swaybg works). alpheus never touches sleep or screen power-off.</p>
+<p>It is not packaged for any distribution yet: it builds with Nix or Cargo. Some defaults still call commands alpheus does not ship, such as <code>wm-set</code> to switch a workspace; those of the bar and the launcher are configurable, and a missing command fails visibly and breaks nothing else.</p>
+</section>
+
+<section id="install">
+<h2>Install</h2>
+<p>The x86_64 Linux tarball of a <a href="https://github.com/mornepousse/alpheus/releases">release</a>, checked against its <code>SHA256SUMS</code>:</p>
+<pre><code>v=0.1.0
+base=https://github.com/mornepousse/alpheus/releases/download/v$v
+curl -fLO "$base/alpheus-$v-x86_64-linux.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS
+tar -xzf "alpheus-$v-x86_64-linux.tar.gz"
+install -Dm755 -t ~/.local/bin "alpheus-$v-x86_64-linux"/alpheus "alpheus-$v-x86_64-linux"/alpheus-demon "alpheus-$v-x86_64-linux"/alpheus-launch</code></pre>
+<p>Or with Nix, or from source:</p>
+<pre><code>nix run github:mornepousse/alpheus#alpheus-demon       # straight from GitHub, no clone
+nix build .#alpheus-demon .#alpheus-launch .#alpheus   # or: cargo build --release</code></pre>
+<p>Then:</p>
+<pre><code>alpheus-demon                # from your compositor's startup
+alpheus-launch --toggle      # bind this to a key
+alpheus --tab sound          # the control center, on a tab</code></pre>
+<p>Build and runtime dependencies, a flake input, and key binds for Hyprland, Sway, niri and Mango: <a href="https://github.com/mornepousse/alpheus/blob/main/docs/install.md">install.md</a>. Everything is optional, under <code>~/.config/alpheus/</code>.</p>
+</section>
+
+</main>
+
+<footer class="column bottom">
+<p>
+<a href="https://github.com/mornepousse/alpheus">source</a> ·
+<a href="https://github.com/mornepousse/alpheus/tree/main/docs">docs</a> ·
+<a href="https://github.com/mornepousse/alpheus/blob/main/CHANGELOG.md">changelog</a> ·
+<a href="https://github.com/mornepousse/alpheus/blob/main/LICENSE">MIT license</a> ·
+font: JetBrains Mono (<a href="fonts/OFL.txt">OFL</a>)
+</p>
+</footer>
+
 </body>
 </html>

@@ -59,3 +59,254 @@ body {
 	margin-inline: auto;
 	padding-inline: 16px;
 }
+
+/* Text */
+
+p {
+	margin: 0 0 1em;
+}
+
+a {
+	color: var(--fg);
+	text-decoration: underline;
+	text-decoration-color: var(--accent);
+	text-underline-offset: 3px;
+}
+
+a:hover {
+	color: var(--accent);
+}
+
+a:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+code {
+	font-family: inherit;
+	color: var(--orange);
+}
+
+strong {
+	color: var(--fg);
+}
+
+.dim,
+.meta {
+	color: var(--fg-dim);
+}
+
+/* Header and footer */
+
+.top {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 24px;
+	justify-content: space-between;
+	align-items: baseline;
+	padding-block: 24px;
+	border-bottom: 1px solid var(--raised);
+}
+
+.brand {
+	font-weight: 700;
+	text-decoration: none;
+}
+
+.mark {
+	color: var(--accent);
+}
+
+nav {
+	display: flex;
+	gap: 20px;
+}
+
+nav a {
+	color: var(--fg-dim);
+	text-decoration: none;
+}
+
+nav a:hover {
+	color: var(--fg);
+}
+
+.bottom {
+	margin-top: 48px;
+	padding-block: 24px;
+	border-top: 1px solid var(--raised);
+	color: var(--fg-dim);
+	font-size: 13px;
+}
+
+.bottom a {
+	color: var(--fg-dim);
+}
+
+/* Sections */
+
+section {
+	padding-block: 32px;
+}
+
+.intro {
+	padding-top: 40px;
+}
+
+.lead {
+	font-size: 18px;
+	font-weight: 700;
+	line-height: 1.5;
+}
+
+h2 {
+	margin: 0 0 20px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--raised);
+	color: var(--accent);
+	font-size: 16px;
+}
+
+h2::before {
+	content: "◆ ";
+}
+
+h3 {
+	margin: 0 0 12px;
+	font-size: 15px;
+}
+
+/* A part: a framed block, as the control center's cards. */
+
+.part {
+	margin-block: 20px;
+	padding: 16px;
+	background: var(--pill);
+	border: 1px solid var(--raised);
+}
+
+.part p {
+	margin-bottom: 8px;
+}
+
+.more {
+	color: var(--fg-dim);
+	font-size: 13px;
+}
+
+.also {
+	margin-top: 32px;
+}
+
+.also-list {
+	margin: 0;
+	padding-left: 2ch;
+}
+
+.also-list li {
+	margin-bottom: 6px;
+}
+
+.also-list li::marker {
+	content: "· ";
+	color: var(--accent);
+}
+
+/* Screenshots: rendered at scale 2, declared at half size (sharp on a 2x screen),
+   never wider than the column, a 1-px frame. */
+
+.shot {
+	width: fit-content;
+	max-width: 100%;
+	margin: 0 0 12px;
+	border: 1px solid var(--raised);
+	background: var(--bg);
+	line-height: 0;
+}
+
+.shot img {
+	display: block;
+	max-width: 100%;
+	height: auto;
+}
+
+/* The bar is 1920 px wide: it leaves the text column for the page's width. */
+.shot.wide {
+	position: relative;
+	left: 50%;
+	width: min(100vw - 32px, 1280px);
+	margin-top: 24px;
+	transform: translateX(-50%);
+}
+
+/* Memory table: scrolls inside itself on a narrow screen. */
+
+.table {
+	overflow-x: auto;
+	margin-bottom: 12px;
+	border: 1px solid var(--raised);
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+th,
+td {
+	padding: 6px 12px;
+	text-align: left;
+	vertical-align: top;
+	border-bottom: 1px solid var(--raised);
+}
+
+th {
+	background: var(--pill);
+	color: var(--fg-dim);
+	font-weight: 400;
+}
+
+tbody tr:first-child {
+	background: var(--selection);
+}
+
+tr:last-child td {
+	border-bottom: 0;
+}
+
+.num {
+	text-align: right;
+	white-space: nowrap;
+}
+
+/* Commands: scroll inside, never wrap (a wrapped line breaks copy and paste). */
+
+pre {
+	overflow-x: auto;
+	margin: 0 0 16px;
+	padding: 12px 16px;
+	background: var(--popup);
+	border: 1px solid var(--raised);
+	border-left: 2px solid var(--accent);
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+pre code {
+	color: var(--fg);
+}
+
+@media (max-width: 480px) {
+	body {
+		font-size: 14px;
+	}
+
+	.lead {
+		font-size: 16px;
+	}
+}
+
+.shot.wide img {
+	width: 100%;
+}
