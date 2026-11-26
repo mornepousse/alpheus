@@ -1,0 +1,260 @@
+/* alpheus's site, set as a manual page read in a terminal: bold and
+   underline do the work, colour stays out of the way. Colours: the Ink
+   preset, dark half (INK_DARK in crates/alpheus-common/src/theme/presets.rs);
+   no colour outside these tokens. */
+
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "JetBrains Mono";
+	src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+	font-weight: 700;
+	font-display: swap;
+}
+
+:root {
+	--bg: #101010;
+	--pill: #1e1e1e;
+	--popup: #161616;
+	--raised: #2b2b2b;
+	--selection: #3b3b3b;
+	--fg: #e8e6e1;
+	--fg-dim: #8f8d88;
+	--accent: #ff5a3c;
+
+	/* A man page's body sits 7 columns in; a tagged paragraph 7 more. */
+	--indent: 7ch;
+
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	background: var(--bg);
+	scrollbar-color: var(--raised) var(--bg);
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: "JetBrains Mono", ui-monospace, monospace;
+	font-size: 15px;
+	line-height: 1.55;
+}
+
+::selection {
+	background: var(--selection);
+}
+
+/* The page: 80 columns, as a terminal. */
+
+.page {
+	max-width: calc(80ch + 32px);
+	margin-inline: auto;
+	padding-inline: 16px;
+}
+
+/* The running header and footer: NAME(1) at both ends, a title between. */
+
+.runner {
+	display: flex;
+	justify-content: space-between;
+	gap: 2ch;
+	padding-block: 24px;
+	color: var(--fg);
+}
+
+.runner .mid {
+	color: var(--fg-dim);
+}
+
+footer.runner {
+	margin-top: 32px;
+}
+
+/* Sections */
+
+section {
+	margin-bottom: 24px;
+}
+
+h2 {
+	margin: 0;
+	font-size: inherit;
+	font-weight: 700;
+}
+
+.body {
+	margin: 0 0 0 var(--indent);
+}
+
+p {
+	margin: 0 0 1em;
+}
+
+b {
+	font-weight: 700;
+	color: var(--fg);
+}
+
+/* Replaceable words: underlined, as a terminal shows them. */
+i {
+	font-style: normal;
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.synopsis p {
+	margin-bottom: 0.4em;
+	padding-left: 2ch;
+	text-indent: -2ch;
+}
+
+/* Tagged paragraphs: the tag at the body's margin, its text indented. */
+
+#name b {
+	white-space: nowrap;
+}
+
+dl {
+	margin: 0;
+}
+
+dt {
+	margin: 0;
+}
+
+dd {
+	margin: 0 0 1em var(--indent);
+}
+
+/* Links */
+
+a {
+	color: var(--fg);
+	text-decoration: underline;
+	text-decoration-color: var(--accent);
+	text-underline-offset: 3px;
+}
+
+a:hover {
+	color: var(--accent);
+}
+
+a:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Screenshots: rendered at scale 2, declared at half size (sharp on a 2x
+   screen), never wider than the text, a 1-px frame. */
+
+.shot {
+	width: fit-content;
+	max-width: 100%;
+	margin: 0 0 1em;
+	border: 1px solid var(--raised);
+	background: var(--bg);
+	line-height: 0;
+}
+
+.shot img {
+	display: block;
+	max-width: 100%;
+	height: auto;
+}
+
+/* The bar is 1945 px wide: it leaves the text for the page's width. */
+.shot.wide {
+	position: relative;
+	left: 50%;
+	width: min(100vw - 32px, 1280px);
+	max-width: none;
+	margin-block: 8px 0;
+	transform: translateX(-50%);
+}
+
+.shot.wide img {
+	width: 100%;
+}
+
+/* Memory table: plain columns, scrolls inside itself on a narrow screen. */
+
+.table {
+	overflow-x: auto;
+	margin-bottom: 1em;
+}
+
+table {
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+th,
+td {
+	padding: 2px 2ch 2px 0;
+	text-align: left;
+	vertical-align: top;
+}
+
+th {
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+td:not(:last-child) {
+	white-space: nowrap;
+}
+
+td:last-child {
+	min-width: 24ch;
+	color: var(--fg-dim);
+}
+
+.num {
+	text-align: right;
+	white-space: nowrap;
+}
+
+/* Commands: scroll inside, never wrap (a wrapped line breaks copy and paste). */
+
+pre {
+	overflow-x: auto;
+	margin: 0 0 1em;
+	padding: 8px 2ch;
+	background: var(--popup);
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+pre code {
+	font-family: inherit;
+	color: var(--fg);
+}
+
+/* A phone: the indents shrink so the text keeps its width. */
+
+@media (max-width: 560px) {
+	:root {
+		--indent: 2ch;
+	}
+
+	body {
+		font-size: 14px;
+	}
+
+	.runner .mid {
+		display: none;
+	}
+}
