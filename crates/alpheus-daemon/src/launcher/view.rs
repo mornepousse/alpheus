@@ -20,7 +20,7 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
 use crate::launcher::tools::catalog::{Choices, Entry};
 use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
-use crate::launcher::tools::overview::{CardId, CardPlace};
+use crate::launcher::tools::overview::{CardId, CardPlace, FULL_BAND_COLUMNS};
 use crate::list::{self, Boxed, Row, Shape, ShapeKind, tail, wrap};
 use crate::painter::FrameInk;
 use crate::quick;
@@ -99,16 +99,18 @@ fn overview_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
     (share(output_columns, 9), share(output_rows, 8))
 }
 
-/// The cells `Overview::place` may fill on this output: the cap less the box's ring and chrome,
-/// so the cards are never cut by `tools_layout`.
+/// The cells `Overview::place` may fill on this output: a full band of cards at their narrowest
+/// (`Overview::place` stretches the cards to the width it is given), within the cap less the box's
+/// ring and chrome, so the cards are never cut by `tools_layout`.
 pub fn overview_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
     let (columns, rows) = overview_cap(output_columns, output_rows);
-    (columns.saturating_sub(2), rows.saturating_sub(OVERVIEW_CHROME_ROWS))
+    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(OVERVIEW_CHROME_ROWS))
 }
 
 /// The Tools box sized to its overview's `wanted` cells (columns, rows), decided once per open
 /// and kept at every level: the cards and the ring across; the ring, the search field, the cards,
-/// a blank row and the footer down. Never more than `overview_cap`; no preview panel.
+/// a blank row and the footer down. Never more than `overview_cap`, nor less than `BOX_COLUMNS`
+/// when the cap leaves room for it; no preview panel.
 pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -> BoxLayout {
     let (columns, rows) = overview_cap(output_columns, output_rows);
     tools_box(columns, rows, wanted)
@@ -117,7 +119,8 @@ pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -
 /// `tools_layout` within `max_columns` × `max_rows` cells, the ring counted (a size the compositor
 /// imposed refits through it, the output's cap already applied when the box was asked).
 pub fn tools_box(max_columns: u16, max_rows: u16, wanted: (u16, u16)) -> BoxLayout {
-    let columns = wanted.0.saturating_add(2).min(max_columns);
+    // Never narrower than today's box (a catalog of one card), unless the room is.
+    let columns = wanted.0.saturating_add(2).min(max_columns).max(BOX_COLUMNS.min(max_columns));
     let rows = wanted.1.saturating_add(OVERVIEW_CHROME_ROWS).min(max_rows).max(OVERVIEW_CHROME_ROWS);
     BoxLayout { columns, rows, list_top: 2, list_rows: rows - 4, preview_columns: 0 }
 }
@@ -881,26 +884,31 @@ pub fn render_tools_overview(l: &Launcher, b: &BoxLayout) -> Boxed {
             continue;
         }
         let x0 = 1 + p.col;
-        shapes.push(ring_shape(y0, x0, p.width, p.rows.min(u16::try_from(bottom - y0).unwrap_or(u16::MAX)), ShapeKind::Card));
-        card_header(t, p, &mut rows[y0], x0);
+        // Cut to the box, as to its rows: a box refitted narrower than the cards were placed for.
+        let width = p.width.min(b.columns.saturating_sub(1).saturating_sub(x0));
+        if width == 0 {
+            continue;
+        }
+        shapes.push(ring_shape(y0, x0, width, p.rows.min(u16::try_from(bottom - y0).unwrap_or(u16::MAX)), ShapeKind::Card));
+        card_header(t, p, &mut rows[y0], x0, width);
         for (k, &e) in p.shown.iter().enumerate() {
             let y = y0 + 1 + k;
             if y >= bottom {
                 break;
             }
             if selected == Some(RowId::Entry(e)) {
-                band = Some(ring_shape(y, x0, p.width, 1, ShapeKind::Band));
+                band = Some(ring_shape(y, x0, width, 1, ShapeKind::Band));
             }
-            card_tool(t, e, &mut rows[y], &mut marks, y, x0, p.width);
+            card_tool(t, e, &mut rows[y], &mut marks, y, x0, width);
         }
         let y = y0 + 1 + p.shown.len();
         if p.more > 0 && y < bottom {
-            let end = x0 + p.width - 1;
+            let end = x0 + width - 1;
             let text = format!("+{} more", p.more);
             match p.card {
                 CardId::Category(c) => {
                     if selected == Some(RowId::Category(c)) {
-                        band = Some(ring_shape(y, x0, p.width, 1, ShapeKind::Band));
+                        band = Some(ring_shape(y, x0, width, 1, ShapeKind::Band));
                     }
                     rows[y].write(x0 + 3, end, &text, Style::NORMAL);
                     rows[y].write(end.saturating_sub(LETTER_CELLS + 2), end, "›", Style::MUTED);
@@ -935,8 +943,8 @@ pub fn render_tools_overview(l: &Launcher, b: &BoxLayout) -> Boxed {
 
 /// A card's header on its first row: the dot in the card's hue, the name in bold, the count of its
 /// tools dim at the right.
-fn card_header(t: &ToolsState, p: &CardPlace, g: &mut Grid, x0: u16) {
-    let end = x0 + p.width - 1;
+fn card_header(t: &ToolsState, p: &CardPlace, g: &mut Grid, x0: u16, width: u16) {
+    let end = x0 + width - 1;
     let (dot, name) = match p.card {
         CardId::Pinned => (Style::ACCENT, "Pinned"),
         CardId::Category(c) => (category_hue(t, Some(c)), t.catalog.categories.get(c).map_or("", |c| c.name.as_str())),

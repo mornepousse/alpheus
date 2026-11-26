@@ -1280,10 +1280,11 @@ mod tests {
         let mut l = tools_open("");
         place_overview_for_open(232, 49, &mut l);
         let at_open = open_layout(232, 49, &l);
+        assert!(l.overview_size().is_some(), "the overview is placed at open");
         for c in "/w".chars() {
             l.key(Key::Char(c));
         }
-        assert!(l.tools().unwrap().overview().is_none() || !l.query.is_empty(), "searching");
+        assert_eq!(l.query, "w", "searching");
         assert_eq!(open_layout(232, 49, &l), at_open, "typing never resizes the box");
         l.key(Key::Backspace);
         l.key(Key::Backspace);
@@ -1330,5 +1331,16 @@ mod tests {
         assert!(l.tools().unwrap().overview().is_none(), "the `/` prefix shows no overview");
         assert_eq!(l.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>(), unplaced, "today's root rows");
         assert_eq!(open_layout(232, 49, &l), today, "the `/` prefix never resizes the box");
+    }
+
+    #[test]
+    fn an_output_too_short_for_any_card_shows_today_s_root() {
+        let mut l = tools_open("");
+        place_overview_for_open(232, 8, &mut l);
+        assert!(l.tools().unwrap().overview().is_none(), "no card fits: no overview");
+        let unplaced = tools_open("");
+        let ids = |m: &Launcher| m.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(&l), ids(&unplaced), "today's root rows");
+        assert_eq!(open_layout(232, 8, &l), open_layout(232, 8, &unplaced), "and today's box");
     }
 }

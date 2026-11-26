@@ -477,7 +477,7 @@ setting both of the first two.
 |---|---|---|---|---|
 | `terminal` | command | `["foot", "-e"]` | non-empty, non-blank program | Runs `Terminal=true` apps, plain. |
 | `terminal_hold` | command | `["foot", "--hold", "-e"]` | non-empty, non-blank program | A command or typed shell text on Enter: the terminal stays open to read the output (`Ctrl+Enter` runs detached instead). |
-| `rows` | integer | `10` | 3 to 30 | Result rows. The `--tools` overview's box ignores it: sized to its cards, at most 90 % × 80 % of the output. |
+| `rows` | integer | `10` | 3 to 30 | Result rows. The `--tools` overview's box ignores it: sized to its cards (about 105 cells wide), at most 90 % × 80 % of the output. |
 | `history` | integer | `200` | 0 to 1000 | Entries kept; 0: no history file (never read, never written). |
 | `proc_dir` | path | `"/proc"` | absolute | A testing seam for the kill list (`alpheus-launch --kill`): it decides only which pids are listed (a folder of links to `/proc/<pid>` narrows the list). Start times, ancestors and signals always use the real `/proc`. Leave it alone: the headless tests point it at a folder of their own so that they can never list a real process. |
 | `focus` | command | `["wm-set", "focus-window", "{window}"]` | non-empty, non-blank program that does not contain `{window}`; some element must contain `{window}` | Run to focus a window; `{window}` is `address:0x…` on Hyprland, `id:N` elsewhere. `wm-set` is an external script, see [compositors.md](compositors.md#external-commands). |

@@ -1549,3 +1549,46 @@ fn the_overview_box_fits_a_small_output() {
         assert!(s.col + s.width <= b.columns - 2 && usize::from(s.rows) + s.row <= usize::from(b.rows) - 2, "{s:?} inside {b:?}");
     }
 }
+
+const ONE_CARD_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "One"
+[[tools.entry]]
+name = "Alone"
+category = "One"
+run = ["x"]
+"#;
+
+#[test]
+fn a_one_card_overview_keeps_today_s_width() {
+    // One card placed in 40 columns: narrower than today's box.
+    let (l, _) = overview_box_in(ONE_CARD_CFG, 40, 34);
+    let o = l.tools().and_then(|t| t.overview()).unwrap();
+    assert!(o.columns + 2 < BOX_COLUMNS, "one card is narrower than today's box: {}", o.columns);
+    assert_eq!(tools_layout(232, 49, (o.columns, o.rows)).columns, BOX_COLUMNS, "never narrower than today's box");
+    assert_eq!(super::tools_box(BOX_COLUMNS + 10, 40, (o.columns, o.rows)).columns, BOX_COLUMNS, "a refit floors the same");
+    assert_eq!(tools_layout(50, 49, (o.columns, o.rows)).columns, 45, "a narrow output still caps at 90 %");
+}
+
+#[test]
+fn the_overview_is_three_cards_wide_on_a_wide_output() {
+    let (room_columns, room_rows) = overview_room(232, 49);
+    assert_eq!(room_columns, 104, "three cards of 34 and their two gaps, not 90 % of the output");
+    let (l, _) = overview_box_in("", room_columns, room_rows);
+    let o = l.tools().and_then(|t| t.overview()).unwrap();
+    assert_eq!(tools_layout(232, 49, (o.columns, o.rows)).columns, 106, "about 105 cells (spec \"Box size\")");
+    assert_eq!(overview_room(80, 30).0, 70, "a smaller output: its 90 % cap, less the ring");
+}
+
+#[test]
+fn an_overview_drawn_in_a_narrower_box_keeps_its_shapes_inside() {
+    let (l, b) = overview_box_in("", 110, 40);
+    assert!(b.columns > 100, "placed wider than the box it is drawn in: {b:?}");
+    let narrow = BoxLayout { columns: 100, ..b };
+    let rows = draw_in(&l, &narrow);
+    for s in &rows.shapes {
+        assert!(s.col + s.width <= narrow.columns - 2, "{s:?} past the last column of {narrow:?}");
+    }
+}

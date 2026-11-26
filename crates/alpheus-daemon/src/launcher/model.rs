@@ -383,7 +383,8 @@ impl Launcher {
 
     /// The Tools catalog of a Mod+Space open (its typed search ranks the entries, the `/` prefix
     /// jumps in): refilters, keeping the selection by identity like `set_entries`. A catalog with
-    /// no entry installs nothing (the `/` stays text).
+    /// no entry installs nothing (the `/` stays text). It drops a placed overview: a `--tools` open
+    /// must place it again (`place_overview`).
     pub fn set_tools(&mut self, catalog: ToolsCatalog) {
         if catalog.entries.is_empty() {
             return;

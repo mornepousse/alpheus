@@ -224,7 +224,8 @@ impl ToolsState {
     /// Places the overview's cards in `max_columns` × `max_rows` cells: from now on the root lists
     /// its slots. The caller decides whether the overview is on (`[tools] overview`).
     pub fn place_overview(&mut self, max_columns: u16, max_rows: u16) {
-        self.overview = Some(Overview::place(&self.catalog, max_columns, max_rows));
+        // No card fits (a very short or narrow output): not placed, the root stays today's list.
+        self.overview = Some(Overview::place(&self.catalog, max_columns, max_rows)).filter(|o| !o.cards.is_empty());
         self.rev += 1;
     }
 

@@ -23,6 +23,9 @@ pub const MIN_CARD_COLUMNS: u16 = 34;
 pub const MAX_CARDS_PER_BAND: usize = 3;
 /// The blank columns between two cards of a band.
 const CARD_GAP: u16 = 1;
+/// The widest the overview is placed: a band of the most cards at their narrowest, with their gaps
+/// (spec "Box size": about 105 cells with the box's ring).
+pub const FULL_BAND_COLUMNS: u16 = MAX_CARDS_PER_BAND as u16 * MIN_CARD_COLUMNS + (MAX_CARDS_PER_BAND as u16 - 1) * CARD_GAP;
 
 /// Which card: the Pinned one, or a category's (an index into `Catalog::categories`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
