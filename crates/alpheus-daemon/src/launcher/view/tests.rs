@@ -1819,6 +1819,20 @@ fn the_panel_pages_by_its_two_line_tools() {
     assert_eq!(model_rows(&apps, &b), usize::from(b.list_rows));
 }
 
+/// A box drawn shorter than planned (a size the compositor imposed) fits the model to it: the USB
+/// reset, cut off there, draws no capsule and its letter `x` starts the search.
+#[test]
+fn a_letter_follows_the_box_drawn() {
+    let (mut l, b) = panel_box(PINNED);
+    // The ring and chrome, then four lines: Pinned's label and Wi-Fi, the USB reset cut off.
+    let short = BoxLayout { rows: 7 + 4, ..b };
+    fit(&mut l, &short);
+    assert_eq!(capsules(&draw_in(&l, &short)).len(), 1, "Wi-Fi's capsule only");
+    let o = l.key(Key::Char('x'));
+    assert!(!matches!(o, crate::launcher::model::Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "x");
+}
+
 // --- the panel's cleanup (Task 13b) ---
 
 /// Opens the tab that lists `name`, from All.

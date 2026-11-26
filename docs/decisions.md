@@ -1983,7 +1983,9 @@ Super+X opens on a command panel: tabs (All, then each category), each tool on t
 does, a detail card for the selected one, and a letter that runs a tool in one key. The owner chose
 this layout over a grid of category cards after seeing both drawn by the daemon: nothing is hidden
 (All scrolls through every category), and each tool says what it does. A key that runs something
-at once must never surprise, so a letter acts only on a tool whose capsule is drawn in the open tab;
+at once must never surprise, so a letter acts only on a tool whose capsule is drawn on screen: a tool
+the open tab lists but has scrolled out of the pane starts the search with its letter, as a letter
+without a capsule does;
 `/` or Space start the search, and every letter after them is text; a held key never acts twice;
 Mod+Space never shows the panel nor has live letters, since its users type to search. In the search,
 no choice is picked by default: with a first chip picked, one Enter on Schedule shutdown would

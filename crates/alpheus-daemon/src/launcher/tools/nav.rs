@@ -5,7 +5,7 @@
 
 use super::catalog::{Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
-use super::panel::Panel;
+use super::panel::{Panel, PanelRow, window};
 use crate::launcher::matching::ToolHitRow;
 use crate::launcher::sources::PATH_JOIN;
 use crate::session::{self, Activation as Ask};
@@ -162,6 +162,10 @@ pub struct ToolsState {
     /// The cells (columns, rows) the Super+X box is sized to, once `open_panel` opened it: set
     /// once per open, kept at every level. While set, the root's letters run their tools.
     panel: Option<(u16, u16)>,
+    /// The lines of the panel's list pane as drawn: the rows it was sized to at open, then the
+    /// box's own (`set_pane_lines`, a size the compositor imposed). A letter reaches only the
+    /// tools drawn in them.
+    pane_lines: usize,
     /// The panel's tabs and rows, while it is opened: the root lists its open tab's tools.
     home: Option<Panel>,
     /// Its Recent section, read once at open.
@@ -187,6 +191,7 @@ impl ToolsState {
             flat: Vec::new(),
             flat_hits: Vec::new(),
             panel: None,
+            pane_lines: 0,
             home: None,
             recent: Vec::new(),
             picked: Vec::new(),
@@ -236,6 +241,7 @@ impl ToolsState {
     pub fn open_panel(&mut self, columns: u16, rows: u16, recent: Vec<usize>) {
         // No room (a very short or narrow output): not opened, the root and the box stay today's.
         self.panel = (columns > 0 && rows > 0).then_some((columns, rows));
+        self.pane_lines = usize::from(rows);
         self.home = self.panel.map(|_| Panel::build(&self.catalog, &recent, 0));
         self.recent = recent;
         self.rev += 1;
@@ -344,16 +350,37 @@ impl ToolsState {
         self.panel.is_some() && self.level == Level::Root
     }
 
-    /// The row the letter `c` runs: a tool the open tab lists whose letter it is (its capsule shows
-    /// there; a tool listed twice is the one row). A tool not listed there leaves its letter inert
-    /// (the key starts the search).
-    pub fn letter(&self, c: char) -> Option<RowId> {
-        self.panel()?.tools().find(|&e| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c))).map(RowId::Entry)
+    /// The lines of the panel's list pane in the box drawn (the view, at each layout).
+    pub fn set_pane_lines(&mut self, lines: usize) {
+        self.pane_lines = lines;
     }
 
-    /// Whether a letter runs anything at the panel's root: one of the open tab's tools carries a capsule.
-    pub fn root_letters(&self) -> bool {
-        self.panel().is_some_and(|p| p.tools().any(|e| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some())))
+    /// The open tab's tools the pane draws whole, the list scrolled to tool `top` and tool
+    /// `selected` selected: (index into `Panel::tools`, entry), in row order.
+    fn drawn(&self, top: usize, selected: Option<usize>) -> Vec<(usize, usize)> {
+        let Some(panel) = self.panel() else { return Vec::new() };
+        let (lines, start) = window(&panel.rows, top, selected, self.pane_lines);
+        lines
+            .iter()
+            .filter(|x| x.drawn(start, self.pane_lines))
+            .filter_map(|x| if let PanelRow::Tool(e) = x.row { Some((x.tool, e)) } else { None })
+            .collect()
+    }
+
+    /// The tool the letter `c` runs, the list scrolled to `top` with `selected` selected: one the
+    /// open tab draws whose letter it is, its capsule on screen (index into `Panel::tools`, row;
+    /// a tool drawn twice is its first row). A tool listed but not drawn, or not listed, leaves
+    /// its letter inert (the key starts the search): no key runs what the user did not see.
+    pub fn letter(&self, c: char, top: usize, selected: Option<usize>) -> Option<(usize, RowId)> {
+        self.drawn(top, selected)
+            .into_iter()
+            .find(|&(_, e)| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c)))
+            .map(|(k, e)| (k, RowId::Entry(e)))
+    }
+
+    /// Whether a letter runs anything at the panel's root: one of the tools drawn carries a capsule.
+    pub fn root_letters(&self, top: usize, selected: Option<usize>) -> bool {
+        self.drawn(top, selected).into_iter().any(|(_, e)| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some()))
     }
 
     /// The flat search's rows (every entry, then every fixed choice) and their candidates.

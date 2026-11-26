@@ -56,12 +56,14 @@ its description, then its actions derived from what the tool is (`Run ⏎` or `O
 `Type <label> ⏎`, `Turn on/off ⏎`, `Confirm ⏎ ⏎`, `Quick key <letter>`), and `Pinned` for a pinned
 tool. The levels below a tool (its choices, its prompt) keep the card.
 
-**Letters.** A letter acts on the tool whose capsule shows in the open tab as Enter on its row
+**Letters.** A letter acts on the tool whose capsule is drawn on screen as Enter on its row
 would: it runs it and closes the box, opens its level, or asks its question first (`confirm`). A tool shown twice (pinned and in its category)
 keeps one letter. Letters are given in display order: Pinned first, then each category in order; a
 user entry wants its `key`, a built-in its `[tools] keys` letter, else its default. A letter wanted
 twice goes to the first, and one log line counts the letters taken twice (`tools: N letters taken
-twice`), never which. A letter is never live:
+twice`), never which. A tool the open tab lists but has
+scrolled out of the pane (or a box drawn shorter cuts off) is not drawn: its letter starts the
+search, as a letter without a capsule does, until the list scrolls to it. A letter is never live:
 
 - after `/` or Space, which start the search (the letters then are text);
 - for a letter with no capsule in the open tab: it starts the search with itself;

@@ -11,7 +11,7 @@ use crate::launcher::matching::Source;
 use crate::launcher::model::Launcher;
 use crate::launcher::tools::catalog::{Choices, Entry, EntryKind};
 use crate::launcher::tools::nav::{Level, RowId, ToolsState};
-use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions};
+use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions, window};
 use crate::list::{self, Boxed, Shape, ShapeKind, wrap};
 use std::borrow::Cow;
 
@@ -53,7 +53,6 @@ struct Geometry {
 }
 
 fn geometry(b: &BoxLayout) -> Geometry {
-    let rows = usize::from(b.rows);
     let (start, end) = (1 + TOOLS_INSET, b.columns.saturating_sub(1 + TOOLS_INSET));
     let inner = end.saturating_sub(start);
     // About 60 % for the list, the rest for the card, one blank column between.
@@ -63,7 +62,7 @@ fn geometry(b: &BoxLayout) -> Geometry {
     } else {
         ((start, end), None)
     };
-    Geometry { tabs: 2, pane_top: 4, pane_rows: rows.saturating_sub(usize::from(CHROME_ROWS)), list, card }
+    Geometry { tabs: 2, pane_top: 4, pane_rows: pane_lines(b), list, card }
 }
 
 /// Whether `l` shows the panel: the Tools mode at an opened panel's root, its home or its search.
@@ -132,51 +131,21 @@ fn row_tools(rows: &[PanelRow]) -> impl Iterator<Item = usize> + '_ {
 /// The model's page at the panel: one tool per two lines of its pane (`Launcher::set_list_rows`);
 /// any other box's list rows.
 pub fn model_rows(l: &Launcher, b: &BoxLayout) -> usize {
-    if l.panel_size().is_some() { (usize::from(b.rows.saturating_sub(CHROME_ROWS)) / 2).max(1) } else { usize::from(b.list_rows) }
+    if l.panel_size().is_some() { (pane_lines(b) / 2).max(1) } else { usize::from(b.list_rows) }
 }
 
-/// A line of the list: a section label, or the first of a tool's two (`tool` indexes `Panel::tools`).
-#[derive(Debug, Clone, Copy)]
-struct Line {
-    at: usize,
-    row: PanelRow,
-    tool: usize,
+/// The lines of the panel's list pane in box `b`.
+pub fn pane_lines(b: &BoxLayout) -> usize {
+    usize::from(b.rows.saturating_sub(CHROME_ROWS))
 }
 
-/// The list's lines, then the first line shown: the model's top tool (with its label right above
-/// it), moved down only as far as the selected tool needs to show whole.
-fn window(l: &Launcher, rows: &[PanelRow], pane_rows: usize) -> (Vec<Line>, usize) {
-    let mut lines = Vec::with_capacity(rows.len());
-    let (mut at, mut tool) = (0, 0);
-    for &row in rows {
-        lines.push(Line { at, row, tool });
-        match row {
-            PanelRow::Section(_) => at += 1,
-            PanelRow::Tool(_) => {
-                at += 2;
-                tool += 1;
-            }
-        }
+/// Fits `l` to box `b`: its page (`model_rows`) and, at the panel, its pane's lines, so a letter
+/// reaches only the tools this box draws.
+pub fn fit(l: &mut Launcher, b: &BoxLayout) {
+    l.set_list_rows(model_rows(l, b));
+    if l.panel_size().is_some() {
+        l.set_pane_lines(pane_lines(b));
     }
-    let total = at;
-    // The first line of tool `k`, its label's when the label is right above it.
-    let begin = |k: usize| {
-        let i = lines.iter().position(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == k);
-        i.map_or(0, |i| match i.checked_sub(1).map(|p| lines[p].row) {
-            Some(PanelRow::Section(_)) => lines[i - 1].at,
-            _ => lines[i].at,
-        })
-    };
-    let mut start = begin(l.top);
-    if !l.results.is_empty() {
-        let first = begin(l.selected);
-        let end = lines.iter().find(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == l.selected).map_or(0, |x| x.at + 2);
-        if end > start + pane_rows {
-            start = end - pane_rows;
-        }
-        start = start.min(first);
-    }
-    (lines, start.min(total.saturating_sub(pane_rows)))
 }
 
 /// The panel's home, drawn in `b`.
@@ -194,7 +163,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     }
     let list = list_rows(l, t, panel);
     let search = l.panel_search();
-    let (lines, start) = window(l, &list, g.pane_rows);
+    let (lines, start) = window(&list, l.top, (!l.results.is_empty()).then_some(l.selected), g.pane_rows);
     let selected = (!l.results.is_empty() && !l.selection_lost()).then_some(l.selected);
     for line in &lines {
         let Some(offset) = line.at.checked_sub(start) else { continue };
@@ -232,7 +201,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                     Some(e) if search && t.chips(e).is_some() && t.chip(e).is_some() => &SEARCH_CHIP_HINTS,
                     Some(e) if search && t.chips(e).is_some() => &SEARCH_UNPICKED_HINTS,
                     _ if search => &SEARCH_HINTS,
-                    _ if l.letters_live() && t.root_letters() => &HOME_HINTS,
+                    _ if l.letters_live() && l.root_letters() => &HOME_HINTS,
                     _ => &HOME_HINTS_NO_LETTERS,
                 };
                 key_hints(row, &mut shapes, footer, start, end, hints);
@@ -591,11 +560,9 @@ pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
         return Click::Inside;
     }
     let list = list_rows(l, t, panel);
-    let (lines, start) = window(l, &list, g.pane_rows);
+    let (lines, start) = window(&list, l.top, (!l.results.is_empty()).then_some(l.selected), g.pane_rows);
     let line = start + row - g.pane_top;
-    let Some(found) = lines.iter().find(|x| {
-        matches!(x.row, PanelRow::Tool(_)) && (x.at..x.at + 2).contains(&line) && x.at >= start && x.at + 2 <= start + g.pane_rows
-    }) else {
+    let Some(found) = lines.iter().find(|x| x.drawn(start, g.pane_rows) && (x.at..x.at + 2).contains(&line)) else {
         return Click::Inside;
     };
     // The second line of a search row with chips: the chip under the pointer, if any.

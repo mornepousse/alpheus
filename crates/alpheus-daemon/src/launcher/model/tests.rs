@@ -2038,6 +2038,39 @@ fn a_letter_of_a_tool_not_in_the_tab_starts_the_search() {
     assert_eq!(l.query, "w");
 }
 
+/// A letter runs only a tool whose capsule the pane draws: at open Lock is listed on the All tab
+/// but below the pane's 23 lines, so `l` starts the search; once Lock is scrolled into view, `l`
+/// runs it.
+#[test]
+fn a_letter_of_a_tool_scrolled_out_of_view_starts_the_search() {
+    // The planned pane (`view/panel.rs` PANE_ROWS).
+    let lines = 23;
+    let open = || {
+        let config = LauncherConfig::from_text("").unwrap();
+        let catalog = panel_catalog(&config);
+        let mut l = Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000);
+        l.open_panel(104, 23);
+        l.set_list_rows(lines / 2);
+        l
+    };
+    let mut l = open();
+    let lock = builtin_entry(&l, "lock");
+    let at = panel_of(&l).tools().position(|e| e == lock).expect("Lock is listed on the All tab");
+    assert!(at >= lines / 2, "Lock is below the pane at open (tool {at})");
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('l'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "l");
+
+    let mut l = open();
+    while l.selected < at {
+        l.key(Key::Down);
+    }
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('l'));
+    assert!(runs_builtin(&o, "lock"), "{o:?}");
+}
+
 fn panel_of(l: &Launcher) -> &panel::Panel {
     l.tools().unwrap().panel().expect("the panel")
 }

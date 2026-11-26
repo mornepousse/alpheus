@@ -917,7 +917,7 @@ pub fn snapshot(b: &Boxed) -> String {
 }
 
 mod panel;
-pub use panel::model_rows;
+pub use panel::{fit, model_rows};
 
 #[cfg(test)]
 mod tests;

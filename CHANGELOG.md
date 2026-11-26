@@ -15,7 +15,8 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 - **The Tools menu opens on a command panel**: `alpheus-launch --tools` (Super+X) shows a search
   field, tabs (All, with Pinned, Recent and every category as a section, then each category), each tool
   on two lines with what it does, a detail card with its actions and keys, and a letter that runs a
-  tool in one key. A letter acts only on a tool whose capsule shows in the open tab; `/` or Space
+  tool in one key. A letter acts only on a tool whose capsule is drawn on
+  screen (a tool scrolled out of the pane starts the search with its letter); `/` or Space
   start the search; Mod+Space never shows the panel nor has live letters. The search groups its
   results by category and shows fixed choices as chips; no chip is picked until ←/→, a click or the
   query picks one. New keys: `[tools] panel` (`false` keeps the category list) and `keys`, an entry's

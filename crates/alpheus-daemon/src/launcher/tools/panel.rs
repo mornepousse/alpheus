@@ -84,6 +84,60 @@ impl Panel {
     }
 }
 
+/// A line of the list: a section label, or the first of a tool's two (`tool` indexes the
+/// selectable rows, `Panel::tools` at home).
+#[derive(Debug, Clone, Copy)]
+pub struct Line {
+    pub at: usize,
+    pub row: PanelRow,
+    pub tool: usize,
+}
+
+impl Line {
+    /// Whether this is a tool drawn whole in a pane of `pane_rows` lines from line `start`: a tool
+    /// cut by the pane's edge is not drawn (nor its capsule, nor does a click or a letter reach it).
+    pub fn drawn(&self, start: usize, pane_rows: usize) -> bool {
+        matches!(self.row, PanelRow::Tool(_)) && self.at >= start && self.at + 2 <= start + pane_rows
+    }
+}
+
+/// The list's lines, then the first line shown: tool `top` (with its label right above it), moved
+/// down only as far as tool `selected` needs to show whole. Shared by the view and the letters, so
+/// a letter reaches exactly the tools drawn.
+pub fn window(rows: &[PanelRow], top: usize, selected: Option<usize>, pane_rows: usize) -> (Vec<Line>, usize) {
+    let mut lines = Vec::with_capacity(rows.len());
+    let (mut at, mut tool) = (0, 0);
+    for &row in rows {
+        lines.push(Line { at, row, tool });
+        match row {
+            PanelRow::Section(_) => at += 1,
+            PanelRow::Tool(_) => {
+                at += 2;
+                tool += 1;
+            }
+        }
+    }
+    let total = at;
+    // The first line of tool `k`, its label's when the label is right above it.
+    let begin = |k: usize| {
+        let i = lines.iter().position(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == k);
+        i.map_or(0, |i| match i.checked_sub(1).map(|p| lines[p].row) {
+            Some(PanelRow::Section(_)) => lines[i - 1].at,
+            _ => lines[i].at,
+        })
+    };
+    let mut start = begin(top);
+    if let Some(selected) = selected {
+        let first = begin(selected);
+        let end = lines.iter().find(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == selected).map_or(0, |x| x.at + 2);
+        if end > start + pane_rows {
+            start = end - pane_rows;
+        }
+        start = start.min(first);
+    }
+    (lines, start.min(total.saturating_sub(pane_rows)))
+}
+
 /// The entry a history key names: its own key, or one of its fixed choices' (`<key>/<choice>`).
 fn entry_of(catalog: &Catalog, key: &str) -> Option<usize> {
     catalog.entries.iter().position(|e| e.key == key).or_else(|| {

@@ -444,6 +444,25 @@ impl Launcher {
         self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(ToolsState::at_panel)
     }
 
+    /// The panel's list as the view lays it out: scrolled to tool `top`, the selected tool (none
+    /// on an empty list) shown whole.
+    fn panel_window(&self) -> (usize, Option<usize>) {
+        (self.top, (!self.results.is_empty()).then_some(self.selected))
+    }
+
+    /// Whether a letter runs anything at the panel's root: a tool drawn there carries a capsule.
+    pub fn root_letters(&self) -> bool {
+        let (top, selected) = self.panel_window();
+        self.tools.as_ref().is_some_and(|t| t.root_letters(top, selected))
+    }
+
+    /// The lines of the panel's list pane in the box drawn (`view::fit`).
+    pub fn set_pane_lines(&mut self, lines: usize) {
+        if let Some(t) = self.tools.as_mut() {
+            t.set_pane_lines(lines);
+        }
+    }
+
     /// Whether the Tools mode shows the panel's search: its panel open at the root, a query typed.
     pub fn panel_search(&self) -> bool {
         self.mode == Mode::Tools && !self.query.trim().is_empty() && self.tools.as_ref().is_some_and(|t| t.panel().is_some())
@@ -962,13 +981,14 @@ impl Launcher {
             self.acted = Some(Key::Char(c));
             return Some(Outcome::Redraw);
         }
-        let row = self.tools.as_ref().and_then(|t| t.letter(c))?;
+        let (top, selected) = self.panel_window();
+        let (k, row) = self.tools.as_ref().and_then(|t| t.letter(c, top, selected))?;
         self.acted = Some(Key::Char(c));
-        // On its row: a question shows there and the second Enter answers it.
-        if let Some(at) =
-            self.results.iter().position(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)))
+        // On its row (home lists the tab's tools in order): a question shows there and the second
+        // Enter answers it.
+        if self.results.get(k).is_some_and(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)))
         {
-            self.selected = at;
+            self.selected = k;
             self.moved = true;
             self.keep_visible();
         }
