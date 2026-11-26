@@ -1,0 +1,101 @@
+---
+source: crates/alpheus-daemon/src/launcher/view/tests.rs
+expression: snapshot_with_shapes(&rows)
+---
+  󰍉 ▏ Search tools                                                                          Super   X   
+  All   Quick settings   Control center   Utilities   Captures   Diagnostics   System   Session         
+                                                                                                        
+   󰕾  Sound                                                                                             
+      Volume and output, in quick settings                        󰕾                                     
+   󰖩  Wi-Fi                                                w                                            
+      Wi-Fi networks, in quick settings                                                                 
+   󰂯  Bluetooth                                            b     Sound                                  
+      Bluetooth devices, in quick settings                       Quick settings · built-in              
+   󰖂  VPN                                                  v                                            
+      VPN connections, in quick settings                         Volume and output, in quick settings   
+   󰒘  Shield                                               h     ────────────────────────────────────   
+      Shield mode, in quick settings                             Open                              ⏎    
+   󰂛  Do not disturb                                       d                                            
+      Turn do not disturb on or off                                                                     
+   󰅶  Keep awake                                           z                                            
+      Keep the screen on, or let it sleep                                                               
+   󰖔  Night light                                          i                                            
+      Warmer screen colours, on or off                                                                  
+                                                                                                        
+                                                                                                        
+                                                                                                        
+                                                                                                        
+                                                                                                        
+                                                                                                        
+                                                                                                        
+                                                                                                        
+  ⏎  Run    →  Options    Tab  Category    a-z  Quick key    Esc  Close                                 
+
+..m.a.mmmmmmmmmmmm..........................................................................mmmmm...m...
+........??????????????..................................................................................
+........................................................................................................
+...B....................................................................................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm........................B.....................................
+...B.......................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.................................................................
+...B.......................................................m.....NNNNN..................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.......................mmmmmmmmmmmmmmmmmmmmmmmmm..............
+...B.......................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm................................................................
+...B.......................................................m.....mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...............................................................m....
+...B.......................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmm.....................................................................
+...B.......................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...............................................................
+...B.......................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm..................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+........................................................................................................
+..m..mmm....m..mmmmmmm....mmm..mmmmmmmm....mmm..mmmmmmmmm....mmm..mmmmm.................................
+
+divider: none
+separators: [2, 26]
+
+shapes:
+Chip(Pill) at row 0 col 1 width 102 rows 1
+Chip(Selection) at row 0 col 99 width 3 rows 1
+Chip(Selection) at row 0 col 91 width 7 rows 1
+Chip(Pill) at row 1 col 1 width 5 rows 1
+Chip(AccentContainer) at row 1 col 7 width 16 rows 1
+Chip(Pill) at row 1 col 24 width 16 rows 1
+Chip(Pill) at row 1 col 41 width 11 rows 1
+Chip(Pill) at row 1 col 53 width 10 rows 1
+Chip(Pill) at row 1 col 64 width 13 rows 1
+Chip(Pill) at row 1 col 78 width 8 rows 1
+Chip(Pill) at row 1 col 87 width 9 rows 1
+Band at row 3 col 1 width 61 rows 2
+Chip(Pill) at row 3 col 2 width 3 rows 2
+Chip(Pill) at row 5 col 2 width 3 rows 2
+Chip(Pill) at row 5 col 58 width 3 rows 1
+Chip(Pill) at row 7 col 2 width 3 rows 2
+Chip(Pill) at row 7 col 58 width 3 rows 1
+Chip(Pill) at row 9 col 2 width 3 rows 2
+Chip(Pill) at row 9 col 58 width 3 rows 1
+Chip(Pill) at row 11 col 2 width 3 rows 2
+Chip(Pill) at row 11 col 58 width 3 rows 1
+Chip(Pill) at row 13 col 2 width 3 rows 2
+Chip(Pill) at row 13 col 58 width 3 rows 1
+Chip(Pill) at row 15 col 2 width 3 rows 2
+Chip(Pill) at row 15 col 58 width 3 rows 1
+Chip(Pill) at row 17 col 2 width 3 rows 2
+Chip(Pill) at row 17 col 58 width 3 rows 1
+Card at row 3 col 63 width 40 rows 23
+Chip(Pill) at row 4 col 65 width 3 rows 2
+Chip(Selection) at row 12 col 98 width 3 rows 1
+Chip(Pill) at row 27 col 1 width 3 rows 1
+Chip(Pill) at row 27 col 11 width 3 rows 1
+Chip(Pill) at row 27 col 25 width 5 rows 1
+Chip(Pill) at row 27 col 42 width 5 rows 1
+Chip(Pill) at row 27 col 60 width 5 rows 1

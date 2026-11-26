@@ -53,6 +53,10 @@ const LETTER_CELLS: u16 = 3;
 /// The widest the Super+X panel's box is asked, its ring left out: about three 34-cell cards and
 /// their two gaps (spec "Box": about 106 cells with the ring).
 pub const FULL_BAND_COLUMNS: u16 = 3 * 34 + 2;
+/// The blank column the Tools mode keeps inside the frame at each side: a shape drawn from there
+/// is as far from the frame as the search field's chip is from the top (the painter's margin is
+/// measured to a text's first column, one cell in).
+const TOOLS_INSET: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxLayout {
@@ -90,9 +94,8 @@ pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: b
     BoxLayout { columns, rows: chrome + list_rows, list_top: chrome - 2, list_rows, preview_columns }
 }
 
-/// The rows of the Tools panel's box around its list: the ring's two, the search field, the blank
-/// row before the footer (its line), the footer.
-const PANEL_CHROME_ROWS: u16 = 5;
+/// The rows of the Tools panel's box around its panes (`panel::CHROME_ROWS`).
+const PANEL_CHROME_ROWS: u16 = panel::CHROME_ROWS;
 
 /// The most of the output the panel's box takes (spec "Box"): 90 % of its columns, 80 % of
 /// its rows. `launcher.toml`'s `rows` does not cap it; it still caps every other mode.
@@ -101,16 +104,18 @@ fn panel_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
     (share(output_columns, 9), share(output_rows, 8))
 }
 
-/// The cells the panel's list may fill on this output: `FULL_BAND_COLUMNS` across at most, within
-/// the cap less the box's ring and chrome, so `tools_layout` never cuts it.
+/// The cells the panel's panes may fill on this output: `FULL_BAND_COLUMNS` across and
+/// `panel::PANE_ROWS` down at most (six two-line tools and their labels), within the cap less the
+/// box's ring and chrome, so `tools_layout` never cuts it.
 pub fn panel_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
     let (columns, rows) = panel_cap(output_columns, output_rows);
-    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS))
+    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS).min(panel::PANE_ROWS))
 }
 
 /// The Tools box sized to the panel's `wanted` cells (columns, rows), decided once per open
-/// and kept at every level: the list and the ring across; the ring, the search field, the list,
-/// a blank row and the footer down. Never more than `panel_cap`, nor less than `BOX_COLUMNS`
+/// and kept at every level: the panes and the ring across; the ring, the search field, the tabs,
+/// a line, the panes, a line and the footer down (a level below draws its list from under the
+/// search field). Never more than `panel_cap`, nor less than `BOX_COLUMNS`
 /// when the cap leaves room for it; no preview panel.
 pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -> BoxLayout {
     let (columns, rows) = panel_cap(output_columns, output_rows);
@@ -349,16 +354,16 @@ fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
 /// text with `<name>? ⏎` in the urgent tint.
 fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, selected: bool) {
     let (Some(t), Some(row)) = (l.tools(), l.tool_rows().get(i)) else { return };
-    let end = b.pane_end();
     // The restyle is the Tools mode's: a tool row in All keeps the accent and no glyph in its
-    // flat form (`entry_row`).
+    // flat form (`entry_row`), and no blank column inside the frame.
     let tools = l.mode == Mode::Tools;
+    let (start, end) = if tools { (1 + TOOLS_INSET, b.pane_end().saturating_sub(TOOLS_INSET)) } else { (1, b.pane_end()) };
     let icon_style = if tools { row_hue(t, row.id) } else { Style::ACCENT };
     let icon = if grouped { row.icon.map(|_| ' ') } else { row.icon };
     if t.asking(row.id) {
         let text = t.question_text(row);
         let style = if tools { Style::URGENT } else { Style::WARN };
-        list::row(g, 1, end, &Row { icon, icon_style, text: &text, right: "", style, selected });
+        list::row(g, start, end, &Row { icon, icon_style, text: &text, right: "", style, selected });
         return;
     }
     match &row.trail {
@@ -366,7 +371,7 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, 
             entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected);
         }
         Trail::Category(category) => {
-            list::row(g, 1, end, &Row { icon, icon_style, text: &row.text, right: category, style: Style::NORMAL, selected });
+            list::row(g, start, end, &Row { icon, icon_style, text: &row.text, right: category, style: Style::NORMAL, selected });
         }
         Trail::None | Trail::Chevron | Trail::Switch(_) => {
             let right = if row.trail == Trail::Chevron { "›" } else { "" };
@@ -377,12 +382,12 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, 
                     let (text, style) = quick::switch(Some(on));
                     (
                         Some((text, style)),
-                        truncate(&row.text, end.saturating_sub(text_width(text) + 3 + 2 * u16::from(row.icon.is_some()) + 1)),
+                        truncate(&row.text, end.saturating_sub(start + text_width(text) + 3 + 2 * u16::from(row.icon.is_some()))),
                     )
                 }
                 _ => (None, row.text.clone()),
             };
-            list::row(g, 1, end, &Row { icon, icon_style, text: &shown, right, style: Style::NORMAL, selected });
+            list::row(g, start, end, &Row { icon, icon_style, text: &shown, right, style: Style::NORMAL, selected });
             if let Some((text, style)) = switch {
                 g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
             }
@@ -657,6 +662,9 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 #[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let tools = l.mode == Mode::Tools;
+    if tools && panel::shown(l) {
+        return panel::render(l, b);
+    }
     let unpaned = without_preview(l, b);
     let b = &unpaned;
     let mut shapes = Vec::new();
@@ -678,18 +686,10 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
-            let letter = row_letter(l, index);
-            // A row with a capsule is cut before it, one blank cell between; one more at its right,
-            // as the search field's capsules keep.
-            let narrow = BoxLayout { columns: b.columns.saturating_sub(LETTER_CELLS + 2), ..*b };
-            result_row(l, if letter.is_some() { &narrow } else { b }, &mut g, index);
+            result_row(l, b, &mut g, index);
             if tools && index == l.selected && !l.selection_lost() {
-                shapes.push(ring_shape(rows.len(), 1, end.saturating_sub(1), 1, ShapeKind::Band));
-            }
-            // Over the band: the letter that runs the row's tool.
-            if let Some(c) = letter {
-                let stop = end.saturating_sub(1);
-                capsule(&mut g, &mut shapes, rows.len(), stop.saturating_sub(LETTER_CELLS), stop, &c.to_string(), Tint::Pill);
+                let (from, to) = (1 + TOOLS_INSET, end.saturating_sub(TOOLS_INSET));
+                shapes.push(ring_shape(rows.len(), from, to.saturating_sub(from), 1, ShapeKind::Band));
             }
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
@@ -719,7 +719,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut g = blank(b);
     match &l.message {
         Some(m) => g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR),
-        None if tools => key_hints(&mut g, &mut shapes, rows.len(), end, tools_hints(l)),
+        None if tools => key_hints(&mut g, &mut shapes, rows.len(), 1 + TOOLS_INSET, end.saturating_sub(TOOLS_INSET), tools_hints(l)),
         None => g.write(2, end.saturating_sub(1), &truncate(help_text(l), end.saturating_sub(3)), Style::MUTED),
     };
     rows.push(g);
@@ -756,17 +756,6 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     boxed
 }
 
-/// The letter whose capsule the result at `index` shows: a tool's own while letters run tools
-/// (the panel's root, nothing typed). None for any other row.
-fn row_letter(l: &Launcher, index: usize) -> Option<char> {
-    if !l.letters_live() {
-        return None;
-    }
-    let Source::Tool(i) = l.results.get(index)?.source else { return None };
-    let RowId::Entry(e) = l.tool_rows().get(i)?.id else { return None };
-    l.tools()?.catalog.entries.get(e)?.letter
-}
-
 /// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
 /// run", repeats the row), the results across the box. Any other mode's is `b` itself.
 fn without_preview(l: &Launcher, b: &BoxLayout) -> BoxLayout {
@@ -794,14 +783,9 @@ fn capsule(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, x: u16, end: u16, ke
 /// A footer's offer: keys, each in its capsule, then what they do.
 type Hint = (&'static [&'static str], &'static str);
 
-const PANEL_HINTS: [Hint; 3] = [(&["a-z"], "Run"), (&["⏎"], "Open"), (&["Esc"], "Close")];
-
-/// The Tools footer: the panel root's keys (the letters only while one runs a tool), a level's own.
+/// The Tools footer below the panel's home (which draws its own): the root's keys, a level's own.
 fn tools_hints(l: &Launcher) -> &'static [Hint] {
     let Some(t) = l.tools() else { return &[] };
-    if t.at_panel() && l.query.is_empty() {
-        return &PANEL_HINTS[usize::from(!(l.letters_live() && t.root_letters()))..];
-    }
     // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
     if t.at_root() && l.origin == Origin::Apps {
         &[(&["⏎"], "Open"), (&["⌫"], "All"), (&["Esc"], "Close")]
@@ -814,11 +798,11 @@ fn tools_hints(l: &Launcher) -> &'static [Hint] {
     }
 }
 
-/// `hints` left-aligned on row `y` from the box's left edge: each group's capsules one blank cell
+/// `hints` left-aligned on row `y` from column `start`: each group's capsules one blank cell
 /// apart, its label after them, three cells to the next group; a group that does not fit before
 /// `end` is left out with the ones after it.
-fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, end: u16, hints: &[Hint]) -> u16 {
-    let mut x = 1;
+fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, start: u16, end: u16, hints: &[Hint]) -> u16 {
+    let mut x = start;
     for (keys, label) in hints {
         let need = keys.iter().map(|k| text_width(k) + 3).sum::<u16>() + text_width(label);
         if x + need > end {
@@ -836,8 +820,8 @@ fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, end: u16, hints: &
 /// below the root, the query and its cursor (the placeholder at the panel's root), and at its right
 /// the `Super` `X` capsules in a `--tools` open at least `KEY_HINT_COLUMNS` wide.
 fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
-    let end = b.pane_end();
-    shapes.push(ring_shape(y, 1, end.saturating_sub(1), 1, ShapeKind::Chip(Tint::Pill)));
+    let (start, end) = (1 + TOOLS_INSET, b.pane_end().saturating_sub(TOOLS_INSET));
+    shapes.push(ring_shape(y, start, end.saturating_sub(start), 1, ShapeKind::Chip(Tint::Pill)));
     let mut stop = end.saturating_sub(1);
     if l.origin == Origin::Tools && b.columns >= KEY_HINT_COLUMNS {
         let mut x = stop;
@@ -849,7 +833,7 @@ fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>
         stop = x;
     }
     let panel = l.tools().is_some_and(ToolsState::at_panel);
-    let mut x = g.write(2, stop, &SEARCH_ICON.to_string(), Style::MUTED);
+    let mut x = g.write(start + 1, stop, &SEARCH_ICON.to_string(), Style::MUTED);
     x = g.write(x, stop, " ", Style::NORMAL);
     if !panel {
         // The breadcrumb, cut from the left when too long.
@@ -886,6 +870,9 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         return None;
     }
     let b = &without_preview(l, b);
+    if l.mode == Mode::Tools && panel::shown(l) {
+        return Some(panel::hit(l, b, column, row));
+    }
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
         let index = l.top + usize::from(row - b.list_top);
@@ -908,6 +895,9 @@ pub fn snapshot(b: &Boxed) -> String {
     let divider = b.divider.map_or("none".to_string(), |c| c.to_string());
     format!("{}\n\n{}\n\ndivider: {divider}", texts.join("\n"), styles.join("\n"))
 }
+
+mod panel;
+pub use panel::model_rows;
 
 #[cfg(test)]
 mod tests;

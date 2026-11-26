@@ -467,7 +467,7 @@ impl App {
         // Once per open: the box keeps this size whatever gets selected.
         open_panel_for_open(columns, rows, &mut model);
         let layout = open_layout(columns, rows, &model);
-        model.set_list_rows(layout.list_rows as usize);
+        model.set_list_rows(view::model_rows(&model, &layout));
         let size = layout_size(&layout, advance, row_height, scale, &self.fonts.frame(scale));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let outputs = self.outputs.outputs().count();
@@ -625,7 +625,7 @@ impl App {
         let row_height = height * e as u32;
         let frame = fonts.frame(e);
         let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e, &frame);
-        open.model.set_list_rows(layout.list_rows as usize);
+        open.model.set_list_rows(view::model_rows(&open.model, &layout));
         open.layout = layout;
         match plan_redraw(open.size, wanted, open.configured) {
             Redraw::Wait => {}
@@ -931,7 +931,7 @@ impl App {
                 let e = open.scale.max(1);
                 let frame = fonts.frame(e);
                 let layout = layout_within(imposed, &open.model, fonts.advance(e), height * e as u32, e, &frame);
-                open.model.set_list_rows(layout.list_rows as usize);
+                open.model.set_list_rows(view::model_rows(&open.model, &layout));
                 open.layout = layout;
                 open.size = imposed;
                 open.imposed_size = Some(imposed);
