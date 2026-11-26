@@ -2419,6 +2419,27 @@ fn a_click_on_a_chip_picks_it_and_runs_nothing() {
     assert_eq!(l.click_chip(0, 0), Outcome::Nothing);
 }
 
+/// A click on the chip already picked of a row that is not selected selects that row, and every
+/// chip click forgets the instant it was given, as a row click does.
+#[test]
+fn a_click_on_a_picked_chip_selects_its_row() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/a");
+    let beta = user_entry(&l, "Beta");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(beta))).unwrap();
+    l.set_now(Instant::now());
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw);
+    assert_eq!(l.at, None, "the click's instant is spent");
+    let other = (0..l.results.len()).find(|&i| i != at).expect("another row");
+    l.selected = other;
+    l.set_now(Instant::now());
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw, "the row moves under the click");
+    assert_eq!(l.selected, at);
+    assert_eq!(chip(&l, "Beta"), Some(1), "still picked");
+    assert_eq!(l.at, None);
+    assert_eq!(l.click_chip(at, 1), Outcome::Nothing, "already picked and selected");
+}
+
 /// A `choices_cmd` entry has no chips: Enter or → opens its level, which reads them.
 #[test]
 fn a_choices_cmd_entry_keeps_its_level() {

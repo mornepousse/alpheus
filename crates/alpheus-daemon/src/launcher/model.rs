@@ -472,9 +472,11 @@ impl Launcher {
     }
 
     /// A click on chip `chip` of result `index` in the panel's search: selects the row and picks
-    /// the chip, as ←/→ would; it never runs it (Enter does). Nothing off the search or on a row
-    /// without such a chip.
+    /// the chip, as ←/→ would; it never runs it (Enter does). Nothing off the search, on a row
+    /// without such a chip, or on the chip already picked of the selected row.
     pub fn click_chip(&mut self, index: usize, chip: usize) -> Outcome {
+        // As `click`: the instant given for this click is spent, whatever it does.
+        self.at = None;
         if !self.panel_search() {
             return Outcome::Nothing;
         }
@@ -484,7 +486,10 @@ impl Launcher {
         }) else {
             return Outcome::Nothing;
         };
-        if !self.tools.as_mut().is_some_and(|t| t.pick_chip(e, chip)) {
+        let Some(t) = self.tools.as_mut() else { return Outcome::Nothing };
+        let picked = t.pick_chip(e, chip);
+        // The chip already picked still selects its row when another one was.
+        if !picked && (t.chip(e) != Some(chip) || self.selected == index) {
             return Outcome::Nothing;
         }
         // As any other key would: a pending question is dropped.
