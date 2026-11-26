@@ -1977,18 +1977,22 @@ fn slash_or_space_starts_the_search_and_is_not_typed() {
 
 #[test]
 fn a_prefix_entry_never_runs_a_letter() {
-    let config = LauncherConfig::from_text("").unwrap();
-    let catalog = overview_catalog(&config);
-    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
-    l.set_tools(catalog);
-    l.place_overview(110, 40);
-    assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)));
-    assert_eq!(l.mode, Mode::Tools);
-    assert!(l.tools().unwrap().overview().is_some(), "the overview is shown");
-    assert!(!l.letters_live());
-    let o = l.key(Key::Char('w'));
-    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
-    assert_eq!(l.query, "w");
+    // Placed or not (a Mod+Space open is not the overview's), the letters stay text.
+    for placed in [false, true] {
+        let config = LauncherConfig::from_text("").unwrap();
+        let catalog = overview_catalog(&config);
+        let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+        l.set_tools(catalog);
+        if placed {
+            l.place_overview(110, 40);
+        }
+        assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)));
+        assert_eq!(l.mode, Mode::Tools);
+        assert!(!l.letters_live(), "placed: {placed}");
+        let o = l.key(Key::Char('w'));
+        assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+        assert_eq!(l.query, "w");
+    }
 }
 
 #[test]
@@ -2100,4 +2104,96 @@ fn escape_from_a_searched_tool_s_category_lands_on_its_slot() {
     assert!(l.tools().unwrap().overview().is_some());
     assert_eq!(l.query, "");
     assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
+}
+
+/// A held letter that opened a level below the root types nothing there: not into the choices'
+/// filter, not into the prompt's answer.
+#[test]
+fn a_held_letter_that_drilled_types_nothing_below() {
+    let text = "[[tools.entry]]\nname = \"Pick\"\nrun = [\"x\", \"{choice}\"]\nchoices = [\"p\", \"q\"]\nkey = \"g\"\n\
+                [[tools.entry]]\nname = \"Say\"\nrun = [\"x\", \"{text}\"]\nask = \"Text\"\nkey = \"y\"\n";
+    let mut l = overview_box(text);
+    let pick = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Pick").unwrap();
+    l.key(Key::Char('g'));
+    assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: pick });
+    assert_eq!(l.key_repeat(Key::Char('g'), true), Outcome::Nothing);
+    assert_eq!(l.key_repeat(Key::Char('g'), true), Outcome::Nothing);
+    assert_eq!(l.query, "");
+    // A fresh press is typed as usual.
+    l.key(Key::Char('p'));
+    assert_eq!(l.query, "p");
+
+    let mut l = overview_box(text);
+    l.key(Key::Char('y'));
+    assert!(l.tools().unwrap().prompting());
+    assert_eq!(l.key_repeat(Key::Char('y'), true), Outcome::Nothing);
+    assert_eq!(l.query, "", "the answer starts empty");
+}
+
+#[test]
+fn a_held_space_or_slash_types_nothing() {
+    for c in [' ', '/'] {
+        let mut l = overview_box("");
+        l.key(Key::Char(c));
+        assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
+        assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
+        assert_eq!(l.query, "");
+        assert!(l.searching);
+        // The overview's moves stay two-dimensional.
+        let wifi = builtin_entry(&l, "quick.wifi");
+        select_row(&mut l, RowId::Entry(wifi));
+        l.key(Key::Right);
+        assert_eq!(selected_row(&l), Some(RowId::Entry(builtin_entry(&l, "tab.sound"))));
+    }
+}
+
+#[test]
+fn erasing_a_capsule_less_first_character_gives_the_letters_back() {
+    let mut l = overview_box("");
+    l.key(Key::Char('y'));
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
+    assert!(l.letters_live());
+    assert!(runs_builtin(&l.key(Key::Char('w')), "quick.wifi"));
+}
+
+#[test]
+fn another_character_cancels_the_question_and_does_nothing_else() {
+    let mut l = overview_box("");
+    let reset = RowId::Entry(builtin_entry(&l, "diag.usb_reset"));
+    assert_eq!(l.key(Key::Char('x')), Outcome::Asked);
+    assert_eq!(l.key(Key::Char('w')), Outcome::Redraw, "Wi-Fi does not run");
+    assert!(!l.tools().unwrap().asking(reset));
+    assert_eq!(l.query, "");
+}
+
+#[test]
+fn right_at_the_last_column_does_nothing() {
+    let mut l = overview_box("");
+    // Utilities is the first band's third card.
+    let notes = builtin_entry(&l, "notes");
+    select_row(&mut l, RowId::Entry(notes));
+    assert_eq!(l.key(Key::Right), Outcome::Nothing);
+    assert_eq!(selected_row(&l), Some(RowId::Entry(notes)));
+}
+
+/// A Mod+Space hit that drills into the Tools mode (no `/` prefix) back at the root: still no live
+/// letters, whatever was placed.
+#[test]
+fn a_mod_space_jump_into_tools_never_runs_a_letter() {
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = overview_catalog(&config);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l.place_overview(110, 40);
+    typed(&mut l, "network scan");
+    l.key(Key::Enter);
+    assert_eq!(l.mode, Mode::Tools);
+    while !l.tools().unwrap().at_root() {
+        l.key(Key::Escape);
+    }
+    assert_eq!(l.query, "");
+    assert!(!l.letters_live());
+    let o = l.key(Key::Char('w'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "w");
 }

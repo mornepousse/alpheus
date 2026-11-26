@@ -231,6 +231,10 @@ pub struct Launcher {
     /// At the Tools overview, `/` or Space asked for the search: letters are text from then on,
     /// though the query is still empty. Backspace on the empty query gives them back.
     pub searching: bool,
+    /// The character key that last acted at the overview (a letter, `/` or Space): its
+    /// auto-repeats do nothing until a fresh press, wherever the press led (a level below, a
+    /// prompt, the search).
+    acted: Option<Key>,
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
@@ -290,6 +294,7 @@ impl Launcher {
             ranker: Ranker::new(),
             by_prefix: false,
             searching: false,
+            acted: None,
             list_rows,
             moved: false,
             switcher: false,
@@ -409,9 +414,9 @@ impl Launcher {
     }
 
     /// Whether a letter runs its tool: the Tools mode at its overview, nothing typed, no search
-    /// asked, and not entered by Mod+Space's `/` prefix (a typed path never runs a tool).
+    /// asked, never in a Mod+Space box nor after its `/` prefix (a typed path never runs a tool).
     pub fn letters_live(&self) -> bool {
-        self.at_overview() && !self.searching && !self.by_prefix
+        self.origin != Origin::Apps && self.at_overview() && !self.searching && !self.by_prefix
     }
 
     /// The Tools mode shows the overview's slots: the root, with nothing typed (a typed query lists
@@ -673,10 +678,14 @@ impl Launcher {
             self.at = None;
             return Outcome::Nothing;
         }
-        // The same for a held letter at the overview: one press, one tool (and no typed run of it).
-        if repeat && matches!(k, Key::Char(_)) && self.letters_live() {
+        // The same for a held letter at the overview: one press, one tool (and no typed run of it),
+        // even once that press opened a level, a prompt or the search.
+        if repeat && matches!(k, Key::Char(_)) && self.mode == Mode::Tools && (self.letters_live() || self.acted == Some(k)) {
             self.at = None;
             return Outcome::Nothing;
+        }
+        if !repeat {
+            self.acted = None;
         }
         if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
             let hit = self.selected_hit().map(|h| h.source);
@@ -868,9 +877,11 @@ impl Launcher {
     fn tools_letter(&mut self, c: char) -> Option<Outcome> {
         if c == '/' || c == ' ' {
             self.searching = true;
+            self.acted = Some(Key::Char(c));
             return Some(Outcome::Redraw);
         }
         let row = self.tools.as_ref().and_then(|t| t.letter(c))?;
+        self.acted = Some(Key::Char(c));
         // On its row: a question shows there and the second Enter answers it.
         if let Some(at) =
             self.results.iter().position(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)))
