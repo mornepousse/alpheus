@@ -1833,6 +1833,20 @@ fn a_letter_follows_the_box_drawn() {
     assert_eq!(l.query, "x");
 }
 
+/// The search field keeps the `Super` `X` capsules while its chip has room for them beside the
+/// magnifier and the placeholder: a 60-column box shows them, a 59-column one does not.
+#[test]
+fn the_super_x_capsules_need_room_in_the_search_field() {
+    let (l, b) = panel_box("");
+    let keys = |columns: u16| {
+        let boxed = render(&l, &BoxLayout { columns, ..b });
+        // The search field's row, in the ring's coordinates.
+        boxed.shapes.iter().filter(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Selection)).count()
+    };
+    assert_eq!(keys(60), 2);
+    assert_eq!(keys(59), 0);
+}
+
 // --- the panel's cleanup (Task 13b) ---
 
 /// Opens the tab that lists `name`, from All.

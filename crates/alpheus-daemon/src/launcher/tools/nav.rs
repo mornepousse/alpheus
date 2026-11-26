@@ -640,7 +640,8 @@ impl ToolsState {
             return self.position(Level::Root, RowId::Entry(e));
         }
         if let (Level::Root, Some(c)) = (self.level, self.catalog.entries.get(e).and_then(|e| e.category)) {
-            let from = self.root_anchor(c);
+            // `up` lands on the category's row, the root row the entry is reached through.
+            let from = self.position(Level::Root, RowId::Category(c));
             self.open(Level::Category(c), from);
             return self.position(Level::Category(c), RowId::Entry(e));
         }
@@ -728,12 +729,6 @@ impl ToolsState {
         self.position(level, row)
     }
 
-    /// The root row an entry of category `c` is reached through, for `up` to land on: the
-    /// category's row.
-    fn root_anchor(&mut self, c: usize) -> usize {
-        self.position(Level::Root, RowId::Category(c))
-    }
-
     /// The index of `id` among the rows `level` lists (0 when absent).
     fn position(&mut self, level: Level, id: RowId) -> usize {
         let saved = std::mem::replace(&mut self.level, level);
@@ -752,7 +747,7 @@ impl ToolsState {
         self.cancel_read();
         self.rev += 1;
         if let Some(c) = self.catalog.entries.get(entry).and_then(|e| e.category) {
-            let at = self.root_anchor(c);
+            let at = self.position(Level::Root, RowId::Category(c));
             self.stack.push((Level::Root, at));
             self.level = Level::Category(c);
         }

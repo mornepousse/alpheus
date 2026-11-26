@@ -46,13 +46,14 @@ const PROMPT: &str = "❯";
 const TOOLS_PLACEHOLDER: &str = "Search tools";
 /// The Tools search field's cursor.
 const TOOLS_CURSOR: &str = "▏";
-/// The narrowest box whose search field still shows the `Super` `X` capsules.
-const KEY_HINT_COLUMNS: u16 = 60;
+/// The narrowest search field (its chip's columns) that still shows the `Super` `X` capsules
+/// beside the magnifier and the placeholder.
+const KEY_HINT_COLUMNS: u16 = 56;
 /// The cells of a tool's letter capsule at the right of its row: the letter between two blanks.
 const LETTER_CELLS: u16 = 3;
-/// The widest the Super+X panel's box is asked, its ring left out: 104 cells, the width it was
-/// first sized to (three 34-cell columns and their two gaps; spec "Box": about 106 with the ring).
-pub const FULL_BAND_COLUMNS: u16 = 3 * 34 + 2;
+/// The widest the Super+X panel's box is asked, its ring left out: 104 cells (spec "Box": about
+/// 106 with the ring), room for the list and the detail card side by side.
+pub const PANEL_COLUMNS: u16 = 104;
 /// The blank column the Tools mode keeps inside the frame at each side: a shape drawn from there
 /// is as far from the frame as the search field's chip is from the top (the painter's margin is
 /// measured to a text's first column, one cell in).
@@ -104,12 +105,12 @@ fn panel_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
     (share(output_columns, 9), share(output_rows, 8))
 }
 
-/// The cells the panel's panes may fill on this output: `FULL_BAND_COLUMNS` across and
+/// The cells the panel's panes may fill on this output: `PANEL_COLUMNS` across and
 /// `panel::PANE_ROWS` down at most (six two-line tools and their labels), within the cap less the
 /// box's ring and chrome, so `tools_layout` never cuts it.
 pub fn panel_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
     let (columns, rows) = panel_cap(output_columns, output_rows);
-    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS).min(panel::PANE_ROWS))
+    (columns.saturating_sub(2).min(PANEL_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS).min(panel::PANE_ROWS))
 }
 
 /// The Tools box sized to the panel's `wanted` cells (columns, rows), decided once per open
@@ -831,12 +832,12 @@ fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, start: u16, end: u
 
 /// The Tools mode's search field on row `y`: a chip across the box, the magnifier, the breadcrumb
 /// below the root, the query and its cursor (the placeholder at the panel's root), and at its right
-/// the `Super` `X` capsules in a `--tools` open at least `KEY_HINT_COLUMNS` wide.
+/// the `Super` `X` capsules in a `--tools` open whose field is at least `KEY_HINT_COLUMNS` wide.
 fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
     let (start, end) = (1 + TOOLS_INSET, b.pane_end().saturating_sub(TOOLS_INSET));
     shapes.push(ring_shape(y, start, end.saturating_sub(start), 1, ShapeKind::Chip(Tint::Pill)));
     let mut stop = end.saturating_sub(1);
-    if l.origin == Origin::Tools && b.columns >= KEY_HINT_COLUMNS {
+    if l.origin == Origin::Tools && end.saturating_sub(start) >= KEY_HINT_COLUMNS {
         let mut x = stop;
         for key in ["X", "Super"] {
             x = x.saturating_sub(text_width(key) + 2);

@@ -1274,7 +1274,7 @@ mod tests {
         let size = l.panel_size().expect("a --tools open opens the panel");
         let b = open_layout(232, 49, &l);
         assert_eq!(b, view::tools_layout(232, 49, size));
-        assert_eq!(b.columns, view::FULL_BAND_COLUMNS + 2, "about three cards wide on a wide output");
+        assert_eq!(b.columns, view::PANEL_COLUMNS + 2, "the panel's full width on a wide output");
         assert!(b.columns <= 232 * 9 / 10 && b.rows <= 49 * 8 / 10, "{b:?}");
     }
 
