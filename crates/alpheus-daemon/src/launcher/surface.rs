@@ -10,7 +10,7 @@ use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
 use crate::launcher::host::ScriptOwner;
-use crate::launcher::model::{Activation, Launcher, Outcome};
+use crate::launcher::model::{Activation, Launcher, Origin, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
 use crate::launcher::socket::Pending;
@@ -130,8 +130,25 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
 /// has one (the switcher's has no modes row, so one row less). Driven by the model's kind alone, never by the selection.
+/// A placed Tools overview sizes the box to its cards instead (`view::tools_layout`), at every
+/// level of the open, so search, levels and the kill list draw inside it.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
-    view::layout(output_columns, output_rows, model.config.rows, !model.has_modes(), !model.is_bare())
+    match model.overview_size() {
+        Some(wanted) => view::tools_layout(output_columns, output_rows, wanted),
+        None => view::layout(output_columns, output_rows, model.config.rows, !model.has_modes(), !model.is_bare()),
+    }
+}
+
+/// Places the Super+X overview at open, in the room the box's cap leaves on this output
+/// (`view::overview_room`): an `alpheus-launch --tools` open only. A Mod+Space box reaching the
+/// Tools mode (the `/` prefix, a Tools hit) keeps today's root list and size; `[tools] overview =
+/// false` is `Launcher::place_overview`'s own no-op. Before `open_layout`, which sizes the box to it.
+pub(crate) fn place_overview_for_open(output_columns: u16, output_rows: u16, model: &mut Launcher) {
+    if model.origin != Origin::Tools {
+        return;
+    }
+    let (columns, rows) = view::overview_room(output_columns, output_rows);
+    model.place_overview(columns, rows);
 }
 
 /// The size a configure imposes, when it is not the one asked: a 0
@@ -184,7 +201,11 @@ pub(crate) fn layout_within(
     let (extra_w, extra_h) = frame.extra();
     let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance_phys);
     let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
-    open_layout(columns.saturating_add(4), rows.saturating_add(2), model)
+    match model.overview_size() {
+        // The output's cap was applied when the box was asked: only the imposed cells bound it here.
+        Some(wanted) => view::tools_box(columns.saturating_add(2), rows.saturating_add(2), wanted),
+        None => open_layout(columns.saturating_add(4), rows.saturating_add(2), model),
+    }
 }
 
 /// What a scale change recomputes the box's layout within: the
@@ -444,6 +465,7 @@ impl App {
             model.path_dirs = open_path_dirs(true, |k| std::env::var_os(k));
         }
         // Once per open: the box keeps this size whatever gets selected.
+        place_overview_for_open(columns, rows, &mut model);
         let layout = open_layout(columns, rows, &model);
         model.set_list_rows(layout.list_rows as usize);
         let size = layout_size(&layout, advance, row_height, scale, &self.fonts.frame(scale));
@@ -1207,5 +1229,106 @@ mod tests {
         assert!(owns_surface(true, true, false), "the box");
         assert!(owns_surface(true, false, true), "a scrim");
         assert!(!owns_surface(true, false, false), "open, but neither surface matches: the bar's own");
+    }
+
+    // --- the overview's box size (spec "Box size") ---
+
+    use crate::keys::Key;
+    use crate::launcher::tools::catalog::{Catalog, Context};
+
+    /// Every built-in a default launcher.toml shows with these answers.
+    fn builtins() -> Context {
+        Context {
+            quick: true,
+            timer: true,
+            lock: true,
+            session: true,
+            shutdown: true,
+            captures: true,
+            diagnostics: true,
+            ..Context::default()
+        }
+    }
+
+    fn tools_open(text: &str) -> Launcher {
+        let config = LauncherConfig::from_text(text).unwrap();
+        let catalog = Catalog::build(&config.tools, &builtins(), &mut |_| {});
+        Launcher::for_tools(config, catalog, history::History::empty(200), 0)
+    }
+
+    /// A Mod+Space open with the Tools catalog, as `launcher_open_apps` builds it.
+    fn apps_with_tools(text: &str) -> Launcher {
+        let config = LauncherConfig::from_text(text).unwrap();
+        let catalog = Catalog::build(&config.tools, &builtins(), &mut |_| {});
+        let mut l = Launcher::for_apps(config, Vec::new(), history::History::empty(200), 0);
+        l.set_tools(catalog);
+        l
+    }
+
+    #[test]
+    fn a_tools_open_is_sized_to_its_overview() {
+        let mut l = tools_open("");
+        place_overview_for_open(232, 49, &mut l);
+        let o = l.tools().and_then(|t| t.overview()).expect("a --tools open places the overview");
+        let b = open_layout(232, 49, &l);
+        assert_eq!(b, view::tools_layout(232, 49, (o.columns, o.rows)));
+        assert!(b.columns <= 232 * 9 / 10 && b.rows <= 49 * 8 / 10, "{b:?}");
+    }
+
+    #[test]
+    fn the_box_keeps_its_size_from_overview_to_search() {
+        let mut l = tools_open("");
+        place_overview_for_open(232, 49, &mut l);
+        let at_open = open_layout(232, 49, &l);
+        for c in "/w".chars() {
+            l.key(Key::Char(c));
+        }
+        assert!(l.tools().unwrap().overview().is_none() || !l.query.is_empty(), "searching");
+        assert_eq!(open_layout(232, 49, &l), at_open, "typing never resizes the box");
+        l.key(Key::Backspace);
+        l.key(Key::Backspace);
+        // `s` opens Schedule shutdown's level: the overview is gone, the box stays.
+        l.key(Key::Char('s'));
+        assert!(!l.tools().unwrap().at_root(), "a level below the root");
+        assert_eq!(open_layout(232, 49, &l), at_open, "a level never resizes the box");
+        let size = layout_size(&at_open, 8.25, 22, 1, &frame1());
+        assert_eq!(layout_within(size, &l, 8.25, 22, 1, &frame1()), at_open, "its own size refits to the same layout");
+    }
+
+    #[test]
+    fn rows_still_caps_the_other_modes() {
+        let capped = "rows = 4\n";
+        let mut apps = apps_with_tools(capped);
+        place_overview_for_open(232, 49, &mut apps);
+        assert_eq!(open_layout(232, 49, &apps).list_rows, 4, "Mod+Space keeps `rows`");
+        let mut tools = tools_open(capped);
+        place_overview_for_open(232, 49, &mut tools);
+        assert!(open_layout(232, 49, &tools).list_rows > 4, "`rows` no longer caps the overview's box");
+    }
+
+    #[test]
+    fn overview_off_keeps_today_s_size() {
+        let mut l = tools_open("[tools]\noverview = false\n");
+        place_overview_for_open(232, 49, &mut l);
+        assert!(l.tools().unwrap().overview().is_none(), "off: never placed");
+        assert_eq!(open_layout(232, 49, &l), view::layout(232, 49, l.config.rows, true, true), "today's box");
+    }
+
+    #[test]
+    fn a_mod_space_open_never_places_the_overview() {
+        let mut l = apps_with_tools("");
+        let today = open_layout(232, 49, &l);
+        place_overview_for_open(232, 49, &mut l);
+        assert!(l.tools().unwrap().overview().is_none(), "Mod+Space keeps today's Tools root");
+        assert_eq!(open_layout(232, 49, &l), today, "and today's size");
+        l.key(Key::Char('/'));
+        let unplaced = {
+            let mut m = apps_with_tools("");
+            m.key(Key::Char('/'));
+            m.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>()
+        };
+        assert!(l.tools().unwrap().overview().is_none(), "the `/` prefix shows no overview");
+        assert_eq!(l.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>(), unplaced, "today's root rows");
+        assert_eq!(open_layout(232, 49, &l), today, "the `/` prefix never resizes the box");
     }
 }

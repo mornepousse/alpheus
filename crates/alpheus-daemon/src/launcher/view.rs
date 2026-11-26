@@ -88,6 +88,40 @@ pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: b
     BoxLayout { columns, rows: chrome + list_rows, list_top: chrome - 2, list_rows, preview_columns }
 }
 
+/// The rows of the Tools box around its cards: the ring's two, the search field, the blank row
+/// before the footer (its line), the footer.
+const OVERVIEW_CHROME_ROWS: u16 = 5;
+
+/// The most of the output the overview's box takes (spec "Box size"): 90 % of its columns, 80 % of
+/// its rows. `launcher.toml`'s `rows` does not cap it; it still caps every other mode.
+fn overview_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
+    let share = |cells: u16, tenths: u32| u16::try_from(u32::from(cells) * tenths / 10).unwrap_or(u16::MAX);
+    (share(output_columns, 9), share(output_rows, 8))
+}
+
+/// The cells `Overview::place` may fill on this output: the cap less the box's ring and chrome,
+/// so the cards are never cut by `tools_layout`.
+pub fn overview_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
+    let (columns, rows) = overview_cap(output_columns, output_rows);
+    (columns.saturating_sub(2), rows.saturating_sub(OVERVIEW_CHROME_ROWS))
+}
+
+/// The Tools box sized to its overview's `wanted` cells (columns, rows), decided once per open
+/// and kept at every level: the cards and the ring across; the ring, the search field, the cards,
+/// a blank row and the footer down. Never more than `overview_cap`; no preview panel.
+pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -> BoxLayout {
+    let (columns, rows) = overview_cap(output_columns, output_rows);
+    tools_box(columns, rows, wanted)
+}
+
+/// `tools_layout` within `max_columns` × `max_rows` cells, the ring counted (a size the compositor
+/// imposed refits through it, the output's cap already applied when the box was asked).
+pub fn tools_box(max_columns: u16, max_rows: u16, wanted: (u16, u16)) -> BoxLayout {
+    let columns = wanted.0.saturating_add(2).min(max_columns);
+    let rows = wanted.1.saturating_add(OVERVIEW_CHROME_ROWS).min(max_rows).max(OVERVIEW_CHROME_ROWS);
+    BoxLayout { columns, rows, list_top: 2, list_rows: rows - 4, preview_columns: 0 }
+}
+
 /// The modes row's labels and their columns [start, end).
 fn mode_spans() -> Vec<(Mode, u16, u16)> {
     let mut x = 1;
@@ -622,7 +656,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         return render_tools_overview(l, b);
     }
     let tools = l.mode == Mode::Tools;
-    let unpaned = tools_layout(l, b);
+    let unpaned = without_preview(l, b);
     let b = &unpaned;
     let mut shapes = Vec::new();
     let mut rows = vec![blank(b)];
@@ -719,7 +753,7 @@ fn overview_shown(l: &Launcher) -> bool {
 
 /// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
 /// run", repeats the row), the results across the box. Any other mode's is `b` itself.
-fn tools_layout(l: &Launcher, b: &BoxLayout) -> BoxLayout {
+fn without_preview(l: &Launcher, b: &BoxLayout) -> BoxLayout {
     if l.mode == Mode::Tools { BoxLayout { preview_columns: 0, ..*b } } else { *b }
 }
 
@@ -978,7 +1012,7 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if overview_shown(l) {
         return Some(overview_hit(l, b, column, row));
     }
-    let b = &tools_layout(l, b);
+    let b = &without_preview(l, b);
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
         let index = l.top + usize::from(row - b.list_top);

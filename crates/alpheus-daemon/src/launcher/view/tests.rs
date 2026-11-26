@@ -1520,3 +1520,32 @@ fn a_confirm_from_all_asks_in_the_tools_mode_with_an_urgent_frame() {
     assert_eq!(l.mode, Mode::Tools, "the question lives in the Tools mode");
     assert_eq!(frame_ink(&l), FrameInk::Urgent);
 }
+
+// --- the overview's box size (spec "Box size") ---
+
+#[test]
+fn the_tools_layout_takes_the_overview_s_size_capped_at_90_and_80_percent() {
+    let b = tools_layout(232, 49, (105, 20));
+    assert_eq!(
+        b,
+        BoxLayout { columns: 107, rows: 25, list_top: 2, list_rows: 21, preview_columns: 0 },
+        "the cards and the ring across; the chip, the cards, a blank row and the footer down"
+    );
+    let capped = tools_layout(80, 30, (200, 100));
+    assert_eq!((capped.columns, capped.rows), (72, 24), "90 % of the columns, 80 % of the rows");
+    assert_eq!((capped.list_top, capped.list_rows, capped.preview_columns), (2, 20, 0));
+}
+
+#[test]
+fn the_overview_box_fits_a_small_output() {
+    let (room_columns, room_rows) = overview_room(80, 30);
+    let (l, _) = overview_box_in("", room_columns, room_rows);
+    let o = l.tools().and_then(|t| t.overview()).unwrap();
+    let b = tools_layout(80, 30, (o.columns, o.rows));
+    assert!(b.columns <= 72 && b.rows <= 24, "at most 90 % × 80 % of the output: {b:?}");
+    assert_eq!((b.columns, b.list_rows), (o.columns + 2, o.rows + 1), "the cards fit the box: no cut");
+    let rows = draw_in(&l, &b);
+    for s in &rows.shapes {
+        assert!(s.col + s.width <= b.columns - 2 && usize::from(s.rows) + s.row <= usize::from(b.rows) - 2, "{s:?} inside {b:?}");
+    }
+}

@@ -228,6 +228,11 @@ impl ToolsState {
         self.rev += 1;
     }
 
+    /// The overview as placed at open, at any level: the box keeps its size for the whole open.
+    pub fn placed(&self) -> Option<&Overview> {
+        self.overview.as_ref()
+    }
+
     /// The overview, while the root shows it.
     pub fn overview(&self) -> Option<&Overview> {
         self.overview.as_ref().filter(|_| self.level == Level::Root)

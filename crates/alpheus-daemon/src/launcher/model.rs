@@ -413,6 +413,14 @@ impl Launcher {
         self.refilter();
     }
 
+    /// The cells the placed overview's cards take (columns, rows), at any level of the open: the
+    /// box is sized to them once (`view::tools_layout`). None when no overview was placed, or an
+    /// empty one (no card: today's box).
+    pub fn overview_size(&self) -> Option<(u16, u16)> {
+        let o = self.tools.as_ref()?.placed()?;
+        (o.columns > 0 && o.rows > 0).then_some((o.columns, o.rows))
+    }
+
     /// Whether a letter runs its tool: the Tools mode at its overview, nothing typed, no search
     /// asked, never in a Mod+Space box nor after its `/` prefix (a typed path never runs a tool).
     pub fn letters_live(&self) -> bool {
