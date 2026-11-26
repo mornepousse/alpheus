@@ -295,7 +295,7 @@ pub struct Category {
     pub name: String,
     pub icon: char,
     pub order: u16,
-    /// Its cards' tint; `None` stands for the Pinned card's accent.
+    /// Its hue: its tools' glyphs and its section label's dot; `None` draws them in the accent.
     pub hue: Option<Hue>,
 }
 
@@ -480,7 +480,7 @@ impl Catalog {
     }
 
     /// Gives each entry the letter it wants unless an earlier one took it, in display order: the
-    /// Pinned card's entries, then each category's in category order. A user entry wants its `key`,
+    /// root's entries (All's Pinned section), then each category's in category order. A user entry wants its `key`,
     /// a built-in its `[tools] keys` letter, else its default.
     fn claim_letters(&mut self, t: &ToolsConfig) {
         let rows = self.root_rows();

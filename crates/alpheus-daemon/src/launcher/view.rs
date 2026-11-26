@@ -50,8 +50,8 @@ const TOOLS_CURSOR: &str = "▏";
 const KEY_HINT_COLUMNS: u16 = 60;
 /// The cells of a tool's letter capsule at the right of its row: the letter between two blanks.
 const LETTER_CELLS: u16 = 3;
-/// The widest the Super+X panel's box is asked, its ring left out: about three 34-cell cards and
-/// their two gaps (spec "Box": about 106 cells with the ring).
+/// The widest the Super+X panel's box is asked, its ring left out: 104 cells, the width it was
+/// first sized to (three 34-cell columns and their two gaps; spec "Box": about 106 with the ring).
 pub const FULL_BAND_COLUMNS: u16 = 3 * 34 + 2;
 /// The blank column the Tools mode keeps inside the frame at each side: a shape drawn from there
 /// is as far from the frame as the search field's chip is from the top (the painter's margin is
@@ -404,7 +404,7 @@ fn row_hue(t: &ToolsState, id: RowId) -> Style {
     category_hue(t, category)
 }
 
-/// A category's hue as a style, the accent without one (a root entry, the Pinned card).
+/// A category's hue as a style, the accent without one (a root entry, or a category with no hue).
 fn category_hue(t: &ToolsState, category: Option<usize>) -> Style {
     category.and_then(|c| t.catalog.categories.get(c)).and_then(|c| c.hue).map_or(Style::ACCENT, Style::hue)
 }

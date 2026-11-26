@@ -790,7 +790,7 @@ fn a_taken_letter_leaves_the_later_claimant_without_one() {
     let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
     assert_eq!(letter_of(&cat, "Mine"), None);
     assert_eq!(letter_of(&cat, "quick.wifi"), Some('w'));
-    // At the root, the entry is on the Pinned card, which claims first.
+    // At the root, the entry is in the Pinned section, which claims first.
     let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
     assert_eq!(letter_of(&cat, "Mine"), Some('w'));
     assert_eq!(letter_of(&cat, "quick.wifi"), None);

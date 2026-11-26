@@ -18,7 +18,8 @@ use std::borrow::Cow;
 /// The rows around the panes: the ring's two, the search field, the tabs, the line under them,
 /// the line over the footer, the footer.
 pub(super) const CHROME_ROWS: u16 = 7;
-/// The panes' lines the box asks for: six two-line tools and five section labels between them.
+/// The panes' lines the box asks for: the planned 30-row box less its chrome, room for six
+/// two-line tools even when each sits under its own section label (18 lines, the worst case).
 pub(super) const PANE_ROWS: u16 = 23;
 /// The narrowest list and card side by side: below, the list takes the box alone.
 const SPLIT_COLUMNS: u16 = 80;
