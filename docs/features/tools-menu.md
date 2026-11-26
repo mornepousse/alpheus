@@ -397,7 +397,7 @@ its own target directory (the [memory tables](../measurements.md) have the figur
   (main +32…+40; bound 128); 5 threads before and after (`tools_pss_open_and_closed`).
 - **At rest, closed:** PSS +276…+340 KB cold over main before any open (the panel's code and
   descriptions in the binary); the steady state stays at 11.1 MB against the 15 MB budget
-  (`pss_under_30mb_and_stable`). No second font size is loaded.
+  (`pss_under_budget_and_stable`). No second font size is loaded.
 - **A `choices_cmd` of 2,000 lines:** anonymous memory +1,444…+1,812 KB open, +164…+256 KB closed
   again (main +144…+256) (`tools_choices_2000_lines`).
 - **At rest:** 0 loop wake-ups in 5 s after a question closed with the box, after one left to expire,

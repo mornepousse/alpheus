@@ -71,7 +71,7 @@ the tests and which from a real session. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 12 MB** (re-measured 2026-11-26) | the release memory suite's daemon (bar and sound source, busy compositor and PipeWire, 5 plug cycles): 10.5 MB at startup, 11.3 to 11.9 MB at steady state (3 runs of `pss_under_30mb_and_stable`, bound 15 MB) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the figure is the test harness's, not a live session's |
+| **alpheus** (today, hybrid mode: the alpheus bar and sound source, plus the borrowed tools in the rows below) | Rust, no toolkit | **≈ 12 MB** (re-measured 2026-11-26) | the release memory suite's daemon (bar and sound source, busy compositor and PipeWire, 5 plug cycles): 10.5 MB at startup, 11.3 to 11.9 MB at steady state (3 runs of `pss_under_budget_and_stable`, bound 15 MB) + swaybg 1.4 MB (optional) borrowed; swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the figure is the test harness's, not a live session's |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 15 MB budget at rest** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
