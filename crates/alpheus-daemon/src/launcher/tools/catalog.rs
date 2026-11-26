@@ -352,6 +352,15 @@ fn icon_of(s: &Option<String>) -> Option<char> {
     s.as_deref().and_then(|s| s.chars().next())
 }
 
+/// The letter `e` wants: a user entry its `key`, a built-in its `[tools] keys` letter, else its
+/// default.
+fn wanted_letter(e: &Entry, t: &ToolsConfig) -> Option<char> {
+    match e.kind {
+        EntryKind::Builtin(b) => BUILTINS.get(b).and_then(|b| t.keys.get(b.id).copied().or(b.key)),
+        EntryKind::User(u) => t.entries.get(u).and_then(|u| u.key),
+    }
+}
+
 impl Catalog {
     /// The catalog for `t` under `c`. An unknown id in `hide`, `root` or `keys` is noted once per list,
     /// however many it holds (never quoted), and ignored, so a file written for a newer alpheus stays valid.
@@ -467,17 +476,19 @@ impl Catalog {
         let mut taken: Vec<char> = Vec::new();
         for i in order {
             let Some(e) = self.entries.get_mut(i) else { continue };
-            let wanted = match e.kind {
-                EntryKind::Builtin(b) => BUILTINS.get(b).and_then(|b| t.keys.get(b.id).copied().or(b.key)),
-                EntryKind::User(u) => t.entries.get(u).and_then(|u| u.key),
-            };
-            if let Some(l) = wanted
+            if let Some(l) = wanted_letter(e, t)
                 && !taken.contains(&l)
             {
                 taken.push(l);
                 e.letter = Some(l);
             }
         }
+    }
+
+    /// How many entries want a letter an earlier claimant took (the glue logs the count, never
+    /// which).
+    pub fn lost_letters(&self, t: &ToolsConfig) -> usize {
+        self.entries.iter().filter(|e| e.letter.is_none() && wanted_letter(e, t).is_some()).count()
     }
 
     /// The root's rows: the built-ins `[tools] root` lists, then the categories that hold an

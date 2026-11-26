@@ -5,6 +5,7 @@
 
 use super::catalog::{Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
+use super::overview::{CardId, Overview, Slot};
 use crate::launcher::matching::ToolHitRow;
 use crate::launcher::sources::PATH_JOIN;
 use crate::session::{self, Activation as Ask};
@@ -158,6 +159,9 @@ pub struct ToolsState {
     /// choice. Never a dynamic choice.
     flat: Vec<ToolRow>,
     flat_hits: Vec<ToolHitRow>,
+    /// The Super+X overview's placement, once `place_overview` placed it: the root then lists its
+    /// slots in `Overview::order`.
+    overview: Option<Overview>,
 }
 
 impl ToolsState {
@@ -176,6 +180,7 @@ impl ToolsState {
             rev: 0,
             flat: Vec::new(),
             flat_hits: Vec::new(),
+            overview: None,
         };
         state.build_flat();
         state
@@ -215,6 +220,34 @@ impl ToolsState {
         self.level == Level::Root
     }
 
+    /// Places the overview's cards in `max_columns` × `max_rows` cells: from now on the root lists
+    /// its slots. The caller decides whether the overview is on (`[tools] overview`).
+    pub fn place_overview(&mut self, max_columns: u16, max_rows: u16) {
+        self.overview = Some(Overview::place(&self.catalog, max_columns, max_rows));
+        self.rev += 1;
+    }
+
+    /// The overview, while the root shows it.
+    pub fn overview(&self) -> Option<&Overview> {
+        self.overview.as_ref().filter(|_| self.level == Level::Root)
+    }
+
+    /// The row the letter `c` runs: an entry shown on the overview whose letter it is. A folded
+    /// entry's letter is inert (the key starts the search).
+    pub fn letter(&self, c: char) -> Option<RowId> {
+        self.overview()?.order().into_iter().find_map(|slot| match slot {
+            Slot::Entry(e) if self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c)) => Some(RowId::Entry(e)),
+            _ => None,
+        })
+    }
+
+    /// The overview's `+N more` row of category `c`, which opens it.
+    fn more_row(&self, overview: &Overview, c: usize) -> Option<ToolRow> {
+        let more = overview.cards.iter().find(|p| p.card == CardId::Category(c))?.more;
+        let category = self.catalog.categories.get(c)?;
+        Some(ToolRow { id: RowId::Category(c), icon: Some(category.icon), text: format!("+{more} more"), trail: Trail::Chevron })
+    }
+
     /// The flat search's rows (every entry, then every fixed choice) and their candidates.
     pub fn flat(&self) -> (&[ToolRow], &[ToolHitRow]) {
         (&self.flat, &self.flat_hits)
@@ -245,15 +278,25 @@ impl ToolsState {
     /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
-            Level::Root => self
-                .catalog
-                .root_rows()
-                .into_iter()
-                .filter_map(|item| match item {
-                    Item::Entry(e) => self.entry_row(e),
-                    Item::Category(c) => self.category_row(c),
-                })
-                .collect(),
+            Level::Root => match &self.overview {
+                Some(o) => o
+                    .order()
+                    .into_iter()
+                    .filter_map(|slot| match slot {
+                        Slot::Entry(e) => self.entry_row(e),
+                        Slot::More(c) => self.more_row(o, c),
+                    })
+                    .collect(),
+                None => self
+                    .catalog
+                    .root_rows()
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Item::Entry(e) => self.entry_row(e),
+                        Item::Category(c) => self.category_row(c),
+                    })
+                    .collect(),
+            },
             Level::Category(c) => self.catalog.category_rows(c).into_iter().filter_map(|e| self.entry_row(e)).collect(),
             Level::Choices { entry } => self
                 .choice_lines(entry)
@@ -467,7 +510,7 @@ impl ToolsState {
     /// level (`selected` when already below the root).
     fn through_category(&mut self, e: usize, selected: usize) -> usize {
         if let (Level::Root, Some(c)) = (self.level, self.catalog.entries.get(e).and_then(|e| e.category)) {
-            let from = self.position(Level::Root, RowId::Category(c));
+            let from = self.root_anchor(e, c);
             self.open(Level::Category(c), from);
             return self.position(Level::Category(c), RowId::Entry(e));
         }
@@ -555,6 +598,19 @@ impl ToolsState {
         self.position(level, row)
     }
 
+    /// The root row an entry of category `c` is reached through, for `up` to land on: the
+    /// category's row, or on the overview the entry's own slot (else its card's `+N more`).
+    fn root_anchor(&mut self, entry: usize, c: usize) -> usize {
+        if self.overview.is_some() {
+            let saved = std::mem::replace(&mut self.level, Level::Root);
+            let rows = self.rows();
+            self.level = saved;
+            let find = |id: RowId| rows.iter().position(|r| r.id == id);
+            return find(RowId::Entry(entry)).or_else(|| find(RowId::Category(c))).unwrap_or(0);
+        }
+        self.position(Level::Root, RowId::Category(c))
+    }
+
     /// The index of `id` among the rows `level` lists (0 when absent).
     fn position(&mut self, level: Level, id: RowId) -> usize {
         let saved = std::mem::replace(&mut self.level, level);
@@ -573,7 +629,7 @@ impl ToolsState {
         self.cancel_read();
         self.rev += 1;
         if let Some(c) = self.catalog.entries.get(entry).and_then(|e| e.category) {
-            let at = self.position(Level::Root, RowId::Category(c));
+            let at = self.root_anchor(entry, c);
             self.stack.push((Level::Root, at));
             self.level = Level::Category(c);
         }

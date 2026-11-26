@@ -18,6 +18,7 @@ use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
 use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
+use crate::launcher::tools::overview::Dir;
 use crate::list;
 use crate::session;
 use alpheus_common::launcher_ipc::{DmenuFlags, wipe};
@@ -227,6 +228,9 @@ pub struct Launcher {
     /// The current mode was entered by typing its prefix: Backspace on the
     /// empty query goes back to All.
     by_prefix: bool,
+    /// At the Tools overview, `/` or Space asked for the search: letters are text from then on,
+    /// though the query is still empty. Backspace on the empty query gives them back.
+    pub searching: bool,
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
@@ -285,6 +289,7 @@ impl Launcher {
             at: None,
             ranker: Ranker::new(),
             by_prefix: false,
+            searching: false,
             list_rows,
             moved: false,
             switcher: false,
@@ -387,6 +392,32 @@ impl Launcher {
 
     pub fn tools(&self) -> Option<&ToolsState> {
         self.tools.as_ref()
+    }
+
+    /// Places the Super+X overview in `max_columns` × `max_rows` cells (the open's output), when
+    /// `[tools] overview` is on: the root then lists its slots. Off, the root stays the list of
+    /// categories.
+    pub fn place_overview(&mut self, max_columns: u16, max_rows: u16) {
+        if !self.config.tools.overview {
+            return;
+        }
+        let Some(t) = self.tools.as_mut() else { return };
+        t.place_overview(max_columns, max_rows);
+        // Another list at the root: its facts are not the categories'.
+        self.ranker.forget();
+        self.refilter();
+    }
+
+    /// Whether a letter runs its tool: the Tools mode at its overview, nothing typed, no search
+    /// asked, and not entered by Mod+Space's `/` prefix (a typed path never runs a tool).
+    pub fn letters_live(&self) -> bool {
+        self.at_overview() && !self.searching && !self.by_prefix
+    }
+
+    /// The Tools mode shows the overview's slots: the root, with nothing typed (a typed query lists
+    /// the flat search instead).
+    fn at_overview(&self) -> bool {
+        self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(|t| t.overview().is_some())
     }
 
     /// The rows the `Source::Tool` hits index.
@@ -642,6 +673,11 @@ impl Launcher {
             self.at = None;
             return Outcome::Nothing;
         }
+        // The same for a held letter at the overview: one press, one tool (and no typed run of it).
+        if repeat && matches!(k, Key::Char(_)) && self.letters_live() {
+            self.at = None;
+            return Outcome::Nothing;
+        }
         if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
             let hit = self.selected_hit().map(|h| h.source);
             let guarded = match k {
@@ -662,6 +698,12 @@ impl Launcher {
         let cancelled_tool = k != Key::Enter && self.tools.as_mut().is_some_and(ToolsState::cancel);
         // The kill list's question is answered by Enter or asked again by Ctrl+Enter; any other key ends it.
         let cancelled_proc = !matches!(k, Key::Enter | Key::CtrlEnter) && self.proc_ask.take().is_some();
+        // A letter that cancels a question at the overview does only that: pressing a confirm
+        // tool's letter twice never runs it, nor asks again at once.
+        if cancelled_tool && matches!(k, Key::Char(_)) && self.letters_live() {
+            self.at = None;
+            return Outcome::Redraw;
+        }
         let o = self.apply(k);
         self.at = None;
         if (had_message || cancelled || cancelled_tool || cancelled_proc) && o == Outcome::Nothing { Outcome::Redraw } else { o }
@@ -745,6 +787,7 @@ impl Launcher {
         self.mode = mode;
         self.query.clear();
         self.by_prefix = true;
+        self.searching = false;
         if mode != Mode::Tools {
             return None;
         }
@@ -766,7 +809,28 @@ impl Launcher {
     // Left in a typed query is spelled out, so it never falls to a later arm.
     #[allow(clippy::match_same_arms)]
     fn apply_tools(&mut self, k: Key) -> Option<Outcome> {
+        if self.letters_live()
+            && let Key::Char(c) = k
+        {
+            return self.tools_letter(c);
+        }
+        if self.at_overview()
+            && let Some(dir) = match k {
+                Key::Up => Some(Dir::Up),
+                Key::Down => Some(Dir::Down),
+                Key::Left => Some(Dir::Left),
+                Key::Right => Some(Dir::Right),
+                _ => None,
+            }
+        {
+            return Some(self.overview_step(dir));
+        }
         Some(match k {
+            // Backspace after `/` or Space at the overview: the letters again.
+            Key::Backspace if self.query.is_empty() && self.searching => {
+                self.searching = false;
+                Outcome::Redraw
+            }
             Key::Backspace if self.query.is_empty() => {
                 if self.tools_up() {
                     Outcome::Redraw
@@ -798,10 +862,46 @@ impl Launcher {
         })
     }
 
+    /// A character at the overview while letters are live: `/` or Space starts the search (and is
+    /// not typed), a shown tool's letter runs it as Enter on its row would (asks, drills), any other
+    /// character falls through to be typed, starting the search with it.
+    fn tools_letter(&mut self, c: char) -> Option<Outcome> {
+        if c == '/' || c == ' ' {
+            self.searching = true;
+            return Some(Outcome::Redraw);
+        }
+        let row = self.tools.as_ref().and_then(|t| t.letter(c))?;
+        // On its row: a question shows there and the second Enter answers it.
+        if let Some(at) =
+            self.results.iter().position(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)))
+        {
+            self.selected = at;
+            self.moved = true;
+            self.keep_visible();
+        }
+        Some(self.tools_activate(row))
+    }
+
+    /// An arrow at the overview: the slot `Overview::step` leads to (its list is the overview's
+    /// order, unranked on an empty query).
+    fn overview_step(&mut self, dir: Dir) -> Outcome {
+        let Some(to) = self.tools.as_ref().and_then(|t| t.overview()).map(|o| o.step(self.selected, dir)) else {
+            return Outcome::Nothing;
+        };
+        if to == self.selected || to >= self.results.len() {
+            return Outcome::Nothing;
+        }
+        self.moved = true;
+        self.selected = to;
+        self.keep_visible();
+        Outcome::Redraw
+    }
+
     /// Up one level (the query dropped, the parent's selection back): false at the root.
     fn tools_up(&mut self) -> bool {
         let Some(selected) = self.tools.as_mut().and_then(ToolsState::up) else { return false };
         self.query.clear();
+        self.searching = false;
         self.message = None;
         // The parent's list may have as many rows as the one left: its facts are not that list's.
         self.ranker.forget();
@@ -815,6 +915,7 @@ impl Launcher {
     fn forget_tools(&mut self) {
         // The Tools list's prepared facts are not another mode's, whatever its row count.
         self.ranker.forget();
+        self.searching = false;
         if let Some(t) = self.tools.as_mut() {
             t.cancel_read();
             // A prompt's query is an answer, not a filter: it stays in no other mode, and the
@@ -902,6 +1003,7 @@ impl Launcher {
     /// The open level changed (a drill, a jump): a fresh query and rows, the first selected.
     fn level_changed(&mut self) {
         self.query.clear();
+        self.searching = false;
         self.message = None;
         self.ranker.forget();
         self.refilter();

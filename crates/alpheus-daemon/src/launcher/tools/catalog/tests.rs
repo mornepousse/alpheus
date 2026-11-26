@@ -799,3 +799,14 @@ fn builtin_categories_have_their_hues() {
         assert_eq!(hue(&format!("U{i}")), Some(cycle[i % 7]), "U{i}");
     }
 }
+
+#[test]
+fn lost_letters_counts_the_claimants_left_without_theirs() {
+    let (cat, _) = build("", &all());
+    assert_eq!(cat.lost_letters(&tools("")), 0, "the table's letters never collide");
+    let text = "[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n\
+                [[tools.entry]]\nname = \"Also\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"b\"\n\
+                [[tools.entry]]\nname = \"Free\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"y\"\n";
+    let (cat, _) = build(text, &all());
+    assert_eq!(cat.lost_letters(&tools(text)), 2, "Mine and Also lost theirs; Free kept its own");
+}

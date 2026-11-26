@@ -406,7 +406,15 @@ impl App {
         // A boxed closure, because the two branches are different closures of one type: a note
         // sink that writes to the log, or one that drops it.
         let mut note: Box<dyn FnMut(&str)> = if notes { Box::new(log) } else { Box::new(|_| {}) };
-        Catalog::build(&config.tools, &self.tools_context(config), &mut *note)
+        let catalog = Catalog::build(&config.tools, &self.tools_context(config), &mut *note);
+        // The overview's letters a later claimant wanted in vain: a count, never which.
+        if notes && config.tools.overview {
+            let n = catalog.lost_letters(&config.tools);
+            if n > 0 {
+                log(&format!("tools: {n} letters taken twice"));
+            }
+        }
+        catalog
     }
 
     /// The menu is gone: a running states read stops after its entry.
