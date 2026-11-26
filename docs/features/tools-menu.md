@@ -395,7 +395,7 @@ tables](../measurements.md) have the figures):
 - **Open, 20 cycles:** PSS +2,005…+2,209 KB open over closed (main +1,115…+1,235), of which the shm
   pools +1,792 KB (main +878: the larger box), back to 56 KB closed; the daemon's own anonymous
   memory +304…+504 KB open (main +328…+448), +20…+104 KB closed again (main +0…+152; bound 256),
-  +16…+156 KB after 20 more cycles (main −68…+88; bound 128, read over once in 6 runs, under load);
+  +16…+156 KB after 20 more cycles (main −68…+88; bound 128, read over once in 6 runs while another build ran, a cause not verified; +60…+120 in 3 runs alone on an idle machine);
   5 threads before and after (`tools_pss_open_and_closed`).
 - **60 cycles:** the anonymous memory levels off, +84 KB over the first ten cycles then +8 KB over
   the last twenty: a plateau, not a leak.
