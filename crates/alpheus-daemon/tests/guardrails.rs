@@ -4061,7 +4061,13 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The Tools menu's pure parts: no panicking path (a name, a command or a choice
 /// may sit in a message), no log (their notes go through a callback the glue logs), no slicing by
 /// range. Production code only.
-const TOOLS_PURE: &[&str] = &["launcher/tools/config.rs", "launcher/tools/catalog.rs", "launcher/tools/nav.rs", "launcher/tools/diag.rs"];
+const TOOLS_PURE: &[&str] = &[
+    "launcher/tools/config.rs",
+    "launcher/tools/catalog.rs",
+    "launcher/tools/nav.rs",
+    "launcher/tools/diag.rs",
+    "launcher/tools/overview.rs",
+];
 
 #[test]
 fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {

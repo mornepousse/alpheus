@@ -688,3 +688,114 @@ fn a_key_for_an_unknown_builtin_is_noted_once_and_never_quoted() {
     let (_, notes) = build("[tools]\nkeys = { \"notes\" = \"n\", \"quick.shield\" = \"s\" }\n", &Context::default());
     assert!(notes.is_empty(), "known ids are fine, shown or not");
 }
+
+/// The letter each shown entry claimed, by built-in id or user entry name.
+fn letter_of(cat: &Catalog, id: &str) -> Option<char> {
+    cat.entries
+        .iter()
+        .find(|e| match e.kind {
+            EntryKind::Builtin(b) => BUILTINS[b].id == id,
+            EntryKind::User(_) => e.name == id,
+        })
+        .unwrap_or_else(|| panic!("{id} not shown"))
+        .letter
+}
+
+#[test]
+fn default_letters_are_the_table_s() {
+    let c = Context { recording: false, ..all() };
+    let (cat, _) = build("", &c);
+    let table = [
+        ("capture.area", 'a'),
+        ("capture.full", 'f'),
+        ("capture.annotate", 'e'),
+        ("capture.record", 'r'),
+        ("capture.pick", 'p'),
+        ("capture.ocr", 'o'),
+        ("quick.wifi", 'w'),
+        ("quick.bluetooth", 'b'),
+        ("quick.vpn", 'v'),
+        ("quick.shield", 'h'),
+        ("dnd", 'd'),
+        ("keep_awake", 'z'),
+        ("night_light", 'i'),
+        ("shutdown", 's'),
+        ("process.kill", 'k'),
+        ("lock", 'l'),
+        ("power", 'q'),
+        ("notes", 'n'),
+        ("timer", 't'),
+        ("clipboard", 'c'),
+        ("emoji", 'm'),
+        ("diag.usb_events", 'u'),
+        ("diag.usb_reset", 'x'),
+        ("diag.preset.errors", 'j'),
+    ];
+    assert_eq!(cat.entries.len(), BUILTINS.len() - 1, "every built-in but Stop");
+    for e in &cat.entries {
+        let EntryKind::Builtin(b) = e.kind else { panic!("a user entry") };
+        let id = BUILTINS[b].id;
+        let want = table.iter().find(|(t, _)| *t == id).map(|(_, l)| *l);
+        assert_eq!(e.letter, want, "{id}");
+    }
+}
+
+#[test]
+fn stop_takes_record_s_letter_while_recording() {
+    let (cat, _) = build("", &all());
+    assert_eq!(letter_of(&cat, "capture.stop"), Some('r'));
+}
+
+#[test]
+fn a_taken_letter_leaves_the_later_claimant_without_one() {
+    // Utilities (order 30) comes after Quick settings (10).
+    let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
+    assert_eq!(letter_of(&cat, "Mine"), None);
+    assert_eq!(letter_of(&cat, "quick.wifi"), Some('w'));
+    // At the root, the entry is on the Pinned card, which claims first.
+    let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
+    assert_eq!(letter_of(&cat, "Mine"), Some('w'));
+    assert_eq!(letter_of(&cat, "quick.wifi"), None);
+    // `[tools] keys` overrides a built-in's default and frees it.
+    let (cat, _) = build("[tools]\nkeys = { \"quick.vpn\" = \"w\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.vpn"), None, "Wi-Fi comes first in Quick settings");
+    let (cat, _) = build("[tools]\nkeys = { \"quick.wifi\" = \"y\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.wifi"), Some('y'));
+    // A pinned built-in claims before its category's rows.
+    let (cat, _) = build("[tools]\nroot = [\"quick.vpn\"]\nkeys = { \"quick.vpn\" = \"w\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.vpn"), Some('w'));
+    assert_eq!(letter_of(&cat, "quick.wifi"), None);
+}
+
+#[test]
+fn hidden_tools_free_their_letters() {
+    let (cat, _) = build(
+        "[tools]\nhide = [\"quick.wifi\"]\n[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n",
+        &all(),
+    );
+    assert_eq!(letter_of(&cat, "Mine"), Some('w'));
+}
+
+#[test]
+fn builtin_categories_have_their_hues() {
+    use crate::grid::Hue;
+    let text = (0..9).map(|i| format!("[[tools.category]]\nname = \"U{i}\"\n")).collect::<String>()
+        + "[[tools.category]]\nname = \"System\"\norder = 5\n";
+    let (cat, _) = build(&text, &all());
+    let hue = |name: &str| cat.categories.iter().find(|k| k.name == name).unwrap().hue;
+    for (name, h) in [
+        ("Quick settings", Hue::Blue),
+        ("Control center", Hue::Purple),
+        ("Utilities", Hue::Cyan),
+        ("Captures", Hue::Orange),
+        ("System", Hue::Yellow),
+        ("Session", Hue::Red),
+        ("Diagnostics", Hue::Green),
+    ] {
+        assert_eq!(hue(name), Some(h), "{name}");
+    }
+    let cycle = [Hue::Blue, Hue::Cyan, Hue::Green, Hue::Yellow, Hue::Orange, Hue::Red, Hue::Purple];
+    for i in 0..9 {
+        assert_eq!(hue(&format!("U{i}")), Some(cycle[i % 7]), "U{i}");
+    }
+}
