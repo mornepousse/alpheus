@@ -995,7 +995,7 @@ impl Launcher {
     fn step_chip(&mut self, step: i32) -> Option<Outcome> {
         let Some(RowId::Entry(e)) = self.selected_tool().filter(|_| self.panel_search()) else { return None };
         let t = self.tools.as_mut()?;
-        t.chip(e)?;
+        t.chips(e)?;
         Some(if t.step_chip(e, step) { Outcome::Redraw } else { Outcome::Nothing })
     }
 
@@ -1281,7 +1281,8 @@ impl Launcher {
         };
         let ranked = self.ranker.rank(&q);
         if flat && t.panel().is_some() {
-            let groups = group_by_category(&ranked, tools);
+            let ranker = &mut self.ranker;
+            let groups = group_by_category(&ranked, tools, |choice| ranker.finds(&self.query, choice));
             self.tool_marks = groups
                 .hits
                 .iter()

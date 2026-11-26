@@ -199,7 +199,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             }
             None => {
                 let hints: &[Hint] = match chosen {
-                    Some(e) if search && t.chip(e).is_some() => &SEARCH_CHIP_HINTS,
+                    Some(e) if search && t.chips(e).is_some() => &SEARCH_CHIP_HINTS,
                     _ if search => &SEARCH_HINTS,
                     _ if l.letters_live() && t.root_letters() => &HOME_HINTS,
                     _ => &HOME_HINTS_NO_LETTERS,
@@ -326,11 +326,8 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
             shapes.push(ring_shape(y, right, 2, 1, ShapeKind::Switch(on)));
         }
     }
-    // Its chips: in the search, for an entry with fixed choices (a picked one).
-    let chips = match (&entry.choices, t.chip(e)) {
-        (Choices::Fixed(list), Some(picked)) if search => Some((list, picked)),
-        _ => None,
-    };
+    // Its chips: in the search, for an entry with fixed choices, and the one picked if any.
+    let chips = t.chips(e).filter(|_| search).map(|list| (list, t.chip(e)));
     if opens_level(entry) && chips.is_none() {
         right = right.saturating_sub(2);
         grid[y].write(right, right + 1, "›", Style::MUTED);
@@ -338,7 +335,7 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
     let (x, stop) = (tile + 4, right.saturating_sub(1));
     let room = stop.saturating_sub(x);
     let asked = match chips {
-        Some((list, picked)) if t.asking(RowId::Choice(e, picked)) => list.get(picked).map(|c| format!("{} · {c}? ⏎", entry.name)),
+        Some((list, Some(picked))) if t.asking(RowId::Choice(e, picked)) => list.get(picked).map(|c| format!("{} · {c}? ⏎", entry.name)),
         _ if t.asking(RowId::Entry(e)) => l.tool_rows().get(k).filter(|r| r.id == RowId::Entry(e)).map(|r| t.question_text(r)),
         _ => None,
     };
@@ -374,26 +371,39 @@ fn marked(g: &mut Grid, x: u16, stop: u16, name: &str, marks: &[u32]) -> u16 {
 }
 
 /// A row's fixed choices as chips on row `y` within `columns`, one blank cell apart, the picked one
-/// filled: the line starts at the first chip, or as far right as the picked one needs to show.
-fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u16, u16), list: &[String], picked: usize) {
+/// filled: the line starts at the first chip, or as far right as the picked one needs to show;
+/// when they do not all fit, `‹` and `›` mark the cut ends, as on the tab strip.
+fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u16, u16), list: &[String], picked: Option<usize>) {
     let room = stop.saturating_sub(start);
-    // A chip never wider than the line.
-    let words: Vec<String> = list.iter().map(|c| truncate(c, room.saturating_sub(2))).collect();
+    // A chip never wider than the line, its cut marks kept.
+    let words: Vec<String> = list.iter().map(|c| truncate(c, room.saturating_sub(6))).collect();
     let widths: Vec<u16> = words.iter().map(|w| text_width(w) + 2).collect();
     let span = |from: usize, to: usize| widths.get(from..=to).map_or(0, |w| w.iter().map(|w| w + 1).sum::<u16>().saturating_sub(1));
+    let cut = span(0, widths.len().saturating_sub(1)) > room;
+    // Two cells kept at each cut end for its mark: at the left only once the line starts further right.
+    let to = if cut { stop.saturating_sub(2) } else { stop };
+    let anchor = picked.unwrap_or(0);
     let mut first = 0;
-    while first < picked && span(first, picked) > room {
+    while first < anchor && span(first, anchor) > to.saturating_sub(start + 2) {
         first += 1;
     }
-    let mut x = start;
+    let mut x = if first > 0 { start + 2 } else { start };
+    let mut drawn = first;
     for (i, (word, w)) in words.iter().zip(&widths).enumerate().skip(first) {
-        if x + w > stop {
+        if x + w > to {
             break;
         }
-        let on = i == picked;
+        let on = Some(i) == picked;
         shapes.push(ring_shape(y, x, *w, 1, ShapeKind::Chip(if on { Tint::AccentContainer } else { Tint::Pill })));
         g.write(x + 1, x + w - 1, word, if on { ON_ACCENT } else { Style::NORMAL });
         x += w + 1;
+        drawn = i + 1;
+    }
+    if first > 0 {
+        g.write(start, start + 1, "‹", Style::MUTED);
+    }
+    if drawn < words.len() {
+        g.write(stop.saturating_sub(1), stop, "›", Style::MUTED);
     }
 }
 
@@ -460,7 +470,7 @@ fn detail_card(
         if y >= bottom {
             return;
         }
-        let (label, keys) = action_line(t, e, &action, search && t.chip(e).is_some());
+        let (label, keys) = action_line(t, e, &action, search && t.chips(e).is_some());
         let mut kx = end;
         for key in keys.iter().rev() {
             kx = kx.saturating_sub(text_width(key) + 2);

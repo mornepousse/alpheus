@@ -166,8 +166,8 @@ pub struct ToolsState {
     home: Option<Panel>,
     /// Its Recent section, read once at open.
     recent: Vec<usize>,
-    /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search.
-    picked: Vec<usize>,
+    /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search, if any.
+    picked: Vec<Option<usize>>,
 }
 
 impl ToolsState {
@@ -265,44 +265,55 @@ impl ToolsState {
         true
     }
 
-    /// The chip picked on `entry`'s row in the panel's search: none for an entry without fixed
-    /// choices (a `choices_cmd` one keeps its level).
-    pub fn chip(&self, entry: usize) -> Option<usize> {
+    /// The fixed choices `entry`'s row shows as chips in the panel's search: none for an entry
+    /// without them (a `choices_cmd` one keeps its level).
+    pub fn chips(&self, entry: usize) -> Option<&[String]> {
         match self.catalog.entries.get(entry).map(|e| &e.choices) {
-            Some(Choices::Fixed(list)) if !list.is_empty() => {
-                Some(self.picked.get(entry).copied().unwrap_or(0).min(list.len().saturating_sub(1)))
-            }
+            Some(Choices::Fixed(list)) if !list.is_empty() => Some(list),
             _ => None,
         }
     }
 
-    /// Every entry back on its first chip, but those `matched` names (entry, choice): what a new
-    /// query picks.
+    /// The chip picked on `entry`'s row in the panel's search, if one is: none is picked until ←/→
+    /// or a query that matches a choice's text picks it (Enter never runs a choice the user did
+    /// not pick).
+    pub fn chip(&self, entry: usize) -> Option<usize> {
+        let list = self.chips(entry)?;
+        self.picked.get(entry).copied().flatten().filter(|&k| k < list.len())
+    }
+
+    /// No chip picked on any row, but those `matched` names (entry, choice): what a new query picks.
     pub fn pick_chips(&mut self, matched: &[(usize, usize)]) {
         self.picked.clear();
-        self.picked.resize(self.catalog.entries.len(), 0);
+        self.picked.resize(self.catalog.entries.len(), None);
         for &(e, k) in matched {
             if let Some(slot) = self.picked.get_mut(e) {
-                *slot = k;
+                *slot = Some(k);
             }
         }
     }
 
-    /// Picks the chip `step` places from `entry`'s picked one, stopping at the first and the last:
-    /// false when it did not move (no chip, or already at that end).
+    /// Picks the chip `step` places from `entry`'s picked one, stopping at the first and the last;
+    /// with none picked, → (a positive step) picks the first and ← nothing. False when it did not
+    /// move (no chips, already at that end, or ← with none picked).
     pub fn step_chip(&mut self, entry: usize, step: i32) -> bool {
-        let (Some(at), Some(Choices::Fixed(list))) = (self.chip(entry), self.catalog.entries.get(entry).map(|e| &e.choices)) else {
-            return false;
+        let Some(n) = self.chips(entry).map(<[String]>::len) else { return false };
+        let to = match self.chip(entry) {
+            None if step > 0 => 0,
+            None => return false,
+            Some(at) => {
+                let to = usize::try_from(i64::try_from(at).unwrap_or(0) + i64::from(step)).unwrap_or(0).min(n.saturating_sub(1));
+                if to == at {
+                    return false;
+                }
+                to
+            }
         };
-        let to = usize::try_from(i64::try_from(at).unwrap_or(0) + i64::from(step)).unwrap_or(0).min(list.len().saturating_sub(1));
-        if to == at {
-            return false;
-        }
         if self.picked.len() < self.catalog.entries.len() {
-            self.picked.resize(self.catalog.entries.len(), 0);
+            self.picked.resize(self.catalog.entries.len(), None);
         }
         if let Some(slot) = self.picked.get_mut(entry) {
-            *slot = to;
+            *slot = Some(to);
         }
         true
     }

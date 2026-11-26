@@ -813,14 +813,20 @@ fn results_are_grouped_by_category_in_best_rank_order() {
         }
     }
     assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(2), Source::Tool(1), Source::Tool(4), Source::Tool(0)], "as ranked");
-    let g = group_by_category(&l.rank(Mode::Tools, "one"), &l.tools);
+    let g = grouped(&l, "one");
     let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
     assert_eq!(order, [Source::Tool(2), Source::Tool(0), Source::Tool(1), Source::Tool(4)], "Gamma's group, then Beta's, then the root's");
     assert!(g.chips.is_empty());
 }
 
+/// The panel's search of `text` over `l`'s tools, choices found by a ranker as the model finds them.
+fn grouped(l: &Lists, text: &str) -> ToolGroups {
+    let mut r = Ranker::new();
+    group_by_category(&l.rank(Mode::Tools, text), &l.tools, |choice| r.finds(text, choice))
+}
+
 /// A hit on a choice stands for its entry (listed once, where its best hit ranks) and picks that
-/// choice, the best-ranked one of each entry, when the entry's own name missed (or ranked lower).
+/// choice, the best-ranked one of each entry, when the query finds the choice's own text.
 #[test]
 fn a_hit_on_a_choice_lists_its_entry_once_and_picks_the_choice() {
     let mut l = Lists::new();
@@ -835,14 +841,30 @@ fn a_hit_on_a_choice_lists_its_entry_once_and_picks_the_choice() {
         choice("Sleep · zero", 1, 0),
         choice("Sleep · twofold", 1, 1),
     ];
-    let g = group_by_category(&l.rank(Mode::Tools, "two"), &l.tools);
+    let g = grouped(&l, "two");
     let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
     assert_eq!(order, [Source::Tool(0), Source::Tool(1)], "each entry once, never a choice row");
     assert_eq!(g.chips, [(0, 0), (1, 1)], "each entry's own matching choice");
     // `lock` finds the entry's own name: its choices match only through it, none is picked.
-    let g = group_by_category(&l.rank(Mode::Tools, "lock"), &l.tools);
+    let g = grouped(&l, "lock");
     assert_eq!(g.hits.iter().map(|h| h.source).collect::<Vec<_>>(), [Source::Tool(0)]);
     assert!(g.chips.is_empty(), "{:?}", g.chips);
+}
+
+/// A query that matches `Entry · choice` only across the separator (`sh`: the `S` of `Scan`, the
+/// `h` of `Host`) picks no chip; one that finds the choice's own text does.
+#[test]
+fn a_choice_matched_only_across_its_entry_picks_no_chip() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str| ToolHitRow { category: Some(0), ..tool_row(n, "") };
+    let choice = |n: &str, k| ToolHitRow { parent: Some((0, k)), ..tool(n) };
+    l.tools = vec![tool("Scan"), choice("Scan · Host discovery", 0), choice("Scan · Quick", 1)];
+    assert!(l.sources(Mode::Tools, "sh").contains(&Source::Tool(1)), "the composite name matches");
+    let g = grouped(&l, "sh");
+    assert_eq!(g.hits.iter().map(|h| h.source).collect::<Vec<_>>(), [Source::Tool(0)]);
+    assert!(g.chips.is_empty(), "{:?}", g.chips);
+    assert_eq!(grouped(&l, "host").chips, [(0, 0)]);
 }
 
 /// The characters a query matched in a name, as character positions, sorted, each once.
@@ -853,4 +875,11 @@ fn matched_positions_are_the_characters_the_query_found() {
     assert_eq!(r.marks("dn sch", "Schedule shutdown"), [0, 1, 2, 13, 16], "every atom's, sorted");
     assert!(r.marks("zz", "Schedule shutdown").is_empty(), "nothing matched: no position");
     assert_eq!(r.marks("cafe", "Café"), [0, 1, 2, 3], "folded as the ranking folds");
+    // A decomposed `é` is one grapheme of two characters: no position rather than shifted ones.
+    let decomposed = "Cafe\u{301} bar";
+    assert!(r.finds("bar", decomposed));
+    let marks = r.marks("bar", decomposed);
+    let chars: Vec<char> = decomposed.chars().collect();
+    let found: String = marks.iter().map(|&i| chars[i as usize]).collect();
+    assert!(marks.is_empty() || found == "bar", "{marks:?} marks {found:?}");
 }

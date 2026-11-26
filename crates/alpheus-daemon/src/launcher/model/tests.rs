@@ -2160,6 +2160,7 @@ fn escape_from_a_searched_tool_lands_on_its_row() {
     typed(&mut l, "/network scan");
     let scan = builtin_entry(&l, "diag.scan");
     assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
+    l.key(Key::Right);
     l.key(Key::Right); // its second chip, which asks for a target
     l.key(Key::Enter);
     assert_eq!(l.tools().unwrap().level(), Level::Prompt { entry: scan });
@@ -2288,20 +2289,26 @@ fn chip(l: &Launcher, name: &str) -> Option<usize> {
     l.tools().unwrap().chip(user_entry(l, name))
 }
 
-/// ←/→ pick a chip on the selected row and stop at the first and the last; on a row without chips
-/// they do nothing; neither ever leaves the row, the search or the root.
+/// ←/→ pick a chip on the selected row (none is picked at first: → picks the first, ← nothing)
+/// and stop at the first and the last; on a row without chips they do nothing; neither ever leaves
+/// the row, the search or the root.
 #[test]
 fn arrows_on_chips_stay_on_the_row() {
     let mut l = panel_box(CHIPS);
     typed(&mut l, "/alpha");
     let alpha = RowId::Entry(user_entry(&l, "Alpha"));
     assert_eq!(selected_row(&l), Some(alpha));
-    assert_eq!(chip(&l, "Alpha"), Some(0), "the first chip is picked");
+    assert_eq!(chip(&l, "Alpha"), None, "no chip is picked");
     let stays = |l: &Launcher| {
         assert_eq!(selected_row(l), Some(alpha));
         assert_eq!(l.tools().unwrap().level(), Level::Root);
         assert_eq!(l.query, "alpha");
     };
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "nothing picked: ← picks nothing");
+    assert_eq!(chip(&l, "Alpha"), None);
+    stays(&l);
+    assert_eq!(l.key(Key::Right), Outcome::Redraw, "→ picks the first");
+    assert_eq!(chip(&l, "Alpha"), Some(0));
     assert_eq!(l.key(Key::Left), Outcome::Nothing, "already the first");
     stays(&l);
     assert_eq!(l.key(Key::Right), Outcome::Redraw);
@@ -2336,8 +2343,9 @@ fn enter_runs_the_picked_chip() {
     let shutdown = builtin_entry(&l, "shutdown");
     assert_eq!(selected_row(&l), Some(RowId::Entry(shutdown)));
     assert!(!l.results.iter().any(|h| matches!(h.source, Source::Tool(i) if matches!(l.tool_rows()[i].id, RowId::Choice(..)))));
-    l.key(Key::Right);
-    l.key(Key::Right);
+    for _ in 0..3 {
+        l.key(Key::Right);
+    }
     let o = l.key(Key::Enter);
     let want = ToolAction::Builtin { index: builtin_index("shutdown"), choice: Some("1 h 30".into()), text: None };
     assert_eq!(o, Outcome::Activate(Activation::Tool(want)));
@@ -2359,9 +2367,35 @@ fn a_query_picks_the_matching_chip_of_each_entry() {
     let mut l = panel_box(CHIPS);
     typed(&mut l, "/alph");
     l.key(Key::Right);
+    l.key(Key::Right);
     assert_eq!(chip(&l, "Alpha"), Some(1));
     typed(&mut l, "a");
-    assert_eq!(chip(&l, "Alpha"), Some(0), "a new query that matches no choice resets the chip");
+    assert_eq!(chip(&l, "Alpha"), None, "a new query that matches no choice picks none");
+}
+
+/// With no chip picked, Enter or a click on a row with chips opens its choices, as at home:
+/// nothing runs that the user did not pick (`sh` finds no choice's own text: none is picked).
+#[test]
+fn enter_without_a_picked_chip_opens_the_choices() {
+    for click in [false, true] {
+        let mut l = panel_box("");
+        typed(&mut l, "/sh");
+        let (shutdown, scan) = (builtin_entry(&l, "shutdown"), builtin_entry(&l, "diag.scan"));
+        let t = l.tools().unwrap();
+        assert_eq!((t.chip(shutdown), t.chip(scan)), (None, None), "`sh` picks no chip");
+        let at =
+            l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(shutdown))).unwrap();
+        let o = if click {
+            l.click(at, false)
+        } else {
+            while l.selected < at {
+                l.key(Key::Down);
+            }
+            l.key(Key::Enter)
+        };
+        assert_eq!(o, Outcome::Redraw, "click: {click}");
+        assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: shutdown }, "click: {click}");
+    }
 }
 
 /// A `choices_cmd` entry has no chips: Enter or → opens its level, which reads them.

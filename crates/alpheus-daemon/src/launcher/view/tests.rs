@@ -1565,8 +1565,9 @@ fn chips_on(rows: &Boxed, y: usize) -> Vec<(bool, String)> {
         .collect()
 }
 
-/// The search lists Schedule shutdown once, its durations as chips on its second line (the first
-/// picked), under its category's label; → picks the next one; the card follows the selection.
+/// The search lists Schedule shutdown once, its durations as chips on its second line (none
+/// picked), under its category's label; → picks the first; the card follows the selection; chips
+/// that do not fit are marked at the cut ends.
 #[test]
 fn fixed_choices_show_as_chips_not_rows() {
     let (mut l, b) = panel_box("");
@@ -1578,8 +1579,7 @@ fn fixed_choices_show_as_chips_not_rows() {
     let chips = chips_on(&rows, y + 1);
     let words: Vec<&str> = chips.iter().map(|(_, w)| w.as_str()).collect();
     assert_eq!(words, ["30 min", "1 h", "1 h 30", "2 h", "3 h"], "{}", snapshot_with_shapes(&rows));
-    assert_eq!(chips.iter().filter(|(picked, _)| *picked).count(), 1);
-    assert!(chips[0].0, "the first chip picked");
+    assert!(chips.iter().all(|(picked, _)| !picked), "no chip picked: {chips:?}");
     assert!(text[..y].iter().rev().find(|t| t.contains('●')).is_some_and(|t| t.contains("● SYSTEM")), "under its label: {text:#?}");
     // A row without chips keeps its description.
     let (wy, _) = find(&rows, "Screenshot");
@@ -1595,7 +1595,7 @@ fn fixed_choices_show_as_chips_not_rows() {
     let rows = draw_in(&l, &b);
     let (y, _) = find(&rows, "Schedule shutdown");
     let picked: Vec<String> = chips_on(&rows, y + 1).into_iter().filter(|(p, _)| *p).map(|(_, w)| w).collect();
-    assert_eq!(picked, ["1 h"]);
+    assert_eq!(picked, ["30 min"]);
     assert!(card_text(&rows).iter().any(|t| t == "Schedule shutdown"), "{:#?}", card_text(&rows));
     insta::assert_snapshot!("panel_search", snapshot_with_shapes(&rows));
     // A click on a search row is its result.
@@ -1603,6 +1603,9 @@ fn fixed_choices_show_as_chips_not_rows() {
     assert_eq!(hit(&l, &b, ring(8), ring(y + 1)), Some(Click::Result(at)));
     // A picked chip past the line's end: the line starts further right so it shows.
     let scan = entry_named(&l, "Network scan");
+    let (sy, _) = find(&rows, "Network scan");
+    let line = list_text(&rows)[sy + 1].trim().to_string();
+    assert!(line.ends_with('›') && !line.starts_with('‹'), "more chips at the right: {line:?}");
     l.key(Key::Down);
     assert_eq!(
         l.tool_rows()[match l.results[l.selected].source {
@@ -1617,6 +1620,8 @@ fn fixed_choices_show_as_chips_not_rows() {
     let (y, _) = find(&rows, "Network scan");
     let chips = chips_on(&rows, y + 1);
     assert_eq!(chips.last().cloned(), Some((true, "Aggressive scan -A (sudo)".to_string())), "{}", snapshot_with_shapes(&rows));
+    let line = list_text(&rows)[y + 1].trim().to_string();
+    assert!(line.starts_with('‹') && !line.ends_with('›'), "more chips at the left: {line:?}");
 }
 
 /// `sh` found in `Schedule shutdown`: those two cells in the accent, the rest of the name not.

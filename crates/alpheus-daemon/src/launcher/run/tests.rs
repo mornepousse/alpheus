@@ -730,6 +730,7 @@ fn typed_text_still_never_reaches_history_or_debug() {
     for c in "/pick".chars() {
         l.key(Key::Char(c));
     }
+    assert_eq!(l.key(Key::Right), Outcome::Redraw, "the `quick` chip");
     assert_eq!(l.key(Key::Right), Outcome::Redraw, "the `full` chip");
     assert_eq!(l.key(Key::Enter), Outcome::Redraw, "its prompt");
     for c in "secret-target.example".chars() {
