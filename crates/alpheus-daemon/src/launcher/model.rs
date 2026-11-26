@@ -235,7 +235,7 @@ pub struct Launcher {
     by_prefix: bool,
     /// At the Tools panel's root, `/` or Space asked for the search: letters are text from then on,
     /// though the query is still empty. Backspace on the empty query gives them back.
-    pub searching: bool,
+    searching: bool,
     /// The character key that last acted at the panel's root (a letter, `/` or Space): its
     /// auto-repeats do nothing until a fresh press, wherever the press led (a level below, a
     /// prompt, the search).
