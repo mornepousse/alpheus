@@ -1,5 +1,5 @@
 //! Startup PSS < 15 MB (firm),
-//! < 30 MB at steady state and no growth, under a busy compositor and a
+//! < 15 MB at steady state and no growth, under a busy compositor and a
 //! busy PipeWire; at rest with the resources module hidden, no wake-up —
 //! none at all for the sound and D-Bus threads; with resources, the loop
 //! wakes at the configured interval, no faster; threads counted, none left
@@ -485,7 +485,9 @@ fn pss_under_30mb_and_stable() {
     eprintln!(
         "PSS: {initial} KB at startup, {baseline} KB after warm-up, {end} KB after {n} events, 5 plug cycles, pw-dump deltas every 10 ms"
     );
-    assert!(end < 30 * 1024, "PSS {end} KB >= 30 MB");
+    // The resident budget of docs/decisions.md ("Everything alpheus keeps resident fits in
+    // 15 MB at rest"); measured 11.3 to 11.9 MB, never raise.
+    assert!(end < 15 * 1024, "PSS {end} KB >= 15 MB");
     assert!(end <= baseline + 1024, "growth: {baseline} -> {end} KB");
     const RETURN_MARGIN_KB: u64 = 2 * 1024;
     assert!(end.abs_diff(initial) <= RETURN_MARGIN_KB, "PSS does not come back close to the start: {initial} KB -> {end} KB");
