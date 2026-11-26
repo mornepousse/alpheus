@@ -120,11 +120,9 @@ pub fn window(rows: &[PanelRow], top: usize, selected: Option<usize>, pane_rows:
     let total = at;
     // The first line of tool `k`, its label's when the label is right above it.
     let begin = |k: usize| {
-        let i = lines.iter().position(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == k);
-        i.map_or(0, |i| match i.checked_sub(1).map(|p| lines[p].row) {
-            Some(PanelRow::Section(_)) => lines[i - 1].at,
-            _ => lines[i].at,
-        })
+        let Some(i) = lines.iter().position(|x| matches!(x.row, PanelRow::Tool(_)) && x.tool == k) else { return 0 };
+        let above = i.checked_sub(1).and_then(|p| lines.get(p)).filter(|x| matches!(x.row, PanelRow::Section(_)));
+        above.or_else(|| lines.get(i)).map_or(0, |x| x.at)
     };
     let mut start = begin(top);
     if let Some(selected) = selected {
