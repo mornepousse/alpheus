@@ -680,3 +680,11 @@ fn every_capture_row_has_its_own_glyph() {
     unique.dedup();
     assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
 }
+
+#[test]
+fn a_key_for_an_unknown_builtin_is_noted_once_and_never_quoted() {
+    let (_, notes) = build("[tools]\nkeys = { \"nope\" = \"a\", \"also.nope\" = \"b\", \"notes\" = \"n\" }\n", &all());
+    assert_eq!(notes, ["tools: unknown built-in id in [tools] keys"]);
+    let (_, notes) = build("[tools]\nkeys = { \"notes\" = \"n\", \"quick.shield\" = \"s\" }\n", &Context::default());
+    assert!(notes.is_empty(), "known ids are fine, shown or not");
+}

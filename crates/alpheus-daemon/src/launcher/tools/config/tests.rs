@@ -479,3 +479,30 @@ ask = "Value"
     assert_eq!(t.entries[1].choices, v(&["a", "b"]));
     assert_eq!(parse(&entry("")).unwrap().tools.entries[0].ask, None, "no ask by default");
 }
+
+#[test]
+fn overview_defaults_on_and_parses_off() {
+    assert!(parse("").unwrap().tools.overview, "on by default");
+    assert!(ToolsConfig::default().overview);
+    assert!(!parse("[tools]\noverview = false\n").unwrap().tools.overview);
+}
+
+#[test]
+fn keys_take_one_lowercase_ascii_letter() {
+    let c = parse("[tools]\nkeys = { \"quick.wifi\" = \"w\", \"tab.power\" = \"z\" }\n").unwrap();
+    assert_eq!(c.tools.keys.get("quick.wifi"), Some(&'w'));
+    assert_eq!(c.tools.keys.get("tab.power"), Some(&'z'));
+    assert!(parse("").unwrap().tools.keys.is_empty());
+    for bad in ["W", "ww", "1", "é", "", "`", "{"] {
+        assert!(parse(&format!("[tools]\nkeys = {{ \"quick.wifi\" = \"{bad}\" }}\n")).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn an_entry_key_is_one_lowercase_letter() {
+    assert_eq!(parse(&entry("key = \"g\"\n")).unwrap().tools.entries[0].key, Some('g'));
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].key, None);
+    for bad in ["G", "gg", "1", "é", "", "@", "["] {
+        assert!(parse(&entry(&format!("key = \"{bad}\"\n"))).is_err(), "{bad:?}");
+    }
+}

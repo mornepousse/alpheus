@@ -2,8 +2,8 @@
 //! structure, its validation and its bounds. Pure: no thread, no command, no log (the bound
 //! notes go through a callback the caller logs).
 
-use serde::Deserialize;
-use std::collections::HashSet;
+use serde::{Deserialize, Deserializer};
+use std::collections::{BTreeMap, HashSet};
 
 /// At most this many `[[tools.category]]`; the first ones are kept.
 pub const MAX_CATEGORIES: usize = 16;
@@ -39,6 +39,11 @@ pub struct ToolsConfig {
     pub root: Vec<String>,
     /// The "Reload the bar" built-in's argv; empty hides it.
     pub reload: Vec<String>,
+    /// `false`: the Super+X overview never shows; the menu opens as before.
+    pub overview: bool,
+    /// Built-in id to the letter that opens it (one lowercase ASCII letter); an unknown id is noted and ignored.
+    #[serde(deserialize_with = "letter_map")]
+    pub keys: BTreeMap<String, char>,
     /// The commands of the built-ins that run one (`[tools.builtin]`).
     pub builtin: BuiltinCommands,
     #[serde(rename = "category")]
@@ -54,6 +59,8 @@ impl Default for ToolsConfig {
             hide: Vec::new(),
             root: Vec::new(),
             reload: Vec::new(),
+            overview: true,
+            keys: BTreeMap::new(),
             builtin: BuiltinCommands::default(),
             categories: Vec::new(),
             entries: Vec::new(),
@@ -106,6 +113,9 @@ pub struct EntryConfig {
     pub choices_cmd: Vec<String>,
     /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
     pub ask: Option<String>,
+    /// The letter that opens the entry from the overview: one lowercase ASCII letter.
+    #[serde(deserialize_with = "letter")]
+    pub key: Option<char>,
     /// 1-based position in the file (what logs name an entry by); set after parsing.
     #[serde(skip)]
     pub position: usize,
@@ -116,6 +126,23 @@ impl EntryConfig {
     pub fn has_choices(&self) -> bool {
         !self.choices.is_empty() || !self.choices_cmd.is_empty()
     }
+}
+
+/// One character of `a` to `z`.
+fn letter_of<E: serde::de::Error>(s: &str) -> Result<char, E> {
+    let mut cs = s.chars();
+    match (cs.next(), cs.next()) {
+        (Some(c @ 'a'..='z'), None) => Ok(c),
+        _ => Err(E::custom("expected one lowercase letter, a to z")),
+    }
+}
+
+fn letter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<char>, D::Error> {
+    Option::<String>::deserialize(d)?.map(|s| letter_of(&s)).transpose()
+}
+
+fn letter_map<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, char>, D::Error> {
+    BTreeMap::<String, String>::deserialize(d)?.into_iter().map(|(id, s)| Ok((id, letter_of(&s)?))).collect()
 }
 
 /// Numbers the entries by their place in the file (1-based).

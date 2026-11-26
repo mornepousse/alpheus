@@ -529,6 +529,8 @@ bound the first ones are kept, with one log line of counts.
 | `builtins` | bool | `true` | | `false`: no built-in entry. |
 | `hide` | list of ids | `[]` | | Built-in ids never shown (`"tab.power"`, `"quick.shield"`…); an unknown one is logged and ignored. |
 | `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
+| `overview` | bool | `true` | | `false`: the Super+X overview never shows; the menu opens as before. |
+| `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that opens a built-in from the overview, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
 
 `[tools.builtin]`:
@@ -557,6 +559,7 @@ bound the first ones are kept, with one log line of counts.
 | `terminal` | bool | `false` | not with `hold` | `true`: the launcher's `terminal` is put in front. |
 | `hold` | bool | `false` | not with `terminal` | `true`: `terminal_hold` instead (the output stays readable). |
 | `confirm` | bool | `false` | not with `ask` | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
+| `key` | one letter | none | one lowercase ASCII letter, `a` to `z` | The letter that opens the entry from the overview. |
 | `ask` | string | none | 1 to 48 characters, not blank; `run` must hold `{text}` | A label: the entry asks for a text (after its choice, if it has choices) and runs with it as the one element `{text}`. Never logged, never kept in the history. |
 | `state` | command | `[]` | not with choices; read for at most 16 entries | Run when the box opens: exit 0 shows the switch on, any other exit off; a hung one is killed at 1 s. |
 | `choices` | list of strings | `[]` | at most 32, each 1 to 64 characters; not with `choices_cmd` | Fixed choices for `{choice}`. |
@@ -585,6 +588,8 @@ tools = "/"          # jumps into the Tools menu; "" turns it off
 builtins = true      # false: no built-in entry
 hide = []            # built-in ids never shown ("tab.power", "quick.shield", …); an unknown one is logged and ignored
 root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
+overview = true      # false: the Super+X overview never shows
+keys = {}            # built-in id to the letter that opens it, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
 
 [tools.builtin]
@@ -604,6 +609,7 @@ run = ["my-update", "--now"]   # argv, no shell; required
 terminal = false     # true: `terminal` is put in front
 hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
 confirm = false      # true: asks "Update? ⏎", runs on a second Enter 0.4 s to 3 s later
+key = "u"            # one lowercase letter a to z: opens the entry from the overview; default none
 # ask = "Host"       # instead of confirm: asks for a text (after the choice, if any); run then holds "{text}" once, as a whole element
 
 [[tools.entry]]

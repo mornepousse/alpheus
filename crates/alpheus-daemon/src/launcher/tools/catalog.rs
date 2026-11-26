@@ -337,7 +337,7 @@ fn icon_of(s: &Option<String>) -> Option<char> {
 }
 
 impl Catalog {
-    /// The catalog for `t` under `c`. An unknown id in `hide` or `root` is noted once per list,
+    /// The catalog for `t` under `c`. An unknown id in `hide`, `root` or `keys` is noted once per list,
     /// however many it holds (never quoted), and ignored, so a file written for a newer alpheus stays valid.
     pub fn build(t: &ToolsConfig, c: &Context, note: &mut dyn FnMut(&str)) -> Catalog {
         let known = |id: &String| BUILTINS.iter().any(|b| b.id == id);
@@ -346,6 +346,9 @@ impl Catalog {
         }
         if !t.root.iter().all(known) {
             note("tools: unknown built-in id in [tools] root");
+        }
+        if !t.keys.keys().all(known) {
+            note("tools: unknown built-in id in [tools] keys");
         }
         let mut categories: Vec<Category> = BUILTIN_CATEGORIES
             .iter()
