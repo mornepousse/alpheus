@@ -708,6 +708,7 @@ fn tool_row(name: &str, path: &str) -> ToolHitRow {
         path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") },
         key: String::new(),
         parent: None,
+        category: None,
     }
 }
 
@@ -774,17 +775,82 @@ fn the_tools_search_groups_choices_after_their_entry() {
     let mut l = Lists::new();
     l.apps = vec![];
     let key = |n: &str| ToolHitRow { key: format!("tool:user:/{n}"), ..tool_row(n, "") };
-    let choice = |n: &str, parent| ToolHitRow { parent: Some(parent), ..key(n) };
-    l.tools = vec![key("Lock one"), key("Zed one"), choice("Lock one · now", 0), choice("Lock one · later", 0)];
+    let choice = |n: &str, parent, k| ToolHitRow { parent: Some((parent, k)), ..key(n) };
+    l.tools = vec![key("Lock one"), key("Zed one"), choice("Lock one · now", 0, 0), choice("Lock one · later", 0, 1)];
     l.history = History::empty(10);
     l.history.record("tool:user:/Lock one · later", NOW);
     l.history.record("tool:user:/Zed one", NOW - 10);
     l.history.record("tool:user:/Zed one", NOW - 20);
     assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(3), Source::Tool(0), Source::Tool(2)], "All: as ranked");
+    let grouped =
+        |text: &str| -> Vec<Source> { group_choices(l.rank(Mode::Tools, text), &l.tools).into_iter().map(|h| h.source).collect() };
     assert_eq!(
-        l.sources(Mode::Tools, "one"),
+        grouped("one"),
         [Source::Tool(1), Source::Tool(0), Source::Tool(3), Source::Tool(2)],
         "the entry where it ranks, its choices after it in their own order"
     );
-    assert_eq!(l.sources(Mode::Tools, "now"), [Source::Tool(2)], "a choice alone keeps its place");
+    assert_eq!(grouped("now"), [Source::Tool(2)], "a choice alone keeps its place");
+}
+
+/// The panel's search: groups by category, each where its best result ranks, its results in rank
+/// order (here the frecency decides, every name matching alike).
+#[test]
+fn results_are_grouped_by_category_in_best_rank_order() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str, category| ToolHitRow { key: format!("tool:user:/{n}"), category, ..tool_row(n, "") };
+    l.tools = vec![
+        tool("Alpha one", Some(1)),
+        tool("Beta one", Some(0)),
+        tool("Gamma one", Some(1)),
+        tool("Delta", Some(2)),
+        tool("Eta one", None),
+    ];
+    l.history = History::empty(10);
+    for (name, uses) in [("Gamma one", 4), ("Beta one", 3), ("Eta one", 2), ("Alpha one", 1)] {
+        for k in 0..uses {
+            l.history.record(&format!("tool:user:/{name}"), NOW - k);
+        }
+    }
+    assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(2), Source::Tool(1), Source::Tool(4), Source::Tool(0)], "as ranked");
+    let g = group_by_category(&l.rank(Mode::Tools, "one"), &l.tools);
+    let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
+    assert_eq!(order, [Source::Tool(2), Source::Tool(0), Source::Tool(1), Source::Tool(4)], "Gamma's group, then Beta's, then the root's");
+    assert!(g.chips.is_empty());
+}
+
+/// A hit on a choice stands for its entry (listed once, where its best hit ranks) and picks that
+/// choice, the best-ranked one of each entry, when the entry's own name missed (or ranked lower).
+#[test]
+fn a_hit_on_a_choice_lists_its_entry_once_and_picks_the_choice() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str, category| ToolHitRow { key: format!("tool:user:/{n}"), category, ..tool_row(n, "") };
+    let choice = |n: &str, parent, k| ToolHitRow { parent: Some((parent, k)), ..tool(n, Some(0)) };
+    l.tools = vec![
+        tool("Lock", Some(0)),
+        tool("Sleep", Some(0)),
+        choice("Lock · two", 0, 0),
+        choice("Lock · one", 0, 1),
+        choice("Sleep · zero", 1, 0),
+        choice("Sleep · twofold", 1, 1),
+    ];
+    let g = group_by_category(&l.rank(Mode::Tools, "two"), &l.tools);
+    let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
+    assert_eq!(order, [Source::Tool(0), Source::Tool(1)], "each entry once, never a choice row");
+    assert_eq!(g.chips, [(0, 0), (1, 1)], "each entry's own matching choice");
+    // `lock` finds the entry's own name: its choices match only through it, none is picked.
+    let g = group_by_category(&l.rank(Mode::Tools, "lock"), &l.tools);
+    assert_eq!(g.hits.iter().map(|h| h.source).collect::<Vec<_>>(), [Source::Tool(0)]);
+    assert!(g.chips.is_empty(), "{:?}", g.chips);
+}
+
+/// The characters a query matched in a name, as character positions, sorted, each once.
+#[test]
+fn matched_positions_are_the_characters_the_query_found() {
+    let mut r = Ranker::new();
+    assert_eq!(r.marks("sh", "Schedule shutdown"), [9, 10], "the word start wins over a scattered match");
+    assert_eq!(r.marks("dn sch", "Schedule shutdown"), [0, 1, 2, 13, 16], "every atom's, sorted");
+    assert!(r.marks("zz", "Schedule shutdown").is_empty(), "nothing matched: no position");
+    assert_eq!(r.marks("cafe", "Café"), [0, 1, 2, 3], "folded as the ranking folds");
 }

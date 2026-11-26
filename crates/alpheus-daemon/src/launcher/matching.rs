@@ -122,9 +122,21 @@ pub struct ToolHitRow {
     /// `<category> <name>`, or empty without a category: scored only when the name itself missed.
     pub path_text: String,
     pub key: String,
-    /// A choice of the flat search: the index of its entry's row in the same list. The Tools search
-    /// keeps it right after its entry.
-    pub parent: Option<usize>,
+    /// A choice of the flat search: the index of its entry's row in the same list and the choice's
+    /// index among the entry's. The Tools search keeps it right after its entry (`group_choices`),
+    /// the panel's folds it into its entry (`group_by_category`).
+    pub parent: Option<(usize, usize)>,
+    /// Its category (an index into the catalog's), none for a root entry: the panel's search
+    /// groups by it.
+    pub category: Option<usize>,
+}
+
+/// The Super+X panel's search results: one hit per entry, grouped by category, and the choice a
+/// hit picked for each entry it names, (entry row, choice).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolGroups {
+    pub hits: Vec<Hit>,
+    pub chips: Vec<(usize, usize)>,
 }
 
 pub struct Query<'a> {
@@ -696,18 +708,78 @@ impl Ranker {
         if !path_hits.is_empty() {
             ranked.extend(finish(path_hits, q, pr));
         }
-        if q.mode == Mode::Tools {
-            ranked = group_choices(ranked, q.tools);
-        }
         ranked
     }
+
+    /// The positions of the characters `text` (a query, parsed as `rank` parses it) matches in
+    /// `name`, sorted and each once: none when it does not match.
+    pub fn marks(&mut self, text: &str, name: &str) -> Vec<u32> {
+        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
+        let mut out = Vec::new();
+        if pattern.indices(Utf32Str::new(name, &mut self.buf), &mut self.matcher, &mut out).is_none() {
+            out.clear();
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// The panel's search (spec 2026-11-26-superx-panel-design.md, "Search"): the Tools search's
+/// `ranked` hits with each choice folded into its entry, each entry once where its best hit ranks;
+/// then grouped by category, the groups in the order of their best hit, the entries of a group in
+/// rank order. A choice picks its chip when its entry's own name missed or ranked a bucket lower:
+/// the query then found the choice's text, not only the entry's.
+pub fn group_by_category(ranked: &[Hit], tools: &[ToolHitRow]) -> ToolGroups {
+    let tool = |h: &Hit| match h.source {
+        Source::Tool(i) => tools.get(i).map(|t| (i, t)),
+        _ => None,
+    };
+    // The score of each entry's own hit.
+    let mut own = vec![None; tools.len()];
+    for h in ranked {
+        if let Some((i, t)) = tool(h)
+            && t.parent.is_none()
+            && let Some(slot) = own.get_mut(i)
+        {
+            *slot = Some(h.score / SCORE_BUCKET);
+        }
+    }
+    let mut seen = vec![false; tools.len()];
+    let mut entries: Vec<(Option<usize>, Hit)> = Vec::new();
+    let mut chips = Vec::new();
+    for h in ranked {
+        let Some((i, t)) = tool(h) else { continue };
+        let row = t.parent.map_or(i, |(p, _)| p);
+        if let Some((p, k)) = t.parent
+            && own.get(p).copied().flatten().is_none_or(|s| h.score / SCORE_BUCKET > s)
+            && !chips.iter().any(|&(e, _)| e == p)
+        {
+            chips.push((p, k));
+        }
+        if let Some(done) = seen.get_mut(row)
+            && !*done
+        {
+            *done = true;
+            entries.push((tools.get(row).and_then(|t| t.category), Hit { source: Source::Tool(row), ..*h }));
+        }
+    }
+    // Groups in the order their first entry comes: the order of their best hit.
+    let mut groups: Vec<Option<usize>> = Vec::new();
+    for (c, _) in &entries {
+        if !groups.contains(c) {
+            groups.push(*c);
+        }
+    }
+    let hits = groups.iter().flat_map(|g| entries.iter().filter(move |(c, _)| c == g).map(|(_, h)| *h)).collect();
+    ToolGroups { hits, chips }
 }
 
 /// The Tools search's hits with each choice moved right after its entry when the entry is among
 /// them, the choices of one entry in their own order; a choice whose entry missed keeps its place.
-fn group_choices(ranked: Vec<Hit>, tools: &[ToolHitRow]) -> Vec<Hit> {
+pub fn group_choices(ranked: Vec<Hit>, tools: &[ToolHitRow]) -> Vec<Hit> {
     let parent = |h: &Hit| match h.source {
-        Source::Tool(i) => tools.get(i).and_then(|t| t.parent),
+        Source::Tool(i) => tools.get(i).and_then(|t| t.parent).map(|(p, _)| p),
         _ => None,
     };
     if !ranked.iter().any(|h| parent(h).is_some()) {

@@ -861,6 +861,8 @@ pub fn frame_ink(l: &Launcher) -> FrameInk {
 pub enum Click {
     Result(usize),
     Mode(Mode),
+    /// A tab of the Super+X panel's strip: an index into `Panel::tabs`.
+    Tab(usize),
     Inside,
 }
 

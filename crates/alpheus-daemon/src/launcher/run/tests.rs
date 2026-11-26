@@ -713,6 +713,37 @@ fn text_is_never_recorded_in_history_nor_shown_by_debug() {
     assert!(!format!("{a:?}").contains("secret-target"));
 }
 
+/// From the panel's search: a picked chip and the typed answer run as a fixed choice does, the
+/// chip recorded under its key, neither the search's text nor the answer anywhere.
+#[test]
+fn typed_text_still_never_reaches_history_or_debug() {
+    use crate::keys::Key;
+    use crate::launcher::model::Outcome;
+    let d = TempDir::new("run-chip-history");
+    let h = d.join("launcher-history");
+    let bin = stubs("chip-history", &["atool", "foot"]);
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    f.ok(&format!("{SCOPE} foot --hold -e atool full -- secret-target.example"), "");
+    let mut l = tools_launcher(ASKS);
+    l.open_panel(104, 35);
+    for c in "/pick".chars() {
+        l.key(Key::Char(c));
+    }
+    assert_eq!(l.key(Key::Right), Outcome::Redraw, "the `full` chip");
+    assert_eq!(l.key(Key::Enter), Outcome::Redraw, "its prompt");
+    for c in "secret-target.example".chars() {
+        l.key(Key::Char(c));
+    }
+    let Outcome::Activate(a) = l.key(Key::Enter) else { panic!("runs") };
+    assert!(!format!("{a:?}").contains("secret-target"), "Debug never shows the answer");
+    assert_eq!(perform(&mut l, a, &ctx(&f, Spawner::SystemdScope, Some(&h), &dirs)), Ok(Done::Close));
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:user:/Pick/full"], "the chip under its key");
+    let saved = std::fs::read_to_string(&h).unwrap();
+    assert!(!saved.contains("secret-target"), "no typed text in the file");
+}
+
 #[test]
 fn a_built_ins_choice_is_recorded_under_its_key_and_its_text_never() {
     let d = TempDir::new("run-builtin-choice");

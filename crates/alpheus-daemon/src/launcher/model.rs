@@ -11,7 +11,7 @@ use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
-use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow};
+use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow, group_by_category, group_choices};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::{ProcRow, Sig, SignalError};
 use crate::launcher::scan::Catalog;
@@ -219,6 +219,11 @@ pub struct Launcher {
     tool_level_builds: u32,
     /// Whether `Source::Tool` hits index the flat search's rows (All, and a typed root query).
     tool_flat_shown: bool,
+    /// The panel's search: the chips its last ranking matched, (entry, choice), picked by the
+    /// next `refilter`; and per result the positions of the characters the query matched in the
+    /// name. Empty otherwise.
+    tool_chips: Vec<(usize, usize)>,
+    tool_marks: Vec<Vec<u32>>,
     /// When the Clear row asked `Clear? ⏎`: it never expires (no timer), only another key or click cancels it.
     clear_asked: Option<Instant>,
     /// The instant of the key or click being handled: the host sets it before each one and the
@@ -289,6 +294,8 @@ impl Launcher {
             #[cfg(test)]
             tool_level_builds: 0,
             tool_flat_shown: true,
+            tool_chips: Vec::new(),
+            tool_marks: Vec::new(),
             clear_asked: None,
             at: None,
             ranker: Ranker::new(),
@@ -435,6 +442,33 @@ impl Launcher {
     /// query lists the flat search instead).
     fn at_panel(&self) -> bool {
         self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(ToolsState::at_panel)
+    }
+
+    /// Whether the Tools mode shows the panel's search: its panel open at the root, a query typed.
+    pub fn panel_search(&self) -> bool {
+        self.mode == Mode::Tools && !self.query.trim().is_empty() && self.tools.as_ref().is_some_and(|t| t.panel().is_some())
+    }
+
+    /// The positions of the characters the panel's search matched in result `index`'s name.
+    pub fn tool_marks(&self, index: usize) -> &[u32] {
+        self.tool_marks.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// A click on the panel's tab `tab`: opens it as Tab would, on its first tool; from the search
+    /// too, which it ends. Nothing without a panel at the root or such a tab.
+    pub fn click_tab(&mut self, tab: usize) -> Outcome {
+        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(|t| t.open_tab(tab)) {
+            return Outcome::Nothing;
+        }
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel();
+        }
+        self.query.clear();
+        self.searching = false;
+        self.message = None;
+        self.ranker.forget();
+        self.refilter();
+        Outcome::Redraw
     }
 
     /// The rows the `Source::Tool` hits index.
@@ -857,8 +891,12 @@ impl Launcher {
                     Outcome::Nothing
                 }
             }
-            Key::Left => Outcome::Nothing,
-            Key::Right => self.tools_drill(),
+            // On the panel's search a row's chips; nothing else moves the row.
+            Key::Left => self.step_chip(-1).unwrap_or(Outcome::Nothing),
+            Key::Right => match self.step_chip(1) {
+                Some(o) => o,
+                None => self.tools_drill(),
+            },
             Key::Escape => {
                 if self.tools_up() {
                     Outcome::Redraw
@@ -952,6 +990,15 @@ impl Launcher {
         }
     }
 
+    /// ←/→ on the selected row of the panel's search: picks the chip `step` places away (stopping at
+    /// either end). None when the row has no chips.
+    fn step_chip(&mut self, step: i32) -> Option<Outcome> {
+        let Some(RowId::Entry(e)) = self.selected_tool().filter(|_| self.panel_search()) else { return None };
+        let t = self.tools.as_mut()?;
+        t.chip(e)?;
+        Some(if t.step_chip(e, step) { Outcome::Redraw } else { Outcome::Nothing })
+    }
+
     /// → on a category or an entry with choices opens it like Enter; elsewhere nothing.
     fn tools_drill(&mut self) -> Outcome {
         let drills = match (self.selected_tool(), &self.tools) {
@@ -978,7 +1025,10 @@ impl Launcher {
                 _ => Outcome::Nothing,
             };
         }
+        // A row of the panel's search with chips runs its entry with the picked one.
+        let chip = |e: usize| self.tools.as_ref().and_then(|t| t.chip(e)).filter(|_| self.panel_search());
         match self.selected_tool() {
+            Some(RowId::Entry(e)) if let Some(k) = chip(e) => self.tools_activate(RowId::Choice(e, k)),
             Some(row) => self.tools_activate(row),
             None => Outcome::Nothing,
         }
@@ -1101,6 +1151,8 @@ impl Launcher {
     }
 
     fn rank(&mut self) {
+        self.tool_chips.clear();
+        self.tool_marks.clear();
         // `--password`: no list to rank, and a nucleo pattern built from the query would copy
         // the secret into heap buffers the drop cannot wipe.
         if self.password {
@@ -1227,7 +1279,22 @@ impl Launcher {
             history: &self.history,
             now: self.now,
         };
-        self.results = self.ranker.rank(&q);
+        let ranked = self.ranker.rank(&q);
+        if flat && t.panel().is_some() {
+            let groups = group_by_category(&ranked, tools);
+            self.tool_marks = groups
+                .hits
+                .iter()
+                .map(|h| match h.source {
+                    Source::Tool(i) => tools.get(i).map(|r| self.ranker.marks(&self.query, &r.name)).unwrap_or_default(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            self.results = groups.hits;
+            self.tool_chips = groups.chips;
+        } else {
+            self.results = group_choices(ranked, tools);
+        }
     }
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
@@ -1237,6 +1304,10 @@ impl Launcher {
     fn refilter(&mut self) {
         self.proc_lost = false;
         self.rank();
+        // A new query picks the chips it matched, every other row its first.
+        if let Some(t) = self.tools.as_mut() {
+            t.pick_chips(&self.tool_chips);
+        }
         self.selected = 0;
         self.top = 0;
         self.moved = false;

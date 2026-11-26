@@ -873,6 +873,7 @@ impl App {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
                             (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
                             (Some(Click::Mode(m)), Button::Left) => open.model.click_mode(m),
+                            (Some(Click::Tab(tab)), Button::Left) => open.model.click_tab(tab),
                             _ => Outcome::Nothing,
                         }
                     }
@@ -1278,7 +1279,7 @@ mod tests {
 
     #[test]
     fn the_box_keeps_its_size_from_panel_to_search() {
-        let mut l = tools_open("");
+        let mut l = tools_open("[[tools.entry]]\nname = \"Ping\"\nrun = [\"ping\", \"{text}\"]\nask = \"Host\"\n");
         open_panel_for_open(232, 49, &mut l);
         let at_open = open_layout(232, 49, &l);
         assert!(l.panel_size().is_some(), "the panel is opened at open");
@@ -1289,11 +1290,11 @@ mod tests {
         assert_eq!(open_layout(232, 49, &l), at_open, "typing never resizes the box");
         l.key(Key::Backspace);
         l.key(Key::Backspace);
-        // Another tab, then a tool's choices (a level below the root): the box stays.
+        // Another tab, then a tool's prompt (a level below the root): the box stays.
         l.key(Key::Tab);
         assert_eq!(l.tools().unwrap().panel().map(|p| p.active), Some(1), "the second tab");
         assert_eq!(open_layout(232, 49, &l), at_open, "a tab never resizes the box");
-        for c in "/schedule".chars() {
+        for c in "/ping".chars() {
             l.key(Key::Char(c));
         }
         l.key(Key::Enter);

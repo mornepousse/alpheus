@@ -1535,30 +1535,134 @@ fn entry_named(l: &Launcher, name: &str) -> usize {
     l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
 }
 
+// --- the panel's search (spec "Search") ---
+
+/// The rendered row and cell of `text`'s first character, the first time the list (left of the
+/// card) or the tab strip shows it.
+fn find(rows: &Boxed, text: &str) -> (usize, usize) {
+    list_text(rows)
+        .iter()
+        .enumerate()
+        .find_map(|(y, t)| t.find(text).map(|at| (y, t[..at].chars().count())))
+        .unwrap_or_else(|| panic!("{text:?} in {}", snapshot_with_shapes(rows)))
+}
+
+/// The chips on rendered row `y`, left to right: (picked, the text over them).
+fn chips_on(rows: &Boxed, y: usize) -> Vec<(bool, String)> {
+    let mut chips: Vec<&Shape> = rows
+        .shapes
+        .iter()
+        .filter(|s| s.row == y && s.rows == 1 && matches!(s.kind, ShapeKind::Chip(Tint::Pill | Tint::AccentContainer)))
+        .collect();
+    chips.sort_by_key(|s| s.col);
+    let text = rows.rows[y].text();
+    chips
+        .into_iter()
+        .map(|s| {
+            let words: String = text.chars().skip(usize::from(s.col)).take(usize::from(s.width)).collect();
+            (s.kind == ShapeKind::Chip(Tint::AccentContainer), words.trim().to_string())
+        })
+        .collect()
+}
+
+/// The search lists Schedule shutdown once, its durations as chips on its second line (the first
+/// picked), under its category's label; → picks the next one; the card follows the selection.
 #[test]
-fn search_rows_keep_icons_and_group_choices() {
+fn fixed_choices_show_as_chips_not_rows() {
     let (mut l, b) = panel_box("");
     typed(&mut l, "/sh");
     let rows = draw_in(&l, &b);
     let text = tool_text(&rows);
-    let at = text.iter().position(|t| t.contains("Schedule shutdown") && !t.contains(" · ")).unwrap_or_else(|| panic!("{text:#?}"));
-    for k in 1..=5 {
-        assert!(text[at + k].contains("Schedule shutdown · "), "choice {k} right after its entry: {text:#?}");
+    assert!(!text.iter().any(|t| t.contains("Schedule shutdown · ")), "no choice row: {text:#?}");
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let chips = chips_on(&rows, y + 1);
+    let words: Vec<&str> = chips.iter().map(|(_, w)| w.as_str()).collect();
+    assert_eq!(words, ["30 min", "1 h", "1 h 30", "2 h", "3 h"], "{}", snapshot_with_shapes(&rows));
+    assert_eq!(chips.iter().filter(|(picked, _)| *picked).count(), 1);
+    assert!(chips[0].0, "the first chip picked");
+    assert!(text[..y].iter().rev().find(|t| t.contains('●')).is_some_and(|t| t.contains("● SYSTEM")), "under its label: {text:#?}");
+    // A row without chips keeps its description.
+    let (wy, _) = find(&rows, "Screenshot");
+    let description = l.tools().unwrap().catalog.entries[entry_named(&l, "Screenshot")].description.clone().unwrap();
+    assert!(chips_on(&rows, wy + 1).is_empty() && text[wy + 1].contains(description.as_ref()), "{text:#?}");
+    // On its row, → moves the pick; the card shows the selected tool.
+    let shutdown = entry_named(&l, "Schedule shutdown");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(shutdown))).unwrap();
+    while l.selected < at {
+        l.key(Key::Down);
     }
-    assert!(!text[at + 6].contains("Schedule shutdown"), "then the next entry: {text:#?}");
-    // Every entry row carries its glyph.
-    for (i, h) in l.results.iter().enumerate().take(usize::from(b.list_rows)) {
-        let Source::Tool(r) = h.source else { panic!() };
-        let row = &l.tool_rows()[r];
-        if let (RowId::Entry(_), Some(icon)) = (row.id, row.icon) {
-            assert!(text[usize::from(b.list_top) - 1 + i].contains(icon), "{:?} keeps its glyph", row.text);
-        }
+    l.key(Key::Right);
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let picked: Vec<String> = chips_on(&rows, y + 1).into_iter().filter(|(p, _)| *p).map(|(_, w)| w).collect();
+    assert_eq!(picked, ["1 h"]);
+    assert!(card_text(&rows).iter().any(|t| t == "Schedule shutdown"), "{:#?}", card_text(&rows));
+    insta::assert_snapshot!("panel_search", snapshot_with_shapes(&rows));
+    // A click on a search row is its result.
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(hit(&l, &b, ring(8), ring(y + 1)), Some(Click::Result(at)));
+    // A picked chip past the line's end: the line starts further right so it shows.
+    let scan = entry_named(&l, "Network scan");
+    l.key(Key::Down);
+    assert_eq!(
+        l.tool_rows()[match l.results[l.selected].source {
+            Source::Tool(i) => i,
+            other => panic!("{other:?}"),
+        }]
+        .id,
+        RowId::Entry(scan)
+    );
+    while l.key(Key::Right) == crate::launcher::model::Outcome::Redraw {}
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Network scan");
+    let chips = chips_on(&rows, y + 1);
+    assert_eq!(chips.last().cloned(), Some((true, "Aggressive scan -A (sudo)".to_string())), "{}", snapshot_with_shapes(&rows));
+}
+
+/// `sh` found in `Schedule shutdown`: those two cells in the accent, the rest of the name not.
+#[test]
+fn matched_characters_are_accented() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/sh");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, "Schedule shutdown");
+    let styles: Vec<char> = rows.rows[y].styles().chars().collect();
+    let (accent, normal) = (Style::ACCENT.code(), Style::NORMAL.code());
+    let name: Vec<char> = styles[x..x + "Schedule shutdown".len()].to_vec();
+    for (i, c) in name.iter().enumerate() {
+        let want = if (9..=10).contains(&i) { accent } else { normal };
+        assert_eq!(*c, want, "cell {i} of the name: {name:?}");
     }
-    assert!(text[at].contains("System"), "the category dim at the right: {:?}", text[at]);
-    let glyph = l.tools().unwrap().catalog.entries[entry_named(&l, "Schedule shutdown")].icon.unwrap();
-    assert!(text[at].contains(glyph) && !text[at + 1].contains(glyph), "a choice under its entry leaves the glyph to it");
-    let orphan = text.iter().find(|t| t.contains("Network scan · ")).unwrap_or_else(|| panic!("{text:#?}"));
-    assert!(!orphan.starts_with("   "), "a choice whose entry missed keeps its glyph: {orphan:?}");
+    // At home no name is accented.
+    let (mut l, b) = panel_box("");
+    select_tool(&mut l, "Schedule shutdown");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, "Schedule shutdown");
+    let name: String = rows.rows[y].styles().chars().skip(x).take("Schedule shutdown".len()).collect();
+    assert!(name.chars().all(|c| c == normal), "{name:?}");
+}
+
+/// A click on a tab of the strip is that tab, scrolled or not; between two tabs it is nothing.
+#[test]
+fn a_click_on_a_tab_maps_to_it() {
+    use crate::launcher::tools::panel::Tab;
+    let (l, b) = panel_box("");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, " Captures ");
+    let captures = l.tools().unwrap().catalog.categories.iter().position(|c| c.name == "Captures").unwrap();
+    let tab = l.tools().unwrap().panel().unwrap().tabs.iter().position(|t| *t == Tab::Category(captures)).unwrap();
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(y, 1, "the strip's row");
+    assert_eq!(hit(&l, &b, ring(x + 1), ring(y)), Some(Click::Tab(tab)));
+    assert_eq!(hit(&l, &b, ring(x), ring(y)), Some(Click::Tab(tab)), "the pill's own edge");
+    assert_eq!(hit(&l, &b, ring(x - 1), ring(y)), Some(Click::Inside), "the gap before it");
+    // A scrolled strip: the last tab drawn is the last tab.
+    let (mut l, b) = panel_box(&many_categories());
+    l.key(Key::BackTab);
+    let strip = draw_in(&l, &b).rows[1].text();
+    let (y, x) = (1, strip[..strip.find(" Category 15 ").unwrap()].chars().count());
+    let last = l.tools().unwrap().panel().unwrap().tabs.len() - 1;
+    assert_eq!(hit(&l, &b, ring(x + 2), ring(y)), Some(Click::Tab(last)));
 }
 
 #[test]

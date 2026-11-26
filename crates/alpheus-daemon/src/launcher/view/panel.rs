@@ -1,16 +1,19 @@
-//! The Super+X command panel's home, drawn: the search field, the tab strip, a line, the list of
-//! the open tab (section labels, tools on two lines) beside the selected tool's detail card, a
-//! line, the footer. Every number is in the ring's coordinates, as in the rest of the view.
+//! The Super+X command panel drawn: the search field, the tab strip, a line, the list (the open
+//! tab's section labels and tools on two lines, or the search's results under their category's
+//! label, fixed choices as chips) beside the selected tool's detail card, a line, the footer. Every
+//! number is in the ring's coordinates, as in the rest of the view.
 //!
-//! See: docs/superpowers/specs/2026-11-26-superx-panel-design.md ("Layout").
+//! See: docs/superpowers/specs/2026-11-26-superx-panel-design.md ("Layout", "Search").
 
 use super::{BoxLayout, Click, Hint, LETTER_CELLS, TOOLS_INSET, blank, capsule, category_hue, key_hints, ring_shape, tools_chip};
 use crate::grid::{Grid, Style, Tint, text_width, truncate};
+use crate::launcher::matching::Source;
 use crate::launcher::model::Launcher;
 use crate::launcher::tools::catalog::{Choices, Entry, EntryKind};
 use crate::launcher::tools::nav::{RowId, ToolsState};
 use crate::launcher::tools::panel::{Action, Label, Panel, PanelRow, Tab, actions};
 use crate::list::{self, Boxed, Shape, ShapeKind, wrap};
+use std::borrow::Cow;
 
 /// The rows around the panes: the ring's two, the search field, the tabs, the line under them,
 /// the line over the footer, the footer.
@@ -28,6 +31,11 @@ const SWITCH_CELLS: u16 = 3;
 
 const HOME_HINTS: [Hint; 5] = [(&["⏎"], "Run"), (&["→"], "Options"), (&["Tab"], "Category"), (&["a-z"], "Quick key"), (&["Esc"], "Close")];
 const HOME_HINTS_NO_LETTERS: [Hint; 4] = [(&["⏎"], "Run"), (&["→"], "Options"), (&["Tab"], "Category"), (&["Esc"], "Close")];
+const SEARCH_HINTS: [Hint; 2] = [(&["⏎"], "Run"), (&["Esc"], "Close")];
+const SEARCH_CHIP_HINTS: [Hint; 3] = [(&["⏎"], "Run"), (&["←", "→"], "Choose"), (&["Esc"], "Close")];
+/// What a picked chip's and the open tab's text is drawn in: the surface's background kept under
+/// it (a filled cell would square the pill).
+const ON_ACCENT: Style = Style { fg: Tint::OnAccent, bg: Tint::Bg, bold: true };
 
 /// Where the panel's parts lie in a box (ring coordinates, ends exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +63,41 @@ fn geometry(b: &BoxLayout) -> Geometry {
     Geometry { tabs: 2, pane_top: 4, pane_rows: rows.saturating_sub(usize::from(CHROME_ROWS)), list, card }
 }
 
-/// Whether `l` shows the panel's home: the Tools mode at an opened panel's root, nothing typed.
+/// Whether `l` shows the panel: the Tools mode at an opened panel's root, its home or its search.
 pub(super) fn shown(l: &Launcher) -> bool {
-    l.query.is_empty() && l.tools().and_then(ToolsState::panel).is_some()
+    l.tools().and_then(ToolsState::panel).is_some()
+}
+
+/// The list's rows: the open tab's at home; in the search one tool per result, in their order,
+/// under their category's label (a root entry's group under Pinned's, where home lists it).
+fn list_rows<'a>(l: &Launcher, t: &ToolsState, panel: &'a Panel) -> Cow<'a, [PanelRow]> {
+    if !l.panel_search() {
+        return Cow::Borrowed(&panel.rows);
+    }
+    let mut rows = Vec::with_capacity(l.results.len() * 2);
+    let mut last = None;
+    // The search's results are entries only (`matching::group_by_category`).
+    let entries = l.results.iter().filter_map(|h| match h.source {
+        Source::Tool(i) => match l.tool_rows().get(i).map(|r| r.id) {
+            Some(RowId::Entry(e)) => Some(e),
+            _ => None,
+        },
+        _ => None,
+    });
+    for e in entries {
+        let label = t.catalog.entries.get(e).and_then(|x| x.category).map_or(Label::Pinned, Label::Category);
+        if last != Some(label) {
+            rows.push(PanelRow::Section(label));
+            last = Some(label);
+        }
+        rows.push(PanelRow::Tool(e));
+    }
+    Cow::Owned(rows)
+}
+
+/// The selectable rows' entries, in row order.
+fn row_tools(rows: &[PanelRow]) -> impl Iterator<Item = usize> + '_ {
+    rows.iter().filter_map(|r| if let PanelRow::Tool(e) = *r { Some(e) } else { None })
 }
 
 /// The model's page at the panel: one tool per two lines of its pane (`Launcher::set_list_rows`);
@@ -74,12 +114,12 @@ struct Line {
     tool: usize,
 }
 
-/// The open tab's lines, then the first line shown: the model's top tool (with its label right
-/// above it), moved down only as far as the selected tool needs to show whole.
-fn window(l: &Launcher, panel: &Panel, pane_rows: usize) -> (Vec<Line>, usize) {
-    let mut lines = Vec::with_capacity(panel.rows.len());
+/// The list's lines, then the first line shown: the model's top tool (with its label right above
+/// it), moved down only as far as the selected tool needs to show whole.
+fn window(l: &Launcher, rows: &[PanelRow], pane_rows: usize) -> (Vec<Line>, usize) {
+    let mut lines = Vec::with_capacity(rows.len());
     let (mut at, mut tool) = (0, 0);
-    for &row in &panel.rows {
+    for &row in rows {
         lines.push(Line { at, row, tool });
         match row {
             PanelRow::Section(_) => at += 1,
@@ -123,7 +163,9 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     if let Some(row) = grid.get_mut(g.tabs) {
         tab_strip(t, panel, b, row, &mut shapes, g.tabs);
     }
-    let (lines, start) = window(l, panel, g.pane_rows);
+    let list = list_rows(l, t, panel);
+    let search = l.panel_search();
+    let (lines, start) = window(l, &list, g.pane_rows);
     let selected = (!l.results.is_empty() && !l.selection_lost()).then_some(l.selected);
     for line in &lines {
         let Some(offset) = line.at.checked_sub(start) else { continue };
@@ -135,17 +177,18 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         let y = g.pane_top + offset;
         match line.row {
             PanelRow::Section(label) => section(t, label, g.list, &mut grid[y]),
-            PanelRow::Tool(e) => tool_row(l, t, e, line.tool, selected == Some(line.tool), g.list, &mut grid, &mut shapes, y),
+            PanelRow::Tool(e) => {
+                let row = ToolLine { e, k: line.tool, selected: selected == Some(line.tool), search, y };
+                tool_row(l, t, &row, g.list, &mut grid, &mut shapes);
+            }
         }
     }
     if g.pane_rows > 0 && lines.iter().all(|x| !matches!(x.row, PanelRow::Tool(_))) {
-        grid[g.pane_top].write(g.list.0 + 1, g.list.1, "nothing here", Style::MUTED);
+        grid[g.pane_top].write(g.list.0 + 1, g.list.1, if search { "no match" } else { "nothing here" }, Style::MUTED);
     }
-    if let (Some(card), Some(k)) = (g.card, selected) {
-        let entry = panel.tools().get(k).copied();
-        if let Some(e) = entry {
-            detail_card(t, panel, e, card, (g.pane_top, g.pane_rows), &mut grid, &mut shapes);
-        }
+    let chosen = selected.and_then(|k| row_tools(&list).nth(k));
+    if let (Some(card), Some(e)) = (g.card, chosen) {
+        detail_card(t, panel, e, search, card, (g.pane_top, g.pane_rows), &mut grid, &mut shapes);
     }
     let footer = rows.saturating_sub(2);
     if let Some(row) = grid.get_mut(footer) {
@@ -155,7 +198,12 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                 row.write(start + 1, end, &truncate(m, end.saturating_sub(start + 1)), Style::ERROR);
             }
             None => {
-                let hints: &[Hint] = if l.letters_live() && t.root_letters() { &HOME_HINTS } else { &HOME_HINTS_NO_LETTERS };
+                let hints: &[Hint] = match chosen {
+                    Some(e) if search && t.chip(e).is_some() => &SEARCH_CHIP_HINTS,
+                    _ if search => &SEARCH_HINTS,
+                    _ if l.letters_live() && t.root_letters() => &HOME_HINTS,
+                    _ => &HOME_HINTS_NO_LETTERS,
+                };
                 key_hints(row, &mut shapes, footer, start, end, hints);
             }
         }
@@ -165,9 +213,17 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     boxed
 }
 
-/// The tab strip on row `y`: a pill per tab, the open one filled; when they do not fit, the strip
-/// starts as far right as the open tab needs, `‹` and `›` at the cut ends.
-fn tab_strip(t: &ToolsState, panel: &Panel, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
+/// The tabs a strip shows: each drawn tab's index, first column, width and name; whether tabs are
+/// cut off at the left and at the right.
+struct Strip {
+    tabs: Vec<(usize, u16, u16, String)>,
+    cut_left: bool,
+    cut_right: bool,
+}
+
+/// The strip in box `b`: a pill per tab from the left; when they do not fit, it starts as far
+/// right as the open tab needs, two cells kept at each cut end for its mark.
+fn strip(t: &ToolsState, panel: &Panel, b: &BoxLayout) -> Strip {
     let names: Vec<String> = panel
         .tabs
         .iter()
@@ -181,31 +237,38 @@ fn tab_strip(t: &ToolsState, panel: &Panel, b: &BoxLayout, g: &mut Grid, shapes:
     let span = |from: usize, to: usize| widths[from..=to].iter().map(|w| w + 1).sum::<u16>().saturating_sub(1);
     let last = widths.len().saturating_sub(1);
     let cut = !widths.is_empty() && span(0, last) > end.saturating_sub(start);
-    // Two cells kept at each cut end for its mark.
     let (from, to) = if cut { (start + 2, end.saturating_sub(2)) } else { (start, end) };
     let mut first = 0;
     while cut && first < panel.active && span(first, panel.active) > to.saturating_sub(from) {
         first += 1;
     }
     let mut x = from;
-    let mut drawn = first;
-    for (i, (name, w)) in names.iter().zip(&widths).enumerate().skip(first) {
+    let mut tabs = Vec::new();
+    for (i, (name, w)) in names.into_iter().zip(widths).enumerate().skip(first) {
         if x + w > to {
             break;
         }
-        let active = i == panel.active;
-        let tint = if active { Tint::AccentContainer } else { Tint::Pill };
-        shapes.push(ring_shape(y, x, *w, 1, ShapeKind::Chip(tint)));
-        // The text keeps the surface's background: a filled cell would square the pill.
-        let style = if active { Style { fg: Tint::OnAccent, bg: Tint::Bg, bold: true } } else { Style::NORMAL };
-        g.write(x + 1, x + w - 1, name, style);
+        tabs.push((i, x, w, name));
         x += w + 1;
-        drawn = i + 1;
     }
-    if first > 0 {
+    let drawn = tabs.last().map_or(first, |(i, ..)| i + 1);
+    Strip { tabs, cut_left: first > 0, cut_right: drawn < panel.tabs.len() }
+}
+
+/// The tab strip on row `y`: a pill per tab, the open one filled, `‹` and `›` at the cut ends.
+fn tab_strip(t: &ToolsState, panel: &Panel, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
+    let s = strip(t, panel, b);
+    for (i, x, w, name) in &s.tabs {
+        let active = *i == panel.active;
+        let tint = if active { Tint::AccentContainer } else { Tint::Pill };
+        shapes.push(ring_shape(y, *x, *w, 1, ShapeKind::Chip(tint)));
+        g.write(x + 1, x + w - 1, name, if active { ON_ACCENT } else { Style::NORMAL });
+    }
+    let (start, end) = (1 + TOOLS_INSET, b.columns.saturating_sub(1 + TOOLS_INSET));
+    if s.cut_left {
         g.write(start, start + 1, "‹", Style::MUTED);
     }
-    if drawn < names.len() {
+    if s.cut_right {
         g.write(end.saturating_sub(1), end, "›", Style::MUTED);
     }
 }
@@ -224,21 +287,23 @@ fn section(t: &ToolsState, label: Label, list: (u16, u16), g: &mut Grid) {
     };
 }
 
-/// A tool on rows `y` and `y + 1`: its tile with the glyph in its category's hue, its name (or its
-/// pending question), its description dim below; at the right of the first line its switch (the
-/// slot kept from the first frame for a tool with a state), `›` when it opens a level, its letter.
-#[allow(clippy::too_many_arguments)]
-fn tool_row(
-    l: &Launcher,
-    t: &ToolsState,
+/// A tool of the list: its entry, its index among the list's tools (the result's), whether it is
+/// selected, whether the list is the search's, and its first line.
+struct ToolLine {
     e: usize,
     k: usize,
     selected: bool,
-    list: (u16, u16),
-    grid: &mut [Grid],
-    shapes: &mut Vec<Shape>,
+    search: bool,
     y: usize,
-) {
+}
+
+/// A tool on rows `y` and `y + 1`: its tile with the glyph in its category's hue, its name (or its
+/// pending question; in the search the matched characters in the accent), its description dim
+/// below, or in the search its fixed choices as chips, the picked one filled; at the right of the
+/// first line its switch (the slot kept from the first frame for a tool with a state), `›` when it
+/// opens a level, its letter.
+fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid: &mut [Grid], shapes: &mut Vec<Shape>) {
+    let &ToolLine { e, k, selected, search, y } = row;
     let Some(entry) = t.catalog.entries.get(e) else { return };
     if selected {
         // Under the tile and the capsule, listed before them.
@@ -261,22 +326,74 @@ fn tool_row(
             shapes.push(ring_shape(y, right, 2, 1, ShapeKind::Switch(on)));
         }
     }
-    if opens_level(entry) {
+    // Its chips: in the search, for an entry with fixed choices (a picked one).
+    let chips = match (&entry.choices, t.chip(e)) {
+        (Choices::Fixed(list), Some(picked)) if search => Some((list, picked)),
+        _ => None,
+    };
+    if opens_level(entry) && chips.is_none() {
         right = right.saturating_sub(2);
         grid[y].write(right, right + 1, "›", Style::MUTED);
     }
     let (x, stop) = (tile + 4, right.saturating_sub(1));
     let room = stop.saturating_sub(x);
-    let asking = t.asking(RowId::Entry(e));
-    if asking && let Some(row) = l.tool_rows().get(k).filter(|r| r.id == RowId::Entry(e)) {
-        grid[y].write(x, stop, &truncate(&t.question_text(row), room), Style::URGENT);
-    } else {
-        grid[y].write(x, stop, &truncate(&entry.name, room), Style::NORMAL);
+    let asked = match chips {
+        Some((list, picked)) if t.asking(RowId::Choice(e, picked)) => list.get(picked).map(|c| format!("{} · {c}? ⏎", entry.name)),
+        _ if t.asking(RowId::Entry(e)) => l.tool_rows().get(k).filter(|r| r.id == RowId::Entry(e)).map(|r| t.question_text(r)),
+        _ => None,
+    };
+    match asked {
+        Some(q) => grid[y].write(x, stop, &truncate(&q, room), Style::URGENT),
+        None if search => marked(&mut grid[y], x, stop, &entry.name, l.tool_marks(k)),
+        None => grid[y].write(x, stop, &truncate(&entry.name, room), Style::NORMAL),
+    };
+    if let Some((list, picked)) = chips {
+        chip_line(&mut grid[y + 1], shapes, y + 1, (x, stop), list, picked);
+        return;
     }
     // No description: the category's name, dim, says where it lives.
     let second = entry.description.as_deref().or_else(|| entry.category.and_then(|c| t.catalog.categories.get(c)).map(|c| c.name.as_str()));
     if let Some(text) = second {
         grid[y + 1].write(x, stop, &truncate(text, room), Style::MUTED);
+    }
+}
+
+/// `name` from column `x`, cut before `stop`, the characters at `marks` (character positions) in
+/// the accent. The column after it.
+fn marked(g: &mut Grid, x: u16, stop: u16, name: &str, marks: &[u32]) -> u16 {
+    let shown = truncate(name, stop.saturating_sub(x));
+    // A cut name ends with `…`, which matched nothing.
+    let whole = shown.chars().count().saturating_sub(usize::from(shown != name));
+    let mut x = x;
+    let mut buf = [0; 4];
+    for (i, c) in shown.chars().enumerate() {
+        let hit = i < whole && u32::try_from(i).is_ok_and(|i| marks.binary_search(&i).is_ok());
+        x = g.write(x, stop, c.encode_utf8(&mut buf), if hit { Style::ACCENT } else { Style::NORMAL });
+    }
+    x
+}
+
+/// A row's fixed choices as chips on row `y` within `columns`, one blank cell apart, the picked one
+/// filled: the line starts at the first chip, or as far right as the picked one needs to show.
+fn chip_line(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, (start, stop): (u16, u16), list: &[String], picked: usize) {
+    let room = stop.saturating_sub(start);
+    // A chip never wider than the line.
+    let words: Vec<String> = list.iter().map(|c| truncate(c, room.saturating_sub(2))).collect();
+    let widths: Vec<u16> = words.iter().map(|w| text_width(w) + 2).collect();
+    let span = |from: usize, to: usize| widths.get(from..=to).map_or(0, |w| w.iter().map(|w| w + 1).sum::<u16>().saturating_sub(1));
+    let mut first = 0;
+    while first < picked && span(first, picked) > room {
+        first += 1;
+    }
+    let mut x = start;
+    for (i, (word, w)) in words.iter().zip(&widths).enumerate().skip(first) {
+        if x + w > stop {
+            break;
+        }
+        let on = i == picked;
+        shapes.push(ring_shape(y, x, *w, 1, ShapeKind::Chip(if on { Tint::AccentContainer } else { Tint::Pill })));
+        g.write(x + 1, x + w - 1, word, if on { ON_ACCENT } else { Style::NORMAL });
+        x += w + 1;
     }
 }
 
@@ -288,10 +405,12 @@ fn opens_level(e: &Entry) -> bool {
 /// The selected tool's card over `columns` and the pane's rows: its tile, its name in bold, its
 /// category and kind dim, its description wrapped, a thin line, its actions with their keys at
 /// the right, and `Pinned` for a pinned tool. A line that does not fit is left out.
+#[allow(clippy::too_many_arguments)]
 fn detail_card(
     t: &ToolsState,
     panel: &Panel,
     e: usize,
+    search: bool,
     columns: (u16, u16),
     (top, rows): (usize, usize),
     grid: &mut [Grid],
@@ -341,7 +460,7 @@ fn detail_card(
         if y >= bottom {
             return;
         }
-        let (label, keys) = action_line(t, e, &action);
+        let (label, keys) = action_line(t, e, &action, search && t.chip(e).is_some());
         let mut kx = end;
         for key in keys.iter().rev() {
             kx = kx.saturating_sub(text_width(key) + 2);
@@ -362,12 +481,13 @@ fn pinned_holds(panel: &Panel, p: usize, e: usize) -> bool {
     panel.rows[p + 1..].iter().take_while(|r| matches!(r, PanelRow::Tool(_))).any(|r| *r == PanelRow::Tool(e))
 }
 
-/// An action's words and its keys.
-fn action_line(t: &ToolsState, e: usize, action: &Action) -> (String, Vec<String>) {
+/// An action's words and its keys (`chips`: the choices are the row's chips, picked by ← and →).
+fn action_line(t: &ToolsState, e: usize, action: &Action, chips: bool) -> (String, Vec<String>) {
     let enter = || vec!["⏎".to_string()];
     match action {
         Action::Run => ("Run".into(), enter()),
         Action::Open => ("Open".into(), enter()),
+        Action::Choose if chips => ("Choose".into(), vec!["←".into(), "→".into()]),
         Action::Choose => ("Choose".into(), vec!["→".into()]),
         Action::Type(label) => (format!("Type {label}"), enter()),
         Action::Confirm => ("Confirm".into(), vec!["⏎".into(), "⏎".into()]),
@@ -383,14 +503,24 @@ fn action_line(t: &ToolsState, e: usize, action: &Action) -> (String, Vec<String
     }
 }
 
-/// Cell (column, row) of the panel's home → what it hits: a tool's two lines are its result.
+/// Cell (column, row) of the panel → what it hits: a tab of the strip, or a tool (its two lines
+/// are its result).
 pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
-    let (Some(panel), g) = (l.tools().and_then(ToolsState::panel), geometry(b)) else { return Click::Inside };
+    let (Some(t), g) = (l.tools(), geometry(b)) else { return Click::Inside };
+    let Some(panel) = t.panel() else { return Click::Inside };
     let row = usize::from(row);
+    if row == g.tabs {
+        return strip(t, panel, b)
+            .tabs
+            .iter()
+            .find(|(_, x, w, _)| (*x..x + w).contains(&column))
+            .map_or(Click::Inside, |(i, ..)| Click::Tab(*i));
+    }
     if !(g.list.0..g.list.1).contains(&column) || row < g.pane_top || row >= g.pane_top + g.pane_rows {
         return Click::Inside;
     }
-    let (lines, start) = window(l, panel, g.pane_rows);
+    let list = list_rows(l, t, panel);
+    let (lines, start) = window(l, &list, g.pane_rows);
     let line = start + row - g.pane_top;
     lines
         .iter()

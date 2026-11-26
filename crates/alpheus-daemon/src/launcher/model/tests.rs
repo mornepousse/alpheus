@@ -2152,17 +2152,20 @@ fn panel_off_keeps_today_s_root() {
     assert_eq!(l.query, "w");
 }
 
-/// A tool found by the search opens its level right above the panel (categories are tabs, not
-/// levels): Esc lands on the tool's row of the open tab.
+/// A tool found by the search opens its levels right above the panel (categories are tabs, not
+/// levels): Esc lands on the tool's choices, then on its row of the open tab.
 #[test]
 fn escape_from_a_searched_tool_lands_on_its_row() {
     let mut l = panel_box(PINNED);
     typed(&mut l, "/network scan");
     let scan = builtin_entry(&l, "diag.scan");
     assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
-    l.key(Key::Enter); // its choices
+    l.key(Key::Right); // its second chip, which asks for a target
+    l.key(Key::Enter);
+    assert_eq!(l.tools().unwrap().level(), Level::Prompt { entry: scan });
+    assert_eq!(l.tools().unwrap().breadcrumb(), "Tools › Diagnostics › Network scan › Quick scan (common ports)");
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
     assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: scan });
-    assert_eq!(l.tools().unwrap().breadcrumb(), "Tools › Diagnostics › Network scan");
     assert_eq!(l.key(Key::Escape), Outcome::Redraw);
     assert!(l.tools().unwrap().at_panel());
     assert_eq!(l.query, "");
@@ -2244,4 +2247,153 @@ fn a_mod_space_jump_into_tools_never_runs_a_letter() {
     let o = l.key(Key::Char('w'));
     assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
     assert_eq!(l.query, "w");
+}
+
+// The panel's search: fixed choices as chips on their entry's row (spec "Search").
+
+/// Two entries whose choices share words, one whose choices are read, one without any.
+const CHIPS: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Mine"
+[[tools.category]]
+name = "Yours"
+[[tools.entry]]
+name = "Alpha"
+category = "Mine"
+run = ["x", "{choice}"]
+choices = ["one", "two words"]
+[[tools.entry]]
+name = "Beta"
+category = "Yours"
+run = ["x", "{choice}"]
+choices = ["zero", "nine", "two words"]
+[[tools.entry]]
+name = "Gamma"
+category = "Mine"
+run = ["x", "{choice}"]
+choices_cmd = ["list"]
+[[tools.entry]]
+name = "Plain"
+category = "Mine"
+run = ["x"]
+"#;
+
+fn user_entry(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+fn chip(l: &Launcher, name: &str) -> Option<usize> {
+    l.tools().unwrap().chip(user_entry(l, name))
+}
+
+/// ←/→ pick a chip on the selected row and stop at the first and the last; on a row without chips
+/// they do nothing; neither ever leaves the row, the search or the root.
+#[test]
+fn arrows_on_chips_stay_on_the_row() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/alpha");
+    let alpha = RowId::Entry(user_entry(&l, "Alpha"));
+    assert_eq!(selected_row(&l), Some(alpha));
+    assert_eq!(chip(&l, "Alpha"), Some(0), "the first chip is picked");
+    let stays = |l: &Launcher| {
+        assert_eq!(selected_row(l), Some(alpha));
+        assert_eq!(l.tools().unwrap().level(), Level::Root);
+        assert_eq!(l.query, "alpha");
+    };
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "already the first");
+    stays(&l);
+    assert_eq!(l.key(Key::Right), Outcome::Redraw);
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    assert_eq!(l.key(Key::Right), Outcome::Nothing, "already the last: no level opens");
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    stays(&l);
+    assert_eq!(l.key(Key::Left), Outcome::Redraw);
+    assert_eq!(chip(&l, "Alpha"), Some(0));
+    stays(&l);
+
+    // A row without chips: nothing moves, nothing opens.
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/plain");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(user_entry(&l, "Plain"))));
+    assert_eq!(chip(&l, "Plain"), None);
+    assert_eq!(l.key(Key::Right), Outcome::Nothing);
+    assert_eq!(l.key(Key::Left), Outcome::Nothing);
+    assert_eq!((l.tools().unwrap().level(), l.query.as_str()), (Level::Root, "plain"));
+
+    // At home ← goes nowhere.
+    let mut l = panel_box(CHIPS);
+    assert_eq!(l.key(Key::Left), Outcome::Nothing);
+    assert!(l.tools().unwrap().at_panel());
+}
+
+/// Enter on a row with chips runs the entry with the picked one; the search lists no choice row.
+#[test]
+fn enter_runs_the_picked_chip() {
+    let mut l = panel_box("");
+    typed(&mut l, "/schedule");
+    let shutdown = builtin_entry(&l, "shutdown");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(shutdown)));
+    assert!(!l.results.iter().any(|h| matches!(h.source, Source::Tool(i) if matches!(l.tool_rows()[i].id, RowId::Choice(..)))));
+    l.key(Key::Right);
+    l.key(Key::Right);
+    let o = l.key(Key::Enter);
+    let want = ToolAction::Builtin { index: builtin_index("shutdown"), choice: Some("1 h 30".into()), text: None };
+    assert_eq!(o, Outcome::Activate(Activation::Tool(want)));
+}
+
+/// A query that matches a choice picks that chip, on each entry its own; the next query that
+/// matches none puts every row back on its first chip.
+#[test]
+fn a_query_picks_the_matching_chip_of_each_entry() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/words");
+    assert_eq!(l.results.len(), 2, "Alpha and Beta, once each");
+    assert_eq!((chip(&l, "Alpha"), chip(&l, "Beta")), (Some(1), Some(2)));
+    let o = l.key(Key::Enter);
+    let first = selected_row(&l).unwrap();
+    let RowId::Entry(e) = first else { panic!("{first:?}") };
+    assert_eq!(o, Outcome::Activate(Activation::Tool(ToolAction::User { entry: e, choice: Some("two words".into()), text: None })));
+
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/alph");
+    l.key(Key::Right);
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    typed(&mut l, "a");
+    assert_eq!(chip(&l, "Alpha"), Some(0), "a new query that matches no choice resets the chip");
+}
+
+/// A `choices_cmd` entry has no chips: Enter or → opens its level, which reads them.
+#[test]
+fn a_choices_cmd_entry_keeps_its_level() {
+    for k in [Key::Enter, Key::Right] {
+        let mut l = panel_box(CHIPS);
+        typed(&mut l, "/gamma");
+        let gamma = user_entry(&l, "Gamma");
+        assert_eq!(selected_row(&l), Some(RowId::Entry(gamma)));
+        assert_eq!(chip(&l, "Gamma"), None);
+        assert!(matches!(l.key(k), Outcome::ReadChoices(_)), "{k:?}");
+        assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: gamma });
+    }
+}
+
+/// A click on a tab opens it, as Tab would; from the search too, which it ends.
+#[test]
+fn a_click_on_a_tab_opens_it() {
+    let mut l = panel_box("");
+    l.key(Key::Down);
+    assert_eq!(l.click_tab(2), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, 2);
+    assert_eq!(l.selected, 0, "on its first tool");
+    assert_lists_the_tab(&l);
+    assert_eq!(l.click_tab(99), Outcome::Nothing, "no such tab");
+    typed(&mut l, "/sh");
+    assert_eq!(l.click_tab(1), Outcome::Redraw);
+    assert_eq!((panel_of(&l).active, l.query.as_str()), (1, ""));
+    assert_lists_the_tab(&l);
+    assert!(l.letters_live(), "the tab's home, letters live");
+    // No panel: nothing to open.
+    let mut l = panel_box("[tools]\npanel = false\n");
+    assert_eq!(l.click_tab(0), Outcome::Nothing);
 }

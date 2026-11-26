@@ -166,6 +166,8 @@ pub struct ToolsState {
     home: Option<Panel>,
     /// Its Recent section, read once at open.
     recent: Vec<usize>,
+    /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search.
+    picked: Vec<usize>,
 }
 
 impl ToolsState {
@@ -187,6 +189,7 @@ impl ToolsState {
             panel: None,
             home: None,
             recent: Vec::new(),
+            picked: Vec::new(),
         };
         state.build_flat();
         state
@@ -208,7 +211,7 @@ impl ToolsState {
             let path_text = category.map(|c| format!("{c} {text}")).unwrap_or_default();
             flat.push(ToolRow { id, icon: e.icon, text: text.clone(), trail: Trail::Category(category.unwrap_or_default().to_string()) });
             // `Catalog::flat` lists every entry first, in order: an entry's row is its index.
-            hits.push(ToolHitRow { name: text, path_text, key, parent: f.choice.map(|_| f.entry) });
+            hits.push(ToolHitRow { name: text, path_text, key, parent: f.choice.map(|k| (f.entry, k)), category: e.category });
         }
         self.flat = flat;
         self.flat_hits = hits;
@@ -245,14 +248,62 @@ impl ToolsState {
 
     /// Opens the tab `step` places from the open one, wrapping: false with no panel at the root.
     pub fn next_tab(&mut self, step: i32) -> bool {
-        if self.level != Level::Root {
-            return false;
-        }
-        let Some(home) = &self.home else { return false };
+        let Some(home) = self.panel() else { return false };
         let n = i64::try_from(home.tabs.len()).unwrap_or(1).max(1);
         let to = (i64::try_from(home.active).unwrap_or(0) + i64::from(step)).rem_euclid(n);
-        self.home = Some(Panel::build(&self.catalog, &self.recent, usize::try_from(to).unwrap_or(0)));
+        self.open_tab(usize::try_from(to).unwrap_or(0))
+    }
+
+    /// Opens tab `tab` (an index into `Panel::tabs`, a click on it): false with no panel at the
+    /// root or no such tab.
+    pub fn open_tab(&mut self, tab: usize) -> bool {
+        if self.panel().is_none_or(|p| tab >= p.tabs.len()) {
+            return false;
+        }
+        self.home = Some(Panel::build(&self.catalog, &self.recent, tab));
         self.rev += 1;
+        true
+    }
+
+    /// The chip picked on `entry`'s row in the panel's search: none for an entry without fixed
+    /// choices (a `choices_cmd` one keeps its level).
+    pub fn chip(&self, entry: usize) -> Option<usize> {
+        match self.catalog.entries.get(entry).map(|e| &e.choices) {
+            Some(Choices::Fixed(list)) if !list.is_empty() => {
+                Some(self.picked.get(entry).copied().unwrap_or(0).min(list.len().saturating_sub(1)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Every entry back on its first chip, but those `matched` names (entry, choice): what a new
+    /// query picks.
+    pub fn pick_chips(&mut self, matched: &[(usize, usize)]) {
+        self.picked.clear();
+        self.picked.resize(self.catalog.entries.len(), 0);
+        for &(e, k) in matched {
+            if let Some(slot) = self.picked.get_mut(e) {
+                *slot = k;
+            }
+        }
+    }
+
+    /// Picks the chip `step` places from `entry`'s picked one, stopping at the first and the last:
+    /// false when it did not move (no chip, or already at that end).
+    pub fn step_chip(&mut self, entry: usize, step: i32) -> bool {
+        let (Some(at), Some(Choices::Fixed(list))) = (self.chip(entry), self.catalog.entries.get(entry).map(|e| &e.choices)) else {
+            return false;
+        };
+        let to = usize::try_from(i64::try_from(at).unwrap_or(0) + i64::from(step)).unwrap_or(0).min(list.len().saturating_sub(1));
+        if to == at {
+            return false;
+        }
+        if self.picked.len() < self.catalog.entries.len() {
+            self.picked.resize(self.catalog.entries.len(), 0);
+        }
+        if let Some(slot) = self.picked.get_mut(entry) {
+            *slot = to;
+        }
         true
     }
 
@@ -361,7 +412,7 @@ impl ToolsState {
             },
             RowId::Category(_) | RowId::Prompt(_) => None,
         };
-        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default(), parent: None }
+        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default(), parent: None, category: None }
     }
 
     /// The question a pending `row` shows: `<name>? ⏎` (the icon is the row's own), a choice of a
