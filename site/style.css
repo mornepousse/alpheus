@@ -235,6 +235,7 @@ h3 {
 	position: relative;
 	left: 50%;
 	width: min(100vw - 32px, 1280px);
+	max-width: none;
 	margin-top: 24px;
 	transform: translateX(-50%);
 }
