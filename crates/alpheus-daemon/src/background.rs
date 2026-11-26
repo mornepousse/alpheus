@@ -183,7 +183,9 @@ impl CornerMask {
 /// (`blocks::fitted_radius`) from the island radius (at most 8) or `floating::FLOAT_RADIUS` (10),
 /// so 0..=10: at most 11 masks per scale seen (one or two per session), each
 /// 2 × (radius × scale)² bytes with its physical radius capped at `MAX_MASK_RADIUS`. At scale 1
-/// and 2 together that is at most 22 masks and about 4 KB.
+/// and 2 together that is at most 22 masks and about 4 KB. A box's shapes (`Fonts::paint_boxed`)
+/// ask 4, 5 and 6, and a switch two radii set by the font's advance (its track and its knob, a
+/// few px): a handful more per scale.
 #[derive(Debug, Default)]
 pub struct MaskCache {
     masks: Vec<((u32, i32), CornerMask)>,

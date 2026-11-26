@@ -33,7 +33,7 @@ use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Group, Hue, Style, Tint};
-use crate::list::{Boxed, Graph};
+use crate::list::{Boxed, Graph, Shape, ShapeKind};
 use crate::placement::FLOAT_SHADOW;
 use alpheus_common::theme::settings::BarStyle;
 use alpheus_common::theme::{Rgb, Roles};
@@ -50,6 +50,12 @@ pub const MAX_CACHE: usize = 2048;
 const FRAME_SIDE: u32 = 4;
 /// Logical px radius of a boxed surface's rounded corners.
 const FRAME_RADIUS: u32 = 6;
+/// Logical px radii of a box's shapes (`ShapeKind`): a card, a chip, the selection's band.
+const CARD_RADIUS: u32 = 6;
+const CHIP_RADIUS: u32 = 4;
+const BAND_RADIUS: u32 = 5;
+/// Logical px between a chip or a switch's track and the top and bottom of its rows.
+const CHIP_INSET: u32 = 2;
 /// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
 /// measures the visible margin from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +229,31 @@ pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
             Hue::Purple => r.hues.purple,
         },
     }
+}
+
+/// A shape's fill on a surface of `base`: a card `raised`, a chip its tint, the band the
+/// selection's, a switch's track green when on and `pill_bg` when off.
+fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
+    match kind {
+        ShapeKind::Card => r.raised,
+        ShapeKind::Chip(t) => color(r, base, t),
+        ShapeKind::Band => color(r, base, Tint::Selection),
+        ShapeKind::Switch(on) => color(r, base, if on { Tint::Hue(Hue::Green) } else { Tint::Pill }),
+    }
+}
+
+/// The columns a shape spans: a switch is always two cells.
+fn shape_columns(sh: &Shape) -> u16 {
+    match sh.kind {
+        ShapeKind::Switch(_) => 2,
+        ShapeKind::Card | ShapeKind::Chip(_) | ShapeKind::Band => sh.width,
+    }
+}
+
+/// Whether `sh` lies under the cell at `row`, `col`.
+fn covers(sh: &Shape, row: usize, col: usize) -> bool {
+    let cols = usize::from(sh.col)..usize::from(sh.col) + usize::from(shape_columns(sh));
+    (sh.row..sh.row.saturating_add(usize::from(sh.rows))).contains(&row) && cols.contains(&col)
 }
 
 /// Number of cells in a physical width.
@@ -804,7 +835,8 @@ impl Fonts {
         Ink { left: left.max(0) as u32, top: top.max(0) as u32, bottom: (row - 1 - bottom).max(0) as u32 }
     }
 
-    /// Paints a boxed surface `width` × `height` px: the surface's background, the rows' cells
+    /// Paints a boxed surface `width` × `height` px: the surface's background, its rounded shapes
+    /// (`paint_shapes`: cards, chips, the selection's band, switches), the rows' cells
     /// `frame.side` px from the left and `frame.top` from the top, each `row_height` px tall, the
     /// separator and divider lines, and last the frame, drawn at the surface's own edge (outside
     /// its rounded corners stays transparent). Rows that do not fit are not painted. The surface is
@@ -828,11 +860,13 @@ impl Fonts {
         let frame = self.frame(scale).fitted(b.cells(), self.advance, row_height, (width, height));
         let base = roles.popup_bg;
         fill(px, width, 0, width, height, base);
+        self.paint_shapes(b, roles, px, width, height, row_height, &frame, scale);
         let band = width as usize * row_height as usize * 4;
         for (i, row) in b.rows.iter().enumerate() {
             let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
             let Some(slice) = px.get_mut(start..start + band) else { break };
-            self.paint_cells(row, roles, base, slice, width, row_height, frame.side, &[]);
+            self.cell_backgrounds(row, roles, base, slice, width, row_height, frame.side, (0, row_height), Clip::None);
+            self.boxed_glyphs(b, i, row, roles, base, slice, width, row_height, frame.side);
         }
         // A selection band reaching the frame's top or bottom edge is as far from it as from the
         // sides: the first and last rows' coloured cells bleed into the vertical inset.
@@ -872,6 +906,98 @@ impl Fonts {
             FrameInk::Urgent => roles.urgent,
         };
         draw_frame(px, w, h, &frame, edge);
+    }
+
+    /// `b`'s shapes, in order, cut to the cells' area (a shape past the last row or column never
+    /// reaches the frame's margin): each filled (`shape_fill`), then its corners rounded with the
+    /// bar's masks onto what was under it.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_shapes(
+        &mut self,
+        b: &Boxed,
+        roles: &Roles,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        row_height: u32,
+        frame: &Frame,
+        scale: i32,
+    ) {
+        let e = scale.max(1) as u32;
+        let clip = ((frame.side, width.saturating_sub(frame.side)), (frame.top, height.saturating_sub(frame.bottom)));
+        for sh in &b.shapes {
+            let (col, cols) = (usize::from(sh.col), usize::from(shape_columns(sh)));
+            let x = (frame.side.saturating_add(self.edge(col)), frame.side.saturating_add(self.edge(col + cols)));
+            let row = u32::try_from(sh.row).unwrap_or(u32::MAX);
+            let y = (
+                frame.top.saturating_add(row.saturating_mul(row_height)),
+                frame.top.saturating_add(row.saturating_add(u32::from(sh.rows)).saturating_mul(row_height)),
+            );
+            let fill = shape_fill(roles, roles.popup_bg, sh.kind);
+            let inset = CHIP_INSET * e;
+            match sh.kind {
+                ShapeKind::Card => self.rounded(px, width, height, x, y, clip, fill, CARD_RADIUS, scale),
+                ShapeKind::Band => self.rounded(px, width, height, x, y, clip, fill, BAND_RADIUS, scale),
+                ShapeKind::Chip(_) => {
+                    let y = (y.0.saturating_add(inset), y.1.saturating_sub(inset));
+                    self.rounded(px, width, height, x, y, clip, fill, CHIP_RADIUS, scale);
+                }
+                ShapeKind::Switch(on) => {
+                    // A capsule five eighths as tall as it is wide (at most its rows less the
+                    // insets), centred on its rows; the knob a disc one logical px inside it.
+                    let w = x.1.saturating_sub(x.0);
+                    let h = y.1.saturating_sub(y.0).saturating_sub(2 * inset).min(w.saturating_mul(5) / 8);
+                    let top = y.0.saturating_add((y.1.saturating_sub(y.0) - h) / 2);
+                    self.rounded(px, width, height, x, (top, top.saturating_add(h)), clip, fill, h / (2 * e), scale);
+                    let d = h.saturating_sub(2 * e);
+                    let left = if on { x.1.saturating_sub(e + d) } else { x.0.saturating_add(e) };
+                    let knob = (left, left.saturating_add(d));
+                    let y = (top.saturating_add(e), top.saturating_add(e + d));
+                    self.rounded(px, width, height, knob, y, clip, roles.fg, d / (2 * e), scale);
+                }
+            }
+        }
+    }
+
+    /// Fills x ∈ [x.0, x.1) × y ∈ [y.0, y.1), cut to `clip` (x and y spans), with `fill` and
+    /// rounds its corners (`radius` logical px) onto the colour its top left pixel had before.
+    #[allow(clippy::too_many_arguments)]
+    fn rounded(
+        &mut self,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        x: (u32, u32),
+        y: (u32, u32),
+        clip: ((u32, u32), (u32, u32)),
+        fill: Rgb,
+        radius: u32,
+        scale: i32,
+    ) {
+        let (x, y) = ((x.0.max(clip.0.0), x.1.min(clip.0.1)), (y.0.max(clip.1.0), y.1.min(clip.1.1)));
+        if x.0 >= x.1 || y.0 >= y.1 {
+            return;
+        }
+        let o = (y.0 as usize * width as usize + x.0 as usize) * 4;
+        let Some(under) = px.get(o..o + 4).and_then(|p| <[u8; 4]>::try_from(p).ok()) else { return };
+        rect(px, width, height, x, y, fill);
+        blocks::round_block(px, width, height, x, y, self.masks.get(radius, scale), under, None);
+    }
+
+    /// Row `i` of `b`'s glyphs, as `glyphs` draws a box's (no pills, no underline), each on the
+    /// fill of the shape under its cell, `base` off every shape. A cell's own `Tint::Bg` is that
+    /// fill: `cell_backgrounds` paints no `Tint::Bg` cell, so the shape stays behind it, and a
+    /// glyph in `Tint::Bg` is cut in the shape's colour.
+    #[allow(clippy::too_many_arguments)]
+    fn boxed_glyphs(&mut self, b: &Boxed, i: usize, row: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32) {
+        for (col, c) in row.cells().iter().enumerate() {
+            if c.ch == ' ' || c.ch == CONT {
+                continue;
+            }
+            let under = b.shapes.iter().rev().find(|sh| covers(sh, i, col)).map_or(base, |sh| shape_fill(roles, base, sh.kind));
+            let x = x0 + self.edge(col);
+            self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, height);
+        }
     }
 
     /// Left edge of cell `col`, px from the cells' origin, at the current scale.

@@ -1297,3 +1297,180 @@ mod graphs {
         );
     }
 }
+
+/// The rounded shapes of a `Boxed` (cards, chips, the selection band, switches), painted under
+/// its cells.
+mod shapes {
+    use super::*;
+    use crate::list::{Shape, ShapeKind};
+
+    /// `b` painted with `distinct()` roles at `scale`, in a box of its cells plus the frame.
+    struct Painted {
+        px: Vec<u8>,
+        w: u32,
+        h: u32,
+        rh: u32,
+        frame: Frame,
+    }
+
+    impl Painted {
+        fn new(p: &mut Fonts, b: &Boxed, scale: i32) -> Painted {
+            let (advance, frame) = (p.advance(scale), p.frame(scale));
+            let (cols, rows) = b.cells();
+            let rh = DEFAULT_HEIGHT * scale as u32;
+            let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
+            let mut px = vec![0x11u8; (w * h * 4) as usize];
+            p.paint_boxed(b, &distinct(), &mut px, w, h, rh, scale, FrameInk::Border);
+            Painted { px, w, h, rh, frame }
+        }
+
+        fn at(&self, x: u32, y: u32) -> Rgb {
+            let o = ((y * self.w + x) * 4) as usize;
+            Rgb(self.px[o + 2], self.px[o + 1], self.px[o])
+        }
+
+        /// The physical rectangle of cells [col, col + width) × rows [row, row + rows).
+        fn cells(&self, p: &Fonts, row: u32, col: usize, width: usize, rows: u32) -> ((u32, u32), (u32, u32)) {
+            let (f, rh) = (&self.frame, self.rh);
+            ((f.side + p.edge(col), f.side + p.edge(col + width)), (f.top + row * rh, f.top + (row + rows) * rh))
+        }
+    }
+
+    fn blank(columns: u16, rows: usize) -> Boxed {
+        Boxed { rows: (0..rows).map(|_| text_row(columns, "")).collect(), ..Boxed::default() }
+    }
+
+    fn shape(row: usize, col: u16, width: u16, rows: u16, kind: ShapeKind) -> Shape {
+        Shape { row, col, width, rows, kind }
+    }
+
+    #[test]
+    fn a_card_fills_its_cells_with_raised_and_rounds_its_corners() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(20, 6);
+        b.shapes.push(shape(1, 5, 10, 4, ShapeKind::Card));
+        let s = Painted::new(&mut p, &b, 1);
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 5, 10, 4);
+        assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.raised, "the card's centre");
+        assert_eq!(s.at(x0 + 1, (y0 + y1) / 2), r.raised, "its left edge, mid-height");
+        for (x, y) in [(x0, y0), (x1 - 1, y0), (x0, y1 - 1), (x1 - 1, y1 - 1)] {
+            assert_eq!(s.at(x, y), r.popup_bg, "the corner ({x}, {y}) is rounded off");
+        }
+        let ((cx0, _), _) = s.cells(&p, 1, 4, 1, 1);
+        assert_eq!(s.at(cx0 + 1, (y0 + y1) / 2), r.popup_bg, "a cell left of the card");
+        assert_eq!(s.at((x0 + x1) / 2, y0 - s.rh / 2), r.popup_bg, "a row above the card");
+        assert_eq!(s.at((x0 + x1) / 2, y1 + s.rh / 2), r.popup_bg, "a row below the card");
+    }
+
+    #[test]
+    fn text_on_a_card_keeps_the_card_behind_it() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(20, 6);
+        b.rows[3].write(10, 20, " ", Style::NORMAL);
+        // A letter cut out of its cell (ink `Tint::Bg`): on a card, cut in the card's colour.
+        b.rows[3].write(8, 20, "E", Style { fg: Tint::Bg, bg: Tint::Bg, bold: false });
+        b.shapes.push(shape(1, 5, 10, 4, ShapeKind::Card));
+        let s = Painted::new(&mut p, &b, 1);
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 3, 10, 1, 1);
+        assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.raised, "a blank cell over the card");
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 3, 8, 1, 1);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                assert_eq!(s.at(x, y), r.raised, "the cut-out letter at ({x}, {y}): the card shows through");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chip_takes_its_tint_and_the_band_the_selection() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(20, 6);
+        b.shapes.push(shape(1, 2, 6, 1, ShapeKind::Chip(Tint::Pill)));
+        b.shapes.push(shape(3, 2, 12, 1, ShapeKind::Band));
+        let s = Painted::new(&mut p, &b, 1);
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 2, 6, 1);
+        assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.pill_bg, "the chip's tint");
+        assert_eq!(s.at((x0 + x1) / 2, y0), r.popup_bg, "a chip is inset from its row's top");
+        assert_eq!(s.at((x0 + x1) / 2, y1 - 1), r.popup_bg, "and from its bottom");
+        let ((x0, x1), (y0, y1)) = s.cells(&p, 3, 2, 12, 1);
+        assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.selection, "the band: the selection's fill");
+        assert_eq!(s.at((x0 + x1) / 2, y0), r.selection, "the band fills its row");
+        assert_eq!(s.at(x0, y0), r.popup_bg, "its corner is rounded off");
+    }
+
+    #[test]
+    fn a_shape_on_a_card_rounds_onto_the_card() {
+        let (mut p, r) = (fonts(), distinct());
+        let mut b = blank(20, 6);
+        b.shapes.push(shape(0, 1, 18, 6, ShapeKind::Card));
+        b.shapes.push(shape(2, 4, 6, 1, ShapeKind::Band));
+        let s = Painted::new(&mut p, &b, 1);
+        let ((x0, _), (y0, _)) = s.cells(&p, 2, 4, 6, 1);
+        assert_eq!(s.at(x0, y0), r.raised, "the band's corner shows the card under it");
+    }
+
+    #[test]
+    fn a_switch_draws_its_knob_on_the_side_of_its_state() {
+        let (mut p, r) = (fonts(), distinct());
+        for (on, track) in [(true, r.hues.green), (false, r.pill_bg)] {
+            let mut b = blank(20, 3);
+            b.shapes.push(shape(1, 8, 2, 1, ShapeKind::Switch(on)));
+            let s = Painted::new(&mut p, &b, 1);
+            let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 8, 2, 1);
+            let mid = (x0 + x1) / 2;
+            let knob = |xs: std::ops::Range<u32>| xs.clone().any(|x| (y0..y1).any(|y| s.at(x, y) == r.fg));
+            let (left, right) = (knob(x0..mid), knob(mid..x1));
+            assert_eq!((left, right), (!on, on), "on {on}: the knob on its side");
+            let (cy, far) = ((y0 + y1) / 2, if on { x0 + 3 } else { x1 - 4 });
+            assert_eq!(s.at(far, cy), track, "on {on}: the track on the other side");
+            assert_eq!(s.at(mid, y0), r.popup_bg, "on {on}: the track is shorter than its row");
+            assert!((y0..y1).all(|y| s.at(x0 - 1, y) == r.popup_bg && s.at(x1, y) == r.popup_bg), "on {on}: two cells wide");
+        }
+    }
+
+    #[test]
+    fn no_shape_paints_outside_the_frame() {
+        let mut p = fonts();
+        let plain = blank(20, 6);
+        let mut b = plain.clone();
+        b.shapes.push(shape(4, 15, 30, 9, ShapeKind::Card));
+        b.shapes.push(shape(5, 18, 2, 1, ShapeKind::Switch(true)));
+        b.shapes.push(shape(5, 19, 4, 1, ShapeKind::Chip(Tint::Accent)));
+        b.shapes.push(shape(40, 300, 9, 9, ShapeKind::Band));
+        b.shapes.push(shape(usize::MAX, u16::MAX, u16::MAX, u16::MAX, ShapeKind::Card));
+        for scale in [1, 2] {
+            let (with, without) = (Painted::new(&mut p, &b, scale), Painted::new(&mut p, &plain, scale));
+            let f = with.frame;
+            let mut inside = 0;
+            for y in 0..with.h {
+                for x in 0..with.w {
+                    let interior = (f.side..with.w - f.side).contains(&x) && (f.top..with.h - f.bottom).contains(&y);
+                    let o = ((y * with.w + x) * 4) as usize;
+                    let same = with.px[o..o + 4] == without.px[o..o + 4];
+                    if interior {
+                        inside += usize::from(!same);
+                    } else {
+                        assert!(same, "scale {scale}: ({x}, {y}) outside the frame's interior was painted");
+                    }
+                }
+            }
+            assert!(inside > 0, "scale {scale}: the visible part is drawn");
+        }
+    }
+
+    #[test]
+    fn the_masks_are_one_per_radius_and_scale() {
+        let mut p = fonts();
+        let mut b = blank(30, 8);
+        b.shapes.push(shape(0, 1, 12, 3, ShapeKind::Card));
+        b.shapes.push(shape(0, 15, 12, 3, ShapeKind::Card));
+        for col in [2, 8, 16] {
+            b.shapes.push(shape(5, col, 4, 1, ShapeKind::Chip(Tint::Pill)));
+        }
+        let before = p.corner_masks();
+        Painted::new(&mut p, &b, 2);
+        assert_eq!(p.corner_masks() - before, 2, "one mask for the cards, one for the chips");
+        Painted::new(&mut p, &b, 2);
+        assert_eq!(p.corner_masks() - before, 2, "and none more on the next frame");
+    }
+}
