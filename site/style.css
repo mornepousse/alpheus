@@ -1,5 +1,7 @@
-/* alpheus's site. Colours: the Ink preset, dark half (INK_DARK in
-   crates/alpheus-common/src/theme/presets.rs); no colour outside these tokens. */
+/* alpheus's site, set as a manual page read in a terminal: bold and
+   underline do the work, colour stays out of the way. Colours: the Ink
+   preset, dark half (INK_DARK in crates/alpheus-common/src/theme/presets.rs);
+   no colour outside these tokens. */
 
 @font-face {
 	font-family: "JetBrains Mono";
@@ -24,13 +26,9 @@
 	--fg: #e8e6e1;
 	--fg-dim: #8f8d88;
 	--accent: #ff5a3c;
-	--red: #ff5a3c;
-	--orange: #e8975c;
-	--yellow: #d9c27a;
-	--green: #a3b895;
-	--cyan: #8fb5b5;
-	--blue: #8da2c4;
-	--purple: #b49bb8;
+
+	/* A man page's body sits 7 columns in; a tagged paragraph 7 more. */
+	--indent: 7ch;
 
 	color-scheme: dark;
 }
@@ -43,6 +41,7 @@
 
 html {
 	background: var(--bg);
+	scrollbar-color: var(--raised) var(--bg);
 }
 
 body {
@@ -51,20 +50,96 @@ body {
 	color: var(--fg);
 	font-family: "JetBrains Mono", ui-monospace, monospace;
 	font-size: 15px;
-	line-height: 1.6;
+	line-height: 1.55;
 }
 
-.column {
-	max-width: 76ch;
+::selection {
+	background: var(--selection);
+}
+
+/* The page: 80 columns, as a terminal. */
+
+.page {
+	max-width: calc(80ch + 32px);
 	margin-inline: auto;
 	padding-inline: 16px;
 }
 
-/* Text */
+/* The running header and footer: NAME(1) at both ends, a title between. */
+
+.runner {
+	display: flex;
+	justify-content: space-between;
+	gap: 2ch;
+	padding-block: 24px;
+	color: var(--fg);
+}
+
+.runner .mid {
+	color: var(--fg-dim);
+}
+
+footer.runner {
+	margin-top: 32px;
+}
+
+/* Sections */
+
+section {
+	margin-bottom: 24px;
+}
+
+h2 {
+	margin: 0;
+	font-size: inherit;
+	font-weight: 700;
+}
+
+.body {
+	margin: 0 0 0 var(--indent);
+}
 
 p {
 	margin: 0 0 1em;
 }
+
+b {
+	font-weight: 700;
+	color: var(--fg);
+}
+
+/* Replaceable words: underlined, as a terminal shows them. */
+i {
+	font-style: normal;
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.synopsis p {
+	margin-bottom: 0.4em;
+	padding-left: 2ch;
+	text-indent: -2ch;
+}
+
+/* Tagged paragraphs: the tag at the body's margin, its text indented. */
+
+#name b {
+	white-space: nowrap;
+}
+
+dl {
+	margin: 0;
+}
+
+dt {
+	margin: 0;
+}
+
+dd {
+	margin: 0 0 1em var(--indent);
+}
+
+/* Links */
 
 a {
 	color: var(--fg);
@@ -82,143 +157,13 @@ a:focus-visible {
 	outline-offset: 2px;
 }
 
-code {
-	font-family: inherit;
-	color: var(--orange);
-}
-
-strong {
-	color: var(--fg);
-}
-
-.dim,
-.meta {
-	color: var(--fg-dim);
-}
-
-/* Header and footer */
-
-.top {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px 24px;
-	justify-content: space-between;
-	align-items: baseline;
-	padding-block: 24px;
-	border-bottom: 1px solid var(--raised);
-}
-
-.brand {
-	font-weight: 700;
-	text-decoration: none;
-}
-
-.mark {
-	color: var(--accent);
-}
-
-nav {
-	display: flex;
-	gap: 20px;
-}
-
-nav a {
-	color: var(--fg-dim);
-	text-decoration: none;
-}
-
-nav a:hover {
-	color: var(--fg);
-}
-
-.bottom {
-	margin-top: 48px;
-	padding-block: 24px;
-	border-top: 1px solid var(--raised);
-	color: var(--fg-dim);
-	font-size: 13px;
-}
-
-.bottom a {
-	color: var(--fg-dim);
-}
-
-/* Sections */
-
-section {
-	padding-block: 32px;
-}
-
-.intro {
-	padding-top: 40px;
-}
-
-.lead {
-	font-size: 18px;
-	font-weight: 700;
-	line-height: 1.5;
-}
-
-h2 {
-	margin: 0 0 20px;
-	padding-bottom: 8px;
-	border-bottom: 1px solid var(--raised);
-	color: var(--accent);
-	font-size: 16px;
-}
-
-h2::before {
-	content: "◆ ";
-}
-
-h3 {
-	margin: 0 0 12px;
-	font-size: 15px;
-}
-
-/* A part: a framed block, as the control center's cards. */
-
-.part {
-	margin-block: 20px;
-	padding: 16px;
-	background: var(--pill);
-	border: 1px solid var(--raised);
-}
-
-.part p {
-	margin-bottom: 8px;
-}
-
-.more {
-	color: var(--fg-dim);
-	font-size: 13px;
-}
-
-.also {
-	margin-top: 32px;
-}
-
-.also-list {
-	margin: 0;
-	padding-left: 2ch;
-}
-
-.also-list li {
-	margin-bottom: 6px;
-}
-
-.also-list li::marker {
-	content: "· ";
-	color: var(--accent);
-}
-
-/* Screenshots: rendered at scale 2, declared at half size (sharp on a 2x screen),
-   never wider than the column, a 1-px frame. */
+/* Screenshots: rendered at scale 2, declared at half size (sharp on a 2x
+   screen), never wider than the text, a 1-px frame. */
 
 .shot {
 	width: fit-content;
 	max-width: 100%;
-	margin: 0 0 12px;
+	margin: 0 0 1em;
 	border: 1px solid var(--raised);
 	background: var(--bg);
 	line-height: 0;
@@ -230,50 +175,51 @@ h3 {
 	height: auto;
 }
 
-/* The bar is 1920 px wide: it leaves the text column for the page's width. */
+/* The bar is 1945 px wide: it leaves the text for the page's width. */
 .shot.wide {
 	position: relative;
 	left: 50%;
 	width: min(100vw - 32px, 1280px);
 	max-width: none;
-	margin-top: 24px;
+	margin-block: 8px 0;
 	transform: translateX(-50%);
 }
 
-/* Memory table: scrolls inside itself on a narrow screen. */
+.shot.wide img {
+	width: 100%;
+}
+
+/* Memory table: plain columns, scrolls inside itself on a narrow screen. */
 
 .table {
 	overflow-x: auto;
-	margin-bottom: 12px;
-	border: 1px solid var(--raised);
+	margin-bottom: 1em;
 }
 
 table {
-	width: 100%;
 	border-collapse: collapse;
 	font-size: 13px;
 }
 
 th,
 td {
-	padding: 6px 12px;
+	padding: 2px 2ch 2px 0;
 	text-align: left;
 	vertical-align: top;
-	border-bottom: 1px solid var(--raised);
 }
 
 th {
-	background: var(--pill);
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+td:not(:last-child) {
+	white-space: nowrap;
+}
+
+td:last-child {
+	min-width: 24ch;
 	color: var(--fg-dim);
-	font-weight: 400;
-}
-
-tbody tr:first-child {
-	background: var(--selection);
-}
-
-tr:last-child td {
-	border-bottom: 0;
 }
 
 .num {
@@ -285,29 +231,30 @@ tr:last-child td {
 
 pre {
 	overflow-x: auto;
-	margin: 0 0 16px;
-	padding: 12px 16px;
+	margin: 0 0 1em;
+	padding: 8px 2ch;
 	background: var(--popup);
-	border: 1px solid var(--raised);
-	border-left: 2px solid var(--accent);
 	font-size: 13px;
 	line-height: 1.5;
 }
 
 pre code {
+	font-family: inherit;
 	color: var(--fg);
 }
 
-@media (max-width: 480px) {
+/* A phone: the indents shrink so the text keeps its width. */
+
+@media (max-width: 560px) {
+	:root {
+		--indent: 2ch;
+	}
+
 	body {
 		font-size: 14px;
 	}
 
-	.lead {
-		font-size: 16px;
+	.runner .mid {
+		display: none;
 	}
-}
-
-.shot.wide img {
-	width: 100%;
 }
