@@ -18,6 +18,7 @@ use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
 use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
+use crate::launcher::tools::panel;
 use crate::list;
 use crate::session;
 use alpheus_common::launcher_ipc::{DmenuFlags, wipe};
@@ -406,8 +407,16 @@ impl Launcher {
         if !self.config.tools.panel {
             return;
         }
+        // A Mod+Space box never shows the panel: its Tools mode is a jump.
+        if self.origin != Origin::Tools {
+            return;
+        }
         let Some(t) = self.tools.as_mut() else { return };
-        t.open_panel(columns, rows);
+        let recent = panel::recent_entries(&t.catalog, &self.history.tool_ids_newest_first(), panel::RECENT_MAX);
+        t.open_panel(columns, rows, recent);
+        // The root lists the panel's All tab from now on.
+        self.ranker.forget();
+        self.refilter();
     }
 
     /// The cells the panel's box was sized to (columns, rows), at any level of the open
@@ -858,6 +867,17 @@ impl Launcher {
                 }
             }
             Key::Enter => self.tools_enter(),
+            // The panel's tabs, wrapping; a new tab opens on its first tool.
+            Key::Tab | Key::BackTab if self.at_panel() => {
+                let step = if k == Key::Tab { 1 } else { -1 };
+                if self.tools.as_mut().is_some_and(|t| t.next_tab(step)) {
+                    self.ranker.forget();
+                    self.refilter();
+                    Outcome::Redraw
+                } else {
+                    Outcome::Nothing
+                }
+            }
             Key::Tab | Key::BackTab | Key::CtrlEnter | Key::Delete => Outcome::Nothing,
             _ => return None,
         })

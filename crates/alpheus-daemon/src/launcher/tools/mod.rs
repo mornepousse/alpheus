@@ -8,4 +8,5 @@ pub mod config;
 pub mod diag;
 pub mod join;
 pub mod nav;
+pub mod panel;
 pub mod read;

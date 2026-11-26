@@ -1289,7 +1289,13 @@ mod tests {
         assert_eq!(open_layout(232, 49, &l), at_open, "typing never resizes the box");
         l.key(Key::Backspace);
         l.key(Key::Backspace);
-        // Enter on the first category: a level below the root, the box stays.
+        // Another tab, then a tool's choices (a level below the root): the box stays.
+        l.key(Key::Tab);
+        assert_eq!(l.tools().unwrap().panel().map(|p| p.active), Some(1), "the second tab");
+        assert_eq!(open_layout(232, 49, &l), at_open, "a tab never resizes the box");
+        for c in "/schedule".chars() {
+            l.key(Key::Char(c));
+        }
         l.key(Key::Enter);
         assert!(!l.tools().unwrap().at_root(), "a level below the root");
         assert_eq!(open_layout(232, 49, &l), at_open, "a level never resizes the box");

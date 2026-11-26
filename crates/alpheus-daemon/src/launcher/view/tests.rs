@@ -1235,16 +1235,20 @@ fn snapshot_with_shapes(b: &Boxed) -> String {
     format!("{}\nseparators: {:?}\n\nshapes:\n{}", snapshot(b), b.separators, shapes.join("\n"))
 }
 
+/// Until the panel is drawn (Task 12), today's list shows the open tab's tools, in its order.
 #[test]
-fn the_panel_root_lists_the_categories_and_no_capsule_without_a_root_tool() {
+fn the_panel_root_lists_the_open_tab_s_tools() {
     let (l, b) = panel_box("");
     let rows = draw_in(&l, &b);
-    let text = tool_text(&rows).join("\n");
-    for name in ["Quick settings", "Control center", "Utilities", "Captures", "Diagnostics", "System", "Session"] {
-        assert!(text.contains(name), "the {name} row: {text}");
+    let text = tool_text(&rows);
+    let first = usize::from(b.list_top) - 1;
+    let tools = l.tools().unwrap().panel().unwrap().tools();
+    let entries = &l.tools().unwrap().catalog.entries;
+    for (i, &e) in tools.iter().enumerate().take(3) {
+        assert!(text[first + i].contains(entries[e].name.as_str()), "row {i}: {text:#?}");
     }
-    assert!(text.contains("Search tools"), "the placeholder: {text}");
-    assert!(capsules(&rows).is_empty(), "no tool at the root, no capsule: {}", snapshot_with_shapes(&rows));
+    assert!(text.join("\n").contains("Search tools"), "the placeholder: {text:#?}");
+    assert!(!capsules(&rows).is_empty(), "its tools' letters: {}", snapshot_with_shapes(&rows));
 }
 
 /// A tool listed at the panel's root shows its letter in a capsule at its row's right, drawn over
@@ -1254,7 +1258,8 @@ fn a_root_tool_shows_its_capsule_over_the_band() {
     let (l, b) = panel_box(PINNED);
     let rows = draw_in(&l, &b);
     let caps = capsules(&rows);
-    assert_eq!(caps.len(), 2, "Wi-Fi's and the reset's: {}", snapshot_with_shapes(&rows));
+    let reset = tool_text(&rows).iter().position(|t| t.contains("Reset USB")).unwrap();
+    assert!(caps.iter().any(|c| c.row == reset), "the reset's: {}", snapshot_with_shapes(&rows));
     let wifi = tool_text(&rows).iter().position(|t| t.contains("Wi-Fi")).unwrap();
     let cap = caps.iter().find(|c| c.row == wifi).unwrap_or_else(|| panic!("on Wi-Fi's row: {}", snapshot_with_shapes(&rows)));
     let line = rows.rows[wifi].text();
@@ -1329,8 +1334,8 @@ fn the_footer_hides_letters_when_they_are_not_live() {
     let typing = footer(&l);
     assert!(!typing.contains("a-z") && !typing.contains("Run"), "{typing:?}");
     assert!(typing.contains("Close"), "{typing:?}");
-    // No tool at the root: no letter to offer.
-    let (l, b) = panel_box("");
+    // No tool of the tab has a letter: none to offer.
+    let (l, b) = panel_box("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
     let none = draw_in(&l, &b).rows.last().unwrap().text();
     assert!(!none.contains("a-z"), "{none:?}");
 }

@@ -5,6 +5,7 @@
 
 use super::catalog::{Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
+use super::panel::Panel;
 use crate::launcher::matching::ToolHitRow;
 use crate::launcher::sources::PATH_JOIN;
 use crate::session::{self, Activation as Ask};
@@ -161,6 +162,10 @@ pub struct ToolsState {
     /// The cells (columns, rows) the Super+X box is sized to, once `open_panel` opened it: set
     /// once per open, kept at every level. While set, the root's letters run their tools.
     panel: Option<(u16, u16)>,
+    /// The panel's tabs and rows, while it is opened: the root lists its open tab's tools.
+    home: Option<Panel>,
+    /// Its Recent section, read once at open.
+    recent: Vec<usize>,
 }
 
 impl ToolsState {
@@ -180,6 +185,8 @@ impl ToolsState {
             flat: Vec::new(),
             flat_hits: Vec::new(),
             panel: None,
+            home: None,
+            recent: Vec::new(),
         };
         state.build_flat();
         state
@@ -220,13 +227,33 @@ impl ToolsState {
         self.level == Level::Root
     }
 
-    /// Opens the Tools menu as the Super+X panel, its box sized to `columns` × `rows` cells. The
-    /// caller decides whether the panel is on (`[tools] panel`). The root still lists today's rows
-    /// until the panel's own (spec 2026-11-26-superx-panel-design.md).
-    pub fn open_panel(&mut self, columns: u16, rows: u16) {
+    /// Opens the Tools menu as the Super+X panel, its box sized to `columns` × `rows` cells, on its
+    /// All tab with `recent` as its Recent section. The caller decides whether the panel is on
+    /// (`[tools] panel`). From then on the root lists the open tab's tools.
+    pub fn open_panel(&mut self, columns: u16, rows: u16, recent: Vec<usize>) {
         // No room (a very short or narrow output): not opened, the root and the box stay today's.
         self.panel = (columns > 0 && rows > 0).then_some((columns, rows));
+        self.home = self.panel.map(|_| Panel::build(&self.catalog, &recent, 0));
+        self.recent = recent;
         self.rev += 1;
+    }
+
+    /// The panel, at its root (spec 2026-11-26-superx-panel-design.md, "Tabs and sections").
+    pub fn panel(&self) -> Option<&Panel> {
+        self.home.as_ref().filter(|_| self.level == Level::Root)
+    }
+
+    /// Opens the tab `step` places from the open one, wrapping: false with no panel at the root.
+    pub fn next_tab(&mut self, step: i32) -> bool {
+        if self.level != Level::Root {
+            return false;
+        }
+        let Some(home) = &self.home else { return false };
+        let n = i64::try_from(home.tabs.len()).unwrap_or(1).max(1);
+        let to = (i64::try_from(home.active).unwrap_or(0) + i64::from(step)).rem_euclid(n);
+        self.home = Some(Panel::build(&self.catalog, &self.recent, usize::try_from(to).unwrap_or(0)));
+        self.rev += 1;
+        true
     }
 
     /// The cells the box was sized to at open, at any level: the box keeps its size for the whole open.
@@ -239,26 +266,17 @@ impl ToolsState {
         self.panel.is_some() && self.level == Level::Root
     }
 
-    /// The row the letter `c` runs: an entry the panel's root lists whose letter it is (its capsule
-    /// shows there). An entry not listed there leaves its letter inert (the key starts the search).
+    /// The row the letter `c` runs: a tool the open tab lists whose letter it is (its capsule shows
+    /// there; a tool listed twice is the one row). A tool not listed there leaves its letter inert
+    /// (the key starts the search).
     pub fn letter(&self, c: char) -> Option<RowId> {
-        if !self.at_panel() {
-            return None;
-        }
-        self.catalog.root_rows().into_iter().find_map(|item| match item {
-            Item::Entry(e) if self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c)) => Some(RowId::Entry(e)),
-            _ => None,
-        })
+        let tools = self.panel()?.tools();
+        tools.into_iter().find(|&e| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c))).map(RowId::Entry)
     }
 
-    /// Whether a letter runs anything at the panel's root: one of its rows carries a capsule.
+    /// Whether a letter runs anything at the panel's root: one of the open tab's tools carries a capsule.
     pub fn root_letters(&self) -> bool {
-        self.at_panel()
-            && self
-                .catalog
-                .root_rows()
-                .into_iter()
-                .any(|item| matches!(item, Item::Entry(e) if self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some())))
+        self.panel().is_some_and(|p| p.tools().into_iter().any(|e| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some())))
     }
 
     /// The flat search's rows (every entry, then every fixed choice) and their candidates.
@@ -291,6 +309,9 @@ impl ToolsState {
     /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
+            Level::Root if self.home.is_some() => {
+                self.home.as_ref().map(Panel::tools).unwrap_or_default().into_iter().filter_map(|e| self.entry_row(e)).collect()
+            }
             Level::Root => self
                 .catalog
                 .root_rows()
@@ -512,6 +533,10 @@ impl ToolsState {
     /// the breadcrumb shows: ← and Esc land on it. Returns the selection to restore in the next
     /// level (`selected` when already below the root).
     fn through_category(&mut self, e: usize, selected: usize) -> usize {
+        // The panel has no category level (its categories are tabs): Esc lands on the tool's row.
+        if self.home.is_some() && self.level == Level::Root {
+            return self.position(Level::Root, RowId::Entry(e));
+        }
         if let (Level::Root, Some(c)) = (self.level, self.catalog.entries.get(e).and_then(|e| e.category)) {
             let from = self.root_anchor(c);
             self.open(Level::Category(c), from);

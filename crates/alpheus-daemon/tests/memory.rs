@@ -4282,7 +4282,7 @@ fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
     (sway, d)
 }
 
-/// One `--tools` cycle: four moves through the root and a category (the typist then holds its
+/// One `--tools` cycle: four moves through the panel's rows (the typist then holds its
 /// keyboard, so no focus loss closes the box), the box closed by the verb; the n-th open waits for
 /// its states line. Returns the reading taken with the menu open and drawn after the moves: (PSS,
 /// anonymous, shm pools) in KB.

@@ -1985,6 +1985,7 @@ fn a_prefix_entry_never_runs_a_letter() {
         }
         assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)));
         assert_eq!(l.mode, Mode::Tools);
+        assert!(l.tools().unwrap().panel().is_none(), "a Mod+Space open has no panel");
         assert!(!l.letters_live(), "placed: {placed}");
         let o = l.key(Key::Char('w'));
         assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
@@ -2022,44 +2023,150 @@ fn a_confirm_tool_s_letter_asks_first() {
     assert!(runs_builtin(&o, "diag.usb_reset"), "{o:?}");
 }
 
-/// Wi-Fi's letter is claimed, but the root lists its category, not Wi-Fi: no capsule, no run.
+/// A letter runs only a tool shown in the open tab's rows: on the Utilities tab, Wi-Fi's letter
+/// (Quick settings) starts the search with it.
 #[test]
-fn the_letter_of_a_tool_not_listed_at_the_root_starts_the_search() {
+fn a_letter_of_a_tool_not_in_the_tab_starts_the_search() {
     let mut l = panel_box("");
     let wifi = builtin_entry(&l, "quick.wifi");
     assert_eq!(l.tools().unwrap().catalog.entries[wifi].letter, Some('w'), "the letter is claimed");
-    assert!(!l.tool_rows().iter().any(|r| r.id == RowId::Entry(wifi)), "not at the root");
+    open_tab(&mut l, "Utilities");
+    assert!(!l.tool_rows().iter().any(|r| r.id == RowId::Entry(wifi)), "not in the tab");
     assert!(l.letters_live());
     let o = l.key(Key::Char('w'));
     assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
     assert_eq!(l.query, "w");
 }
 
+fn panel_of(l: &Launcher) -> &panel::Panel {
+    l.tools().unwrap().panel().expect("the panel")
+}
+
+/// Tab until the tab of the category `name` is open.
+fn open_tab(l: &mut Launcher, name: &str) {
+    use crate::launcher::tools::panel::Tab;
+    let t = l.tools().unwrap();
+    let k = t.catalog.categories.iter().position(|c| c.name == name).unwrap();
+    let at = panel_of(l).tabs.iter().position(|t| *t == Tab::Category(k)).unwrap();
+    while panel_of(l).active != at {
+        l.key(Key::Tab);
+    }
+}
+
+/// The list shows the open tab's tools, in its order: `selected` indexes `Panel::tools`.
+fn assert_lists_the_tab(l: &Launcher) {
+    let listed: Vec<RowId> = l
+        .results
+        .iter()
+        .map(|h| match h.source {
+            Source::Tool(i) => l.tool_rows()[i].id,
+            other => panic!("not a tool row: {other:?}"),
+        })
+        .collect();
+    let tools: Vec<RowId> = panel_of(l).tools().into_iter().map(RowId::Entry).collect();
+    assert_eq!(listed, tools);
+}
+
+#[test]
+fn tab_and_shift_tab_switch_tabs_and_wrap() {
+    let mut l = panel_box("");
+    let n = panel_of(&l).tabs.len();
+    assert!(n > 2, "All and the categories");
+    assert_eq!(panel_of(&l).active, 0);
+    assert_lists_the_tab(&l);
+    l.key(Key::Down);
+    assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, 1);
+    assert_eq!(l.selected, 0, "a tab opens on its first tool");
+    assert_lists_the_tab(&l);
+    l.key(Key::BackTab);
+    assert_eq!(l.key(Key::BackTab), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, n - 1, "Shift+Tab wraps to the last tab");
+    assert_lists_the_tab(&l);
+    l.key(Key::Tab);
+    assert_eq!(panel_of(&l).active, 0, "Tab wraps to All");
+    assert!(l.letters_live());
+}
+
+/// Notes pinned and in Utilities: both rows show `n`, and `n` runs Notes once, from its first row.
+#[test]
+fn a_tool_shown_twice_keeps_one_letter() {
+    let mut l = panel_box("[tools]\nroot = [\"notes\"]\n");
+    let notes = builtin_entry(&l, "notes");
+    assert_eq!(panel_of(&l).tools().iter().filter(|&&e| e == notes).count(), 2, "Pinned and Utilities");
+    assert_eq!(l.tools().unwrap().catalog.entries[notes].letter, Some('n'));
+    let o = l.key(Key::Char('n'));
+    assert!(runs_builtin(&o, "notes"), "{o:?}");
+    assert_eq!(l.selected, 0, "its Pinned row");
+}
+
+#[test]
+fn letters_run_from_a_category_tab_too() {
+    let mut l = panel_box("");
+    open_tab(&mut l, "Utilities");
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('n'));
+    assert!(runs_builtin(&o, "notes"), "{o:?}");
+}
+
+#[test]
+fn page_down_moves_a_page_of_tools() {
+    let mut l = panel_box("");
+    l.set_list_rows(4);
+    assert!(l.results.len() > 8);
+    l.key(Key::PageDown);
+    assert_eq!(l.selected, 4);
+    l.key(Key::PageDown);
+    assert_eq!(l.selected, 8);
+    l.key(Key::PageUp);
+    assert_eq!(l.selected, 4);
+    assert!(l.letters_live(), "moving keeps the letters");
+}
+
+/// A Recent section from the launcher's history, newest first: what was read at open.
+#[test]
+fn recent_comes_from_the_launcher_s_history() {
+    use crate::launcher::tools::panel::{Label, PanelRow};
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = panel_catalog(&config);
+    let history = History::parse("100\t1\ttool:builtin:emoji\n300\t1\ttool:builtin:timer\n200\t1\tapp:x.desktop\n", 200, 1_000);
+    let mut l = Launcher::for_tools(config, catalog, history, 1_000);
+    l.open_panel(104, 35);
+    let rows = &panel_of(&l).rows;
+    let at = rows.iter().position(|r| *r == PanelRow::Section(Label::Recent)).expect("a Recent section");
+    let (timer, emoji) = (builtin_entry(&l, "timer"), builtin_entry(&l, "emoji"));
+    assert_eq!(rows[at + 1..at + 3], [PanelRow::Tool(timer), PanelRow::Tool(emoji)]);
+    assert_eq!(rows.get(at + 3).copied(), Some(PanelRow::Section(Label::Category(0))), "then the first category");
+}
+
 #[test]
 fn panel_off_keeps_today_s_root() {
     let mut l = panel_box("[tools]\npanel = false\nroot = [\"quick.wifi\"]\n");
     assert!(l.panel_size().is_none());
+    assert!(l.tools().unwrap().panel().is_none());
+    assert!(l.tool_rows().iter().any(|r| matches!(r.id, RowId::Category(_))), "today's categories");
     assert!(!l.letters_live());
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing, "no tab to switch");
     let o = l.key(Key::Char('w'));
     assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
     assert_eq!(l.query, "w");
 }
 
-/// A tool found by the search goes down through its category; Esc lands on that category's row.
+/// A tool found by the search opens its level right above the panel (categories are tabs, not
+/// levels): Esc lands on the tool's row of the open tab.
 #[test]
-fn escape_from_a_searched_tool_s_category_lands_on_its_category() {
+fn escape_from_a_searched_tool_lands_on_its_row() {
     let mut l = panel_box(PINNED);
     typed(&mut l, "/network scan");
     let scan = builtin_entry(&l, "diag.scan");
     assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
-    l.key(Key::Enter); // its choices, under Diagnostics
+    l.key(Key::Enter); // its choices
     assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: scan });
-    l.key(Key::Escape);
-    l.key(Key::Escape);
+    assert_eq!(l.tools().unwrap().breadcrumb(), "Tools › Diagnostics › Network scan");
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
     assert!(l.tools().unwrap().at_panel());
     assert_eq!(l.query, "");
-    let diagnostics = l.tools().unwrap().catalog.entries[scan].category.unwrap();
-    assert_eq!(selected_row(&l), Some(RowId::Category(diagnostics)));
+    assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
 }
 
 /// A held letter that opened a level below the root types nothing there: not into the choices'

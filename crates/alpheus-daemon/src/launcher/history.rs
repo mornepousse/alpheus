@@ -175,6 +175,14 @@ impl History {
         self.entries.iter().filter(|u| u.id.starts_with(TOOL_PREFIX)).map(|u| (u.id.as_str(), frecency_of(u, now))).collect()
     }
 
+    /// The tools' ids, the most recently used first (the command panel's Recent, read at open).
+    pub fn tool_ids_newest_first(&self) -> Vec<String> {
+        let mut tools: Vec<&Use> = self.entries.iter().filter(|u| u.id.starts_with(TOOL_PREFIX)).collect();
+        // Stable: two uses of one second keep the file's order.
+        tools.sort_by_key(|u| std::cmp::Reverse(u.last));
+        tools.into_iter().map(|u| u.id.clone()).collect()
+    }
+
     pub fn entries(&self) -> &[Use] {
         &self.entries
     }
