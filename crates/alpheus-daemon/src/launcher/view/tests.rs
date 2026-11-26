@@ -1201,11 +1201,16 @@ fn every_builtin() -> crate::launcher::tools::catalog::Context {
 /// cells, and a box sized for it: the cards' width; the chip, the cards, a blank row (its line)
 /// and the footer.
 fn overview_box(text: &str) -> (Launcher, BoxLayout) {
+    overview_box_in(text, 110, 40)
+}
+
+/// `overview_box`, placed in `columns` × `rows` cells.
+fn overview_box_in(text: &str, columns: u16, rows: u16) -> (Launcher, BoxLayout) {
     use crate::launcher::tools::catalog::Catalog;
     let config = LauncherConfig::from_text(text).unwrap();
     let catalog = Catalog::build(&config.tools, &every_builtin(), &mut |_| {});
     let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
-    l.place_overview(110, 40);
+    l.place_overview(columns, rows);
     let o = l.tools().and_then(|t| t.overview()).expect("the overview is placed");
     let b = BoxLayout { columns: o.columns + 2, rows: o.rows + 5, list_top: 2, list_rows: o.rows + 1, preview_columns: 0 };
     l.set_list_rows(usize::from(b.list_rows));
@@ -1384,4 +1389,134 @@ fn a_tool_row_in_all_keeps_the_flat_selection() {
     let row = &rows.rows[usize::from(b.list_top) - 1];
     assert!(row.text().contains("Lock now") && row.styles().contains(Style::SELECTED.code()), "{}", snapshot(&rows));
     assert!(rows.shapes.is_empty(), "no band outside the Tools mode");
+}
+
+/// Tool rows in All (Mod+Space, a typed query) keep their own look: no glyph, the category two
+/// cells after the name, the flat selection; the Tools mode's restyle stays in the Tools mode.
+#[test]
+fn tool_rows_in_all_keep_their_look() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let tools = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    l.set_tools(tools);
+    typed(&mut l, "o");
+    let at = (0..l.results.len()).find(|&i| matches!(l.results[i].source, Source::Tool(_))).expect("a tool row");
+    for _ in 0..at {
+        l.key(Key::Down);
+    }
+    let (_, rows) = draw(&mut l, 100);
+    insta::assert_snapshot!("tools_in_all", snapshot(&rows));
+}
+
+/// Four root entries (the Pinned card) and a category of six, in a box too short for them.
+const FOLDED_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Big"
+[[tools.entry]]
+name = "Root one"
+run = ["x"]
+[[tools.entry]]
+name = "Root two"
+run = ["x"]
+[[tools.entry]]
+name = "Root three"
+run = ["x"]
+[[tools.entry]]
+name = "Root four"
+run = ["x"]
+[[tools.entry]]
+name = "Big one"
+category = "Big"
+run = ["x"]
+[[tools.entry]]
+name = "Big two"
+category = "Big"
+run = ["x"]
+[[tools.entry]]
+name = "Big three"
+category = "Big"
+run = ["x"]
+[[tools.entry]]
+name = "Big four"
+category = "Big"
+run = ["x"]
+[[tools.entry]]
+name = "Big five"
+category = "Big"
+run = ["x"]
+[[tools.entry]]
+name = "Big six"
+category = "Big"
+run = ["x"]
+"#;
+
+/// The row of `rows` holding `text`, and the cell its first character is in.
+fn find_cell(rows: &Boxed, text: &str) -> (usize, usize) {
+    let lines = tool_text(rows);
+    let r = lines.iter().position(|t| t.contains(text)).unwrap_or_else(|| panic!("{text:?} in {lines:#?}"));
+    (r, lines[r][..lines[r].find(text).unwrap()].chars().count())
+}
+
+#[test]
+fn a_category_s_more_row_is_drawn_selectable_and_opens_the_category() {
+    use crate::launcher::tools::overview::CardId;
+    let (mut l, b) = overview_box_in(FOLDED_CFG, 70, 4);
+    let o = l.tools().and_then(|t| t.overview()).unwrap().clone();
+    let big = o.cards.iter().find(|p| matches!(p.card, CardId::Category(_)) && p.more > 0).unwrap_or_else(|| panic!("{o:?}"));
+    let CardId::Category(c) = big.card else { unreachable!() };
+    let label = format!("+{} more", big.more);
+    let rows = draw_in(&l, &b);
+    let (r, col) = find_cell(&rows, &label);
+    let line = rows.rows[r].text();
+    assert!(line[line.find(&label).unwrap()..].contains('›'), "its chevron: {line:?}");
+    assert_eq!(rows.rows[r].styles().chars().nth(col), Some(Style::NORMAL.code()), "not dim: {}", snapshot(&rows));
+    // A click on it maps to the category's row, and selected it carries the band.
+    let Some(Click::Result(i)) = hit(&l, &b, col as u16 + 1, r as u16 + 1) else { panic!("a slot: {}", snapshot(&rows)) };
+    let Source::Tool(t) = l.results[i].source else { panic!() };
+    assert_eq!(l.tool_rows()[t].id, RowId::Category(c));
+    l.selected = i;
+    let rows = draw_in(&l, &b);
+    let band: Vec<_> = rows.shapes.iter().filter(|s| s.kind == ShapeKind::Band).collect();
+    assert_eq!(band.len(), 1);
+    assert_eq!((band[0].row, band[0].col, band[0].width), (r, big.col, big.width), "the band over its row inside its card");
+}
+
+#[test]
+fn the_pinned_more_row_is_dim_and_never_a_slot() {
+    use crate::launcher::tools::overview::CardId;
+    let (l, b) = overview_box_in(FOLDED_CFG, 70, 4);
+    let o = l.tools().and_then(|t| t.overview()).unwrap().clone();
+    let pinned = o.cards.iter().find(|p| p.card == CardId::Pinned && p.more > 0).unwrap_or_else(|| panic!("the Pinned card folds: {o:?}"));
+    let label = format!("+{} more", pinned.more);
+    let rows = draw_in(&l, &b);
+    let (r, col) = find_cell(&rows, &label);
+    assert!(col < usize::from(pinned.col + pinned.width), "in the Pinned card: {}", snapshot(&rows));
+    let styles: String = rows.rows[r].styles().chars().skip(col).take(label.chars().count()).collect();
+    assert!(styles.chars().all(|c| c == Style::MUTED.code()), "dim: {styles:?}");
+    let line = rows.rows[r].text();
+    assert!(!line[line.find(&label).unwrap()..].chars().take(usize::from(pinned.width)).any(|c| c == '›'), "no chevron: {line:?}");
+    assert_eq!(hit(&l, &b, col as u16 + 1, r as u16 + 1), Some(Click::Inside), "not a slot");
+    assert!(l.results.iter().all(|h| !matches!(h.source, Source::Tool(t) if l.tool_rows()[t].text == label)), "no result for it");
+}
+
+/// A Tools question is asked in the Tools mode only: a confirm tool hit in All moves the box to
+/// its level with the question pending, and the frame turns urgent there.
+#[test]
+fn a_confirm_from_all_asks_in_the_tools_mode_with_an_urgent_frame() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let tools = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(tools);
+    typed(&mut l, "collect garbage");
+    assert!(matches!(l.selected_hit().map(|h| h.source), Some(Source::Tool(_))));
+    assert_eq!(frame_ink(&l), FrameInk::Border);
+    l.set_now(std::time::Instant::now());
+    l.key(Key::Enter);
+    assert_eq!(l.mode, Mode::Tools, "the question lives in the Tools mode");
+    assert_eq!(frame_ink(&l), FrameInk::Urgent);
 }

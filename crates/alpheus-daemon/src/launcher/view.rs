@@ -226,8 +226,8 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
             Source::Tool(j) => l.tool_rows().get(j),
             _ => None,
         });
-        let grouped =
-            above.is_some_and(|a| matches!((a.id, row.id), (RowId::Entry(a) | RowId::Choice(a, _), RowId::Choice(e, _)) if a == e));
+        let grouped = l.mode == Mode::Tools
+            && above.is_some_and(|a| matches!((a.id, row.id), (RowId::Entry(a) | RowId::Choice(a, _), RowId::Choice(e, _)) if a == e));
         // The Tools mode draws its selection as a band under the row (`render`).
         tool_row(l, b, g, i, grouped, selected && l.mode != Mode::Tools);
         return;
@@ -312,14 +312,21 @@ fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
 fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, selected: bool) {
     let (Some(t), Some(row)) = (l.tools(), l.tool_rows().get(i)) else { return };
     let end = b.pane_end();
-    let icon_style = row_hue(t, row.id);
+    // The restyle is the Tools mode's: a tool row in All keeps the accent and no glyph in its
+    // flat form (`entry_row`).
+    let tools = l.mode == Mode::Tools;
+    let icon_style = if tools { row_hue(t, row.id) } else { Style::ACCENT };
     let icon = if grouped { row.icon.map(|_| ' ') } else { row.icon };
     if t.asking(row.id) {
         let text = t.question_text(row);
-        list::row(g, 1, end, &Row { icon, icon_style, text: &text, right: "", style: Style::URGENT, selected });
+        let style = if tools { Style::URGENT } else { Style::WARN };
+        list::row(g, 1, end, &Row { icon, icon_style, text: &text, right: "", style, selected });
         return;
     }
     match &row.trail {
+        Trail::Category(category) if !tools => {
+            entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected);
+        }
         Trail::Category(category) => {
             list::row(g, 1, end, &Row { icon, icon_style, text: &row.text, right: category, style: Style::NORMAL, selected });
         }
