@@ -20,7 +20,7 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   start the search; Mod+Space never shows the panel nor has live letters. The search groups its
   results by category and shows fixed choices as chips; no chip is picked until ←/→, a click or the
   query picks one. New keys: `[tools] panel` (`false` keeps the category list) and `keys`, an entry's
-  `key` and `description`. Cost against main: open +2.0…+2.2 MB PSS (main +1.5…+1.7), of which +1.8 MB is the larger box's pools (main +1.3); +0.3 MB at rest before any open; 0 wake-ups at rest. [Page](docs/features/tools-menu.md#the-command-panel),
+  `key` and `description`. Cost against main, the same cycle on both sides: open +2.0…+2.2 MB PSS (main +1.1…+1.2), of which +1.8 MB is the larger box's pools (main +0.9); +0.25 MB at rest before any open; anonymous memory levels off over 60 cycles; 0 wake-ups at rest. [Page](docs/features/tools-menu.md#the-command-panel),
   [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
 - **Resident budget: 15 MB at rest** instead of 120 MB; the memory suite holds the steady state to it.
   [Decision](docs/decisions.md#everything-alpheus-keeps-resident-fits-in-15-mb-at-rest).

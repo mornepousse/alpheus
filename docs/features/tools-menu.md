@@ -388,14 +388,18 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
 
 ## What it costs
 
-The command panel, 3 release runs back to back against `main` (c2f53bdd, the category list) built in
-its own target directory (the [memory tables](../measurements.md) have the figures):
+The command panel, 6 release runs back to back against `main` (c2f53bdd, the category list) built in
+its own target directory, the same cycle on both sides (four moves per open; the [memory
+tables](../measurements.md) have the figures):
 
-- **Open, 20 cycles:** PSS +2,041…+2,225 KB open over closed (main +1,522…+1,654), of which the shm
-  pools +1,792 KB (main +1,316: the larger box), back to 56 KB closed; the daemon's own anonymous
-  memory +340…+524 KB open, +20…+44 KB closed again (main +12…+32), +80…+112 KB after 20 more cycles
-  (main +32…+40; bound 128); 5 threads before and after (`tools_pss_open_and_closed`).
-- **At rest, closed:** PSS +276…+340 KB cold over main before any open (the panel's code and
+- **Open, 20 cycles:** PSS +2,005…+2,209 KB open over closed (main +1,115…+1,235), of which the shm
+  pools +1,792 KB (main +878: the larger box), back to 56 KB closed; the daemon's own anonymous
+  memory +304…+504 KB open (main +328…+448), +20…+104 KB closed again (main +0…+152; bound 256),
+  +16…+156 KB after 20 more cycles (main −68…+88; bound 128, read over once in 6 runs, under load);
+  5 threads before and after (`tools_pss_open_and_closed`).
+- **60 cycles:** the anonymous memory levels off, +84 KB over the first ten cycles then +8 KB over
+  the last twenty: a plateau, not a leak.
+- **At rest, closed:** PSS about +250 KB cold over main before any open (the panel's code and
   descriptions in the binary); the steady state stays at 11.1 MB against the 15 MB budget
   (`pss_under_budget_and_stable`). No second font size is loaded.
 - **A `choices_cmd` of 2,000 lines:** anonymous memory +1,444…+1,812 KB open, +164…+256 KB closed
