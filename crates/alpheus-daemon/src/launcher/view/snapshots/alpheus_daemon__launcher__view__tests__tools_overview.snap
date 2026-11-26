@@ -1,0 +1,112 @@
+---
+source: crates/alpheus-daemon/src/launcher/view/tests.rs
+expression: snapshot_with_shapes(&rows)
+---
+ 󰍉 ▏ Search tools                                                                                  Super   X  
+ ● Quick settings                 8   ● Control center                 8   ● Utilities                      4 
+ 󰕾 Sound                              󰋜 Home                               󰎞 Notes                         n  
+ 󰖩 Wi-Fi                         w    󰕾 Sound                              󰔛 Timer                         t  
+ 󰂯 Bluetooth                     b    󰛳 Network                            󰅌 Clipboard                     c  
+ 󰖂 VPN                           v    󰂯 Bluetooth                          󰱨 Emoji                         m  
+ 󰒘 Shield                        h    󰁹 Power                                                                 
+ 󰂛 Do not disturb                d    󰍹 Displays                                                              
+ 󰅶 Keep awake                    z    󰏘 Theme                                                                 
+ 󰖔 Night light                   i    󰓙 Diagnostics                                                           
+                                                                                                              
+ ● Captures                       8   ● Diagnostics                   11   ● System                         2 
+ 󰹑 Screenshot                    f    󰐷 Network scan               ›       󰤂 Schedule shutdown          ›  s  
+ 󰒉 Area                          a    󰕓 USB events                    u    󰚌 Kill a process                k  
+ 󰆓 Area (save)                        󰜉 Reset USB (xHCI)              x                                       
+ 󰏫 Annotate                      e    󰈙 Errors this boot              j                                       
+ 󰑊 Record screen                 r    󰈙 USB                                                                   
+ 󰕧 Record area                        󰈙 Suspend and resume                                                    
+ 󰈊 Colour picker                 p    󰈙 Out of memory                                                         
+ 󱄽 Text from area (OCR)          o    󰈙 Thermal and throttling                                                
+                                      󰈙 NetworkManager                                                        
+                                      󰈙 Live journal                                                          
+                                      󰈙 Logs of a service…                                                    
+                                                                                                              
+ ● Session                        3                                                                           
+ 󰌾 Lock                          l                                                                            
+ 󰐥 Power menu                    q                                                                            
+ 󰑐 Reload the bar                                                                                             
+                                                                                                              
+ a-z  Run    ↑   ↓   ←   →  Move    ⏎  Open    Esc  Close                                                     
+
+.m.a.mmmmmmmmmmmm..................................................................................mmmmm...m..
+.B.NNNNNNNNNNNNNN.................m...p.NNNNNNNNNNNNNN.................m...c.NNNNNNNNN......................m.
+.B....................................p....................................c...............................m..
+.B...............................m....p....................................c...............................m..
+.B...............................m....p....................................c...............................m..
+.B...............................m....p....................................c...............................m..
+.B...............................m....p.......................................................................
+.B...............................m....p.......................................................................
+.B...............................m....p.......................................................................
+.B...............................m....p.......................................................................
+..............................................................................................................
+.o.NNNNNNNN.......................m...g.NNNNNNNNNNN...................mm...y.NNNNNN.........................m.
+.o...............................m....g............................m.......y............................m..m..
+.o...............................m....g...............................m....y...............................m..
+.o....................................g...............................m.......................................
+.o...............................m....g...............................m.......................................
+.o...............................m....g.......................................................................
+.o....................................g.......................................................................
+.o...............................m....g.......................................................................
+.o...............................m....g.......................................................................
+......................................g.......................................................................
+......................................g.......................................................................
+......................................g.......................................................................
+..............................................................................................................
+.r.NNNNNNN........................m...........................................................................
+.r...............................m............................................................................
+.r...............................m............................................................................
+.r............................................................................................................
+..............................................................................................................
+.mmm..mmm....m...m...m...m..mmmm....m..mmmm....mmm..mmmmm.....................................................
+
+divider: none
+separators: [28]
+
+shapes:
+Chip(Pill) at row 0 col 0 width 110 rows 1
+Chip(Selection) at row 0 col 106 width 3 rows 1
+Chip(Selection) at row 0 col 98 width 7 rows 1
+Card at row 1 col 0 width 36 rows 9
+Card at row 1 col 37 width 36 rows 9
+Card at row 1 col 74 width 36 rows 9
+Card at row 11 col 0 width 36 rows 12
+Card at row 11 col 37 width 36 rows 12
+Card at row 11 col 74 width 36 rows 12
+Card at row 24 col 0 width 36 rows 4
+Band at row 2 col 0 width 36 rows 1
+Chip(Pill) at row 3 col 32 width 3 rows 1
+Chip(Pill) at row 4 col 32 width 3 rows 1
+Chip(Pill) at row 5 col 32 width 3 rows 1
+Chip(Pill) at row 6 col 32 width 3 rows 1
+Chip(Pill) at row 7 col 32 width 3 rows 1
+Chip(Pill) at row 8 col 32 width 3 rows 1
+Chip(Pill) at row 9 col 32 width 3 rows 1
+Chip(Pill) at row 2 col 106 width 3 rows 1
+Chip(Pill) at row 3 col 106 width 3 rows 1
+Chip(Pill) at row 4 col 106 width 3 rows 1
+Chip(Pill) at row 5 col 106 width 3 rows 1
+Chip(Pill) at row 12 col 32 width 3 rows 1
+Chip(Pill) at row 13 col 32 width 3 rows 1
+Chip(Pill) at row 15 col 32 width 3 rows 1
+Chip(Pill) at row 16 col 32 width 3 rows 1
+Chip(Pill) at row 18 col 32 width 3 rows 1
+Chip(Pill) at row 19 col 32 width 3 rows 1
+Chip(Pill) at row 13 col 69 width 3 rows 1
+Chip(Pill) at row 14 col 69 width 3 rows 1
+Chip(Pill) at row 15 col 69 width 3 rows 1
+Chip(Pill) at row 12 col 106 width 3 rows 1
+Chip(Pill) at row 13 col 106 width 3 rows 1
+Chip(Pill) at row 25 col 32 width 3 rows 1
+Chip(Pill) at row 26 col 32 width 3 rows 1
+Chip(Pill) at row 29 col 0 width 5 rows 1
+Chip(Pill) at row 29 col 12 width 3 rows 1
+Chip(Pill) at row 29 col 16 width 3 rows 1
+Chip(Pill) at row 29 col 20 width 3 rows 1
+Chip(Pill) at row 29 col 24 width 3 rows 1
+Chip(Pill) at row 29 col 35 width 3 rows 1
+Chip(Pill) at row 29 col 46 width 5 rows 1

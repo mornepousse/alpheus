@@ -122,6 +122,9 @@ pub struct ToolHitRow {
     /// `<category> <name>`, or empty without a category: scored only when the name itself missed.
     pub path_text: String,
     pub key: String,
+    /// A choice of the flat search: the index of its entry's row in the same list. The Tools search
+    /// keeps it right after its entry.
+    pub parent: Option<usize>,
 }
 
 pub struct Query<'a> {
@@ -693,8 +696,42 @@ impl Ranker {
         if !path_hits.is_empty() {
             ranked.extend(finish(path_hits, q, pr));
         }
+        if q.mode == Mode::Tools {
+            ranked = group_choices(ranked, q.tools);
+        }
         ranked
     }
+}
+
+/// The Tools search's hits with each choice moved right after its entry when the entry is among
+/// them, the choices of one entry in their own order; a choice whose entry missed keeps its place.
+fn group_choices(ranked: Vec<Hit>, tools: &[ToolHitRow]) -> Vec<Hit> {
+    let parent = |h: &Hit| match h.source {
+        Source::Tool(i) => tools.get(i).and_then(|t| t.parent),
+        _ => None,
+    };
+    if !ranked.iter().any(|h| parent(h).is_some()) {
+        return ranked;
+    }
+    // The rank of each entry among the hits: a choice sorts on its entry's, after it.
+    let mut rank_of = vec![None; tools.len()];
+    for (r, h) in ranked.iter().enumerate() {
+        if let Source::Tool(i) = h.source
+            && let Some(slot) = rank_of.get_mut(i)
+        {
+            *slot = Some(r);
+        }
+    }
+    let mut keyed: Vec<((usize, bool, usize), Hit)> = ranked
+        .into_iter()
+        .enumerate()
+        .map(|(r, h)| match parent(&h).and_then(|p| rank_of.get(p).copied().flatten()) {
+            Some(anchor) => ((anchor, true, r), h),
+            None => ((r, false, r), h),
+        })
+        .collect();
+    keyed.sort_unstable_by_key(|(k, _)| *k);
+    keyed.into_iter().map(|(_, h)| h).collect()
 }
 
 /// Sorts (score bucket desc, a name typed in full first, frecency desc, kind, name, index) and

@@ -874,7 +874,7 @@ fn tools_category_snapshot_with_switch_and_chevron() {
     let update = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Update").unwrap();
     l.adopt_state(update, Some(true));
     let (_, rows) = draw(&mut l, 100);
-    insta::assert_snapshot!("tools_category", snapshot(&rows));
+    insta::assert_snapshot!("tools_category", snapshot_with_shapes(&rows));
     l.adopt_state(update, Some(false));
     let (_, rows) = draw(&mut l, 100);
     assert!(tool_text(&rows).iter().any(|t| t.contains("Update") && t.contains("○ off")), "{}", snapshot(&rows));
@@ -893,7 +893,7 @@ fn the_prompt_shows_its_label_the_typed_text_and_its_own_hint() {
     let text = tool_text(&rows);
     assert!(text[0].contains("Tools › Ping") && text[0].contains("10.0.0.1"), "breadcrumb and typed text: {text:?}");
     assert!(text.iter().any(|t| t.contains("Host to ping")), "the label is the one row: {text:?}");
-    assert!(text.iter().any(|t| t.contains("⏎ run · esc back")), "the prompt's own hint: {text:?}");
+    assert!(text.iter().any(|t| t.contains("⏎  Run") && t.contains("Esc  Back")), "the prompt's own hint: {text:?}");
 }
 
 #[test]
@@ -902,10 +902,11 @@ fn tools_flat_search_snapshot() {
     typed(&mut l, "gen");
     let (_, rows) = draw(&mut l, 100);
     insta::assert_snapshot!("tools_flat", snapshot(&rows));
-    // The category is dimmed after the entry, two cells on; a root entry has none.
+    // The category is dim at the right; a choice comes right after its entry.
     let text = tool_text(&rows);
-    assert!(text.iter().any(|t| t.contains("Generation  Nix")), "{text:?}");
-    assert!(text.iter().any(|t| t.contains("Generation · list  Nix")), "{text:?}");
+    let at = text.iter().position(|t| t.contains("Generation ") && !t.contains(" · ")).unwrap_or_else(|| panic!("{text:?}"));
+    assert!(text[at].trim_end().ends_with("Nix"), "{text:?}");
+    assert!(text[at + 1].contains("Generation · list") && text[at + 1].trim_end().ends_with("Nix"), "{text:?}");
 }
 
 #[test]
@@ -969,12 +970,12 @@ fn tools_empty_level_says_nothing_here_and_a_missed_search_no_match() {
 fn tools_help_rows() {
     let mut l = tools_box(TOOLS_CFG);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · esc close")));
-    assert!(!tool_text(&rows).iter().any(|t| t.contains("⌫") || t.contains("← back")), "← does nothing at the root");
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    Esc  Close")), "{}", snapshot(&rows));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("⌫") || t.contains("Back")), "← does nothing at the root");
     keys(&mut l, &[Key::Down, Key::Enter]);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ← esc back")));
-    assert!(!tool_text(&rows).iter().any(|t| t.contains("esc close")));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    ←   Esc  Back")), "{}", snapshot(&rows));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("Close")));
 }
 
 #[test]
@@ -986,7 +987,7 @@ fn the_help_row_of_an_apps_origin_root_offers_backspace_to_all() {
     l.set_tools(catalog);
     typed(&mut l, "/");
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ⌫ all · esc close")), "{}", snapshot(&rows));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    ⌫  All    Esc  Close")), "{}", snapshot(&rows));
 }
 
 #[test]
@@ -1166,4 +1167,221 @@ fn with_nothing_selected_no_row_is_highlighted() {
     let (b, rows) = draw(&mut l, 100);
     let top = usize::from(b.list_top) - 1;
     assert!((0..2).all(|i| selected_cells(&rows.rows[top + i]) == 0), "no highlight when nothing is selected");
+}
+
+// --- the Super+X overview ---
+
+/// Every built-in shown but "Stop recording" (as the overview's own tests).
+fn every_builtin() -> crate::launcher::tools::catalog::Context {
+    crate::launcher::tools::catalog::Context {
+        quick: true,
+        notifications: true,
+        timer: true,
+        keep_awake: true,
+        night_light: true,
+        lock: true,
+        session: true,
+        reload: true,
+        shield: true,
+        clipboard: true,
+        diagnostics: true,
+        nmap: true,
+        usb_reset: true,
+        shutdown: true,
+        shutdown_left: None,
+        captures: true,
+        recording: false,
+        annotate: true,
+        ocr: true,
+        record: true,
+    }
+}
+
+/// A `--tools` open of `text`'s launcher.toml with every built-in, its overview placed in 110×40
+/// cells, and a box sized for it: the cards' width; the chip, the cards, a blank row (its line)
+/// and the footer.
+fn overview_box(text: &str) -> (Launcher, BoxLayout) {
+    use crate::launcher::tools::catalog::Catalog;
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = Catalog::build(&config.tools, &every_builtin(), &mut |_| {});
+    let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
+    l.place_overview(110, 40);
+    let o = l.tools().and_then(|t| t.overview()).expect("the overview is placed");
+    let b = BoxLayout { columns: o.columns + 2, rows: o.rows + 5, list_top: 2, list_rows: o.rows + 1, preview_columns: 0 };
+    l.set_list_rows(usize::from(b.list_rows));
+    (l, b)
+}
+
+/// Renders `l` in `b`, every row as wide as the box less its ring.
+fn draw_in(l: &Launcher, b: &BoxLayout) -> Boxed {
+    let rows = render(l, b);
+    for (i, r) in rows.rows.iter().enumerate() {
+        assert_eq!(r.width(), b.columns - 2, "row {i} of {}", snapshot(&rows));
+    }
+    rows
+}
+
+/// The snapshot, the separators, then the shapes one per line.
+fn snapshot_with_shapes(b: &Boxed) -> String {
+    let shapes: Vec<String> =
+        b.shapes.iter().map(|s| format!("{:?} at row {} col {} width {} rows {}", s.kind, s.row, s.col, s.width, s.rows)).collect();
+    format!("{}\nseparators: {:?}\n\nshapes:\n{}", snapshot(b), b.separators, shapes.join("\n"))
+}
+
+fn switches(b: &Boxed) -> Vec<&Shape> {
+    b.shapes.iter().filter(|s| matches!(s.kind, ShapeKind::Switch(_))).collect()
+}
+
+#[test]
+fn overview_snapshot_default_catalog() {
+    let (l, b) = overview_box("");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows).join("\n");
+    for name in ["Quick settings", "Control center", "Utilities", "Captures", "Diagnostics", "System", "Session"] {
+        assert!(text.contains(name), "the {name} card's header: {text}");
+    }
+    assert!(!text.contains("Pinned"), "no root built-in, no Pinned card: {text}");
+    assert!(text.contains("Search tools"), "the placeholder: {text}");
+    assert!(text.contains('›'), "a tool that opens a level: {text}");
+    let header = tool_text(&rows).into_iter().find(|t| t.contains("System")).unwrap();
+    assert!(header.contains('●'), "the hue dot: {header:?}");
+    let shutdown = tool_text(&rows).into_iter().find(|t| t.contains("Schedule shutdown")).unwrap();
+    assert!(shutdown.contains("›  s"), "the chevron then the letter: {shutdown:?}");
+    assert!(rows.shapes.iter().filter(|s| s.kind == ShapeKind::Card).count() >= 6, "one card per category");
+    assert_eq!(rows.shapes.iter().filter(|s| s.kind == ShapeKind::Band).count(), 1, "one selection band");
+    assert!(rows.shapes.iter().all(|s| s.kind != ShapeKind::Band || s.row > 0), "the band is on a tool, not the chip");
+    insta::assert_snapshot!("tools_overview", snapshot_with_shapes(&rows));
+}
+
+const LATE_STATE_CFG: &str = r#"
+[[tools.category]]
+name = "Local"
+[[tools.entry]]
+name = "A rather long tool name that fills its card"
+category = "Local"
+run = ["x"]
+state = ["s"]
+"#;
+
+/// The catalog index of the entry named `name`.
+fn entry_named(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+#[test]
+fn a_late_state_fills_its_slot_without_moving_the_row() {
+    let name = "A rather long tool name that fills its card";
+    let (mut l, b) = overview_box(LATE_STATE_CFG);
+    let e = entry_named(&l, name);
+    let before = draw_in(&l, &b);
+    assert!(switches(&before).is_empty(), "no switch before the state is in");
+    l.adopt_state(e, Some(true));
+    let after = draw_in(&l, &b);
+    assert_eq!(tool_text(&before), tool_text(&after), "the name and the letter stay where they were");
+    let new = switches(&after);
+    assert_eq!(new.len(), 1, "{}", snapshot_with_shapes(&after));
+    assert_eq!(new[0].kind, ShapeKind::Switch(true));
+    let line = &after.rows[new[0].row];
+    let cut = line.text();
+    assert!(cut.contains('…'), "the long name is cut before the slot: {cut:?}");
+    let cells: String = line.cells()[usize::from(new[0].col)..usize::from(new[0].col) + 2].iter().map(|c| c.ch).collect();
+    assert_eq!(cells, "  ", "the switch lies on the reserved blank cells: {cut:?}");
+}
+
+#[test]
+fn a_hung_state_leaves_the_slot_empty() {
+    let name = "A rather long tool name that fills its card";
+    let (mut l, b) = overview_box(LATE_STATE_CFG);
+    let e = entry_named(&l, name);
+    let before = draw_in(&l, &b);
+    l.adopt_state(e, None);
+    let after = draw_in(&l, &b);
+    assert!(switches(&after).is_empty(), "never a guess");
+    assert_eq!(tool_text(&before), tool_text(&after), "the slot stays blank");
+}
+
+#[test]
+fn search_rows_keep_icons_and_group_choices() {
+    let (mut l, b) = overview_box("");
+    typed(&mut l, "/sh");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows);
+    let at = text.iter().position(|t| t.contains("Schedule shutdown") && !t.contains(" · ")).unwrap_or_else(|| panic!("{text:#?}"));
+    for k in 1..=5 {
+        assert!(text[at + k].contains("Schedule shutdown · "), "choice {k} right after its entry: {text:#?}");
+    }
+    assert!(!text[at + 6].contains("Schedule shutdown"), "then the next entry: {text:#?}");
+    // Every entry row carries its glyph.
+    for (i, h) in l.results.iter().enumerate().take(usize::from(b.list_rows)) {
+        let Source::Tool(r) = h.source else { panic!() };
+        let row = &l.tool_rows()[r];
+        if let (RowId::Entry(_), Some(icon)) = (row.id, row.icon) {
+            assert!(text[usize::from(b.list_top) - 1 + i].contains(icon), "{:?} keeps its glyph", row.text);
+        }
+    }
+    assert!(text[at].contains("System"), "the category dim at the right: {:?}", text[at]);
+    let glyph = l.tools().unwrap().catalog.entries[entry_named(&l, "Schedule shutdown")].icon.unwrap();
+    assert!(text[at].contains(glyph) && !text[at + 1].contains(glyph), "a choice under its entry leaves the glyph to it");
+    let orphan = text.iter().find(|t| t.contains("Network scan · ")).unwrap_or_else(|| panic!("{text:#?}"));
+    assert!(!orphan.starts_with("   "), "a choice whose entry missed keeps its glyph: {orphan:?}");
+}
+
+#[test]
+fn a_pending_question_turns_the_frame_urgent() {
+    let mut l = tools_box(TOOLS_CFG);
+    assert_eq!(frame_ink(&l), FrameInk::Border);
+    keys(&mut l, &[Key::Down, Key::Enter, Key::Down]); // Collect garbage
+    l.set_now(std::time::Instant::now());
+    assert_eq!(l.key(Key::Enter), crate::launcher::model::Outcome::Asked);
+    assert_eq!(frame_ink(&l), FrameInk::Urgent, "while the question is pending");
+    let (_, rows) = draw(&mut l, 100);
+    let question = tool_text(&rows).into_iter().position(|t| t.contains("Collect garbage? ⏎")).unwrap();
+    assert!(rows.rows[question].styles().contains(Style::URGENT.code()), "the question in the urgent tint");
+    l.key(Key::Down);
+    assert_eq!(frame_ink(&l), FrameInk::Border, "any other key cancels it");
+}
+
+#[test]
+fn the_footer_hides_letters_when_they_are_not_live() {
+    let (mut l, b) = overview_box("");
+    let footer = |l: &Launcher| draw_in(l, &b).rows.last().unwrap().text();
+    let live = footer(&l);
+    for word in ["a-z", "Run", "Move", "Open", "Esc", "Close"] {
+        assert!(live.contains(word), "{word} in {live:?}");
+    }
+    l.key(Key::Char('/'));
+    assert!(!l.letters_live());
+    let typing = footer(&l);
+    assert!(!typing.contains("a-z") && !typing.contains("Run"), "{typing:?}");
+    assert!(typing.contains("Move") && typing.contains("Close"), "{typing:?}");
+}
+
+#[test]
+fn a_click_on_an_overview_row_maps_to_its_slot() {
+    let (l, b) = overview_box("");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows);
+    let r = text.iter().position(|t| t.contains("Schedule shutdown")).unwrap();
+    let c = text[r][..text[r].find("Schedule shutdown").unwrap()].chars().count();
+    // Boxed coordinates are the ring's less one.
+    let Some(Click::Result(i)) = hit(&l, &b, c as u16 + 1, r as u16 + 1) else { panic!("a slot") };
+    let Source::Tool(t) = l.results[i].source else { panic!() };
+    assert_eq!(l.tool_rows()[t].text, "Schedule shutdown");
+    let header = text.iter().position(|t| t.contains("System")).unwrap();
+    assert_eq!(hit(&l, &b, c as u16 + 1, header as u16 + 1), Some(Click::Inside), "a header is no slot");
+}
+
+#[test]
+fn a_tool_row_in_all_keeps_the_flat_selection() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let catalog = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(catalog);
+    typed(&mut l, "lock now");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(matches!(l.selected_hit().map(|h| h.source), Some(Source::Tool(_))), "{}", snapshot(&rows));
+    let row = &rows.rows[usize::from(b.list_top) - 1];
+    assert!(row.text().contains("Lock now") && row.styles().contains(Style::SELECTED.code()), "{}", snapshot(&rows));
+    assert!(rows.shapes.is_empty(), "no band outside the Tools mode");
 }

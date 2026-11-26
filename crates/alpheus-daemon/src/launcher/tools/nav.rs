@@ -201,7 +201,8 @@ impl ToolsState {
             let category = e.category.and_then(|c| self.catalog.categories.get(c)).map(|c| c.name.as_str());
             let path_text = category.map(|c| format!("{c} {text}")).unwrap_or_default();
             flat.push(ToolRow { id, icon: e.icon, text: text.clone(), trail: Trail::Category(category.unwrap_or_default().to_string()) });
-            hits.push(ToolHitRow { name: text, path_text, key });
+            // `Catalog::flat` lists every entry first, in order: an entry's row is its index.
+            hits.push(ToolHitRow { name: text, path_text, key, parent: f.choice.map(|_| f.entry) });
         }
         self.flat = flat;
         self.flat_hits = hits;
@@ -337,7 +338,7 @@ impl ToolsState {
             },
             RowId::Category(_) | RowId::Prompt(_) => None,
         };
-        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default() }
+        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default(), parent: None }
     }
 
     /// The question a pending `row` shows: `<name>? ⏎` (the icon is the row's own), a choice of a

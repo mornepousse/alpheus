@@ -703,7 +703,12 @@ fn rank_emoji_matches_non_ascii_names() {
 }
 
 fn tool_row(name: &str, path: &str) -> ToolHitRow {
-    ToolHitRow { name: name.into(), path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") }, key: String::new() }
+    ToolHitRow {
+        name: name.into(),
+        path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") },
+        key: String::new(),
+        parent: None,
+    }
 }
 
 /// Tool rows join All on a typed query only, never the other modes.
@@ -760,4 +765,26 @@ fn tool_frecency_orders_equal_hits_and_the_tools_mode_keeps_the_level_order_othe
     l.tools = vec![key("Zed one"), key("Beta one")];
     assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(0)], "All: by name between equals");
     assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(0), Source::Tool(1)], "the Tools mode: the level's order");
+}
+
+/// The Tools search keeps an entry's choices right after it, whatever ranks between them; a
+/// choice whose entry missed keeps its own place; All ranks them as they come.
+#[test]
+fn the_tools_search_groups_choices_after_their_entry() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let key = |n: &str| ToolHitRow { key: format!("tool:user:/{n}"), ..tool_row(n, "") };
+    let choice = |n: &str, parent| ToolHitRow { parent: Some(parent), ..key(n) };
+    l.tools = vec![key("Lock one"), key("Zed one"), choice("Lock one · now", 0), choice("Lock one · later", 0)];
+    l.history = History::empty(10);
+    l.history.record("tool:user:/Lock one · later", NOW);
+    l.history.record("tool:user:/Zed one", NOW - 10);
+    l.history.record("tool:user:/Zed one", NOW - 20);
+    assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(3), Source::Tool(0), Source::Tool(2)], "All: as ranked");
+    assert_eq!(
+        l.sources(Mode::Tools, "one"),
+        [Source::Tool(1), Source::Tool(0), Source::Tool(3), Source::Tool(2)],
+        "the entry where it ranks, its choices after it in their own order"
+    );
+    assert_eq!(l.sources(Mode::Tools, "now"), [Source::Tool(2)], "a choice alone keeps its place");
 }

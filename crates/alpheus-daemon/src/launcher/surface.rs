@@ -18,7 +18,7 @@ use crate::launcher::tools::nav::ToolAction;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::painter::{self, Frame, FrameInk};
+use crate::painter::{self, Frame};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
@@ -664,7 +664,9 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e, FrameInk::Border);
+        // A Tools question waiting for its second Enter turns the frame urgent; its row changes
+        // with it, so the `last` check above never skips that frame.
+        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e, view::frame_ink(&open.model));
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

@@ -11,16 +11,18 @@
 //! built (`list::boxed`).
 
 use crate::compositor::Toplevel;
-use crate::grid::{Grid, Style, text_width, truncate};
+use crate::grid::{Grid, Style, Tint, text_width, truncate};
 use crate::icons;
 use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
-use crate::launcher::tools::catalog::Choices;
-use crate::launcher::tools::nav::{RowId, Trail};
-use crate::list::{self, Boxed, Row, tail, wrap};
+use crate::launcher::tools::catalog::{Choices, Entry};
+use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
+use crate::launcher::tools::overview::{CardId, CardPlace};
+use crate::list::{self, Boxed, Row, Shape, ShapeKind, tail, wrap};
+use crate::painter::FrameInk;
 use crate::quick;
 use alpheus_common::launcher_ipc::wipe;
 use std::borrow::Cow;
@@ -41,6 +43,14 @@ const CLIPBOARD_PLACEHOLDER: &str = "type to filter the clipboard history";
 /// The kill list's empty input line.
 const PROCESSES_PLACEHOLDER: &str = "type to filter the processes";
 const PROMPT: &str = "❯";
+/// The Tools search field's placeholder at the overview.
+const TOOLS_PLACEHOLDER: &str = "Search tools";
+/// The Tools search field's cursor.
+const TOOLS_CURSOR: &str = "▏";
+/// The narrowest box whose search field still shows the `Super` `X` capsules.
+const KEY_HINT_COLUMNS: u16 = 60;
+/// The cells of a tool's letter capsule at the right of its card row: the letter between two blanks.
+const LETTER_CELLS: u16 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxLayout {
@@ -209,9 +219,17 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         return;
     }
     if let Source::Tool(i) = l.results[index].source
-        && l.tool_rows().get(i).is_some()
+        && let Some(row) = l.tool_rows().get(i)
     {
-        tool_row(l, b, g, i, selected);
+        // A choice right under its entry (or a sibling choice) in the search.
+        let above = index.checked_sub(1).and_then(|p| l.results.get(p)).and_then(|h| match h.source {
+            Source::Tool(j) => l.tool_rows().get(j),
+            _ => None,
+        });
+        let grouped =
+            above.is_some_and(|a| matches!((a.id, row.id), (RowId::Entry(a) | RowId::Choice(a, _), RowId::Choice(e, _)) if a == e));
+        // The Tools mode draws its selection as a band under the row (`render`).
+        tool_row(l, b, g, i, grouped, selected && l.mode != Mode::Tools);
         return;
     }
     if let Source::Proc(i) = l.results[index].source
@@ -287,19 +305,24 @@ fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
     }
 }
 
-/// A Tools row: `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
-/// panel's switch, or, in a flat search, the category dimmed after the entry (`entry_row`, no glyph).
-/// A pending question replaces the text with `<name>? ⏎` in warn.
-fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
+/// A Tools row: `<icon> <text>` (the icon in its category's hue) and its trail at the right edge:
+/// ` ›` dim, the quick panel's switch, or, in a flat search, the category dim at the right (a
+/// choice `grouped` under its entry leaves its glyph cell blank). A pending question replaces the
+/// text with `<name>? ⏎` in the urgent tint.
+fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, selected: bool) {
     let (Some(t), Some(row)) = (l.tools(), l.tool_rows().get(i)) else { return };
     let end = b.pane_end();
+    let icon_style = row_hue(t, row.id);
+    let icon = if grouped { row.icon.map(|_| ' ') } else { row.icon };
     if t.asking(row.id) {
         let text = t.question_text(row);
-        list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
+        list::row(g, 1, end, &Row { icon, icon_style, text: &text, right: "", style: Style::URGENT, selected });
         return;
     }
     match &row.trail {
-        Trail::Category(category) => entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected),
+        Trail::Category(category) => {
+            list::row(g, 1, end, &Row { icon, icon_style, text: &row.text, right: category, style: Style::NORMAL, selected });
+        }
         Trail::None | Trail::Chevron | Trail::Switch(_) => {
             let right = if row.trail == Trail::Chevron { "›" } else { "" };
             // A switch is drawn over the row's right edge: the name is cut before it, ellipsis
@@ -314,12 +337,31 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
                 }
                 _ => (None, row.text.clone()),
             };
-            list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &shown, right, style: Style::NORMAL, selected });
+            list::row(g, 1, end, &Row { icon, icon_style, text: &shown, right, style: Style::NORMAL, selected });
             if let Some((text, style)) = switch {
                 g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
             }
         }
     }
+}
+
+/// The style of a Tools row's glyph: its category's hue, the accent for a root entry.
+fn row_hue(t: &ToolsState, id: RowId) -> Style {
+    let category = match id {
+        RowId::Category(c) => Some(c),
+        RowId::Entry(e) | RowId::Choice(e, _) | RowId::Prompt(e) => t.catalog.entries.get(e).and_then(|e| e.category),
+    };
+    category_hue(t, category)
+}
+
+/// A category's hue as a style, the accent without one (a root entry, the Pinned card).
+fn category_hue(t: &ToolsState, category: Option<usize>) -> Style {
+    category.and_then(|c| t.catalog.categories.get(c)).and_then(|c| c.hue).map_or(Style::ACCENT, Style::hue)
+}
+
+/// Whether Enter on the entry opens a level (its choices, or the text it asks for).
+fn opens_level(e: &Entry) -> bool {
+    !matches!(e.choices, Choices::None) || e.ask.is_some()
 }
 
 /// A command-source entry: the entry, then its path dimmed two cells after it,
@@ -368,11 +410,8 @@ fn help_text(l: &Launcher) -> &'static str {
         return "enter focus · tab next · esc close";
     }
     match l.mode {
-        // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
-        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) && l.origin == Origin::Apps => "⏎ open/run · ⌫ all · esc close",
-        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · esc close",
-        Mode::Tools if l.tools().is_some_and(|t| t.prompting()) => "⏎ run · esc back",
-        Mode::Tools => "⏎ open/run · ← esc back",
+        // Drawn as capsules: `tools_hints`.
+        Mode::Tools => "",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
         Mode::Processes => processes_help(l),
@@ -550,10 +589,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((String::new(), Style::NORMAL));
                 let opens = match row.id {
                     RowId::Category(_) => true,
-                    RowId::Entry(e) => l
-                        .tools()
-                        .and_then(|t| t.catalog.entries.get(e))
-                        .is_some_and(|e| !matches!(e.choices, Choices::None) || e.ask.is_some()),
+                    RowId::Entry(e) => l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(opens_level),
                     RowId::Choice(..) | RowId::Prompt(_) => false,
                 };
                 out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
@@ -575,6 +611,13 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 // the empty-state texts: one row per mode, so a mode keeps its own line.
 #[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
+    if overview_shown(l) {
+        return render_tools_overview(l, b);
+    }
+    let tools = l.mode == Mode::Tools;
+    let unpaned = tools_layout(l, b);
+    let b = &unpaned;
+    let mut shapes = Vec::new();
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
     if l.has_modes() {
@@ -583,13 +626,20 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         rows.push(g);
     }
     let mut g = blank(b);
-    input_row(l, b, &mut g);
+    if tools {
+        tools_chip(l, b, &mut g, &mut shapes, rows.len());
+    } else {
+        input_row(l, b, &mut g);
+    }
     rows.push(g);
     for r in 0..usize::from(b.list_rows) {
         let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
             result_row(l, b, &mut g, index);
+            if tools && index == l.selected && !l.selection_lost() {
+                shapes.push(ring_shape(rows.len(), 1, end.saturating_sub(1), 1, ShapeKind::Band));
+            }
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
                 _ if let Some((p, text)) = l.prefixed() => {
@@ -618,6 +668,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut g = blank(b);
     match &l.message {
         Some(m) => g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR),
+        None if tools => key_hints(&mut g, &mut shapes, rows.len(), end, tools_hints(l)),
         None => g.write(2, end.saturating_sub(1), &truncate(help_text(l), end.saturating_sub(3)), Style::MUTED),
     };
     rows.push(g);
@@ -649,7 +700,260 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             wipe(text);
         }
     }
-    list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()))
+    let mut boxed = list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()));
+    boxed.shapes = shapes;
+    boxed
+}
+
+/// Whether the Tools mode shows its overview: the root, placed, nothing typed.
+fn overview_shown(l: &Launcher) -> bool {
+    l.mode == Mode::Tools && l.query.is_empty() && l.tools().is_some_and(|t| t.overview().is_some())
+}
+
+/// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
+/// run", repeats the row), the results across the box. Any other mode's is `b` itself.
+fn tools_layout(l: &Launcher, b: &BoxLayout) -> BoxLayout {
+    if l.mode == Mode::Tools { BoxLayout { preview_columns: 0, ..*b } } else { *b }
+}
+
+/// A shape over cells given in the ring's coordinates, as every row is built: `list::boxed` drops
+/// the ring, the shape follows it.
+fn ring_shape(row: usize, col: u16, width: u16, rows: u16, kind: ShapeKind) -> Shape {
+    Shape { row: row.saturating_sub(1), col: col.saturating_sub(1), width, rows, kind }
+}
+
+/// A key capsule on row `y` from column `x`: `key` dim between two blank cells, on a chip of
+/// `tint`. The column after it; nothing drawn when it does not fit before `end`.
+fn capsule(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, x: u16, end: u16, key: &str, tint: Tint) -> u16 {
+    let w = text_width(key) + 2;
+    if x + w > end {
+        return x;
+    }
+    shapes.push(ring_shape(y, x, w, 1, ShapeKind::Chip(tint)));
+    g.write(x + 1, x + w - 1, key, Style::MUTED);
+    x + w
+}
+
+/// A footer's offer: keys, each in its capsule, then what they do.
+type Hint = (&'static [&'static str], &'static str);
+
+const OVERVIEW_HINTS: [Hint; 4] = [(&["a-z"], "Run"), (&["↑", "↓", "←", "→"], "Move"), (&["⏎"], "Open"), (&["Esc"], "Close")];
+
+/// The Tools footer: the overview's keys (the letters only while they run tools), a level's own.
+fn tools_hints(l: &Launcher) -> &'static [Hint] {
+    let Some(t) = l.tools() else { return &[] };
+    if t.overview().is_some() && l.query.is_empty() {
+        return &OVERVIEW_HINTS[usize::from(!l.letters_live())..];
+    }
+    // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
+    if t.at_root() && l.origin == Origin::Apps {
+        &[(&["⏎"], "Open"), (&["⌫"], "All"), (&["Esc"], "Close")]
+    } else if t.at_root() {
+        &[(&["⏎"], "Open"), (&["Esc"], "Close")]
+    } else if t.prompting() {
+        &[(&["⏎"], "Run"), (&["Esc"], "Back")]
+    } else {
+        &[(&["⏎"], "Open"), (&["←", "Esc"], "Back")]
+    }
+}
+
+/// `hints` left-aligned on row `y` from the box's left edge: each group's capsules one blank cell
+/// apart, its label after them, three cells to the next group; a group that does not fit before
+/// `end` is left out with the ones after it.
+fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, end: u16, hints: &[Hint]) -> u16 {
+    let mut x = 1;
+    for (keys, label) in hints {
+        let need = keys.iter().map(|k| text_width(k) + 3).sum::<u16>() + text_width(label);
+        if x + need > end {
+            break;
+        }
+        for k in *keys {
+            x = capsule(g, shapes, y, x, end, k, Tint::Pill) + 1;
+        }
+        x = g.write(x, end, label, Style::MUTED) + 3;
+    }
+    x
+}
+
+/// The Tools mode's search field on row `y`: a chip across the box, the magnifier, the breadcrumb
+/// below the root, the query and its cursor (the placeholder at the overview), and at its right
+/// the `Super` `X` capsules in a `--tools` open at least `KEY_HINT_COLUMNS` wide.
+fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
+    let end = b.pane_end();
+    shapes.push(ring_shape(y, 1, end.saturating_sub(1), 1, ShapeKind::Chip(Tint::Pill)));
+    let mut stop = end.saturating_sub(1);
+    if l.origin == Origin::Tools && b.columns >= KEY_HINT_COLUMNS {
+        let mut x = stop;
+        for key in ["X", "Super"] {
+            x = x.saturating_sub(text_width(key) + 2);
+            capsule(g, shapes, y, x, stop, key, Tint::Selection);
+            x = x.saturating_sub(1);
+        }
+        stop = x;
+    }
+    let overview = l.tools().is_some_and(|t| t.overview().is_some());
+    let mut x = g.write(2, stop, &SEARCH_ICON.to_string(), Style::MUTED);
+    x = g.write(x, stop, " ", Style::NORMAL);
+    if !overview {
+        // The breadcrumb, cut from the left when too long.
+        let crumb = l.tools().map_or_else(String::new, |t| tail(&t.breadcrumb(), stop.saturating_sub(x) / 2));
+        x = g.write(x, stop, &crumb, Style::BOLD_ACCENT);
+        x = g.write(x, stop, " ", Style::NORMAL);
+    }
+    // One cell kept for the cursor, one for the margin.
+    let mut shown = tail(&l.query, stop.saturating_sub(x).saturating_sub(2));
+    x = g.write(x, stop, &shown, Style::NORMAL);
+    wipe(&mut shown);
+    // A thin bar, as the field's own: a block would spill past the chip's rounded edge.
+    x = g.write(x, stop, TOOLS_CURSOR, Style::ACCENT);
+    if overview && l.query.is_empty() {
+        g.write(x + 1, stop, TOOLS_PLACEHOLDER, Style::MUTED);
+    }
+}
+
+/// The Super+X overview: the search field, each card where `Overview::place` put it (a header,
+/// its tools, a dim `+N more`), the selection a band over its row inside its card, and the footer's
+/// capsules. The shapes go in painting order: the field, the cards, the band, then what lies on
+/// them (letter capsules, switches, the footer's capsules).
+pub fn render_tools_overview(l: &Launcher, b: &BoxLayout) -> Boxed {
+    let mut rows: Vec<Grid> = (0..b.rows).map(|_| blank(b)).collect();
+    let mut shapes = Vec::new();
+    let (Some(t), Some(o)) = (l.tools(), l.tools().and_then(ToolsState::overview)) else { return list::boxed(&rows, &[], None) };
+    if l.has_modes()
+        && let Some(g) = rows.get_mut(1)
+    {
+        modes_row(l, b, g);
+    }
+    let chip = usize::from(b.list_top.saturating_sub(1));
+    if let Some(g) = rows.get_mut(chip) {
+        tools_chip(l, b, g, &mut shapes, chip);
+    }
+    let selected = l.selected_hit().and_then(|h| match h.source {
+        Source::Tool(i) => l.tool_rows().get(i).map(|r| r.id),
+        _ => None,
+    });
+    let (top, bottom) = (usize::from(b.list_top), usize::from(b.list_top + b.list_rows).min(rows.len()));
+    let (mut band, mut marks) = (None, Vec::new());
+    for p in &o.cards {
+        let y0 = top + usize::from(p.row);
+        if y0 >= bottom {
+            continue;
+        }
+        let x0 = 1 + p.col;
+        shapes.push(ring_shape(y0, x0, p.width, p.rows.min(u16::try_from(bottom - y0).unwrap_or(u16::MAX)), ShapeKind::Card));
+        card_header(t, p, &mut rows[y0], x0);
+        for (k, &e) in p.shown.iter().enumerate() {
+            let y = y0 + 1 + k;
+            if y >= bottom {
+                break;
+            }
+            if selected == Some(RowId::Entry(e)) {
+                band = Some(ring_shape(y, x0, p.width, 1, ShapeKind::Band));
+            }
+            card_tool(t, e, &mut rows[y], &mut marks, y, x0, p.width);
+        }
+        let y = y0 + 1 + p.shown.len();
+        if p.more > 0 && y < bottom {
+            let end = x0 + p.width - 1;
+            let text = format!("+{} more", p.more);
+            match p.card {
+                CardId::Category(c) => {
+                    if selected == Some(RowId::Category(c)) {
+                        band = Some(ring_shape(y, x0, p.width, 1, ShapeKind::Band));
+                    }
+                    rows[y].write(x0 + 3, end, &text, Style::NORMAL);
+                    rows[y].write(end.saturating_sub(LETTER_CELLS + 2), end, "›", Style::MUTED);
+                }
+                // The Pinned card's opens nothing: dim, never a slot.
+                CardId::Pinned => {
+                    rows[y].write(x0 + 3, end, &text, Style::MUTED);
+                }
+            }
+        }
+    }
+    shapes.extend(band);
+    shapes.append(&mut marks);
+    let footer = usize::from(b.list_top + b.list_rows);
+    let end = b.pane_end();
+    if let Some(g) = rows.get_mut(footer) {
+        match &l.message {
+            Some(m) => {
+                g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR);
+            }
+            None => {
+                key_hints(g, &mut shapes, footer, end, tools_hints(l));
+            }
+        }
+    }
+    // A blank row left between the cards and the footer carries a line, as the box's other parts.
+    let separators: Vec<usize> = (top + usize::from(o.rows) < footer).then(|| footer - 1).into_iter().collect();
+    let mut boxed = list::boxed(&rows, &separators, None);
+    boxed.shapes = shapes;
+    boxed
+}
+
+/// A card's header on its first row: the dot in the card's hue, the name in bold, the count of its
+/// tools dim at the right.
+fn card_header(t: &ToolsState, p: &CardPlace, g: &mut Grid, x0: u16) {
+    let end = x0 + p.width - 1;
+    let (dot, name) = match p.card {
+        CardId::Pinned => (Style::ACCENT, "Pinned"),
+        CardId::Category(c) => (category_hue(t, Some(c)), t.catalog.categories.get(c).map_or("", |c| c.name.as_str())),
+    };
+    let count = (p.shown.len() + p.more).to_string();
+    let count_at = end.saturating_sub(text_width(&count));
+    g.write(x0 + 1, end, "●", dot);
+    let stop = count_at.saturating_sub(1);
+    g.write(x0 + 3, stop, &truncate(name, stop.saturating_sub(x0 + 3)), Style::BOLD);
+    g.write(count_at, end, &count, Style::MUTED);
+}
+
+/// A tool's row in its card, right to left from the card's margin: the letter capsule (its cells
+/// kept without a letter, so the columns line up), `›` for a tool that opens a level, the switch's
+/// two cells for a tool with a state, reserved from the first frame so the row never moves when the
+/// state comes in (and left blank while it is unknown, never a guess); then the glyph in the
+/// card's hue and the name, cut before them. A pending question shows in the urgent tint.
+fn card_tool(t: &ToolsState, e: usize, g: &mut Grid, marks: &mut Vec<Shape>, y: usize, x0: u16, width: u16) {
+    let Some(entry) = t.catalog.entries.get(e) else { return };
+    let end = x0 + width - 1;
+    let mut stop = end.saturating_sub(LETTER_CELLS);
+    if let Some(c) = entry.letter {
+        marks.push(ring_shape(y, stop, LETTER_CELLS, 1, ShapeKind::Chip(Tint::Pill)));
+        g.write(stop + 1, end, &c.to_string(), Style::MUTED);
+    }
+    if opens_level(entry) {
+        g.write(stop.saturating_sub(2), stop, "›", Style::MUTED);
+        stop = stop.saturating_sub(2);
+    }
+    if entry.has_state {
+        if let Some(on) = t.state_of(e) {
+            marks.push(ring_shape(y, stop.saturating_sub(3), 2, 1, ShapeKind::Switch(on)));
+        }
+        stop = stop.saturating_sub(3);
+    }
+    let stop = stop.saturating_sub(1);
+    let mut x = x0 + 1;
+    if let Some(icon) = entry.icon {
+        x = g.write(x, stop, &icon.to_string(), category_hue(t, entry.category));
+        x = g.write(x, stop, " ", Style::NORMAL);
+    }
+    let (text, style) = if t.asking(RowId::Entry(e)) {
+        let question = t.question_text(&crate::launcher::tools::nav::ToolRow {
+            id: RowId::Entry(e),
+            icon: entry.icon,
+            text: entry.name.clone(),
+            trail: Trail::None,
+        });
+        (question, Style::URGENT)
+    } else {
+        (entry.name.clone(), Style::NORMAL)
+    };
+    g.write(x, stop, &truncate(&text, stop.saturating_sub(x)), style);
+}
+
+/// The box's frame: the urgent tint while a Tools question waits for its second Enter.
+pub fn frame_ink(l: &Launcher) -> FrameInk {
+    if l.mode == Mode::Tools && l.tools().is_some_and(|t| t.next_deadline().is_some()) { FrameInk::Urgent } else { FrameInk::Border }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,6 +968,10 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if column >= b.columns || row >= b.rows {
         return None;
     }
+    if overview_shown(l) {
+        return Some(overview_hit(l, b, column, row));
+    }
+    let b = &tools_layout(l, b);
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
         let index = l.top + usize::from(row - b.list_top);
@@ -676,6 +984,29 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         return Some(Click::Mode(m));
     }
     Some(Click::Inside)
+}
+
+/// A cell of the overview → the slot under it: a tool's row or a category's `+N more` inside its
+/// card; anything else (a header, a gap, the Pinned card's `+N more`) is only inside the box.
+fn overview_hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
+    let Some(o) = l.tools().and_then(ToolsState::overview) else { return Click::Inside };
+    let Some(y) = row.checked_sub(b.list_top).filter(|y| *y < b.list_rows) else { return Click::Inside };
+    let Some(p) = o.cards.iter().find(|p| (1 + p.col..1 + p.col + p.width).contains(&column) && (p.row..p.row + p.rows).contains(&y))
+    else {
+        return Click::Inside;
+    };
+    let id = match usize::from(y - p.row).checked_sub(1) {
+        Some(k) if k < p.shown.len() => RowId::Entry(p.shown[k]),
+        Some(k) if k == p.shown.len() && p.more > 0 => match p.card {
+            CardId::Category(c) => RowId::Category(c),
+            CardId::Pinned => return Click::Inside,
+        },
+        _ => return Click::Inside,
+    };
+    l.results
+        .iter()
+        .position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows().get(i).is_some_and(|r| r.id == id)))
+        .map_or(Click::Inside, Click::Result)
 }
 
 /// Snapshot text: each row's text, then each row's style codes (Grid::text, Grid::styles), then the
