@@ -56,6 +56,30 @@ fn category_names(cat: &Catalog, items: &[Item]) -> Vec<String> {
         .collect()
 }
 
+/// Spec "Descriptions and actions": one plain line each, at most 40 characters, no trailing period.
+#[test]
+fn every_builtin_has_a_short_description() {
+    for b in &BUILTINS {
+        let n = b.description.chars().count();
+        assert!(n > 0 && n <= 40, "{}: {n} characters", b.id);
+        assert!(!b.description.ends_with('.'), "{}: a trailing period", b.id);
+        assert_eq!(b.description.trim(), b.description, "{}: blanks at an end", b.id);
+    }
+}
+
+/// A built-in's entry carries its table text, a user entry its own `description` (none: None).
+#[test]
+fn an_entry_carries_its_description() {
+    let text = "[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\ndescription = \"Do my thing\"\n\n[[tools.entry]]\nname = \"Bare\"\nrun = [\"x\"]\n";
+    let (cat, _) = build(text, &all());
+    let wifi = cat.entries.iter().find(|e| e.name == "Wi-Fi").unwrap();
+    let table = BUILTINS.iter().find(|b| b.id == "quick.wifi").unwrap();
+    assert_eq!(wifi.description.as_deref(), Some(table.description));
+    let user = |name: &str| cat.entries.iter().find(|e| e.name == name).unwrap().description.clone();
+    assert_eq!(user("Mine").as_deref(), Some("Do my thing"));
+    assert_eq!(user("Bare"), None);
+}
+
 #[test]
 fn the_table_is_the_specs() {
     let ids: Vec<&str> = BUILTINS.iter().map(|b| b.id).collect();

@@ -477,7 +477,7 @@ setting both of the first two.
 |---|---|---|---|---|
 | `terminal` | command | `["foot", "-e"]` | non-empty, non-blank program | Runs `Terminal=true` apps, plain. |
 | `terminal_hold` | command | `["foot", "--hold", "-e"]` | non-empty, non-blank program | A command or typed shell text on Enter: the terminal stays open to read the output (`Ctrl+Enter` runs detached instead). |
-| `rows` | integer | `10` | 3 to 30 | Result rows. The `--tools` overview's box ignores it: sized to its cards (about 105 cells wide), at most 90 % × 80 % of the output. |
+| `rows` | integer | `10` | 3 to 30 | Result rows. The `--tools` command panel's box ignores it: about 106 cells wide, at most 90 % × 80 % of the output. |
 | `history` | integer | `200` | 0 to 1000 | Entries kept; 0: no history file (never read, never written). |
 | `proc_dir` | path | `"/proc"` | absolute | A testing seam for the kill list (`alpheus-launch --kill`): it decides only which pids are listed (a folder of links to `/proc/<pid>` narrows the list). Start times, ancestors and signals always use the real `/proc`. Leave it alone: the headless tests point it at a folder of their own so that they can never list a real process. |
 | `focus` | command | `["wm-set", "focus-window", "{window}"]` | non-empty, non-blank program that does not contain `{window}`; some element must contain `{window}` | Run to focus a window; `{window}` is `address:0x…` on Hyprland, `id:N` elsewhere. `wm-set` is an external script, see [compositors.md](compositors.md#external-commands). |
@@ -529,8 +529,8 @@ bound the first ones are kept, with one log line of counts.
 | `builtins` | bool | `true` | | `false`: no built-in entry. |
 | `hide` | list of ids | `[]` | | Built-in ids never shown (`"tab.power"`, `"quick.shield"`…); an unknown one is logged and ignored. |
 | `root` | list of ids | `[]` | | Built-in ids also listed at the root, first, in this order (`"keep_awake"`). |
-| `overview` | bool | `true` | | `false`: the Super+X overview never shows; the menu opens as before. |
-| `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that opens a built-in from the overview, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
+| `panel` | bool | `true` | | `false`: Super+X opens on the category list instead of the command panel, with no letters. |
+| `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that runs a built-in from the command panel, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
 
 `[tools.builtin]`:
@@ -559,7 +559,8 @@ bound the first ones are kept, with one log line of counts.
 | `terminal` | bool | `false` | not with `hold` | `true`: the launcher's `terminal` is put in front. |
 | `hold` | bool | `false` | not with `terminal` | `true`: `terminal_hold` instead (the output stays readable). |
 | `confirm` | bool | `false` | not with `ask` | `true`: the first Enter asks `Name? ⏎`, a second one 0.4 s to 3 s later runs it. |
-| `key` | one letter | none | one lowercase ASCII letter, `a` to `z` | The letter that opens the entry from the overview. |
+| `key` | one letter | none | one lowercase ASCII letter, `a` to `z` | The letter that runs the entry from the command panel. |
+| `description` | string | none (the category's name shows) | 1 to 80 characters, not blank, no control character | One line on what the entry does, shown under its name in the command panel. |
 | `ask` | string | none | 1 to 48 characters, not blank; `run` must hold `{text}` | A label: the entry asks for a text (after its choice, if it has choices) and runs with it as the one element `{text}`. Never logged, never kept in the history. |
 | `state` | command | `[]` | not with choices; read for at most 16 entries | Run when the box opens: exit 0 shows the switch on, any other exit off; a hung one is killed at 1 s. |
 | `choices` | list of strings | `[]` | at most 32, each 1 to 64 characters; not with `choices_cmd` | Fixed choices for `{choice}`. |
@@ -588,7 +589,7 @@ tools = "/"          # jumps into the Tools menu; "" turns it off
 builtins = true      # false: no built-in entry
 hide = []            # built-in ids never shown ("tab.power", "quick.shield", …); an unknown one is logged and ignored
 root = []            # built-in ids also listed at the root, first, in this order ("keep_awake")
-overview = true      # false: the Super+X overview never shows
+panel = true         # false: Super+X opens on the category list, with no letters
 keys = {}            # built-in id to the letter that opens it, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
 
@@ -609,7 +610,8 @@ run = ["my-update", "--now"]   # argv, no shell; required
 terminal = false     # true: `terminal` is put in front
 hold = false         # true: `terminal_hold` instead (the output stays readable); not with `terminal`
 confirm = false      # true: asks "Update? ⏎", runs on a second Enter 0.4 s to 3 s later
-key = "u"            # one lowercase letter a to z: opens the entry from the overview; default none
+key = "u"            # one lowercase letter a to z: runs the entry from the command panel; default none
+description = "Update the system now"   # 1 to 80 characters: one line under the name; absent: the category's name
 # ask = "Host"       # instead of confirm: asks for a text (after the choice, if any); run then holds "{text}" once, as a whole element
 
 [[tools.entry]]

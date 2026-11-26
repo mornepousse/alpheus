@@ -990,3 +990,35 @@ fn a_builtin_choice_is_reachable_from_the_flat_search() {
         Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("2 h".into()), text: None }))
     );
 }
+
+/// A letter runs only from the opened panel's root, and only a tool the root lists: a tool of a
+/// category keeps its letter inert there; below the root, every letter is.
+#[test]
+fn a_letter_runs_only_a_root_tool_of_the_opened_panel() {
+    let text = format!("{CFG}key = \"y\"\n[[tools.entry]]\nname = \"Rooted\"\nrun = [\"x\"]\nkey = \"r\"\n");
+    let (_, cat) = catalog(&text);
+    let nixify = cat.entries.iter().position(|e| e.name == "Nixify").unwrap();
+    let rooted = cat.entries.iter().position(|e| e.name == "Rooted").unwrap();
+    assert_eq!(cat.entries[nixify].letter, Some('y'), "claimed all the same");
+    let mut t = ToolsState::new(cat);
+    assert_eq!(t.letter('r'), None, "not opened as the panel");
+    assert!(!t.root_letters());
+    t.open_panel(104, 30);
+    assert_eq!(t.letter('r'), Some(RowId::Entry(rooted)));
+    assert_eq!(t.letter('y'), None, "Nixify is in Zed, not at the root");
+    assert!(t.root_letters());
+    t.open(Level::Category(0), 0);
+    assert_eq!(t.letter('r'), None, "below the root");
+    assert!(!t.root_letters());
+}
+
+#[test]
+fn a_panel_with_no_room_is_not_opened() {
+    let (_, cat) = catalog(CFG);
+    let mut t = ToolsState::new(cat);
+    t.open_panel(104, 0);
+    assert_eq!(t.panel_size(), None);
+    assert!(!t.at_panel());
+    t.open_panel(104, 30);
+    assert_eq!(t.panel_size(), Some((104, 30)));
+}

@@ -407,8 +407,8 @@ impl App {
         // sink that writes to the log, or one that drops it.
         let mut note: Box<dyn FnMut(&str)> = if notes { Box::new(log) } else { Box::new(|_| {}) };
         let catalog = Catalog::build(&config.tools, &self.tools_context(config), &mut *note);
-        // The overview's letters a later claimant wanted in vain: a count, never which.
-        if notes && config.tools.overview {
+        // The letters a later claimant wanted in vain: a count, never which.
+        if notes && config.tools.panel {
             let n = catalog.lost_letters(&config.tools);
             if n > 0 {
                 log(&format!("tools: {n} letters taken twice"));

@@ -9,6 +9,7 @@ use crate::grid::Hue;
 use crate::quick::Toggle;
 use alpheus_common::diagnostics::query::Preset;
 use alpheus_common::launcher_ipc::{CaptureVerb, QuickVerb};
+use std::borrow::Cow;
 
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
@@ -62,9 +63,12 @@ pub struct Builtin {
     pub id: &'static str,
     pub label: &'static str,
     pub category: &'static str,
+    /// What it does, in one plain line from the user's side: at most 40 characters, no trailing
+    /// period (the command panel's second line and detail card).
+    pub description: &'static str,
     pub glyph: char,
     pub action: BuiltinAction,
-    /// The default letter that runs it from the overview (`[tools] keys` overrides it).
+    /// The default letter that runs it from the Tools menu's root (`[tools] keys` overrides it).
     pub key: Option<char>,
 }
 
@@ -85,8 +89,15 @@ impl Builtin {
     }
 }
 
-const fn b(id: &'static str, label: &'static str, category: &'static str, glyph: char, action: BuiltinAction) -> Builtin {
-    Builtin { id, label, category, glyph, action, key: None }
+const fn b(
+    id: &'static str,
+    label: &'static str,
+    category: &'static str,
+    description: &'static str,
+    glyph: char,
+    action: BuiltinAction,
+) -> Builtin {
+    Builtin { id, label, category, description, glyph, action, key: None }
 }
 
 // `BUILTIN_CATEGORIES`' names, spelled out (a const cannot be indexed here without a panicking
@@ -99,53 +110,54 @@ const SYSTEM: &str = "System";
 const SESSION: &str = "Session";
 const DIAGNOSTICS: &str = "Diagnostics";
 
-/// The built-in table, in its order.
+/// The built-in table, in its order: one row per line, read as a table.
+#[rustfmt::skip]
 pub const BUILTINS: [Builtin; 45] = [
-    b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
-    b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)).with_key('w'),
-    b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)).with_key('b'),
-    b("quick.vpn", "VPN", QUICK, '\u{F0582}', BuiltinAction::Quick(QuickVerb::Vpn)).with_key('v'),
-    b("quick.shield", "Shield", QUICK, '\u{F0498}', BuiltinAction::Shield).with_key('h'),
-    b("dnd", "Do not disturb", QUICK, '\u{F009B}', BuiltinAction::Dnd).with_key('d'),
-    b("keep_awake", "Keep awake", QUICK, '\u{F0176}', BuiltinAction::Toggle(Toggle::KeepAwake)).with_key('z'),
-    b("night_light", "Night light", QUICK, '\u{F0594}', BuiltinAction::Toggle(Toggle::NightLight)).with_key('i'),
-    b("tab.home", "Home", CONTROL, '\u{F02DC}', BuiltinAction::Tab),
-    b("tab.sound", "Sound", CONTROL, '\u{F057E}', BuiltinAction::Tab),
-    b("tab.network", "Network", CONTROL, '\u{F06F3}', BuiltinAction::Tab),
-    b("tab.bluetooth", "Bluetooth", CONTROL, '\u{F00AF}', BuiltinAction::Tab),
-    b("tab.power", "Power", CONTROL, '\u{F0079}', BuiltinAction::Tab),
-    b("tab.displays", "Displays", CONTROL, '\u{F0379}', BuiltinAction::Tab),
-    b("tab.appearance", "Theme", CONTROL, '\u{F03D8}', BuiltinAction::Tab),
-    b("tab.diagnostics", "Diagnostics", CONTROL, '\u{F04D9}', BuiltinAction::Tab),
-    b("notes", "Notes", UTILITIES, '\u{F039E}', BuiltinAction::Notes).with_key('n'),
-    b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer).with_key('t'),
-    b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard).with_key('c'),
-    b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji).with_key('m'),
-    b("capture.full", "Screenshot", CAPTURES, '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)).with_key('f'),
-    b("capture.area", "Area", CAPTURES, '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)).with_key('a'),
-    b("capture.area_save", "Area (save)", CAPTURES, '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
-    b("capture.annotate", "Annotate", CAPTURES, '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)).with_key('e'),
-    b("capture.record", "Record screen", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)).with_key('r'),
-    b("capture.record_area", "Record area", CAPTURES, '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
-    b("capture.stop", "Stop recording", CAPTURES, '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)).with_key('r'),
-    b("capture.pick", "Colour picker", CAPTURES, '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)).with_key('p'),
-    b("capture.ocr", "Text from area (OCR)", CAPTURES, '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)).with_key('o'),
-    b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown).with_key('s'),
-    b("process.kill", "Kill a process", SYSTEM, '\u{F068C}', BuiltinAction::Kill).with_key('k'),
-    b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock).with_key('l'),
-    b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power).with_key('q'),
-    b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
-    b("diag.scan", "Network scan", DIAGNOSTICS, '\u{F0437}', BuiltinAction::Scan),
-    b("diag.usb_events", "USB events", DIAGNOSTICS, '\u{F0553}', BuiltinAction::UsbEvents).with_key('u'),
-    b("diag.usb_reset", "Reset USB (xHCI)", DIAGNOSTICS, '\u{F0709}', BuiltinAction::UsbReset).with_key('x'),
-    b("diag.preset.errors", "Errors this boot", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ErrorsThisBoot)).with_key('j'),
-    b("diag.preset.usb", "USB", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Usb)),
-    b("diag.preset.suspend", "Suspend and resume", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::SuspendResume)),
-    b("diag.preset.oom", "Out of memory", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::OutOfMemory)),
-    b("diag.preset.thermal", "Thermal and throttling", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Thermal)),
-    b("diag.preset.network", "NetworkManager", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::NetworkManager)),
-    b("diag.preset.live", "Live journal", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Live)),
-    b("diag.preset.service", "Logs of a service…", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ServiceLogs)),
+    b("quick.sound", "Sound", QUICK, "Volume and output, in quick settings", '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
+    b("quick.wifi", "Wi-Fi", QUICK, "Wi-Fi networks, in quick settings", '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)).with_key('w'),
+    b("quick.bluetooth", "Bluetooth", QUICK, "Bluetooth devices, in quick settings", '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)).with_key('b'),
+    b("quick.vpn", "VPN", QUICK, "VPN connections, in quick settings", '\u{F0582}', BuiltinAction::Quick(QuickVerb::Vpn)).with_key('v'),
+    b("quick.shield", "Shield", QUICK, "Shield mode, in quick settings", '\u{F0498}', BuiltinAction::Shield).with_key('h'),
+    b("dnd", "Do not disturb", QUICK, "Turn do not disturb on or off", '\u{F009B}', BuiltinAction::Dnd).with_key('d'),
+    b("keep_awake", "Keep awake", QUICK, "Keep the screen on, or let it sleep", '\u{F0176}', BuiltinAction::Toggle(Toggle::KeepAwake)).with_key('z'),
+    b("night_light", "Night light", QUICK, "Warmer screen colours, on or off", '\u{F0594}', BuiltinAction::Toggle(Toggle::NightLight)).with_key('i'),
+    b("tab.home", "Home", CONTROL, "Open the control center's Home tab", '\u{F02DC}', BuiltinAction::Tab),
+    b("tab.sound", "Sound", CONTROL, "Open the control center's Sound tab", '\u{F057E}', BuiltinAction::Tab),
+    b("tab.network", "Network", CONTROL, "Open the control center's Network tab", '\u{F06F3}', BuiltinAction::Tab),
+    b("tab.bluetooth", "Bluetooth", CONTROL, "Open the control center's Bluetooth tab", '\u{F00AF}', BuiltinAction::Tab),
+    b("tab.power", "Power", CONTROL, "Open the control center's Power tab", '\u{F0079}', BuiltinAction::Tab),
+    b("tab.displays", "Displays", CONTROL, "Open the control center's Displays tab", '\u{F0379}', BuiltinAction::Tab),
+    b("tab.appearance", "Theme", CONTROL, "Open the control center's Theme tab", '\u{F03D8}', BuiltinAction::Tab),
+    b("tab.diagnostics", "Diagnostics", CONTROL, "Open the control center's Diag tab", '\u{F04D9}', BuiltinAction::Tab),
+    b("notes", "Notes", UTILITIES, "Jot down a note", '\u{F039E}', BuiltinAction::Notes).with_key('n'),
+    b("timer", "Timer", UTILITIES, "Set a focus timer", '\u{F051B}', BuiltinAction::Timer).with_key('t'),
+    b("clipboard", "Clipboard", UTILITIES, "Pick from the clipboard history", '\u{F014C}', BuiltinAction::Clipboard).with_key('c'),
+    b("emoji", "Emoji", UTILITIES, "Find an emoji and copy it", '\u{F0C68}', BuiltinAction::Emoji).with_key('m'),
+    b("capture.full", "Screenshot", CAPTURES, "Copy a screenshot of this screen", '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)).with_key('f'),
+    b("capture.area", "Area", CAPTURES, "Select an area, copy it", '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)).with_key('a'),
+    b("capture.area_save", "Area (save)", CAPTURES, "Select an area, save it to Pictures", '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
+    b("capture.annotate", "Annotate", CAPTURES, "Select an area, draw on it", '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)).with_key('e'),
+    b("capture.record", "Record screen", CAPTURES, "Record this screen to Videos", '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)).with_key('r'),
+    b("capture.record_area", "Record area", CAPTURES, "Select an area, record it", '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
+    b("capture.stop", "Stop recording", CAPTURES, "End the recording and save it", '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)).with_key('r'),
+    b("capture.pick", "Colour picker", CAPTURES, "Copy the colour of a pixel", '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)).with_key('p'),
+    b("capture.ocr", "Text from area (OCR)", CAPTURES, "Select an area, copy its text", '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)).with_key('o'),
+    b("shutdown", "Schedule shutdown", SYSTEM, "Power off after a delay", '\u{F0902}', BuiltinAction::Shutdown).with_key('s'),
+    b("process.kill", "Kill a process", SYSTEM, "Ask a process to quit", '\u{F068C}', BuiltinAction::Kill).with_key('k'),
+    b("lock", "Lock", SESSION, "Lock the screen", '\u{F033E}', BuiltinAction::Lock).with_key('l'),
+    b("power", "Power menu", SESSION, "Lock, log out, reboot or power off", '\u{F0425}', BuiltinAction::Power).with_key('q'),
+    b("reload", "Reload the bar", SESSION, "Run the reload command you set", '\u{F0450}', BuiltinAction::Reload),
+    b("diag.scan", "Network scan", DIAGNOSTICS, "Scan hosts and ports with nmap", '\u{F0437}', BuiltinAction::Scan),
+    b("diag.usb_events", "USB events", DIAGNOSTICS, "Watch USB devices come and go", '\u{F0553}', BuiltinAction::UsbEvents).with_key('u'),
+    b("diag.usb_reset", "Reset USB (xHCI)", DIAGNOSTICS, "Restart the USB controller", '\u{F0709}', BuiltinAction::UsbReset).with_key('x'),
+    b("diag.preset.errors", "Errors this boot", DIAGNOSTICS, "Journal errors since this boot", '\u{F0219}', BuiltinAction::Preset(Preset::ErrorsThisBoot)).with_key('j'),
+    b("diag.preset.usb", "USB", DIAGNOSTICS, "Journal lines about USB", '\u{F0219}', BuiltinAction::Preset(Preset::Usb)),
+    b("diag.preset.suspend", "Suspend and resume", DIAGNOSTICS, "Journal around suspend and resume", '\u{F0219}', BuiltinAction::Preset(Preset::SuspendResume)),
+    b("diag.preset.oom", "Out of memory", DIAGNOSTICS, "Journal of out-of-memory kills", '\u{F0219}', BuiltinAction::Preset(Preset::OutOfMemory)),
+    b("diag.preset.thermal", "Thermal and throttling", DIAGNOSTICS, "Journal of heat and CPU throttling", '\u{F0219}', BuiltinAction::Preset(Preset::Thermal)),
+    b("diag.preset.network", "NetworkManager", DIAGNOSTICS, "NetworkManager's journal", '\u{F0219}', BuiltinAction::Preset(Preset::NetworkManager)),
+    b("diag.preset.live", "Live journal", DIAGNOSTICS, "Follow the journal as it is written", '\u{F0219}', BuiltinAction::Preset(Preset::Live)),
+    b("diag.preset.service", "Logs of a service…", DIAGNOSTICS, "Read one service's journal", '\u{F0219}', BuiltinAction::Preset(Preset::ServiceLogs)),
 ];
 
 /// What decides which built-ins show: plain booleans, so the
@@ -271,8 +283,11 @@ pub struct Entry {
     pub has_state: bool,
     /// The history key; a fixed choice appends `/<choice>` (`Catalog::choice_key`).
     pub key: String,
-    /// The letter that runs it from the overview: `None` when it wants none or lost it to an earlier claimant.
+    /// The letter that runs it from the Tools menu's root: `None` when it wants none or lost it to an earlier claimant.
     pub letter: Option<char>,
+    /// One line on what it does: a built-in's table text (borrowed, never copied), a user entry's
+    /// `description`, or none.
+    pub description: Option<Cow<'static, str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,6 +436,7 @@ impl Catalog {
                         has_state: matches!(b.action, BuiltinAction::Dnd | BuiltinAction::Toggle(_)),
                         key: format!("tool:builtin:{}", b.id),
                         letter: None,
+                        description: Some(Cow::Borrowed(b.description)),
                     });
                 }
             }
@@ -446,6 +462,7 @@ impl Catalog {
                 has_state: !e.state.is_empty(),
                 key: format!("tool:user:{}/{}", e.category.as_deref().unwrap_or(""), e.name),
                 letter: None,
+                description: e.description.clone().map(Cow::Owned),
             });
         }
         let mut root = Vec::new();

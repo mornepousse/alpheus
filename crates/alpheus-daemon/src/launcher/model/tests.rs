@@ -1865,10 +1865,10 @@ fn a_question_is_about_a_pid_and_its_start_time() {
     assert_eq!(key, (200, 2000));
 }
 
-// The Super+X overview: letters, the search's start, the 2-D moves.
+// The Super+X panel's root: letters and the search's start (the root still lists today's rows).
 
 /// Every built-in shown but "Stop recording".
-fn overview_context() -> crate::launcher::tools::catalog::Context {
+fn panel_context() -> crate::launcher::tools::catalog::Context {
     crate::launcher::tools::catalog::Context {
         quick: true,
         notifications: true,
@@ -1893,18 +1893,21 @@ fn overview_context() -> crate::launcher::tools::catalog::Context {
     }
 }
 
-fn overview_catalog(config: &LauncherConfig) -> crate::launcher::tools::catalog::Catalog {
-    crate::launcher::tools::catalog::Catalog::build(&config.tools, &overview_context(), &mut |_| {})
+fn panel_catalog(config: &LauncherConfig) -> crate::launcher::tools::catalog::Catalog {
+    crate::launcher::tools::catalog::Catalog::build(&config.tools, &panel_context(), &mut |_| {})
 }
 
-/// A `--tools` open of `text`'s launcher.toml, placed in 110×40 cells.
-fn overview_box(text: &str) -> Launcher {
+/// A `--tools` open of `text`'s launcher.toml, its panel opened in 104×35 cells.
+fn panel_box(text: &str) -> Launcher {
     let config = LauncherConfig::from_text(text).unwrap();
-    let catalog = overview_catalog(&config);
+    let catalog = panel_catalog(&config);
     let mut l = Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000);
-    l.place_overview(110, 40);
+    l.open_panel(104, 35);
     l
 }
+
+/// Wi-Fi and the USB reset pinned at the root, where their capsules show.
+const PINNED: &str = "[tools]\nroot = [\"quick.wifi\", \"diag.usb_reset\"]\n";
 
 /// The catalog index of the built-in `id`.
 fn builtin_entry(l: &Launcher, id: &str) -> usize {
@@ -1921,19 +1924,13 @@ fn selected_row(l: &Launcher) -> Option<RowId> {
     l.selected_tool()
 }
 
-/// Selects the row `id` of the list shown.
-fn select_row(l: &mut Launcher, id: RowId) {
-    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == id)).unwrap();
-    l.selected = at;
-}
-
 fn runs_builtin(o: &Outcome, id: &str) -> bool {
     matches!(o, Outcome::Activate(Activation::Tool(ToolAction::Builtin { index, .. })) if *index == builtin_index(id))
 }
 
 #[test]
 fn a_letter_runs_the_tool_its_capsule_shows() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     assert!(l.letters_live());
     let o = l.key(Key::Char('w'));
     assert!(runs_builtin(&o, "quick.wifi"), "{o:?}");
@@ -1942,7 +1939,7 @@ fn a_letter_runs_the_tool_its_capsule_shows() {
 
 #[test]
 fn a_letter_without_a_capsule_starts_the_search_with_it() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     let o = l.key(Key::Char('y'));
     assert_eq!(o, Outcome::Redraw);
     assert_eq!(l.query, "y");
@@ -1954,21 +1951,21 @@ fn a_letter_without_a_capsule_starts_the_search_with_it() {
 
 #[test]
 fn slash_or_space_starts_the_search_and_is_not_typed() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     assert_eq!(l.key(Key::Char('/')), Outcome::Redraw);
     assert!(l.searching && !l.letters_live());
     assert_eq!(l.query, "");
     assert_eq!(l.key(Key::Char('w')), Outcome::Redraw);
     assert_eq!(l.query, "w");
 
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     assert_eq!(l.key(Key::Char(' ')), Outcome::Redraw);
     assert_eq!(l.query, "");
     l.key(Key::Char('w'));
     assert_eq!(l.query, "w");
 
     // Backspace on the empty query after `/`: back to the letters, the box stays open.
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     l.key(Key::Char('/'));
     assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
     assert!(l.letters_live());
@@ -1977,14 +1974,14 @@ fn slash_or_space_starts_the_search_and_is_not_typed() {
 
 #[test]
 fn a_prefix_entry_never_runs_a_letter() {
-    // Placed or not (a Mod+Space open is not the overview's), the letters stay text.
+    // Opened or not (a Mod+Space open is not the panel's), the letters stay text.
     for placed in [false, true] {
-        let config = LauncherConfig::from_text("").unwrap();
-        let catalog = overview_catalog(&config);
+        let config = LauncherConfig::from_text(PINNED).unwrap();
+        let catalog = panel_catalog(&config);
         let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
         l.set_tools(catalog);
         if placed {
-            l.place_overview(110, 40);
+            l.open_panel(104, 35);
         }
         assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)));
         assert_eq!(l.mode, Mode::Tools);
@@ -1997,7 +1994,7 @@ fn a_prefix_entry_never_runs_a_letter() {
 
 #[test]
 fn a_held_letter_runs_nothing() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     assert_eq!(l.key_repeat(Key::Char('w'), true), Outcome::Nothing);
     assert_eq!(l.key_repeat(Key::Char('y'), true), Outcome::Nothing, "a held letter types nothing either");
     assert_eq!(l.query, "");
@@ -2005,7 +2002,7 @@ fn a_held_letter_runs_nothing() {
 
 #[test]
 fn a_confirm_tool_s_letter_asks_first() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     let t = Instant::now();
     let reset = RowId::Entry(builtin_entry(&l, "diag.usb_reset"));
     set_at(&mut l, t, 0);
@@ -2025,75 +2022,33 @@ fn a_confirm_tool_s_letter_asks_first() {
     assert!(runs_builtin(&o, "diag.usb_reset"), "{o:?}");
 }
 
+/// Wi-Fi's letter is claimed, but the root lists its category, not Wi-Fi: no capsule, no run.
 #[test]
-fn arrows_move_in_two_dimensions() {
-    let mut l = overview_box("");
+fn the_letter_of_a_tool_not_listed_at_the_root_starts_the_search() {
+    let mut l = panel_box("");
     let wifi = builtin_entry(&l, "quick.wifi");
-    let sound_tab = builtin_entry(&l, "tab.sound");
-    select_row(&mut l, RowId::Entry(wifi));
-    assert_eq!(l.key(Key::Right), Outcome::Redraw);
-    assert_eq!(selected_row(&l), Some(RowId::Entry(sound_tab)), "the Control center card's second row");
-    l.key(Key::Left);
-    assert_eq!(selected_row(&l), Some(RowId::Entry(wifi)));
-    // Down at the Quick card's last row goes to the first row of the card below.
-    let night = builtin_entry(&l, "night_light");
-    let screenshot = builtin_entry(&l, "capture.full");
-    select_row(&mut l, RowId::Entry(night));
-    l.key(Key::Down);
-    assert_eq!(selected_row(&l), Some(RowId::Entry(screenshot)));
-    l.key(Key::Up);
-    assert_eq!(selected_row(&l), Some(RowId::Entry(night)));
-}
-
-/// A user category of 40 tools, the last one wanting `g`: it folds in 110×40.
-fn folding_config() -> String {
-    let mut text = String::from("[[tools.category]]\nname = \"Many\"\norder = 5\n");
-    for i in 0..40 {
-        text.push_str(&format!("[[tools.entry]]\nname = \"Tool {i}\"\ncategory = \"Many\"\nrun = [\"x\"]\n"));
-    }
-    text.push_str("key = \"g\"\n");
-    text
-}
-
-#[test]
-fn enter_on_more_opens_its_category() {
-    let mut l = overview_box(&folding_config());
-    let many = l.tools().unwrap().catalog.categories.iter().position(|c| c.name == "Many").unwrap();
-    assert!(l.tool_rows().iter().any(|r| r.id == RowId::Category(many)), "a `+N more` row");
-    select_row(&mut l, RowId::Category(many));
-    assert_eq!(l.key(Key::Enter), Outcome::Redraw);
-    assert_eq!(l.tools().unwrap().level(), Level::Category(many));
-    assert!(l.tools().unwrap().overview().is_none(), "below the root, no overview");
-    l.key(Key::Escape);
-    assert_eq!(selected_row(&l), Some(RowId::Category(many)), "back on its `+N more` row");
-}
-
-#[test]
-fn a_folded_tool_s_letter_starts_the_search() {
-    let mut l = overview_box(&folding_config());
-    let last = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Tool 39").unwrap();
-    assert_eq!(l.tools().unwrap().catalog.entries[last].letter, Some('g'), "the letter is claimed");
-    assert!(!l.tool_rows().iter().any(|r| r.id == RowId::Entry(last)), "folded away");
-    let o = l.key(Key::Char('g'));
-    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
-    assert_eq!(l.query, "g");
-}
-
-#[test]
-fn overview_off_keeps_today_s_root() {
-    let mut l = overview_box("[tools]\noverview = false\n");
-    assert!(l.tools().unwrap().overview().is_none());
-    assert!(!l.letters_live());
-    assert!(l.tool_rows().iter().all(|r| matches!(r.id, RowId::Category(_))), "the root lists the categories");
+    assert_eq!(l.tools().unwrap().catalog.entries[wifi].letter, Some('w'), "the letter is claimed");
+    assert!(!l.tool_rows().iter().any(|r| r.id == RowId::Entry(wifi)), "not at the root");
+    assert!(l.letters_live());
     let o = l.key(Key::Char('w'));
     assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
     assert_eq!(l.query, "w");
 }
 
-/// A tool found by the search goes down through its category; Esc lands on its slot of the overview.
 #[test]
-fn escape_from_a_searched_tool_s_category_lands_on_its_slot() {
-    let mut l = overview_box("");
+fn panel_off_keeps_today_s_root() {
+    let mut l = panel_box("[tools]\npanel = false\nroot = [\"quick.wifi\"]\n");
+    assert!(l.panel_size().is_none());
+    assert!(!l.letters_live());
+    let o = l.key(Key::Char('w'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "w");
+}
+
+/// A tool found by the search goes down through its category; Esc lands on that category's row.
+#[test]
+fn escape_from_a_searched_tool_s_category_lands_on_its_category() {
+    let mut l = panel_box(PINNED);
     typed(&mut l, "/network scan");
     let scan = builtin_entry(&l, "diag.scan");
     assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
@@ -2101,9 +2056,10 @@ fn escape_from_a_searched_tool_s_category_lands_on_its_slot() {
     assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: scan });
     l.key(Key::Escape);
     l.key(Key::Escape);
-    assert!(l.tools().unwrap().overview().is_some());
+    assert!(l.tools().unwrap().at_panel());
     assert_eq!(l.query, "");
-    assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
+    let diagnostics = l.tools().unwrap().catalog.entries[scan].category.unwrap();
+    assert_eq!(selected_row(&l), Some(RowId::Category(diagnostics)));
 }
 
 /// A held letter that opened a level below the root types nothing there: not into the choices'
@@ -2112,7 +2068,7 @@ fn escape_from_a_searched_tool_s_category_lands_on_its_slot() {
 fn a_held_letter_that_drilled_types_nothing_below() {
     let text = "[[tools.entry]]\nname = \"Pick\"\nrun = [\"x\", \"{choice}\"]\nchoices = [\"p\", \"q\"]\nkey = \"g\"\n\
                 [[tools.entry]]\nname = \"Say\"\nrun = [\"x\", \"{text}\"]\nask = \"Text\"\nkey = \"y\"\n";
-    let mut l = overview_box(text);
+    let mut l = panel_box(text);
     let pick = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Pick").unwrap();
     l.key(Key::Char('g'));
     assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: pick });
@@ -2123,7 +2079,7 @@ fn a_held_letter_that_drilled_types_nothing_below() {
     l.key(Key::Char('p'));
     assert_eq!(l.query, "p");
 
-    let mut l = overview_box(text);
+    let mut l = panel_box(text);
     l.key(Key::Char('y'));
     assert!(l.tools().unwrap().prompting());
     assert_eq!(l.key_repeat(Key::Char('y'), true), Outcome::Nothing);
@@ -2133,23 +2089,18 @@ fn a_held_letter_that_drilled_types_nothing_below() {
 #[test]
 fn a_held_space_or_slash_types_nothing() {
     for c in [' ', '/'] {
-        let mut l = overview_box("");
+        let mut l = panel_box(PINNED);
         l.key(Key::Char(c));
         assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
         assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
         assert_eq!(l.query, "");
         assert!(l.searching);
-        // The overview's moves stay two-dimensional.
-        let wifi = builtin_entry(&l, "quick.wifi");
-        select_row(&mut l, RowId::Entry(wifi));
-        l.key(Key::Right);
-        assert_eq!(selected_row(&l), Some(RowId::Entry(builtin_entry(&l, "tab.sound"))));
     }
 }
 
 #[test]
 fn erasing_a_capsule_less_first_character_gives_the_letters_back() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     l.key(Key::Char('y'));
     assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
     assert!(l.letters_live());
@@ -2158,7 +2109,7 @@ fn erasing_a_capsule_less_first_character_gives_the_letters_back() {
 
 #[test]
 fn another_character_cancels_the_question_and_does_nothing_else() {
-    let mut l = overview_box("");
+    let mut l = panel_box(PINNED);
     let reset = RowId::Entry(builtin_entry(&l, "diag.usb_reset"));
     assert_eq!(l.key(Key::Char('x')), Outcome::Asked);
     assert_eq!(l.key(Key::Char('w')), Outcome::Redraw, "Wi-Fi does not run");
@@ -2166,25 +2117,15 @@ fn another_character_cancels_the_question_and_does_nothing_else() {
     assert_eq!(l.query, "");
 }
 
-#[test]
-fn right_at_the_last_column_does_nothing() {
-    let mut l = overview_box("");
-    // Utilities is the first band's third card.
-    let notes = builtin_entry(&l, "notes");
-    select_row(&mut l, RowId::Entry(notes));
-    assert_eq!(l.key(Key::Right), Outcome::Nothing);
-    assert_eq!(selected_row(&l), Some(RowId::Entry(notes)));
-}
-
 /// A Mod+Space hit that drills into the Tools mode (no `/` prefix) back at the root: still no live
-/// letters, whatever was placed.
+/// letters, whatever was opened.
 #[test]
 fn a_mod_space_jump_into_tools_never_runs_a_letter() {
-    let config = LauncherConfig::from_text("").unwrap();
-    let catalog = overview_catalog(&config);
+    let config = LauncherConfig::from_text(PINNED).unwrap();
+    let catalog = panel_catalog(&config);
     let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
     l.set_tools(catalog);
-    l.place_overview(110, 40);
+    l.open_panel(104, 35);
     typed(&mut l, "network scan");
     l.key(Key::Enter);
     assert_eq!(l.mode, Mode::Tools);

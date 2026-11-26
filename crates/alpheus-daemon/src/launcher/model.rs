@@ -18,7 +18,6 @@ use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
 use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
-use crate::launcher::tools::overview::Dir;
 use crate::list;
 use crate::session;
 use alpheus_common::launcher_ipc::{DmenuFlags, wipe};
@@ -228,10 +227,10 @@ pub struct Launcher {
     /// The current mode was entered by typing its prefix: Backspace on the
     /// empty query goes back to All.
     by_prefix: bool,
-    /// At the Tools overview, `/` or Space asked for the search: letters are text from then on,
+    /// At the Tools panel's root, `/` or Space asked for the search: letters are text from then on,
     /// though the query is still empty. Backspace on the empty query gives them back.
     pub searching: bool,
-    /// The character key that last acted at the overview (a letter, `/` or Space): its
+    /// The character key that last acted at the panel's root (a letter, `/` or Space): its
     /// auto-repeats do nothing until a fresh press, wherever the press led (a level below, a
     /// prompt, the search).
     acted: Option<Key>,
@@ -383,8 +382,8 @@ impl Launcher {
 
     /// The Tools catalog of a Mod+Space open (its typed search ranks the entries, the `/` prefix
     /// jumps in): refilters, keeping the selection by identity like `set_entries`. A catalog with
-    /// no entry installs nothing (the `/` stays text). It drops a placed overview: a `--tools` open
-    /// must place it again (`place_overview`).
+    /// no entry installs nothing (the `/` stays text). It drops an opened panel: a `--tools` open
+    /// must open it again (`open_panel`).
     pub fn set_tools(&mut self, catalog: ToolsCatalog) {
         if catalog.entries.is_empty() {
             return;
@@ -400,38 +399,33 @@ impl Launcher {
         self.tools.as_ref()
     }
 
-    /// Places the Super+X overview in `max_columns` × `max_rows` cells (the open's output), when
-    /// `[tools] overview` is on: the root then lists its slots. Off, the root stays the list of
-    /// categories.
-    pub fn place_overview(&mut self, max_columns: u16, max_rows: u16) {
-        if !self.config.tools.overview {
+    /// Opens the Super+X panel in a box of `columns` × `rows` cells (sized once, for the open's
+    /// output), when `[tools] panel` is on: the root's letters then run their tools. Off, the root
+    /// stays the list of categories with no letter.
+    pub fn open_panel(&mut self, columns: u16, rows: u16) {
+        if !self.config.tools.panel {
             return;
         }
         let Some(t) = self.tools.as_mut() else { return };
-        t.place_overview(max_columns, max_rows);
-        // Another list at the root: its facts are not the categories'.
-        self.ranker.forget();
-        self.refilter();
+        t.open_panel(columns, rows);
     }
 
-    /// The cells the placed overview's cards take (columns, rows), at any level of the open: the
-    /// box is sized to them once (`view::tools_layout`). None when no overview was placed, or an
-    /// empty one (no card: today's box).
-    pub fn overview_size(&self) -> Option<(u16, u16)> {
-        let o = self.tools.as_ref()?.placed()?;
-        (o.columns > 0 && o.rows > 0).then_some((o.columns, o.rows))
+    /// The cells the panel's box was sized to (columns, rows), at any level of the open
+    /// (`view::tools_layout`). None when no panel was opened (today's box).
+    pub fn panel_size(&self) -> Option<(u16, u16)> {
+        self.tools.as_ref()?.panel_size()
     }
 
-    /// Whether a letter runs its tool: the Tools mode at its overview, nothing typed, no search
+    /// Whether a letter runs its tool: the Tools mode at its panel's root, nothing typed, no search
     /// asked, never in a Mod+Space box nor after its `/` prefix (a typed path never runs a tool).
     pub fn letters_live(&self) -> bool {
-        self.origin != Origin::Apps && self.at_overview() && !self.searching && !self.by_prefix
+        self.origin != Origin::Apps && self.at_panel() && !self.searching && !self.by_prefix
     }
 
-    /// The Tools mode shows the overview's slots: the root, with nothing typed (a typed query lists
-    /// the flat search instead).
-    fn at_overview(&self) -> bool {
-        self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(|t| t.overview().is_some())
+    /// The Tools mode shows the panel's root: opened as the panel, with nothing typed (a typed
+    /// query lists the flat search instead).
+    fn at_panel(&self) -> bool {
+        self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(ToolsState::at_panel)
     }
 
     /// The rows the `Source::Tool` hits index.
@@ -687,7 +681,7 @@ impl Launcher {
             self.at = None;
             return Outcome::Nothing;
         }
-        // The same for a held letter at the overview: one press, one tool (and no typed run of it),
+        // The same for a held letter at the panel's root: one press, one tool (and no typed run of it),
         // even once that press opened a level, a prompt or the search.
         if repeat && matches!(k, Key::Char(_)) && self.mode == Mode::Tools && (self.letters_live() || self.acted == Some(k)) {
             self.at = None;
@@ -716,7 +710,7 @@ impl Launcher {
         let cancelled_tool = k != Key::Enter && self.tools.as_mut().is_some_and(ToolsState::cancel);
         // The kill list's question is answered by Enter or asked again by Ctrl+Enter; any other key ends it.
         let cancelled_proc = !matches!(k, Key::Enter | Key::CtrlEnter) && self.proc_ask.take().is_some();
-        // A letter that cancels a question at the overview does only that: pressing a confirm
+        // A letter that cancels a question at the panel's root does only that: pressing a confirm
         // tool's letter twice never runs it, nor asks again at once.
         if cancelled_tool && matches!(k, Key::Char(_)) && self.letters_live() {
             self.at = None;
@@ -832,19 +826,8 @@ impl Launcher {
         {
             return self.tools_letter(c);
         }
-        if self.at_overview()
-            && let Some(dir) = match k {
-                Key::Up => Some(Dir::Up),
-                Key::Down => Some(Dir::Down),
-                Key::Left => Some(Dir::Left),
-                Key::Right => Some(Dir::Right),
-                _ => None,
-            }
-        {
-            return Some(self.overview_step(dir));
-        }
         Some(match k {
-            // Backspace after `/` or Space at the overview: the letters again.
+            // Backspace after `/` or Space at the panel's root: the letters again.
             Key::Backspace if self.query.is_empty() && self.searching => {
                 self.searching = false;
                 Outcome::Redraw
@@ -880,7 +863,7 @@ impl Launcher {
         })
     }
 
-    /// A character at the overview while letters are live: `/` or Space starts the search (and is
+    /// A character at the panel's root while letters are live: `/` or Space starts the search (and is
     /// not typed), a shown tool's letter runs it as Enter on its row would (asks, drills), any other
     /// character falls through to be typed, starting the search with it.
     fn tools_letter(&mut self, c: char) -> Option<Outcome> {
@@ -900,21 +883,6 @@ impl Launcher {
             self.keep_visible();
         }
         Some(self.tools_activate(row))
-    }
-
-    /// An arrow at the overview: the slot `Overview::step` leads to (its list is the overview's
-    /// order, unranked on an empty query).
-    fn overview_step(&mut self, dir: Dir) -> Outcome {
-        let Some(to) = self.tools.as_ref().and_then(|t| t.overview()).map(|o| o.step(self.selected, dir)) else {
-            return Outcome::Nothing;
-        };
-        if to == self.selected || to >= self.results.len() {
-            return Outcome::Nothing;
-        }
-        self.moved = true;
-        self.selected = to;
-        self.keep_visible();
-        Outcome::Redraw
     }
 
     /// Up one level (the query dropped, the parent's selection back): false at the root.

@@ -4282,7 +4282,7 @@ fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
     (sway, d)
 }
 
-/// One `--tools` cycle on the overview: four moves across its cards (the typist then holds its
+/// One `--tools` cycle: four moves through the root and a category (the typist then holds its
 /// keyboard, so no focus loss closes the box), the box closed by the verb; the n-th open waits for
 /// its states line. Returns the reading taken with the menu open and drawn after the moves: (PSS,
 /// anonymous, shm pools) in KB.
@@ -4449,7 +4449,7 @@ fn tools_choices_2000_lines() {
 
 /// Nothing at rest after a Tools cycle that read states and asked a question, the box closed by
 /// the `--tools` verb (past the debounce) with the question still pending, after one left to
-/// expire, and after moves on the overview and a letter that ran its entry: no loop wake-up in 5 s (SCTK's key-repeat firing, once ~0.6 s after a key, is past
+/// expire, and after moves and a root entry's letter that ran it: no loop wake-up in 5 s (SCTK's key-repeat firing, once ~0.6 s after a key, is past
 /// before the window starts), the thread count where it was.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -4462,7 +4462,7 @@ fn at_rest_no_wakeups_after_tools() {
     let toml = format!(
         "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Danger\"\ncategory = \"Fake\"\n\
          run = [{:?}]\nconfirm = true\nstate = [{:?}]\n\
-         [[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [{:?}]\nkey = \"p\"\n",
+         [[tools.entry]]\nname = \"Plain\"\nrun = [{:?}]\nkey = \"p\"\n",
         run.display().to_string(),
         on.display().to_string(),
         run.display().to_string()
@@ -4491,9 +4491,8 @@ fn at_rest_no_wakeups_after_tools() {
         eprintln!("loop-thread wake-ups at rest {what} (5 s): {delta}");
         assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s {what}: {:?}", d.log());
     };
-    // A question asked (Enter on the entry its card shows; the second Enter, inside 0.4 s, does
-    // nothing), the box closed by the verb with it pending (0.3 s after the open, past the
-    // debounce; the question lives 3 s). The typist stays alive for 2.5 s so that no focus loss
+    // A question asked (Enter on the category, Enter on the entry), the box closed by the verb
+    // with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The typist stays alive for 2.5 s so that no focus loss
     // closes the box before the verb.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
@@ -4517,13 +4516,14 @@ fn at_rest_no_wakeups_after_tools() {
     );
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     rest("after an expired question");
-    // The overview: moves across its cards, then Plain's letter runs it and closes the box.
+    // Moves through the root (Plain sits there, after the category), then Plain's letter runs it
+    // and closes the box.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 3, DELAY), "{:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "-k", "Down", "-k", "Right", "-k", "Up", "-k", "Left", "-s", "100", "p"]).success());
     assert!(d.wait_for("tools: entry 2 run", DELAY), "the letter ran its entry: {:?}", d.log());
     assert!(d.wait_for_count("launcher closed (activated)", 1, DELAY), "{:?}", d.log());
-    rest("after an overview cycle and a letter");
+    rest("after moves and a letter");
     assert_eq!(d.threads(), threads, "no thread left behind");
 }
 

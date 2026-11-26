@@ -481,10 +481,29 @@ ask = "Value"
 }
 
 #[test]
-fn overview_defaults_on_and_parses_off() {
-    assert!(parse("").unwrap().tools.overview, "on by default");
-    assert!(ToolsConfig::default().overview);
-    assert!(!parse("[tools]\noverview = false\n").unwrap().tools.overview);
+fn panel_defaults_on_and_parses_off() {
+    assert!(parse("").unwrap().tools.panel, "on by default");
+    assert!(ToolsConfig::default().panel);
+    assert!(!parse("[tools]\npanel = false\n").unwrap().tools.panel);
+}
+
+/// The branch never shipped `overview`: no migration, an unknown key like any other.
+#[test]
+fn the_old_overview_key_is_refused() {
+    assert!(parse("[tools]\noverview = false\n").is_err());
+}
+
+#[test]
+fn an_entry_description_is_at_most_80_characters() {
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].description, None, "none by default");
+    let ok = "é".repeat(80);
+    assert_eq!(parse(&entry(&format!("description = \"{ok}\"\n"))).unwrap().tools.entries[0].description.as_deref(), Some(ok.as_str()));
+    let e = parse(&entry(&format!("description = \"{}\"\n", "d".repeat(81)))).unwrap_err();
+    assert!(e.contains("tools.entry 1: description"), "{e}");
+    assert!(!e.contains("ddd"), "never the text: {e}");
+    for bad in ["", " ", "a\\u0007b"] {
+        assert!(parse(&entry(&format!("description = \"{bad}\"\n"))).is_err(), "{bad:?}");
+    }
 }
 
 #[test]

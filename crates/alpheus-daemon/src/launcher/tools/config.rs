@@ -15,6 +15,8 @@ pub const MAX_CHOICES: usize = 32;
 pub const MAX_STATES: usize = 16;
 /// A category's or an entry's name: 1 to TOOL_NAME_MAX characters (not bytes).
 pub const TOOL_NAME_MAX: usize = 48;
+/// An entry's `description`: 1 to DESCRIPTION_MAX characters.
+pub const DESCRIPTION_MAX: usize = 80;
 /// A fixed choice: 1 to CHOICE_MAX characters.
 pub const CHOICE_MAX: usize = 64;
 /// `order` is 0 to ORDER_MAX.
@@ -39,8 +41,8 @@ pub struct ToolsConfig {
     pub root: Vec<String>,
     /// The "Reload the bar" built-in's argv; empty hides it.
     pub reload: Vec<String>,
-    /// `false`: the Super+X overview never shows; the menu opens as before.
-    pub overview: bool,
+    /// `false`: Super+X opens on the category list instead of the command panel.
+    pub panel: bool,
     /// Built-in id to the letter that opens it (one lowercase ASCII letter); an unknown id is noted and ignored.
     #[serde(deserialize_with = "letter_map")]
     pub keys: BTreeMap<String, char>,
@@ -59,7 +61,7 @@ impl Default for ToolsConfig {
             hide: Vec::new(),
             root: Vec::new(),
             reload: Vec::new(),
-            overview: true,
+            panel: true,
             keys: BTreeMap::new(),
             builtin: BuiltinCommands::default(),
             categories: Vec::new(),
@@ -113,9 +115,11 @@ pub struct EntryConfig {
     pub choices_cmd: Vec<String>,
     /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
     pub ask: Option<String>,
-    /// The letter that opens the entry from the overview: one lowercase ASCII letter.
+    /// The letter that opens the entry from the Tools menu's root: one lowercase ASCII letter.
     #[serde(deserialize_with = "letter")]
     pub key: Option<char>,
+    /// One line on what the entry does, shown under its name; absent: its category's name.
+    pub description: Option<String>,
     /// 1-based position in the file (what logs name an entry by); set after parsing.
     #[serde(skip)]
     pub position: usize,
@@ -263,6 +267,9 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         }
         check_icon(&at, &e.icon)?;
         check_order(&at, e.order)?;
+        if let Some(d) = &e.description {
+            check_text(&at, "description", d, DESCRIPTION_MAX)?;
+        }
         if e.terminal && e.hold {
             return Err(format!("{at}: terminal and hold are both set"));
         }

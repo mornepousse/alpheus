@@ -1169,9 +1169,9 @@ fn with_nothing_selected_no_row_is_highlighted() {
     assert!((0..2).all(|i| selected_cells(&rows.rows[top + i]) == 0), "no highlight when nothing is selected");
 }
 
-// --- the Super+X overview ---
+// --- the Super+X panel's root (today's rows until the panel's own) ---
 
-/// Every built-in shown but "Stop recording" (as the overview's own tests).
+/// Every built-in shown but "Stop recording".
 fn every_builtin() -> crate::launcher::tools::catalog::Context {
     crate::launcher::tools::catalog::Context {
         quick: true,
@@ -1197,24 +1197,26 @@ fn every_builtin() -> crate::launcher::tools::catalog::Context {
     }
 }
 
-/// A `--tools` open of `text`'s launcher.toml with every built-in, its overview placed in 110×40
-/// cells, and a box sized for it: the cards' width; the chip, the cards, a blank row (its line)
-/// and the footer.
-fn overview_box(text: &str) -> (Launcher, BoxLayout) {
-    overview_box_in(text, 110, 40)
-}
-
-/// `overview_box`, placed in `columns` × `rows` cells.
-fn overview_box_in(text: &str, columns: u16, rows: u16) -> (Launcher, BoxLayout) {
+/// A `--tools` open of `text`'s launcher.toml with every built-in, its panel opened in the room a
+/// 232×49 output leaves, and the box `tools_layout` sizes for it.
+fn panel_box(text: &str) -> (Launcher, BoxLayout) {
     use crate::launcher::tools::catalog::Catalog;
     let config = LauncherConfig::from_text(text).unwrap();
     let catalog = Catalog::build(&config.tools, &every_builtin(), &mut |_| {});
     let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
-    l.place_overview(columns, rows);
-    let o = l.tools().and_then(|t| t.overview()).expect("the overview is placed");
-    let b = BoxLayout { columns: o.columns + 2, rows: o.rows + 5, list_top: 2, list_rows: o.rows + 1, preview_columns: 0 };
+    let (columns, rows) = panel_room(232, 49);
+    l.open_panel(columns, rows);
+    let b = tools_layout(232, 49, l.panel_size().expect("the panel is opened"));
     l.set_list_rows(usize::from(b.list_rows));
     (l, b)
+}
+
+/// Wi-Fi and the USB reset pinned at the root, where their capsules show.
+const PINNED: &str = "[tools]\nroot = [\"quick.wifi\", \"diag.usb_reset\"]\n";
+
+/// The letter capsules on the list's rows: not the search field's, not the footer's.
+fn capsules(b: &Boxed) -> Vec<&Shape> {
+    b.shapes.iter().filter(|s| s.kind == ShapeKind::Chip(Tint::Pill) && s.width == 3 && s.row > 0 && s.row + 1 < b.rows.len()).collect()
 }
 
 /// Renders `l` in `b`, every row as wide as the box less its ring.
@@ -1233,40 +1235,40 @@ fn snapshot_with_shapes(b: &Boxed) -> String {
     format!("{}\nseparators: {:?}\n\nshapes:\n{}", snapshot(b), b.separators, shapes.join("\n"))
 }
 
-fn switches(b: &Boxed) -> Vec<&Shape> {
-    b.shapes.iter().filter(|s| matches!(s.kind, ShapeKind::Switch(_))).collect()
-}
-
 #[test]
-fn overview_snapshot_default_catalog() {
-    let (l, b) = overview_box("");
+fn the_panel_root_lists_the_categories_and_no_capsule_without_a_root_tool() {
+    let (l, b) = panel_box("");
     let rows = draw_in(&l, &b);
     let text = tool_text(&rows).join("\n");
     for name in ["Quick settings", "Control center", "Utilities", "Captures", "Diagnostics", "System", "Session"] {
-        assert!(text.contains(name), "the {name} card's header: {text}");
+        assert!(text.contains(name), "the {name} row: {text}");
     }
-    assert!(!text.contains("Pinned"), "no root built-in, no Pinned card: {text}");
     assert!(text.contains("Search tools"), "the placeholder: {text}");
-    assert!(text.contains('›'), "a tool that opens a level: {text}");
-    let header = tool_text(&rows).into_iter().find(|t| t.contains("System")).unwrap();
-    assert!(header.contains('●'), "the hue dot: {header:?}");
-    let shutdown = tool_text(&rows).into_iter().find(|t| t.contains("Schedule shutdown")).unwrap();
-    assert!(shutdown.contains("›  s"), "the chevron then the letter: {shutdown:?}");
-    assert!(rows.shapes.iter().filter(|s| s.kind == ShapeKind::Card).count() >= 6, "one card per category");
-    assert_eq!(rows.shapes.iter().filter(|s| s.kind == ShapeKind::Band).count(), 1, "one selection band");
-    assert!(rows.shapes.iter().all(|s| s.kind != ShapeKind::Band || s.row > 0), "the band is on a tool, not the chip");
-    insta::assert_snapshot!("tools_overview", snapshot_with_shapes(&rows));
+    assert!(capsules(&rows).is_empty(), "no tool at the root, no capsule: {}", snapshot_with_shapes(&rows));
 }
 
-const LATE_STATE_CFG: &str = r#"
-[[tools.category]]
-name = "Local"
-[[tools.entry]]
-name = "A rather long tool name that fills its card"
-category = "Local"
-run = ["x"]
-state = ["s"]
-"#;
+/// A tool listed at the panel's root shows its letter in a capsule at its row's right, drawn over
+/// the selection band; its name is cut before it.
+#[test]
+fn a_root_tool_shows_its_capsule_over_the_band() {
+    let (l, b) = panel_box(PINNED);
+    let rows = draw_in(&l, &b);
+    let caps = capsules(&rows);
+    assert_eq!(caps.len(), 2, "Wi-Fi's and the reset's: {}", snapshot_with_shapes(&rows));
+    let wifi = tool_text(&rows).iter().position(|t| t.contains("Wi-Fi")).unwrap();
+    let cap = caps.iter().find(|c| c.row == wifi).unwrap_or_else(|| panic!("on Wi-Fi's row: {}", snapshot_with_shapes(&rows)));
+    let line = rows.rows[wifi].text();
+    let letter: String = line.chars().skip(usize::from(cap.col)).take(3).collect();
+    assert_eq!(letter, " w ", "{line:?}");
+    assert_eq!(usize::from(cap.col + cap.width), usize::from(b.columns) - 3, "at the row's right, one cell from the edge");
+    let band = rows.shapes.iter().position(|s| s.kind == ShapeKind::Band && s.row == wifi).expect("Wi-Fi is selected");
+    let at = rows.shapes.iter().position(|s| std::ptr::eq(s, *cap)).unwrap();
+    assert!(band < at, "the capsule lies on the band");
+    // Not after `/`: the letters are text there.
+    let mut l = l;
+    l.key(Key::Char('/'));
+    assert!(capsules(&draw_in(&l, &b)).is_empty());
+}
 
 /// The catalog index of the entry named `name`.
 fn entry_named(l: &Launcher, name: &str) -> usize {
@@ -1274,40 +1276,8 @@ fn entry_named(l: &Launcher, name: &str) -> usize {
 }
 
 #[test]
-fn a_late_state_fills_its_slot_without_moving_the_row() {
-    let name = "A rather long tool name that fills its card";
-    let (mut l, b) = overview_box(LATE_STATE_CFG);
-    let e = entry_named(&l, name);
-    let before = draw_in(&l, &b);
-    assert!(switches(&before).is_empty(), "no switch before the state is in");
-    l.adopt_state(e, Some(true));
-    let after = draw_in(&l, &b);
-    assert_eq!(tool_text(&before), tool_text(&after), "the name and the letter stay where they were");
-    let new = switches(&after);
-    assert_eq!(new.len(), 1, "{}", snapshot_with_shapes(&after));
-    assert_eq!(new[0].kind, ShapeKind::Switch(true));
-    let line = &after.rows[new[0].row];
-    let cut = line.text();
-    assert!(cut.contains('…'), "the long name is cut before the slot: {cut:?}");
-    let cells: String = line.cells()[usize::from(new[0].col)..usize::from(new[0].col) + 2].iter().map(|c| c.ch).collect();
-    assert_eq!(cells, "  ", "the switch lies on the reserved blank cells: {cut:?}");
-}
-
-#[test]
-fn a_hung_state_leaves_the_slot_empty() {
-    let name = "A rather long tool name that fills its card";
-    let (mut l, b) = overview_box(LATE_STATE_CFG);
-    let e = entry_named(&l, name);
-    let before = draw_in(&l, &b);
-    l.adopt_state(e, None);
-    let after = draw_in(&l, &b);
-    assert!(switches(&after).is_empty(), "never a guess");
-    assert_eq!(tool_text(&before), tool_text(&after), "the slot stays blank");
-}
-
-#[test]
 fn search_rows_keep_icons_and_group_choices() {
-    let (mut l, b) = overview_box("");
+    let (mut l, b) = panel_box("");
     typed(&mut l, "/sh");
     let rows = draw_in(&l, &b);
     let text = tool_text(&rows);
@@ -1348,32 +1318,21 @@ fn a_pending_question_turns_the_frame_urgent() {
 
 #[test]
 fn the_footer_hides_letters_when_they_are_not_live() {
-    let (mut l, b) = overview_box("");
+    let (mut l, b) = panel_box(PINNED);
     let footer = |l: &Launcher| draw_in(l, &b).rows.last().unwrap().text();
     let live = footer(&l);
-    for word in ["a-z", "Run", "Move", "Open", "Esc", "Close"] {
+    for word in ["a-z", "Run", "Open", "Esc", "Close"] {
         assert!(live.contains(word), "{word} in {live:?}");
     }
     l.key(Key::Char('/'));
     assert!(!l.letters_live());
     let typing = footer(&l);
     assert!(!typing.contains("a-z") && !typing.contains("Run"), "{typing:?}");
-    assert!(typing.contains("Move") && typing.contains("Close"), "{typing:?}");
-}
-
-#[test]
-fn a_click_on_an_overview_row_maps_to_its_slot() {
-    let (l, b) = overview_box("");
-    let rows = draw_in(&l, &b);
-    let text = tool_text(&rows);
-    let r = text.iter().position(|t| t.contains("Schedule shutdown")).unwrap();
-    let c = text[r][..text[r].find("Schedule shutdown").unwrap()].chars().count();
-    // Boxed coordinates are the ring's less one.
-    let Some(Click::Result(i)) = hit(&l, &b, c as u16 + 1, r as u16 + 1) else { panic!("a slot") };
-    let Source::Tool(t) = l.results[i].source else { panic!() };
-    assert_eq!(l.tool_rows()[t].text, "Schedule shutdown");
-    let header = text.iter().position(|t| t.contains("System")).unwrap();
-    assert_eq!(hit(&l, &b, c as u16 + 1, header as u16 + 1), Some(Click::Inside), "a header is no slot");
+    assert!(typing.contains("Close"), "{typing:?}");
+    // No tool at the root: no letter to offer.
+    let (l, b) = panel_box("");
+    let none = draw_in(&l, &b).rows.last().unwrap().text();
+    assert!(!none.contains("a-z"), "{none:?}");
 }
 
 #[test]
@@ -1410,99 +1369,6 @@ fn tool_rows_in_all_keep_their_look() {
     insta::assert_snapshot!("tools_in_all", snapshot(&rows));
 }
 
-/// Four root entries (the Pinned card) and a category of six, in a box too short for them.
-const FOLDED_CFG: &str = r#"
-[tools]
-builtins = false
-[[tools.category]]
-name = "Big"
-[[tools.entry]]
-name = "Root one"
-run = ["x"]
-[[tools.entry]]
-name = "Root two"
-run = ["x"]
-[[tools.entry]]
-name = "Root three"
-run = ["x"]
-[[tools.entry]]
-name = "Root four"
-run = ["x"]
-[[tools.entry]]
-name = "Big one"
-category = "Big"
-run = ["x"]
-[[tools.entry]]
-name = "Big two"
-category = "Big"
-run = ["x"]
-[[tools.entry]]
-name = "Big three"
-category = "Big"
-run = ["x"]
-[[tools.entry]]
-name = "Big four"
-category = "Big"
-run = ["x"]
-[[tools.entry]]
-name = "Big five"
-category = "Big"
-run = ["x"]
-[[tools.entry]]
-name = "Big six"
-category = "Big"
-run = ["x"]
-"#;
-
-/// The row of `rows` holding `text`, and the cell its first character is in.
-fn find_cell(rows: &Boxed, text: &str) -> (usize, usize) {
-    let lines = tool_text(rows);
-    let r = lines.iter().position(|t| t.contains(text)).unwrap_or_else(|| panic!("{text:?} in {lines:#?}"));
-    (r, lines[r][..lines[r].find(text).unwrap()].chars().count())
-}
-
-#[test]
-fn a_category_s_more_row_is_drawn_selectable_and_opens_the_category() {
-    use crate::launcher::tools::overview::CardId;
-    let (mut l, b) = overview_box_in(FOLDED_CFG, 70, 4);
-    let o = l.tools().and_then(|t| t.overview()).unwrap().clone();
-    let big = o.cards.iter().find(|p| matches!(p.card, CardId::Category(_)) && p.more > 0).unwrap_or_else(|| panic!("{o:?}"));
-    let CardId::Category(c) = big.card else { unreachable!() };
-    let label = format!("+{} more", big.more);
-    let rows = draw_in(&l, &b);
-    let (r, col) = find_cell(&rows, &label);
-    let line = rows.rows[r].text();
-    assert!(line[line.find(&label).unwrap()..].contains('›'), "its chevron: {line:?}");
-    assert_eq!(rows.rows[r].styles().chars().nth(col), Some(Style::NORMAL.code()), "not dim: {}", snapshot(&rows));
-    // A click on it maps to the category's row, and selected it carries the band.
-    let Some(Click::Result(i)) = hit(&l, &b, col as u16 + 1, r as u16 + 1) else { panic!("a slot: {}", snapshot(&rows)) };
-    let Source::Tool(t) = l.results[i].source else { panic!() };
-    assert_eq!(l.tool_rows()[t].id, RowId::Category(c));
-    l.selected = i;
-    let rows = draw_in(&l, &b);
-    let band: Vec<_> = rows.shapes.iter().filter(|s| s.kind == ShapeKind::Band).collect();
-    assert_eq!(band.len(), 1);
-    assert_eq!((band[0].row, band[0].col, band[0].width), (r, big.col, big.width), "the band over its row inside its card");
-}
-
-#[test]
-fn the_pinned_more_row_is_dim_and_never_a_slot() {
-    use crate::launcher::tools::overview::CardId;
-    let (l, b) = overview_box_in(FOLDED_CFG, 70, 4);
-    let o = l.tools().and_then(|t| t.overview()).unwrap().clone();
-    let pinned = o.cards.iter().find(|p| p.card == CardId::Pinned && p.more > 0).unwrap_or_else(|| panic!("the Pinned card folds: {o:?}"));
-    let label = format!("+{} more", pinned.more);
-    let rows = draw_in(&l, &b);
-    let (r, col) = find_cell(&rows, &label);
-    assert!(col < usize::from(pinned.col + pinned.width), "in the Pinned card: {}", snapshot(&rows));
-    let styles: String = rows.rows[r].styles().chars().skip(col).take(label.chars().count()).collect();
-    assert!(styles.chars().all(|c| c == Style::MUTED.code()), "dim: {styles:?}");
-    let line = rows.rows[r].text();
-    assert!(!line[line.find(&label).unwrap()..].chars().take(usize::from(pinned.width)).any(|c| c == '›'), "no chevron: {line:?}");
-    assert_eq!(hit(&l, &b, col as u16 + 1, r as u16 + 1), Some(Click::Inside), "not a slot");
-    assert!(l.results.iter().all(|h| !matches!(h.source, Source::Tool(t) if l.tool_rows()[t].text == label)), "no result for it");
-}
-
 /// A Tools question is asked in the Tools mode only: a confirm tool hit in All moves the box to
 /// its level with the question pending, and the frame turns urgent there.
 #[test]
@@ -1521,15 +1387,15 @@ fn a_confirm_from_all_asks_in_the_tools_mode_with_an_urgent_frame() {
     assert_eq!(frame_ink(&l), FrameInk::Urgent);
 }
 
-// --- the overview's box size (spec "Box size") ---
+// --- the panel's box size (spec "Box") ---
 
 #[test]
-fn the_tools_layout_takes_the_overview_s_size_capped_at_90_and_80_percent() {
+fn the_tools_layout_takes_the_panel_s_size_capped_at_90_and_80_percent() {
     let b = tools_layout(232, 49, (105, 20));
     assert_eq!(
         b,
         BoxLayout { columns: 107, rows: 25, list_top: 2, list_rows: 21, preview_columns: 0 },
-        "the cards and the ring across; the chip, the cards, a blank row and the footer down"
+        "the list and the ring across; the chip, the list, a blank row and the footer down"
     );
     let capped = tools_layout(80, 30, (200, 100));
     assert_eq!((capped.columns, capped.rows), (72, 24), "90 % of the columns, 80 % of the rows");
@@ -1537,57 +1403,35 @@ fn the_tools_layout_takes_the_overview_s_size_capped_at_90_and_80_percent() {
 }
 
 #[test]
-fn the_overview_box_fits_a_small_output() {
-    let (room_columns, room_rows) = overview_room(80, 30);
-    let (l, _) = overview_box_in("", room_columns, room_rows);
-    let o = l.tools().and_then(|t| t.overview()).unwrap();
-    let b = tools_layout(80, 30, (o.columns, o.rows));
+fn the_panel_box_fits_a_small_output() {
+    let room = panel_room(80, 30);
+    let b = tools_layout(80, 30, room);
     assert!(b.columns <= 72 && b.rows <= 24, "at most 90 % × 80 % of the output: {b:?}");
-    assert_eq!((b.columns, b.list_rows), (o.columns + 2, o.rows + 1), "the cards fit the box: no cut");
-    let rows = draw_in(&l, &b);
-    for s in &rows.shapes {
-        assert!(s.col + s.width <= b.columns - 2 && usize::from(s.rows) + s.row <= usize::from(b.rows) - 2, "{s:?} inside {b:?}");
-    }
-}
-
-const ONE_CARD_CFG: &str = r#"
-[tools]
-builtins = false
-[[tools.category]]
-name = "One"
-[[tools.entry]]
-name = "Alone"
-category = "One"
-run = ["x"]
-"#;
-
-#[test]
-fn a_one_card_overview_keeps_today_s_width() {
-    // One card placed in 40 columns: narrower than today's box.
-    let (l, _) = overview_box_in(ONE_CARD_CFG, 40, 34);
-    let o = l.tools().and_then(|t| t.overview()).unwrap();
-    assert!(o.columns + 2 < BOX_COLUMNS, "one card is narrower than today's box: {}", o.columns);
-    assert_eq!(tools_layout(232, 49, (o.columns, o.rows)).columns, BOX_COLUMNS, "never narrower than today's box");
-    assert_eq!(super::tools_box(BOX_COLUMNS + 10, 40, (o.columns, o.rows)).columns, BOX_COLUMNS, "a refit floors the same");
-    assert_eq!(tools_layout(50, 49, (o.columns, o.rows)).columns, 45, "a narrow output still caps at 90 %");
+    assert_eq!((b.columns, b.list_rows), (room.0 + 2, room.1 + 1), "the room fits the box: no cut");
 }
 
 #[test]
-fn the_overview_is_three_cards_wide_on_a_wide_output() {
-    let (room_columns, room_rows) = overview_room(232, 49);
-    assert_eq!(room_columns, 104, "three cards of 34 and their two gaps, not 90 % of the output");
-    let (l, _) = overview_box_in("", room_columns, room_rows);
-    let o = l.tools().and_then(|t| t.overview()).unwrap();
-    assert_eq!(tools_layout(232, 49, (o.columns, o.rows)).columns, 106, "about 105 cells (spec \"Box size\")");
-    assert_eq!(overview_room(80, 30).0, 70, "a smaller output: its 90 % cap, less the ring");
+fn a_narrow_panel_keeps_today_s_width() {
+    assert_eq!(tools_layout(232, 49, (40, 30)).columns, BOX_COLUMNS, "never narrower than today's box");
+    assert_eq!(super::tools_box(BOX_COLUMNS + 10, 40, (40, 30)).columns, BOX_COLUMNS, "a refit floors the same");
+    assert_eq!(tools_layout(50, 49, (40, 30)).columns, 45, "a narrow output still caps at 90 %");
 }
 
 #[test]
-fn an_overview_drawn_in_a_narrower_box_keeps_its_shapes_inside() {
-    let (l, b) = overview_box_in("", 110, 40);
-    assert!(b.columns > 100, "placed wider than the box it is drawn in: {b:?}");
+fn the_panel_is_three_cards_wide_on_a_wide_output() {
+    let room = panel_room(232, 49);
+    assert_eq!(room.0, 104, "three cards of 34 and their two gaps, not 90 % of the output");
+    assert_eq!(tools_layout(232, 49, room).columns, 106, "about 106 cells (spec \"Box\")");
+    assert_eq!(panel_room(80, 30).0, 70, "a smaller output: its 90 % cap, less the ring");
+}
+
+#[test]
+fn a_panel_drawn_in_a_narrower_box_keeps_its_shapes_inside() {
+    let (l, b) = panel_box(PINNED);
+    assert!(b.columns > 100, "opened wider than the box it is drawn in: {b:?}");
     let narrow = BoxLayout { columns: 100, ..b };
     let rows = draw_in(&l, &narrow);
+    assert!(!capsules(&rows).is_empty());
     for s in &rows.shapes {
         assert!(s.col + s.width <= narrow.columns - 2, "{s:?} past the last column of {narrow:?}");
     }

@@ -20,7 +20,6 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
 use crate::launcher::tools::catalog::{Choices, Entry};
 use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
-use crate::launcher::tools::overview::{CardId, CardPlace, FULL_BAND_COLUMNS};
 use crate::list::{self, Boxed, Row, Shape, ShapeKind, tail, wrap};
 use crate::painter::FrameInk;
 use crate::quick;
@@ -43,14 +42,17 @@ const CLIPBOARD_PLACEHOLDER: &str = "type to filter the clipboard history";
 /// The kill list's empty input line.
 const PROCESSES_PLACEHOLDER: &str = "type to filter the processes";
 const PROMPT: &str = "❯";
-/// The Tools search field's placeholder at the overview.
+/// The Tools search field's placeholder at the panel's root.
 const TOOLS_PLACEHOLDER: &str = "Search tools";
 /// The Tools search field's cursor.
 const TOOLS_CURSOR: &str = "▏";
 /// The narrowest box whose search field still shows the `Super` `X` capsules.
 const KEY_HINT_COLUMNS: u16 = 60;
-/// The cells of a tool's letter capsule at the right of its card row: the letter between two blanks.
+/// The cells of a tool's letter capsule at the right of its row: the letter between two blanks.
 const LETTER_CELLS: u16 = 3;
+/// The widest the Super+X panel's box is asked, its ring left out: about three 34-cell cards and
+/// their two gaps (spec "Box": about 106 cells with the ring).
+pub const FULL_BAND_COLUMNS: u16 = 3 * 34 + 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxLayout {
@@ -88,40 +90,39 @@ pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: b
     BoxLayout { columns, rows: chrome + list_rows, list_top: chrome - 2, list_rows, preview_columns }
 }
 
-/// The rows of the Tools box around its cards: the ring's two, the search field, the blank row
-/// before the footer (its line), the footer.
-const OVERVIEW_CHROME_ROWS: u16 = 5;
+/// The rows of the Tools panel's box around its list: the ring's two, the search field, the blank
+/// row before the footer (its line), the footer.
+const PANEL_CHROME_ROWS: u16 = 5;
 
-/// The most of the output the overview's box takes (spec "Box size"): 90 % of its columns, 80 % of
+/// The most of the output the panel's box takes (spec "Box"): 90 % of its columns, 80 % of
 /// its rows. `launcher.toml`'s `rows` does not cap it; it still caps every other mode.
-fn overview_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
+fn panel_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
     let share = |cells: u16, tenths: u32| u16::try_from(u32::from(cells) * tenths / 10).unwrap_or(u16::MAX);
     (share(output_columns, 9), share(output_rows, 8))
 }
 
-/// The cells `Overview::place` may fill on this output: a full band of cards at their narrowest
-/// (`Overview::place` stretches the cards to the width it is given), within the cap less the box's
-/// ring and chrome, so the cards are never cut by `tools_layout`.
-pub fn overview_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
-    let (columns, rows) = overview_cap(output_columns, output_rows);
-    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(OVERVIEW_CHROME_ROWS))
+/// The cells the panel's list may fill on this output: `FULL_BAND_COLUMNS` across at most, within
+/// the cap less the box's ring and chrome, so `tools_layout` never cuts it.
+pub fn panel_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
+    let (columns, rows) = panel_cap(output_columns, output_rows);
+    (columns.saturating_sub(2).min(FULL_BAND_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS))
 }
 
-/// The Tools box sized to its overview's `wanted` cells (columns, rows), decided once per open
-/// and kept at every level: the cards and the ring across; the ring, the search field, the cards,
-/// a blank row and the footer down. Never more than `overview_cap`, nor less than `BOX_COLUMNS`
+/// The Tools box sized to the panel's `wanted` cells (columns, rows), decided once per open
+/// and kept at every level: the list and the ring across; the ring, the search field, the list,
+/// a blank row and the footer down. Never more than `panel_cap`, nor less than `BOX_COLUMNS`
 /// when the cap leaves room for it; no preview panel.
 pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -> BoxLayout {
-    let (columns, rows) = overview_cap(output_columns, output_rows);
+    let (columns, rows) = panel_cap(output_columns, output_rows);
     tools_box(columns, rows, wanted)
 }
 
 /// `tools_layout` within `max_columns` × `max_rows` cells, the ring counted (a size the compositor
 /// imposed refits through it, the output's cap already applied when the box was asked).
 pub fn tools_box(max_columns: u16, max_rows: u16, wanted: (u16, u16)) -> BoxLayout {
-    // Never narrower than today's box (a catalog of one card), unless the room is.
+    // Never narrower than today's box, unless the room is.
     let columns = wanted.0.saturating_add(2).min(max_columns).max(BOX_COLUMNS.min(max_columns));
-    let rows = wanted.1.saturating_add(OVERVIEW_CHROME_ROWS).min(max_rows).max(OVERVIEW_CHROME_ROWS);
+    let rows = wanted.1.saturating_add(PANEL_CHROME_ROWS).min(max_rows).max(PANEL_CHROME_ROWS);
     BoxLayout { columns, rows, list_top: 2, list_rows: rows - 4, preview_columns: 0 }
 }
 
@@ -655,9 +656,6 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 // the empty-state texts: one row per mode, so a mode keeps its own line.
 #[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
-    if overview_shown(l) {
-        return render_tools_overview(l, b);
-    }
     let tools = l.mode == Mode::Tools;
     let unpaned = without_preview(l, b);
     let b = &unpaned;
@@ -680,9 +678,18 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
-            result_row(l, b, &mut g, index);
+            let letter = row_letter(l, index);
+            // A row with a capsule is cut before it, one blank cell between; one more at its right,
+            // as the search field's capsules keep.
+            let narrow = BoxLayout { columns: b.columns.saturating_sub(LETTER_CELLS + 2), ..*b };
+            result_row(l, if letter.is_some() { &narrow } else { b }, &mut g, index);
             if tools && index == l.selected && !l.selection_lost() {
                 shapes.push(ring_shape(rows.len(), 1, end.saturating_sub(1), 1, ShapeKind::Band));
+            }
+            // Over the band: the letter that runs the row's tool.
+            if let Some(c) = letter {
+                let stop = end.saturating_sub(1);
+                capsule(&mut g, &mut shapes, rows.len(), stop.saturating_sub(LETTER_CELLS), stop, &c.to_string(), Tint::Pill);
             }
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
@@ -749,9 +756,15 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     boxed
 }
 
-/// Whether the Tools mode shows its overview: the root, placed, nothing typed.
-fn overview_shown(l: &Launcher) -> bool {
-    l.mode == Mode::Tools && l.query.is_empty() && l.tools().is_some_and(|t| t.overview().is_some())
+/// The letter whose capsule the result at `index` shows: a tool's own while letters run tools
+/// (the panel's root, nothing typed). None for any other row.
+fn row_letter(l: &Launcher, index: usize) -> Option<char> {
+    if !l.letters_live() {
+        return None;
+    }
+    let Source::Tool(i) = l.results.get(index)?.source else { return None };
+    let RowId::Entry(e) = l.tool_rows().get(i)?.id else { return None };
+    l.tools()?.catalog.entries.get(e)?.letter
 }
 
 /// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
@@ -781,13 +794,13 @@ fn capsule(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, x: u16, end: u16, ke
 /// A footer's offer: keys, each in its capsule, then what they do.
 type Hint = (&'static [&'static str], &'static str);
 
-const OVERVIEW_HINTS: [Hint; 4] = [(&["a-z"], "Run"), (&["↑", "↓", "←", "→"], "Move"), (&["⏎"], "Open"), (&["Esc"], "Close")];
+const PANEL_HINTS: [Hint; 3] = [(&["a-z"], "Run"), (&["⏎"], "Open"), (&["Esc"], "Close")];
 
-/// The Tools footer: the overview's keys (the letters only while they run tools), a level's own.
+/// The Tools footer: the panel root's keys (the letters only while one runs a tool), a level's own.
 fn tools_hints(l: &Launcher) -> &'static [Hint] {
     let Some(t) = l.tools() else { return &[] };
-    if t.overview().is_some() && l.query.is_empty() {
-        return &OVERVIEW_HINTS[usize::from(!l.letters_live())..];
+    if t.at_panel() && l.query.is_empty() {
+        return &PANEL_HINTS[usize::from(!(l.letters_live() && t.root_letters()))..];
     }
     // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
     if t.at_root() && l.origin == Origin::Apps {
@@ -820,7 +833,7 @@ fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, end: u16, hints: &
 }
 
 /// The Tools mode's search field on row `y`: a chip across the box, the magnifier, the breadcrumb
-/// below the root, the query and its cursor (the placeholder at the overview), and at its right
+/// below the root, the query and its cursor (the placeholder at the panel's root), and at its right
 /// the `Super` `X` capsules in a `--tools` open at least `KEY_HINT_COLUMNS` wide.
 fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
     let end = b.pane_end();
@@ -835,10 +848,10 @@ fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>
         }
         stop = x;
     }
-    let overview = l.tools().is_some_and(|t| t.overview().is_some());
+    let panel = l.tools().is_some_and(ToolsState::at_panel);
     let mut x = g.write(2, stop, &SEARCH_ICON.to_string(), Style::MUTED);
     x = g.write(x, stop, " ", Style::NORMAL);
-    if !overview {
+    if !panel {
         // The breadcrumb, cut from the left when too long.
         let crumb = l.tools().map_or_else(String::new, |t| tail(&t.breadcrumb(), stop.saturating_sub(x) / 2));
         x = g.write(x, stop, &crumb, Style::BOLD_ACCENT);
@@ -850,154 +863,9 @@ fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>
     wipe(&mut shown);
     // A thin bar, as the field's own: a block would spill past the chip's rounded edge.
     x = g.write(x, stop, TOOLS_CURSOR, Style::ACCENT);
-    if overview && l.query.is_empty() {
+    if panel && l.query.is_empty() {
         g.write(x + 1, stop, TOOLS_PLACEHOLDER, Style::MUTED);
     }
-}
-
-/// The Super+X overview: the search field, each card where `Overview::place` put it (a header,
-/// its tools, a dim `+N more`), the selection a band over its row inside its card, and the footer's
-/// capsules. The shapes go in painting order: the field, the cards, the band, then what lies on
-/// them (letter capsules, switches, the footer's capsules).
-pub fn render_tools_overview(l: &Launcher, b: &BoxLayout) -> Boxed {
-    let mut rows: Vec<Grid> = (0..b.rows).map(|_| blank(b)).collect();
-    let mut shapes = Vec::new();
-    let (Some(t), Some(o)) = (l.tools(), l.tools().and_then(ToolsState::overview)) else { return list::boxed(&rows, &[], None) };
-    if l.has_modes()
-        && let Some(g) = rows.get_mut(1)
-    {
-        modes_row(l, b, g);
-    }
-    let chip = usize::from(b.list_top.saturating_sub(1));
-    if let Some(g) = rows.get_mut(chip) {
-        tools_chip(l, b, g, &mut shapes, chip);
-    }
-    let selected = l.selected_hit().and_then(|h| match h.source {
-        Source::Tool(i) => l.tool_rows().get(i).map(|r| r.id),
-        _ => None,
-    });
-    let (top, bottom) = (usize::from(b.list_top), usize::from(b.list_top + b.list_rows).min(rows.len()));
-    let (mut band, mut marks) = (None, Vec::new());
-    for p in &o.cards {
-        let y0 = top + usize::from(p.row);
-        if y0 >= bottom {
-            continue;
-        }
-        let x0 = 1 + p.col;
-        // Cut to the box, as to its rows: a box refitted narrower than the cards were placed for.
-        let width = p.width.min(b.columns.saturating_sub(1).saturating_sub(x0));
-        if width == 0 {
-            continue;
-        }
-        shapes.push(ring_shape(y0, x0, width, p.rows.min(u16::try_from(bottom - y0).unwrap_or(u16::MAX)), ShapeKind::Card));
-        card_header(t, p, &mut rows[y0], x0, width);
-        for (k, &e) in p.shown.iter().enumerate() {
-            let y = y0 + 1 + k;
-            if y >= bottom {
-                break;
-            }
-            if selected == Some(RowId::Entry(e)) {
-                band = Some(ring_shape(y, x0, width, 1, ShapeKind::Band));
-            }
-            card_tool(t, e, &mut rows[y], &mut marks, y, x0, width);
-        }
-        let y = y0 + 1 + p.shown.len();
-        if p.more > 0 && y < bottom {
-            let end = x0 + width - 1;
-            let text = format!("+{} more", p.more);
-            match p.card {
-                CardId::Category(c) => {
-                    if selected == Some(RowId::Category(c)) {
-                        band = Some(ring_shape(y, x0, width, 1, ShapeKind::Band));
-                    }
-                    rows[y].write(x0 + 3, end, &text, Style::NORMAL);
-                    rows[y].write(end.saturating_sub(LETTER_CELLS + 2), end, "›", Style::MUTED);
-                }
-                // The Pinned card's opens nothing: dim, never a slot.
-                CardId::Pinned => {
-                    rows[y].write(x0 + 3, end, &text, Style::MUTED);
-                }
-            }
-        }
-    }
-    shapes.extend(band);
-    shapes.append(&mut marks);
-    let footer = usize::from(b.list_top + b.list_rows);
-    let end = b.pane_end();
-    if let Some(g) = rows.get_mut(footer) {
-        match &l.message {
-            Some(m) => {
-                g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR);
-            }
-            None => {
-                key_hints(g, &mut shapes, footer, end, tools_hints(l));
-            }
-        }
-    }
-    // A blank row left between the cards and the footer carries a line, as the box's other parts.
-    let separators: Vec<usize> = (top + usize::from(o.rows) < footer).then(|| footer - 1).into_iter().collect();
-    let mut boxed = list::boxed(&rows, &separators, None);
-    boxed.shapes = shapes;
-    boxed
-}
-
-/// A card's header on its first row: the dot in the card's hue, the name in bold, the count of its
-/// tools dim at the right.
-fn card_header(t: &ToolsState, p: &CardPlace, g: &mut Grid, x0: u16, width: u16) {
-    let end = x0 + width - 1;
-    let (dot, name) = match p.card {
-        CardId::Pinned => (Style::ACCENT, "Pinned"),
-        CardId::Category(c) => (category_hue(t, Some(c)), t.catalog.categories.get(c).map_or("", |c| c.name.as_str())),
-    };
-    let count = (p.shown.len() + p.more).to_string();
-    let count_at = end.saturating_sub(text_width(&count));
-    g.write(x0 + 1, end, "●", dot);
-    let stop = count_at.saturating_sub(1);
-    g.write(x0 + 3, stop, &truncate(name, stop.saturating_sub(x0 + 3)), Style::BOLD);
-    g.write(count_at, end, &count, Style::MUTED);
-}
-
-/// A tool's row in its card, right to left from the card's margin: the letter capsule (its cells
-/// kept without a letter, so the columns line up), `›` for a tool that opens a level, the switch's
-/// two cells for a tool with a state, reserved from the first frame so the row never moves when the
-/// state comes in (and left blank while it is unknown, never a guess); then the glyph in the
-/// card's hue and the name, cut before them. A pending question shows in the urgent tint.
-fn card_tool(t: &ToolsState, e: usize, g: &mut Grid, marks: &mut Vec<Shape>, y: usize, x0: u16, width: u16) {
-    let Some(entry) = t.catalog.entries.get(e) else { return };
-    let end = x0 + width - 1;
-    let mut stop = end.saturating_sub(LETTER_CELLS);
-    if let Some(c) = entry.letter {
-        marks.push(ring_shape(y, stop, LETTER_CELLS, 1, ShapeKind::Chip(Tint::Pill)));
-        g.write(stop + 1, end, &c.to_string(), Style::MUTED);
-    }
-    if opens_level(entry) {
-        g.write(stop.saturating_sub(2), stop, "›", Style::MUTED);
-        stop = stop.saturating_sub(2);
-    }
-    if entry.has_state {
-        if let Some(on) = t.state_of(e) {
-            marks.push(ring_shape(y, stop.saturating_sub(3), 2, 1, ShapeKind::Switch(on)));
-        }
-        stop = stop.saturating_sub(3);
-    }
-    let stop = stop.saturating_sub(1);
-    let mut x = x0 + 1;
-    if let Some(icon) = entry.icon {
-        x = g.write(x, stop, &icon.to_string(), category_hue(t, entry.category));
-        x = g.write(x, stop, " ", Style::NORMAL);
-    }
-    let (text, style) = if t.asking(RowId::Entry(e)) {
-        let question = t.question_text(&crate::launcher::tools::nav::ToolRow {
-            id: RowId::Entry(e),
-            icon: entry.icon,
-            text: entry.name.clone(),
-            trail: Trail::None,
-        });
-        (question, Style::URGENT)
-    } else {
-        (entry.name.clone(), Style::NORMAL)
-    };
-    g.write(x, stop, &truncate(&text, stop.saturating_sub(x)), style);
 }
 
 /// The box's frame: the urgent tint while a Tools question waits for its second Enter.
@@ -1017,9 +885,6 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if column >= b.columns || row >= b.rows {
         return None;
     }
-    if overview_shown(l) {
-        return Some(overview_hit(l, b, column, row));
-    }
     let b = &without_preview(l, b);
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
@@ -1033,29 +898,6 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         return Some(Click::Mode(m));
     }
     Some(Click::Inside)
-}
-
-/// A cell of the overview → the slot under it: a tool's row or a category's `+N more` inside its
-/// card; anything else (a header, a gap, the Pinned card's `+N more`) is only inside the box.
-fn overview_hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
-    let Some(o) = l.tools().and_then(ToolsState::overview) else { return Click::Inside };
-    let Some(y) = row.checked_sub(b.list_top).filter(|y| *y < b.list_rows) else { return Click::Inside };
-    let Some(p) = o.cards.iter().find(|p| (1 + p.col..1 + p.col + p.width).contains(&column) && (p.row..p.row + p.rows).contains(&y))
-    else {
-        return Click::Inside;
-    };
-    let id = match usize::from(y - p.row).checked_sub(1) {
-        Some(k) if k < p.shown.len() => RowId::Entry(p.shown[k]),
-        Some(k) if k == p.shown.len() && p.more > 0 => match p.card {
-            CardId::Category(c) => RowId::Category(c),
-            CardId::Pinned => return Click::Inside,
-        },
-        _ => return Click::Inside,
-    };
-    l.results
-        .iter()
-        .position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows().get(i).is_some_and(|r| r.id == id)))
-        .map_or(Click::Inside, Click::Result)
 }
 
 /// Snapshot text: each row's text, then each row's style codes (Grid::text, Grid::styles), then the
