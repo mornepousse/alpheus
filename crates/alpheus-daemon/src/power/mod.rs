@@ -24,7 +24,7 @@
 
 use crate::config::BarConfig;
 use crate::grid::{Grid, Style, Tint, text_width};
-use crate::keys::Key;
+use crate::keys::{Key, Mods};
 use crate::list::{self, Boxed, Row, Shape, ShapeKind};
 use crate::session::{self, Activation, Session};
 use std::borrow::Cow;
@@ -32,6 +32,24 @@ use std::time::Instant;
 
 /// The rows that carry a digit capsule: 1 to 9, the keys that pick them.
 pub const DIGITS: usize = 9;
+
+/// evdev's `KEY_1` and `KEY_9` (linux/input-event-codes.h): the top row's digit keys, by position.
+const KEY_1: u32 = 2;
+const KEY_9: u32 = 10;
+
+/// The digit a top-row key stands for by its position (evdev `KEY_1` to `KEY_9`, the event's
+/// `raw_code`), whatever character the layout types there, so AZERTY's `&` key is 1 without Shift.
+/// None for any other key, and with Ctrl, Alt or Super held (as on the typed path, which reads no
+/// character then); Shift does not matter. The keypad keeps the typed path (its digits with
+/// NumLock). Only the power menu reads keys this way. See docs/decisions.md, "A digit picks a power
+/// row, and the same digit confirms".
+pub fn position_digit(raw_code: u32, mods: Mods) -> Option<Key> {
+    if mods.ctrl || mods.alt || mods.logo || !(KEY_1..=KEY_9).contains(&raw_code) {
+        return None;
+    }
+    // `from_digit` gives Some for 1 to 9 (`raw_code - 1`), which the range above ensures.
+    char::from_digit(raw_code - 1, 10).map(Key::Char)
+}
 
 /// What a digit adds to a row's cells, past its text's trailing blank: a gap outside the
 /// selection band, then the capsule's three cells (blank, digit, blank).
@@ -315,11 +333,10 @@ impl Power {
         let mut shapes = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             let mut g = Grid::empty(columns);
-            let end = if i < DIGITS { band_end } else { columns - 1 };
             match self.question {
                 // The `if` after the pattern: only the row that asked shows its question.
                 Some((asking, _)) if asking == r.entry => {
-                    g.write(2, end, &r.question(), Style::WARN);
+                    g.write(2, band_end, &r.question(), Style::WARN);
                 }
                 _ => {
                     let row = Row {
@@ -330,7 +347,7 @@ impl Power {
                         style: Style::NORMAL,
                         selected: self.selected == Some(i),
                     };
-                    list::row(&mut g, 1, end, &row);
+                    list::row(&mut g, 1, band_end, &row);
                 }
             }
             // `char::from_digit` gives Some for 1 to 9, the rows that have a digit.
@@ -669,6 +686,24 @@ mod tests {
         p.key(Key::Char(d), false, at)
     }
 
+    /// The top row by position: evdev 2 to 10 are 1 to 9 whatever the layout types (AZERTY's `&`,
+    /// Shift or not); 11 (`0`), 1 (Escape), the keypad's codes and a held Ctrl, Alt or Super are not.
+    #[test]
+    fn the_top_rows_keys_are_digits_by_position() {
+        let none = Mods::default();
+        for code in 2..=10u32 {
+            assert_eq!(position_digit(code, none), char::from_digit(code - 1, 10).map(Key::Char), "code {code}");
+        }
+        let shift = Mods { shift: true, ..none };
+        assert_eq!(position_digit(2, shift), Some(Key::Char('1')), "Shift does not matter");
+        for code in [0, 1, 11, 12, 16, 79, 80, 81] {
+            assert_eq!(position_digit(code, none), None, "code {code}");
+        }
+        for mods in [Mods { ctrl: true, ..none }, Mods { alt: true, ..none }, Mods { logo: true, ..none }] {
+            assert_eq!(position_digit(2, mods), None, "{mods:?}");
+        }
+    }
+
     /// `1` on Lock, which does not ask: it runs at once, from nothing selected.
     #[test]
     fn a_digit_runs_a_row_that_does_not_ask() {
@@ -751,6 +786,12 @@ mod tests {
         for i in 9..12 {
             assert_eq!(b.rows[i].text().trim_end(), format!(" {USER_GLYPH} Row {}", i - 4), "row {i}: its text alone");
         }
+        // Selected, a row past nine has its band end where every other row's does.
+        let mut p = p;
+        p.selected = Some(10);
+        let w = usize::from(p.width());
+        let styles = p.render().rows[10].styles();
+        assert_eq!((&styles[..w - 5], &styles[w - 5..]), ("S".repeat(w - 5).as_str(), "....."), "row 11's band");
     }
 
     /// The width follows the longest text: a 24-character user name shows whole, its capsule after

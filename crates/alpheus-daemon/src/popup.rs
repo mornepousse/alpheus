@@ -432,6 +432,25 @@ pub(crate) fn key_to(launcher_open: bool, notes_open: bool, grabbing_popup: bool
     }
 }
 
+/// The key a grabbing popup gets for `event`: the typed one (`keys::translate`), except that in the
+/// power menu (`power`) a top-row key that types another character than a digit (or none) is read
+/// by its position (`power::position_digit`), so AZERTY's `&` is 1 without Shift. A named key (an
+/// arrow, Enter, Escape) keeps its meaning and a typed digit is that digit, whatever code it came
+/// on: a virtual keyboard (wtype, an on-screen keyboard) numbers its keys as it likes.
+pub(crate) fn popup_key_of(event: &KeyEvent, mods: Mods, power: bool) -> Option<Key> {
+    let typed = keys::translate(event.keysym, event.utf8.as_deref(), mods);
+    let by_position = power
+        && match typed {
+            None => true,
+            Some(Key::Char(c)) => !('1'..='9').contains(&c),
+            Some(_) => false,
+        };
+    if by_position && let Some(digit) = crate::power::position_digit(event.raw_code, mods) {
+        return Some(digit);
+    }
+    typed
+}
+
 /// Most keys `KeysDown` follows at once (more than a hand can hold).
 pub(crate) const MAX_KEYS_DOWN: usize = 16;
 
@@ -1052,7 +1071,7 @@ impl App {
                 self.notes_guarded("key", move |app| app.notes_key(event));
             }
             KeyTo::Popup => {
-                if let Some(k) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) {
+                if let Some(k) = popup_key_of(&event, self.keyboard.mods, self.power_shown()) {
                     self.popup_key(k);
                 }
             }
@@ -1159,6 +1178,37 @@ impl WindowHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key event as the compositor sends it: evdev `raw_code`, the layout's keysym and text.
+    fn event(raw_code: u32, keysym: u32, utf8: &str) -> KeyEvent {
+        KeyEvent { time: 0, raw_code, keysym: Keysym::new(keysym), utf8: Some(utf8.into()) }
+    }
+
+    /// The power menu reads the top row by position: AZERTY's `&` key (evdev 2) is 1 without
+    /// Shift, its `ç` key (evdev 10) is 9; other popups get the typed character. The keypad's 1
+    /// with NumLock (evdev 79) and QWERTY's 1 arrive typed; `à` on evdev 11 (the 0 key) stays text.
+    #[test]
+    fn the_power_menu_reads_the_top_rows_digits_by_position() {
+        use xkeysym::key;
+        let none = Mods::default();
+        let ampersand = event(2, key::ampersand, "&");
+        assert_eq!(popup_key_of(&ampersand, none, true), Some(Key::Char('1')), "AZERTY's top row, no Shift");
+        assert_eq!(popup_key_of(&ampersand, none, false), Some(Key::Char('&')), "another popup: the typed character");
+        assert_eq!(popup_key_of(&event(10, key::ccedilla, "ç"), none, true), Some(Key::Char('9')));
+        assert_eq!(popup_key_of(&event(79, key::KP_1, "1"), none, true), Some(Key::Char('1')), "the keypad with NumLock");
+        assert_eq!(popup_key_of(&event(2, key::_1, "1"), none, true), Some(Key::Char('1')), "QWERTY");
+        assert_eq!(popup_key_of(&event(11, key::agrave, "à"), none, true), Some(Key::Char('à')), "the 0 key is no row");
+        assert_eq!(popup_key_of(&event(1, key::Escape, "\u{1b}"), none, true), Some(Key::Escape));
+        // A virtual keyboard (wtype, an on-screen keyboard) numbers its keys as it likes: a named key
+        // keeps its meaning and a typed digit is that digit, whatever code they came on.
+        let up = KeyEvent { time: 0, raw_code: 2, keysym: Keysym::new(key::Up), utf8: None };
+        assert_eq!(popup_key_of(&up, none, true), Some(Key::Up), "an arrow on code 2");
+        assert_eq!(popup_key_of(&event(2, key::Return, "\r"), none, true), Some(Key::Enter), "Enter on code 2");
+        assert_eq!(popup_key_of(&event(2, key::_5, "5"), none, true), Some(Key::Char('5')), "a typed 5 on code 2");
+        assert_eq!(popup_key_of(&event(9, key::_1, "1"), none, true), Some(Key::Char('1')), "a typed 1 on code 9");
+        let ctrl = Mods { ctrl: true, ..none };
+        assert_eq!(popup_key_of(&ampersand, ctrl, true), None, "Ctrl+&: no digit, as no character");
+    }
 
     /// Which hooks run at a close hang on this map: every module body names its popup.
     #[test]

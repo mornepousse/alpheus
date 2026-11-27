@@ -400,11 +400,20 @@ press never confirms. Another digit moves to its row and asks that row's own que
 digit never acts (the repeat rule above). A digit past the rows is any other key. Each of rows 1
 to 9 shows its digit in a capsule at its right, outside the selection band, and the menu's width
 follows its longest text (label, question or countdown line) instead of a fixed 16 cells, so a
-24-character name shows whole and the popup keeps one size. The digit is the typed character, as
-every key of the menu is read: on AZERTY it needs Shift or the keypad. Decision Q5 (a) of the
-session menu design.
+24-character name shows whole and the popup keeps one size. Decision Q5 (a) of the session menu
+design.
 
-Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`
+The top row's keys are read by position (evdev `KEY_1` to `KEY_9`) while the menu is open, so on
+AZERTY the `&` key is 1 without Shift; the typed character still counts too, so the keypad with
+NumLock and QWERTY's digits work as before. Only the power menu reads a key by position: every other
+box follows the layout (`keys.rs`), because a letter or a word must mean what the user chose, while
+a row number is a place on the keyboard. Only a top-row key that types another character than a
+digit, or none, is read by position: a typed digit is that digit and a named key (an arrow, Enter,
+Escape) keeps its meaning, whatever code it came on, because a virtual keyboard (wtype, an on-screen
+keyboard) numbers its keys as it likes. The owner's decision 11 (2026-11-27), after the first
+version needed Shift on AZERTY.
+
+Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`, `the_top_rows_keys_are_digits_by_position`, `the_power_menu_reads_the_top_rows_digits_by_position`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`
 
 ### The power menu has its own timer
 
