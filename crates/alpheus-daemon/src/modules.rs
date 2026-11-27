@@ -51,6 +51,8 @@ impl Needs {
     pub(crate) const OSD_SCOPE: Needs = Needs(1 << 10);
     /// systemd's failed-units count (the D-Bus `Units` domain): the `failed` module.
     pub(crate) const UNITS: Needs = Needs(1 << 11);
+    /// The compositor source's keyboard layout and mode (`startup::keyboard_wanted`).
+    pub(crate) const KEYBOARD: Needs = Needs(1 << 12);
 
     pub(crate) const fn or(self, other: Needs) -> Needs {
         Needs(self.0 | other.0)

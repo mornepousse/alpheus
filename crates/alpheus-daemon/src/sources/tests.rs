@@ -387,7 +387,7 @@ fn mango_flapper_backs_off() {
             // Both dropped here: Mango gone.
         }
     });
-    let (delays, log, published) = flapping(|p| mango::session(&path, p), Duration::ZERO);
+    let (delays, log, published) = flapping(|p| mango::session(&path, false, p), Duration::ZERO);
     assert!(published >= 1, "the state was served at least once");
     assert_eq!(delays, [1, 2, 4, 8, 16]);
     assert_eq!(log.len(), 1, "{log:?}");

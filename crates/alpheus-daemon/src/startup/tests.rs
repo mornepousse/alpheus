@@ -32,6 +32,18 @@ fn the_camera_watch_starts_only_with_privacy() {
     assert!(!camera_wanted(&without));
 }
 
+/// The compositor source reads the keyboard only when a module asks: no row asks yet, so no
+/// module list wants it.
+#[test]
+fn keyboard_wanted_follows_needs() {
+    assert!(keyboard_wanted_for(Needs::KEYBOARD));
+    assert!(keyboard_wanted_for(Needs::KEYBOARD.or(Needs::SOUND)));
+    assert!(!keyboard_wanted_for(Needs::NONE));
+    assert!(!keyboard_wanted_for(Needs::SOUND.or(Needs::OSD_SCOPE).or(Needs::UNITS)));
+    assert!(!keyboard_wanted(&ModuleId::ALL, &OsdConfig::default()), "no module asks for it yet");
+    assert!(!keyboard_wanted(&[], &OsdConfig::default()));
+}
+
 #[test]
 fn privacy_alone_starts_the_sound_source() {
     assert!(wanted(&[ModuleId::Privacy]).sound);

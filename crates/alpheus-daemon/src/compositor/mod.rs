@@ -1,5 +1,5 @@
 //! What the bar knows about the compositor, whichever it is: workspaces,
-//! windows per workspace, urgency, active window. `hypr`, `niri`, `mango` and `sway`
+//! windows per workspace, urgency, active window, keyboard layout and mode. `hypr`, `niri`, `mango` and `sway`
 //! translate their compositor into this normalized state; the rest of the
 //! daemon only ever sees this one.
 
@@ -62,6 +62,11 @@ pub struct CompositorState {
     /// How long a release of `casting` still counts as casting: Hyprland's `0` comes about
     /// 500 ms after the last frame and a screenshot blips, niri's events are exact (zero).
     pub cast_hold: Duration,
+    /// The keyboard layout's name as the compositor gives it ("English (US)"), cleaned and capped;
+    /// None unless the keyboard is wanted (`startup::keyboard_wanted`) and the compositor says.
+    pub layout: Option<String>,
+    /// The compositor's bind mode ("default", "resize"), on the same terms as `layout`.
+    pub mode: Option<String>,
 }
 
 /// One mapped window, as the launcher lists it.

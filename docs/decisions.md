@@ -2141,3 +2141,17 @@ delay and a second, about 11 s on i915). The xe tree is taken from the kernel's 
 (`xe_tile_sysfs.c`, `xe_gt_sysfs.c`, `xe_gt_idle.c`), not checked on xe hardware.
 
 Date: 2026-11-27 · Source: tests `gpu_usage_from_rc6_is_one_minus_the_idle_share`, `busy_from_idle_clamps_and_refuses_a_counter_going_back`, `the_older_rc6_path_is_read_when_gt0_is_absent`, `a_suspension_drops_the_idle_baseline`, `xe_idle_residency_is_read_from_the_tile_tree`, `the_intel_estimate_reads_active`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md` (draft Q2)
+
+### The keyboard layout comes from the compositor's own state, never from the keyboard
+
+The keyboard layout's name and the bind mode are read from what the compositor connection already
+gives: Mango's monitors snapshot (`keyboardlayout`, `keymode`, two more fields in a line already
+parsed, the active monitor's), and Sway's IPC on the connections already open. Never `wl_keyboard`
+(its events reach only the focused surface, and the bar never has focus), never evdev or
+`/dev/input` (a key-logger by shape), never a `watch keyboardlayout` child of Mango's command-line
+client (a resident process for one field). The fields are read only when a module asks
+(`Needs::KEYBOARD`): otherwise a layout switch changes no published state and wakes nothing. The
+Caps Lock and Num Lock indicators are left out: no source is both event-driven and private without
+keyboard focus (see the spec).
+
+Date: 2026-11-27 · Source: tests `mango_the_monitors_carry_keymode_and_keyboardlayout`, `mango_layout_comes_from_the_active_monitor`, `mango_without_keyboard_publishes_no_layout_nor_mode` (`compositor/mango.rs`), `a_layout_change_without_keyboard_publishes_nothing`, `a_layout_change_with_keyboard_publishes_it` (`sources/mango.rs`), `keyboard_wanted_follows_needs` (`startup/tests.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`

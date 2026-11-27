@@ -37,7 +37,7 @@
 
 use crate::clock;
 use crate::clock::LocalTime;
-use crate::config::{BarConfig, ModuleId, ResourcesConfig};
+use crate::config::{BarConfig, ModuleId, OsdConfig, ResourcesConfig};
 use crate::launcher::scan::Catalog;
 use crate::launcher::socket::Server;
 use crate::launcher::socket_glue::{launcher_socket_outcome, watch_launcher_socket};
@@ -353,6 +353,18 @@ pub fn camera_wanted(modules: &[ModuleId]) -> bool {
     Needs::of(modules).contains(Needs::CAMERA)
 }
 
+/// Whether the compositor source reads the keyboard layout and mode: only when a module asks
+/// (`Needs::KEYBOARD`); otherwise a layout switch publishes nothing and wakes nothing. `osd` is
+/// read once the OSD has a layout kind.
+pub fn keyboard_wanted(modules: &[ModuleId], _osd: &OsdConfig) -> bool {
+    keyboard_wanted_for(Needs::of(modules))
+}
+
+/// `keyboard_wanted` for `needs` (tests give theirs directly).
+pub(crate) fn keyboard_wanted_for(needs: Needs) -> bool {
+    needs.contains(Needs::KEYBOARD)
+}
+
 /// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
 /// microphone or a label change wakes nothing).
 pub fn sound_scope(modules: &[ModuleId]) -> Scope {
@@ -595,6 +607,8 @@ struct Plan {
     want: Wanted,
     scope: Scope,
     privacy: bool,
+    /// The compositor source reads the keyboard layout and mode.
+    keyboard: bool,
     camera_roots: (PathBuf, PathBuf),
     resources_config: ResourcesConfig,
 }
@@ -606,6 +620,7 @@ impl Plan {
             want: wanted(&config.modules),
             scope: sound_scope(&config.modules),
             privacy: camera_wanted(&config.modules),
+            keyboard: keyboard_wanted(&config.modules, &config.osd),
             camera_roots: (config.privacy.dev_dir.clone(), config.privacy.proc_dir.clone()),
             resources_config: config.resources.clone(),
         }
@@ -809,7 +824,9 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
 fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec: &Arc<dyn Executor>) {
     let want = &plan.want;
     let tx_compositor = tx.clone();
-    sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
+    sources::start(sources::detect(|k| std::env::var_os(k)), plan.keyboard, move |e| {
+        tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok()
+    });
     if want.sound {
         let tx = tx.clone();
         // Shared with the quick panel: the loop keeps a clone (`App::quick.sound_tap`).

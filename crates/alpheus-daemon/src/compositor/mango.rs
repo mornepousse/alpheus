@@ -2,7 +2,8 @@
 //! connections, one JSON object per line, each a full state — `{"monitors":[…]}` and
 //! `{"clients":[…]}`. Unknown fields are ignored and missing ones take their default (`appid` may
 //! be null); `last_open_surface` (layer surfaces, the bar's own included) is never read. Mango
-//! gives no focus history: the model keeps one (`mru`).
+//! gives no focus history: the model keeps one (`mru`). The keyboard layout and bind mode
+//! (`keyboardlayout`, `keymode`, per monitor) reach the state only with `Model::new(true)`.
 
 use super::{CompositorState, MAX_NESTING, Toplevel, Window, Workspace, too_deep};
 use crate::text::clean;
@@ -56,6 +57,12 @@ struct Monitor {
     active_tags: Vec<i64>,
     #[serde(default)]
     active_client: Option<ActiveClient>,
+    /// The bind mode ("default"); read only with `Model::keyboard`.
+    #[serde(default)]
+    keymode: Option<String>,
+    /// The layout's name ("English (US)"); read only with `Model::keyboard`.
+    #[serde(default)]
+    keyboardlayout: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +98,9 @@ pub struct Model {
     focused: Option<u64>,
     /// Ids that had focus, oldest first, the most recent last; only ids of the last snapshot.
     mru: Vec<u64>,
+    /// The keyboard is wanted: `state` carries the layout and the mode. Off, a layout switch
+    /// changes no state, so nothing is published and the loop does not wake.
+    keyboard: bool,
 }
 
 /// An optional label from Mango, cleaned and capped (`text::clean`); null or absent: empty.
@@ -99,6 +109,11 @@ fn label(s: &Option<String>) -> String {
 }
 
 impl Model {
+    /// A model that reads the keyboard layout and mode when `keyboard`; `Model::default()` does not.
+    pub fn new(keyboard: bool) -> Model {
+        Model { keyboard, ..Model::default() }
+    }
+
     /// Takes one line of `watch`. Mango's refusal, a line that is not a JSON object, or one without
     /// the list its watch sends is an error: the source ends the session on it, and the
     /// model keeps what it had.
@@ -222,8 +237,18 @@ impl Model {
                 focused: c.is_focused,
             })
             .collect();
-        CompositorState { workspaces, window, toplevels, ..Default::default() }
+        // Mango keeps a layout and a mode per monitor; the active one's is the keyboard's.
+        let (layout, mode) = match monitors.iter().find(|m| m.active).or(monitors.first()).filter(|_| self.keyboard) {
+            Some(m) => (named(&m.keyboardlayout), named(&m.keymode)),
+            None => (None, None),
+        };
+        CompositorState { workspaces, window, toplevels, layout, mode, ..Default::default() }
     }
+}
+
+/// A name from Mango through `label`; absent, null or empty: None.
+fn named(s: &Option<String>) -> Option<String> {
+    Some(label(s)).filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -241,12 +266,73 @@ mod tests {
     const SEVERAL_TAGS: &str = include_str!("../../tests/fixtures/mango-clients-several-tags.json");
     const ERROR: &str = include_str!("../../tests/fixtures/mango-error.json");
     const UNKNOWN: &str = include_str!("../../tests/fixtures/mango-unknown-fields.json");
+    const LAYOUT_FR: &str = include_str!("../../tests/fixtures/mango-monitors-layout-fr.json");
 
     fn model(monitors: &str, clients: &str) -> Model {
-        let mut m = Model::default();
+        fed(Model::default(), monitors, clients)
+    }
+
+    fn fed(mut m: Model, monitors: &str, clients: &str) -> Model {
         m.apply(Watch::Monitors, monitors).unwrap();
         m.apply(Watch::Clients, clients).unwrap();
         m
+    }
+
+    /// (layout, mode) of the state of a keyboard model fed `monitors`.
+    fn keyboard(monitors: &str) -> (Option<String>, Option<String>) {
+        let e = fed(Model::new(true), monitors, CLIENTS).state();
+        (e.layout, e.mode)
+    }
+
+    fn some(layout: &str, mode: &str) -> (Option<String>, Option<String>) {
+        (Some(layout.into()), Some(mode.into()))
+    }
+
+    #[test]
+    fn mango_the_monitors_carry_keymode_and_keyboardlayout() {
+        assert_eq!(keyboard(MONITORS), some("English (US)", "default"));
+    }
+
+    /// The active monitor's, not the first's: Mango keeps one per monitor.
+    #[test]
+    fn mango_layout_comes_from_the_active_monitor() {
+        assert_eq!(keyboard(LAYOUT_FR), some("French (AZERTY)", "resize"));
+        let none_active = LAYOUT_FR.replace("\"name\": \"eDP-1\", \"active\": true", "\"name\": \"eDP-1\", \"active\": false");
+        assert_ne!(none_active, LAYOUT_FR);
+        assert_eq!(keyboard(&none_active), some("English (US)", "default"), "no active monitor: the first's");
+    }
+
+    /// Without the keyboard module nothing is published: a layout change alone changes no state.
+    #[test]
+    fn mango_without_keyboard_publishes_no_layout_nor_mode() {
+        for monitors in [MONITORS, LAYOUT_FR] {
+            let e = model(monitors, CLIENTS).state();
+            assert_eq!((e.layout, e.mode), (None, None));
+        }
+    }
+
+    #[test]
+    fn mango_a_snapshot_without_the_fields_gives_none() {
+        assert_eq!(keyboard(MULTI), (None, None));
+        let mut m = Model::new(true);
+        assert_eq!(m.apply(Watch::Monitors, UNKNOWN), Ok(()));
+        m.apply(Watch::Clients, CLIENTS).unwrap();
+        assert_eq!(m.state().layout, None, "keymode alone: no layout");
+        assert_eq!(m.state().mode.as_deref(), Some("default"));
+        let empty = MONITORS.replace("\"English (US)\"", "\"\"").replace("\"keymode\": \"default\"", "\"keymode\": null");
+        assert_eq!(keyboard(&empty), (None, None), "an empty or null name: None");
+    }
+
+    #[test]
+    fn mango_layout_is_cleaned_and_capped() {
+        let name = format!("{}\\u0007{}", "x".repeat(10), "y".repeat(1990));
+        let monitors = MONITORS.replace("\"keyboardlayout\": \"English (US)\"", &format!("\"keyboardlayout\": \"{name}\""));
+        assert_ne!(monitors, MONITORS);
+        let (layout, _) = keyboard(&monitors);
+        let expected = clean(&format!("{}\u{7}{}", "x".repeat(10), "y".repeat(1990)));
+        assert_eq!(expected.chars().count(), crate::text::MAX_TEXT);
+        assert!(expected.starts_with("xxxxxxxxxxy"), "the control character removed: {expected}");
+        assert_eq!(layout, Some(expected));
     }
 
     /// (name, output, windows, urgent, visible, focused) of each workspace.

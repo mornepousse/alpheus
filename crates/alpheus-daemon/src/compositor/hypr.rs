@@ -369,7 +369,14 @@ impl Model {
             let most_recent = toplevels.remove(0);
             toplevels.push(most_recent);
         }
-        CompositorState { workspaces, window: self.window.clone(), toplevels, casting: self.casting, cast_hold: CAST_HOLD }
+        CompositorState {
+            workspaces,
+            window: self.window.clone(),
+            toplevels,
+            casting: self.casting,
+            cast_hold: CAST_HOLD,
+            ..Default::default()
+        }
     }
 }
 
