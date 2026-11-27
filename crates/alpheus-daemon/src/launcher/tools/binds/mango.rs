@@ -37,11 +37,7 @@ pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse) -> Vec<PathBuf> {
             "source" if !value.is_empty() => sources.push(here.join(value)),
             "env" => {
                 if let Some((name, val)) = value.split_once(',') {
-                    let (name, val) = (name.trim().to_string(), val.trim().to_string());
-                    match st.vars.iter_mut().find(|(n, _)| *n == name) {
-                        Some(var) => var.1 = val,
-                        None => st.vars.push((name, val)),
-                    }
+                    st.define(name.trim(), val.trim());
                 }
             }
             k if is_bind(k) => bind(value, trailing, above, st),

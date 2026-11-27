@@ -154,6 +154,23 @@ fn env_variables_of_the_chain_expand_others_stay() {
 }
 
 #[test]
+fn env_variables_are_bounded() {
+    // 70 definitions: the first MAX_VARS kept, the others ignored and counted; a redefinition of a
+    // kept one still replaces it.
+    let mut text: String = (0..70).map(|i| format!("env=a{i},v{i}\n")).collect();
+    text.push_str("env=a0,again\nbind=SUPER,x,spawn,$a0 $a63 $a64 $a69\n");
+    let b = mango(&text);
+    assert_eq!(b.binds[0].command, "spawn,again v63 $a64 $a69");
+    assert_eq!(b.cut.vars, 70 - MAX_VARS);
+
+    // A name or a value past MAX_VAR bytes is ignored and counted.
+    let text = format!("env=n,{}\nenv={},v\nbind=SUPER,x,spawn,$n\n", "x".repeat(MAX_VAR + 1), "N".repeat(MAX_VAR + 1));
+    let b = mango(&text);
+    assert_eq!(b.binds[0].command, "spawn,$n");
+    assert_eq!(b.cut.vars, 2);
+}
+
+#[test]
 fn combos_print_in_title_case() {
     let m = Dialect::Mango;
     assert_eq!(describe::combo(m, "SUPER+SHIFT", "a"), "Super+Shift+A");

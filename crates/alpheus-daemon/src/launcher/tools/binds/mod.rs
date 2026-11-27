@@ -8,7 +8,7 @@
 //!
 //! Never:
 //! - read without a bound: MAX_FILES files, MAX_BYTES in all, MAX_BINDS binds, MAX_GROUPS groups,
-//!   a line cut at MAX_LINE; past one, the first are kept and `Binds::cut` counts the rest;
+//!   a line cut at MAX_LINE, MAX_VARS variables of MAX_VAR bytes; past one, the first are kept and `Binds::cut` counts the rest;
 //! - read a file twice: an include cycle stops at the file seen;
 //! - write, run or log anything: the glue logs `Binds`' counts, never a path, combo or command.
 //!
@@ -50,7 +50,7 @@ pub struct Bind {
 /// What the bounds left out, each counted past its bound: `files` include lines naming a file
 /// past MAX_FILES, `bytes` reads the MAX_BYTES budget cut short or skipped, `binds` binds past
 /// MAX_BINDS, `groups` headers past MAX_GROUPS (their binds stay in the group before), `lines`
-/// lines cut at MAX_LINE.
+/// lines cut at MAX_LINE, `vars` variable definitions past MAX_VARS or longer than MAX_VAR.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Cut {
     pub files: usize,
@@ -58,6 +58,7 @@ pub struct Cut {
     pub binds: usize,
     pub groups: usize,
     pub lines: usize,
+    pub vars: usize,
 }
 
 /// The result of a load. `files` holds the last path component of each file read, in reading
@@ -84,6 +85,10 @@ pub const MAX_BYTES: usize = 512 * 1024;
 pub const MAX_BINDS: usize = 1000;
 pub const MAX_GROUPS: usize = 32;
 pub const MAX_LINE: usize = 1024;
+/// Variables a load keeps (`env=`), and the bytes of a variable's name or value: `expand` scans
+/// them for every `$`, so a config of thousands of definitions must not make it quadratic.
+pub const MAX_VARS: usize = 64;
+pub const MAX_VAR: usize = 128;
 
 /// The files a load starts from: `binds_files` (`~/` expanded from HOME) when any, else the
 /// dialect's config under `$XDG_CONFIG_HOME` (absolute only), else under `~/.config`.
@@ -278,6 +283,21 @@ impl Parse {
             }
         };
         self.out.binds.push(Bind { combo, description, command, group, file: self.file });
+    }
+
+    /// Defines `name` as `value` (a later definition replaces an earlier one); a name or value past
+    /// MAX_VAR bytes, or a new name past MAX_VARS, is ignored and counted.
+    pub(crate) fn define(&mut self, name: &str, value: &str) {
+        if name.len() > MAX_VAR || value.len() > MAX_VAR {
+            self.out.cut.vars += 1;
+            return;
+        }
+        let full = self.vars.len() >= MAX_VARS;
+        match self.vars.iter_mut().find(|(n, _)| n == name) {
+            Some(var) => value.clone_into(&mut var.1),
+            None if full => self.out.cut.vars += 1,
+            None => self.vars.push((name.to_string(), value.to_string())),
+        }
     }
 
     /// `text` with each `$NAME` or `${NAME}` defined in `vars` replaced; others kept. The result
