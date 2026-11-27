@@ -182,8 +182,8 @@ fn actions_are_derived_from_the_entry() {
     assert_eq!(of("Do not disturb"), [Action::Toggle, Action::QuickKey('d')]);
     assert_eq!(of("Reset USB (xHCI)"), [Action::Confirm, Action::QuickKey('x')]);
     assert_eq!(of("Schedule shutdown"), [Action::Choose, Action::QuickKey('s')]);
-    assert_eq!(of("Say"), [Action::Type("Words".into())]);
-    assert_eq!(of("Network scan"), [Action::Choose, Action::Type(TARGET_PROMPT.into())], "a choice, then the target");
+    assert_eq!(of("Say"), [Action::Type("Words")]);
+    assert_eq!(of("Network scan"), [Action::Choose, Action::Type(TARGET_PROMPT)], "a choice, then the target");
     assert_eq!(of("Wi-Fi"), [Action::Open, Action::QuickKey('w')], "it opens the quick panel");
     assert_eq!(of("Screenshot"), [Action::Run, Action::QuickKey('f')]);
     assert_eq!(of("Plain"), [Action::Run, Action::QuickKey('g')]);

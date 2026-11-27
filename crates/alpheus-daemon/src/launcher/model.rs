@@ -450,12 +450,6 @@ impl Launcher {
         (self.top, (!self.results.is_empty()).then_some(self.selected))
     }
 
-    /// Whether a letter runs anything at the panel's root: a tool drawn there carries a capsule.
-    pub fn root_letters(&self) -> bool {
-        let (top, selected) = self.panel_window();
-        self.tools.as_ref().is_some_and(|t| t.root_letters(top, selected))
-    }
-
     /// The lines of the panel's list pane in the box drawn (`view::fit`).
     pub fn set_pane_lines(&mut self, lines: usize) {
         if let Some(t) = self.tools.as_mut() {

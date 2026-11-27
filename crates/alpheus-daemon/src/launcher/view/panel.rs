@@ -165,6 +165,9 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let search = l.panel_search();
     let (lines, start) = window(&list, l.top, (!l.results.is_empty()).then_some(l.selected), g.pane_rows);
     let selected = (!l.results.is_empty() && !l.selection_lost()).then_some(l.selected);
+    // Whether a tool drawn carries a letter: the footer offers `a-z` only then (read off this
+    // window, never a second one).
+    let mut letters = false;
     for line in &lines {
         let Some(offset) = line.at.checked_sub(start) else { continue };
         // Only what shows whole: a tool cut by the pane's edge is left out, and a label with it
@@ -177,6 +180,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         match line.row {
             PanelRow::Section(label) => section(t, label, g.list, &mut grid[y]),
             PanelRow::Tool(e) => {
+                letters |= t.catalog.entries.get(e).is_some_and(|x| x.letter.is_some());
                 let row = ToolLine { e, k: line.tool, selected: selected == Some(line.tool), search, y };
                 tool_row(l, t, &row, g.list, &mut grid, &mut shapes);
             }
@@ -201,7 +205,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                     Some(e) if search && t.chips(e).is_some() && t.chip(e).is_some() => &SEARCH_CHIP_HINTS,
                     Some(e) if search && t.chips(e).is_some() => &SEARCH_UNPICKED_HINTS,
                     _ if search => &SEARCH_HINTS,
-                    _ if l.letters_live() && l.root_letters() => &HOME_HINTS,
+                    _ if l.letters_live() && letters => &HOME_HINTS,
                     _ => &HOME_HINTS_NO_LETTERS,
                 };
                 key_hints(row, &mut shapes, footer, start, end, hints);
@@ -225,19 +229,13 @@ struct Strip<'a> {
 /// right as the open tab needs, two cells kept at each cut end for its mark (at the left only
 /// once it starts past the first tab).
 fn strip<'a>(t: &'a ToolsState, panel: &Panel, b: &BoxLayout) -> Strip<'a> {
-    // A name that fits is borrowed: only a cut one is a new string.
-    let names: Vec<Cow<'a, str>> = panel
-        .tabs
-        .iter()
-        .map(|tab| match *tab {
-            Tab::All => Cow::Borrowed("All"),
-            Tab::Category(k) => {
-                let name = t.catalog.categories.get(k).map_or("", |c| c.name.as_str());
-                if text_width(name) <= TAB_MAX { Cow::Borrowed(name) } else { Cow::Owned(truncate(name, TAB_MAX)) }
-            }
-        })
-        .collect();
-    let widths: Vec<u16> = names.iter().map(|n| text_width(n) + 2).collect();
+    // A tab's name, borrowed: only one wider than `TAB_MAX`, cut, is a new string.
+    let name = |tab: Tab| match tab {
+        Tab::All => "All",
+        Tab::Category(k) => t.catalog.categories.get(k).map_or("", |c| c.name.as_str()),
+    };
+    let shown = |name: &'a str| if text_width(name) <= TAB_MAX { Cow::Borrowed(name) } else { Cow::Owned(truncate(name, TAB_MAX)) };
+    let widths: Vec<u16> = panel.tabs.iter().map(|&tab| text_width(&shown(name(tab))) + 2).collect();
     let (start, end) = (1 + TOOLS_INSET, b.columns.saturating_sub(1 + TOOLS_INSET));
     let span = |from: usize, to: usize| widths[from..=to].iter().map(|w| w + 1).sum::<u16>().saturating_sub(1);
     let last = widths.len().saturating_sub(1);
@@ -250,11 +248,11 @@ fn strip<'a>(t: &'a ToolsState, panel: &Panel, b: &BoxLayout) -> Strip<'a> {
     }
     let mut x = from(first);
     let mut tabs = Vec::new();
-    for (i, (name, w)) in names.into_iter().zip(widths).enumerate().skip(first) {
+    for (i, (&tab, w)) in panel.tabs.iter().zip(widths).enumerate().skip(first) {
         if x + w > to {
             break;
         }
-        tabs.push((i, x, w, name));
+        tabs.push((i, x, w, shown(name(tab))));
         x += w + 1;
     }
     let drawn = tabs.last().map_or(first, |(i, ..)| i + 1);
@@ -510,9 +508,10 @@ fn detail_card(
         if y >= bottom {
             return;
         }
-        let (label, keys) = action_line(t, e, &action, search && t.chips(e).is_some());
+        let mut letter = [0; 4];
+        let (label, keys) = action_line(t, e, &action, search && t.chips(e).is_some(), &mut letter);
         let mut kx = end;
-        for key in keys.iter().rev() {
+        for key in keys.iter().rev().flatten() {
             kx = kx.saturating_sub(text_width(key) + 2);
             capsule(&mut grid[y], shapes, y, kx, kx + text_width(key) + 2, key, Tint::Selection);
             kx = kx.saturating_sub(1);
@@ -527,25 +526,32 @@ fn detail_card(
     }
 }
 
-/// An action's words and its keys (`chips`: the choices are the row's chips, picked by ← and →).
-fn action_line(t: &ToolsState, e: usize, action: &Action, chips: bool) -> (String, Vec<String>) {
-    let enter = || vec!["⏎".to_string()];
-    match action {
-        Action::Run => ("Run".into(), enter()),
-        Action::Open => ("Open".into(), enter()),
-        Action::Choose if chips => ("Choose".into(), vec!["←".into(), "→".into()]),
-        Action::Choose => ("Choose".into(), vec!["→".into()]),
-        Action::Type(label) => (format!("Type {label}"), enter()),
-        Action::Confirm => ("Confirm".into(), vec!["⏎".into(), "⏎".into()]),
+/// An action's words and its keys, one or two (`chips`: the choices are the row's chips, picked
+/// by ← and →); a quick key's letter is encoded in `letter`. Borrowed but for a typed text's label.
+fn action_line<'a>(
+    t: &ToolsState,
+    e: usize,
+    action: &Action<'a>,
+    chips: bool,
+    letter: &'a mut [u8; 4],
+) -> (Cow<'a, str>, [Option<&'a str>; 2]) {
+    const ENTER: [Option<&str>; 2] = [Some("⏎"), None];
+    match *action {
+        Action::Run => (Cow::Borrowed("Run"), ENTER),
+        Action::Open => (Cow::Borrowed("Open"), ENTER),
+        Action::Choose if chips => (Cow::Borrowed("Choose"), [Some("←"), Some("→")]),
+        Action::Choose => (Cow::Borrowed("Choose"), [Some("→"), None]),
+        Action::Type(label) => (Cow::Owned(format!("Type {label}")), ENTER),
+        Action::Confirm => (Cow::Borrowed("Confirm"), [Some("⏎"), Some("⏎")]),
         Action::Toggle => {
             let words = match t.state_of(e) {
                 Some(true) => "Turn off",
                 Some(false) => "Turn on",
                 None => "Turn on/off",
             };
-            (words.into(), enter())
+            (Cow::Borrowed(words), ENTER)
         }
-        Action::QuickKey(c) => ("Quick key".into(), vec![c.to_string()]),
+        Action::QuickKey(c) => (Cow::Borrowed("Quick key"), [Some(c.encode_utf8(letter)), None]),
     }
 }
 
