@@ -23,7 +23,9 @@ the bar. `then` is not run then (the colours it wrote are already there). A reme
 is no longer an image of the folder is ignored.
 
 **Rotation.** `alpheus-launch --wallpaper next` applies the name after the remembered one (the
-first when none), then `then`: call it from a cron line or a systemd user timer
+first when none), then `then`. With `remember = false` it steps from the name the daemon last
+applied, held in its memory only (the first after the daemon starts). Call it from a cron line or
+a systemd user timer
 ([../cli.md](../cli.md#alpheus-launch-scripting-bridge-to-the-daemon) has both). The daemon has
 no timer of its own.
 
@@ -79,7 +81,9 @@ start.
 - `--wallpaper next`: `Request::Wallpaper(WallpaperVerb::Next)`, the wire words `wallpaper next`,
   answered by `wallpaper_verb` before the launcher's guard (`launcher/socket_glue.rs`). It reads
   `launcher.toml` again, and `next_choice` lists the folder once on the loop (`wallpaper::list`,
-  at most 2,000 names) and takes `next_after` the remembered name. Its refusals are fixed words:
+  at most 2,000 names) and takes `next_after` the remembered name, or with `remember = false` the
+  name `Setter::last_applied` holds (set by a set that worked, never written to disk). Its refusals
+  are fixed words:
   `wallpaper is off`, `the folder cannot be read`, `no image in the folder` (logged as
   `wallpaper: next refused`).
 - `wallpaper/app.rs`: the glue on `App`. `wallpaper_apply` runs on the event loop's thread, so the
@@ -87,6 +91,10 @@ start.
   calloop `Generic` source, silent until it ends. Logs are fixed words: `wallpaper: applied`,
   `wallpaper: setter could not start`, `wallpaper: setter failed`, `wallpaper: setter ended`,
   `wallpaper: not saved`, `wallpaper: then could not start`, `wallpaper: next refused`.
+- A folder on a hung mount (an NFS or sshfs server gone) blocks the bar for as long as the kernel
+  waits: the start re-apply and every apply `stat` the file, and `--wallpaper next` lists the folder
+  (one `read_dir`), all on the event loop. Accepted for v1 (the spec says so); the Tools menu's
+  listing runs on the reader thread and is not affected.
 
 ## The rules its tests enforce
 
@@ -107,10 +115,12 @@ start.
   `tools_wallpaper_replaces_the_setter` (one setter left after two picks).
 - `the_remembered_wallpaper_is_applied_at_start_without_then`,
   `a_remembered_name_outside_the_folder_is_not_applied`, `nothing_is_read_at_start_when_off`,
-  `next_applies_the_name_after_the_remembered_one`, `the_wallpaper_verb_round_trips`,
+  `next_applies_the_name_after_the_remembered_one`,
+  `next_without_remember_steps_from_the_name_last_applied`, `the_wallpaper_verb_round_trips`,
   `alpheus_launch_parses_wallpaper_next` (an older daemon: exit 3).
 - Headless: `wallpaper_reapplied_at_start` (the remembered file, `then` not run),
   `wallpaper_next_steps_through_the_folder` (`a.png` then `b.png`, `then` after each),
+  `wallpaper_next_steps_without_remember` (the same with `remember = false`, no state file),
   `wallpaper_setter_dies_with_the_daemon`.
 - `a_restart_drops_only_the_old_handle_after_the_new_one_started`,
   `a_one_shot_setter_succeeds_only_on_exit_zero`,
@@ -120,13 +130,12 @@ start.
 
 ## What it costs
 
-- Off: nothing. The `Setter` on `App` is two empty options (the figure is in
+- Off: nothing. The `Setter` on `App` is three empty options (the figure is in
   [../measurements.md](../measurements.md)); nothing is read or started.
 - A setter running: its handle, one pidfd and one calloop source, no wake-up until it ends. The
   setter itself is the user's program.
 - At start with a remembered name: the same setter running, the daemon's PSS and anonymous memory
-  within noise of the same start without it; `--wallpaper next` keeps nothing between calls
-  (figures in [../measurements.md](../measurements.md)).
+  within noise of the same start without it (figures in [../measurements.md](../measurements.md)).
 - The Tools menu with `[wallpaper]` set: no syscall per open, the anonymous memory within noise
   of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names
   show, back within +20 to +140 KB once closed, the reader thread gone (figures in

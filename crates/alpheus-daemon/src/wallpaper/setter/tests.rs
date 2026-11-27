@@ -106,6 +106,7 @@ fn a_restart_drops_only_the_old_handle_after_the_new_one_started() {
     exec.watch_err("swaybg", ExecError::NotFound);
     assert!(setter.start(&exec, &w, &dir, "c.png", true).is_err());
     assert!(!exec.children()[1].killed(), "a failed start never ends the setter running");
+    assert_eq!(setter.last_applied(), Some("b.png"), "the name on screen is kept");
     assert_eq!(setter.child_ended().map(|(e, _)| e), None, "it still runs");
 }
 
@@ -118,11 +119,13 @@ fn a_one_shot_setter_succeeds_only_on_exit_zero() {
     let mut setter = Setter::new();
     assert!(matches!(setter.start(&exec, &w, &dir, "a.png", true), Ok(Started::Pending)));
     assert!(setter.child_ended().is_none(), "nothing ended yet");
+    assert_eq!(setter.last_applied(), None, "a pending set is not applied yet");
     exec.children()[0].end(Some(1));
     match setter.child_ended() {
         Some((Ended::Failed, None)) => {}
         other => panic!("exit 1 is a failure: {:?}", other.map(|(e, a)| (e, a.map(|a| a.name)))),
     }
+    assert_eq!(setter.last_applied(), None, "a failed set applied nothing");
     assert!(matches!(setter.start(&exec, &w, &dir, "b.png", true), Ok(Started::Pending)));
     exec.children()[1].end(Some(0));
     match setter.child_ended() {
@@ -133,6 +136,7 @@ fn a_one_shot_setter_succeeds_only_on_exit_zero() {
         other => panic!("exit 0 applies: {:?}", other.map(|(e, a)| (e, a.map(|a| a.name)))),
     }
     assert!(setter.child_ended().is_none(), "each end is told once");
+    assert_eq!(setter.last_applied(), Some("b.png"), "applied on exit 0");
 }
 
 /// A one-shot set while a setter runs: the running one survives the one-shot's start and its
@@ -284,11 +288,11 @@ fn the_wallpaper_file_round_trips_and_refuses_a_path() {
     assert_eq!(read_wallpaper(&state_dir), None, "too long");
 }
 
-/// At rest the setter on `App` is two empty options: no allocation, a fixed size on the state.
+/// At rest the setter on `App` is three empty options: no allocation, a fixed size on the state.
 #[test]
-fn the_setter_at_rest_is_two_empty_options() {
+fn the_setter_at_rest_is_three_empty_options() {
     let setter = Setter::new();
-    assert!(setter.child.is_none() && setter.pending.is_none() && setter.exit_fd().is_none());
+    assert!(setter.child.is_none() && setter.pending.is_none() && setter.last.is_none() && setter.exit_fd().is_none());
     eprintln!("size_of::<Setter>() = {}", size_of::<Setter>());
     assert!(size_of::<Setter>() <= 128);
 }

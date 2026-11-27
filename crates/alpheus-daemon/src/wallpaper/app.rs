@@ -49,19 +49,23 @@ pub(crate) fn start_choice(w: &WallpaperConfig, state_dir: &Path, home: Option<&
     let dir = resolve_dir(&w.dir, home)?;
     // `read_wallpaper` refuses a name with a `/`, `..` or NUL: the join stays in the folder.
     let name = read_wallpaper(state_dir)?;
+    // `Setter::start` checks this again; checked here too so that a remembered file since removed
+    // is skipped quietly instead of logged as a setter that could not start at every login.
     let file = std::fs::metadata(dir.join(&name)).is_ok_and(|m| m.is_file());
     (is_image_name(&name) && file).then_some(Choice { name, run_then: false })
 }
 
-/// The name for `--wallpaper next`: the folder's name after the remembered one (the first when
-/// none, or when it is no longer listed), with `then`. Err: the fixed words of the reply.
-pub(crate) fn next_choice(w: &WallpaperConfig, state_dir: &Path, home: Option<&Path>) -> Result<Choice, &'static str> {
+/// The name for `--wallpaper next`: the folder's name after the current one (the first when none,
+/// or when it is no longer listed), with `then`. The current one is the remembered name, or with
+/// `remember = false` `last`, the name the running daemon last applied (nothing on disk). Err: the
+/// fixed words of the reply.
+pub(crate) fn next_choice(w: &WallpaperConfig, state_dir: &Path, home: Option<&Path>, last: Option<&str>) -> Result<Choice, &'static str> {
     if !w.enabled() {
         return Err("wallpaper is off");
     }
     let dir = resolve_dir(&w.dir, home).ok_or("the folder cannot be read")?;
     let listing = list(&dir, MAX_FILES).map_err(|_| "the folder cannot be read")?;
-    let remembered = read_wallpaper(state_dir);
+    let remembered = if w.remember { read_wallpaper(state_dir) } else { last.map(str::to_owned) };
     let name = next_after(&listing.names, remembered.as_deref()).ok_or("no image in the folder")?;
     Ok(Choice { name: name.to_string(), run_then: true })
 }
@@ -108,7 +112,7 @@ impl App {
         let Request::Wallpaper(_) = request else { return Reply::Done };
         let (config, _) = LauncherConfig::load(&config_path(&paths::config_dir()));
         let w = config.wallpaper;
-        match next_choice(&w, &paths::state_dir(), home().as_deref()) {
+        match next_choice(&w, &paths::state_dir(), home().as_deref(), self.wallpaper.last_applied()) {
             Ok(choice) => {
                 self.wallpaper_apply(&w, &choice.name, choice.run_then);
                 Reply::Done

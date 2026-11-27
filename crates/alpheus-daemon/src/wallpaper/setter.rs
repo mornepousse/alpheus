@@ -65,16 +65,26 @@ pub enum Ended {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotStarted;
 
-/// At most one running setter, and at most one one-shot setter not yet ended.
+/// At most one running setter, at most one one-shot setter not yet ended, and the name last applied.
 #[derive(Default)]
 pub struct Setter {
     child: Option<Box<dyn Watched>>,
     pending: Option<(Box<dyn Watched>, Applied)>,
+    /// The name the last set that worked applied, kept in memory only: what `--wallpaper next`
+    /// steps from when nothing is remembered on disk (`remember = false`). A setter that later ends
+    /// on its own leaves it: the name is still the last one shown.
+    last: Option<Box<str>>,
 }
 
 impl Setter {
     pub fn new() -> Setter {
         Setter::default()
+    }
+
+    /// The name the last set that worked applied (a running setter at its start, a one-shot on its
+    /// exit 0); None before any.
+    pub fn last_applied(&self) -> Option<&str> {
+        self.last.as_deref()
     }
 
     /// Starts `w.set` on `dir/name`. Err (nothing started, nothing dropped) for a name that is not
@@ -106,6 +116,7 @@ impl Setter {
             // still pending with it, whose ending would no longer mean anything.
             self.pending = None;
             self.child = Some(started);
+            self.last = Some(name.into());
             Ok(Started::Running(applied))
         } else {
             // The setter running stays until this one has worked (`child_ended`).
@@ -130,6 +141,7 @@ impl Setter {
             let (_, applied) = self.pending.take()?;
             if exit == Some(0) {
                 self.child = None;
+                self.last = Some(applied.name.as_str().into());
                 return Some((Ended::Applied, Some(applied)));
             }
             return Some((Ended::Failed, None));

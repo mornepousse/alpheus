@@ -824,6 +824,25 @@ fn wallpaper_next_steps_through_the_folder() {
     assert!(process_alive(pids[1]));
 }
 
+/// `remember = false`: `--wallpaper next` still steps (`a.png`, then `b.png`) from the name the
+/// daemon last applied, held in its memory; no state file is written.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn wallpaper_next_steps_without_remember() {
+    let sway = Sway::start("wallpaper-next-forget", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = format!("{}remember = false\n", wallpaper_setup(&sway));
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(wallpaper_next(&sway), EXIT_OK, "{:?}", d.log());
+    assert!(wait_until(|| setter_starts(&sway).len() == 1), "{:?}", d.log());
+    assert_eq!(wallpaper_next(&sway), EXIT_OK, "{:?}", d.log());
+    assert!(wait_until(|| setter_starts(&sway).len() == 2), "{:?}", d.log());
+    let (a, b) = (sway.runtime.join("walls/a.png").display().to_string(), sway.runtime.join("walls/b.png").display().to_string());
+    assert_eq!(setter_starts(&sway), [vec!["-i".to_string(), a], vec!["-i".to_string(), b]]);
+    assert!(!sway.runtime.join("state/alpheus/wallpaper").exists(), "nothing remembered on disk");
+}
+
 /// The setter applied at start is the daemon's child: when the harness stops the daemon, no fake
 /// setter of this test is left running.
 #[test]

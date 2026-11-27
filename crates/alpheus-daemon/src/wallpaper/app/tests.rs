@@ -4,7 +4,7 @@
 use super::*;
 use crate::launcher::run::{RunContext, Spawner};
 use crate::launcher::testing::TempDir;
-use crate::state_file::save_wallpaper;
+use crate::state_file::{read_wallpaper, save_wallpaper};
 use crate::wallpaper::setter::{Setter, Started, apply_outcome};
 use alpheus_common::exec::fake::FakeExecutor;
 use std::os::unix::fs::PermissionsExt;
@@ -98,7 +98,7 @@ fn nothing_is_read_at_start_when_off() {
 fn next_applies_the_name_after_the_remembered_one() {
     let (d, state) = folder("wp-next", &["c.png", "a.png", "b.png", "notes.txt"]);
     let w = config(&d.join("walls"));
-    let next = |state: &Path| next_choice(&w, state, None);
+    let next = |state: &Path| next_choice(&w, state, None, None);
     assert_eq!(next(&state), Ok(Choice { name: "a.png".into(), run_then: true }), "none remembered: the first");
     save_wallpaper(&state, "a.png").unwrap();
     assert_eq!(next(&state).map(|c| c.name), Ok("b.png".into()));
@@ -106,8 +106,30 @@ fn next_applies_the_name_after_the_remembered_one() {
     assert_eq!(next(&state).map(|c| c.name), Ok("a.png".into()), "wraps");
     save_wallpaper(&state, "gone.png").unwrap();
     assert_eq!(next(&state).map(|c| c.name), Ok("a.png".into()), "a name no longer listed: the first");
-    assert_eq!(next_choice(&WallpaperConfig::default(), &state, None), Err("wallpaper is off"));
+    assert_eq!(next_choice(&WallpaperConfig::default(), &state, None, None), Err("wallpaper is off"));
     let (e, state) = folder("wp-next-empty", &["notes.txt"]);
-    assert_eq!(next_choice(&config(&e.join("walls")), &state, None), Err("no image in the folder"));
-    assert_eq!(next_choice(&config(&e.join("missing")), &state, None), Err("the folder cannot be read"));
+    assert_eq!(next_choice(&config(&e.join("walls")), &state, None, None), Err("no image in the folder"));
+    assert_eq!(next_choice(&config(&e.join("missing")), &state, None, None), Err("the folder cannot be read"));
+}
+
+/// `remember = false`: `next` steps from the name the setter last applied, held by the daemon
+/// alone; a stale state file is not read, and nothing is written.
+#[test]
+fn next_without_remember_steps_from_the_name_last_applied() {
+    let (d, state) = folder("wp-next-forget", &["a.png", "b.png", "c.png"]);
+    let walls = d.join("walls");
+    let w = WallpaperConfig { remember: false, ..config(&walls) };
+    // A name left by an earlier `remember = true`: read, it would make the first `next` b.png.
+    save_wallpaper(&state, "a.png").unwrap();
+    let exec = FakeExecutor::new();
+    exec.watch_ok("swaybg", None);
+    let mut setter = Setter::new();
+    for want in ["a.png", "b.png", "c.png", "a.png"] {
+        let choice = next_choice(&w, &state, None, setter.last_applied()).unwrap();
+        assert_eq!(choice.name, want, "steps from the name last applied");
+        let Ok(Started::Running(applied)) = setter.start(&exec, &w, &walls, &choice.name, false) else { panic!("started") };
+        let ctx = RunContext { exec: &exec, spawner: Spawner::Detached, history_path: None, path_dirs: &[] };
+        assert_eq!(apply_outcome(&ctx, &state, &applied).saved, None, "not remembered: nothing saved");
+    }
+    assert_eq!(read_wallpaper(&state).as_deref(), Some("a.png"), "the state file is left as it was");
 }
