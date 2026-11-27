@@ -111,6 +111,16 @@ fn net_interface_rejects_a_bad_name_without_naming_it() {
 }
 
 #[test]
+fn gpu_metric_parses_its_four_words() {
+    assert_eq!(BarConfig::default().resources.gpu_metric, GpuMetric::Auto);
+    for (word, want) in [("auto", GpuMetric::Auto), ("usage", GpuMetric::Usage), ("temp", GpuMetric::Temp), ("both", GpuMetric::Both)] {
+        let c = BarConfig::from_text(&format!("[resources]\ngpu_metric = \"{word}\"\n")).unwrap();
+        assert_eq!(c.resources.gpu_metric, want, "{word}");
+    }
+    assert!(BarConfig::from_text("[resources]\ngpu_metric = \"load\"\n").is_err());
+}
+
+#[test]
 fn disk_keys_default_and_parse() {
     let d = BarConfig::default().resources;
     assert_eq!((d.disk_mounts.len(), d.disk_interval), (0, 15));

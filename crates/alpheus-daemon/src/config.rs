@@ -27,7 +27,8 @@
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
 //! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" (disk_mounts, else $HOME's filesystem), "gpu"
-//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
+//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia), also the card's driver for usage; "": automatic
+//! gpu_metric = "auto"   # "auto" | "usage" | "temp" | "both": auto shows usage when a card offers it (amdgpu), else the temperature
 //! net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
 //! disk_mounts = []   # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem (a hung network mount stalls the bar)
 //! disk_interval = 15   # seconds between disk readings, 1 to 300; the last figures repeat in between
@@ -377,6 +378,19 @@ impl ResourceItem {
     }
 }
 
+/// What the `gpu` item shows: its usage (and VRAM in the popup), its temperature, or both. Decided
+/// once at start; only what it names is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuMetric {
+    /// Usage when a card offering it is found at start, else the temperature.
+    #[default]
+    Auto,
+    Usage,
+    Temp,
+    Both,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResourcesConfig {
@@ -389,8 +403,11 @@ pub struct ResourcesConfig {
     pub sensor: String,
     /// The figures shown, in this order (never empty, no repeat).
     pub show: Vec<ResourceItem>,
-    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia); empty = automatic.
+    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia), and the driver of the card read for
+    /// usage (amdgpu, i915, xe); empty = automatic.
     pub gpu_sensor: String,
+    /// What `gpu` shows: usage, temperature, or both (`auto`: usage when a card offers it).
+    pub gpu_metric: GpuMetric,
     /// The interface whose throughput `net` shows; empty = the IPv4 default route's.
     pub net_interface: String,
     /// The paths whose filesystems `disk` measures, in order (at most `DISKS`, absolute, no
@@ -409,6 +426,7 @@ impl Default for ResourcesConfig {
             sensor: String::new(),
             show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
             gpu_sensor: String::new(),
+            gpu_metric: GpuMetric::Auto,
             net_interface: String::new(),
             disk_mounts: Vec::new(),
             disk_interval: 15,

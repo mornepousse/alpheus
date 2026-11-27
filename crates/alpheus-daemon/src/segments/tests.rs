@@ -979,6 +979,22 @@ fn the_gpu_errs_from_85() {
 }
 
 #[test]
+fn the_bar_shows_gpu_usage_then_both() {
+    use crate::system::GpuBusy;
+    let busy = Some(GpuBusy { percent: 23, idle_based: false });
+    let s = Sample { gpu_busy: busy, ..Sample::default() };
+    let (t, _) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f08ae} 23%");
+    let s = Sample { gpu_busy: busy, gpu: Some(90), ..Sample::default() };
+    let (t, st) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f08ae} 23% 90\u{b0}");
+    assert_eq!(st, ".".repeat(5) + &"e".repeat(4), "the degrees alone in the error colour");
+    let s = Sample { gpu_busy: busy, gpu: Some(54), ..Sample::default() };
+    let (_, st) = items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::Full).unwrap();
+    assert_eq!(st, "p".repeat(9));
+}
+
+#[test]
 fn extra_items_take_their_hues() {
     use ResourceItem::*;
     let s = Sample {

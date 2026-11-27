@@ -418,6 +418,14 @@ pub struct NetRate {
 /// Paths the disk item can follow (`[resources] disk_mounts` holds at most this many).
 pub const DISKS: usize = 4;
 
+/// GPU usage, percent: the busy share the driver reports (amdgpu), or one minus the idle share
+/// (`idle_based`, Intel's estimate, labelled `active` in the popup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuBusy {
+    pub percent: u8,
+    pub idle_based: bool,
+}
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
@@ -435,6 +443,10 @@ pub struct Sample {
     pub disks: [Option<u8>; DISKS],
     /// GPU temperature, °C.
     pub gpu: Option<i16>,
+    /// GPU usage; None while the card is runtime-suspended, or without a card that offers it.
+    pub gpu_busy: Option<GpuBusy>,
+    /// VRAM in use, percent rounded up (amdgpu).
+    pub vram: Option<u8>,
     /// Installed memory, in tenths of GiB (read with `memory`, never alone).
     pub memory_total: Option<u16>,
 }

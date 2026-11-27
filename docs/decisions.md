@@ -2065,3 +2065,19 @@ as it already could for `$HOME`; the slower cadence makes that rarer, and the ke
 warns about it (a timeout would need a thread).
 
 Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+
+### GPU usage comes from sysfs only; NVIDIA proprietary shows —
+
+The `gpu` item shows usage from the card's own sysfs files, with no command and no library:
+amdgpu's `gpu_busy_percent` and its VRAM figures. The card is picked among
+`/sys/class/drm/card<N>` by the file name of its `device/driver` link (only links are read for the
+pick); `amdgpu` first, then `i915` and `xe`, and any other driver never wins, so a DisplayLink
+`evdi` card or NVIDIA's proprietary one is never read. `device/power/runtime_status` is read before
+any usage file, and a `suspended` card gives no figure: the bar never wakes a hybrid laptop's
+discrete GPU. NVIDIA's proprietary driver has no such file and no hwmon: its GPU shows `—` in the
+popup and nothing on the bar. `nvidia-smi` would be a resident child or a process every tick, and
+NVML a library loaded into the daemon; neither fits a bar that runs no command for its figures
+(owner's decision, 2026-11-27). `gpu_metric` decides at start what is read (`auto`: usage when a card
+offering it is found, else the temperature), so a metric not shown costs no read.
+
+Date: 2026-11-27 · Source: tests `gpu_usage_reads_amdgpu_busy_and_vram`, `a_monitor_only_card_never_wins`, `gpu_nvidia_proprietary_gives_nothing_and_no_panic`, `a_suspended_gpu_is_not_read`, `gpu_metric_temp_reads_no_usage_file`, `gpu_metric_auto_prefers_usage_and_skips_the_sensor`, `the_resources_reader_never_logs_a_mount_an_interface_or_a_card` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`

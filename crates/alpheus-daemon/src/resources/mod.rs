@@ -88,6 +88,8 @@ fn permille(v: u64, top: u64) -> u16 {
 /// kept, so the time axis never shifts.
 pub fn series(item: ResourceItem, index: usize, h: &History) -> Vec<Vec<Option<u16>>> {
     let top = net_top(h).unwrap_or(NET_FLOOR);
+    // The GPU graph plots usage as soon as one sample of the ring has it, else the degrees.
+    let gpu_usage = item == ResourceItem::Gpu && h.iter().any(|s| s.gpu_busy.is_some());
     let count = if item == ResourceItem::Net { 2 } else { 1 };
     let mut out = vec![vec![None; HISTORY - h.len()]; count];
     for s in h.iter() {
@@ -106,6 +108,7 @@ pub fn series(item: ResourceItem, index: usize, h: &History) -> Vec<Vec<Option<u
                 [point, None]
             }
             ResourceItem::Temperature => [s.temperature.map(degrees), None],
+            ResourceItem::Gpu if gpu_usage => [s.gpu_busy.map(|b| permille(u64::from(b.percent), 100)), None],
             ResourceItem::Gpu => [s.gpu.map(degrees), None],
             ResourceItem::Net => match s.net {
                 Some(n) => [Some(permille(n.down, top)), Some(permille(n.up, top))],
@@ -239,10 +242,26 @@ fn figure(item: ResourceItem, index: usize, r: &Resources) -> Vec<(String, Style
             Some(t) => degrees_figure(t, hue),
             None => no_figure(),
         },
-        ResourceItem::Gpu => match s.gpu {
-            Some(t) => degrees_figure(t, hue),
-            None => no_figure(),
-        },
+        // A dim `vram` share first, then the usage, then the degrees: each when read.
+        ResourceItem::Gpu => {
+            if s.gpu_busy.is_none() && s.gpu.is_none() {
+                return no_figure();
+            }
+            let mut pieces = Vec::new();
+            if let Some(v) = s.vram {
+                pieces.push((format!("vram {v}% "), Style::MUTED));
+            }
+            if let Some(b) = s.gpu_busy {
+                pieces.push((format!("{}%", b.percent), Style::hue(hue)));
+            }
+            if let Some(t) = s.gpu {
+                if s.gpu_busy.is_some() {
+                    pieces.push((" ".to_string(), Style::hue(hue)));
+                }
+                pieces.extend(degrees_figure(t, hue));
+            }
+            pieces
+        }
         ResourceItem::Net => match s.net {
             // The dim `peak` is the graph's top, so the reader knows what its height means.
             Some(n) => {

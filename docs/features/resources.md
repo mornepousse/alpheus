@@ -18,8 +18,9 @@ A left click on the resources module opens a popup under it:
   rows tall:
   - the item's icon in its hue (CPU orange, Memory yellow, Temperature red, Network cyan, Disk
     blue, GPU purple, as on the bar), its name, and its current figure on the right:
-    CPU `12%`; Memory `6.1G` then, dim, ` of 15.5G`; Temperature and GPU `54°`, in the error
-    colour from 85 °C as on the bar; Network `󰇚 1.2M 󰕒 80K` (download then upload), preceded by,
+    CPU `12%`; Memory `6.1G` then, dim, ` of 15.5G`; Temperature `54°`, in the error colour from
+    85 °C as on the bar; GPU its usage `23%`, preceded by a dim `vram 41% ` on amdgpu, and/or
+    `54°` as the temperature (both: `23% 54°`, per `gpu_metric`); Network `󰇚 1.2M 󰕒 80K` (download then upload), preceded by,
     dim, `peak 3.4M` (the graph's top); Disk `62%`; and a dim `—` when there is no figure;
   - a graph under it: the last 60 samples, the newest at the right edge, drawn in pixels by the
     painter in the theme's colours. A filled graph has a body at 40 % of the item's hue over the
@@ -28,9 +29,17 @@ A left click on the resources module opens a popup under it:
 - A separator, then `Monitor…`, which runs `[actions] resources`. With that setting empty the
   popup has no `Monitor…` row and no separator.
 
-The graphs' scales: CPU and disk 0 to 100 %; memory 0 to the machine's total; temperature and GPU
-0 to 100 °C (clamped); network one scale for both directions, the highest rate of either in the
+The graphs' scales: CPU and disk 0 to 100 %; memory 0 to the machine's total; temperature 0 to 100 °C
+(clamped); GPU 0 to 100 % of usage when any sample of the ring has a usage reading, else 0 to
+100 °C like the temperature; network one scale for both directions, the highest rate of either in the
 ring, never below 128 KiB/s so that an idle link does not fill it with noise.
+
+On the bar, `gpu` shows `󰢮 23%` (usage), `󰢮 54°` (temperature), or `󰢮 23% 54°` with
+`gpu_metric = "both"` (the degrees in the error colour from 85 °C). Usage comes from the card's
+sysfs files (amdgpu's `gpu_busy_percent` and VRAM figures), the card picked by its driver link;
+a runtime-suspended card is not read at all, so the bar never wakes a hybrid laptop's discrete
+GPU. NVIDIA's proprietary driver offers no usage file and no hwmon: its GPU shows `—` in the popup
+and nothing on the bar (no `nvidia-smi`, no NVML: alpheus runs no command for its figures).
 
 On the bar, `disk` shows the fullest of the listed paths (`󰋊 87%`). The disks are read every
 `disk_interval` seconds (15 by default), not every pass; in between, each pass repeats the last
@@ -63,6 +72,8 @@ In `bar.toml`, read at start (a change needs a restart of the bar).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[resources] show` | `["cpu", "memory", "temperature"]` | the items, in order: also `net`, `disk`, `gpu`; one block each in the popup |
+| `[resources] gpu_metric` | `"auto"` | `usage`, `temp` or `both`; `auto`: usage when a card offering it is found at start, else the temperature; only what it names is read |
+| `[resources] gpu_sensor` | `""` | the GPU's hwmon name, and the driver (`amdgpu`, `i915`, `xe`) of the card read for usage; `""`: automatic (an `evdi` or NVIDIA card never wins) |
 | `[resources] net_interface` | `""` | the interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's; absent, `net` shows no figure |
 | `[resources] disk_mounts` | `[]` | up to 4 absolute paths `disk` measures, one block each; `[]`: `$HOME`'s filesystem, one block named `Disk`. A hung network mount stalls the bar (`statvfs` runs on the event loop) |
 | `[resources] disk_interval` | `15` | seconds between two readings of the disks, 1 to 300; the last figures repeat in between |
@@ -113,7 +124,13 @@ reading. The popup owns no timer: opening it adds no wake-up.
 
 ## Rules it keeps
 
-- `the_tray_spawns_no_thread`: `resources/mod.rs` starts no thread, process or command.
+- `the_tray_spawns_no_thread`: `resources/mod.rs` and `sources/resources.rs` start no thread,
+  process or command.
+- `the_resources_reader_never_logs_a_mount_an_interface_or_a_card`: no log line of the reader names
+  a disk path, a mount, an interface or a GPU card.
+- `a_suspended_gpu_is_not_read`: a runtime-suspended card gives no figure, its busy file unread;
+  `a_monitor_only_card_never_wins` and `gpu_nvidia_proprietary_gives_nothing_and_no_panic`: an
+  `evdi` or NVIDIA card is never picked for usage.
 - `the_resources_popup_has_no_panicking_path`: neither file's production code panics.
 - `a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading`: a tick applies the
   reading before it repaints, repaints only while the popup is open, and the timer goes through
@@ -130,7 +147,8 @@ reading. The popup owns no timer: opening it adds no wake-up.
   samples", "The resources popup spans 60 times the interval", "Every resources item keeps its
   block in the popup", "Each resources graph has a set scale; the network's follows its peak, with a
   floor", "The bar shows the fullest disk, the popup one block per path", "Disks are read every
-  `disk_interval` seconds, the last figures repeat between reads", "The resources popup has no timer of its own", "The left click opens the resources popup and the
+  `disk_interval` seconds, the last figures repeat between reads", "GPU usage comes from sysfs only;
+  NVIDIA proprietary shows —", "The resources popup has no timer of its own", "The left click opens the resources popup and the
   right click runs `[actions] resources`", "Logs carry fixed words and numbers only".
 
 ## What it costs

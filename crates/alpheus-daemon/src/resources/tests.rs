@@ -5,7 +5,7 @@
 use super::*;
 use crate::config::ResourceItem::{Cpu, Disk, Gpu, Memory, Net, Temperature};
 use crate::grid::Hue;
-use crate::system::{DISKS, HISTORY, NetRate, Sample};
+use crate::system::{DISKS, GpuBusy, HISTORY, NetRate, Sample};
 use std::path::{Path, PathBuf};
 
 /// The text of each row, without its trailing blanks.
@@ -168,6 +168,33 @@ fn a_temperature_from_85_is_in_the_error_colour_and_the_net_figure_leads_with_it
     };
     assert_eq!(style_of("peak"), Style::MUTED);
     assert_eq!(style_of("1.2M"), Style::hue(Hue::Cyan));
+}
+
+#[test]
+fn the_gpu_block_shows_vram_and_plots_usage() {
+    let busy = |p| Some(GpuBusy { percent: p, idle_based: false });
+    let c = ResourcesConfig { show: vec![Gpu], ..ResourcesConfig::default() };
+    let s = Sample { gpu_busy: busy(23), vram: Some(41), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[s]), &c);
+    let row = &row_texts(&b)[1];
+    assert!(row.ends_with("vram 41% 23%"), "{row:?}");
+    let style_of = |b: &Boxed, needle: &str| {
+        let hay = b.rows[1].text();
+        let col = hay[..hay.find(needle).expect(needle)].chars().count();
+        b.rows[1].cells()[col].style
+    };
+    assert_eq!(style_of(&b, "vram"), Style::MUTED);
+    assert_eq!(style_of(&b, "23%"), Style::hue(Hue::Purple));
+    // Usage and degrees together: the degrees follow, in the error colour from 85 °C.
+    let both = Sample { gpu_busy: busy(23), vram: Some(41), gpu: Some(90), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&resources_with_history(&[both]), &c);
+    assert!(row_texts(&b)[1].ends_with("vram 41% 23% 90°"), "{:?}", row_texts(&b)[1]);
+    assert_eq!(style_of(&b, "90°"), Style::ERROR);
+    // The graph plots usage when any sample of the ring has it, the degrees otherwise.
+    let h = resources_with_history(&[Sample { gpu: Some(54), ..Sample::default() }, both]).history;
+    let points = &series(Gpu, 0, &h)[0];
+    assert_eq!(&points[HISTORY - 2..], &[None, Some(230)], "usage permille, a sample without usage is a gap");
+    assert_eq!(newest_point_of(Gpu, Sample { gpu: Some(54), ..Sample::default() }), Some(540), "no usage anywhere: degrees");
 }
 
 /// The widest net row: `peak` and both rates at the five-cell cap (`9999G`; 1023 MiB/s itself reads
