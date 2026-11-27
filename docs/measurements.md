@@ -392,3 +392,26 @@ the reading. So the absolute open PSS is higher through the verb: about 12,899 K
 daemon's own memory open over closed is +56 KB through the verb against +153 KB by the menu, and
 closed it stays ~430 KB lower (10,037 against 10,471 KB): a `--binds` open never draws the panel,
 so the panel's warm-up is never paid. The menu path on the branch stays within the base's.
+
+Task 6, `[power]` and user rows in the ⏻ menu (on pc-simu, release, the base is the branch's
+merge-base with `main` 529a0bc6 and the branch at Task 6 alternated, 3 rounds, each run holding
+the memory lock exclusively through the turnstile; other agents' work ran on the machine
+meanwhile: loaded machine, 2026-11-27). The branch's `POWER_BAR` gains two `[[power.entry]]` rows
+(one plain, one with `confirm`) after the default three; the base's has none (it has no
+`[power]`), so the delta is the code and the two rows together:
+
+| Test | Base 529a0bc6 | Branch, two user rows |
+|---|---|---|
+| PSS without the module | 8,667…8,675 KB | 8,735 KB (×3) |
+| button at rest over without | +128…+136 KB | +128…+132 KB |
+| menu open over at rest | +480…+496 KB | +560 KB (×3) |
+| closed / after 20 more cycles, over without | +476…+556 / +484…+492 KB | +544 / +552…+556 KB |
+| loop wake-ups in 10 s after the menu (a question pending at the last close) | 0, 0, 0 | 0, 0, 0 |
+
+The ~+64 KB without the module is the whole branch's code over the base (the cheatsheet's parser
+and level, Tasks 1 to 5, and this task), the same in every column. The button at rest costs what
+it did. The open menu costs +64…+80 KB more, the two rows' share of a taller popup (five rows
+instead of three: its shm pool and two buffers) and their labels; after the menu closed and after
+20 more cycles the branch keeps +60…+72 KB more over its own baseline than the base, within the
+test's bounds (closed ≤ idle + 512 KB, cycled ≤ closed + 128 KB: +8…+12 KB measured). No wake-up
+at rest after the menu, as before: the rows add no timer.
