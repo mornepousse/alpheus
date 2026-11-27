@@ -666,6 +666,19 @@ fn real_files_read_regular_files_only_and_within_max() {
 }
 
 #[test]
+fn real_files_list_keeps_the_first_names_of_a_big_folder() {
+    use alpheus_common::temp_path::TempPath;
+    let dir = TempPath::dir("binds-real-list");
+    for i in (0..300).rev() {
+        std::fs::write(dir.join(format!("f{i:03}.conf")), "").unwrap();
+    }
+    let real = RealFiles { home: None };
+    let names: Vec<String> = real.list(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    let expected: Vec<String> = (0..256).map(|i| format!("f{i:03}.conf")).collect();
+    assert_eq!(names, expected, "the 256 first by name, sorted");
+}
+
+#[test]
 fn the_dialect_is_mango_or_sway() {
     assert_eq!(binds_dialect(Some(&mango())), Some(Dialect::Mango));
     assert_eq!(binds_dialect(Some(&Compositor::Sway { socket: PathBuf::from("/s") })), Some(Dialect::Sway));

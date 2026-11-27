@@ -4854,10 +4854,16 @@ fn binds_pss_open_and_closed() {
     let closed = (d.pss_kb(), anon_kb(&d));
     let open = binds_cycle(&sway, &d, 2);
     let again = (d.pss_kb(), anon_kb(&d));
-    for n in 3..=22 {
+    // A reading half way through the 20 more: a plateau or a trend.
+    for n in 3..=12 {
+        binds_cycle(&sway, &d, n);
+    }
+    let ten = (d.pss_kb(), anon_kb(&d));
+    for n in 13..=22 {
         binds_cycle(&sway, &d, n);
     }
     let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!("binds anonymous after 10 more cycles (KB): {} ({:+}); PSS {}", ten.1, ten.1 as i64 - again.1 as i64, ten.0);
     eprintln!(
         "binds PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
         cold.0,

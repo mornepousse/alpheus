@@ -134,7 +134,7 @@ impl Files for RealFiles {
     /// FIFO, a device or a folder named in a config is refused, never waited on nor read forever.
     fn read(&self, path: &Path, max: usize) -> Option<String> {
         use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(self.expand(path)).ok()?;
+        let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(self.expand(path)).ok()?;
         if !file.metadata().ok()?.is_file() {
             return None;
         }
@@ -143,13 +143,19 @@ impl Files for RealFiles {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// The folder's entries, sorted (at most MAX_LISTED, the first by name).
+    /// The folder's entries, sorted (at most MAX_LISTED, the first by name): kept in a heap of
+    /// MAX_LISTED while the folder is walked, so a huge folder never grows a list.
     fn list(&self, dir: &Path) -> Vec<PathBuf> {
         let Ok(entries) = std::fs::read_dir(self.expand(dir)) else { return Vec::new() };
-        let mut out: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        out.sort();
-        out.truncate(MAX_LISTED);
-        out
+        let mut first = std::collections::BinaryHeap::with_capacity(MAX_LISTED + 1);
+        for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            first.push(path);
+            if first.len() > MAX_LISTED {
+                // The greatest name goes: the heap keeps the first ones.
+                first.pop();
+            }
+        }
+        first.into_sorted_vec()
     }
 }
 

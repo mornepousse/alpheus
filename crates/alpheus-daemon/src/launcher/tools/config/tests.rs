@@ -540,4 +540,9 @@ fn binds_files_holds_at_most_8_paths_none_blank() {
         assert!(e.contains("tools.binds_files"), "{bad}: {e}");
         assert!(!e.contains("a\u{7}b"), "the path is never quoted: {e}");
     }
+    for relative in ["keys.conf", "./keys.conf", "~keys.conf", "mango/keys.conf"] {
+        let e = parse(&format!("[tools]\nbinds_files = [\"{relative}\"]\n")).unwrap_err();
+        assert!(e.contains("tools.binds_files") && !e.contains(relative), "{relative}: {e}");
+    }
+    assert!(parse("[tools]\nbinds_files = [\"/etc/keys.conf\", \"~/keys.conf\"]\n").is_ok(), "absolute or under ~/");
 }

@@ -137,8 +137,9 @@ pub enum Step {
     /// Too soon after the question: nothing.
     Wait,
     Run(ToolAction),
-    /// The Keybindings built-in: the glue reads the bindings, then `open_binds` opens the level.
-    Binds,
+    /// The Keybindings built-in: the glue reads the bindings, then `open_binds` opens the level,
+    /// `up` landing on the given row (from the root's flat search, the entry in its category).
+    Binds(usize),
 }
 
 pub struct ToolsState {
@@ -692,7 +693,7 @@ impl ToolsState {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
                 if matches!(entry.kind, EntryKind::Builtin(b) if BUILTINS.get(b).is_some_and(|b| b.action == BuiltinAction::Binds)) {
                     self.question = None;
-                    return Step::Binds;
+                    return Step::Binds(self.through_category(e, selected));
                 }
                 if !matches!(entry.choices, Choices::None) {
                     let selected = self.through_category(e, selected);

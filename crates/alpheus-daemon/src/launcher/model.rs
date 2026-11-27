@@ -1049,10 +1049,14 @@ impl Launcher {
                 t.up();
                 self.query.clear();
             }
-            // Nor does it come back to the bindings: they are dropped with their level.
+            // Nor does it come back to the bindings: they are dropped with their level, and the
+            // level's rows with them (their text holds each binding's combo and description).
             if t.binds().is_some() {
                 t.up();
                 self.query.clear();
+                self.tool_level = Vec::new();
+                self.tool_level_hits = Vec::new();
+                self.tool_level_key = None;
             }
         }
     }
@@ -1124,16 +1128,16 @@ impl Launcher {
         // The flat search's index means nothing in the level it drills into: restore the top.
         let query_empty = self.query.is_empty();
         let selected = self.selected;
-        let Some((step, selected)) = self.tools.as_mut().map(|t| {
+        let Some(step) = self.tools.as_mut().map(|t| {
             // A typed query's index means nothing in the level: `up` restores the row's real place.
             let selected = if query_empty { selected } else { t.here(row) };
-            (t.enter(&self.config.tools, row, selected, now), selected)
+            t.enter(&self.config.tools, row, selected, now)
         }) else {
             return Outcome::Nothing;
         };
         match step {
-            Step::Binds => {
-                self.binds_from = Some(selected);
+            Step::Binds(at) => {
+                self.binds_from = Some(at);
                 Outcome::OpenBinds
             }
             Step::Drill(job) => {
@@ -1187,7 +1191,7 @@ impl Launcher {
             return match t.enter(&self.config.tools, row, 0, now) {
                 Step::Run(action) => Outcome::Activate(Activation::Tool(action)),
                 // The Keybindings level opens in the Tools mode, at the entry's level.
-                Step::Binds => {
+                Step::Binds(_) => {
                     t.goto_entry(entry);
                     self.enter_tools_mode();
                     self.binds_from = self.tools.as_mut().map(|t| t.here(row));

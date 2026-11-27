@@ -2577,7 +2577,11 @@ fn enter_on_the_binds_builtin_opens_the_level() {
     let from = l.selected;
     let now = Instant::now();
     let config = l.config.tools.clone();
-    assert_eq!(l.tools.as_mut().unwrap().enter(&config, RowId::Entry(e), from, now), Step::Binds, "the state opens nothing by itself");
+    assert_eq!(
+        l.tools.as_mut().unwrap().enter(&config, RowId::Entry(e), from, now),
+        Step::Binds(from),
+        "the state opens nothing by itself"
+    );
     let o = l.key(Key::Enter);
     assert_eq!(o, Outcome::OpenBinds, "no Activation: the host reads, then opens");
     assert!(!l.at_binds(), "nothing open until the host hands the bindings");
@@ -2737,7 +2741,31 @@ fn keybindings_from_mod_space_opens_in_the_tools_mode() {
     assert_eq!(l.mode, Mode::Tools);
     l.open_binds(some_binds());
     assert!(l.at_binds());
-    // Leaving the Tools mode drops them.
+    assert!(!l.letters_live(), "letters are text in a Mod+Space box");
+    assert!(l.tools().unwrap().panel().is_none(), "no panel in a Mod+Space box");
+    assert!(l.tool_level.iter().any(|r| r.id == RowId::Bind(0)));
+    // Leaving the Tools mode drops them, and the level's rows.
     l.click_mode(Mode::All);
     assert!(!l.tools().unwrap().holds_binds());
+    assert!(l.tool_level.is_empty() && l.tool_level_hits.is_empty(), "no binding's text kept");
+}
+
+#[test]
+fn esc_from_keybindings_opened_by_the_flat_search_lands_in_its_category() {
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = panel_catalog(&config);
+    let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
+    for c in "keybindings".chars() {
+        l.key(Key::Char(c));
+    }
+    let e = builtin_entry(&l, "tools.binds");
+    l.selected = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(e))).unwrap();
+    assert_eq!(l.key(Key::Enter), Outcome::OpenBinds);
+    l.open_binds(some_binds());
+    assert!(l.at_binds());
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    let t = l.tools().unwrap();
+    assert!(matches!(t.level(), Level::Category(_)), "{:?}", t.level());
+    assert!(t.breadcrumb().ends_with("System"), "{}", t.breadcrumb());
+    assert_eq!(l.selected_tool(), Some(RowId::Entry(e)), "on Keybindings, as every other drill");
 }

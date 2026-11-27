@@ -165,7 +165,8 @@ level opens (shown only on Mango and Sway; on another compositor the entry hides
 the box; Esc, ← on an empty query or Backspace go back to where it was opened, the panel on the tab it
 was on. Nothing of it is kept once it is left.
 
-- **Sources:** `[tools] binds_files` when set (at most 8 paths, `~/` is your home folder), else the
+- **Sources:** `[tools] binds_files` when set (at most 8 paths, each absolute or starting with `~/`,
+  your home folder; a relative one makes `launcher.toml` invalid), else the
   compositor's own config: Mango's `$XDG_CONFIG_HOME/mango/config.conf` (else
   `~/.config/mango/config.conf`), following its `source=` lines (relative to the file that names them,
   or `~/…`). Sway's config is read but its lines are not listed yet.
