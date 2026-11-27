@@ -86,13 +86,14 @@ fn read(dir: &Path, device: &str) -> Option<Kbd> {
 }
 
 /// The keyboard backlight: the first LED in sorted order whose name ends with `SUFFIX` and that
-/// reads as a level (at most `MAX_ENTRIES` names looked at); None hides the row.
+/// reads as a level; None hides the row. At most `MAX_ENTRIES` keyboard LEDs are kept, however
+/// many other LEDs `read_dir` lists before them.
 pub fn find(dir: &Path) -> Option<Kbd> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .ok()?
-        .take(MAX_ENTRIES)
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
         .filter(|n| plain(n) && n.ends_with(SUFFIX))
+        .take(MAX_ENTRIES)
         .collect();
     names.sort();
     names.iter().find_map(|n| read(dir, n))
@@ -181,6 +182,31 @@ mod tests {
         let root = tree("above");
         fake(&root, "tpacpi::kbd_backlight", "9\n", "2\n");
         assert_eq!(find(&root), Some(kbd(2, 2)), "a level above max counts as max");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The cap counts keyboard LEDs, not every LED: on a machine with many LEDs (a USB hub's, a
+    /// keyboard's per-key ones) the keyboard backlight listed late by `read_dir` is still found.
+    #[test]
+    fn kbd_backlight_found_past_many_other_leds() {
+        let root = tree("many");
+        for n in 0..3 * MAX_ENTRIES {
+            fs::create_dir_all(root.join(format!("input{n}::capslock"))).unwrap();
+        }
+        let position = |name: &str| fs::read_dir(&root).unwrap().position(|e| e.unwrap().file_name().to_str() == Some(name)).unwrap();
+        // `read_dir` order is the filesystem's (creation, hash): a name it lists past the cap.
+        let late = (0..64)
+            .map(|i| format!("led{i}::kbd_backlight"))
+            .find(|name| {
+                fake(&root, name, "1\n", "2\n");
+                let late = position(name) >= MAX_ENTRIES;
+                if !late {
+                    fs::remove_dir_all(root.join(name)).unwrap();
+                }
+                late
+            })
+            .expect("a keyboard LED listed past the first MAX_ENTRIES entries");
+        assert_eq!(find(&root).map(|k| k.device), Some(late));
         let _ = fs::remove_dir_all(&root);
     }
 
