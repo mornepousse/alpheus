@@ -37,6 +37,11 @@ ink, in the status block. The name comes from the compositor, the way it gives i
 | Hyprland, niri | nothing drawn (the backends of both are retired) |
 | Other layer-shell compositors | nothing drawn |
 
+**A pill without the module.** With `"layout"` in `[osd] kinds` (and `osd` in `modules`), the
+on-screen display shows a pill with the layout's full name (`󰌌 French (AZERTY)`, whatever `short`
+says) when the layout changes, and the compositor source reads the layout for it even without the
+`keyboard` module. See [the OSD page](osd.md).
+
 ## Using it
 
 Add the module to `modules` in `bar.toml`:
@@ -65,9 +70,10 @@ show_mode = false  # never the bind mode
 ## How it is built
 
 - **The data** is two fields of the compositor's state, `CompositorState.layout` and `.mode`,
-  filled by the compositor source only when the module is in `modules`: `startup::keyboard_wanted`
-  reads `Needs::KEYBOARD`, which only this module's row of `modules.rs` asks for, and passes it to
-  `sources::start`. Without the module, Mango's two fields are parsed and dropped, so a layout
+  filled by the compositor source only when the module is in `modules`, or `osd` with the `layout`
+  kind: `startup::keyboard_wanted` reads `Needs::KEYBOARD` from `modules::needs_of`, which this
+  module's row of `modules.rs` and the `layout` kind (`OsdKind::needs`) ask for, and passes it to
+  `sources::start`. Without either, Mango's two fields are parsed and dropped, so a layout
   switch publishes nothing and the main loop does not wake.
 - **Under Sway** (`sources/sway.rs`, `compositor/sway.rs`), the module changes what the source
   sends: its subscription adds the `input` and `mode` events, and it reads `GET_INPUTS` once at the
@@ -121,7 +127,7 @@ and the harness switches them, or enters a mode, on its private socket
   (`at_rest_no_wakeups_with_the_keyboard_module`, both compositors).
 - Sway is only read: `GET_INPUTS` and the two more events are the whole extension
   (`sway_writes_only_its_messages`, `tests/guardrails.rs`).
-- Off costs nothing at run time: without the module the source publishes no layout
+- Off costs nothing at run time: without the module or the kind the source publishes no layout
   (`keyboard_off_under_mango_redraws_nothing_on_a_layout_change`, and
   `a_layout_change_without_keyboard_publishes_nothing` in `sources/mango.rs`); under Sway it
   subscribes to no keyboard event and never asks for the inputs

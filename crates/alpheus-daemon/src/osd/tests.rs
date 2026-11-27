@@ -592,3 +592,136 @@ fn osd_passive_pills_are_described_in_fixed_words() {
         assert_eq!(describe(&Pill::Profile(p)), "profile changed", "never the profile itself");
     }
 }
+
+// ---- The keyboard layout and the track. ----
+
+/// A compositor state whose keyboard layout is `layout`.
+fn layout_state(layout: Option<&str>) -> CompositorState {
+    CompositorState { layout: layout.map(String::from), ..CompositorState::default() }
+}
+
+/// The active player's view: playing or not, with this title.
+fn track(playing: bool, title: &str) -> MediaView {
+    MediaView { playing, title: title.into() }
+}
+
+/// A track watch that heard its baseline `track(true, "A")` at `t0`, and a time past its grace.
+fn settled_track() -> (TrackWatch, Instant) {
+    let t0 = Instant::now();
+    let mut w = TrackWatch::default();
+    assert_eq!(w.hear(Some(&track(true, "A")), t0), None, "the baseline never shows");
+    (w, t0 + Duration::from_secs(5))
+}
+
+#[test]
+fn track_first_view_is_the_baseline() {
+    let t0 = Instant::now();
+    let mut w = TrackWatch::default();
+    assert_eq!(w.hear(Some(&track(true, "A")), t0), None, "playing, but the first view");
+    let mut paused = TrackWatch::default();
+    assert_eq!(paused.hear(Some(&track(false, "A")), t0), None);
+}
+
+#[test]
+fn track_a_new_title_while_playing_shows() {
+    let (mut w, late) = settled_track();
+    assert_eq!(w.hear(Some(&track(true, "B")), late), Some("B".to_string()));
+    assert_eq!(w.hear(Some(&track(true, "B")), late + millis(10)), None, "the same title again");
+    assert_eq!(w.hear(Some(&track(true, "C")), late + millis(20)), Some("C".to_string()));
+}
+
+#[test]
+fn track_a_new_title_while_paused_shows_nothing_and_resume_shows_nothing() {
+    let (mut w, late) = settled_track();
+    assert_eq!(w.hear(Some(&track(false, "A")), late), None, "paused");
+    assert_eq!(w.hear(Some(&track(false, "B")), late + millis(10)), None, "skipped while paused");
+    assert_eq!(w.hear(Some(&track(true, "B")), late + millis(20)), None, "the title was learnt while paused");
+}
+
+#[test]
+fn track_pause_and_resume_of_the_same_title_show_nothing() {
+    let (mut w, late) = settled_track();
+    assert_eq!(w.hear(Some(&track(false, "A")), late), None);
+    assert_eq!(w.hear(Some(&track(true, "A")), late + millis(10)), None);
+    assert_eq!(w.hear(Some(&track(false, "A")), late + millis(20)), None);
+}
+
+#[test]
+fn track_titles_inside_the_grace_after_a_player_appears_show_nothing() {
+    let (mut w, late) = settled_track();
+    assert_eq!(w.hear(None, late), None, "the last player left");
+    let back = late + millis(100);
+    assert_eq!(w.hear(Some(&track(true, "Loading")), back), None, "a player appears: the baseline");
+    assert_eq!(w.hear(Some(&track(true, "B")), back + GRACE - millis(1)), None, "its metadata settling");
+    assert_eq!(w.hear(Some(&track(true, "C")), back + GRACE), Some("C".to_string()), "at the grace end it is over");
+}
+
+#[test]
+fn track_the_player_leaving_takes_a_new_baseline() {
+    let (mut w, late) = settled_track();
+    assert_eq!(w.hear(None, late), None);
+    assert_eq!(w.hear(Some(&track(true, "B")), late + Duration::from_secs(5)), None, "however late: a baseline");
+    let later = late + Duration::from_secs(10);
+    assert_eq!(w.hear(Some(&track(true, "C")), later), Some("C".to_string()));
+}
+
+#[test]
+fn track_kind_maps_to_its_pill() {
+    let t0 = Instant::now();
+    let mut k = Kinds::default();
+    assert_eq!(k.track(Some(&track(true, "A")), t0), None);
+    let late = t0 + Duration::from_secs(5);
+    assert_eq!(k.track(Some(&track(true, "B")), late), Some(Pill::Track("B".into())));
+    assert_eq!(k.track(None, late + millis(10)), None, "the player left");
+}
+
+#[test]
+fn layout_a_new_name_shows_the_full_name() {
+    let t0 = Instant::now();
+    let mut k = Kinds::default();
+    assert_eq!(k.layout(Some(&layout_state(Some("English (US)"))), t0), None, "the baseline");
+    let late = t0 + Duration::from_secs(5);
+    assert_eq!(k.layout(Some(&layout_state(Some("English (US)"))), late), None, "a focus change: the same name");
+    let pill = k.layout(Some(&layout_state(Some("French (AZERTY)"))), late + millis(10));
+    assert_eq!(pill, Some(Pill::Layout("French (AZERTY)".into())), "the full name, never the short code");
+    let b = rows(&pill.unwrap(), 32);
+    assert_eq!(row_texts(&b), [format!(" {KEYBOARD} French (AZERTY){} ", " ".repeat(15))]);
+    assert_eq!(row_styles(&b), [format!(".a.{}.", ".".repeat(30))]);
+    assert_eq!(k.layout(Some(&layout_state(None)), late + millis(20)), None, "no name: a reset");
+    assert_eq!(k.layout(Some(&layout_state(Some("German"))), late + millis(30)), None, "a new baseline");
+    assert_eq!(k.layout(None, late + millis(40)), None, "the compositor went: a reset");
+    assert_eq!(k.layout(Some(&layout_state(Some("English (US)"))), late + millis(50)), None);
+}
+
+#[test]
+fn layout_a_hotplug_burst_shows_one_pill_with_the_last_name() {
+    let t0 = Instant::now();
+    let mut osd = Osd::default();
+    assert_eq!(osd.kinds.layout(Some(&layout_state(Some("English (US)"))), t0), None);
+    let late = t0 + Duration::from_secs(5);
+    for (n, name) in ["German", "French (AZERTY)", "English (UK)"].into_iter().enumerate() {
+        let now = late + millis(n as u64);
+        let pill = osd.kinds.layout(Some(&layout_state(Some(name))), now).expect("each new name shows");
+        osd.show(pill, now, millis(1500));
+    }
+    assert_eq!(osd.shown(), Some(&Pill::Layout("English (UK)".into())), "one pill, replaced: the last name");
+    assert_eq!(osd.deadline(), Some(late + millis(2) + millis(1500)));
+}
+
+#[test]
+fn rows_cut_a_long_title_to_the_pill() {
+    let title = "A very long track title that never fits a thirty-two cell pill";
+    let b = rows(&Pill::Track(title.into()), 32);
+    assert_eq!(b.cells(), (34, 1));
+    let t = &row_texts(&b)[0];
+    assert!(t.starts_with(&format!(" {PLAY} A very long")), "{t}");
+    assert!(t.ends_with("… "), "cut with an ellipsis: {t}");
+    assert_eq!(text_width(t), 34, "never wider than the pill");
+    assert_eq!(row_texts(&rows(&Pill::Track("Song".into()), 32)), [format!(" {PLAY} Song{} ", " ".repeat(26))]);
+}
+
+#[test]
+fn layout_and_track_pills_are_described_in_fixed_words() {
+    assert_eq!(describe(&Pill::Layout("French (AZERTY)".into())), "layout changed", "never the name");
+    assert_eq!(describe(&Pill::Track("Song by Someone".into())), "track changed", "never the title");
+}

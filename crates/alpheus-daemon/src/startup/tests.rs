@@ -52,6 +52,23 @@ fn keyboard_wanted_with_the_module() {
     assert!(keyboard_wanted(&ModuleId::ALL, &OsdConfig::default()));
 }
 
+/// An OSD with the `layout` kind reads the layout too, without the bar module.
+#[test]
+fn keyboard_wanted_by_the_layout_kind_alone() {
+    let layout = OsdConfig { kinds: vec![OsdKind::Layout], ..OsdConfig::default() };
+    assert!(keyboard_wanted(&[ModuleId::Osd], &layout));
+    assert!(keyboard_wanted(&[ModuleId::Clock, ModuleId::Osd], &layout));
+    let other = OsdConfig { kinds: vec![OsdKind::Volume, OsdKind::Track], ..OsdConfig::default() };
+    assert!(!keyboard_wanted(&[ModuleId::Osd], &other), "another kind does not read it");
+}
+
+#[test]
+fn layout_kind_without_osd_wants_nothing() {
+    let layout = OsdConfig { kinds: vec![OsdKind::Layout], ..OsdConfig::default() };
+    assert!(!keyboard_wanted(&[], &layout));
+    assert!(!keyboard_wanted(&[ModuleId::Clock, ModuleId::Workspaces], &layout), "a kind without the osd module");
+}
+
 #[test]
 fn privacy_alone_starts_the_sound_source() {
     assert!(wanted(&[ModuleId::Privacy], &OsdConfig::default()).sound);

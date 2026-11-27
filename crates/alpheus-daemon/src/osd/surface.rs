@@ -117,14 +117,16 @@ impl App {
         }
     }
 
-    /// A passive kind's message (Bluetooth, the bell's view, the power profile), before the bar
-    /// applies it: its trigger rules (`osd::Kinds`), then the pill. Returns at once unless the
+    /// A passive kind's message (Bluetooth, the bell's view, the power profile, the compositor's
+    /// keyboard layout, the active player), before the bar applies it: its trigger rules (`osd::Kinds`), then the pill. Returns at once unless the
     /// module is on and the message's kind is listed, so a kind not listed keeps no memory either.
     pub(crate) fn osd_passive(&mut self, m: &Msg) {
         let kind = match m {
             Msg::Bluetooth(_) => OsdKind::Bluetooth,
             Msg::Notifications(_) => OsdKind::Dnd,
             Msg::Profile(_) => OsdKind::Profile,
+            Msg::Compositor(_) => OsdKind::Layout,
+            Msg::Media(_) => OsdKind::Track,
             _ => return,
         };
         if !self.osd_shows(kind) {
@@ -136,6 +138,8 @@ impl App {
             Msg::Bluetooth(s) => kinds.bluetooth(s.as_ref(), now),
             Msg::Notifications(view) => kinds.dnd(*view, now),
             Msg::Profile(s) => kinds.profile(s.as_ref(), now),
+            Msg::Compositor(s) => kinds.layout(s.as_ref(), now),
+            Msg::Media(v) => kinds.track(v.as_ref(), now),
             _ => None,
         };
         if let Some(pill) = pill {

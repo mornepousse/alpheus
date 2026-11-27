@@ -1,15 +1,16 @@
 //! The on-screen display's model: when a change shows the pill, and what the pill says.
 //!
 //! The pill is the small bar that shows a volume, microphone or brightness level, or a passive
-//! kind's state (Bluetooth, do-not-disturb, the power profile), for a moment. This file is its pure
-//! half. `Watch` decides when a sound change shows it: the baseline after pw-dump (re)starts, a 1 s
-//! grace after startup or after a default device appears, a level that must move, the microphone on
-//! a mute flip only, a default sink that was switched (its name card kept up to date while it
-//! shows). `Passive` does the same for one passive value (baseline, grace, change), and `Kinds`
-//! holds one per kind with the mapping from each source's message. `Osd` keeps the pill that is
-//! shown and its deadline. `rows` builds the pill's one row of cells, and `brightness_percent` turns
-//! the backlight's two sysfs texts into a level. The Wayland surface is `surface.rs`'s; the files of the backlight are read by
-//! `backlight.rs`.
+//! kind's state (Bluetooth, do-not-disturb, the power profile, the keyboard layout, a new track),
+//! for a moment. This file is its pure half. `Watch` decides when a sound change shows it: the
+//! baseline after pw-dump (re)starts, a 1 s grace after startup or after a default device appears,
+//! a level that must move, the microphone on a mute flip only, a default sink that was switched
+//! (its name card kept up to date while it shows). `Passive` does the same for one passive value
+//! (baseline, grace, change), `TrackWatch` for the track (a new title shows only while playing),
+//! and `Kinds` holds one per kind with the mapping from each source's message. `Osd` keeps the
+//! pill that is shown and its deadline. `rows` builds the pill's one row of cells, and
+//! `brightness_percent` turns the backlight's two sysfs texts into a level. The Wayland surface is
+//! `surface.rs`'s; the files of the backlight are read by `backlight.rs`.
 //!
 //! Never:
 //! - talk to Wayland, read a file, start a thread or run a command: texts and times are handed in,
@@ -23,13 +24,14 @@
 //! percent", "Brightness is shown on request, read once", "An OSD kind is opt-in and brings the
 //! source it reads").
 
+use crate::compositor::CompositorState;
 use crate::config::OsdConfig;
 use crate::grid::{Grid, Style, Tint, text_width};
 use crate::list::{self, Boxed};
-use crate::media::truncate_title;
+use crate::media::{MediaView, truncate_title};
 use crate::notify::NotifyView;
 use crate::quick::PROFILE;
-use crate::segments::{BELL, BELL_OFF, BLUETOOTH, VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
+use crate::segments::{BELL, BELL_OFF, BLUETOOTH, KEYBOARD, PLAY, VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
 use crate::system::{BtState, DeviceName, Profile, ProfileState, SoundState, Volume};
 use std::time::{Duration, Instant};
 
@@ -63,6 +65,10 @@ pub enum Pill {
     Dnd(bool),
     /// The active power profile changed to this one.
     Profile(Profile),
+    /// The keyboard layout changed to this one: its full name, as the compositor gives it.
+    Layout(String),
+    /// A new track started playing: its title (the bar's media view, already capped).
+    Track(String),
 }
 
 /// What a sound message means for the OSD: nothing to show, the baseline, or a pill to show.
@@ -275,12 +281,48 @@ impl<T: PartialEq + Clone> Passive<T> {
     }
 }
 
+/// The track's trigger memory. Unlike `Passive`, the title is learnt whatever the player says,
+/// but a new one shows only while it plays: a track skipped while paused, then resumed, shows
+/// nothing, and so does a pause and resume of the same track. The first view after no player is
+/// the baseline, and a `GRACE` follows it (a player that appears sends its metadata in bursts).
+#[derive(Debug, Clone, Default)]
+pub struct TrackWatch {
+    last_title: Option<String>,
+    grace: Option<Instant>,
+}
+
+impl TrackWatch {
+    /// The active player's view at `now` (None: no player); Some: the title to show.
+    pub fn hear(&mut self, view: Option<&MediaView>, now: Instant) -> Option<String> {
+        let Some(view) = view else {
+            self.last_title = None;
+            self.grace = None;
+            return None;
+        };
+        // An unchanged title (most views: a pause, a resume, a position) allocates nothing.
+        let old = match self.last_title.as_deref() {
+            Some(old) if old == view.title => return None,
+            old => old.is_some(),
+        };
+        self.last_title = Some(view.title.clone());
+        if !old {
+            self.grace = Some(now + GRACE);
+            return None;
+        }
+        // Inside the grace: before its end (at exactly its end it is over).
+        let inside = self.grace.is_some_and(|end| now < end);
+        if view.playing && !inside { Some(view.title.clone()) } else { None }
+    }
+}
+
 /// The passive kinds' trigger memories, one per kind, and what each source's message means.
 #[derive(Debug, Clone, Default)]
 pub struct Kinds {
     pub bluetooth: Passive<bool>,
     pub dnd: Passive<bool>,
     pub profile: Passive<Profile>,
+    pub layout: Passive<String>,
+    pub track: TrackWatch,
 }
 
 impl Kinds {
@@ -305,6 +347,22 @@ impl Kinds {
     /// power-profiles-daemon's active profile; none active, or the bus down: a reset.
     pub fn profile(&mut self, s: Option<&ProfileState>, now: Instant) -> Option<Pill> {
         self.profile.hear(s.and_then(|s| s.active), now).map(Pill::Profile)
+    }
+
+    /// The compositor's keyboard layout: a new name shows. Most compositor messages are a focus or
+    /// a workspace change with the same name: those are answered before the name is copied. No
+    /// name, or the compositor down: a reset.
+    pub fn layout(&mut self, s: Option<&CompositorState>, now: Instant) -> Option<Pill> {
+        let name = s.and_then(|s| s.layout.as_ref());
+        if name.is_some() && self.layout.last.as_ref() == name {
+            return None;
+        }
+        self.layout.hear(name.cloned(), now).map(Pill::Layout)
+    }
+
+    /// The active player's view: a new title while playing (`TrackWatch`).
+    pub fn track(&mut self, view: Option<&MediaView>, now: Instant) -> Option<Pill> {
+        self.track.hear(view, now).map(Pill::Track)
     }
 }
 
@@ -422,13 +480,16 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
 
 /// A text pill's row in `g`: the glyph in `style`, a space, the label, and the `right` word
 /// right-aligned at the end, where the percentage sits on a level pill. The label gives way (cut
-/// with an ellipsis) so that one blank cell stays before the word.
+/// with an ellipsis) so that one blank cell stays before the word; an empty word leaves the label
+/// the whole row.
 pub(crate) fn text_row(g: &mut Grid, glyph: char, style: Style, label: &str, right: &str) {
     let end = g.width();
     let w = text_width(right);
+    // The blank cell before the word; none without a word (the label then takes the whole row).
+    let gap = if right.is_empty() { 0 } else { w.saturating_add(1) };
     let x = g.write(0, end, &glyph.to_string(), style);
     let x = g.write(x, end, " ", Style::NORMAL);
-    let room = end.saturating_sub(x).saturating_sub(w.saturating_add(1));
+    let room = end.saturating_sub(x).saturating_sub(gap);
     g.write(x, x.saturating_add(room), &truncate_title(label, room), Style::NORMAL);
     g.write(end.saturating_sub(w), end, right, Style::NORMAL);
 }
@@ -463,12 +524,14 @@ pub fn rows(pill: &Pill, width: u16) -> Boxed {
             text_row(&mut g, if *on { BELL_OFF } else { BELL }, style, "Do not disturb", word);
         }
         Pill::Profile(p) => text_row(&mut g, PROFILE, Style::ACCENT, "Power profile", p.label()),
+        Pill::Layout(name) => text_row(&mut g, KEYBOARD, Style::ACCENT, name, ""),
+        Pill::Track(title) => text_row(&mut g, PLAY, Style::ACCENT, title, ""),
     }
     list::padded(&[g])
 }
 
-/// The pill in a log line: fixed words and numbers, never a device name nor a profile (a label stays
-/// out of the journal; a guardrail reads these arms).
+/// The pill in a log line: fixed words and numbers, never a device name, a profile, a layout or a
+/// track title (a label stays out of the journal; a guardrail reads these arms).
 pub fn describe(pill: &Pill) -> String {
     let muted = |v: &Volume| if v.muted { " muted" } else { "" };
     match pill {
@@ -481,6 +544,8 @@ pub fn describe(pill: &Pill) -> String {
         Pill::Dnd(true) => "dnd on".into(),
         Pill::Dnd(false) => "dnd off".into(),
         Pill::Profile(_) => "profile changed".into(),
+        Pill::Layout(_) => "layout changed".into(),
+        Pill::Track(_) => "track changed".into(),
     }
 }
 

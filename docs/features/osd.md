@@ -1,7 +1,7 @@
 # The on-screen display
 
 A small pill that shows a volume, microphone or brightness level, or a state that just changed
-(Bluetooth, do-not-disturb, the power profile), for a moment, bottom centre of the screen. This page says what it does, how to use it, how to configure it, how it is built, which
+(Bluetooth, do-not-disturb, the power profile, the keyboard layout, a new track), for a moment, bottom centre of the screen. This page says what it does, how to use it, how to configure it, how it is built, which
 rules the tests enforce on it, and what it costs. It describes the code as it is today.
 
 ## What it does
@@ -22,7 +22,7 @@ that is shown. It never takes a click and never takes the keyboard.
 - **Brightness** (the laptop's backlight). A sun glyph, the level and the percentage, shown only when
   asked (`alpheus-launch --osd brightness`).
 
-Three more kinds are opt-in, each listed in `[osd] kinds`. Their pill is a glyph, a label and a
+Five more kinds are opt-in, each listed in `[osd] kinds`. Their pill is a glyph, a label and a
 word where the percentage sits; "off" dims the glyph:
 
 - **Bluetooth**: `󰂯 Bluetooth … on` or `off`, when the adapter is powered on or off. A device
@@ -32,10 +32,19 @@ word where the percentage sits; "off" dims the glyph:
   `alpheus-launch --dnd`, the bell, the quick panel or `dnd_while_sharing` all show it.
 - **Power profile**: `󰾅 Power profile … balanced` (the quick panel's word: `saver`, `balanced`,
   `performance`), when power-profiles-daemon's active profile changes.
+- **Keyboard layout**: `󰌌 French (AZERTY)`, the layout's full name as the compositor gives it
+  (whatever `[keyboard] short` says), when it changes. The `keyboard` bar module is not needed. A
+  burst of changes (a keyboard plugged in) shows one pill, replaced in place, with the last name.
+- **Track**: `󰐊 <title>` (the bar's media title, cut to the pill with an ellipsis), when the
+  active player's title changes while it plays. A track skipped while paused shows nothing when it
+  resumes, a pause and a resume of the same track show nothing, and neither does the burst of
+  metadata in the second after a player appears. The title is on screen only when `track` is
+  listed, and it is never logged (the log says `track changed`).
 
 The same rules hold for each: the first state after its source (re)starts is the baseline and shows
 nothing, nor does a change in the second after it; a source going down (BlueZ or the adapter gone,
-the system bus down, the notification name lost, no active profile) takes a new baseline.
+the system bus down, the notification name lost, no active profile, no layout name, the compositor
+or the last player gone) takes a new baseline.
 
 Volume and microphone changes are passive: they come from the PipeWire state the bar already
 follows (the `pw-dump` child of the sound source), whatever caused them (a key, pavucontrol, a
@@ -69,7 +78,7 @@ In `bar.toml`, read at start (a change needs a restart of the bar). `osd` is in 
 | `[osd] width` | `32` | cells of the pill's row; 24 to 60 |
 | `[osd] margin` | `48` | logical px between the pill and the output's bottom edge; 0 to 400 |
 | `[osd] backlight` | `""` | a device name in `backlight_dir`; empty means the first one in sorted order |
-| `[osd] kinds` | `["volume", "mic", "brightness"]` | which pills show, each once; also `"bluetooth"`, `"dnd"`, `"profile"` (and `"layout"`, `"track"`, read but not shown yet). An unknown name, a name twice, or `"dnd"` without `notifications` in `modules` makes the file invalid |
+| `[osd] kinds` | `["volume", "mic", "brightness"]` | which pills show, each once; also `"bluetooth"`, `"dnd"`, `"profile"`, `"layout"`, `"track"`. An unknown name, a name twice, or `"dnd"` without `notifications` in `modules` makes the file invalid |
 | `[osd] backlight_dir` | `/sys/class/backlight` | where backlight devices are listed; an absolute path; read on the verb, and when the quick panel shows its brightness row (again 150 ms after it runs `brightnessctl`) |
 
 An unknown key or a value out of range makes `bar.toml` invalid: the daemon logs one line and runs on
@@ -77,7 +86,10 @@ the defaults.
 
 A kind brings the source it reads, as the module once brought `pw-dump` whatever it showed:
 `volume` and `mic` the `pw-dump` child (and its OSD scope: the microphone and the names), `bluetooth`
-the BlueZ domain on the system bus, `profile` power-profiles-daemon's. `brightness` reads on the
+the BlueZ domain on the system bus, `profile` power-profiles-daemon's, `track` the MPRIS players on
+the session bus (as the `media` module does), `layout` the compositor's keyboard layout (as the
+`keyboard` module does: Mango's two snapshot fields, Sway's `GET_INPUTS` and `input` events).
+`brightness` reads on the
 verb only, and `dnd` reads the bell, which the `notifications` module owns. So a list without
 `volume` and `mic` starts no `pw-dump` for the OSD (another module may still start it), and kinds
 bring nothing while `osd` is not in `modules`. See [decisions](../decisions.md), "An OSD kind is
@@ -91,15 +103,18 @@ Two files in `crates/alpheus-daemon/src/osd/`, and the backlight's reader beside
   what a sound message means (`Heard`: the baseline, nothing, or a `Pill` to show); `side` applies the
   rules to one stream (the sink or the source). `Passive<T>` is the same baseline, grace and change
   for one value with no level, and `Kinds` holds one per passive kind with what each message means
-  (BlueZ's power, the bell's do-not-disturb while serving, the active profile). `Osd` keeps the pill
+  (BlueZ's power, the bell's do-not-disturb while serving, the active profile, the compositor's
+  layout name). `TrackWatch` is the track's: the title is learnt whatever the player says, and a
+  new one shows only while it plays. `Osd` keeps the pill
   that is shown with its deadline. `text_row` draws a passive pill's glyph, label and word. `rows` builds the pill's one row of cells (`level` draws the glyph, bar and percentage,
   which the quick panel's sliders share), and `parse_level` and `brightness_percent` turn the
   backlight's two texts into a level.
 - `surface.rs`: the Wayland side, kept thin. `OsdSurface` is one field of `App`, with three fields of its own (the model,
   the open surface `OpenOsd`, and the hide timer); whether `osd` is in `modules` is read from the
   config each time (`osd_enabled`, and the kinds `osd_shows`), not stored. `osd_sound` takes every sound message;
-  `osd_passive` takes the Bluetooth and profile messages in `on_bar_message` and the bell's view in
-  `notify_view` (it never passes `on_bar_message`), and returns at once for a kind not listed;
+  `osd_passive` takes the Bluetooth, profile and compositor messages in `on_bar_message`, the bell's
+  view in `notify_view` and the media view in `media_view` (neither passes `on_bar_message`), and
+  returns at once for a kind not listed;
   `osd_verb` answers the brightness verb; all end in `osd_show`, which replaces the pill, moves the deadline and calls
   `osd_sync`, the one place that creates or updates the surface (`osd_create`, `osd_update`) or
   drops it (`osd_drop`). `osd_draw` paints the row after each dispatch pass and commits nothing when
@@ -138,8 +153,8 @@ reads the backlight once and calls `osd_show` with `Pill::Brightness`.
 - `the_osd_has_no_panicking_path`: none of them panics.
 - `the_osd_logs_are_fixed_words`: every log line of those files is a literal or interpolates only an
   error's word, the output's connector name, a size, a count, a literal reason and `describe`'s
-  words; `describe`'s arms are literals and numbers (`bluetooth on`, `dnd off`, `profile changed`),
-  never a device name, a profile or a label.
+  words; `describe`'s arms are literals and numbers (`bluetooth on`, `dnd off`, `profile changed`,
+  `layout changed`, `track changed`), never a device name, a profile, a layout, a title or a label.
 - `the_osd_and_the_bubbles_are_created_on_the_overlay_layer`: the surface is created on
   `Layer::Overlay`.
 - `nothing_resident_while_the_launcher_is_closed`: the hide timer is the only one `osd/surface.rs`
@@ -156,10 +171,13 @@ reads the backlight once and calls `osd_show` with `Pill::Brightness`.
   `osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing`,
   `osd_another_output_going_away_leaves_the_pill`, `osd_the_pills_own_output_going_away_drops_it`,
   `osd_a_bluetooth_flip_shows_its_pill`, `osd_a_profile_change_shows_its_pill`,
-  `osd_a_dnd_toggle_shows_its_pill`, `osd_kinds_off_read_no_bluez`)
+  `osd_a_dnd_toggle_shows_its_pill`, `osd_kinds_off_read_no_bluez`,
+  `osd_a_layout_change_shows_the_pill`, `osd_a_track_change_while_playing_shows_the_pill`,
+  `osd_the_new_kinds_off_cost_no_wakeup`)
   pin the wiring on an
   isolated Sway with a fake `pw-dump`, a fake backlight directory and, for the passive kinds, a fake
-  BlueZ and power-profiles-daemon on a private system bus; no test reads `/sys` or calls
+  BlueZ and power-profiles-daemon on a private system bus, a fake Mango, and a fake player on a
+  private session bus; no test reads `/sys` or calls
   `wpctl` or `brightnessctl`.
 - The reasons are in [decisions.md](../decisions.md): "The microphone pill shows only when its mute
   flips", "A sound change within a second of a start or a new default device shows nothing", "The OSD

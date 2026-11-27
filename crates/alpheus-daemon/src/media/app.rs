@@ -49,7 +49,10 @@ impl App {
     /// changes (`Bar::apply`), and one line marks the module appearing or going.
     pub(crate) fn media_view(&mut self, view: Option<MediaView>) {
         let (before, after) = (self.bar.media.is_some(), view.is_some());
-        if self.bar.apply(Msg::Media(view)) {
+        // The view never passes `on_bar_message`: the OSD's track pill reads it here.
+        let m = Msg::Media(view);
+        self.osd_passive(&m);
+        if self.bar.apply(m) {
             self.dirty = true;
         }
         if before != after {

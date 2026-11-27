@@ -4731,6 +4731,91 @@ fn osd_kinds_off_read_no_bluez() {
     assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
 }
 
+// ---- The OSD's layout and track kinds. ----
+
+const OSD_LAYOUT_BAR: &str = "modules = [\"osd\"]\n[osd]\nkinds = [\"layout\"]\n";
+
+/// Under Mango, the OSD alone with the `layout` kind (no keyboard module): the first snapshot's
+/// layout is the baseline, the next snapshot's French layout shows the pill, and the log says the
+/// layout changed, never its name. Then the same under Sway, the harness switching the layout on
+/// its private socket.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_a_layout_change_shows_the_pill() {
+    let (sway, mango, d) = mango_keyboard_daemon("osd-layout-mango", OSD_LAYOUT_BAR);
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first layout is the baseline: {:?}", d.log());
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    assert!(osd_shown(&d, "layout changed"), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "the pill drawn: {:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("French") || l.contains("English")), "{:?}", d.log());
+    drop(d);
+    drop(mango);
+    drop(sway);
+
+    let sway = Sway::start("osd-layout-sway", 1);
+    let _keyboard = sway.keyboard();
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(OSD_LAYOUT_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    assert!(d.wait_for("compositor: Sway ($SWAYSOCK)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    // GET_INPUTS read (the baseline), then past its grace.
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first layout is the baseline: {:?}", d.log());
+    sway.command("input type:keyboard xkb_switch_layout next");
+    assert!(osd_shown(&d, "layout changed"), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("French") || l.contains("English")), "{:?}", d.log());
+}
+
+/// The OSD alone with the `track` kind on a private session bus whose fake player plays "Harbor
+/// Lights": a new title while playing shows the pill; a pause and a resume of that title show no
+/// second one. No title reaches the log.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_track_change_while_playing_shows_the_pill() {
+    let toml = "modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"track\"]\n";
+    let (_bus, _sway, _hypr, d, player) = media_daemon("osd-track", toml, None);
+    assert!(d.wait_for("media: shown", DELAY), "the players are read for the kind: {:?}", d.log());
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first track is the baseline: {:?}", d.log());
+    player.set_track("Tidal Reach", "Wavecrest", 180_000_000);
+    assert!(osd_shown(&d, "track changed"), "{:?}", d.log());
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    player.set_status("Paused");
+    thread::sleep(Duration::from_millis(300));
+    player.set_status("Playing");
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(d.count("osd surface on"), 1, "a pause and a resume of the same title show nothing: {:?}", d.log());
+    let titles = ["Harbor", "Tidal", "Wavecrest", "Tidewave"];
+    assert!(!d.log().iter().any(|l| titles.iter().any(|t| l.contains(t))), "{:?}", d.log());
+}
+
+/// With the default kinds, a layout change under Mango and a new track on the session bus cost
+/// nothing: the players are never read, no pill shows, and the loop does not wake in 5 s.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_the_new_kinds_off_cost_no_wakeup() {
+    let bus = PrivateBus::start("osd-kinds-off");
+    let player = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let sway = Sway::start("osd-kinds-off", 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let options = DaemonOptions {
+        bar_toml: Some("modules = [\"osd\"]\n"),
+        session_bus: Some(&bus.address),
+        backend: Backend::Mango(&mango.socket),
+        ..DaemonOptions::default()
+    };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(wait_until(|| mango.requests() == ["watch all-clients", "watch all-monitors"]), "{:?}", mango.requests());
+    let before = quiet_loop(&d);
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    player.set_track("Tidal Reach", "Wavecrest", 180_000_000);
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "a layout or a track change woke the loop: {:?}", d.log());
+    assert_eq!(player.calls(), Vec::<String>::new(), "the players are never read: {:?}", d.log());
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
+}
+
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";
 /// A press on the volume module: the first one, from cell 1.
 const VOLUME_AT: (u32, u32) = (16, 10);

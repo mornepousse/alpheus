@@ -2010,7 +2010,7 @@ fn at_rest_no_wakeups_after_the_vpn_detail() {
 /// with or without the kinds), so the difference is the kinds' own state.
 const KINDS_BAR: &str = "modules = [\"workspaces\", \"bluetooth\", \"notifications\", \"osd\", \"quick\", \"clock\"]\n[osd]\n";
 
-/// The default kinds against the three passive ones added: the anonymous memory they keep (a few
+/// The default kinds against the five passive ones added: the anonymous memory they keep (a few
 /// words each), then one Bluetooth pill shown and gone.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -2027,7 +2027,8 @@ fn osd_kinds_pss_off_and_on() {
         std::thread::sleep(TRAY_SETTLE);
         (d.pss_kb(), d.anonymous_kb())
     };
-    let on = format!("{KINDS_BAR}kinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\"]\n");
+    let on =
+        format!("{KINDS_BAR}kinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\", \"layout\", \"track\"]\n");
     let (_sway, _hypr, d) = start("osd-kinds-on", 1, &bus, None, Some(&on), PwDump::Fifo);
     std::thread::sleep(TRAY_SETTLE);
     let (on_pss, on_anon) = (d.pss_kb(), d.anonymous_kb());
@@ -2039,13 +2040,98 @@ fn osd_kinds_pss_off_and_on() {
     std::thread::sleep(TRAY_SETTLE);
     let (gone_pss, gone_anon) = (d.pss_kb(), d.anonymous_kb());
     eprintln!(
-        "osd kinds PSS (KB): {off_pss} default kinds, {on_pss} with bluetooth, dnd and profile, {shown} with a Bluetooth pill, \
+        "osd kinds PSS (KB): {off_pss} default kinds, {on_pss} with the five passive kinds, {shown} with a Bluetooth pill, \
          {gone_pss} once gone; anonymous (KB): {off_anon} default, {on_anon} on, {gone_anon} gone"
     );
     assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
     let delta = on_anon.saturating_sub(off_anon);
     assert!(delta <= 64, "the kinds keep {delta} KB of anonymous memory (a few words each: ≤ 64 KB)");
     assert!(gone_anon <= on_anon + 64, "gone: {gone_anon} KB anonymous vs {on_anon} KB before the pill");
+}
+
+/// The OSD alone with the layout and track kinds (no clock: its minute tick is a planned wake-up of
+/// its own), a pill hidden 600 ms after the last change.
+const LAYOUT_TRACK_BAR: &str = "modules = [\"osd\"]\n[osd]\nkinds = [\"layout\", \"track\"]\ntimeout_ms = 600\n";
+
+/// Pushes one layout change to the fake Mango or, `track`, a new title to the fake player. `i`
+/// picks which: an even `i` is the French snapshot (the first one served is English), an odd one
+/// the English; each `i` is its own title.
+fn layout_or_track(fake: &FakeMango, player: &FakePlayer, i: u32, track: bool) {
+    if track {
+        player.set_track(&format!("Lantern {i}"), "Paper", 180_000_000 + i64::from(i));
+    } else {
+        fake.push_monitors(if i.is_multiple_of(2) { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
+    }
+}
+
+/// The layout and track pills under the fake Mango with a fake player on a private session bus:
+/// one of each first (the glyphs' and the surface's first use), then 100 layout changes and 100 new
+/// titles, each showing a pill. The anonymous memory may grow by 64 KB at most (each kind keeps one
+/// short string), and once the last pill is gone the loop sleeps (0 wake-ups in 5 s).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_layout_and_track_pills_no_growth() {
+    require_release(cfg!(debug_assertions));
+    if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_some() {
+        eprintln!("osd layout and track: the build under test predates their pills, skipped");
+        return;
+    }
+    let bus = PrivateBus::start("osd-lt");
+    let session = PrivateBus::start("osd-lt-session");
+    let player = FakePlayer::start(&session, PlayerSpec::playing("lantern", "Paper Lanterns"));
+    let sway = Sway::start("osd-lt", 1);
+    let fake = FakeMango::start(&sway.runtime);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(LAYOUT_TRACK_BAR),
+            system_bus: Some(&bus.address),
+            session_bus: Some(&session.address),
+            pw_dump: PwDump::Silent,
+            backend: Backend::Mango(&fake.socket),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_until_read(&fake, &d);
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE); // past the kinds' grace
+    let gone = |n: usize| {
+        let t = Instant::now();
+        while d.count("osd surface dropped (timeout") < n {
+            assert!(t.elapsed() < DELAY, "pill {n} never went: {:?}", d.log());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    for (n, track) in [(1, false), (2, true)] {
+        layout_or_track(&fake, &player, 0, track);
+        assert!(d.wait_for(if track { "track changed" } else { "layout changed" }, DELAY), "{:?}", d.log());
+        gone(n);
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let (before_pss, before) = (d.pss_kb(), d.anonymous_kb());
+    for (n, track) in [(3, false), (4, true)] {
+        for i in 1..101 {
+            layout_or_track(&fake, &player, i, track);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        gone(n);
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let (after_pss, after) = (d.pss_kb(), d.anonymous_kb());
+    quiet_loop(&d);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "after the layout and track pills");
+    let main = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!(
+        "osd layout and track pills, PSS (anonymous) KB: {before_pss} ({before}) after one of each, {after_pss} ({after}) after 100 \
+         layout changes and 100 titles; loop wake-ups in 5 s after: {main}"
+    );
+    assert!(after_pss < STARTUP_MAX_KB, "{after_pss} KB >= 15 MB — report it, never raise");
+    assert!(after <= before + 64, "100 layout and 100 track pills kept {} KB anonymous", after.saturating_sub(before));
+    assert_eq!(main, 0, "{main} loop wake-ups in 5 s after the last pill");
+    assert!(!d.log().iter().any(|l| l.contains("Lantern") || l.contains("French")), "{:?}", d.log());
 }
 
 /// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the

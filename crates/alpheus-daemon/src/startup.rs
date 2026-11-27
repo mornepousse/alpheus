@@ -356,10 +356,10 @@ pub fn camera_wanted(modules: &[ModuleId]) -> bool {
 }
 
 /// Whether the compositor source reads the keyboard layout and mode: only with the `keyboard`
-/// module (`Needs::KEYBOARD`); otherwise a layout switch publishes nothing, so the main loop does
-/// not wake. `osd` is read once the OSD has a layout kind.
-pub fn keyboard_wanted(modules: &[ModuleId], _osd: &OsdConfig) -> bool {
-    keyboard_wanted_for(Needs::of(modules))
+/// module, or the `osd` module with `layout` in its kinds (`Needs::KEYBOARD`); otherwise a layout
+/// switch publishes nothing, so the main loop does not wake.
+pub fn keyboard_wanted(modules: &[ModuleId], osd: &OsdConfig) -> bool {
+    keyboard_wanted_for(needs_of(modules, osd))
 }
 
 /// `keyboard_wanted` for `needs` (tests give theirs directly).
