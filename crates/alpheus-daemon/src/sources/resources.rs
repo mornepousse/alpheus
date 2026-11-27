@@ -28,8 +28,8 @@
 //!   `gpu_sensor` exists so that a discrete GPU's sensor is not woken on a hybrid laptop;
 //! - wake a GPU or keep it from falling asleep: `device/power/runtime_status` is read before any
 //!   usage file and a card that is not awake gives no figure (`only_an_active_card_is_read`); the
-//!   usage file (and the card's hwmon in `both`) is read at most once per its autosuspend delay and
-//!   a second (`usage_is_read_once_per_autosuspend_delay_and_a_second`);
+//!   usage file (and, in `both`, the hwmon under that same card) is read at most once per its
+//!   autosuspend delay and a second (`usage_is_read_once_per_autosuspend_delay_and_a_second`);
 //!   `auto` reads only the `boot_vga` card (docs/decisions.md, "A GPU's usage is read without
 //!   keeping it awake");
 //! - log a disk path, an interface or a card
@@ -434,6 +434,12 @@ pub fn busy_from_idle(prev: (u64, Instant), now: (u64, Instant)) -> Option<u8> {
     Some(100u128.saturating_sub(idle_share) as u8)
 }
 
+/// The hottest hwmon temperature under the card's own device (`device/hwmon/hwmon<N>`), so that
+/// `both` reads the very card whose `runtime_status` gates it, never another card of that driver.
+fn card_temperature(card: &Card) -> Option<i16> {
+    entries(&card.dir.join("device/hwmon")).iter().filter_map(|d| read_temperature(&hwmon_temp(d))).max()
+}
+
 /// Whether the card drives the panel (`device/boot_vga` reads 1).
 fn boot_vga(card: &Card) -> bool {
     first_line(&card.dir.join("device/boot_vga")).is_some_and(|b| b == "1")
@@ -468,12 +474,19 @@ struct GpuUsage {
     card: Option<Card>,
     /// False in `temp`: the gate only, no usage file opened.
     reads_usage: bool,
+    /// True in `both`: the temperature is the card's own hwmon (`card_temperature`), not the
+    /// sensor picked by name.
+    card_temp: bool,
+    /// Read when the card is picked and again each time it wakes: a delay changed while it slept
+    /// (powertop, a udev rule) is followed from then on.
     spacing: Option<Duration>,
+    /// Whether the last pass found the card not awake.
+    asleep: bool,
     /// When the usage files were last read; None until then and after the card slept.
     read_at: Option<Instant>,
     /// The figures of the last read, repeated between throttled reads.
     last: (Option<GpuBusy>, Option<u8>),
-    /// The hwmon temperature of the last read (`both`), repeated likewise.
+    /// The hwmon temperature of the last read (`both`, or `temp`'s gate), repeated likewise.
     temperature: Option<i16>,
     /// The previous idle reading of an Intel card and when, the estimate's baseline; dropped when the
     /// card sleeps, so no difference spans a suspension.
@@ -483,12 +496,14 @@ struct GpuUsage {
 }
 
 impl GpuUsage {
-    fn new(hint: &str, card: Option<Card>, reads_usage: bool) -> GpuUsage {
+    fn new(hint: &str, card: Option<Card>, reads_usage: bool, card_temp: bool) -> GpuUsage {
         let mut usage = GpuUsage {
             hint: hint.to_string(),
             card: None,
             reads_usage,
+            card_temp,
             spacing: None,
+            asleep: false,
             read_at: None,
             last: (None, None),
             temperature: None,
@@ -501,6 +516,7 @@ impl GpuUsage {
 
     fn set(&mut self, card: Option<Card>) {
         self.spacing = card.as_ref().and_then(spacing);
+        self.asleep = false;
         self.retry_in = if card.is_some() { 0 } else { RETRY_EMPTY_EVERY_TICKS };
         self.card = card;
         self.forget();
@@ -529,7 +545,12 @@ impl GpuUsage {
         // (i915, xe) or holds up one going to sleep.
         if !runtime_active(card) {
             self.forget();
+            self.asleep = true;
             return UsagePass::Asleep;
+        }
+        if self.asleep {
+            self.asleep = false;
+            self.spacing = spacing(card);
         }
         let due = match (self.spacing, self.read_at) {
             (Some(spacing), Some(at)) => now.duration_since(at) >= spacing,
@@ -690,16 +711,19 @@ impl Reader {
         let (gpu_sensor, gpu_usage) = match (show.contains(&ResourceItem::Gpu), config.gpu_metric) {
             (false, _) => (None, None),
             // A named secondary card's hwmon keeps the usage read's cadence: it marks the card busy too.
-            (true, GpuMetric::Temp) => (
-                sensor(ResourceItem::Gpu, SensorKind::Gpu, hint),
-                pick_card(&roots.root, hint).filter(|c| !hint.is_empty() && !boot_vga(c)).map(|c| GpuUsage::new(hint, Some(c), false)),
-            ),
-            (true, GpuMetric::Usage) => (None, Some(GpuUsage::new(hint, pick_card(&roots.root, hint), true))),
+            // So does a named card absent at start (an eGPU plugged in later), picked when it comes.
+            (true, GpuMetric::Temp) => {
+                let card = pick_card(&roots.root, hint);
+                let gated = GpuDriver::from_name(hint).is_some() && card.as_ref().is_none_or(|c| !boot_vga(c));
+                (sensor(ResourceItem::Gpu, SensorKind::Gpu, hint), gated.then(|| GpuUsage::new(hint, card, false, false)))
+            }
+            (true, GpuMetric::Usage) => (None, Some(GpuUsage::new(hint, pick_card(&roots.root, hint), true, false))),
+            // The sensor by name only while there is no card: with one, its own hwmon.
             (true, GpuMetric::Both) => {
-                (sensor(ResourceItem::Gpu, SensorKind::Gpu, hint), Some(GpuUsage::new(hint, pick_card(&roots.root, hint), true)))
+                (sensor(ResourceItem::Gpu, SensorKind::Gpu, hint), Some(GpuUsage::new(hint, pick_card(&roots.root, hint), true, true)))
             }
             (true, GpuMetric::Auto) => match pick_card(&roots.root, hint) {
-                Some(card) => (None, Some(GpuUsage::new(hint, Some(card), true))),
+                Some(card) => (None, Some(GpuUsage::new(hint, Some(card), true, false))),
                 None => (sensor(ResourceItem::Gpu, SensorKind::Gpu, hint), None),
             },
         };
@@ -838,7 +862,10 @@ impl Reader {
                     sample.gpu = match usage.read(root, now) {
                         UsagePass::NoCard => sensor(),
                         UsagePass::Read => {
-                            usage.temperature = sensor();
+                            usage.temperature = match (usage.card_temp, &usage.card) {
+                                (true, Some(card)) => card_temperature(card),
+                                _ => sensor(),
+                            };
                             usage.temperature
                         }
                         UsagePass::Repeat => usage.temperature,
@@ -1513,10 +1540,14 @@ mod tests {
         put(&t.0, &format!("{device}/power/runtime_status"), "active\n");
     }
 
-    /// The amdgpu hwmon temperature, 54 °C.
+    /// card1's amdgpu hwmon temperature, 54 °C: under the card's PCI device, with
+    /// `sys/class/hwmon/hwmon3` a link to it, as in sysfs.
     fn amdgpu_hwmon(t: &Tree) {
-        put(&t.0, "sys/class/hwmon/hwmon3/name", "amdgpu\n");
-        put(&t.0, "sys/class/hwmon/hwmon3/temp1_input", "54000\n");
+        let dir = t.0.join("sys/class/drm/card1/device/hwmon/hwmon3");
+        put(&dir, "name", "amdgpu\n");
+        put(&dir, "temp1_input", "54000\n");
+        std::fs::create_dir_all(t.0.join("sys/class/hwmon")).unwrap();
+        std::os::unix::fs::symlink(dir, t.0.join("sys/class/hwmon/hwmon3")).unwrap();
     }
 
     fn gpu_reader(root: &Path, metric: GpuMetric) -> Reader {
@@ -1688,6 +1719,33 @@ mod tests {
     }
 
     #[test]
+    fn both_reads_the_hwmon_of_the_gated_card() {
+        // An APU and a discrete card, both amdgpu: the discrete one, not driving the panel, runs hot.
+        let t = throttled_tree("bothowncard");
+        amdgpu_hwmon(&t);
+        put(&t.0, "sys/class/hwmon/hwmon2/name", "amdgpu\n");
+        put(&t.0, "sys/class/hwmon/hwmon2/temp1_input", "80000\n");
+        let s = gpu_reader(&t.0, GpuMetric::Both).sample();
+        assert_eq!((s.gpu, s.gpu_busy), (Some(54), BUSY_37), "card1's own hwmon, not the hottest amdgpu");
+    }
+
+    #[test]
+    fn a_wake_reads_the_autosuspend_delay_again() {
+        let t = throttled_tree("delaychange");
+        let status = "sys/class/drm/card1/device/power/runtime_status";
+        let mut r = gpu_reader(&t.0, GpuMetric::Usage);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).gpu_busy, BUSY_37);
+        put(&t.0, status, "suspended\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(20)).gpu_busy, None);
+        put(&t.0, "sys/class/drm/card1/device/power/autosuspend_delay_ms", "2000\n");
+        put(&t.0, status, "active\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(22)).gpu_busy, BUSY_37);
+        put(&t.0, "sys/class/drm/card1/device/gpu_busy_percent", "50\n");
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(25)).gpu_busy, busy(50), "spaced by the new delay and a second, 3 s");
+    }
+
+    #[test]
     fn no_autosuspend_delay_reads_every_pass() {
         let t = drm_tree("nodelay", &[("card1", "amdgpu")]);
         amdgpu_files(&t, "card1");
@@ -1731,6 +1789,34 @@ mod tests {
         assert_eq!(r.sample_at(t0).gpu, Some(60));
         put(&t.0, "sys/class/hwmon/hwmon3/temp1_input", "61000\n");
         assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).gpu, Some(61));
+    }
+
+    #[test]
+    fn temp_spaces_a_named_secondary_card_that_appears_later() {
+        // An eGPU plugged in after start: no card, no hwmon at first.
+        let t = drm_tree("templater", &[]);
+        let config = ResourcesConfig {
+            show: vec![ResourceItem::Gpu],
+            gpu_metric: GpuMetric::Temp,
+            gpu_sensor: "amdgpu".into(),
+            ..ResourcesConfig::default()
+        };
+        let mut r = Reader::new(roots(&t.0, None, refuse), &config);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).gpu, None);
+        let device = t.0.join("sys/class/drm/card1/device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::os::unix::fs::symlink("../fictional/drivers/amdgpu", device.join("driver")).unwrap();
+        put(&device, "boot_vga", "0\n");
+        put(&device, "power/runtime_status", "active\n");
+        put(&device, "power/autosuspend_delay_ms", "10000\n");
+        amdgpu_hwmon(&t);
+        let at = |pass: u64| t0 + Duration::from_secs(pass);
+        let found = (1..=4 * u64::from(RETRY_EMPTY_EVERY_TICKS)).find(|&pass| r.sample_at(at(pass)).gpu.is_some());
+        let found = found.expect("the card's hwmon never read");
+        put(&t.0, "sys/class/hwmon/hwmon3/temp1_input", "60000\n");
+        assert_eq!(r.sample_at(at(found + 2)).gpu, Some(54), "spaced like a usage read");
+        assert_eq!(r.sample_at(at(found + 11)).gpu, Some(60));
     }
 
     /// An i915 card (the laptop's integrated GPU, `gt/gt0/rc6_residency_ms` as listed on 2026-11-27)

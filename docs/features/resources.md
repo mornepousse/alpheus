@@ -46,8 +46,8 @@ among the cards driving the panel (`boot_vga`; another only when `gpu_sensor` na
 usage file marks the card busy and restarts its autosuspend timer, so: a card that is not awake is
 not read at all, and an awake one at most once per its autosuspend delay and a second (about every
 11 s on Intel, 6 s on amdgpu), the last figures repeating in between, so the card can still fall
-asleep; its hwmon in `both` follows the same rule (docs/decisions.md, "A GPU's usage is read without
-keeping it awake"). NVIDIA's proprietary driver offers no usage file and no hwmon: its GPU shows `—` in the popup
+asleep; in `both` the temperature comes from that same card's own hwmon and follows the same
+rule (docs/decisions.md, "A GPU's usage is read without keeping it awake"). NVIDIA's proprietary driver offers no usage file and no hwmon: its GPU shows `—` in the popup
 and nothing on the bar (no `nvidia-smi`, no NVML: alpheus runs no command for its figures).
 
 On the bar, `disk` shows the fullest of the listed paths (`󰋊 87%`). The disks are read every
@@ -139,10 +139,13 @@ reading. The popup owns no timer: opening it adds no wake-up.
   a disk path, a mount, an interface or a GPU card.
 - `a_suspended_gpu_is_not_read` and `only_an_active_card_is_read`: a card that is not awake gives no
   figure, its busy file unread; `usage_is_read_once_per_autosuspend_delay_and_a_second`,
-  `both_skips_the_sensor_of_a_sleeping_card` and `temp_spaces_the_hwmon_of_a_named_secondary_card`:
+  `both_skips_the_sensor_of_a_sleeping_card`, `a_wake_reads_the_autosuspend_delay_again`,
+  `temp_spaces_the_hwmon_of_a_named_secondary_card` and
+  `temp_spaces_a_named_secondary_card_that_appears_later`:
   the reads never keep the card from falling asleep; `auto_picks_only_the_boot_vga_card`;
   `a_monitor_only_card_never_wins` and `gpu_nvidia_proprietary_gives_nothing_and_no_panic`: an
-  `evdi` or NVIDIA card is never picked for usage.
+  `evdi` or NVIDIA card is never picked for usage; `both_reads_the_hwmon_of_the_gated_card`: the
+  temperature in `both` is the gated card's own, never another card of its driver.
 - `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`: a listed path on a network filesystem
   is never asked, so a hung server cannot block the loop; `a_network_mount_is_found_by_its_longest_mount_point`:
   an automount point and an unknown FUSE type count as remote.

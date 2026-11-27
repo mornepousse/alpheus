@@ -2107,12 +2107,15 @@ each read. Read every pass (2 s by default), a card that would fall asleep never
 - `device/power/runtime_status` is read before any usage file: only `active`, `unsupported` or no
   such file lets the usage files be opened (`suspended`, `suspending`, `resuming` give no figure).
 - The usage file is read at most once per the card's autosuspend delay and a second
-  (`device/power/autosuspend_delay_ms`, read once when the card is picked), the last figures
+  (`device/power/autosuspend_delay_ms`, read when the card is picked and again each time it
+  wakes, so a delay changed while it slept is followed), the last figures
   repeating in between: the figure refreshes about every 11 s on Intel and 6 s on amdgpu, and the
   card can still fall asleep between two reads; once asleep it is no longer read. No readable delay,
   or a negative one (runtime PM off: the card never sleeps), reads every pass.
-- In `both`, the card's hwmon temperature follows the same rule; in `temp`, so does the hwmon of a
-  secondary card named in `gpu_sensor`.
+- In `both`, the temperature is read from the hwmon under that same card's device
+  (`device/hwmon/hwmon<N>`), never another card of its driver, and follows the same rule; in
+  `temp`, so does the hwmon of a secondary card named in `gpu_sensor`, including one absent at
+  start (an eGPU plugged in later), spaced once it is picked.
 
 Reading the connectors' power state to read faster while a display is lit was considered and left
 out: alpheus never touches the screens' power, not even to read it ("alpheus never handles sleep or
@@ -2120,7 +2123,7 @@ the screens' power"). Never written: only `runtime_status`, `autosuspend_delay_m
 are read beside the usage and hwmon files. Controller ruling, 2026-11-27 (to be confirmed by the
 owner; reversible).
 
-Date: 2026-11-27 · Source: tests `auto_picks_only_the_boot_vga_card`, `only_an_active_card_is_read`, `usage_is_read_once_per_autosuspend_delay_and_a_second`, `no_autosuspend_delay_reads_every_pass`, `both_skips_the_sensor_of_a_sleeping_card`, `temp_spaces_the_hwmon_of_a_named_secondary_card`; kernel `drivers/gpu/drm/i915/gt/intel_gt_sysfs_pm.c` (`get_residency`), `drivers/gpu/drm/i915/intel_runtime_pm.c`, `drivers/gpu/drm/xe/xe_gt_idle.c`, `drivers/gpu/drm/amd/pm/amdgpu_pm.c`, `include/linux/pm_runtime.h`
+Date: 2026-11-27 · Source: tests `auto_picks_only_the_boot_vga_card`, `only_an_active_card_is_read`, `usage_is_read_once_per_autosuspend_delay_and_a_second`, `no_autosuspend_delay_reads_every_pass`, `both_skips_the_sensor_of_a_sleeping_card`, `both_reads_the_hwmon_of_the_gated_card`, `a_wake_reads_the_autosuspend_delay_again`, `temp_spaces_the_hwmon_of_a_named_secondary_card`, `temp_spaces_a_named_secondary_card_that_appears_later`; kernel `drivers/gpu/drm/i915/gt/intel_gt_sysfs_pm.c` (`get_residency`), `drivers/gpu/drm/i915/intel_runtime_pm.c`, `drivers/gpu/drm/xe/xe_gt_idle.c`, `drivers/gpu/drm/amd/pm/amdgpu_pm.c`, `include/linux/pm_runtime.h`
 
 ### Intel GPU usage is an idle-residency estimate, labelled active
 
