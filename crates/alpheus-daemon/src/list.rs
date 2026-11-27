@@ -39,6 +39,18 @@ pub struct Boxed {
     /// Rounded shapes drawn in pixels under rectangles of cells, in order (a later one over an
     /// earlier one): the cells' text goes over them.
     pub shapes: Vec<Shape>,
+    /// What the box's outermost content is, which the frame's margins are measured to.
+    pub edge: Edge,
+}
+
+/// What a box's outermost content is (`Fonts::boxed_frame`): letters, whose ink the frame's
+/// visible margin is measured to, or shapes (the Super+X panel's chips, bands and card), whose
+/// edges it is measured to instead, so the margin stays the same on every side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Edge {
+    #[default]
+    Text,
+    Shapes,
 }
 
 /// A rounded shape under a rectangle of cells of a `Boxed` (in its own coordinates, after `boxed`
@@ -112,6 +124,7 @@ pub fn boxed(rows: &[Grid], separators: &[usize], divider: Option<u16>) -> Boxed
         divider: divider.and_then(|c| c.checked_sub(1)),
         graphs: Vec::new(),
         shapes: Vec::new(),
+        edge: Edge::Text,
     }
 }
 
@@ -134,7 +147,7 @@ pub fn padded(content: &[Grid]) -> Boxed {
             g
         })
         .collect();
-    Boxed { rows, separators: Vec::new(), divider: None, graphs: Vec::new(), shapes: Vec::new() }
+    Boxed { rows, separators: Vec::new(), divider: None, graphs: Vec::new(), shapes: Vec::new(), edge: Edge::Text }
 }
 
 /// One list row's content.

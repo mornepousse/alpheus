@@ -20,7 +20,7 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
 use crate::launcher::tools::catalog::{Choices, Entry};
 use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
-use crate::list::{self, Boxed, Row, Shape, ShapeKind, tail, wrap};
+use crate::list::{self, Boxed, Edge, Row, Shape, ShapeKind, tail, wrap};
 use crate::painter::FrameInk;
 use crate::quick;
 use alpheus_common::launcher_ipc::wipe;
@@ -664,7 +664,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let tools = l.mode == Mode::Tools;
     if tools && panel::shown(l) {
-        return panel::render(l, b);
+        return Boxed { edge: edge(l), ..panel::render(l, b) };
     }
     let unpaned = without_preview(l, b);
     let b = &unpaned;
@@ -761,6 +761,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     }
     let mut boxed = list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()));
     boxed.shapes = shapes;
+    boxed.edge = edge(l);
     boxed
 }
 
@@ -864,6 +865,14 @@ fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>
     if panel && l.query.is_empty() {
         g.write(x + 1, stop, TOOLS_PLACEHOLDER, Style::MUTED);
     }
+}
+
+/// What `l`'s box has at its edges (`list::Edge`): a `--tools` open's Tools mode draws shapes
+/// there (the search field's chip on the first row, the footer's capsules on the last, the chips,
+/// bands and card from `TOOLS_INSET` in), every other box text. Mod+Space's `/` jump keeps its
+/// box's frame: the box was sized for its modes row.
+pub fn edge(l: &Launcher) -> Edge {
+    if l.mode == Mode::Tools && l.origin == Origin::Tools { Edge::Shapes } else { Edge::Text }
 }
 
 /// The box's frame: the urgent tint while a Tools question waits for its second Enter.

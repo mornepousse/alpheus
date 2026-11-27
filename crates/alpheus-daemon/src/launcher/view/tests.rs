@@ -6,7 +6,9 @@ use crate::launcher::desktop::{DesktopAction, DesktopEntry};
 use crate::launcher::history::History;
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::{Entries, SourceEntry};
+use crate::list::Edge;
 use alpheus_common::launcher_ipc::DmenuFlags;
+use alpheus_common::theme::{Rgb, Roles};
 use std::path::PathBuf;
 
 const NOW: u64 = 1_800_000_000;
@@ -1337,6 +1339,84 @@ fn panel_home_snapshot() {
     assert!(text[1].contains(" All ") && text[1].contains(" Captures "), "the tabs: {text:#?}");
     assert!(text[3].contains("● QUICK SETTINGS"), "no root tool: the first category's label first: {text:#?}");
     insta::assert_snapshot!("panel_home", snapshot_with_shapes(&rows));
+}
+
+/// `l` drawn in `b` and painted at `scale` with the default theme, in a surface sized as the host
+/// sizes it (`surface::box_frame`, `surface::layout_size`): the pixels (r, g, b), the width, the
+/// height, the frame as painted, and the x span of the search field's cursor's cell.
+fn painted(
+    fonts: &mut crate::painter::Fonts,
+    l: &Launcher,
+    b: &BoxLayout,
+    scale: i32,
+) -> (Vec<Rgb>, u32, u32, crate::painter::Frame, (u32, u32)) {
+    use crate::config::DEFAULT_HEIGHT;
+    use crate::launcher::surface::{box_frame, layout_size};
+    let rows = draw_in(l, b);
+    let (e, roles) = (scale as u32, Roles::default());
+    let rh = DEFAULT_HEIGHT * e;
+    let advance = fonts.advance(scale);
+    let frame = box_frame(fonts, scale, l);
+    let (w, h) = layout_size(b, advance, rh, scale, &frame);
+    let (w, h) = (w * e, h * e);
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    fonts.paint_boxed(&rows, &roles, &mut px, w, h, rh, scale, FrameInk::Border);
+    let frame = frame.fitted(rows.cells(), advance, rh, (w, h));
+    let col = rows.rows[0].text().chars().position(|c| c == '▏').expect("the search field's cursor") as f32;
+    let cursor = (frame.side + (col * advance).round() as u32, frame.side + ((col + 1.0) * advance).round() as u32);
+    (px.chunks(4).map(|p| Rgb(p[2], p[1], p[0])).collect(), w, h, frame, cursor)
+}
+
+/// The panel's outermost content (the search field's chip at the top, the footer's capsules at
+/// the bottom, the chips and the band one cell in at the sides) is as far from the frame on all
+/// four sides, within a pixel, at both scales: the frame's margins are measured to shapes there,
+/// not to letters (the project's rule: the same visual margin on every side).
+#[test]
+fn the_panel_s_content_is_as_far_from_the_frame_on_every_side() {
+    use crate::config::{DEFAULT_HEIGHT, FontConfig};
+    let (mut fonts, _) = crate::painter::Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT).expect("a monospace font (nix develop)");
+    let roles = Roles::default();
+    let (bg, line) = (roles.popup_bg, roles.border_over(roles.popup_bg));
+    for scale in [1, 2] {
+        let (l, b) = panel_box(PINNED);
+        let (px, w, h, frame, cursor) = painted(&mut fonts, &l, &b, scale);
+        // Neither the surface nor a line (the frame's stroke, the separators run up to it).
+        let content = |x: u32, y: u32| ![bg, line].contains(&px[(y * w + x) as usize]);
+        let (st, r) = (frame.stroke, frame.radius);
+        // The cursor's bar is the font's full line, taller than the field's chip: not a margin.
+        let xs: Vec<u32> = (st + r..w - st - r).filter(|x| !(cursor.0..cursor.1).contains(x)).collect();
+        let ys = st + r..h - st - r;
+        let left = ys.clone().filter_map(|y| (st..w).find(|&x| content(x, y))).min().unwrap() - st;
+        let right = (w - st - 1) - ys.filter_map(|y| (0..w - st).rev().find(|&x| content(x, y))).max().unwrap();
+        let top = xs.iter().filter_map(|&x| (st..h).find(|&y| content(x, y))).min().unwrap() - st;
+        let bottom = (h - st - 1) - xs.iter().filter_map(|&x| (0..h - st).rev().find(|&y| content(x, y))).max().unwrap();
+        let margins = [left, right, top, bottom];
+        let (lo, hi) = (margins.iter().min().unwrap(), margins.iter().max().unwrap());
+        assert!(hi - lo <= 1, "scale {scale}: left {left}, right {right}, top {top}, bottom {bottom} px");
+        assert!(*lo > 4 * scale as u32, "scale {scale}: a real margin, not the stroke ({lo} px)");
+    }
+}
+
+/// Mod+Space's box (and every box but a `--tools` open's) keeps the frame measured to its letters.
+#[test]
+fn only_a_tools_open_measures_its_frame_to_shapes() {
+    use crate::config::{DEFAULT_HEIGHT, FontConfig};
+    use crate::launcher::surface::box_frame;
+    let (mut fonts, _) = crate::painter::Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT).expect("a monospace font (nix develop)");
+    let mut apps = launcher();
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    apps.set_tools(crate::launcher::tools::catalog::Catalog::build(&config.tools, &every_builtin(), &mut |_| {}));
+    typed(&mut apps, "/");
+    assert_eq!(apps.mode, Mode::Tools, "the `/` jump");
+    for scale in [1, 2] {
+        let text = fonts.frame(scale);
+        assert_eq!(box_frame(&mut fonts, scale, &launcher()), text, "scale {scale}: Mod+Space");
+        assert_eq!(box_frame(&mut fonts, scale, &apps), text, "scale {scale}: Mod+Space's Tools jump");
+        assert_ne!(box_frame(&mut fonts, scale, &panel_box("").0), text, "scale {scale}: the panel");
+    }
+    assert_eq!(render(&launcher(), &layout(100, 40, 8, false, true)).edge, Edge::Text);
+    let (l, b) = panel_box("");
+    assert_eq!(render(&l, &b).edge, Edge::Shapes);
 }
 
 #[test]

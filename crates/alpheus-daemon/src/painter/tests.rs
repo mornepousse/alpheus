@@ -253,6 +253,54 @@ fn frame_makes_the_visible_gap_equal_on_every_side() {
     assert_eq!(Frame::new(0, 8.25, Ink { left: 1, top: 6, bottom: 7 }).stroke, 1, "scale 0 treated as 1");
 }
 
+/// A box whose outermost content is shapes (the Super+X panel: chips on its first and last rows,
+/// shapes from one cell in at the sides) keeps the text frame's visible gap, measured to the
+/// shapes' edges: past the pad cell at the sides, past a chip's inset at the top and the bottom.
+#[test]
+fn a_frame_around_shapes_keeps_the_visible_gap_to_their_edges() {
+    for (scale, advance, ink, pad) in
+        [(1, 8.25, Ink { left: 1, top: 6, bottom: 7 }, 8), (2, 16.5, Ink { left: 2, top: 12, bottom: 14 }, 17)]
+    {
+        let text = Frame::new(scale, advance, ink);
+        let gap = text.side + pad + ink.left;
+        let f = Frame::around_shapes(scale, advance, ink);
+        let inset = CHIP_INSET * scale as u32;
+        assert_eq!(f.side + pad, gap, "scale {scale}: a shape one cell in, at the sides");
+        assert_eq!(f.top + inset, gap, "scale {scale}: a chip on the first row");
+        assert_eq!(f.bottom + inset, gap, "scale {scale}: a chip on the last row");
+        assert_eq!((f.stroke, f.radius), (text.stroke, text.radius), "scale {scale}: the same stroke and corners");
+    }
+}
+
+/// The painter takes a box's frame from its edge (`Boxed::edge`), not from the surface alone: a
+/// box of shapes painted with no room over (a surface of its cells and the text frame) still
+/// starts its first chip `Frame::around_shapes`' side and a pad cell from the edge, and one
+/// chip inset below its top margin.
+#[test]
+fn a_box_of_shapes_is_painted_with_its_frame_around_shapes() {
+    let mut p = fonts();
+    let pal = Roles::default();
+    for scale in [1, 2] {
+        let mut b = Boxed { rows: (0..3).map(|_| text_row(8, "")).collect(), edge: Edge::Shapes, ..Boxed::default() };
+        b.shapes.push(Shape { row: 0, col: 1, width: 6, rows: 1, kind: ShapeKind::Chip(Tint::Accent), glyph: None });
+        let (advance, text, shapes) = (p.advance(scale), p.frame(scale), p.boxed_frame(scale, Edge::Shapes));
+        let rh = DEFAULT_HEIGHT * scale as u32;
+        let (w, h) = ((8.0 * advance).ceil() as u32 + text.extra().0, 3 * rh + text.extra().1);
+        let mut px = vec![0x11u8; (w * h * 4) as usize];
+        p.paint_boxed(&b, &pal, &mut px, w, h, rh, scale, FrameInk::Border);
+        let accent = |x: u32, y: u32| {
+            let o = ((y * w + x) * 4) as usize;
+            Rgb(px[o + 2], px[o + 1], px[o]) == pal.accent
+        };
+        let my = (0..h).find(|&y| (0..w).any(|x| accent(x, y))).expect("the chip is painted");
+        let left = (0..w).find(|&x| accent(x, my + scale as u32 * 4)).unwrap();
+        let top = (0..h).find(|&y| accent(w / 2, y)).unwrap();
+        let pad = advance.round() as u32;
+        assert_eq!(left, shapes.side + pad, "scale {scale}: the frame around shapes at the sides ({text:?} vs {shapes:?})");
+        assert_eq!(top, shapes.top + CHIP_INSET * scale as u32, "scale {scale}: and at the top");
+    }
+}
+
 /// A tall bar (height 40) carries more leading than the usual gap covers: the margins stay
 /// even and the corners stay clear of the rows.
 #[test]

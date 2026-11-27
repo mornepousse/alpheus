@@ -33,7 +33,7 @@ use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Group, Hue, Style, Tint};
-use crate::list::{Boxed, Graph, Shape, ShapeKind};
+use crate::list::{Boxed, Edge, Graph, Shape, ShapeKind};
 use crate::placement::FLOAT_SHADOW;
 use alpheus_common::theme::settings::BarStyle;
 use alpheus_common::theme::{Rgb, Roles};
@@ -103,6 +103,17 @@ impl Frame {
         // gaps stay equal on every side.
         let gap = (FRAME_SIDE * e + pad + ink.left).max(ink.top + radius).max(ink.bottom + radius);
         Frame { side: gap - pad - ink.left, top: gap - ink.top, bottom: gap - ink.bottom, stroke: e, radius }
+    }
+
+    /// The frame of a box whose outermost content is shapes (`Edge::Shapes`) at `scale`, for cells
+    /// `advance` wide and the `ink` of the font's capitals: the visible gap of `new`'s frame kept,
+    /// measured to the shapes' edges, past the pad cell at the sides and a chip's inset
+    /// (`CHIP_INSET`) on the first and the last rows.
+    pub fn around_shapes(scale: i32, advance: f32, ink: Ink) -> Frame {
+        let text = Frame::new(scale, advance, ink);
+        let (pad, inset) = (advance.round().max(0.0) as u32, CHIP_INSET * scale.max(1) as u32);
+        let gap = text.side + pad + ink.left;
+        Frame { side: gap - pad, top: gap - inset, bottom: gap - inset, ..text }
     }
 
     /// This frame inside a surface of `size` physical px holding `cells` columns × rows: the room
@@ -190,7 +201,7 @@ pub struct Fonts {
     /// session). Avoids reshaping "M" on every alternation.
     advances: Vec<(i32, f32)>,
     /// The frame already measured for each scale seen (like `advances`).
-    frames: Vec<(i32, Frame)>,
+    frames: Vec<(i32, Edge, Frame)>,
     /// `shape`'s result, memoized per (char, bold): cosmic-text otherwise
     /// reshapes the exact same glyph on every cell, column and redraw.
     /// Bounded like `cache` (`MAX_CACHE`, cleared past it); also cleared on
@@ -804,13 +815,22 @@ impl Fonts {
 
     /// The frame of boxed surfaces at `scale`, measured once per scale from the font itself.
     pub fn frame(&mut self, scale: i32) -> Frame {
+        self.boxed_frame(scale, Edge::Text)
+    }
+
+    /// The frame of a box whose outermost content is `edge`, at `scale` (`Frame::new`,
+    /// `Frame::around_shapes`), measured once per scale.
+    pub fn boxed_frame(&mut self, scale: i32, edge: Edge) -> Frame {
         self.set_scale(scale);
-        if let Some((_, f)) = self.frames.iter().find(|(s, _)| *s == self.scale) {
+        if let Some((.., f)) = self.frames.iter().find(|(s, e, _)| *s == self.scale && *e == edge) {
             return *f;
         }
         let ink = self.measure_ink();
-        let frame = Frame::new(self.scale, self.advance, ink);
-        self.frames.push((self.scale, frame));
+        let frame = match edge {
+            Edge::Text => Frame::new(self.scale, self.advance, ink),
+            Edge::Shapes => Frame::around_shapes(self.scale, self.advance, ink),
+        };
+        self.frames.push((self.scale, edge, frame));
         frame
     }
 
@@ -857,7 +877,7 @@ impl Fonts {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
-        let frame = self.frame(scale).fitted(b.cells(), self.advance, row_height, (width, height));
+        let frame = self.boxed_frame(scale, b.edge).fitted(b.cells(), self.advance, row_height, (width, height));
         let base = roles.popup_bg;
         fill(px, width, 0, width, height, base);
         self.paint_shapes(b, roles, px, width, height, row_height, &frame, scale);

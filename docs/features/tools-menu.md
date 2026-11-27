@@ -34,7 +34,9 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
 tall on a wide output, never narrower than the launcher's usual box, at most 90 % of the output's
 width and 80 % of its height. It keeps that size for the whole open: the search and the levels draw
 inside it. A Kill a process picked from the panel reopens the box at the kill list's own size.
-`launcher.toml`'s `rows` does not size it.
+`launcher.toml`'s `rows` does not size it. Its frame is measured to the shapes at its edges (the
+search field, the footer's capsules, the panes), not to letters: they sit as far from the frame on
+all four sides, as text does in every other box.
 
 **Tabs.** All is the tab at open. It lists `PINNED` (the built-ins of `[tools] root` and your entries
 with no `category`), `RECENT` (the last 4 distinct tools run, read from the launcher's existing
