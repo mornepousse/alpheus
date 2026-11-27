@@ -104,7 +104,7 @@ const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
     ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
 }
 
-pub(crate) const COUNT: usize = 20;
+pub(crate) const COUNT: usize = 21;
 
 pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec { segment: Some(|_, _| Some(segments::launcher())), ..row(ModuleId::Launcher, "launcher", GroupKind::Launcher) },
@@ -116,6 +116,13 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         hue: Some(Hue::Purple),
         segment: Some(|bar, _| window(&bar.compositor, bar.module_colors)),
         ..row(ModuleId::Window, "window", GroupKind::Title)
+    },
+    // The layout and the bind mode from the compositor's own state; display only, so no tab, popup
+    // nor click, and no hue (a neutral status, like the bell).
+    ModuleSpec {
+        segment: Some(|bar, _| segments::keyboard(&bar.compositor, &bar.config.keyboard)),
+        needs: Needs::KEYBOARD,
+        ..row(ModuleId::Keyboard, "keyboard", GroupKind::Status)
     },
     ModuleSpec {
         hue: Some(Hue::Purple),

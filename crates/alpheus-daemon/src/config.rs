@@ -6,7 +6,7 @@
 //! what it does; docs/configuration.md is the same thing as a page, with the bounds.
 //!
 //! ```toml
-//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
+//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order but "keyboard" ("timer" just before "clock")
 //! height = 22                                               # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
@@ -95,6 +95,9 @@
 //! sound = []                                                # argv run at each end (not under do-not-disturb); [] none
 //! idle = "glyph"                                            # "glyph" | "hidden": the chip when nothing runs
 //! proc_dir = "/proc"                                        # where the scheduled shutdown looks for a screen locker (an absolute path)
+//! [keyboard]                                                # the layout and the bind mode (with "keyboard" in modules); read at start
+//! short = true                                              # "English (US)" -> "us": 2 or 3 ASCII letters in parentheses, else the name's first two; false: the full name
+//! show_mode = true                                          # the bind mode after the layout when it is not "default"
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -141,6 +144,9 @@ pub enum ModuleId {
     Launcher,
     Workspaces,
     Window,
+    /// The keyboard layout and the compositor's bind mode, display only. Opt-in: not in the
+    /// default `modules` (`ModuleId::defaults`).
+    Keyboard,
     Media,
     /// The privacy indicators: who holds the microphone, the camera or the screen.
     Privacy,
@@ -190,6 +196,12 @@ impl ModuleId {
     /// Name in bar.toml.
     pub fn name(self) -> &'static str {
         self.spec().name
+    }
+
+    /// The modules of a `bar.toml` without `modules`: every one in `ALL`'s order but the opt-in
+    /// keyboard, which a user names (it makes the compositor source read the layout).
+    pub fn defaults() -> Vec<ModuleId> {
+        ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Keyboard).collect()
     }
 }
 
@@ -1173,6 +1185,22 @@ pub struct ClipboardConfig {
     pub enabled: bool,
 }
 
+/// `[keyboard]`: how the keyboard module draws the layout and the mode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeyboardConfig {
+    /// `English (US)` → `us` (`segments::short_layout`); false: the full name.
+    pub short: bool,
+    /// The bind mode after the layout when it is not `default`.
+    pub show_mode: bool,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        KeyboardConfig { short: true, show_mode: true }
+    }
+}
+
 /// `[timer]`. Lengths are minutes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1253,6 +1281,7 @@ pub struct BarConfig {
     pub osd: OsdConfig,
     pub quick: QuickConfig,
     pub timer: TimerConfig,
+    pub keyboard: KeyboardConfig,
     pub clipboard: ClipboardConfig,
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
@@ -1263,7 +1292,7 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         BarConfig {
-            modules: ModuleId::ALL.to_vec(),
+            modules: ModuleId::defaults(),
             height: DEFAULT_HEIGHT,
             font: FontConfig::default(),
             clock: ClockConfig::default(),
@@ -1279,6 +1308,7 @@ impl Default for BarConfig {
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
             timer: TimerConfig::default(),
+            keyboard: KeyboardConfig::default(),
             clipboard: ClipboardConfig::default(),
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
@@ -1328,6 +1358,8 @@ struct Raw {
     #[serde(default)]
     timer: TimerConfig,
     #[serde(default)]
+    keyboard: KeyboardConfig,
+    #[serde(default)]
     clipboard: ClipboardConfig,
     #[serde(default)]
     displays: DisplaysConfig,
@@ -1354,7 +1386,7 @@ impl BarConfig {
 
     pub fn from_text(s: &str) -> Result<BarConfig, String> {
         let b: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
-        let modules = b.modules.unwrap_or_else(|| ModuleId::ALL.to_vec());
+        let modules = b.modules.unwrap_or_else(ModuleId::defaults);
         for (i, m) in modules.iter().enumerate() {
             if modules[..i].contains(m) {
                 return Err(format!("duplicate module \"{}\"", m.name()));
@@ -1521,6 +1553,7 @@ impl BarConfig {
             osd: b.osd,
             quick: b.quick,
             timer: b.timer,
+            keyboard: b.keyboard,
             clipboard: b.clipboard,
             displays: b.displays,
             hooks: b.hooks,

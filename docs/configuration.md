@@ -68,20 +68,21 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `modules` | list of module names | every module below, in this order | no duplicate; an unknown name is an error | The bar's modules, left to right, and which daemon features run at all. |
+| `modules` | list of module names | every module below but `keyboard`, in this order | no duplicate; an unknown name is an error | The bar's modules, left to right, and which daemon features run at all. |
 | `height` | integer (logical px) | `22` | 12 to 64 | The bar's height. |
 
-The module names, in the default order: `launcher`, `workspaces`, `window`, `media`, `privacy`,
+The module names, in order: `launcher`, `workspaces`, `window`, `keyboard`, `media`, `privacy`,
 `shield`, `failed`, `volume`, `network`, `bluetooth`, `battery`, `resources`, `tray`,
 `notifications`, `osd`, `quick`, `displays`, `timer`, `clock`, `power`. `osd`, `quick` and
 `displays` draw nothing in the bar (they are features with their own surface or behaviour); a
 module that has nothing to show (`privacy`, `shield`, `failed`, `media` while idle) draws nothing.
+`keyboard` is opt-in: the default list leaves it out, a `modules` list of your own adds it.
 On a narrow screen secondary modules disappear; workspaces and the clock remain. A `modules` list of
 your own must name every module you want, including those added since you wrote it (`privacy` after
 `media`, `shield` after `privacy`, `failed` after `shield`, `timer` before `clock`).
@@ -261,6 +262,15 @@ button there too). See
 | `proc_dir` | absolute path | `"/proc"` | absolute | Where the scheduled shutdown lists processes to tell a locked session (a screen locker running). Only a test changes it. |
 
 See [the focus timer](features/timer.md).
+
+### `[keyboard]`
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `short` | bool | `true` | | The layout's short name: the 2 or 3 ASCII letters in its parentheses (`English (US)` → `us`), else its first two characters, lower case; `false`: the full name as the compositor gives it. |
+| `show_mode` | bool | `true` | | The compositor's bind mode after the layout, in the accent, when it is not `default`. |
+
+Read only with `keyboard` in `modules`. See [the keyboard module](features/keyboard.md).
 
 ### `[displays]`
 
@@ -450,6 +460,10 @@ rounds = 4           # work sessions before the long break (1 to 12)
 sound = []           # an argv run at each end (not under do-not-disturb), e.g. ["pw-play", "/path/bell.oga"]; [] none
 idle = "glyph"       # "glyph" | "hidden": the chip when nothing runs
 proc_dir = "/proc"     # where the scheduled shutdown looks for a screen locker
+
+[keyboard]           # with "keyboard" in modules (not in the default list)
+short = true         # "English (US)" -> "us"; false: the full name
+show_mode = true     # the bind mode after the layout when it is not "default"
 
 [displays]
 auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change

@@ -51,11 +51,14 @@ fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace
 
 #[test]
 fn every_click_only_runs_the_workspace_command() {
-    let mut b = Bar::new(BarConfig::default());
+    // Every module, the opt-in keyboard included, which draws from the layout and the mode.
+    let mut b = Bar::new(BarConfig { modules: ModuleId::ALL.to_vec(), ..BarConfig::default() });
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
         toplevels: vec![],
+        layout: Some("English (US)".into()),
+        mode: Some("resize".into()),
         ..CompositorState::default()
     })));
     let fake = FakeExecutor::new();
@@ -79,11 +82,14 @@ fn every_click_only_runs_the_workspace_command() {
 }
 
 fn full_bar() -> Bar {
-    let mut b = Bar::new(BarConfig::default());
+    // Every module, the opt-in keyboard included, which draws from the layout and the mode.
+    let mut b = Bar::new(BarConfig { modules: ModuleId::ALL.to_vec(), ..BarConfig::default() });
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
         toplevels: vec![],
+        layout: Some("English (US)".into()),
+        mode: Some("resize".into()),
         ..CompositorState::default()
     })));
     b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }), ..SoundState::default() })));
@@ -105,6 +111,7 @@ fn full_bar() -> Bar {
 fn every_click_on_a_full_bar_stays_on_the_allowlist() {
     let mut without_quick = full_bar();
     without_quick.config.modules.retain(|m| *m != ModuleId::Quick);
+    assert!(full_bar().grid("eDP-1", 240).text().contains("us resize"), "the keyboard module is drawn");
     let mut calls = Vec::new();
     for b in [full_bar(), without_quick] {
         let fake = FakeExecutor::new();

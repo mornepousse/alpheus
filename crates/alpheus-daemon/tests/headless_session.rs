@@ -5960,6 +5960,84 @@ fn under_mango_the_bar_reads_the_fake_mangos_tags() {
     assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }
 
+/// A bar under the fake Mango on catppuccin dark with `module_colors = "none"`, `modules` its
+/// `modules = […]` line; returned once both watches are connected and the bar is placed.
+fn mango_keyboard_daemon(name: &str, modules: &str) -> (Sway, FakeMango, Daemon) {
+    let sway = Sway::start(name, 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(modules), backend: Backend::Mango(&mango.socket), ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("compositor: Mango ($MANGO_INSTANCE_SIGNATURE)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(wait_until(|| mango.requests() == ["watch all-clients", "watch all-monitors"]), "{:?}", mango.requests());
+    (sway, mango, d)
+}
+
+/// The pixels of the bar inked in `colour`.
+fn inked_pixels(s: &Ppm, colour: [u8; 3]) -> Vec<(u32, u32)> {
+    (0..BAR_HEIGHT)
+        .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| s.at(x, y).is_some_and(|p| inked_in(p, colour)))
+        .collect()
+}
+
+/// Under Mango, the keyboard module alone: `󰌌 us` in the bar's ink (4 cells, ≈ 34 px, nothing in
+/// the accent), then Mango's next snapshot says `French (AZERTY)` in `resize`: `󰌌 fr` keeps its
+/// width with other letters, and ` resize` follows in the accent (6 letters, ≈ 50 px).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_mango_shows_the_layout_and_follows_a_change() {
+    let (sway, mango, d) = mango_keyboard_daemon("kb-mango", "modules = [\"keyboard\"]\n");
+    let dark = preset("catppuccin").unwrap().dark;
+    let (fg, accent) = (rgb(dark.fg), rgb(dark.accent));
+    let us = Cell::new(None);
+    let shown = sway.wait_for_screen("HEADLESS-1", |s| {
+        us.set(on_the_bar(s, fg));
+        us.get().is_some_and(|(x0, x1)| (22..=38).contains(&(x1 - x0)))
+    });
+    assert!(shown, "the glyph and two letters: {:?} {:?}", us.get(), d.log());
+    let before = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(on_the_bar(&before, accent), None, "the default mode is not shown");
+    let (_, us_end) = us.get().unwrap();
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    let mode = Cell::new(None);
+    let changed = sway.wait_for_screen("HEADLESS-1", |s| {
+        mode.set(on_the_bar(s, accent));
+        mode.get().is_some()
+    });
+    assert!(changed, "the mode drawn after the push: {:?}", d.log());
+    let after = sway.screenshot("HEADLESS-1").expect("grim");
+    let (m0, m1) = on_the_bar(&after, accent).expect("the mode stays");
+    assert!((40..=56).contains(&(m1 - m0)), "` resize`, six letters: {m0}..{m1}");
+    let (f0, f1) = on_the_bar(&after, fg).expect("the layout stays");
+    assert!((22..=38).contains(&(f1 - f0)), "still the glyph and two letters (short): {f0}..{f1}");
+    assert!(f1.abs_diff(us_end) <= 4 && m0 > f1, "the mode after the layout: {f0}..{f1} then {m0}..{m1}");
+    assert_ne!(inked_pixels(&before, fg), inked_pixels(&after, fg), "other letters: fr, not us");
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+}
+
+/// Without the keyboard module, a snapshot that changes only the layout and the mode publishes
+/// nothing: the loop does not wake. A snapshot that changes the active output then does wake it,
+/// so the watch was live all along.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_off_under_mango_redraws_nothing_on_a_layout_change() {
+    let (_sway, mango, d) = mango_keyboard_daemon("kb-mango-off", "modules = [\"workspaces\", \"window\"]\n");
+    thread::sleep(Duration::from_millis(500)); // the first snapshots drawn
+    let before = d.main_thread_wakeups();
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    thread::sleep(Duration::from_millis(1500));
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "a layout change woke the loop: {:?}", d.log());
+    let before = d.main_thread_wakeups();
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    assert!(wait_until(|| d.main_thread_wakeups() > before), "the active output's change reached the loop: {:?}", d.log());
+}
+
 /// The power button: the bar's only module, so cell 1 (≈ 8 to 16 px).
 const POWER_AT: (u32, u32) = (12, 10);
 

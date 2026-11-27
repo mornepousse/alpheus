@@ -16,9 +16,9 @@ macro_rules! rows {
 }
 
 rows! {
-    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Shield => 5, Failed => 6, Volume => 7,
-    Network => 8, Bluetooth => 9, Battery => 10, Resources => 11, Tray => 12, Notifications => 13, Osd => 14,
-    Quick => 15, Displays => 16, Timer => 17, Clock => 18, Power => 19,
+    Launcher => 0, Workspaces => 1, Window => 2, Keyboard => 3, Media => 4, Privacy => 5, Shield => 6, Failed => 7,
+    Volume => 8, Network => 9, Bluetooth => 10, Battery => 11, Resources => 12, Tray => 13, Notifications => 14,
+    Osd => 15, Quick => 16, Displays => 17, Timer => 18, Clock => 19, Power => 20,
 }
 
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
@@ -83,4 +83,16 @@ fn names_are_the_bar_toml_spelling() {
             crate::config::BarConfig::from_text(&format!("modules = [\"{}\"]", spec.name)).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
         assert_eq!(cfg.modules, [spec.id], "{}", spec.name);
     }
+}
+
+/// The keyboard module asks for the compositor's keyboard fields and nothing else; no other module
+/// asks for them. It joins the status block, has no hue, no tab and no popup (display only).
+#[test]
+fn keyboard_needs_the_keyboard_fields_only() {
+    assert_eq!(Needs::of(&[ModuleId::Keyboard]), Needs::KEYBOARD);
+    let others: Vec<ModuleId> = MODULES.iter().map(|m| m.id).filter(|m| *m != ModuleId::Keyboard).collect();
+    assert!(!Needs::of(&others).contains(Needs::KEYBOARD), "nothing else asks for it");
+    let spec = ModuleId::Keyboard.spec();
+    assert_eq!((spec.name, spec.group, spec.hue, spec.tab, spec.popup), ("keyboard", GroupKind::Status, None, None, None));
+    assert!(spec.segment.is_some());
 }

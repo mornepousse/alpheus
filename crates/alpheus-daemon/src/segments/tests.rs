@@ -1,7 +1,7 @@
 use super::*;
 use crate::clock::LocalTime;
 use crate::compositor::example;
-use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ResourceItem, ResourcesConfig};
+use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, KeyboardConfig, ResourceItem, ResourcesConfig};
 use crate::grid::Grid;
 use crate::layout::lay_out;
 use crate::notify::NotifyView;
@@ -1072,4 +1072,72 @@ fn the_shield_glyph_shows_only_while_on() {
     }
     assert!(shield(Some(false)).is_none(), "off: nothing");
     assert!(shield(None).is_none(), "unknown: nothing");
+}
+
+#[test]
+fn short_layout_takes_the_letters_in_parentheses() {
+    assert_eq!(short_layout("English (US)"), "us");
+    assert_eq!(short_layout("German (CH)"), "ch");
+    assert_eq!(short_layout("Serbian (SRB)"), "srb", "three letters too");
+}
+
+#[test]
+fn short_layout_falls_back_to_the_first_two_letters() {
+    assert_eq!(short_layout("French (AZERTY)"), "fr", "more than three letters in parentheses");
+    assert_eq!(short_layout("English (Dvorak)"), "en");
+    assert_eq!(short_layout("Russian"), "ru");
+    assert_eq!(short_layout("English (U)"), "en", "fewer than two letters in parentheses");
+    assert_eq!(short_layout("English (U.S.)"), "en", "only ASCII letters count");
+}
+
+#[test]
+fn short_layout_of_an_empty_or_symbol_name() {
+    assert_eq!(short_layout(""), "");
+    assert_eq!(short_layout("(é)"), "(é");
+    assert_eq!(short_layout("É"), "é");
+    assert_eq!(short_layout("Ελληνικά"), "ελ", "characters, never bytes");
+}
+
+fn kb(layout: Option<&str>, mode: Option<&str>) -> Feed<CompositorState> {
+    Feed::Ready(CompositorState { layout: layout.map(String::from), mode: mode.map(String::from), ..Default::default() })
+}
+
+const SHORT: KeyboardConfig = KeyboardConfig { short: true, show_mode: true };
+
+#[test]
+fn keyboard_segment_shows_the_short_layout() {
+    let s = keyboard(&kb(Some("English (US)"), Some("default")), &SHORT).unwrap();
+    assert_eq!(draw(&s), ("\u{f030c} us".into(), "....".into()));
+    assert_eq!(KEYBOARD, '\u{f030c}');
+    assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Keyboard, &None, false), "display only: no click zone");
+}
+
+#[test]
+fn keyboard_segment_full_name_when_not_short() {
+    let full = KeyboardConfig { short: false, ..SHORT };
+    assert_eq!(draw(&keyboard(&kb(Some("English (US)"), None), &full).unwrap()).0, "\u{f030c} English (US)");
+}
+
+#[test]
+fn keyboard_segment_shows_a_mode_other_than_default() {
+    let s = keyboard(&kb(Some("English (US)"), Some("resize")), &SHORT).unwrap();
+    assert_eq!(draw(&s), ("\u{f030c} us resize".into(), "....aaaaaaa".into()), "the mode in the accent");
+    let s = keyboard(&kb(None, Some("resize")), &SHORT).unwrap();
+    assert_eq!(draw(&s), ("\u{f030c} resize".into(), ".aaaaaaa".into()), "a mode without a layout yet");
+}
+
+#[test]
+fn keyboard_segment_hides_default_and_respects_show_mode() {
+    assert_eq!(draw(&keyboard(&kb(Some("English (US)"), Some("default")), &SHORT).unwrap()).0, "\u{f030c} us");
+    let quiet = KeyboardConfig { show_mode: false, ..SHORT };
+    assert_eq!(draw(&keyboard(&kb(Some("English (US)"), Some("resize")), &quiet).unwrap()).0, "\u{f030c} us");
+    assert!(keyboard(&kb(None, Some("resize")), &quiet).is_none(), "only a hidden mode: nothing");
+    assert!(keyboard(&kb(None, Some("default")), &SHORT).is_none(), "only the default mode: nothing");
+}
+
+#[test]
+fn keyboard_segment_absent_without_layout_nor_mode() {
+    assert!(keyboard(&kb(None, None), &SHORT).is_none());
+    assert!(keyboard(&Feed::Down, &SHORT).is_none(), "not a status that can be down");
+    assert!(keyboard(&Feed::Waiting, &SHORT).is_none());
 }

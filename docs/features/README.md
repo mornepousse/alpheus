@@ -19,6 +19,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [The focus timer](timer.md): a countdown, a Pomodoro and a stopwatch as a chip, with a popup, and a scheduled shutdown beside them.
 - [The privacy indicators](privacy.md): shows when the microphone, a camera or the screen is captured, and by which app.
 - [The failed-units count](failed.md): `󰀦 N` when systemd has units in the failed state.
+- [The keyboard module](keyboard.md): the keyboard layout and the bind mode, from the compositor, opt-in.
 - [The power menu](power.md): the ⏻ button and its Lock, Log out, Reboot and Power off menu.
 
 ## Panels and overlays

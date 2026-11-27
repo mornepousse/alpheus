@@ -2341,6 +2341,70 @@ fn at_rest_no_wakeups_under_sway_and_mango() {
     }
 }
 
+/// The keyboard module's bars under Mango: without it (the baseline) and with it.
+const NO_KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+const KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"keyboard\", \"clock\"]\n";
+
+/// The keyboard module under the fake Mango: PSS without it, with it, and after 100 layout changes
+/// (two snapshots that differ only by the layout and the mode, alternated). Printed for
+/// docs/measurements.md; the anonymous memory bounds the module (two short strings) and the changes
+/// (nothing kept per change).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn keyboard_module_pss_under_mango() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-pss");
+    let _workstation = Workstation::serve(&bus);
+    let mut figures = Vec::new();
+    for (name, bar) in [("kb-off", NO_KEYBOARD_BAR), ("kb-on", KEYBOARD_BAR)] {
+        let (_sway, fake, d) = start_reading(name, 1, &bus, Some(bar), true);
+        let fake = fake.expect("the fake Mango");
+        wait_until_read(&fake, &d);
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        figures.push((d.pss_kb(), d.anonymous_kb()));
+        if bar == KEYBOARD_BAR {
+            for i in 0..100 {
+                fake.push_monitors(if i % 2 == 0 { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(Duration::from_secs(2)); // the last change drawn
+            figures.push((d.pss_kb(), d.anonymous_kb()));
+            assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+        }
+    }
+    let [(off, off_anon), (on, on_anon), (after, after_anon)] = figures[..] else { unreachable!() };
+    eprintln!(
+        "keyboard module under Mango, PSS (anonymous) KB: off {off} ({off_anon}), on {on} ({on_anon}), after 100 layout changes {after} ({after_anon})"
+    );
+    assert!(on_anon <= off_anon + 64, "the module costs {} KB anonymous", on_anon.saturating_sub(off_anon));
+    assert!(after_anon <= on_anon + 64, "100 layout changes kept {} KB anonymous", after_anon.saturating_sub(on_anon));
+}
+
+/// With the keyboard module under Mango, once a layout change is drawn the daemon sleeps: no
+/// wake-up of the loop nor of the compositor thread in a 5 s window (no timer, no polling).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_the_keyboard_module() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-rest");
+    let _workstation = Workstation::serve(&bus);
+    // No clock: its minute tick is a planned wake-up of its own.
+    let (_sway, fake, d) = start_reading("kb-rest", 1, &bus, Some("modules = [\"workspaces\", \"window\", \"keyboard\"]\n"), true);
+    let fake = fake.expect("the fake Mango");
+    wait_until_read(&fake, &d);
+    std::thread::sleep(Duration::from_secs(2)); // end of startup
+    fake.push_monitors("mango-monitors-layout-fr-only.json");
+    std::thread::sleep(Duration::from_secs(1)); // the change drawn
+    let (main_before, compositor_before, ticks) =
+        (d.main_thread_wakeups(), d.thread_wakeups("compositor").expect("the compositor thread runs"), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "with the keyboard module");
+    let main = d.main_thread_wakeups().saturating_sub(main_before);
+    let compositor = d.thread_wakeups("compositor").unwrap().saturating_sub(compositor_before);
+    eprintln!("wake-ups at rest with the keyboard module under Mango (5 s): loop {main}, compositor thread {compositor}");
+    assert_eq!((main, compositor), (0, 0), "the keyboard module wakes the daemon at rest");
+}
+
 /// The power menu's bars: the button and the clock, then the clock alone (the baseline).
 const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n";
 const NO_POWER_BAR: &str = "modules = [\"clock\"]\n";

@@ -324,7 +324,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 20);
+    assert_eq!(ModuleId::ALL.len(), 21);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -929,7 +929,7 @@ fn clipboard_is_off_by_default() {
     assert!(!d.clipboard.enabled);
     assert!(!BarConfig::from_text("").unwrap().clipboard.enabled);
     assert!(!BarConfig::from_text("[clipboard]\n").unwrap().clipboard.enabled);
-    assert_eq!(d.modules, ModuleId::ALL.to_vec());
+    assert_eq!(d.modules, ModuleId::defaults());
     assert!(BarConfig::from_text("[clipboard]\nenabled = true\n").unwrap().clipboard.enabled);
     let e = BarConfig::from_text("[clipboard]\nenabeld = true\n").unwrap_err();
     assert!(e.contains("enabeld"), "{e}");
@@ -1155,4 +1155,35 @@ fn airplane_keys_default_and_parse() {
 fn a_relative_rfkill_dir_is_refused() {
     let err = BarConfig::from_text("[quick]\nrfkill_dir = \"rfkill\"\n").unwrap_err();
     assert!(err.contains("quick.rfkill_dir must be an absolute path"), "{err}");
+}
+
+#[test]
+fn keyboard_defaults() {
+    let d = KeyboardConfig::default();
+    assert_eq!((d.short, d.show_mode), (true, true));
+    assert_eq!(BarConfig::default().keyboard, d);
+    assert_eq!(BarConfig::from_text("height = 22").unwrap().keyboard, d, "absent: defaults");
+    let c = BarConfig::from_text("[keyboard]\nshort = false\nshow_mode = false\n").unwrap();
+    assert_eq!((c.keyboard.short, c.keyboard.show_mode), (false, false));
+}
+
+#[test]
+fn keyboard_unknown_key_is_invalid() {
+    let e = BarConfig::from_text("[keyboard]\nshow_locks = true\n").unwrap_err();
+    assert!(e.contains("show_locks"), "{e}");
+}
+
+/// The keyboard module is opt-in: a `bar.toml` without `modules` does not get it (it would read
+/// the layout on every snapshot for a bar that never asked), but it parses and sits after the title.
+#[test]
+fn keyboard_is_not_a_default_module() {
+    assert!(!BarConfig::default().modules.contains(&ModuleId::Keyboard));
+    assert!(!BarConfig::from_text("").unwrap().modules.contains(&ModuleId::Keyboard));
+    let others: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Keyboard).collect();
+    assert_eq!(BarConfig::default().modules, others, "every other module, in ALL's order");
+    assert_eq!(ModuleId::Keyboard.name(), "keyboard");
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Keyboard), at(ModuleId::Window) + 1, "right after the title");
+    let c = BarConfig::from_text("modules = [\"keyboard\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Keyboard, ModuleId::Clock]);
 }

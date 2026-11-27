@@ -32,16 +32,24 @@ fn the_camera_watch_starts_only_with_privacy() {
     assert!(!camera_wanted(&without));
 }
 
-/// The compositor source reads the keyboard only when a module asks: no row asks yet, so no
-/// module list wants it.
+/// The compositor source reads the keyboard only when a module asks.
 #[test]
 fn keyboard_wanted_follows_needs() {
     assert!(keyboard_wanted_for(Needs::KEYBOARD));
     assert!(keyboard_wanted_for(Needs::KEYBOARD.or(Needs::SOUND)));
     assert!(!keyboard_wanted_for(Needs::NONE));
     assert!(!keyboard_wanted_for(Needs::SOUND.or(Needs::OSD_SCOPE).or(Needs::UNITS)));
-    assert!(!keyboard_wanted(&ModuleId::ALL, &OsdConfig::default()), "no module asks for it yet");
     assert!(!keyboard_wanted(&[], &OsdConfig::default()));
+}
+
+/// The `keyboard` module is what asks: with it the layout is read, without it (the default bar
+/// included) it is not.
+#[test]
+fn keyboard_wanted_with_the_module() {
+    assert!(keyboard_wanted(&[ModuleId::Keyboard], &OsdConfig::default()));
+    assert!(keyboard_wanted(&[ModuleId::Workspaces, ModuleId::Keyboard, ModuleId::Clock], &OsdConfig::default()));
+    assert!(!keyboard_wanted(&ModuleId::defaults(), &OsdConfig::default()), "the default bar does not read it");
+    assert!(keyboard_wanted(&ModuleId::ALL, &OsdConfig::default()));
 }
 
 #[test]
