@@ -427,3 +427,24 @@ first open brings in follows where the code it runs lies in the binary, and the 
 (Tasks 1 to 6 added code) lays it out differently from the base's: that is where the +60…+72 KB
 most likely came from (an attribution from that one run, not proven), and Task 7's measurement
 below, against 78dbea11, shows the same +416 KB held after the close on both sides.
+
+Task 7, digits in the ⏻ menu (on pc-simu, release, base 78dbea11 (Task 6) and the branch at Task 7
+alternated, 3 rounds, `power_menu_pss_idle_open_and_closed --exact`, each run holding the memory
+lock exclusively through the turnstile; other agents' work ran on the machine before and between
+the runs: loaded machine, 2026-11-27). Both sides draw the same `POWER_BAR` (the default three rows
+and two `[[power.entry]]` rows); the branch's menu is 21 cells wide instead of 16 (the longest
+text, "⏻ Power off? ⏎", plus the digit's gap and capsule) and carries five capsules:
+
+| Test | Base 78dbea11 | Branch, Task 7 |
+|---|---|---|
+| PSS without the module | 8,731 KB (×3) | 8,739…8,759 KB |
+| with the button at rest | 8,859 KB (×3) | 8,867 KB (×3) |
+| menu open over at rest | +572 KB (×3) | +582 KB (×3) |
+| closed over at rest | +416 KB (×3) | +416 KB (×3) |
+| after 20 more cycles, over closed | +8 KB (×3) | +12 KB (×3) |
+
+The digits' code is +8 KB at rest, in every column. The open menu costs +10 KB more: the wider
+popup's buffers (five more cells per row) and the five capsule shapes, gone with the popup. Closed,
+the menu holds exactly what the base's does (+416 KB over rest, the first open's code and font
+pages); 20 more cycles keep +12 KB against +8 KB, within the test's bound (+128 KB) and one page
+of noise. No timer is added: the digits act inside `key`.
