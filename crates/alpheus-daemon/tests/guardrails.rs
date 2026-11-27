@@ -779,6 +779,15 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
     let hover_fire = function_body(&prod, "pub(crate) fn hover_fire(");
     assert!(!hover_fire.contains(".name =="), "hover_fire must not look up its bar by name: {hover_fire}");
     assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
+    // Module tooltips take the same path: both keys are matched first, then the one surface
+    // lookup by identity serves them both; no branch reads the anchor's output name to find a bar.
+    assert!(!hover_fire.contains("anchor.output"), "hover_fire must never find a bar from anchor.output: {hover_fire}");
+    let surface_at = hover_fire.find("app.hover_surface").expect("hover_fire reads hover_surface");
+    for branch in ["HoverKey::Tray(", "HoverKey::Module("] {
+        let at = hover_fire.find(branch).unwrap_or_else(|| panic!("hover_fire must handle {branch}: {hover_fire}"));
+        assert!(at < surface_at, "{branch} must reach the shared hover_surface lookup: {hover_fire}");
+    }
+    assert_eq!(hover_fire.matches("position_by(").count(), 1, "one surface lookup, shared by both keys: {hover_fire}");
 }
 
 /// `launcher_fail` must take the launcher out of `self` FIRST, drop its box, then release the
@@ -923,18 +932,18 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
 }
 
 /// `tooltip_item_gone` (wayland.rs) relies on a Tooltip popup
-/// always being paired with `menu.tooltip_item` — set together in `hover_fire`, so it must be cleared
+/// always being paired with `menu.tooltip_owner` (a tray item or a module) — set together in `hover_fire`, so it must be cleared
 /// together too, in `popup_close`, whatever the closing reason (hover ended, a press, a replaced
 /// popup…), or a later redraw's check would read a stale key left behind by an earlier tooltip.
 /// No fake Wayland popup exists to exercise every closing reason in a unit test, so this checks
 /// the one thing that would actually regress the fix: the reset disappearing from `popup_close`.
 #[test]
-fn popup_close_resets_tooltip_item_for_a_closed_tooltip() {
+fn popup_close_resets_tooltip_owner_for_a_closed_tooltip() {
     let files = source_files();
     let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
     let prod = production_code_without_comments(popup);
     let popup_close = function_body(&prod, "pub fn popup_close(");
-    assert!(popup_close.contains("tooltip_item = None"), "popup_close must reset tooltip_item on a closed tooltip: {popup_close}");
+    assert!(popup_close.contains("tooltip_owner = None"), "popup_close must reset tooltip_owner on a closed tooltip: {popup_close}");
 }
 
 /// The launcher socket: bound in exactly one place, its file

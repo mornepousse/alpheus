@@ -28,7 +28,7 @@
 //! - drop a released keyboard inside the dispatch: it is retired instead (`retired.rs`,
 //!   `a_released_keyboard_is_retired_then_dropped_after_the_dispatch`);
 //! - leave a tooltip's item behind after its popup closed
-//!   (`popup_close_resets_tooltip_item_for_a_closed_tooltip`);
+//!   (`popup_close_resets_tooltip_owner_for_a_closed_tooltip`);
 //! - keep a timer, a keyboard or a surface at rest: every one is in the table of
 //!   `nothing_resident_while_the_launcher_is_closed`.
 //!
@@ -761,11 +761,11 @@ impl App {
         }
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
-        // Whatever the reason: a closed tooltip is never left pairing `menu.tooltip_item` with a popup
+        // Whatever the reason: a closed tooltip is never left pairing `menu.tooltip_owner` with a popup
         // that no longer exists — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
         if matches!(open.body, PopupBody::Tooltip(_)) {
-            self.menu.tooltip_item = None;
+            self.menu.tooltip_owner = None;
         }
         drop(open);
         if let Some(p) = kind {

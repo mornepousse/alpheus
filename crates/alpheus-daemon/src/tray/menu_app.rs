@@ -24,6 +24,7 @@ use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, OpenPopup, PopupBody, PopupClose};
 use crate::session_bus::ItemKey;
 use crate::session_bus::codec::Layout;
+use crate::session_bus::hover::HoverKey;
 use crate::session_bus::menu::{Menu, MenuAction};
 use crate::session_bus::router::Tray;
 use crate::wayland::{App, position_by};
@@ -33,8 +34,9 @@ use std::time::Instant;
 /// The tray menus' and tooltip's state, one field of `App`.
 #[derive(Default)]
 pub(crate) struct TrayMenu {
-    /// The item whose tooltip is shown. When it leaves the tray the tooltip closes (`ItemGone`).
-    pub(crate) tooltip_item: Option<ItemKey>,
+    /// The tray item or module whose tooltip is shown. When a tray item leaves the tray its
+    /// tooltip closes (`ItemGone`); a module's never does (`hover::owner_gone`).
+    pub(crate) tooltip_owner: Option<HoverKey>,
     /// The tray icon last pressed, the cells it occupies (where its menu hangs, if one is asked
     /// for) and the button that pressed it. A failed Activate answers asynchronously, and the menu
     /// it asks for belongs to the icon and button the user pressed, not to whatever is under the

@@ -1,18 +1,22 @@
-//! The tooltip's delay (hover ½ s: tooltip with ToolTip title,
-//! else Title, else Id; the timer runs only while hovering), pure: which
-//! icon the pointer rests on and since when. The wiring arms one
-//! `DeadlineTimer` on `Arm`, removes it on `Cancel`; with the pointer
-//! anywhere else, nothing is armed.
+//! The tooltip's delay (hover ½ s on a tray icon: tooltip with ToolTip title, else Title, else
+//! Id; on a module with a tooltip: its text from `tooltips.rs`; the timer runs only while
+//! hovering), pure: which icon or module the pointer rests on and since when. The wiring arms one
+//! `DeadlineTimer` on `Arm`, removes it on `Cancel`; with the pointer anywhere else, nothing is
+//! armed.
 //!
 //! Never:
 //! - keep the timer while the pointer is elsewhere: it is armed on `Arm` and removed on `Cancel`,
-//!   so a bar nobody hovers costs nothing (`nothing_resident_while_the_launcher_is_closed`);
+//!   so a bar nobody hovers costs nothing (`nothing_resident_while_the_launcher_is_closed`), nor
+//!   arm it over a module with no tooltip or with `tooltips = false`
+//!   (`a_module_with_no_tooltip_arms_nothing`, `tooltips_false_arms_no_timer_anywhere`);
 //! - find its bar by an output's name (`hover_fire_finds_its_bar_by_surface_identity_never_by_name`),
-//!   or leave a tooltip's item behind after its popup closed
-//!   (`popup_close_resets_tooltip_item_for_a_closed_tooltip`).
+//!   or leave a tooltip's owner behind after its popup closed
+//!   (`popup_close_resets_tooltip_owner_for_a_closed_tooltip`);
+//! - close a module's tooltip because the tray changed (`a_module_tooltip_is_never_gone_with_a_tray_item`).
 //!
-//! See: docs/features/tray.md ("Tooltips").
+//! See: docs/features/tray.md ("Tooltips"), docs/features/bar.md.
 
+use crate::config::ModuleId;
 use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::popup::Anchor;
 use crate::session_bus::ItemKey;
@@ -30,10 +34,42 @@ pub enum HoverChange {
     Cancel,
 }
 
-/// Which icon the pointer rests on, since when; pure.
+/// What a tooltip belongs to: a tray icon, or a module of the bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoverKey {
+    Tray(ItemKey),
+    Module(ModuleId),
+}
+
+/// A `HoverKey` borrowed from the grid's zone: comparing it allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoverRef<'a> {
+    Tray(&'a ItemKey),
+    Module(ModuleId),
+}
+
+impl HoverKey {
+    pub fn as_ref(&self) -> HoverRef<'_> {
+        match self {
+            HoverKey::Tray(k) => HoverRef::Tray(k),
+            HoverKey::Module(m) => HoverRef::Module(*m),
+        }
+    }
+}
+
+impl HoverRef<'_> {
+    pub fn to_key(self) -> HoverKey {
+        match self {
+            HoverRef::Tray(k) => HoverKey::Tray(k.clone()),
+            HoverRef::Module(m) => HoverKey::Module(m),
+        }
+    }
+}
+
+/// Which icon or module the pointer rests on, since when; pure.
 #[derive(Debug, Default)]
 pub struct Hover {
-    over: Option<(ItemKey, Anchor)>,
+    over: Option<(HoverKey, Anchor)>,
     /// When the pointer came on `over`; None once its tooltip was asked for.
     since: Option<Instant>,
 }
@@ -43,17 +79,16 @@ impl Hover {
         Hover::default()
     }
 
-    /// The pointer moved over `found` (the hovered zone's item key, by reference, and its
-    /// columns; None: off any tray icon) on `output`, at `now`: a new icon (re)arms — cloning the
-    /// key and allocating `output` into an `Anchor` only then — the
-    /// same icon changes nothing (compared on the borrowed key, no allocation at all), none
-    /// cancels.
-    pub fn moved(&mut self, found: Option<(&ItemKey, u16, u16)>, output: &str, now: Instant) -> HoverChange {
+    /// The pointer moved over `found` (the hovered zone's key, borrowed, and its columns; None:
+    /// off any zone with a tooltip) on `output`, at `now`: a new icon or module (re)arms — cloning
+    /// the key and allocating `output` into an `Anchor` only then — the same one changes nothing
+    /// (compared on the borrowed key, no allocation at all), none cancels.
+    pub fn moved(&mut self, found: Option<(HoverRef<'_>, u16, u16)>, output: &str, now: Instant) -> HoverChange {
         match found {
             None => self.cancel(),
-            Some((key, _, _)) if self.over.as_ref().is_some_and(|(k, _)| k == key) => HoverChange::Nothing,
+            Some((key, _, _)) if self.over.as_ref().is_some_and(|(k, _)| k.as_ref() == key) => HoverChange::Nothing,
             Some((key, start, end)) => {
-                self.over = Some((key.clone(), Anchor { output: output.to_string(), start, end }));
+                self.over = Some((key.to_key(), Anchor { output: output.to_string(), start, end }));
                 self.since = Some(now);
                 HoverChange::Arm(now + TOOLTIP_DELAY)
             }
@@ -70,37 +105,66 @@ impl Hover {
         self.since.map(|s| s + TOOLTIP_DELAY)
     }
 
-    /// The delay elapsed: the icon to show a tooltip for.
-    pub fn fire(&mut self, now: Instant) -> Option<(ItemKey, Anchor)> {
+    /// The delay elapsed: the icon or module to show a tooltip for.
+    pub fn fire(&mut self, now: Instant) -> Option<(HoverKey, Anchor)> {
         let due = self.deadline().is_some_and(|d| now >= d);
         if !due {
             return None;
         }
-        // Asked once: resting longer on the same icon shows nothing more.
+        // Asked once: resting longer on the same zone shows nothing more.
         self.since = None;
         self.over.clone()
     }
 
-    /// The item currently tracked (armed, or already shown as a tooltip) and its last known
-    /// anchor; None at rest. Lets `tray_output` (wayland.rs) tell an unrelated icon changing from
-    /// the tracked one actually moving or disappearing under a redrawn grid: only the latter should ever cancel.
-    pub fn target(&self) -> Option<(&ItemKey, &Anchor)> {
-        self.over.as_ref().map(|(k, a)| (k, a))
+    /// The icon or module currently tracked (armed, or already shown as a tooltip) and its last
+    /// known anchor; None at rest. Lets the wiring (`hover_target_moved`, wayland.rs) tell an
+    /// unrelated zone changing from the tracked one actually moving or disappearing under a
+    /// redrawn grid: only the latter should ever cancel.
+    pub fn target(&self) -> Option<(HoverRef<'_>, &Anchor)> {
+        self.over.as_ref().map(|(k, a)| (k.as_ref(), a))
     }
 }
 
-/// The tray icon under `column` of the bar, borrowed from `grid` (no allocation): its key, and the
-/// zone's own columns. Always None when `[tray] tooltips = false` (no hover timer at all). The
-/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms: a plain motion event over the SAME icon
-/// must allocate nothing.
-pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, u16)> {
+/// The zone under `column` of the bar that can show a tooltip, borrowed from `grid` (no
+/// allocation): a tray icon, or a module (its click zone or its passive one) whose spec has a
+/// tooltip; its key and the zone's own columns. Always None when `tooltips = false` (no hover
+/// timer at all). The `Anchor` (which owns the output name) is built only once `Hover::moved`
+/// actually arms: a plain motion event over the SAME zone must allocate nothing.
+pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(HoverRef<'_>, u16, u16)> {
     if !tooltips {
         return None;
     }
     let zone = grid.zone_at(column)?;
-    match &zone.target {
-        Target::TrayItem(key) => Some((key, zone.start, zone.end)),
-        _ => None,
+    let key = match &zone.target {
+        Target::TrayItem(key) => HoverRef::Tray(key),
+        Target::Module(m) | Target::Passive(m) if m.spec().tooltip.is_some() => HoverRef::Module(*m),
+        _ => return None,
+    };
+    Some((key, zone.start, zone.end))
+}
+
+/// Whether the zone of `key` left `anchor`'s columns in `grid`, or left the grid: a tray icon by
+/// its item, a module by its click or passive zone.
+pub fn zone_moved(grid: &Grid, key: HoverRef<'_>, anchor: &Anchor) -> bool {
+    let tracked = |t: &Target| match (t, key) {
+        (Target::TrayItem(k), HoverRef::Tray(key)) => k == key,
+        (Target::Module(m) | Target::Passive(m), HoverRef::Module(key)) => *m == key,
+        _ => false,
+    };
+    match grid.zones().iter().find(|z| tracked(&z.target)) {
+        Some(z) => (z.start, z.end) != (anchor.start, anchor.end),
+        None => true, // dropped from the grid: gone
+    }
+}
+
+/// Whether the shown tooltip's owner is gone: a tray icon that left the tray (`item_exists` false),
+/// or no owner recorded at all (the tooltip closes rather than lingering). A module never leaves
+/// with a tray item: a tray change must not close the clock's tooltip.
+pub fn owner_gone(owner: Option<&HoverKey>, item_exists: impl Fn(&ItemKey) -> bool) -> bool {
+    match owner {
+        Some(HoverKey::Tray(key)) => !item_exists(key),
+        Some(HoverKey::Module(_)) => false,
+        None => true,
     }
 }
 
@@ -134,8 +198,8 @@ mod tests {
         ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() }
     }
 
-    fn at(n: u32) -> Option<(ItemKey, Anchor)> {
-        Some((key(n), Anchor { output: "HDMI-A-1".into(), start: n as u16, end: n as u16 + 1 }))
+    fn at(n: u32) -> Option<(HoverKey, Anchor)> {
+        Some((HoverKey::Tray(key(n)), Anchor { output: "HDMI-A-1".into(), start: n as u16, end: n as u16 + 1 }))
     }
 
     /// `Hover::moved` now borrows its key (no allocation on a
@@ -143,7 +207,7 @@ mod tests {
     /// the real wiring's `Grid` does.
     fn moved_to(h: &mut Hover, n: u32, now: Instant) -> HoverChange {
         let k = key(n);
-        h.moved(Some((&k, n as u16, n as u16 + 1)), "HDMI-A-1", now)
+        h.moved(Some((HoverRef::Tray(&k), n as u16, n as u16 + 1)), "HDMI-A-1", now)
     }
 
     fn moved_off(h: &mut Hover, now: Instant) -> HoverChange {
@@ -209,7 +273,7 @@ mod tests {
         g.write(4, 5, "x", Style::NORMAL);
         g.zone(4, 5, Target::TrayItem(key(7)));
         let k7 = key(7);
-        assert_eq!(over(true, &g, 4), Some((&k7, 4, 5)));
+        assert_eq!(over(true, &g, 4), Some((HoverRef::Tray(&k7), 4, 5)));
         assert_eq!(over(true, &g, 3), None, "beside the icon");
         assert_eq!(over(false, &g, 4), None, "tooltips = false");
         let mut h = Hover::new();
@@ -222,9 +286,103 @@ mod tests {
         let mut h = Hover::new();
         assert_eq!(h.target(), None, "nothing tracked at rest");
         moved_to(&mut h, 1, t0);
-        assert_eq!(h.target(), Some((&key(1), &Anchor { output: "HDMI-A-1".into(), start: 1, end: 2 })));
+        assert_eq!(h.target(), Some((HoverRef::Tray(&key(1)), &Anchor { output: "HDMI-A-1".into(), start: 1, end: 2 })));
         h.cancel();
         assert_eq!(h.target(), None, "cancelled: nothing tracked any more");
+    }
+
+    fn module_grid() -> Grid {
+        let mut g = Grid::empty(40);
+        g.write(0, 5, "12:00", Style::NORMAL);
+        g.zone(0, 5, Target::Module(ModuleId::Clock));
+        g.write(6, 7, "x", Style::NORMAL);
+        g.zone(6, 7, Target::TrayItem(key(7)));
+        g.write(10, 15, "title", Style::NORMAL);
+        g.zone(10, 15, Target::Passive(ModuleId::Window));
+        g.write(20, 21, "L", Style::NORMAL);
+        g.zone(20, 21, Target::Module(ModuleId::Launcher));
+        g
+    }
+
+    #[test]
+    fn module_hover_arms_once_and_cancels_off_the_zone() {
+        let t0 = Instant::now();
+        let g = module_grid();
+        let mut h = Hover::new();
+        assert_eq!(over(true, &g, 2), Some((HoverRef::Module(ModuleId::Clock), 0, 5)));
+        assert_eq!(h.moved(over(true, &g, 2), "HDMI-A-1", t0), HoverChange::Arm(t0 + TOOLTIP_DELAY));
+        let later = t0 + Duration::from_millis(200);
+        assert_eq!(h.moved(over(true, &g, 4), "HDMI-A-1", later), HoverChange::Nothing, "the same module: not re-armed");
+        assert_eq!(h.target(), Some((HoverRef::Module(ModuleId::Clock), &Anchor { output: "HDMI-A-1".into(), start: 0, end: 5 })));
+        assert_eq!(
+            h.fire(t0 + TOOLTIP_DELAY),
+            Some((HoverKey::Module(ModuleId::Clock), Anchor { output: "HDMI-A-1".into(), start: 0, end: 5 }))
+        );
+        assert_eq!(h.fire(t0 + Duration::from_secs(5)), None, "once");
+        assert_eq!(h.moved(over(true, &g, 8), "HDMI-A-1", later), HoverChange::Cancel, "off any zone");
+        assert_eq!(h.target(), None);
+    }
+
+    #[test]
+    fn moving_from_a_module_to_a_tray_icon_rearms() {
+        let t0 = Instant::now();
+        let g = module_grid();
+        let mut h = Hover::new();
+        h.moved(over(true, &g, 1), "HDMI-A-1", t0);
+        let later = t0 + Duration::from_millis(300);
+        let k7 = key(7);
+        assert_eq!(over(true, &g, 6), Some((HoverRef::Tray(&k7), 6, 7)));
+        assert_eq!(h.moved(over(true, &g, 6), "HDMI-A-1", later), HoverChange::Arm(later + TOOLTIP_DELAY));
+        assert_eq!(h.moved(over(true, &g, 1), "HDMI-A-1", later), HoverChange::Arm(later + TOOLTIP_DELAY), "and back");
+        assert_eq!(h.target().map(|(k, _)| k), Some(HoverRef::Module(ModuleId::Clock)));
+    }
+
+    #[test]
+    fn a_module_with_no_tooltip_arms_nothing() {
+        assert!(ModuleId::Launcher.spec().tooltip.is_none(), "the premise: the launcher has no tooltip");
+        let g = module_grid();
+        assert_eq!(over(true, &g, 20), None);
+        let mut h = Hover::new();
+        assert_eq!(h.moved(over(true, &g, 20), "HDMI-A-1", Instant::now()), HoverChange::Nothing, "never armed");
+    }
+
+    #[test]
+    fn a_passive_zone_with_a_tooltip_arms() {
+        let g = module_grid();
+        assert_eq!(over(true, &g, 12), Some((HoverRef::Module(ModuleId::Window), 10, 15)));
+    }
+
+    #[test]
+    fn tooltips_false_arms_no_timer_anywhere() {
+        let g = module_grid();
+        for column in 0..g.width() {
+            assert_eq!(over(false, &g, column), None, "column {column}: tooltips = false");
+        }
+        let mut h = Hover::new();
+        for column in [2, 6, 12] {
+            assert_eq!(h.moved(over(false, &g, column), "HDMI-A-1", Instant::now()), HoverChange::Nothing);
+        }
+    }
+
+    #[test]
+    fn a_zone_moves_by_its_own_columns_only() {
+        let g = module_grid();
+        let anchor = |start, end| Anchor { output: "HDMI-A-1".into(), start, end };
+        assert!(!zone_moved(&g, HoverRef::Module(ModuleId::Clock), &anchor(0, 5)), "same cells");
+        assert!(zone_moved(&g, HoverRef::Module(ModuleId::Clock), &anchor(0, 6)), "wider");
+        assert!(!zone_moved(&g, HoverRef::Module(ModuleId::Window), &anchor(10, 15)), "a passive zone");
+        assert!(zone_moved(&g, HoverRef::Module(ModuleId::Volume), &anchor(0, 5)), "not in the grid: gone");
+        let k7 = key(7);
+        assert!(!zone_moved(&g, HoverRef::Tray(&k7), &anchor(6, 7)), "a tray icon by its item");
+        assert!(zone_moved(&g, HoverRef::Tray(&key(8)), &anchor(6, 7)), "another item: gone");
+    }
+
+    #[test]
+    fn a_module_tooltip_is_never_gone_with_a_tray_item() {
+        assert!(!owner_gone(Some(&HoverKey::Module(ModuleId::Clock)), |_| false), "a tray change never closes a module's tooltip");
+        assert!(owner_gone(Some(&HoverKey::Tray(key(1))), |_| false), "its item left the tray");
+        assert!(!owner_gone(Some(&HoverKey::Tray(key(1))), |k| *k == key(1)), "its item still there");
+        assert!(owner_gone(None, |_| true), "no owner recorded: the tooltip closes rather than lingering");
     }
 
     /// A window title or a Bluetooth name is drawn whole by its tooltip, and the pure text

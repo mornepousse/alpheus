@@ -1403,8 +1403,9 @@ fn a_tooltip_appears_after_half_a_second_and_goes_on_leave() {
     assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the icons: {:?}", d.log());
 }
 
-/// The hover timer exists only while the pointer rests on an icon: resting on the clock, the
-/// loop sleeps (the window avoids the clock's minute tick).
+/// The hover timer exists only while the pointer rests on an icon or a module with a tooltip:
+/// resting on the bar's empty middle (no zone), the loop sleeps (the window avoids the clock's
+/// minute tick).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn no_timer_while_the_pointer_is_elsewhere() {
@@ -1413,14 +1414,74 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     while alpheus_daemon::clock::LocalTime::now().0.second > 50 {
         thread::sleep(Duration::from_millis(200));
     }
-    sway.hover(1260, 10); // the clock, at the right end
+    sway.hover(640, 10); // the bar's empty middle, between the tray and the clock
     // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
     thread::sleep(Duration::from_millis(200));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
-    assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
-    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the clock");
+    assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the bar: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the bar");
+    assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
+}
+
+/// The clock's tooltip, on the tray's hover timer: shown after ½ s of rest on the clock, closed
+/// when the pointer leaves the bar, never shown twice.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_module_tooltip_appears_after_half_a_second_and_goes_on_leave() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module", "");
+    sway.hover(640, 400); // the virtual pointer first, off the bar
+    thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    sway.hover(40, 10); // the clock
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
+    assert_eq!(d.count("tooltip shown"), 1);
+    sway.hover(640, 400); // off the bar: its surface's leave
+    assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the clock: {:?}", d.log());
+}
+
+/// Resting on the clock: one tooltip, then the loop sleeps; the hover timer fired once and is gone
+/// (the window avoids the clock's minute tick).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_module_tooltip_fires_once_then_the_loop_sleeps() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module-rest", "");
+    sway.hover(640, 400);
+    while alpheus_daemon::clock::LocalTime::now().0.second > 48 {
+        thread::sleep(Duration::from_millis(200));
+    }
+    sway.hover(40, 10); // the clock
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(200));
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "the loop woke {delta} times with the clock's tooltip shown: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the clock's tooltip shown");
+    assert_eq!(d.count("tooltip shown"), 1, "{:?}", d.log());
+}
+
+/// `tooltips = false`: resting on the clock arms nothing, shows nothing, wakes nothing.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tooltips_false_shows_nothing_on_a_module() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module-off", "tooltips = false\n");
+    sway.hover(640, 400);
+    while alpheus_daemon::clock::LocalTime::now().0.second > 55 {
+        thread::sleep(Duration::from_millis(200));
+    }
+    thread::sleep(Duration::from_millis(200));
+    sway.hover(40, 10); // the clock: armed with tooltips on, never with them off
+    thread::sleep(Duration::from_millis(200));
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(2));
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(2), "tooltips = false");
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
