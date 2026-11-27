@@ -95,7 +95,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --capture pick|annotate|ocr|record|record-area|stop
                           colour picker, annotate an area, text of an area, record the screen or an area, stop recording
   --capture select        debug: run the area selector alone; nothing is captured
-  --wallpaper next        apply the next image of [wallpaper] dir in launcher.toml (after the remembered one), for a timer
+  --wallpaper next        apply the next image of [wallpaper] dir in launcher.toml (after the last one applied), for a timer
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,

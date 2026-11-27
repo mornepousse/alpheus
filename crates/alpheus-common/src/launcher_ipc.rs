@@ -230,7 +230,8 @@ impl QuickVerb {
 /// `--wallpaper`'s word: the folder's next image, for an external timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallpaperVerb {
-    /// The name after the remembered one (the first when none), applied with `then`.
+    /// The image after the last one applied (remembered, or in memory with `remember = false`; the
+    /// first when none), applied with `then`.
     Next,
 }
 
