@@ -13,8 +13,9 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 #### Added
 
 - **Keyboard backlight and airplane mode in quick settings** (27): a keyboard backlight slider right
-  under the brightness, over the LED's own levels (← → one level, Space or Enter cycle, 0 allowed),
-  set with `brightnessctl --class=leds`; an airplane mode switch at the top of the radios that blocks
+  under the brightness, over the LED's own levels (← → one level, a step of `step` % above 10
+  levels, Space or Enter cycle, 0 allowed), set with `brightnessctl --class=leds`; an airplane mode
+  switch at the top of the radios that blocks
   Wi-Fi, Bluetooth and WWAN in one `rfkill` command and unblocks all three to leave. Both are read
   from sysfs when the panel opens (airplane mode again 300 ms after any radio command) and hold
   nothing while it is closed: no fd, thread or timer. New keys: `[quick] kbd_backlight`,
