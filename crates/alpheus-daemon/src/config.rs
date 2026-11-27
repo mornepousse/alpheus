@@ -453,10 +453,6 @@ impl ButtonBindings {
 /// The longest argv a binding takes, program included.
 pub const BINDING_ARGV_MAX: usize = 16;
 
-/// `[bindings]` checked: bindable modules only; an argv of 1 to `BINDING_ARGV_MAX` items with a
-/// non-blank program, no NUL, `{tab}` (only where the module has a tab) and `{output}` each a whole
-/// argument at most once; a verb only where what it acts on exists. A table for a module absent from
-/// `modules` is accepted (it costs nothing). The message names the key, never the command.
 /// The words a binding's argv may not hold, as a whole word in any case: a suspend froze the
 /// DisplayLink dock, and the power rows never offer one either. `hybrid-sleep` is the word pair
 /// `hybrid` `sleep` or the one word `hybridsleep`.
@@ -501,6 +497,10 @@ fn sleeps(argv: &[String]) -> bool {
     by_word || by_pair
 }
 
+/// `[bindings]` checked: bindable modules only; an argv of 1 to `BINDING_ARGV_MAX` items with a
+/// non-blank program, no NUL, `{tab}` (only where the module has a tab) and `{output}` each a whole
+/// argument at most once; a verb only where what it acts on exists. A table for a module absent from
+/// `modules` is accepted (it costs nothing). The message names the key, never the command.
 fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) -> Result<(), String> {
     let has = |m: ModuleId| modules.contains(&m);
     for (&m, buttons) in b {
