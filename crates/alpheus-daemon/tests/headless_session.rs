@@ -23,10 +23,10 @@ use common::sway_client::{TestWindow, con_id};
 use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
-    capture_delta, capture_gone, default_sink_delta, fake_argv_recorder, fake_env_recorder, fake_program, fake_pw_dump_in, fake_recorder,
-    fake_source, fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_argv, recorded_stdin,
-    start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy, wl_paste, write_atomically, wtype,
-    wtype_spawn,
+    binary_knows, capture_delta, capture_gone, daemon_binary, default_sink_delta, fake_argv_recorder, fake_env_recorder, fake_program,
+    fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded,
+    recorded_argv, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy,
+    wl_paste, write_atomically, wtype, wtype_spawn,
 };
 use common::{FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
@@ -52,7 +52,8 @@ fn dies_within_2_s(pid: i32) {
 }
 
 /// A base build (`ALPHEUS_TEST_BASE_CONFIG=1`) gets no `[displays]`, which it would reject; the
-/// privacy roots stay on empty directories either way.
+/// privacy roots stay on empty directories either way, and the quick panel's hardware folders
+/// whenever the binary under test knows their keys.
 #[test]
 fn the_harness_leaves_displays_out_for_a_base_build() {
     let runtime = Path::new("/run/test");
@@ -65,15 +66,14 @@ fn the_harness_leaves_displays_out_for_a_base_build() {
             !base,
             "the shutdown's lock lookup never reads the machine's /proc: {text}"
         );
-        assert_eq!(
+        // In base mode too: the binary under test here is this build's, which knows both keys.
+        assert!(
             text.contains("kbd_backlight_dir = \"/run/test/quick-leds\""),
-            !base,
-            "the keyboard backlight row never reads the machine's /sys/class/leds: {text}"
+            "the keyboard backlight row never reads the machine's /sys/class/leds (base {base}): {text}"
         );
-        assert_eq!(
+        assert!(
             text.contains("rfkill_dir = \"/run/test/quick-rfkill\""),
-            !base,
-            "the airplane mode row never reads the machine's /sys/class/rfkill: {text}"
+            "the airplane mode row never reads the machine's /sys/class/rfkill (base {base}): {text}"
         );
         assert!(alpheus_daemon::config::BarConfig::from_text(&text).is_ok(), "{text}");
     }
@@ -83,6 +83,12 @@ fn the_harness_leaves_displays_out_for_a_base_build() {
     assert_eq!(own.matches("kbd_backlight_dir").count(), 1, "the test's own directory is kept: {own}");
     assert_eq!(own.matches("rfkill_dir").count(), 1, "the test's own directory is kept: {own}");
     assert!(alpheus_daemon::config::BarConfig::from_text(&own).is_ok(), "{own}");
+    // A base binary without the keys gets neither (it would reject the file); this build has both.
+    let before = std::env::temp_dir().join(format!("alpheus-{}-base-binary", std::process::id()));
+    std::fs::write(&before, b"\x7fELF kbd_backlight rfkill").unwrap();
+    assert!(!binary_knows(&before, "kbd_backlight_dir") && !binary_knows(&before, "rfkill_dir"));
+    let _ = std::fs::remove_file(&before);
+    assert!(binary_knows(&daemon_binary(), "kbd_backlight_dir") && binary_knows(&daemon_binary(), "rfkill_dir"));
 }
 
 /// The harness fails a test whose daemon rejected bar.toml, instead of running it on defaults.

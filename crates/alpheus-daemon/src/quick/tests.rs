@@ -2179,10 +2179,13 @@ fn kbd_backlight_sets_with_brightnessctl_leds_class() {
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Right, false, t), set_kbd_level(2), "one level up");
     assert_eq!(q.kbd, a_kbd(2, 2), "shown at once");
-    assert_eq!(q.key(&l, Key::Right, false, later(t, 1)), set_kbd_level(2), "clamped to max");
+    assert_eq!(q.key(&l, Key::Right, false, later(t, 1)), QuickAction::Redraw, "already at max: no command");
+    assert_eq!(q.kbd, a_kbd(2, 2));
     assert_eq!(q.key(&l, Key::Left, false, later(t, 2)), set_kbd_level(1));
     assert_eq!(q.key(&l, Key::Left, false, later(t, 3)), set_kbd_level(0), "0 is allowed: an unlit keyboard");
-    assert_eq!(q.key(&l, Key::Left, false, later(t, 4)), set_kbd_level(0), "never below 0");
+    assert_eq!(q.key(&l, Key::Left, false, later(t, 4)), QuickAction::Redraw, "already at 0: no command");
+    assert_eq!(q.press(&l, (BAR_START, kbd_line(&l, &q)), Button::Left, later(t, 5)), QuickAction::Redraw, "4 % of 2 is 0: no command");
+    assert_eq!(q.flush(), vec![], "nothing waits either");
 }
 
 #[test]

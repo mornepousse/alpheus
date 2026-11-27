@@ -39,7 +39,7 @@ use crate::backlight::Reread;
 use crate::clock::LocalTime;
 use crate::config::{ModuleId, QuickConfig, ToggleConfig};
 use crate::grid::{Grid, Style, Target, text_width};
-use crate::kbd_backlight::{Kbd, KbdReread};
+use crate::kbd_backlight::{self, Kbd, KbdReread};
 use crate::keys::Key;
 use crate::list;
 use crate::notify::dnd::Dnd;
@@ -1101,9 +1101,14 @@ impl Quick {
 
     /// The keyboard backlight to the level `to` gives from the one shown, sent as the brightness
     /// is (one command per window, the latest level); re-read BRIGHTNESS_REREAD after the last one.
+    /// A level the keyboard already shows (← at 0, → at the maximum) sends nothing.
     fn kbd_to(&mut self, to: impl Fn(&Kbd) -> u8, now: Instant) -> QuickAction {
         let Some(k) = self.kbd.as_mut() else { return QuickAction::Nothing };
-        k.level = to(k).min(k.max);
+        let level = to(k).min(k.max);
+        if level == k.level {
+            return QuickAction::Redraw;
+        }
+        k.level = level;
         self.kbd_settle = None;
         if self.kbd_pace.ask(now) { kbd_command(k) } else { QuickAction::Redraw }
     }
@@ -1309,7 +1314,7 @@ impl Quick {
             // One step per notch, in the device's levels.
             Some(Line::Row(Row::KbdBacklight)) => {
                 let step = live.config.step;
-                self.kbd_to(|k| (0..notches).fold(k.clone(), |k, _| Kbd { level: k.stepped(up, step), ..k }).level, now)
+                self.kbd_to(|k| (0..notches).fold(k.level, |l, _| kbd_backlight::step(l, k.max, up, step)), now)
             }
             _ if all.len() > visible => {
                 let last_top = all.len() - visible;

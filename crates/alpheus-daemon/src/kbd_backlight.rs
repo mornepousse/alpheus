@@ -48,11 +48,7 @@ impl Kbd {
     /// One step up or down: one level when the maximum is at most 10, else `step_pct` percent of the
     /// maximum (rounded, at least one level); clamped to `0..=max`.
     pub fn stepped(&self, up: bool, step_pct: u8) -> u8 {
-        let m = u32::from(self.max);
-        let step = if self.max <= 10 { 1 } else { ((m * u32::from(step_pct) + 50) / 100).max(1) };
-        let from = u32::from(self.level.min(self.max));
-        let to = if up { (from + step).min(m) } else { from.saturating_sub(step) };
-        to as u8
+        step(self.level, self.max, up, step_pct)
     }
 
     /// The level nearest to `percent` of the maximum (a press on the bar), never above it.
@@ -65,6 +61,15 @@ impl Kbd {
     pub fn cycled(&self) -> u8 {
         if self.level >= self.max { 0 } else { self.level + 1 }
     }
+}
+
+/// `Kbd::stepped` from `level` of `max`, without a `Kbd` (the wheel folds it once per notch).
+pub fn step(level: u8, max: u8, up: bool, step_pct: u8) -> u8 {
+    let m = u32::from(max);
+    let step = if max <= 10 { 1 } else { ((m * u32::from(step_pct) + 50) / 100).max(1) };
+    let from = u32::from(level.min(max));
+    let to = if up { (from + step).min(m) } else { from.saturating_sub(step) };
+    to as u8
 }
 
 /// `device` under `dir` read as a level and a maximum; None when it is not there, a file is not a
