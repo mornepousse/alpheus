@@ -1472,6 +1472,28 @@ fn the_detail_card_of_a_toggle_a_confirm_and_a_choices_tool() {
     assert!(!text.iter().any(|t| t == "Pinned"), "not pinned: {text:#?}");
 }
 
+/// The card's rhythm (the P1 render): its tile, the name right under it, the category, the
+/// description, the line, the actions; no blank line between them.
+#[test]
+fn the_detail_card_stacks_its_lines_without_gaps() {
+    let (mut l, b) = panel_box(PINNED);
+    select_tool(&mut l, "Night light");
+    let rows = draw_in(&l, &b);
+    let (c, text) = (card(&rows), card_text(&rows));
+    let tile = rows
+        .shapes
+        .iter()
+        .find(|s| s.rows == 2 && s.col > c.col)
+        .unwrap_or_else(|| panic!("the card's tile: {}", snapshot_with_shapes(&rows)));
+    let first = tile.row + 2 - c.row;
+    let lines: Vec<&str> = text[first..first + 5].iter().map(String::as_str).collect();
+    assert_eq!(lines[0], "Night light", "the name right under the tile: {text:#?}");
+    assert_eq!(lines[1], "Quick settings · built-in", "{text:#?}");
+    assert_eq!(lines[2], "Turn warmer screen colours on or off", "{text:#?}");
+    assert!(lines[3].chars().all(|c| c == '─') && !lines[3].is_empty(), "the line under the description: {text:#?}");
+    assert!(lines[4].starts_with("Turn on/off"), "then the actions: {text:#?}");
+}
+
 #[test]
 fn the_band_covers_both_lines_of_a_row() {
     let (mut l, b) = panel_box(PINNED);

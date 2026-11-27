@@ -456,9 +456,10 @@ fn opens_level(e: &Entry) -> bool {
     !matches!(e.choices, Choices::None) || e.ask.is_some()
 }
 
-/// The selected tool's card over `columns` and the pane's rows: its tile, its name in bold, its
-/// category and kind dim, its description wrapped, a thin line, its actions with their keys at
-/// the right, and `Pinned` for a pinned tool. A line that does not fit is left out.
+/// The selected tool's card over `columns` and the pane's rows: its tile, its name in bold right
+/// under it, its category and kind dim, its description wrapped, a thin line, its actions with
+/// their keys at the right, and after a blank line `Pinned` for a pinned tool. A line that does
+/// not fit is left out.
 fn detail_card(
     t: &ToolsState,
     e: usize,
@@ -475,9 +476,10 @@ fn detail_card(
     // The last line inside the card, one blank line kept under it.
     let bottom = (top + rows).saturating_sub(1);
     let mut y = top + 1;
+    // The name right under the tile, then each line under the one before (the P1 render's rhythm).
     if y + 2 <= bottom {
         push_tile(t, entry, y, x, shapes);
-        y += 3;
+        y += 2;
     }
     // A line of the card at `y`, when it fits: `y` then moves past it.
     let put = |grid: &mut [Grid], y: &mut usize, text: &str, style: Style| {
@@ -497,7 +499,6 @@ fn detail_card(
     };
     put(grid, &mut y, &meta, Style::MUTED);
     if let Some(d) = &entry.description {
-        y += 1;
         let mut lines = wrap(d, width);
         lines.truncate(CARD_DESCRIPTION_LINES);
         for line in &lines {
