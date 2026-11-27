@@ -374,7 +374,7 @@ global countdown applies to the rows that ask; a row's own applies whether it as
 counts from its activation when it does not ask. Decision Q2 (a) of the session menu design: no
 countdown on the quick panel's buttons.
 
-Date: 2026-11-27 · Source: tests `the_confirming_activation_starts_the_countdown`, `the_countdown_steps_each_second_then_runs`, `esc_cancels_the_countdown_and_runs_nothing`, `enter_and_space_during_the_countdown_do_nothing`, `any_other_key_or_a_hover_elsewhere_cancels_it`, `a_rows_own_countdown_overrides_the_global_one`, `countdown_zero_runs_at_once`; guardrails `power_countdown_closed_popup_disarms_the_timer` and `every_power_menu_activation_is_a_configured_session`; headless `power_countdown_escape_runs_nothing`, `power_countdown_runs_at_its_end`; memory `at_rest_no_wakeups_after_the_power_menu`, `power_countdown_wakes_once_a_second`
+Date: 2026-11-27 · Source: tests `the_confirming_activation_starts_the_countdown`, `the_countdown_steps_each_second_then_runs`, `esc_cancels_the_countdown_and_runs_nothing`, `enter_and_space_during_the_countdown_do_nothing`, `any_other_key_or_a_hover_elsewhere_cancels_it`, `a_rows_own_countdown_overrides_the_global_one`, `countdown_zero_runs_at_once`, `the_countdown_logs_its_start_and_its_cancel_in_fixed_words`; guardrails `power_countdown_closed_popup_disarms_the_timer` and `every_power_menu_activation_is_a_configured_session`; headless `power_countdown_escape_runs_nothing`, `power_countdown_runs_at_its_end`; memory `at_rest_no_wakeups_after_the_power_menu`, `power_countdown_wakes_once_a_second`
 
 ### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
 
@@ -425,10 +425,13 @@ The top row's keys are read by position (evdev `KEY_1` to `KEY_9`) while the men
 AZERTY the `&` key is 1 without Shift; the typed character still counts too, so the keypad with
 NumLock and QWERTY's digits work as before. Only the power menu reads a key by position: every other
 box follows the layout (`keys.rs`), because a letter or a word must mean what the user chose, while
-a row number is a place on the keyboard. Only a top-row key that types another character than a
-digit, or none, is read by position: a typed digit is that digit and a named key (an arrow, Enter,
-Escape) keeps its meaning, whatever code it came on, because a virtual keyboard (wtype, an on-screen
-keyboard) numbers its keys as it likes. The owner's decision 11 (2026-11-27), after the first
+a row number is a place on the keyboard. Only a top-row key that types no character, or one that
+is not an ASCII letter or digit, is read by position: a typed ASCII letter or digit is that
+character and a named key (an arrow, Enter, Escape) keeps its meaning, whatever code it came on,
+because a virtual keyboard (wtype, squeekboard) numbers its keys as it likes, and a letter it sent
+on code 3 read as row 2 could run Log out (which does not ask) at once. The layouts whose top row
+needs this type punctuation or accented letters there (AZERTY, Bépo, Czech, programmer Dvorak),
+never an ASCII letter, so the rule keeps them. The owner's decision 11 (2026-11-27), after the first
 version needed Shift on AZERTY.
 
 Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`, `the_top_rows_keys_are_digits_by_position`, `the_power_menu_reads_the_top_rows_digits_by_position`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`

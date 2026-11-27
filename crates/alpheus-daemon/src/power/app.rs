@@ -248,6 +248,8 @@ impl App {
         app.power_timer.fired();
         let action = app.power_with(|p| p.due(now));
         app.power_action(action);
+        // After a Redraw `power_refresh` has synced already; this second sync finds the same
+        // deadline armed and returns (`sync` of `DeadlineTimer`): harmless, kept for the other answers.
         app.power_timer_sync();
     }
 

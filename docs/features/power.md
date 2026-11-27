@@ -48,7 +48,8 @@ that names one is refused (see Configuration).
   Enter). Another digit asks its own row's question; a digit past the rows does nothing but drop
   a pending question. The top row's keys count by position, whatever the layout types there: on
   AZERTY the `&` key is 1, no Shift needed. The keypad with NumLock works too, and a key that
-  types a digit is always that digit.
+  types a digit or an ASCII letter is always that character (a virtual keyboard may send one on a
+  top-row code).
 - **Esc**, or a click outside the menu, closes it. So does a change of style that moves the bar,
   or the output going away.
 - **The question.** A second activation counts only from 0.4 s after the question appeared, and
@@ -135,7 +136,8 @@ Two files in `crates/alpheus-daemon/src/power/`, and the rule they share in `ses
   (the rows, the selection, the pending question), `PowerAction` (what a key or the pointer asks of
   the wiring: nothing, redraw, close, or run a row and close), `key` (digits included), `hover`,
   `press`, `due`, `deadline`, `position_digit` (the top row's keys 1 to 9 by their evdev code,
-  which `popup.rs`'s `popup_key_of` asks only while the power menu is open), `width` (the longest text plus the pads, the gap and the capsule) and
+  which `popup.rs`'s `popup_key_of` asks only while the power menu is open, for a key that types
+  no ASCII letter or digit), `width` (the longest text plus the pads, the gap and the capsule) and
   `render` (the digit capsules are `ShapeKind::Chip(Tint::Pill)` shapes of the `Boxed`, painted
   under the cells by `paint_boxed`). The tests sit at the bottom of the file.
 - `app.rs`: the wiring. `OPS` is the menu's row in the table of popups (`popup::POPUPS`).
@@ -160,7 +162,10 @@ after every repaint and every tick, and disarms when there is neither. `power_cl
 menu's `Power`, so it goes with the popup. `Power::due` redraws when the seconds left change and
 answers `RunAndClose` at the end; a tick that changed nothing still re-arms the timer. The log
 says `power: countdown power off` (or `entry 2`) when one starts and `power: countdown cancelled`
-when one goes without running; its end is the row's own `power: power off`.
+when one goes without running; its end is the row's own `power: power off`. What pins the two
+lines is the unit test `the_countdown_logs_its_start_and_its_cancel_in_fixed_words` (on the pure
+`countdown_log`) and the daemon-wide scan `no_log_line_names_a_program_an_error_text_or_a_panic_payload`
+(`log_word_leak`); no power guardrail lists them by name.
 
 **The path of a click.** The bar's click handler finds the module's zone and calls the popup table's
 `toggle` for it, which is `power_toggle`. It builds a `Power` from `[quick]` and `[power]`, asks
@@ -192,8 +197,8 @@ start), never as its command or its name, which can name the user.
   menu's own deadlines, at most a second apart.
 - `the_top_rows_keys_are_digits_by_position` and `the_power_menu_reads_the_top_rows_digits_by_position`:
   evdev 2 to 10 are the digits 1 to 9 in the power menu only (AZERTY's `&` is 1), never with Ctrl,
-  Alt or Super, never over a named key (an arrow, Enter) or a typed digit, which a virtual keyboard
-  can send on any code; other popups, the keypad and QWERTY get the typed key. A held digit still
+  Alt or Super, never over a named key (an arrow, Enter) or a typed ASCII letter or digit, which a
+  virtual keyboard can send on any code (AZERTY's `é` is still 2); other popups, the keypad and QWERTY get the typed key. A held digit still
   goes through the repeat rule.
 - `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and
   `a_power_entry_naming_sleep_makes_bar_toml_invalid`: a row of your own that names a sleep word is

@@ -4001,12 +4001,12 @@ fn every_power_menu_activation_is_a_configured_session() {
     }
 }
 
-/// One call on the power menu: its answer, and the row whose countdown it started (none counting
-/// before the call, one after).
+/// One call on the power menu: its answer, and the row whose countdown it started (a row counting
+/// after the call that is not the one counting before it, if any).
 fn power_call(p: &mut Power, f: impl FnOnce(&mut Power) -> PowerAction) -> (PowerAction, Option<PowerEntry>) {
-    let was = p.counting.is_some();
+    let was = p.counting.map(|c| c.entry);
     let a = f(p);
-    let started = if was { None } else { p.counting.map(|c| c.entry) };
+    let started = p.counting.map(|c| c.entry).filter(|now| Some(*now) != was);
     (a, started)
 }
 
