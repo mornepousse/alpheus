@@ -325,3 +325,9 @@ here).
   popup pool), one shown ≈ 16 KB more; 20 show-and-close cycles keep +0…+4 KB of anonymous memory
   (`module_tooltips_free_everything_on_close`), and the loop sleeps after one
   (`at_rest_no_wakeups_after_a_module_tooltip`).
+- **Bindings and tooltips together** (the whole delivery against the version before it, `[bindings]`
+  absent and `tooltips` on): +60 KiB in the stripped binary, and at start and in the steady state
+  within noise (`everything` 10,133–10,137 KB against 10,205–10,209, steady 11,957–11,984 against
+  12,093–12,101; `startup_pss_per_source`, `pss_under_budget_and_stable`). Without a binding the
+  bar holds an empty map; the window, and a clock without its calendar, get one more zone in their
+  grid when bound or when they have a tooltip.

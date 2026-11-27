@@ -2193,3 +2193,36 @@ grace follows, a source going down takes a new baseline. Bluetooth shows on a po
 never a device, and no pill or log line names a device or a profile.
 
 Date: 2026-11-27 · Source: tests `osd_kinds_default_is_the_three_levels`, `osd_dnd_kind_needs_the_notifications_module` (`config/tests.rs`), `osd_without_sound_kinds_needs_no_sound`, `osd_kinds_bring_their_source`, `kinds_without_the_osd_module_bring_nothing` (`startup/tests.rs`), `passive_first_value_is_the_baseline`, `passive_a_source_going_down_takes_a_new_baseline`, `bluetooth_device_changes_do_not_show` (`osd/tests.rs`), `the_osd_logs_are_fixed_words` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`
+
+### A user binding replaces a module's default for that button only; a verb runs no new command
+
+`[bindings.<module>]` in `bar.toml` changes one button of one module: `left`, `middle`, `right`,
+`wheel_up` or `wheel_down`. A button left out keeps its default, so a binding never changes more
+than it names, and an empty `[bindings]` changes no click byte for byte. A binding is either an
+argument list, run through the executor as written with `{tab}` and `{output}` replaced as whole
+arguments (never a shell string), or one of seven verbs: `none`, `popup`, `quick`, `open_tab`,
+`launcher`, `dnd` and `mute`. A verb only reaches what the bar already does on some click, through
+the same path (`open_tab` is `[actions] open_tab`, `mute` the volume module's own mute): it runs no
+command of its own, writes nothing to the compositor and has no DPMS or idle action. A verb is
+refused at load where what it acts on does not exist (`popup` on a module without one, `quick` or
+`dnd` without their module). An argv that names `suspend`, `hibernate` or `hybrid-sleep`, or
+`systemctl` or `loginctl` then `sleep`, is refused: a suspend froze the DisplayLink dock, and the
+power rows never offer one; what any other command does is the user's choice. A refused binding's
+message names the key, never the command. The workspaces and the tray take no binding: their
+clicks are navigation. Prior art: waybar's `on-click` keys and i3status-rust's `[[click]]` arrays;
+one table per module with one key per button leaves no duplicate to detect.
+
+Date: 2026-11-27 · Source: tests `a_command_binding_runs_as_written`, `each_verb_resolves`, `an_unbound_button_keeps_today`, `empty_bindings_change_no_click_byte_for_byte` (`actions/tests.rs`), `bindings_refuse_the_sleep_words`, `bindings_default_empty_and_tooltips_on` (`config/tests.rs`); spec `docs/superpowers/specs/2026-11-27-bar-actions-design.md` (owner's draft Q1, Q2)
+
+### A tooltip spells out only what the bar draws (no SSID, device label or window class)
+
+A module tooltip says in one line what the module's glyphs already show: the full date under the
+clock, the volume's percent or `muted`, the network's link kind, VPN count and limits. It never
+tells more than the bar draws. The bar never draws an SSID (`NetState` holds none), so the network
+tooltip never shows one; on the same ground no sink or source label, no peripheral name, no window
+class and no app name appear. The window title and the Bluetooth device are drawn (cut), so their
+tooltip may show them whole, cleaned and capped like any application text. A tooltip's text is
+taken when it shows and never refreshed while shown, and it is never logged. One top-level key,
+`tooltips`, turns every tooltip off, the tray's included; `[tray] tooltips = false` still does.
+
+Date: 2026-11-27 · Source: tests `tooltips_name_no_private_field` (`tests/guardrails.rs`), `the_network_tooltip_says_link_vpns_and_limits` (`tooltips/tests.rs`), `a_hostile_title_is_drawn_clean_and_capped`, `nothing_left_to_read_shows_no_tooltip` (`session_bus/hover.rs`), `tooltips_false_shows_nothing_on_a_module` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-bar-actions-design.md` (decision 7)
