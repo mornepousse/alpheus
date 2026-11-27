@@ -403,6 +403,12 @@ impl Launcher {
         self.refilter_keeping(kept);
     }
 
+    /// The wallpaper folder the Tools catalog's Wallpaper built-in lists (`ToolsState::with_folder`),
+    /// once its catalog is set; nothing without one.
+    pub fn set_tools_folder(&mut self, dir: Option<PathBuf>) {
+        self.tools = self.tools.take().map(|t| t.with_folder(dir));
+    }
+
     pub fn tools(&self) -> Option<&ToolsState> {
         self.tools.as_ref()
     }

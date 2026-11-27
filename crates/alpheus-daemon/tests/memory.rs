@@ -28,8 +28,8 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus,
-    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, VirtualKeyboard, Workstation, assert_no_spin, capture_delta, capture_gone,
-    fake_env_recorder, fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub,
+    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, VirtualKeyboard, Workstation, assert_no_spin, binary_knows, capture_delta, capture_gone,
+    daemon_binary, fake_env_recorder, fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub,
     start_daemon_with, volume_delta, wait_until_executable, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
@@ -4698,7 +4698,21 @@ fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
     wait_until_executable(&on);
     let run = tools_mem_script(&sway, "fake-run", "exit 0");
     wait_until_executable(&run);
-    let (bar, launcher_toml) = tools_mem_config(&on, &run);
+    let (bar, mut launcher_toml) = tools_mem_config(&on, &run);
+    // `[wallpaper]` set (its entry shown, its folder checked at each open, never read): only for a
+    // daemon that knows the table (a base build would refuse the whole file).
+    if binary_knows(&daemon_binary(), "wallpaper.dir must be") {
+        let walls = sway.runtime.join("walls");
+        std::fs::create_dir_all(&walls).unwrap();
+        for i in 0..20 {
+            std::fs::write(walls.join(format!("{i:02}.png")), b"").unwrap();
+        }
+        launcher_toml.push_str(&format!(
+            "[wallpaper]\ndir = {:?}\nset = [{:?}, \"{{file}}\"]\n",
+            walls.display().to_string(),
+            run.display().to_string()
+        ));
+    }
     let d = start_daemon_with(
         &sway,
         &DaemonOptions {
@@ -4877,6 +4891,88 @@ fn tools_choices_2000_lines() {
     assert!(again.1 <= closed.1 + 384, "closed again {} KB anon vs {} KB before: more than 384 KB kept", again.1, closed.1);
     assert!(cycled.1 <= again.1 + 128, "5 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
     assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// The Wallpaper tool on a folder of 2,000 images (the listing's bound): `/wall`, Enter (the names
+/// read on the reader thread), then Escape twice; the reading taken with the names drawn.
+fn wallpaper_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "/wall", "-k", "Return", "-s", "4000", "-k", "Escape", "-k", "Escape"]);
+    // No log line says the names arrived (none is written for a read that worked): 2.5 s is far
+    // past one `read_dir` of 2,000 entries and the redraw.
+    std::thread::sleep(Duration::from_millis(2500));
+    let open = (d.pss_kb(), anon_kb(d));
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("tools: folder read failed"), 0, "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tools_wallpaper_2000_files() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("tools-wallpaper", 1);
+    let walls = sway.runtime.join("walls");
+    std::fs::create_dir_all(&walls).unwrap();
+    for i in 0..2000 {
+        std::fs::write(walls.join(format!("{i:04}.png")), b"").unwrap();
+    }
+    let setter = tools_mem_script(&sway, "fake-setter", "exit 0");
+    wait_until_executable(&setter);
+    let toml = format!(
+        "[tools]\nbuiltins = true\n[wallpaper]\ndir = {:?}\nset = [{:?}, \"{{file}}\"]\n",
+        walls.display().to_string(),
+        setter.display().to_string()
+    );
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(&toml),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let first_open = wallpaper_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let open = wallpaper_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    for n in 3..=7 {
+        wallpaper_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "tools wallpaper 2,000 files PSS (KB): first open {}, closed {}, open {} (+{}), closed again {}, after 5 more {}",
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "tools wallpaper anonymous (KB): closed {}, open {} (+{}), closed again {} ({:+}), after 5 more {} ({:+})",
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64
+    );
+    // The bounds of `tools_choices_2000_lines` (the same level, the same delivery).
+    assert!(again.1 <= closed.1 + 384, "closed again {} KB anon vs {} KB before: more than 384 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "5 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+    assert!(d.log().iter().all(|l| !l.contains("0001.png")), "never a name in the log");
 }
 
 /// Nothing at rest after a Tools cycle that read states and asked a question, the box closed by

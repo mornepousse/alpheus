@@ -831,8 +831,10 @@ impl App {
                         self.run_builtin(&qh, i, prepared);
                     }
                     Ok(Done::BuiltinChoice(i, choice)) => {
+                        // The open's `[wallpaper]`, read at open, moved out: the box goes with the close.
+                        let wallpaper = std::mem::take(&mut open.model.config.wallpaper);
                         self.launcher_close(CloseReason::Activated);
-                        self.run_builtin_choice(i, &choice);
+                        self.run_builtin_choice(i, &choice, &wallpaper);
                     }
                 }
             }

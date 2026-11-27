@@ -682,6 +682,87 @@ fn tools_choices_cmd_filters_and_runs() {
     assert!(d.log().iter().all(|l| !l.contains("two three")), "never a line in the log: {:?}", d.log());
 }
 
+/// A folder of two empty images and a fake setter on the private `PATH` (never a real one): each
+/// start appends its arguments to `<runtime>/setter-argv`, then a `--` line, and its PID to
+/// `<runtime>/setter-pids`, then sleeps as swaybg would. Returns the daemon's launcher.toml.
+fn wallpaper_setup(sway: &Sway) -> String {
+    let walls = sway.runtime.join("walls");
+    std::fs::create_dir_all(&walls).unwrap();
+    for f in ["a.png", "b.png"] {
+        std::fs::write(walls.join(f), b"").unwrap();
+    }
+    let (argv, pids) = (sway.runtime.join("setter-argv"), sway.runtime.join("setter-pids"));
+    tools_script(
+        sway,
+        "fake-setter",
+        &format!(
+            "for a in \"$@\"; do printf '%s\\n' \"$a\"; done >> '{}'\nprintf '%s\\n' '--' >> '{}'\necho $$ >> '{}'\nexec sleep 600",
+            argv.display(),
+            argv.display(),
+            pids.display()
+        ),
+    );
+    format!("[wallpaper]\ndir = \"{}\"\nset = [\"fake-setter\", \"-i\", \"{{file}}\"]\n", walls.display())
+}
+
+/// The fake setter's starts, one `Vec` of arguments each, in order.
+fn setter_starts(sway: &Sway) -> Vec<Vec<String>> {
+    let text = std::fs::read_to_string(sway.runtime.join("setter-argv")).unwrap_or_default();
+    text.split("--\n").filter(|c| !c.is_empty()).map(|c| c.lines().map(String::from).collect()).collect()
+}
+
+/// The PIDs the fake setter wrote (its own processes: the only ones this test reads).
+fn setter_pids(sway: &Sway) -> Vec<i32> {
+    std::fs::read_to_string(sway.runtime.join("setter-pids")).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect()
+}
+
+/// The Wallpaper tool: `/wall` finds it, Enter opens the folder's names, `b` and Enter start the
+/// setter with the file as one argument after the box closed; the name never reaches the log.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_wallpaper_picks_and_starts_the_setter() {
+    let sway = Sway::start("tools-wallpaper", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = wallpaper_setup(&sway);
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["/wall", "-k", "Return", "-s", "800", "b", "-k", "Return"]);
+    assert!(wait_until(|| setter_starts(&sway).len() == 1), "{:?}", d.log());
+    let file = sway.runtime.join("walls/b.png").display().to_string();
+    assert_eq!(setter_starts(&sway)[0], ["-i", file.as_str()]);
+    assert!(d.wait_for("tools: built-in wallpaper.pick", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("wallpaper: applied", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("b.png") && !l.contains("walls")), "never a name or the folder: {:?}", d.log());
+    let pid = setter_pids(&sway)[0];
+    assert!(process_alive(pid), "the setter runs on");
+    // It dies with the daemon (its PDEATHSIG is the event loop's thread's).
+    assert!(d.exit(Duration::from_millis(100)).is_none());
+    drop(d);
+    assert!(wait_until(|| !process_alive(pid)), "the setter outlived the daemon");
+}
+
+/// A second pick starts the new setter, then ends the old one: one fake setter left running.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_wallpaper_replaces_the_setter() {
+    let sway = Sway::start("tools-wallpaper-again", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = wallpaper_setup(&sway);
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["/wall", "-k", "Return", "-s", "800", "a", "-k", "Return"]);
+    assert!(wait_until(|| setter_pids(&sway).len() == 1), "{:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["/wall", "-k", "Return", "-s", "800", "b", "-k", "Return"]);
+    assert!(wait_until(|| setter_pids(&sway).len() == 2), "{:?}", d.log());
+    let pids = setter_pids(&sway);
+    assert!(wait_until(|| !process_alive(pids[0])), "the old setter is ended once the new one runs: {:?}", d.log());
+    assert!(process_alive(pids[1]), "the new one runs");
+    assert_eq!(pids.iter().filter(|&&p| process_alive(p)).count(), 1);
+    let file = sway.runtime.join("walls/b.png").display().to_string();
+    assert_eq!(setter_starts(&sway)[1], ["-i", file.as_str()]);
+}
+
 /// Enter held on an entry with choices drills once: the repeats do nothing (they would otherwise run
 /// its first choice), so a key held past a box never acts in what it opened.
 #[test]

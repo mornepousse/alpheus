@@ -29,6 +29,7 @@ fn all() -> Context {
         annotate: true,
         ocr: true,
         record: true,
+        wallpaper: true,
     }
 }
 
@@ -120,6 +121,7 @@ fn the_table_is_the_specs() {
             "timer",
             "clipboard",
             "emoji",
+            "wallpaper.pick",
             "capture.full",
             "capture.area",
             "capture.area_save",
@@ -175,6 +177,7 @@ fn the_table_is_the_specs() {
             "Timer",
             "Clipboard",
             "Emoji",
+            "Wallpaper",
             "Screenshot",
             "Area",
             "Area (save)",
@@ -207,7 +210,7 @@ fn the_table_is_the_specs() {
     assert_eq!(captures, "Captures");
     let mut expected = vec![quick; 8];
     expected.extend([control; 8]);
-    expected.extend([utilities; 4]);
+    expected.extend([utilities; 5]);
     expected.extend([captures; 9]);
     expected.extend([system; 2]);
     expected.extend([session; 3]);
@@ -230,6 +233,7 @@ fn the_table_is_the_specs() {
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
     assert_eq!(action("process.kill"), BuiltinAction::Kill);
+    assert_eq!(action("wallpaper.pick"), BuiltinAction::Wallpaper);
     // Each capture entry replays the verb of its own name.
     for (id, verb) in [
         ("capture.full", CaptureVerb::Full),
@@ -267,7 +271,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes, emoji, the kill list and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 15] = [
+    let flips: [Flip; 16] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -295,6 +299,7 @@ fn shown_follows_the_context() {
         (|c| c.nmap = true, &["diag.scan"]),
         (|c| c.usb_reset = true, &["diag.usb_reset"]),
         (|c| c.shutdown = true, &["shutdown"]),
+        (|c| c.wallpaper = true, &["wallpaper.pick"]),
         (
             |c| {
                 c.captures = true;
@@ -316,7 +321,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 43, "the table's 45, less the two Record rows hidden while recording");
+    assert_eq!(ids_shown(&all()).len(), 44, "the table's 46, less the two Record rows hidden while recording");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -336,6 +341,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "diag.scan" => c.nmap = false,
         "diag.usb_reset" => c.usb_reset = false,
         "shutdown" => c.shutdown = false,
+        "wallpaper.pick" => c.wallpaper = false,
         "capture.full" => c.captures = false,
         other => panic!("{other}"),
     }
@@ -354,11 +360,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 43);
+    assert_eq!(builtin_ids(&cat).len(), 44);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 41);
+    assert_eq!(ids.len(), 42);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");
@@ -847,4 +853,28 @@ fn lost_letters_counts_the_claimants_left_without_theirs() {
                 [[tools.entry]]\nname = \"Free\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"y\"\n";
     let (cat, _) = build(text, &all());
     assert_eq!(cat.lost_letters(&tools(text)), 2, "Mine and Also lost theirs; Free kept its own");
+}
+
+/// Spec (wallpaper): the Wallpaper entry shows only with `[wallpaper]` set and its folder there; it
+/// sits in Utilities with no default letter, and its names are read at drill-in like a `choices_cmd`.
+#[test]
+fn the_wallpaper_entry_is_absent_without_a_dir() {
+    let (cat, _) = build("", &Context::default());
+    assert!(!builtin_ids(&cat).contains(&"wallpaper.pick"), "off: no entry");
+    let (cat, _) = build("", &Context { wallpaper: true, ..Context::default() });
+    let e = cat.entries.iter().find(|e| e.key == "tool:builtin:wallpaper.pick").expect("the entry");
+    assert_eq!(e.name, "Wallpaper");
+    assert_eq!(e.category.map(|k| cat.categories[k].name.as_str()), Some("Utilities"));
+    assert_eq!(e.choices, Choices::Command);
+    assert_eq!(e.letter, None, "no default letter: [tools] keys gives one");
+    assert!(!e.confirm && e.ask.is_none());
+}
+
+/// A file name is never a row of the flat search: the entry is, its names never.
+#[test]
+fn a_wallpaper_name_is_never_in_the_flat_search() {
+    let (cat, _) = build("", &Context { wallpaper: true, ..Context::default() });
+    let at = cat.entries.iter().position(|e| e.key == "tool:builtin:wallpaper.pick").unwrap();
+    let rows: Vec<Flat> = cat.flat().into_iter().filter(|f| f.entry == at).collect();
+    assert_eq!(rows, [Flat { entry: at, choice: None }]);
 }

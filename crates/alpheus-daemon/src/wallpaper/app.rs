@@ -30,7 +30,6 @@ impl App {
     /// Applies `name` of `w`'s folder: the setter started (the old one dropped only once it runs),
     /// watched, and on success the name saved and `then` started when `run_then`. A setter that
     /// cannot start leaves the wallpaper as it was.
-    #[expect(dead_code, reason = "the Tools menu and the daemon's start call it (the plan's tasks 3 and 4)")]
     pub(crate) fn wallpaper_apply(&mut self, w: &WallpaperConfig, name: &str, run_then: bool) {
         let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute());
         let Some(dir) = resolve_dir(&w.dir, home.as_deref()) else {

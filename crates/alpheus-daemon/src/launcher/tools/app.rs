@@ -48,11 +48,12 @@ use crate::log::write as log;
 use crate::quick::Toggle;
 use crate::startup::Mail;
 use crate::timer::shutdown::ShutdownChoice;
+use crate::wallpaper::{WallpaperConfig, resolve_dir};
 use crate::wayland::App;
 use alpheus_common::launcher_ipc::{DndVerb, Reply, Request, TimerVerb};
 use alpheus_common::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -91,7 +92,18 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         annotate: false,
         ocr: false,
         record: false,
+        // The folder is checked by `tools_catalog` (one `metadata`), which sets it.
+        wallpaper: false,
     }
+}
+
+/// The folder the Wallpaper built-in lists: `[wallpaper]` set and its folder a directory (one
+/// `metadata`). None, with nothing read, while `[wallpaper]` is off.
+pub fn wallpaper_folder(w: &WallpaperConfig, home: Option<&Path>) -> Option<PathBuf> {
+    if !w.enabled() {
+        return None;
+    }
+    resolve_dir(&w.dir, home).filter(|dir| dir.is_dir())
 }
 
 /// Whether the program of `argv` (its first element) is on `path_dirs`; false for an empty argv.
@@ -248,7 +260,8 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Power
         | BuiltinAction::Shield
         | BuiltinAction::Kill
-        | BuiltinAction::Capture(_) => return Ok(None),
+        | BuiltinAction::Capture(_)
+        | BuiltinAction::Wallpaper => return Ok(None),
     };
     let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
@@ -266,7 +279,7 @@ fn not_found() -> alpheus_common::exec::ExecError {
 /// a built-in spawns runs in its own scope".
 pub fn spawn_builtin(
     exec: &dyn alpheus_common::exec::Executor,
-    runtime_dir: &std::path::Path,
+    runtime_dir: &Path,
     path_dirs: &[PathBuf],
     argv: Vec<String>,
 ) -> Result<(), String> {
@@ -295,7 +308,7 @@ impl Scheduler {
     /// Queues `job` for open `generation`; the job to start now, if the reader is free.
     pub fn offer(&mut self, generation: u64, job: Job, current: Option<u64>) -> Option<(u64, Job)> {
         match job {
-            Job::Choices { .. } => {
+            Job::Choices { .. } | Job::Folder { .. } => {
                 if self.running {
                     self.preempt.store(true, Ordering::Release);
                 }
@@ -400,13 +413,17 @@ impl App {
         c
     }
 
-    /// The catalog of this open (rebuilt at each open, dropped at close); its notes are logged
-    /// only when `notes` (a Tools open: a Mod+Space open says nothing about it).
-    pub(crate) fn tools_catalog(&self, config: &LauncherConfig, notes: bool) -> Catalog {
+    /// The catalog of this open (rebuilt at each open, dropped at close), and the wallpaper folder
+    /// its Wallpaper built-in lists (`ToolsState::with_folder`); its notes are logged only when
+    /// `notes` (a Tools open: a Mod+Space open says nothing about it).
+    pub(crate) fn tools_catalog(&self, config: &LauncherConfig, notes: bool) -> (Catalog, Option<PathBuf>) {
         // A boxed closure, because the two branches are different closures of one type: a note
         // sink that writes to the log, or one that drops it.
         let mut note: Box<dyn FnMut(&str)> = if notes { Box::new(log) } else { Box::new(|_| {}) };
-        let catalog = Catalog::build(&config.tools, &self.tools_context(config), &mut *note);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let folder = wallpaper_folder(&config.wallpaper, home.as_deref());
+        let context = Context { wallpaper: folder.is_some(), ..self.tools_context(config) };
+        let catalog = Catalog::build(&config.tools, &context, &mut *note);
         // The letters a later claimant wanted in vain: a count, never which.
         if notes && config.tools.panel {
             let n = catalog.lost_letters(&config.tools);
@@ -414,7 +431,7 @@ impl App {
                 log(&format!("tools: {n} letters taken twice"));
             }
         }
-        catalog
+        (catalog, folder)
     }
 
     /// The menu is gone: a running states read stops after its entry.
@@ -451,8 +468,9 @@ impl App {
         let config = crate::launcher::host::read_config(&paths::config_dir(), &mut |m| log(m));
         let now = crate::launcher::host::unix_now();
         let history = crate::launcher::host::load_history(&config, now);
-        let catalog = self.tools_catalog(&config, true);
+        let (catalog, folder) = self.tools_catalog(&config, true);
         let mut model = Launcher::for_tools(config, catalog, history, now);
+        model.set_tools_folder(folder);
         model.path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
         self.tools_builtin_states(&mut model);
         let job = model.tools().and_then(|t| t.state_job(&model.config.tools));
@@ -484,7 +502,7 @@ impl App {
                     let exec = self.exec.clone();
                     let preempt = self.tools.scheduler.preempt.clone();
                     let (entry, token) = match &job {
-                        Job::Choices { entry, token, .. } => (Some(*entry), *token),
+                        Job::Choices { entry, token, .. } | Job::Folder { entry, token, .. } => (Some(*entry), *token),
                         Job::States(..) => (None, 0),
                     };
                     match read::spawn_job(job, exec, preempt, move |e| {
@@ -610,8 +628,8 @@ impl App {
             }
             BuiltinAction::Notes => Some(self.notes_verb(qh, &Request::Notes)),
             BuiltinAction::Timer => Some(self.timer_verb(&Request::Timer(TimerVerb::Popup))),
-            // Chosen without a duration (never from the menu: it has choices): nothing to do.
-            BuiltinAction::Shutdown => None,
+            // Chosen without a duration or a name (never from the menu: they have choices): nothing to do.
+            BuiltinAction::Shutdown | BuiltinAction::Wallpaper => None,
             BuiltinAction::Clipboard => {
                 tools::join::open_clipboard(self, qh);
                 None
@@ -637,13 +655,18 @@ impl App {
         }
     }
 
-    /// Replays the shutdown built-in's chosen label after the box closed, through the timer's own
-    /// verbs (`--timer shutdown <secs>` or `shutdown-cancel`): one path for every way in. One log
-    /// line, by id.
-    pub(crate) fn run_builtin_choice(&mut self, i: usize, choice: &str) {
+    /// Replays a built-in's chosen line after the box closed: the shutdown's label through the
+    /// timer's own verbs (`--timer shutdown <secs>` or `shutdown-cancel`), one path for every way
+    /// in; the wallpaper's name to the setter, with `wallpaper` the open's `[wallpaper]` (read at
+    /// open). One log line, by id: never the line.
+    pub(crate) fn run_builtin_choice(&mut self, i: usize, choice: &str, wallpaper: &WallpaperConfig) {
         let Some(b) = BUILTINS.get(i) else { return };
         let id = b.id;
         log(&format!("tools: built-in {id}"));
+        if b.action == BuiltinAction::Wallpaper {
+            self.wallpaper_apply(wallpaper, choice, true);
+            return;
+        }
         let verb = match (b.action, crate::timer::shutdown::choice_of(choice)) {
             (BuiltinAction::Shutdown, Some(ShutdownChoice::Cancel)) => TimerVerb::ShutdownCancel,
             (BuiltinAction::Shutdown, Some(ShutdownChoice::After(ms))) => {

@@ -1,6 +1,7 @@
-//! The Tools menu's reader: the `state` of every entry that has one, and a
-//! `choices_cmd`, read on one short-lived thread (`alpheus-tools`) through `sources::capture_*`
-//! (1 s, 2,000 lines, 256 KiB, the group killed and reaped). One job at a time across opens; states
+//! The Tools menu's reader: the `state` of every entry that has one, a `choices_cmd`, and the
+//! wallpaper folder's names, read on one short-lived thread (`alpheus-tools`): the commands through
+//! `sources::capture_*` (1 s, 2,000 lines, 256 KiB, the group killed and reaped), the folder by one
+//! `read_dir` (`wallpaper::list`, 2,000 names). One job at a time across opens; states
 //! arrive one entry per delivery; a waiting choices job (`preempt`) stops a states job after its
 //! current entry and gets the unread ones back. Notes name an entry by its position in
 //! launcher.toml, never its name, command or output.
@@ -143,6 +144,15 @@ pub fn run_job(
             }
             JobEvent::Choices { entry, token, lines, failed }
         }
+        // A folder's names are delivered as a choices read's lines: the level, its token check and
+        // its drawing are the same. Never the folder or a name in a note.
+        Job::Folder { entry, dir, token } => match crate::wallpaper::list(&dir, crate::wallpaper::MAX_FILES) {
+            Ok(listing) => JobEvent::Choices { entry, token, lines: listing.names, failed: false },
+            Err(_) => {
+                note("tools: folder read failed");
+                JobEvent::Choices { entry, token, lines: Vec::new(), failed: true }
+            }
+        },
     }
 }
 
@@ -175,7 +185,9 @@ pub fn spawn_job(
     std::thread::Builder::new().name(THREAD.into()).spawn(move || {
         let on_panic = match &job {
             Job::States(..) => JobEvent::StatesDone { unread: Vec::new(), counts: Counts::default() },
-            Job::Choices { entry, token, .. } => JobEvent::Choices { entry: *entry, token: *token, lines: Vec::new(), failed: true },
+            Job::Choices { entry, token, .. } | Job::Folder { entry, token, .. } => {
+                JobEvent::Choices { entry: *entry, token: *token, lines: Vec::new(), failed: true }
+            }
         };
         let last =
             catch_unwind(AssertUnwindSafe(|| run_job(job, exec.as_ref(), &preempt, &mut deliver, &mut |m| log(m)))).unwrap_or_else(|_| {

@@ -510,7 +510,7 @@ fn enter_on_a_plain_tool_runs_it_and_a_builtin_is_handed_out() {
     l.set_tools(catalog);
     typed(&mut l, "notes");
     let Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, .. })) = l.key(Key::Enter) else { panic!() };
-    assert_eq!(crate::launcher::tools::catalog::BUILTINS[b].id, "notes");
+    assert_eq!(BUILTINS[b].id, "notes");
 }
 
 #[test]
@@ -829,7 +829,7 @@ fn diag_box() -> Launcher {
 }
 
 fn builtin_index(id: &str) -> usize {
-    crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == id).unwrap()
+    BUILTINS.iter().position(|b| b.id == id).unwrap()
 }
 
 fn into_scan_choices(l: &mut Launcher) {
@@ -922,7 +922,7 @@ fn a_builtin_choice_activates_the_builtin_with_its_label() {
     select(&mut l, "Schedule shutdown");
     assert_eq!(l.key(Key::Enter), Outcome::Redraw, "an entry with choices drills");
     assert_eq!(texts(&l), ["Cancel shutdown (in 1h20)", "30 min", "1 h", "1 h 30", "2 h", "3 h"]);
-    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let b = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     select(&mut l, "1 h 30");
     assert_eq!(
         l.key(Key::Enter),
@@ -983,7 +983,7 @@ fn a_builtin_choice_is_reachable_from_the_flat_search() {
     typed(&mut l, "shutdown 2 h");
     let t = selected_text(&l);
     assert!(t.contains("2 h"), "{t}");
-    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let b = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     // The flat row of a fixed choice: Enter drills nowhere, it activates.
     assert_eq!(
         l.key(Key::Enter),
@@ -1066,4 +1066,55 @@ fn next_tab_with_one_tab_does_nothing() {
     assert!(!t.next_tab(1));
     assert!(!t.next_tab(-1));
     assert_eq!(t.rev(), rev, "the rows were not rebuilt");
+}
+
+/// The wallpaper built-in's catalog: `[wallpaper]` set, its folder there.
+fn wallpaper_catalog() -> (LauncherConfig, Catalog, usize) {
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = Catalog::build(&config.tools, &Context { wallpaper: true, ..Context::default() }, &mut |_| {});
+    let at = catalog.entries.iter().position(|e| e.key == "tool:builtin:wallpaper.pick").unwrap();
+    (config, catalog, at)
+}
+
+/// Off is free, and so is a closed level: the folder is only kept by `with_folder`, read by the job
+/// its level's Enter hands out, never before.
+#[test]
+fn the_folder_is_read_only_when_its_level_opens() {
+    let d = crate::launcher::testing::TempDir::new("nav-wallpaper");
+    std::fs::write(d.join("a.png"), b"").unwrap();
+    let (config, catalog, at) = wallpaper_catalog();
+    let mut t = ToolsState::new(catalog).with_folder(Some(d.to_path_buf()));
+    assert!(!t.reading, "nothing waited for at open");
+    assert!(t.choice_lines(at).is_empty(), "no name listed at open");
+    assert_eq!(t.state_job(&config.tools), None, "no job at open");
+    let step = t.enter(&config.tools, RowId::Entry(at), 0, Instant::now());
+    let Step::Drill(Some(Job::Folder { entry, dir, token })) = step else { panic!("{step:?}") };
+    assert_eq!((entry, dir.as_path()), (at, d.as_ref()));
+    assert!(t.reading && t.choice_lines(at).is_empty(), "read on the reader thread, not here");
+    assert!(t.adopt_choices(at, token, vec!["a.png".into()], false));
+    assert_eq!(t.choice_lines(at), ["a.png"]);
+    // Chosen: the built-in with its name, handed out for the glue.
+    let step = t.enter(&config.tools, RowId::Choice(at, 0), 0, Instant::now());
+    let Step::Run(ToolAction::Builtin { choice, .. }) = step else { panic!("{step:?}") };
+    assert_eq!(choice.as_deref(), Some("a.png"));
+}
+
+/// Without a folder the level opens empty and asks nothing of the reader.
+#[test]
+fn without_a_folder_the_wallpaper_level_reads_nothing() {
+    let (config, catalog, at) = wallpaper_catalog();
+    let mut t = ToolsState::new(catalog);
+    assert_eq!(t.enter(&config.tools, RowId::Entry(at), 0, Instant::now()), Step::Drill(None));
+    assert!(!t.reading);
+}
+
+/// The names delivered never join the flat search, whose rows are built once at open.
+#[test]
+fn a_wallpaper_name_never_joins_the_flat_rows() {
+    let (config, catalog, at) = wallpaper_catalog();
+    let mut t = ToolsState::new(catalog).with_folder(Some("/nonexistent".into()));
+    let Step::Drill(Some(Job::Folder { token, .. })) = t.enter(&config.tools, RowId::Entry(at), 0, Instant::now()) else { panic!() };
+    assert!(t.adopt_choices(at, token, vec!["beach.jpg".into()], false));
+    let (rows, hits) = t.flat();
+    assert!(rows.iter().all(|r| !r.text.contains("beach")) && hits.iter().all(|h| !h.name.contains("beach") && !h.key.contains("beach")));
 }

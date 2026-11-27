@@ -5,8 +5,16 @@ decodes the image: it starts your own setter (swaybg, wbg, swww) with the file, 
 command after it (matugen, so the bar's colours follow), and starts it again with the last choice
 when the daemon starts.
 
-This page grows with the feature: the setter is built; the Tools menu entry, the re-apply at start
-and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallpaper.md`).
+This page grows with the feature: the setter and the Tools menu entry are built; the re-apply at
+start and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallpaper.md`).
+
+## Using it
+
+Set `[wallpaper]` (a folder and your setter's command). Super+X shows **Wallpaper** in Utilities
+(no letter of its own: `[tools] keys = { "wallpaper.pick" = "y" }` gives it one); type `/wall` to find it.
+Enter lists the folder's images by name, sorted (png, jpg, jpeg, webp, bmp, gif; at most 2,000);
+type to filter, Enter applies the one selected, after the box closed. The history keeps that you
+used the tool, never the file's name.
 
 ## What it does
 
@@ -39,6 +47,13 @@ and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallp
   pidfd's readiness into `Applied`, `Failed` or `Gone`. `apply_outcome` saves the name through
   `state_file.rs` (`$XDG_STATE_HOME/alpheus/wallpaper`, owner-only, atomic) and starts `then` in its
   systemd scope (`run::launch`).
+- The Tools menu (`launcher/tools/`): `BuiltinAction::Wallpaper`, shown when `Context.wallpaper`
+  (`[wallpaper]` set and its folder a directory: one `metadata` per open, none while off). Its
+  choices are `Choices::Command`: never in the flat search, never recorded. Enter on it hands the
+  reader a `Job::Folder` (`ToolsState::with_folder` only keeps the folder), listed by `wallpaper::list`
+  on the `alpheus-tools` thread and delivered as a choices read. The chosen name is recorded as
+  `tool:builtin:wallpaper.pick` alone and handed to `wallpaper_apply` with the open's `[wallpaper]`
+  once the box closed. A folder that cannot be read logs `tools: folder read failed`.
 - `wallpaper/app.rs`: the glue on `App`. `wallpaper_apply` runs on the event loop's thread, so the
   setter's PDEATHSIG is the daemon's own: the setter dies with the daemon. Each setter's pidfd is a
   calloop `Generic` source, silent until it ends. Logs are fixed words: `wallpaper: applied`,
@@ -53,6 +68,13 @@ and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallp
   The watched-child list of `the_recording_signal_reaches_only_the_recorder_alpheus_started` holds
   `wallpaper/setter.rs` (the owner's go, 2026-11-27).
 - `the_wallpaper_logs_fixed_words_only` (guardrail): every `log(` takes one string literal.
+- `the_wallpaper_entry_is_absent_without_a_dir`, `the_folder_is_read_only_when_its_level_opens`,
+  `a_folder_job_lists_names_like_a_choices_cmd`, `a_wallpaper_name_is_never_in_the_flat_search`,
+  `a_wallpaper_choice_is_recorded_without_its_name`,
+  `the_wallpaper_builtin_spawns_nothing_through_the_tools_glue`.
+- Headless, with a fake setter on the private `PATH`: `tools_wallpaper_picks_and_starts_the_setter`
+  (the file as one argument, the setter dying with the daemon) and
+  `tools_wallpaper_replaces_the_setter` (one setter left after two picks).
 - `a_restart_drops_only_the_old_handle_after_the_new_one_started`,
   `a_one_shot_setter_succeeds_only_on_exit_zero`,
   `a_failed_set_runs_no_then_and_keeps_the_remembered_name`,
@@ -65,3 +87,7 @@ and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallp
   [../measurements.md](../measurements.md)); nothing is read or started.
 - A setter running: its handle, one pidfd and one calloop source, no wake-up until it ends. The
   setter itself is the user's program.
+- The Tools menu with `[wallpaper]` set: one `metadata` per open, the anonymous memory within noise
+  of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names
+  show, back within +20 to +140 KB once closed, the reader thread gone (figures in
+  [../measurements.md](../measurements.md)).

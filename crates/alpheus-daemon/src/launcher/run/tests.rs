@@ -764,3 +764,21 @@ fn a_built_ins_choice_is_recorded_under_its_key_and_its_text_never() {
     assert!(!std::fs::read_to_string(&h).unwrap().contains("secret-host"));
     assert!(f.calls().is_empty(), "perform runs nothing for a built-in: the glue replays it");
 }
+
+/// A wallpaper's file name is never kept: the choice is recorded under the built-in alone and
+/// handed back whole for the glue, which starts the setter after the box closed.
+#[test]
+fn a_wallpaper_choice_is_recorded_without_its_name() {
+    let d = TempDir::new("run-wallpaper");
+    let h = d.join("launcher-history");
+    let f = FakeExecutor::new();
+    let mut l = tools_launcher("");
+    let wallpaper = BUILTINS.iter().position(|b| b.id == "wallpaper.pick").unwrap();
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &[]);
+    let a = Activation::Tool(ToolAction::Builtin { index: wallpaper, choice: Some("beach.jpg".into()), text: None });
+    assert_eq!(perform(&mut l, a, &c), Ok(Done::BuiltinChoice(wallpaper, "beach.jpg".into())));
+    let ids: Vec<&str> = l.history.entries().iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(ids, ["tool:builtin:wallpaper.pick"]);
+    assert!(!std::fs::read_to_string(&h).unwrap().contains("beach"), "no name in the file");
+    assert!(f.calls().is_empty() && f.children().is_empty(), "perform starts no setter");
+}

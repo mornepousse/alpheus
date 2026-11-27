@@ -582,3 +582,28 @@ fn a_preset_opens_the_diag_tab_on_it_in_the_terminal() {
     let c = commands_with(&quick, &[], &open_tab, &terminal, &dirs);
     assert_eq!(builtin_argv(builtin_by_id("diag.preset.usb"), &c), Err("alpheus: program not found".into()));
 }
+
+/// The Wallpaper built-in spawns nothing through the Tools glue: the setter is the wallpaper's own
+/// child (`wallpaper/app.rs`), started after the box closed.
+#[test]
+fn the_wallpaper_builtin_spawns_nothing_through_the_tools_glue() {
+    let quick = QuickConfig::default();
+    let mut c = commands_with(&quick, &[], &[], &[], &[]);
+    c.choice = Some("a.png");
+    assert_eq!(builtin_argv(builtin_by_id("wallpaper.pick"), &c), Ok(None));
+}
+
+/// The folder listed: `[wallpaper]` set and its folder a directory; off, a missing folder, a file in
+/// its place or a relative one list nothing.
+#[test]
+fn the_wallpaper_folder_is_a_set_directory() {
+    let bin = Bin::new("wallpaper-folder", &["a.png"]);
+    let set = |dir: &str| WallpaperConfig { dir: dir.to_string(), set: strings(&["swaybg", "-i", "{file}"]), ..WallpaperConfig::default() };
+    let dir = bin.0.to_string_lossy().into_owned();
+    assert_eq!(wallpaper_folder(&set(&dir), None), Some(bin.0.clone()));
+    assert_eq!(wallpaper_folder(&set("~/"), Some(&bin.0)), Some(bin.0.join("")));
+    assert_eq!(wallpaper_folder(&WallpaperConfig { dir: dir.clone(), ..WallpaperConfig::default() }, None), None, "no setter: off");
+    assert_eq!(wallpaper_folder(&set(&format!("{dir}/a.png")), None), None, "a file is no folder");
+    assert_eq!(wallpaper_folder(&set(&format!("{dir}/gone")), None), None);
+    assert_eq!(wallpaper_folder(&set("~/walls"), None), None, "no home");
+}
