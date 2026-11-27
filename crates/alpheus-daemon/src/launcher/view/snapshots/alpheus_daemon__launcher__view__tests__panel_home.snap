@@ -3,19 +3,20 @@ source: crates/alpheus-daemon/src/launcher/view/tests.rs
 expression: snapshot_with_shapes(&rows)
 ---
   󰍉 ▏ Search tools                                                                          Super   X   
+                                                                                                        
   All   Quick settings   Control center   Utilities   Captures   Diagnostics   System   Session         
                                                                                                         
   ● QUICK SETTINGS                                                                                      
       Sound                                                                                             
       Set volume and output in quick settings                                                           
-      Wi-Fi                                                w                                            
-      Pick a Wi-Fi network in quick settings                     Sound                                  
-      Bluetooth                                            b     Quick settings · built-in              
-      Connect a device in quick settings                                                                
-      VPN                                                  v     Set volume and output in quick         
-      Connect a VPN in quick settings                            settings                               
-      Shield                                               h     ────────────────────────────────────   
-      Open Shield in quick settings                              Open                              ⏎    
+      Wi-Fi                                                w     Sound                                  
+      Pick a Wi-Fi network in quick settings                     Quick settings · built-in              
+      Bluetooth                                            b     Set volume and output in quick         
+      Connect a device in quick settings                         settings                               
+      VPN                                                  v     ────────────────────────────────────   
+      Connect a VPN in quick settings                            Open                              ⏎    
+      Shield                                               h                                            
+      Open Shield in quick settings                                                                     
       Do not disturb                                       d                                            
       Turn do not disturb on or off                                                                     
       Keep awake                                           z                                            
@@ -28,23 +29,23 @@ expression: snapshot_with_shapes(&rows)
       Sound                                                                                             
       Open the control center's Sound tab                                                               
                                                                                                         
-                                                                                                        
   ⏎  Run    →  Options    Tab  Category    a-z  Quick key    Esc  Close                                 
 
 ..m.a.mmmmmmmmmmmm..........................................................................mmmmm...m...
+........................................................................................................
 ..???...................................................................................................
 ........................................................................................................
 ..B.mmmmmmmmmmmmmm......................................................................................
 ........................................................................................................
 ......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...........................................................
+...........................................................m.....NNNNN..................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.....................mmmmmmmmmmmmmmmmmmmmmmmmm..............
 ...........................................................m............................................
-......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.....................NNNNN..................................
-...........................................................m.....mmmmmmmmmmmmmmmmmmmmmmmmm..............
 ......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm................................................................
-...........................................................m............................................
-......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...................................................................
 ...........................................................m.....mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...
-......mmmmmmmmmmmmmmmmmmmmmmmmmmmmm................................................................m....
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm..............................................................m....
+...........................................................m............................................
+......mmmmmmmmmmmmmmmmmmmmmmmmmmmmm.....................................................................
 ...........................................................m............................................
 ......mmmmmmmmmmmmmmmmmmmmmmmmmmmmm.....................................................................
 ...........................................................m............................................
@@ -57,45 +58,44 @@ expression: snapshot_with_shapes(&rows)
 ........................................................................................................
 ......mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...............................................................
 ........................................................................................................
-........................................................................................................
 ..m..mmm....m..mmmmmmm....mmm..mmmmmmmm....mmm..mmmmmmmmm....mmm..mmmmm.................................
 
 divider: none
-separators: [2, 26]
+separators: [3, 26]
 
 shapes:
 Chip(Pill) at row 0 col 1 width 102 rows 1
 Chip(Selection) at row 0 col 99 width 3 rows 1
 Chip(Selection) at row 0 col 91 width 7 rows 1
-Chip(AccentContainer) at row 1 col 1 width 5 rows 1
-Chip(Pill) at row 1 col 7 width 16 rows 1
-Chip(Pill) at row 1 col 24 width 16 rows 1
-Chip(Pill) at row 1 col 41 width 11 rows 1
-Chip(Pill) at row 1 col 53 width 10 rows 1
-Chip(Pill) at row 1 col 64 width 13 rows 1
-Chip(Pill) at row 1 col 78 width 8 rows 1
-Chip(Pill) at row 1 col 87 width 9 rows 1
-Band at row 4 col 1 width 61 rows 2
-Chip(Pill) at row 4 col 2 width 3 rows 2 glyph '\u{f057e}' in Hue(Blue)
-Chip(Pill) at row 6 col 2 width 3 rows 2 glyph '\u{f05a9}' in Hue(Blue)
-Chip(Pill) at row 6 col 58 width 3 rows 1
-Chip(Pill) at row 8 col 2 width 3 rows 2 glyph '\u{f00af}' in Hue(Blue)
-Chip(Pill) at row 8 col 58 width 3 rows 1
-Chip(Pill) at row 10 col 2 width 3 rows 2 glyph '\u{f0582}' in Hue(Blue)
-Chip(Pill) at row 10 col 58 width 3 rows 1
-Chip(Pill) at row 12 col 2 width 3 rows 2 glyph '\u{f0498}' in Hue(Blue)
-Chip(Pill) at row 12 col 58 width 3 rows 1
-Chip(Pill) at row 14 col 2 width 3 rows 2 glyph '\u{f009b}' in Hue(Blue)
-Chip(Pill) at row 14 col 58 width 3 rows 1
-Chip(Pill) at row 16 col 2 width 3 rows 2 glyph '\u{f0176}' in Hue(Blue)
-Chip(Pill) at row 16 col 58 width 3 rows 1
-Chip(Pill) at row 18 col 2 width 3 rows 2 glyph '\u{f0594}' in Hue(Blue)
-Chip(Pill) at row 18 col 58 width 3 rows 1
-Chip(Pill) at row 21 col 2 width 3 rows 2 glyph '\u{f02dc}' in Hue(Purple)
-Chip(Pill) at row 23 col 2 width 3 rows 2 glyph '\u{f057e}' in Hue(Purple)
-Card at row 3 col 63 width 40 rows 23
-Chip(Pill) at row 4 col 65 width 3 rows 2 glyph '\u{f057e}' in Hue(Blue)
-Chip(Selection) at row 13 col 98 width 3 rows 1
+Chip(AccentContainer) at row 2 col 1 width 5 rows 1
+Chip(Pill) at row 2 col 7 width 16 rows 1
+Chip(Pill) at row 2 col 24 width 16 rows 1
+Chip(Pill) at row 2 col 41 width 11 rows 1
+Chip(Pill) at row 2 col 53 width 10 rows 1
+Chip(Pill) at row 2 col 64 width 13 rows 1
+Chip(Pill) at row 2 col 78 width 8 rows 1
+Chip(Pill) at row 2 col 87 width 9 rows 1
+Band at row 5 col 1 width 61 rows 2
+Tile at row 5 col 2 width 3 rows 2 glyph '\u{f057e}' in Hue(Blue)
+Tile at row 7 col 2 width 3 rows 2 glyph '\u{f05a9}' in Hue(Blue)
+Chip(Pill) at row 7 col 58 width 3 rows 1
+Tile at row 9 col 2 width 3 rows 2 glyph '\u{f00af}' in Hue(Blue)
+Chip(Pill) at row 9 col 58 width 3 rows 1
+Tile at row 11 col 2 width 3 rows 2 glyph '\u{f0582}' in Hue(Blue)
+Chip(Pill) at row 11 col 58 width 3 rows 1
+Tile at row 13 col 2 width 3 rows 2 glyph '\u{f0498}' in Hue(Blue)
+Chip(Pill) at row 13 col 58 width 3 rows 1
+Tile at row 15 col 2 width 3 rows 2 glyph '\u{f009b}' in Hue(Blue)
+Chip(Pill) at row 15 col 58 width 3 rows 1
+Tile at row 17 col 2 width 3 rows 2 glyph '\u{f0176}' in Hue(Blue)
+Chip(Pill) at row 17 col 58 width 3 rows 1
+Tile at row 19 col 2 width 3 rows 2 glyph '\u{f0594}' in Hue(Blue)
+Chip(Pill) at row 19 col 58 width 3 rows 1
+Tile at row 22 col 2 width 3 rows 2 glyph '\u{f02dc}' in Hue(Purple)
+Tile at row 24 col 2 width 3 rows 2 glyph '\u{f057e}' in Hue(Purple)
+Card at row 4 col 63 width 40 rows 22
+Tile at row 5 col 65 width 3 rows 2 glyph '\u{f057e}' in Hue(Blue)
+Chip(Selection) at row 12 col 98 width 3 rows 1
 Chip(Pill) at row 27 col 1 width 3 rows 1
 Chip(Pill) at row 27 col 11 width 3 rows 1
 Chip(Pill) at row 27 col 25 width 5 rows 1

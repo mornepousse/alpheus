@@ -165,7 +165,7 @@ pub fn recent_entries(catalog: &Catalog, keys: &[String], n: usize) -> Vec<usize
 
 /// A line of a tool's detail card, derived from what the tool is (never written per tool).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
+pub enum Action<'a> {
     /// `Run ⏎`.
     Run,
     /// `Open ⏎`: it opens a panel or a box of its own.
@@ -173,7 +173,7 @@ pub enum Action {
     /// `Choose →`: it has choices.
     Choose,
     /// `Type <label> ⏎`: it asks for a text, under this label.
-    Type(String),
+    Type(&'a str),
     /// `Confirm ⏎ ⏎`: it asks first.
     Confirm,
     /// `Turn on/off ⏎`: a state it flips.
@@ -202,14 +202,14 @@ fn opens(action: BuiltinAction) -> bool {
 /// The detail card's actions for `entry`: what Enter does first (choose, type, flip, confirm,
 /// open or run), what follows it (a prompt after a choice, a question after any of them: a toggle
 /// that asks lists the flip, then the question), then its letter.
-pub fn actions(entry: &Entry) -> Vec<Action> {
+pub fn actions(entry: &Entry) -> Vec<Action<'_>> {
     let choices = !matches!(entry.choices, Choices::None);
     let mut out = Vec::new();
     if choices {
         out.push(Action::Choose);
     }
     if let Some(label) = &entry.ask {
-        out.push(Action::Type(label.clone()));
+        out.push(Action::Type(label));
     }
     // A plain tool that asks: the question is what Enter does, no `Run` above it.
     if out.is_empty() && (entry.has_state || !entry.confirm) {

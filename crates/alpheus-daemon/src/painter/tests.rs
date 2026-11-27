@@ -253,6 +253,54 @@ fn frame_makes_the_visible_gap_equal_on_every_side() {
     assert_eq!(Frame::new(0, 8.25, Ink { left: 1, top: 6, bottom: 7 }).stroke, 1, "scale 0 treated as 1");
 }
 
+/// A box whose outermost content is shapes (the Super+X panel: chips on its first and last rows,
+/// shapes from one cell in at the sides) keeps the text frame's visible gap, measured to the
+/// shapes' edges: past the pad cell at the sides, past a chip's inset at the top and the bottom.
+#[test]
+fn a_frame_around_shapes_keeps_the_visible_gap_to_their_edges() {
+    for (scale, advance, ink, pad) in
+        [(1, 8.25, Ink { left: 1, top: 6, bottom: 7 }, 8), (2, 16.5, Ink { left: 2, top: 12, bottom: 14 }, 17)]
+    {
+        let text = Frame::new(scale, advance, ink);
+        let gap = text.side + pad + ink.left;
+        let f = Frame::around_shapes(scale, advance, ink);
+        let inset = CHIP_INSET * scale as u32;
+        assert_eq!(f.side + pad, gap, "scale {scale}: a shape one cell in, at the sides");
+        assert_eq!(f.top + inset, gap, "scale {scale}: a chip on the first row");
+        assert_eq!(f.bottom + inset, gap, "scale {scale}: a chip on the last row");
+        assert_eq!((f.stroke, f.radius), (text.stroke, text.radius), "scale {scale}: the same stroke and corners");
+    }
+}
+
+/// The painter takes a box's frame from its edge (`Boxed::edge`), not from the surface alone: a
+/// box of shapes painted with no room over (a surface of its cells and the text frame) still
+/// starts its first chip `Frame::around_shapes`' side and a pad cell from the edge, and one
+/// chip inset below its top margin.
+#[test]
+fn a_box_of_shapes_is_painted_with_its_frame_around_shapes() {
+    let mut p = fonts();
+    let pal = Roles::default();
+    for scale in [1, 2] {
+        let mut b = Boxed { rows: (0..3).map(|_| text_row(8, "")).collect(), edge: Edge::Shapes, ..Boxed::default() };
+        b.shapes.push(Shape { row: 0, col: 1, width: 6, rows: 1, kind: ShapeKind::Chip(Tint::Accent), glyph: None });
+        let (advance, text, shapes) = (p.advance(scale), p.frame(scale), p.boxed_frame(scale, Edge::Shapes));
+        let rh = DEFAULT_HEIGHT * scale as u32;
+        let (w, h) = ((8.0 * advance).ceil() as u32 + text.extra().0, 3 * rh + text.extra().1);
+        let mut px = vec![0x11u8; (w * h * 4) as usize];
+        p.paint_boxed(&b, &pal, &mut px, w, h, rh, scale, FrameInk::Border);
+        let accent = |x: u32, y: u32| {
+            let o = ((y * w + x) * 4) as usize;
+            Rgb(px[o + 2], px[o + 1], px[o]) == pal.accent
+        };
+        let my = (0..h).find(|&y| (0..w).any(|x| accent(x, y))).expect("the chip is painted");
+        let left = (0..w).find(|&x| accent(x, my + scale as u32 * 4)).unwrap();
+        let top = (0..h).find(|&y| accent(w / 2, y)).unwrap();
+        let pad = advance.round() as u32;
+        assert_eq!(left, shapes.side + pad, "scale {scale}: the frame around shapes at the sides ({text:?} vs {shapes:?})");
+        assert_eq!(top, shapes.top + CHIP_INSET * scale as u32, "scale {scale}: and at the top");
+    }
+}
+
 /// A tall bar (height 40) carries more leading than the usual gap covers: the margins stay
 /// even and the corners stay clear of the rows.
 #[test]
@@ -1131,6 +1179,17 @@ mod graphs {
         assert_eq!(mix(Rgb(255, 0, 100), Rgb(1, 1, 1), 100), Rgb(255, 0, 100));
     }
 
+    /// A pixel past the right edge of its row is no pixel, not the next row's first one.
+    #[test]
+    fn a_pixel_past_the_row_s_end_is_none() {
+        // 2 x 2, BGRA: row 0 is (1, 2), row 1 is (3, 4) in the red channel.
+        let px = [0, 0, 1, 255, 0, 0, 2, 255, 0, 0, 3, 255, 0, 0, 4, 255];
+        assert_eq!(pixel(&px, 2, 1, 0), Some(Rgb(2, 0, 0)));
+        assert_eq!(pixel(&px, 2, 0, 1), Some(Rgb(3, 0, 0)));
+        assert_eq!(pixel(&px, 2, 2, 0), None, "x = width is off the row");
+        assert_eq!(pixel(&px, 2, 0, 2), None, "y = height is off the buffer");
+    }
+
     /// 60 points over fewer than 60 px: some blocks are empty, the others tile the width exactly.
     #[test]
     fn plot_tiles_columns_exactly_at_every_scale() {
@@ -1303,6 +1362,7 @@ mod graphs {
 mod shapes {
     use super::*;
     use crate::list::{Shape, ShapeKind};
+    use alpheus_common::theme::contrast::ratio;
 
     /// `b` painted with `distinct()` roles at `scale`, in a box of its cells plus the frame.
     struct Painted {
@@ -1398,6 +1458,30 @@ mod shapes {
         assert_eq!(s.at(x0, y0), r.popup_bg, "its corner is rounded off");
     }
 
+    /// A glyph on a chip stays inside it: the search field's cursor (`▏`, the full line's height)
+    /// no longer pokes out above or below the field at scale 1, nor at 2.
+    #[test]
+    fn a_full_height_glyph_on_a_chip_stays_inside_it() {
+        let (mut p, r) = (fonts(), distinct());
+        // The cursor, and a box-drawing line and a full block, which reach the bottom too.
+        for glyph in ["▏", "│", "█"] {
+            let mut b = blank(20, 3);
+            b.shapes.push(shape(1, 2, 10, 1, ShapeKind::Chip(Tint::Pill)));
+            b.rows[1].write(4, 20, glyph, Style::ACCENT);
+            for scale in [1, 2] {
+                let s = Painted::new(&mut p, &b, scale);
+                let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 4, 1, 1);
+                let inset = CHIP_INSET * scale as u32;
+                let inked = |ys: std::ops::Range<u32>| {
+                    ys.flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) != r.popup_bg).count()
+                };
+                assert!(inked(y0 + inset..y1 - inset) > 0, "scale {scale}, {glyph}: drawn");
+                assert_eq!(inked(y0..y0 + inset), 0, "scale {scale}, {glyph}: nothing above the chip");
+                assert_eq!(inked(y1 - inset..y1), 0, "scale {scale}, {glyph}: nothing below the chip");
+            }
+        }
+    }
+
     /// A pixel rectangle: its x span, its y span (ends exclusive).
     type Rect = ((u32, u32), (u32, u32));
 
@@ -1408,7 +1492,7 @@ mod shapes {
     /// it) in cyan, at `scale`.
     fn tile(p: &mut Fonts, glyph: char, scale: i32) -> (Painted, Rect) {
         let mut b = blank(10, 4);
-        b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+        b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Tile) });
         let s = Painted::new(p, &b, scale);
         let cells = s.cells(p, 1, 2, 3, 2);
         (s, cells)
@@ -1419,21 +1503,79 @@ mod shapes {
         (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) != fill).collect()
     }
 
+    /// The glyph's ink is centred in its tile within a pixel, at both scales (the centring rounds
+    /// half a pixel at most; a pixel more is a drift).
     #[test]
     fn a_tile_glyph_is_centred_in_its_shape() {
         let (mut p, r) = (fonts(), distinct());
-        let (s, ((x0, x1), (y0, y1))) = tile(&mut p, crate::launcher::tools::catalog::FOLDER, 2);
-        // Inside the tile's chip, clear of its rounded corners: only the glyph differs from the fill.
-        let inset = 4 * 2;
-        let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
-        assert!(ink.len() > 20, "the glyph is drawn: {} px", ink.len());
-        let (lx, hx) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
-        let (ly, hy) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
-        let (cx, cy) = (f64::from(lx + hx + 1) / 2.0, f64::from(ly + hy + 1) / 2.0);
-        let (sx, sy) = (f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
-        assert!((cx - sx).abs() <= 2.0, "centred across: ink {cx} vs tile {sx}");
-        assert!((cy - sy).abs() <= 2.0, "centred down: ink {cy} vs tile {sy}");
-        assert!(ink.iter().any(|&(_, y)| y >= y0 + s.rh), "the top row alone does not hold the glyph");
+        for scale in [1, 2] {
+            let (s, ((x0, x1), (y0, y1))) = tile(&mut p, crate::launcher::tools::catalog::FOLDER, scale);
+            // Inside the tile's chip, clear of its rounded corners: only the glyph differs from the fill.
+            let inset = 4 * scale as u32;
+            let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
+            assert!(ink.len() > 10 * scale as usize, "scale {scale}: the glyph is drawn: {} px", ink.len());
+            let (lx, hx) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
+            let (ly, hy) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
+            let (cx, cy) = (f64::from(lx + hx + 1) / 2.0, f64::from(ly + hy + 1) / 2.0);
+            let (sx, sy) = (f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
+            assert!((cx - sx).abs() <= 1.0, "scale {scale}: centred across: ink {cx} vs tile {sx}");
+            assert!((cy - sy).abs() <= 1.0, "scale {scale}: centred down: ink {cy} vs tile {sy}");
+            assert!(ink.iter().any(|&(_, y)| y >= y0 + s.rh), "scale {scale}: the top row alone does not hold the glyph");
+        }
+    }
+
+    /// The pixels `b` with its last shape's glyph paints differently from `b` without it.
+    fn glyph_pixels(p: &mut Fonts, b: &Boxed, scale: i32) -> Vec<(u32, u32)> {
+        let mut bare = b.clone();
+        if let Some(sh) = bare.shapes.last_mut() {
+            sh.glyph = None;
+        }
+        let (with, without) = (Painted::new(p, b, scale), Painted::new(p, &bare, scale));
+        (0..with.h).flat_map(|y| (0..with.w).map(move |x| (x, y))).filter(|&(x, y)| with.at(x, y) != without.at(x, y)).collect()
+    }
+
+    /// The span of `ink` on each axis, ends inclusive.
+    fn span(ink: &[(u32, u32)]) -> ((u32, u32), (u32, u32)) {
+        let xs = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
+        (xs, (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap()))
+    }
+
+    /// A tile's glyph is drawn from the same face at a larger size than the text's (the P1 render's
+    /// tiles: no second font, one `FontSystem`), and a glyph too wide for that keeps the text's
+    /// size and stays inside the tile's ring.
+    #[test]
+    fn a_tile_glyph_is_larger_than_the_text_and_stays_inside_its_tile() {
+        let mut p = fonts();
+        let wifi = '\u{f05a9}';
+        for scale in [1, 2] {
+            let mut text = blank(10, 4);
+            text.rows[1].write(2, 10, &wifi.to_string(), Style::NORMAL);
+            let in_text = Painted::new(&mut p, &text, scale);
+            let ((x0, x1), (y0, y1)) = in_text.cells(&p, 1, 2, 1, 1);
+            let cell: Vec<(u32, u32)> =
+                (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| in_text.at(x, y) != distinct().popup_bg).collect();
+            let mut b = blank(10, 4);
+            b.shapes.push(Shape { glyph: Some((wifi, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Tile) });
+            let tile = glyph_pixels(&mut p, &b, scale);
+            let (c, t) = (span(&cell), span(&tile));
+            let (ch, th) = (c.1.1 - c.1.0 + 1, t.1.1 - t.1.0 + 1);
+            assert!(th * 10 >= ch * 14, "scale {scale}: the tile's glyph {th} px tall, the text's {ch}: at least 1.4 times");
+            // A tile two cells wide has no room for a zoomed icon: it keeps the text's size.
+            for (glyph, cols) in [('☕', 3), (wifi, 3), (crate::launcher::tools::catalog::FOLDER, 3), (wifi, 2), ('☕', 2)] {
+                let mut b = blank(10, 4);
+                b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, cols, 2, ShapeKind::Tile) });
+                let s = Painted::new(&mut p, &b, scale);
+                let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 2, usize::from(cols), 2);
+                let e = scale as u32;
+                let ((lx, hx), (ly, hy)) = span(&glyph_pixels(&mut p, &b, scale));
+                // Inside the ring (one px) with a px to spare, and the chip's inset.
+                assert!(lx >= x0 + 2 * e && hx < x1 - 2 * e, "scale {scale}, {glyph:?} in {cols} cells: across {lx}..={hx} in {x0}..{x1}");
+                assert!(
+                    ly >= y0 + (CHIP_INSET + 2) * e && hy < y1 - (CHIP_INSET + 2) * e,
+                    "scale {scale}, {glyph:?}: down {ly}..={hy} in {y0}..{y1}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1502,7 +1644,7 @@ mod shapes {
     #[test]
     fn a_switch_draws_its_knob_on_the_side_of_its_state() {
         let (mut p, r) = (fonts(), distinct());
-        for (on, track) in [(true, r.hues.green), (false, r.pill_bg)] {
+        for (on, track) in [(true, r.hues.green), (false, mix(r.fg_dim, r.popup_bg, OFF_TRACK_ALPHA))] {
             let mut b = blank(20, 3);
             b.shapes.push(shape(1, 8, 2, 1, ShapeKind::Switch(on)));
             let s = Painted::new(&mut p, &b, 1);
@@ -1515,6 +1657,86 @@ mod shapes {
             assert_eq!(s.at(far, cy), track, "on {on}: the track on the other side");
             assert_eq!(s.at(mid, y0), r.popup_bg, "on {on}: the track is shorter than its row");
             assert!((y0..y1).all(|y| s.at(x0 - 1, y) == r.popup_bg && s.at(x1, y) == r.popup_bg), "on {on}: two cells wide");
+        }
+    }
+
+    /// The off track stands out of whatever it lies on (the list, the selected row's band, a
+    /// card) in the Ink theme and the default one: a luminance ratio of at least 1.5 to the surface
+    /// around it (the theme's frame and separator lines, `border_over`, sit between 1.3 and 1.9;
+    /// a filled track is a whole shape, so a ratio past the weakest line's reads as one), and the
+    /// knob, which carries the state, at least 3:1 on its track (WCAG 2's floor for the parts of a
+    /// control). `pill_bg`, the track before, was 1.09 on Ink's list.
+    #[test]
+    fn the_off_track_stands_out_of_the_surface_under_it() {
+        let mut p = fonts();
+        let ink = alpheus_common::theme::presets::preset("ink").expect("the Ink theme").dark;
+        for (theme, r) in [("ink", ink), ("default", Roles::default())] {
+            for under in [None, Some(ShapeKind::Band), Some(ShapeKind::Card)] {
+                let mut b = blank(20, 3);
+                if let Some(kind) = under {
+                    b.shapes.push(shape(0, 2, 16, 3, kind));
+                }
+                b.shapes.push(shape(1, 8, 2, 1, ShapeKind::Switch(false)));
+                for scale in [1, 2] {
+                    let (advance, frame) = (p.advance(scale), p.frame(scale));
+                    let (cols, rows) = b.cells();
+                    let rh = DEFAULT_HEIGHT * scale as u32;
+                    let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
+                    let mut px = vec![0x11u8; (w * h * 4) as usize];
+                    p.paint_boxed(&b, &r, &mut px, w, h, rh, scale, FrameInk::Border);
+                    let at = |x: u32, y: u32| {
+                        let o = ((y * w + x) * 4) as usize;
+                        Rgb(px[o + 2], px[o + 1], px[o])
+                    };
+                    let (x0, x1) = (frame.side + p.edge(8), frame.side + p.edge(10));
+                    let cy = frame.top + rh + rh / 2;
+                    let (track, around, knob) = (at(x1 - 3 * scale as u32, cy), at(x0 - 2, cy), r.fg);
+                    let what = format!("{theme}, on {under:?}, scale {scale}: track {track:?} on {around:?}");
+                    assert!(ratio(track, around) >= 1.5, "{what}: {:.2}", ratio(track, around));
+                    assert!(ratio(knob, track) >= 3.0, "{what}: the knob {:.2}", ratio(knob, track));
+                }
+            }
+        }
+    }
+
+    /// A tool's tile stands out of whatever it lies on (the list, the selected row's band, the
+    /// detail card) in the Ink theme and the default one, by the off track's measure: its ring at a
+    /// luminance ratio of at least 1.5 to the surface around it (`pill_bg` alone, the tile before,
+    /// was 1.09 on Ink's list), and its glyph, in any category hue, at least 3:1 on its fill
+    /// (WCAG 2's floor for a graphic). A fill light enough to stand out by itself took the glyphs
+    /// down to 1.5.
+    #[test]
+    fn a_tile_stands_out_of_the_surface_under_it() {
+        let mut p = fonts();
+        let ink = alpheus_common::theme::presets::preset("ink").expect("the Ink theme").dark;
+        for (theme, r) in [("ink", ink), ("default", Roles::default())] {
+            for under in [None, Some(ShapeKind::Band), Some(ShapeKind::Card)] {
+                let mut b = blank(20, 4);
+                if let Some(kind) = under {
+                    b.shapes.push(shape(0, 2, 16, 4, kind));
+                }
+                b.shapes.push(shape(1, 8, 3, 2, ShapeKind::Tile));
+                for scale in [1, 2] {
+                    let (advance, frame) = (p.advance(scale), p.frame(scale));
+                    let (cols, rows) = b.cells();
+                    let rh = DEFAULT_HEIGHT * scale as u32;
+                    let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
+                    let mut px = vec![0x11u8; (w * h * 4) as usize];
+                    p.paint_boxed(&b, &r, &mut px, w, h, rh, scale, FrameInk::Border);
+                    let at = |x: u32, y: u32| {
+                        let o = ((y * w + x) * 4) as usize;
+                        Rgb(px[o + 2], px[o + 1], px[o])
+                    };
+                    let (x0, x1) = (frame.side + p.edge(8), frame.side + p.edge(11));
+                    let cy = frame.top + 2 * rh;
+                    let (tile, ring, around) = (at((x0 + x1) / 2, cy), at(x0, cy), at(x0 - 2, cy));
+                    let what = format!("{theme}, on {under:?}, scale {scale}: ring {ring:?} on {around:?}");
+                    assert!(ratio(ring, around) >= 1.5, "{what}: {:.2}", ratio(ring, around));
+                    for hue in [r.hues.red, r.hues.orange, r.hues.yellow, r.hues.green, r.hues.cyan, r.hues.blue, r.hues.purple] {
+                        assert!(ratio(hue, tile) >= 3.0, "{what}: a glyph in {hue:?} on the fill {tile:?}: {:.2}", ratio(hue, tile));
+                    }
+                }
+            }
         }
     }
 

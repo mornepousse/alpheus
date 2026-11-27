@@ -247,7 +247,14 @@ pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant,
     };
     let columns = WIDTH + 2;
     // The card comes first: its own separators keep their row numbers.
-    let mut out = Boxed { rows: Vec::new(), separators: card.separators.clone(), divider: None, graphs: Vec::new(), shapes: Vec::new() };
+    let mut out = Boxed {
+        rows: Vec::new(),
+        separators: card.separators.clone(),
+        divider: None,
+        graphs: Vec::new(),
+        shapes: Vec::new(),
+        edge: list::Edge::Text,
+    };
     for (r, line) in layout(center, players, p).into_iter().enumerate() {
         let mut g = Grid::empty(columns);
         match line {

@@ -33,7 +33,7 @@ use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Group, Hue, Style, Tint};
-use crate::list::{Boxed, Graph, Shape, ShapeKind};
+use crate::list::{Boxed, Edge, Graph, Shape, ShapeKind};
 use crate::placement::FLOAT_SHADOW;
 use alpheus_common::theme::settings::BarStyle;
 use alpheus_common::theme::{Rgb, Roles};
@@ -41,6 +41,7 @@ use blocks::OnBlock;
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// Rasterized glyphs kept at most (≈ 1 MB at 14 px).
 pub const MAX_CACHE: usize = 2048;
@@ -54,6 +55,14 @@ const FRAME_RADIUS: u32 = 6;
 const CARD_RADIUS: u32 = 6;
 const CHIP_RADIUS: u32 = 4;
 const BAND_RADIUS: u32 = 5;
+/// How much of `fg_dim` an off switch's track takes over the surface under it, in percent.
+const OFF_TRACK_ALPHA: u16 = 70;
+/// How much of `fg_dim` a tool's tile's ring takes over the surface under it, in percent (its fill
+/// stays `pill_bg`, dark enough under its glyph on every surface).
+const TILE_RING_ALPHA: u16 = 70;
+/// How many times the text's size a tile's glyph is drawn at, from the same face (the P1 render's
+/// tiles), when it fits.
+const TILE_GLYPH_ZOOM: f32 = 1.75;
 /// Logical px between a chip or a switch's track and the top and bottom of its rows.
 const CHIP_INSET: u32 = 2;
 /// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
@@ -103,6 +112,17 @@ impl Frame {
         // gaps stay equal on every side.
         let gap = (FRAME_SIDE * e + pad + ink.left).max(ink.top + radius).max(ink.bottom + radius);
         Frame { side: gap - pad - ink.left, top: gap - ink.top, bottom: gap - ink.bottom, stroke: e, radius }
+    }
+
+    /// The frame of a box whose outermost content is shapes (`Edge::Shapes`) at `scale`, for cells
+    /// `advance` wide and the `ink` of the font's capitals: the visible gap of `new`'s frame kept,
+    /// measured to the shapes' edges, past the pad cell at the sides and a chip's inset
+    /// (`CHIP_INSET`) on the first and the last rows.
+    pub fn around_shapes(scale: i32, advance: f32, ink: Ink) -> Frame {
+        let text = Frame::new(scale, advance, ink);
+        let (pad, inset) = (advance.round().max(0.0) as u32, CHIP_INSET * scale.max(1) as u32);
+        let gap = text.side + pad + ink.left;
+        Frame { side: gap - pad, top: gap - inset, bottom: gap - inset, ..text }
     }
 
     /// This frame inside a surface of `size` physical px holding `cells` columns × rows: the room
@@ -159,7 +179,10 @@ struct ShapedGlyph {
 /// nothing extra in `glyph` and needs no change to `Grid::write`'s column
 /// accounting: the cell stays exactly as wide as the character's own
 /// width already made it, just with nothing painted into it.
-fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool) -> Vec<ShapedGlyph> {
+///
+/// `zoom` rasterises the glyph that many times larger from the same face and shaping (a tile's
+/// glyph): cosmic-text scales the size in its `CacheKey`, so no second buffer or font system.
+fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool, zoom: f32) -> Vec<ShapedGlyph> {
     let mut s = [0u8; 4];
     buffer.set_text(ch.encode_utf8(&mut s), &attrs(family, bold), Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
@@ -169,7 +192,7 @@ fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold:
             if gl.glyph_id == 0 {
                 continue;
             }
-            let phys = gl.physical((-gl.x, 0.0), 1.0);
+            let phys = gl.physical((-gl.x * zoom, 0.0), zoom);
             shaped.push(ShapedGlyph { cache_key: phys.cache_key, dx: phys.x, y: run.line_y as i32 + phys.y, color_opt: gl.color_opt });
         }
     }
@@ -190,14 +213,15 @@ pub struct Fonts {
     /// session). Avoids reshaping "M" on every alternation.
     advances: Vec<(i32, f32)>,
     /// The frame already measured for each scale seen (like `advances`).
-    frames: Vec<(i32, Frame)>,
+    frames: Vec<(i32, Edge, Frame)>,
     /// `shape`'s result, memoized per (char, bold): cosmic-text otherwise
     /// reshapes the exact same glyph on every cell, column and redraw.
     /// Bounded like `cache` (`MAX_CACHE`, cleared past it); also cleared on
     /// a scale change (`set_scale`), since a shape's `cache_key` and
     /// physical offsets are only valid for the metrics they were measured
     /// at.
-    shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
+    /// A tile's glyph, drawn larger (`TILE_GLYPH_ZOOM`), is memoized apart: (char, bold, zoomed).
+    shapes: HashMap<(char, bool, bool), Rc<[ShapedGlyph]>>,
     /// The bar shapes' corner masks, made on first use per radius and scale.
     masks: MaskCache,
 }
@@ -232,13 +256,16 @@ pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
 }
 
 /// A shape's fill on a surface of `base`: a card `raised`, a chip its tint, the band the
-/// selection's, a switch's track green when on and `pill_bg` when off.
+/// selection's, a tile `pill_bg` (inside a ring `paint_shapes` draws), a switch's track green when
+/// on and `pill_bg` when off (`paint_shapes` paints an off track `fg_dim` over what lies under it
+/// instead).
 fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
     match kind {
         ShapeKind::Card => r.raised,
         ShapeKind::Chip(t) => color(r, base, t),
         ShapeKind::Band => color(r, base, Tint::Selection),
         ShapeKind::Switch(on) => color(r, base, if on { Tint::Hue(Hue::Green) } else { Tint::Pill }),
+        ShapeKind::Tile => r.pill_bg,
     }
 }
 
@@ -246,7 +273,7 @@ fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
 fn shape_columns(sh: &Shape) -> u16 {
     match sh.kind {
         ShapeKind::Switch(_) => 2,
-        ShapeKind::Card | ShapeKind::Chip(_) | ShapeKind::Band => sh.width,
+        ShapeKind::Card | ShapeKind::Chip(_) | ShapeKind::Band | ShapeKind::Tile => sh.width,
     }
 }
 
@@ -332,6 +359,16 @@ fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rg
 
 /// Share of a graph's ink (percent) in the body under its line.
 pub(crate) const BODY_ALPHA: u16 = 40;
+
+/// The colour of the pixel at `x`, `y` of a BGRA buffer `width` px wide; None past its row's end
+/// or the buffer's.
+fn pixel(px: &[u8], width: u32, x: u32, y: u32) -> Option<Rgb> {
+    if x >= width {
+        return None;
+    }
+    let o = (y as usize * width as usize + x as usize) * 4;
+    px.get(o..o + 3).map(|p| Rgb(p[2], p[1], p[0]))
+}
 
 /// `c` at `alpha` % over `base`, per channel, rounded.
 pub(crate) fn mix(c: Rgb, base: Rgb, alpha: u16) -> Rgb {
@@ -798,19 +835,28 @@ impl Fonts {
                     .find(|b| usize::from(b.start) <= col && col < usize::from(b.end))
                     .map_or(own, |b| if c.style.fg == Tint::FgDim { b.muted } else { b.ink })
             };
-            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, height);
+            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, (0, height));
         }
     }
 
     /// The frame of boxed surfaces at `scale`, measured once per scale from the font itself.
     pub fn frame(&mut self, scale: i32) -> Frame {
+        self.boxed_frame(scale, Edge::Text)
+    }
+
+    /// The frame of a box whose outermost content is `edge`, at `scale` (`Frame::new`,
+    /// `Frame::around_shapes`), measured once per scale.
+    pub fn boxed_frame(&mut self, scale: i32, edge: Edge) -> Frame {
         self.set_scale(scale);
-        if let Some((_, f)) = self.frames.iter().find(|(s, _)| *s == self.scale) {
+        if let Some((.., f)) = self.frames.iter().find(|(s, e, _)| *s == self.scale && *e == edge) {
             return *f;
         }
         let ink = self.measure_ink();
-        let frame = Frame::new(self.scale, self.advance, ink);
-        self.frames.push((self.scale, frame));
+        let frame = match edge {
+            Edge::Text => Frame::new(self.scale, self.advance, ink),
+            Edge::Shapes => Frame::around_shapes(self.scale, self.advance, ink),
+        };
+        self.frames.push((self.scale, edge, frame));
         frame
     }
 
@@ -819,7 +865,7 @@ impl Fonts {
     fn measure_ink(&mut self) -> Ink {
         let row = (self.height * self.scale as u32) as i32;
         let (mut left, mut top, mut bottom) = (i32::MAX, i32::MAX, i32::MIN);
-        for g in self.shaped('E', false) {
+        for g in self.shaped('E', false).iter() {
             self.cache.with_pixels(&mut self.fs, g.cache_key, Color::rgb(255, 255, 255), |dx, dy, c| {
                 if c.a() > 0 {
                     left = left.min(g.dx + dx);
@@ -857,7 +903,7 @@ impl Fonts {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
-        let frame = self.frame(scale).fitted(b.cells(), self.advance, row_height, (width, height));
+        let frame = self.boxed_frame(scale, b.edge).fitted(b.cells(), self.advance, row_height, (width, height));
         let base = roles.popup_bg;
         fill(px, width, 0, width, height, base);
         self.paint_shapes(b, roles, px, width, height, row_height, &frame, scale);
@@ -933,8 +979,12 @@ impl Fonts {
                 frame.top.saturating_add(row.saturating_mul(row_height)),
                 frame.top.saturating_add(row.saturating_add(u32::from(sh.rows)).saturating_mul(row_height)),
             );
-            let fill = shape_fill(roles, roles.popup_bg, sh.kind);
             let inset = CHIP_INSET * e;
+            let fill = shape_fill(roles, roles.popup_bg, sh.kind);
+            // A tile's ring and an off track take `fg_dim` over whatever they lie on (the list,
+            // the selected row's band, a card), read from the pixels already painted, so each
+            // stands out of all of them.
+            let under = |px: &[u8], x: u32, y: u32| pixel(px, width, x, y).unwrap_or(roles.popup_bg);
             match sh.kind {
                 ShapeKind::Card => self.rounded(px, width, height, x, y, clip, fill, CARD_RADIUS, scale),
                 ShapeKind::Band => self.rounded(px, width, height, x, y, clip, fill, BAND_RADIUS, scale),
@@ -942,12 +992,23 @@ impl Fonts {
                     let y = (y.0.saturating_add(inset), y.1.saturating_sub(inset));
                     self.rounded(px, width, height, x, y, clip, fill, CHIP_RADIUS, scale);
                 }
+                ShapeKind::Tile => {
+                    // A ring one logical px wide, then the fill inside it, rounded onto the ring.
+                    let y = (y.0.saturating_add(inset), y.1.saturating_sub(inset));
+                    let ring = mix(roles.fg_dim, under(px, x.0, y.0.midpoint(y.1)), TILE_RING_ALPHA);
+                    self.rounded(px, width, height, x, y, clip, ring, CHIP_RADIUS, scale);
+                    let inner = ((x.0.saturating_add(e), x.1.saturating_sub(e)), (y.0.saturating_add(e), y.1.saturating_sub(e)));
+                    self.rounded(px, width, height, inner.0, inner.1, clip, fill, CHIP_RADIUS - 1, scale);
+                }
                 ShapeKind::Switch(on) => {
                     // A capsule five eighths as tall as it is wide (at most its rows less the
                     // insets), centred on its rows; the knob a disc one logical px inside it.
                     let w = x.1.saturating_sub(x.0);
                     let h = y.1.saturating_sub(y.0).saturating_sub(2 * inset).min(w.saturating_mul(5) / 8);
                     let top = y.0.saturating_add((y.1.saturating_sub(y.0) - h) / 2);
+                    // Off, `fg_dim` over whatever the track lies on (the list, the selected row's
+                    // band, a card), so it stands out of each.
+                    let fill = if on { fill } else { mix(roles.fg_dim, under(px, x.0, top), OFF_TRACK_ALPHA) };
                     self.rounded(px, width, height, x, (top, top.saturating_add(h)), clip, fill, h / (2 * e), scale);
                     let d = h.saturating_sub(2 * e);
                     let left = if on { x.1.saturating_sub(e + d) } else { x.0.saturating_add(e) };
@@ -967,9 +1028,10 @@ impl Fonts {
     }
 
     /// `ch` in `ink`, its inked pixels centred in x ∈ [x.0, x.1) × y ∈ [y.0, y.1) (a tile's glyph,
-    /// whatever its width: a wide one's whole ink is centred). Its pixels are read twice from the
-    /// glyph cache, once to measure them and once to blend them. Whether it inked anything: a
-    /// character no loaded face has draws nothing.
+    /// whatever its width: a wide one's whole ink is centred), `TILE_GLYPH_ZOOM` times the text's
+    /// size, or the text's when that would not fit inside the tile's ring with a pixel to spare.
+    /// Its pixels are read twice from the glyph cache, once to measure them and once to blend
+    /// them. Whether it inked anything: a character no loaded face has draws nothing.
     #[allow(clippy::too_many_arguments)]
     fn centred_glyph(&mut self, ch: char, x: (u32, u32), y: (u32, u32), ink: Rgb, px: &mut [u8], width: u32, height: u32) -> bool {
         if self.cache.image_cache.len() >= MAX_CACHE {
@@ -978,24 +1040,25 @@ impl Fonts {
         }
         let Rgb(r, g, b) = ink;
         let base = Color::rgb(r, g, b);
-        let shaped = self.shaped(ch, false);
-        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for g in &shaped {
-            self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
-                if c.a() > 0 {
-                    (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
-                    (top, bottom) = (top.min(g.y + dy), bottom.max(g.y + dy));
-                }
-            });
-        }
-        if left > right {
-            return false;
-        }
+        // Room inside the ring (one px) and a px more on each side, and the chip's inset.
+        let e = self.scale.max(1) as u32;
+        let room = (x.1.saturating_sub(x.0).saturating_sub(4 * e), y.1.saturating_sub(y.0).saturating_sub(2 * (CHIP_INSET + 2) * e));
+        let fits = |(l, t, r, b): (i32, i32, i32, i32)| i64::from(r - l) < i64::from(room.0) && i64::from(b - t) < i64::from(room.1);
+        let zoomed = self.shaped_at(ch, false, true);
+        let (shaped, (left, top, right, bottom)) = match self.ink_bounds(&zoomed, base) {
+            None => return false,
+            Some(bounds) if fits(bounds) => (zoomed, bounds),
+            Some(_) => {
+                let plain = self.shaped(ch, false);
+                let Some(bounds) = self.ink_bounds(&plain, base) else { return false };
+                (plain, bounds)
+            }
+        };
         // Twice the offset: the rectangle's centre less the ink's, both doubled to stay in integers.
         let span = |a: u32, b: u32| i64::from(a) + i64::from(b);
         let shift = |rect: i64, lo: i32, hi: i32| i32::try_from((rect - i64::from(lo) - i64::from(hi) - 1).div_euclid(2)).unwrap_or(0);
         let (ox, oy) = (shift(span(x.0, x.1), left, right), shift(span(y.0, y.1), top, bottom));
-        for g in &shaped {
+        for g in shaped.iter() {
             let tint = g.color_opt.unwrap_or(base);
             self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
                 blend(px, width, height, ox.saturating_add(g.dx + dx), oy.saturating_add(g.y + dy), c);
@@ -1042,13 +1105,24 @@ impl Fonts {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
+            let on = b.shapes.iter().rev().find(|sh| covers(sh, i, col));
             let under = if c.style.bg != Tint::Bg {
                 color(roles, base, c.style.bg)
             } else {
-                b.shapes.iter().rev().find(|sh| covers(sh, i, col)).map_or(base, |sh| shape_fill(roles, base, sh.kind))
+                on.map_or(base, |sh| shape_fill(roles, base, sh.kind))
+            };
+            // A glyph on a chip stays inside it: a full-height one (the search field's cursor)
+            // would otherwise reach past its inset.
+            let inset = CHIP_INSET * self.scale.max(1) as u32;
+            let rows = match on {
+                Some(sh) if matches!(sh.kind, ShapeKind::Chip(_)) => (
+                    if i == sh.row { inset } else { 0 },
+                    if i + 1 == sh.row + usize::from(sh.rows) { height.saturating_sub(inset) } else { height },
+                ),
+                _ => (0, height),
             };
             let x = x0 + self.edge(col);
-            self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, height);
+            self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, rows);
         }
     }
 
@@ -1062,20 +1136,43 @@ impl Fonts {
     /// column and redraw it appears in. Bounded like `cache` (`MAX_CACHE`):
     /// past the ceiling we start over from an empty memo, same as the
     /// rasterized glyph cache does.
-    fn shaped(&mut self, ch: char, bold: bool) -> Vec<ShapedGlyph> {
-        if let Some(s) = self.shapes.get(&(ch, bold)) {
-            return s.clone();
+    /// Shared, not copied: a hit costs a reference count, never an allocation per glyph drawn.
+    fn shaped(&mut self, ch: char, bold: bool) -> Rc<[ShapedGlyph]> {
+        self.shaped_at(ch, bold, false)
+    }
+
+    /// `shaped`, at the text's size or, `zoomed`, a tile glyph's (`TILE_GLYPH_ZOOM`).
+    fn shaped_at(&mut self, ch: char, bold: bool, zoomed: bool) -> Rc<[ShapedGlyph]> {
+        if let Some(s) = self.shapes.get(&(ch, bold, zoomed)) {
+            return Rc::clone(s);
         }
         if self.shapes.len() >= MAX_CACHE {
             self.shapes.clear();
         }
-        let s = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold);
-        self.shapes.insert((ch, bold), s.clone());
+        let zoom = if zoomed { TILE_GLYPH_ZOOM } else { 1.0 };
+        let s: Rc<[ShapedGlyph]> = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold, zoom).into();
+        self.shapes.insert((ch, bold, zoomed), Rc::clone(&s));
         s
     }
 
+    /// The inked pixels' bounds (left, top, right, bottom, inclusive) of `shaped` drawn at the
+    /// origin, None when it inks nothing.
+    fn ink_bounds(&mut self, shaped: &[ShapedGlyph], base: Color) -> Option<(i32, i32, i32, i32)> {
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for g in shaped {
+            self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
+                if c.a() > 0 {
+                    (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
+                    (top, bottom) = (top.min(g.y + dy), bottom.max(g.y + dy));
+                }
+            });
+        }
+        (left <= right).then_some((left, top, right, bottom))
+    }
+
+    /// `ch` in `ink` from `x0`, its pixels kept to the buffer's rows [rows.0, rows.1).
     #[allow(clippy::too_many_arguments)]
-    fn glyph(&mut self, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, height: u32) {
+    fn glyph(&mut self, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, rows: (u32, u32)) {
         // Bounded memory: past the ceiling, we start over from an empty
         // cache (the shown glyphs are rasterized again, once).
         if self.cache.image_cache.len() >= MAX_CACHE {
@@ -1089,10 +1186,13 @@ impl Fonts {
         // lands on the same subpixel bin, hence the same `cache_key`, as
         // reshaping at this exact `x0` would (see `ShapedGlyph`'s doc).
         let x0 = x0.round() as i32;
-        for g in self.shaped(ch, bold) {
+        for g in self.shaped(ch, bold).iter() {
             let tint = g.color_opt.unwrap_or(base);
             self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
-                blend(px, width, height, x0 + g.dx + dx, g.y + dy, c);
+                let y = g.y + dy;
+                if y >= i32::try_from(rows.0).unwrap_or(i32::MAX) {
+                    blend(px, width, rows.1, x0 + g.dx + dx, y, c);
+                }
             });
         }
     }

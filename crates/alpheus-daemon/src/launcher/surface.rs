@@ -18,7 +18,7 @@ use crate::launcher::tools::nav::ToolAction;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::painter::{self, Frame};
+use crate::painter::{self, Fonts, Frame};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
@@ -80,6 +80,11 @@ pub fn output_cells(width: u32, height: u32, advance_phys: f32, row_height: u32,
     let columns = painter::columns(width * e, advance_phys);
     let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
     (columns, rows)
+}
+
+/// The pixel frame `model`'s box is sized, hit and painted with (`view::edge`).
+pub(crate) fn box_frame(fonts: &mut Fonts, scale: i32, model: &Launcher) -> Frame {
+    fonts.boxed_frame(scale, view::edge(model))
 }
 
 /// The box's logical size: the layout's cells without the ring of one blank cell its numbers count
@@ -468,7 +473,7 @@ impl App {
         open_panel_for_open(columns, rows, &mut model);
         let layout = open_layout(columns, rows, &model);
         view::fit(&mut model, &layout);
-        let size = layout_size(&layout, advance, row_height, scale, &self.fonts.frame(scale));
+        let size = layout_size(&layout, advance, row_height, scale, &box_frame(&mut self.fonts, scale, &model));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let outputs = self.outputs.outputs().count();
         let pool = match SlotPool::new(pool_size(bytes, outputs).max(4096), &self.shm) {
@@ -623,7 +628,7 @@ impl App {
         let e = open.scale.max(1);
         let advance = fonts.advance(e);
         let row_height = height * e as u32;
-        let frame = fonts.frame(e);
+        let frame = box_frame(fonts, e, &open.model);
         let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e, &frame);
         view::fit(&mut open.model, &layout);
         open.layout = layout;
@@ -864,10 +869,10 @@ impl App {
             PointerEventKind::Press { .. } if !on_box => self.launcher_close(CloseReason::ClickOutside),
             PointerEventKind::Press { button, .. } => {
                 let advance = self.fonts.advance(scale);
-                let frame = self.fonts.frame(scale);
                 let outcome = match (self.launcher.as_mut(), actions::button(*button)) {
                     (Some(open), Some(b)) => {
                         open.model.set_now(Instant::now());
+                        let frame = box_frame(&mut self.fonts, scale, &open.model);
                         let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout, open.size);
                         match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
@@ -931,7 +936,7 @@ impl App {
                 // the first output and placed on a smaller one): obey it, the
                 // layout refitted inside, never painted past it.
                 let e = open.scale.max(1);
-                let frame = fonts.frame(e);
+                let frame = box_frame(fonts, e, &open.model);
                 let layout = layout_within(imposed, &open.model, fonts.advance(e), height * e as u32, e, &frame);
                 view::fit(&mut open.model, &layout);
                 open.layout = layout;
