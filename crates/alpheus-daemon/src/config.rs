@@ -1238,11 +1238,15 @@ pub const POWER_NAME_MAX: usize = 24;
 /// never handles sleep or the screens' power (docs/decisions.md, "A user row of the power menu
 /// never sleeps").
 ///
-/// The last is the stem of the screens' power word: a guardrail (`tests/guardrails.rs`, "No
+/// The fourth, `dpm`, is the stem of the screens' power word: a guardrail (`tests/guardrails.rs`, "No
 /// output power management anywhere") forbids that word in every source, so its stem is matched
 /// instead, which catches it and its spellings without naming it; a guardrail test outside the
 /// sources checks the word itself.
-pub const POWER_SLEEP_WORDS: [&str; 4] = ["suspend", "hibernate", "hybrid-sleep", "dpm"];
+///
+/// The last two: niri's action that turns the screens off and the `wlopm` tool. Sway's
+/// `output … power off` is not here: its words are too common to spot without refusing harmless
+/// rows.
+pub const POWER_SLEEP_WORDS: [&str; 6] = ["suspend", "hibernate", "hybrid-sleep", "dpm", "power-off-monitors", "wlopm"];
 
 /// `[power]`: the ⏻ menu's own settings. Absent: the four `[quick]` rows, as before.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

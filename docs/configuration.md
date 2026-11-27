@@ -268,13 +268,15 @@ The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as
 | `confirm` | bool | `false` | | The row asks first, as Reboot and Power off do: a second activation 0.4 s to 3 s later runs it. |
 | `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one (stored, not used yet). |
 
-A `run` holding `suspend`, `hibernate`, `hybrid-sleep` or `dpms` anywhere in any argument, in any
-case, makes `bar.toml` invalid: alpheus never handles sleep or the screens' power. The check reads
-the stem `dpm`, so any argument containing it is refused, a path such as `~/dpm-notes/quit` too;
-the message then says `an argument of run contains "dpm"`. The ⏻ button and
-`alpheus-launch --power` exist when any row does, fixed or yours. A message about a row names it
-by its position (`power.entry 2: …`) and the word found, never by its name or command, and so
-does the log (`power: entry 2`). See [the power menu](features/power.md).
+A `run` holding `suspend`, `hibernate`, `hybrid-sleep`, `dpms`, niri's `power-off-monitors` or
+`wlopm` anywhere in any argument, in any case, makes `bar.toml` invalid: alpheus never handles sleep
+or the screens' power. The check reads the stem `dpm`, so any argument containing it is refused, a
+path such as `~/dpm-notes/quit` too; the message then says `an argument of run contains "dpm"`.
+Sway's `output … power off` is not refused (its words are too common to spot); keep such a row out
+of `[power]` yourself. The ⏻ button and `alpheus-launch --power` exist when any row does, fixed or
+yours. A message about a row names it by its position (`power.entry 2: …`) and the word found,
+never by its name or command, and so does the log (`power: entry 2`). See [the power
+menu](features/power.md).
 
 ### `[timer]`
 
@@ -483,7 +485,7 @@ rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (
 [power]
 countdown = 0        # seconds counted after a confirming activation (0 to 30); 0: off (not built yet)
 builtins = true      # false hides the four [quick] rows from the ⏻ menu
-# [[power.entry]]    # a row of your own after the fixed ones, at most 8; never suspend, hibernate, hybrid-sleep or dpms
+# [[power.entry]]    # a row of your own after the fixed ones, at most 8; never suspend, hibernate, hybrid-sleep, dpms, power-off-monitors or wlopm
 # name = "Quit session"            # 1 to 24 characters
 # icon = "•"                       # one character; absent: •
 # run = ["my-session-quit"]        # argv, run as given, never through a shell

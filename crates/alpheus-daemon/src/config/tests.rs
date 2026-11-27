@@ -1338,6 +1338,10 @@ fn a_power_entry_naming_sleep_makes_bar_toml_invalid() {
         ("[\"fake-run\", \"/home/u/dpm-notes/quit\"]", "dpm"),
         ("[\"loginctl\", \"suspend-then-hibernate\"]", "suspend"),
         ("[\"/usr/bin/suspend\"]", "suspend"),
+        ("[\"niri\", \"msg\", \"action\", \"power-off-monitors\"]", "power-off-monitors"),
+        ("[\"fake-wm\", \"Power-Off-Monitors\"]", "power-off-monitors"),
+        ("[\"wlopm\", \"--off\", \"*\"]", "wlopm"),
+        ("[\"/usr/bin/WLOPM\", \"--off\", \"DP-1\"]", "wlopm"),
     ] {
         let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
         let err = BarConfig::from_text(&text).unwrap_err();
@@ -1349,4 +1353,6 @@ fn a_power_entry_naming_sleep_makes_bar_toml_invalid() {
         assert!(!err.contains("fake") && !err.contains("/home"), "never the command: {err}");
     }
     assert!(BarConfig::from_text("[[power.entry]]\nname = \"Suspend\"\nrun = [\"fake-lock\"]\n").is_ok(), "the name is only a label");
+    // Sway's output command is too generic to spot without refusing harmless rows: allowed.
+    assert!(BarConfig::from_text("[[power.entry]]\nname = \"N\"\nrun = [\"fake-wm\", \"output\", \"*\", \"power\", \"off\"]\n").is_ok());
 }

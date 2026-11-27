@@ -3945,15 +3945,19 @@ fn every_power_menu_activation_is_a_configured_session() {
                 }
                 for e in &ran {
                     let line = e.command(&config).join(" ").to_lowercase();
-                    assert!(!["suspend", "hibernate", "hybrid-sleep", "dpms"].iter().any(|w| line.contains(w)), "{line}");
+                    assert!(
+                        !["suspend", "hibernate", "hybrid-sleep", "dpms", "power-off-monitors", "wlopm"].iter().any(|w| line.contains(w)),
+                        "{line}"
+                    );
                 }
             }
         }
     }
 }
 
-/// A `[[power.entry]]` whose `run` names a sleep word or `dpms`, in any argument and any case,
-/// makes bar.toml invalid: no user row can sleep or turn the screens off. Written here because
+/// A `[[power.entry]]` whose `run` names a sleep word, `dpms`, niri's `power-off-monitors` or
+/// `wlopm`, in any argument and any case, makes bar.toml invalid: no user row can sleep or turn the
+/// screens off. Written here because
 /// `output_power_management_never_appears` keeps the word itself out of every source.
 #[test]
 fn a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid() {
@@ -3964,6 +3968,8 @@ fn a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid() {
         "[\"sh\", \"-c\", \"fake-wm dpms off\"]",
         "[\"fake-wm\", \"DPMS\", \"off\"]",
         "[\"fake-dpms-off\"]",
+        "[\"niri\", \"msg\", \"action\", \"power-off-monitors\"]",
+        "[\"WLOPM\", \"--off\", \"*\"]",
     ] {
         let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
         assert!(BarConfig::from_text(&text).is_err(), "{run}");

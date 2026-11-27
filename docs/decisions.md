@@ -346,15 +346,17 @@ Date: 2026-10-13, amended 2026-11-27 · Source: tests `the_rows_follow_the_comma
 
 ### A user row of the power menu never sleeps
 
-A `[[power.entry]]` whose `run` holds `suspend`, `hibernate`, `hybrid-sleep` or `dpms` anywhere in
-any argument, in any case, makes `bar.toml` invalid, with the reason, as every refused key does.
-A user row would otherwise be a way round "alpheus never handles sleep or the screens' power": the
-menu is alpheus's, so what it runs is too. The match is on words inside arguments, so
-`["sh", "-c", "… hibernate"]` is caught; a script that sleeps without naming it is the user's own
-and cannot be seen. The source matches the stem `dpm`, because the guardrail
-`output_power_management_never_appears` keeps the word itself out of every source file; a
-guardrail test outside the sources checks the word. A row that asks first (`confirm = true`)
-follows the same rule as Reboot: a second activation 0.4 s to 3 s later.
+A `[[power.entry]]` whose `run` holds `suspend`, `hibernate`, `hybrid-sleep`, `dpms`, niri's
+`power-off-monitors` or `wlopm` anywhere in any argument, in any case, makes `bar.toml` invalid,
+with the reason, as every refused key does. A user row would otherwise be a way round "alpheus never
+handles sleep or the screens' power": the menu is alpheus's, so what it runs is too. The match is on
+words inside arguments, so `["sh", "-c", "… hibernate"]` is caught; a script that sleeps without
+naming it is the user's own and cannot be seen. The source matches the stem `dpm`, because the
+guardrail `output_power_management_never_appears` keeps the word itself out of every source file; a
+guardrail test outside the sources checks the word. Niri's `power-off-monitors` and the `wlopm` tool
+are refused the same way (the owner's decision 12, 2026-11-27); Sway's `output … power off` stays
+allowed, its words being too common to spot without refusing harmless rows. A row that asks first
+(`confirm = true`) follows the same rule as Reboot: a second activation 0.4 s to 3 s later.
 
 Date: 2026-11-27 · Source: tests `a_power_entry_naming_sleep_makes_bar_toml_invalid` (`config/tests.rs`) and guardrails `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and `every_power_menu_activation_is_a_configured_session`; `check_power`
 
