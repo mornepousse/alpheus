@@ -213,9 +213,10 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
 }
 
 /// Whether `m` needs a zone over its cells: a button of it is bound (an empty `[bindings.<module>]`
-/// table binds nothing, so it adds no zone).
+/// table binds nothing, so it adds no zone), or it has a tooltip and `tooltips` is on.
 pub(crate) fn wants_zone(bar: &Bar, m: ModuleId) -> bool {
-    bar.config.bindings.get(&m).is_some_and(|b| b.buttons().iter().any(|(_, binding)| binding.is_some()))
+    (bar.config.tooltips && m.spec().tooltip.is_some())
+        || bar.config.bindings.get(&m).is_some_and(|b| b.buttons().iter().any(|(_, binding)| binding.is_some()))
 }
 
 /// The segment the free space goes before when none is elastic: `gap_at` (the absent window

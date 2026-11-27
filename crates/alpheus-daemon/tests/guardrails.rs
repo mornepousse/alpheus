@@ -4376,6 +4376,28 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// The module tooltips (`tooltips.rs`) tell what the bar already draws, nothing more (decision 7,
+/// extended): no field holding a network's name, a sink or source label, the sink list, the window
+/// list, a notification sender or a window's app id is read there. Like every pure file, it logs
+/// nothing and has no panicking path.
+#[test]
+fn tooltips_name_no_private_field() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "tooltips.rs").expect("tooltips.rs").1;
+    let production = production_code(t);
+    for word in ["ssid", "sink_name", "source_name", "sinks", "toplevels", "identity", "bus_name", "class"] {
+        assert!(!production.to_lowercase().contains(word), "{word} in tooltips.rs: a tooltip tells only what the bar draws");
+    }
+    for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+        assert!(!production.contains(p), "{p} in tooltips.rs's production code");
+    }
+    for code in production_code_without_comments(t).lines() {
+        if let Some(why) = panicking_index(code) {
+            panic!("{why} in tooltips.rs's production code");
+        }
+    }
+}
+
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
 /// `launcher/tools/join.rs` alone: no other production file of the menu names their items.
 /// A plain word search for the shield would hit the emoji table and the VPN model, so the

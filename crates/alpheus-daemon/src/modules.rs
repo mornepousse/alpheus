@@ -24,6 +24,7 @@ use crate::layout::{Segment, bar_clock, window, workspaces};
 use crate::popup::ModulePopup;
 use crate::segments;
 use crate::state::Bar;
+use crate::tooltips;
 
 /// The sources a module asks for (`startup::wanted`): a module that is not in `modules` costs
 /// nothing. Plain bit flags, combined with `|` in the table.
@@ -102,6 +103,9 @@ pub(crate) struct ModuleSpec {
     pub popup_needs_quick: bool,
     /// The sources the module asks for.
     pub needs: Needs,
+    /// The one-line text shown after a rest of the pointer on the module (`tooltips.rs`); None for
+    /// the modules with no tooltip, whose cells then arm no hover.
+    pub tooltip: Option<fn(&Bar) -> Option<String>>,
 }
 
 impl ModuleId {
@@ -110,9 +114,20 @@ impl ModuleId {
     }
 }
 
-/// A row with the defaults: no hue, tab, segment, popup nor need.
+/// A row with the defaults: no hue, tab, segment, popup, need nor tooltip.
 const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
-    ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
+    ModuleSpec {
+        id,
+        name,
+        group,
+        hue: None,
+        tab: None,
+        segment: None,
+        popup: None,
+        popup_needs_quick: false,
+        needs: Needs::NONE,
+        tooltip: None,
+    }
 }
 
 pub(crate) const COUNT: usize = 21;
@@ -126,6 +141,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec {
         hue: Some(Hue::Purple),
         segment: Some(|bar, _| window(&bar.compositor, bar.module_colors)),
+        tooltip: Some(tooltips::window),
         ..row(ModuleId::Window, "window", GroupKind::Title)
     },
     // The layout and the bind mode from the compositor's own state; display only, so no tab, popup
@@ -160,6 +176,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         tab: Some("diagnostics"),
         segment: Some(|bar, _| segments::failed(&bar.failed)),
         needs: Needs::UNITS,
+        tooltip: Some(tooltips::failed),
         ..row(ModuleId::Failed, "failed", GroupKind::Failed)
     },
     ModuleSpec {
@@ -169,6 +186,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Quick),
         popup_needs_quick: true,
         needs: Needs::SOUND,
+        tooltip: Some(tooltips::volume),
         ..row(ModuleId::Volume, "volume", GroupKind::Status)
     },
     ModuleSpec {
@@ -178,6 +196,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Quick),
         popup_needs_quick: true,
         needs: Needs::NETWORK,
+        tooltip: Some(tooltips::network),
         ..row(ModuleId::Network, "network", GroupKind::Status)
     },
     ModuleSpec {
@@ -187,6 +206,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         popup: Some(ModulePopup::Quick),
         popup_needs_quick: true,
         needs: Needs::BLUETOOTH,
+        tooltip: Some(tooltips::bluetooth),
         ..row(ModuleId::Bluetooth, "bluetooth", GroupKind::Status)
     },
     ModuleSpec {
@@ -194,6 +214,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         tab: Some("home"),
         segment: Some(|bar, _| segments::battery(&bar.battery, &bar.config.battery, bar.module_colors)),
         needs: Needs::BATTERY,
+        tooltip: Some(tooltips::battery),
         ..row(ModuleId::Battery, "battery", GroupKind::Status)
     },
     ModuleSpec {
@@ -201,6 +222,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         segment: Some(|bar, _| segments::resources(&bar.resources, &bar.config.resources.show, bar.module_colors)),
         popup: Some(ModulePopup::Resources),
         needs: Needs::RESOURCES,
+        tooltip: Some(tooltips::resources),
         ..row(ModuleId::Resources, "resources", GroupKind::Resources)
     },
     ModuleSpec {
@@ -212,6 +234,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         segment: Some(|bar, _| segments::notifications(bar.notifications.as_ref())),
         popup: Some(ModulePopup::Panel),
         needs: Needs::NOTIFICATIONS,
+        tooltip: Some(tooltips::notifications),
         ..row(ModuleId::Notifications, "notifications", GroupKind::Status)
     },
     // The OSD draws its own surface (osd/surface.rs), never in the bar. Its sources are its kinds'
@@ -235,6 +258,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec {
         segment: Some(|bar, _| Some(bar_clock(bar))),
         popup: Some(ModulePopup::Calendar),
+        tooltip: Some(tooltips::clock),
         ..row(ModuleId::Clock, "clock", GroupKind::Clock)
     },
     // ⏻ alone; no segment when `[quick]` has no session command.
