@@ -5,8 +5,9 @@ decodes the image: it starts your own setter (swaybg, wbg, swww) with the file, 
 command after it (matugen, so the bar's colours follow), and starts it again with the last choice
 when the daemon starts.
 
-This page grows with the feature: the setter and the Tools menu entry are built; the re-apply at
-start and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallpaper.md`).
+This page grows with the feature: the setter, the Tools menu entry, the re-apply at start and the
+`--wallpaper next` verb are built; the proof and the full cost follow
+(`docs/superpowers/plans/2026-11-27-wallpaper.md`).
 
 ## Using it
 
@@ -15,6 +16,21 @@ Set `[wallpaper]` (a folder and your setter's command). Super+X shows **Wallpape
 Enter lists the folder's images by name, sorted (png, jpg, jpeg, webp, bmp, gif; at most 2,000);
 type to filter, Enter applies the one selected, after the box closed. The history keeps that you
 used the tool, never the file's name.
+
+**At login.** With `remember` (the default), the daemon applies the last choice again when it
+starts, once its event loop runs: the setter is its child, so the wallpaper comes and goes with
+the bar. `then` is not run then (the colours it wrote are already there). A remembered name that
+is no longer an image of the folder is ignored.
+
+**Rotation.** `alpheus-launch --wallpaper next` applies the name after the remembered one (the
+first when none), then `then`: call it from a cron line or a systemd user timer
+([../cli.md](../cli.md#alpheus-launch-scripting-bridge-to-the-daemon) has both). The daemon has
+no timer of its own.
+
+**One setter.** If your compositor's autostart starts swaybg (or another setter) itself, remove
+that line once alpheus manages the wallpaper: otherwise two setters run, and the one alpheus does
+not own stays on screen under or over the one it does. alpheus never ends a setter it did not
+start.
 
 ## What it does
 
@@ -56,11 +72,21 @@ used the tool, never the file's name.
   once the box closed. A folder that cannot be read (missing, or a file in its place) logs
   `tools: folder read failed` and its level shows empty; one over 2,000 images logs
   `tools: folder cut, 2000 kept`.
+- At start (`startup.rs`): `settings` keeps `launcher.toml`'s `[wallpaper]`; once the loop exists,
+  `wallpaper_at_start` asks `start_choice` (picker on and `remember` set, else nothing is read; the
+  remembered name read through `state_file::read_wallpaper`, then one `metadata` of it in the
+  folder) and applies it without `then`.
+- `--wallpaper next`: `Request::Wallpaper(WallpaperVerb::Next)`, the wire words `wallpaper next`,
+  answered by `wallpaper_verb` before the launcher's guard (`launcher/socket_glue.rs`). It reads
+  `launcher.toml` again, and `next_choice` lists the folder once on the loop (`wallpaper::list`,
+  at most 2,000 names) and takes `next_after` the remembered name. Its refusals are fixed words:
+  `wallpaper is off`, `the folder cannot be read`, `no image in the folder` (logged as
+  `wallpaper: next refused`).
 - `wallpaper/app.rs`: the glue on `App`. `wallpaper_apply` runs on the event loop's thread, so the
   setter's PDEATHSIG is the daemon's own: the setter dies with the daemon. Each setter's pidfd is a
   calloop `Generic` source, silent until it ends. Logs are fixed words: `wallpaper: applied`,
   `wallpaper: setter could not start`, `wallpaper: setter failed`, `wallpaper: setter ended`,
-  `wallpaper: not saved`, `wallpaper: then could not start`.
+  `wallpaper: not saved`, `wallpaper: then could not start`, `wallpaper: next refused`.
 
 ## The rules its tests enforce
 
@@ -79,6 +105,13 @@ used the tool, never the file's name.
 - Headless, with a fake setter on the private `PATH`: `tools_wallpaper_picks_and_starts_the_setter`
   (the file as one argument, the setter dying with the daemon) and
   `tools_wallpaper_replaces_the_setter` (one setter left after two picks).
+- `the_remembered_wallpaper_is_applied_at_start_without_then`,
+  `a_remembered_name_outside_the_folder_is_not_applied`, `nothing_is_read_at_start_when_off`,
+  `next_applies_the_name_after_the_remembered_one`, `the_wallpaper_verb_round_trips`,
+  `alpheus_launch_parses_wallpaper_next` (an older daemon: exit 3).
+- Headless: `wallpaper_reapplied_at_start` (the remembered file, `then` not run),
+  `wallpaper_next_steps_through_the_folder` (`a.png` then `b.png`, `then` after each),
+  `wallpaper_setter_dies_with_the_daemon`.
 - `a_restart_drops_only_the_old_handle_after_the_new_one_started`,
   `a_one_shot_setter_succeeds_only_on_exit_zero`,
   `a_failed_set_runs_no_then_and_keeps_the_remembered_name`,
@@ -91,6 +124,9 @@ used the tool, never the file's name.
   [../measurements.md](../measurements.md)); nothing is read or started.
 - A setter running: its handle, one pidfd and one calloop source, no wake-up until it ends. The
   setter itself is the user's program.
+- At start with a remembered name: the same setter running, the daemon's PSS and anonymous memory
+  within noise of the same start without it; `--wallpaper next` keeps nothing between calls
+  (figures in [../measurements.md](../measurements.md)).
 - The Tools menu with `[wallpaper]` set: no syscall per open, the anonymous memory within noise
   of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names
   show, back within +20 to +140 KB once closed, the reader thread gone (figures in

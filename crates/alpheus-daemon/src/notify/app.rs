@@ -403,7 +403,8 @@ impl App {
             | Request::OutputsKeep
             | Request::OutputsRevert
             | Request::Shield(_)
-            | Request::Capture(_) => {}
+            | Request::Capture(_)
+            | Request::Wallpaper(_) => {}
         }
         Reply::Done
     }

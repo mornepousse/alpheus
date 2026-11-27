@@ -538,13 +538,23 @@ fn startup_pss_per_source() {
         cases.push(("+ keyboard", concat!(every_module!(), ", \"keyboard\""), ""));
     }
     let mut report = Vec::new();
+    let mut anonymous = Vec::new();
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
         let toml = format!("modules = [{modules}]\n{extra}");
         let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, None, Some(&toml), PwDump::Silent);
         std::thread::sleep(Duration::from_secs(3)); // as in pss_under_budget_and_stable
         report.push((*what, d.pss_kb()));
+        anonymous.push((*what, d.anon_kb()));
+    }
+    // `[wallpaper]` on with a name remembered: the setter started at start (a fake one: its own
+    // PSS is not the daemon's and is not counted). Only for a build that knows the table.
+    if binary_knows(&daemon_binary(), "wallpaper.dir must be") {
+        let (pss, anon) = startup_with_a_remembered_wallpaper(&bus);
+        report.push(("+ wallpaper", pss));
+        anonymous.push(("+ wallpaper", anon));
     }
     eprintln!("startup PSS per source (KB): {report:?}");
+    eprintln!("startup anonymous per source (KB): {anonymous:?}");
     for (what, kb) in &report {
         assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report it with these figures, never raise: {report:?}");
     }
@@ -568,6 +578,43 @@ fn startup_pss_per_source() {
     // The history on, nothing copied yet, reports a small step (report, never raise).
     let clipboard = kb("+ clipboard");
     assert!(clipboard <= everything + 256, "+ clipboard {clipboard} KB vs everything {everything} KB: more than 256 KB at rest");
+    // The remembered wallpaper is one setter handle and its pidfd source (report, never raise).
+    if let Some((_, wallpaper)) = report.iter().find(|(what, _)| *what == "+ wallpaper") {
+        assert!(*wallpaper <= everything + 256, "+ wallpaper {wallpaper} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
+}
+
+/// Every module, and launcher.toml's `[wallpaper]` with `b.png` remembered: the daemon's PSS and
+/// anonymous KB 3 s after the setter (a fake `exec sleep`) was started at start.
+fn startup_with_a_remembered_wallpaper(bus: &PrivateBus) -> (u64, u64) {
+    let sway = Sway::start("per-source-wallpaper", 3);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let walls = sway.runtime.join("walls");
+    std::fs::create_dir_all(&walls).unwrap();
+    for f in ["a.png", "b.png"] {
+        std::fs::write(walls.join(f), b"").unwrap();
+    }
+    // Sleeps as swaybg would only when handed a file: `wait_until_executable` runs it bare once.
+    let setter = tools_mem_script(&sway, "fake-setter", "[ -n \"$1\" ] || exit 0\nexec sleep 600");
+    wait_until_executable(&setter);
+    alpheus_daemon::state_file::save_wallpaper(&sway.runtime.join("state/alpheus"), "b.png").unwrap();
+    let launcher_toml =
+        format!("[wallpaper]\ndir = {:?}\nset = [{:?}, \"{{file}}\"]\n", walls.display().to_string(), setter.display().to_string());
+    let bar_toml = format!("modules = [{}]\n", every_module!());
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(&bar_toml),
+            launcher_toml: Some(&launcher_toml),
+            system_bus: Some(&bus.address),
+            pw_dump: PwDump::Silent,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-3", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("wallpaper: applied", DELAY), "the remembered wallpaper was not applied: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3)); // as the other cases
+    (d.pss_kb(), d.anon_kb())
 }
 
 /// DejaVu Sans Mono (the default `[font] fallback`): printed for the task

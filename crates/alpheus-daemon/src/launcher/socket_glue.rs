@@ -213,6 +213,8 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 Route::Failed => reply_guarded(conn, &state.failed_verb(&request)),
                 // The captures' verb: answered here, its own guard inside.
                 Route::Capture => reply_guarded(conn, &state.capture_verb(&request)),
+                // The wallpaper's verb: answered here, never the launcher's.
+                Route::Wallpaper => reply_guarded(conn, &state.wallpaper_verb(&request)),
                 Route::Launcher => {
                     // A dmenu request may have buffered up to 4 MiB: once it
                     // reached RELEASE_AFTER, give the pages back as soon as it
@@ -281,6 +283,7 @@ enum Route {
     Shield,
     Failed,
     Capture,
+    Wallpaper,
     Launcher,
 }
 
@@ -297,6 +300,7 @@ fn route(request: &Request) -> Route {
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
         Request::Shield(_) => Route::Shield,
         Request::Capture(_) => Route::Capture,
+        Request::Wallpaper(_) => Route::Wallpaper,
         Request::Toggle
         | Request::Close
         | Request::Calc

@@ -371,12 +371,12 @@ fn settings_absent_or_invalid() {
     crate::config::resolve_wifi_more(&mut expected.quick, &LauncherConfig::default().terminal);
     crate::config::resolve_vpn_more(&mut expected.quick, &LauncherConfig::default().terminal);
     crate::config::resolve_mixer(&mut expected.quick, &LauncherConfig::default().terminal);
-    let (c, w) = settings(&d);
+    let (c, w, _) = settings(&d);
     assert_eq!((c, w.len()), (expected.clone(), 0));
     assert_eq!(expected.quick.wifi_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui".into()]), "More… defaults to nmtui");
     assert_eq!(expected.quick.vpn_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui-edit".into()]), "the VPN's, nmtui-edit");
     std::fs::write(d.join("bar.toml"), "modules = [\"weather\"]").unwrap();
-    let (c, w) = settings(&d);
+    let (c, w, _) = settings(&d);
     assert_eq!(c, expected, "defaults, More… resolved all the same");
     assert!(w.iter().any(|m| m.contains("bar.toml")), "{w:?}");
     // The launcher's terminal, read once at startup.
@@ -550,7 +550,7 @@ fn settings_carries_the_shield_warning() {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("bar.toml"), "[shield]\nflag = \"/var/lib/test-shield/on\"\n").unwrap();
-    let (c, w) = settings(&d);
+    let (c, w, _) = settings(&d);
     assert!(!c.shield.configured());
     assert!(w.iter().any(|m| m.starts_with("shield:")), "{w:?}");
     let _ = std::fs::remove_dir_all(&d);

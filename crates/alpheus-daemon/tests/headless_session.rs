@@ -763,6 +763,85 @@ fn tools_wallpaper_replaces_the_setter() {
     assert_eq!(setter_starts(&sway)[1], ["-i", file.as_str()]);
 }
 
+/// `wallpaper_setup`'s launcher.toml with `then` set to a fake recorder (`fake-then`, never matugen),
+/// and `name` remembered in the harness's own state directory.
+fn wallpaper_with_then(sway: &Sway, remembered: Option<&str>) -> String {
+    let toml = wallpaper_setup(sway);
+    fake_argv_recorder(sway, "fake-then");
+    if let Some(name) = remembered {
+        alpheus_daemon::state_file::save_wallpaper(&sway.runtime.join("state/alpheus"), name).unwrap();
+    }
+    format!("{toml}then = [\"fake-then\", \"{{file}}\"]\n")
+}
+
+/// `alpheus-launch --wallpaper next`, against this test's socket only.
+fn wallpaper_next(sway: &Sway) -> i32 {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args = [OsString::from("--wallpaper"), OsString::from("next")];
+    run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
+}
+
+/// At start the remembered wallpaper is applied again, once the loop exists; `then` does not run
+/// (the colour files are already written).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn wallpaper_reapplied_at_start() {
+    let sway = Sway::start("wallpaper-start", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = wallpaper_with_then(&sway, Some("b.png"));
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert!(wait_until(|| setter_starts(&sway).len() == 1), "{:?}", d.log());
+    let file = sway.runtime.join("walls/b.png").display().to_string();
+    assert_eq!(setter_starts(&sway)[0], ["-i", file.as_str()]);
+    assert!(d.wait_for("wallpaper: applied", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert!(recorded_argv(&sway, "fake-then").is_empty(), "then ran at start: {:?}", d.log());
+    assert_eq!(setter_starts(&sway).len(), 1, "applied once");
+    assert!(d.log().iter().all(|l| !l.contains("b.png") && !l.contains("walls")), "never a name or the folder: {:?}", d.log());
+}
+
+/// `--wallpaper next` twice steps through the folder (nothing remembered: the first, then the
+/// second), each set followed by `then` with the file; the old setter goes once the new one runs.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn wallpaper_next_steps_through_the_folder() {
+    let sway = Sway::start("wallpaper-next", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = wallpaper_with_then(&sway, None);
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(wallpaper_next(&sway), EXIT_OK, "{:?}", d.log());
+    assert!(wait_until(|| setter_starts(&sway).len() == 1), "{:?}", d.log());
+    assert_eq!(wallpaper_next(&sway), EXIT_OK, "{:?}", d.log());
+    assert!(wait_until(|| setter_starts(&sway).len() == 2), "{:?}", d.log());
+    let (a, b) = (sway.runtime.join("walls/a.png").display().to_string(), sway.runtime.join("walls/b.png").display().to_string());
+    assert_eq!(setter_starts(&sway), [vec!["-i".to_string(), a.clone()], vec!["-i".to_string(), b.clone()]]);
+    assert!(wait_until(|| recorded_argv(&sway, "fake-then").len() == 2), "then after each set: {:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "fake-then"), [vec![a], vec![b]]);
+    let pids = setter_pids(&sway);
+    assert!(wait_until(|| !process_alive(pids[0])), "the old setter is ended: {:?}", d.log());
+    assert!(process_alive(pids[1]));
+}
+
+/// The setter applied at start is the daemon's child: when the harness stops the daemon, no fake
+/// setter of this test is left running.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn wallpaper_setter_dies_with_the_daemon() {
+    let sway = Sway::start("wallpaper-dies", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = wallpaper_with_then(&sway, Some("a.png"));
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert!(wait_until(|| setter_pids(&sway).len() == 1), "{:?}", d.log());
+    let pid = setter_pids(&sway)[0];
+    assert!(process_alive(pid), "the setter runs");
+    assert!(d.exit(Duration::from_millis(100)).is_none());
+    drop(d);
+    assert!(wait_until(|| setter_pids(&sway).iter().all(|&p| !process_alive(p))), "a setter outlived the daemon");
+}
+
 /// Enter held on an entry with choices drills once: the repeats do nothing (they would otherwise run
 /// its first choice), so a key held past a box never acts in what it opened.
 #[test]

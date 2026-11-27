@@ -946,7 +946,9 @@ fn only_the_runners_capture_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb};
+    use alpheus_common::launcher_ipc::{
+        CaptureVerb, DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, ShieldVerb, TimerVerb, WallpaperVerb,
+    };
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -973,6 +975,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::OutputsRevert => "outputs-revert",
             Request::Shield(_) => "shield",
             Request::Capture(_) => "capture",
+            Request::Wallpaper(_) => "wallpaper",
         }
     }
     let all = [
@@ -1000,6 +1003,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::OutputsRevert,
         Request::Shield(ShieldVerb::Status),
         Request::Capture(CaptureVerb::Select),
+        Request::Wallpaper(WallpaperVerb::Next),
     ];
     assert_eq!(
         all.iter().map(verb).collect::<Vec<_>>(),
@@ -1027,7 +1031,8 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "outputs-keep",
             "outputs-revert",
             "shield",
-            "capture"
+            "capture",
+            "wallpaper"
         ]
     );
 }

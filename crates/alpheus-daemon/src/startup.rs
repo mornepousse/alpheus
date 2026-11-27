@@ -55,6 +55,7 @@ use crate::sources;
 use crate::sources::dbus::Domain;
 use crate::sources::resources;
 use crate::state::{Bar, Msg};
+use crate::wallpaper::WallpaperConfig;
 use crate::wayland::App;
 use alpheus_common::exec::{Executor, SystemExecutor};
 use alpheus_common::launcher_ipc;
@@ -131,8 +132,9 @@ pub enum Mail {
 }
 
 /// bar.toml, read at startup, and its warnings to log. `[quick] wifi_more`'s, `vpn_more`'s and `mixer`'s defaults come from
-/// launcher.toml's `terminal`, read once here (its warnings are the launcher's, logged at its own open).
-pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
+/// launcher.toml's `terminal`, read once here (its warnings are the launcher's, logged at its own open),
+/// and its `[wallpaper]` kept, for the remembered wallpaper applied again at start.
+pub fn settings(directory: &Path) -> (BarConfig, Vec<String>, WallpaperConfig) {
     let (mut config, warning) = BarConfig::load(&directory.join("bar.toml"));
     let (launcher, _) = crate::launcher::config::LauncherConfig::load(&crate::launcher::config::config_path(directory));
     crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
@@ -140,7 +142,7 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     crate::config::resolve_mixer(&mut config.quick, &launcher.terminal);
     let mut warnings: Vec<String> = warning.into_iter().collect();
     warnings.extend(resolve_shield(&mut config.shield, directory));
-    (config, warnings)
+    (config, warnings, launcher.wallpaper)
 }
 
 /// `[shield]` once the config directory is known: a partial table, or a flag whose watch would
@@ -529,8 +531,9 @@ pub fn run() -> i32 {
         log(w);
     }
     let launcher_server: Option<Rc<Server>> = launcher_server.map(Rc::new);
-    let loaded = load_settings();
+    let mut loaded = load_settings();
     let plan = Plan::of(&loaded.config);
+    let wallpaper = std::mem::take(&mut loaded.wallpaper);
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
     let Some((mut core, rx)) = build_app(loaded, &exec) else { return 1 };
@@ -539,6 +542,9 @@ pub fn run() -> i32 {
     }
     start_modules(&mut core.state, &core.handle, &plan);
     start_sources(&mut core.state, &core.tx, &plan, &exec);
+    // The remembered wallpaper, on the loop's thread (the setter's PDEATHSIG is the daemon's) and
+    // with the loop made (its pidfd watched). Off: nothing read.
+    core.state.wallpaper_at_start(&wallpaper);
     if let Some(server) = &launcher_server {
         match watch_launcher_socket(&core.handle, server, core.qh.clone()) {
             Ok(()) => log("launcher socket ready"),
@@ -586,12 +592,14 @@ struct Loaded {
     theme_settings: ThemeSettings,
     roles: Roles,
     theme_warnings: Vec<String>,
+    /// launcher.toml's `[wallpaper]`, applied once the loop exists.
+    wallpaper: WallpaperConfig,
 }
 
 /// Reads bar.toml and the theme (warnings logged, the theme line too).
 fn load_settings() -> Loaded {
     let config_dir = paths::config_dir();
-    let (config, warnings) = settings(&config_dir);
+    let (config, warnings, wallpaper) = settings(&config_dir);
     for a in &warnings {
         log(a);
     }
@@ -601,7 +609,7 @@ fn load_settings() -> Loaded {
         log(a);
     }
     log(&format!("theme: {}", describe(&theme_settings, effective_mode(theme_settings.mode, None))));
-    Loaded { config, theme_settings, roles, theme_warnings }
+    Loaded { config, theme_settings, roles, theme_warnings, wallpaper }
 }
 
 /// What the configuration asks for, derived once before the config moves into the bar.
@@ -646,7 +654,7 @@ struct Core {
 /// (the receiver is returned to be inserted by `insert_core_sources`). None: the reason is logged
 /// and `run` returns 1.
 fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel::Channel<Mail>)> {
-    let Loaded { config, theme_settings, roles, theme_warnings } = loaded;
+    let Loaded { config, theme_settings, roles, theme_warnings, wallpaper: _ } = loaded;
     // cosmic-text parses fonts with rayon: one thread is enough for a bar,
     // instead of one thread per core kept around for the whole session.
     // SAFETY: no other thread exists yet (sources and the guard start after).

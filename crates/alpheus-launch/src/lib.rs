@@ -21,7 +21,8 @@
 
 use alpheus_common::launcher_ipc::{
     CaptureVerb, DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb,
-    REPLY_TIMEOUT, Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, exchange_waiting, numbered_lines, wipe,
+    REPLY_TIMEOUT, Reply, Request, ShieldVerb, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb, WallpaperVerb, exchange_waiting, numbered_lines,
+    wipe,
 };
 use alpheus_common::local_time;
 pub use alpheus_common::local_time::parse_clock;
@@ -47,7 +48,8 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
                       | --timer shutdown DURATION | --timer shutdown-cancel | --notes
-                      | --clipboard | --clipboard-clear | --tools | --kill | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop | --help]
+                      | --clipboard | --clipboard-clear | --tools | --kill | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
+                      | --wallpaper next | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -93,12 +95,13 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --capture pick|annotate|ocr|record|record-area|stop
                           colour picker, annotate an area, text of an area, record the screen or an area, stop recording
   --capture select        debug: run the area selector alone; nothing is captured
+  --wallpaper next        apply the next image of [wallpaper] dir in launcher.toml (after the remembered one), for a timer
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--kill/--power/--shield/--capture (restarted since the upgrade? until then, use another menu).
+or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, [wallpaper] off or its folder without an image, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--kill/--power/--shield/--capture/--wallpaper (restarted since the upgrade? until then, use another menu).
 
 --shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -133,6 +136,7 @@ pub enum Invocation {
     Power,
     Shield(ShieldVerb),
     Capture(CaptureVerb),
+    Wallpaper(WallpaperVerb),
     Help,
 }
 
@@ -193,6 +197,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 Invocation::Shield(verb_arg(&mut it, "--shield", "on, off, toggle, status or allow", ShieldVerb::parse)?),
             )?,
             "--capture" => choose(&mut mode, Invocation::Capture(verb_arg(&mut it, "--capture", CAPTURE_WORDS, CaptureVerb::parse)?))?,
+            "--wallpaper" => choose(&mut mode, Invocation::Wallpaper(verb_arg(&mut it, "--wallpaper", "next", WallpaperVerb::parse)?))?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -324,6 +329,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Power => Request::Power,
         Invocation::Shield(v) => Request::Shield(v),
         Invocation::Capture(v) => Request::Capture(v),
+        Invocation::Wallpaper(v) => Request::Wallpaper(v),
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -429,7 +435,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help"
                 .into(),
         );
     }
@@ -540,7 +546,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Kill
             | Invocation::Power
             | Invocation::Shield(_)
-            | Invocation::Capture(_)),
+            | Invocation::Capture(_)
+            | Invocation::Wallpaper(_)),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -607,7 +614,8 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::OutputsKeep
             | Request::OutputsRevert
             | Request::Shield(_)
-            | Request::Capture(_),
+            | Request::Capture(_)
+            | Request::Wallpaper(_),
             Reply::Done,
         ) => EXIT_OK,
         // `status` prints the daemon's text; an unreadable state is told first-line-first and exits 2.
@@ -653,6 +661,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
         Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
         Request::Shield(_) if error == "malformed request: unknown request \"shield\"" => Some("--shield"),
+        Request::Wallpaper(_) if error == "malformed request: unknown request \"wallpaper\"" => Some("--wallpaper"),
         Request::Capture(_) if error == OLD_CAPTURE || error.starts_with(OLD_CAPTURE_WORD) => Some("--capture"),
         Request::Clipboard | Request::ClipboardClear => OLD_CLIPBOARD.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
@@ -844,13 +853,13 @@ mod tests {
             (&["--quick", "--close"], "only one of"),
             (
                 &["--calc", "--toggle"],
-                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help",
+                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help",
             ),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
             (
                 &["--clipboard", "--toggle"],
-                "--notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --help",
+                "--notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help",
             ),
             (&["--tools", "--power"], "only one of"),
             (&["--tools", "--toggle"], "--tools"),
@@ -1237,5 +1246,27 @@ mod tests {
         assert_eq!(reply_to_exit(&request, Reply::Error(no_screencopy.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
         assert!(String::from_utf8_lossy(&err).contains(no_screencopy), "{}", String::from_utf8_lossy(&err));
         assert_eq!(reply_to_exit(&request, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
+    }
+
+    /// `--wallpaper next` asks the daemon for the folder's next image; the word is required, and a
+    /// daemon from before the picker exits 3 naming the flag.
+    #[test]
+    fn alpheus_launch_parses_wallpaper_next() {
+        assert_eq!(parse_args(&args(&["--wallpaper", "next"])), Ok(Invocation::Wallpaper(WallpaperVerb::Next)));
+        assert_eq!(request_of(Invocation::Wallpaper(WallpaperVerb::Next), 0), Ok(Request::Wallpaper(WallpaperVerb::Next)));
+        assert!(parse_args(&args(&["--wallpaper"])).unwrap_err().contains("needs"), "the word is required");
+        assert!(parse_args(&args(&["--wallpaper", "previous"])).unwrap_err().contains("takes next"));
+        assert!(parse_args(&args(&["--wallpaper", "next", "--toggle"])).unwrap_err().contains("--wallpaper"), "one verb at a time");
+        let request = Request::Wallpaper(WallpaperVerb::Next);
+        let mut err = Vec::new();
+        let old = "malformed request: unknown request \"wallpaper\"";
+        assert_eq!(reply_to_exit(&request, Reply::Error(old.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--wallpaper"), "{}", String::from_utf8_lossy(&err));
+        // A current daemon's refusals are plain errors.
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&request, Reply::Error("wallpaper is off".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        assert!(String::from_utf8_lossy(&err).contains("wallpaper is off"));
+        assert_eq!(reply_to_exit(&request, Reply::Done, &[], &mut Vec::new(), &mut Vec::new()), EXIT_OK);
+        assert!(USAGE.contains("--wallpaper next"));
     }
 }

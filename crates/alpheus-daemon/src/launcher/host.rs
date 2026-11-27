@@ -200,7 +200,8 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::OutputsKeep
             | Request::OutputsRevert
             | Request::Shield(_)
-            | Request::Capture(_),
+            | Request::Capture(_)
+            | Request::Wallpaper(_),
             _,
         ) => (Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
     }

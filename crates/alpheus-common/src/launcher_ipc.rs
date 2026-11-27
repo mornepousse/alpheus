@@ -227,6 +227,27 @@ impl QuickVerb {
     }
 }
 
+/// `--wallpaper`'s word: the folder's next image, for an external timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallpaperVerb {
+    /// The name after the remembered one (the first when none), applied with `then`.
+    Next,
+}
+
+impl WallpaperVerb {
+    pub const ALL: [WallpaperVerb; 1] = [WallpaperVerb::Next];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            WallpaperVerb::Next => "next",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<WallpaperVerb> {
+        WallpaperVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
 /// The shortest and the longest countdown `--timer start` asks for, in seconds.
 pub const TIMER_MIN_SECS: u32 = 1;
 pub const TIMER_MAX_SECS: u32 = 86_400;
@@ -368,6 +389,9 @@ pub enum Request {
     /// The captures: answered Done, also when the selector could not open. An older daemon
     /// refuses it as an unknown request.
     Capture(CaptureVerb),
+    /// The wallpaper picker: answered Done once the setter started, or an error when `[wallpaper]`
+    /// is off or the folder holds no image. An older daemon refuses it as an unknown request.
+    Wallpaper(WallpaperVerb),
 }
 
 impl Request {
@@ -448,6 +472,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 timer start <secs>\n" | "alpheus-launcher/1 timer pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup|shutdown-cancel\n" | "alpheus-launcher/1 timer shutdown <secs>\n"
 ///   "alpheus-launcher/1 clipboard\n" | "alpheus-launcher/1 clipboard-clear\n"
 ///   "alpheus-launcher/1 shield on|off|toggle|status|allow\n"
+///   "alpheus-launcher/1 wallpaper next\n"
 ///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
 ///   "alpheus-launcher/1 outputs-try <body_len>\n" <body bytes>
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
@@ -489,6 +514,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Timer(v) => format!("{MAGIC} timer {}\n", v.word()).into_bytes(),
         Request::Shield(v) => format!("{MAGIC} shield {}\n", v.word()).into_bytes(),
         Request::Capture(v) => format!("{MAGIC} capture {}\n", v.word()).into_bytes(),
+        Request::Wallpaper(v) => format!("{MAGIC} wallpaper {}\n", v.word()).into_bytes(),
         Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
         Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
         Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
@@ -539,6 +565,7 @@ enum Header {
     OutputsRevert,
     Shield(ShieldVerb),
     Capture(CaptureVerb),
+    Wallpaper(WallpaperVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -696,6 +723,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::OutputsRevert => Some(Request::OutputsRevert),
         Header::Shield(v) => Some(Request::Shield(v)),
         Header::Capture(v) => Some(Request::Capture(v)),
+        Header::Wallpaper(v) => Some(Request::Wallpaper(v)),
         Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
@@ -760,6 +788,9 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["capture", word] => CaptureVerb::parse(word)
             .map(Header::Capture)
             .ok_or_else(|| IpcError::Malformed(format!("unknown capture word {:?}", cut(word)))),
+        ["wallpaper", word] => WallpaperVerb::parse(word)
+            .map(Header::Wallpaper)
+            .ok_or_else(|| IpcError::Malformed(format!("unknown wallpaper word {:?}", cut(word)))),
         ["outputs"] => Ok(Header::Outputs),
         ["outputs-keep"] => Ok(Header::OutputsKeep),
         ["outputs-revert"] => Ok(Header::OutputsRevert),
