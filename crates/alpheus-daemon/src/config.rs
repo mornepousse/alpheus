@@ -6,7 +6,7 @@
 //! what it does; docs/configuration.md is the same thing as a page, with the bounds.
 //!
 //! ```toml
-//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order ("timer" just before "clock")
+//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order but "keyboard" ("timer" just before "clock")
 //! height = 22                                               # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
@@ -65,6 +65,7 @@
 //! action = "mute"  # "mute": no bubble, kept and counted; "drop": ignored
 //! urgency = "low"  # "low" | "normal" | "critical": replaces the app's (not with "drop")
 //! [osd]                                                     # the volume, microphone and brightness pill (with "osd" in modules)
+//! kinds = ["volume", "mic", "brightness"]                   # which pills show; also "bluetooth", "dnd" (needs "notifications"), "profile", "layout", "track"; each brings the source it reads
 //! timeout_ms = 1300                                         # how long it stays after the last change, 600 to 5000
 //! width = 32                                                # cells of the pill's row, 24 to 60
 //! margin = 48                                               # logical px above the bottom edge, 0 to 400
@@ -95,6 +96,9 @@
 //! sound = []                                                # argv run at each end (not under do-not-disturb); [] none
 //! idle = "glyph"                                            # "glyph" | "hidden": the chip when nothing runs
 //! proc_dir = "/proc"                                        # where the scheduled shutdown looks for a screen locker (an absolute path)
+//! [keyboard]                                                # the layout and the bind mode (with "keyboard" in modules); read at start
+//! short = true                                              # "English (US)" -> "us": 2 or 3 ASCII letters in parentheses, else the name's first two; false: the full name
+//! show_mode = true                                          # the bind mode after the layout when it is not "default"
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -126,6 +130,7 @@
 
 use crate::clock;
 use crate::grid::text_width;
+use crate::modules::Needs;
 use crate::system::DISKS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -141,6 +146,9 @@ pub enum ModuleId {
     Launcher,
     Workspaces,
     Window,
+    /// The keyboard layout and the compositor's bind mode, display only. Opt-in: not in the
+    /// default `modules` (`ModuleId::defaults`).
+    Keyboard,
     Media,
     /// The privacy indicators: who holds the microphone, the camera or the screen.
     Privacy,
@@ -190,6 +198,12 @@ impl ModuleId {
     /// Name in bar.toml.
     pub fn name(self) -> &'static str {
         self.spec().name
+    }
+
+    /// The modules of a `bar.toml` without `modules`: every one in `ALL`'s order but the opt-in
+    /// keyboard, which a user names (it makes the compositor source read the layout).
+    pub fn defaults() -> Vec<ModuleId> {
+        ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Keyboard).collect()
     }
 }
 
@@ -912,6 +926,58 @@ pub const OSD_WIDTH_MIN: u16 = 24;
 pub const OSD_WIDTH_MAX: u16 = 60;
 pub const OSD_MARGIN_MAX: u32 = 400;
 
+/// What a pill can show (`[osd] kinds`). The three levels are on by default; the passive kinds are
+/// opt-in. See docs/decisions.md, "An OSD kind is opt-in and brings the source it reads".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OsdKind {
+    /// The default sink's level, and its name card on a switch.
+    Volume,
+    /// The default source's mute flip.
+    Mic,
+    /// The backlight, on `alpheus-launch --osd brightness`.
+    Brightness,
+    /// The adapter powered on or off.
+    Bluetooth,
+    /// Do-not-disturb on or off, while alpheus serves notifications.
+    Dnd,
+    /// The active power profile.
+    Profile,
+    /// The keyboard layout.
+    Layout,
+    /// A new track while playing.
+    Track,
+}
+
+impl OsdKind {
+    /// The word `bar.toml` uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            OsdKind::Volume => "volume",
+            OsdKind::Mic => "mic",
+            OsdKind::Brightness => "brightness",
+            OsdKind::Bluetooth => "bluetooth",
+            OsdKind::Dnd => "dnd",
+            OsdKind::Profile => "profile",
+            OsdKind::Layout => "layout",
+            OsdKind::Track => "track",
+        }
+    }
+
+    /// The source the kind reads, started for it when `osd` is in `modules` (`modules::needs_of`).
+    /// Brightness is read on request and do-not-disturb comes from the notifications module: none.
+    pub(crate) fn needs(self) -> Needs {
+        match self {
+            OsdKind::Volume | OsdKind::Mic => Needs::SOUND.or(Needs::OSD_SCOPE),
+            OsdKind::Bluetooth => Needs::BLUETOOTH,
+            OsdKind::Profile => Needs::POWER_PROFILE,
+            OsdKind::Track => Needs::MEDIA,
+            OsdKind::Layout => Needs::KEYBOARD,
+            OsdKind::Brightness | OsdKind::Dnd => Needs::NONE,
+        }
+    }
+}
+
 /// `[osd]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -926,6 +992,8 @@ pub struct OsdConfig {
     pub backlight: String,
     /// Where the backlight devices are listed. Read only, and only on `alpheus-launch --osd brightness`.
     pub backlight_dir: PathBuf,
+    /// Which pills show, each once.
+    pub kinds: Vec<OsdKind>,
 }
 
 impl Default for OsdConfig {
@@ -936,6 +1004,7 @@ impl Default for OsdConfig {
             margin: 48,
             backlight: String::new(),
             backlight_dir: PathBuf::from("/sys/class/backlight"),
+            kinds: vec![OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness],
         }
     }
 }
@@ -1173,6 +1242,22 @@ pub struct ClipboardConfig {
     pub enabled: bool,
 }
 
+/// `[keyboard]`: how the keyboard module draws the layout and the mode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeyboardConfig {
+    /// `English (US)` → `us` (`segments::short_layout`); false: the full name.
+    pub short: bool,
+    /// The bind mode after the layout when it is not `default`.
+    pub show_mode: bool,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        KeyboardConfig { short: true, show_mode: true }
+    }
+}
+
 /// `[timer]`. Lengths are minutes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1253,6 +1338,7 @@ pub struct BarConfig {
     pub osd: OsdConfig,
     pub quick: QuickConfig,
     pub timer: TimerConfig,
+    pub keyboard: KeyboardConfig,
     pub clipboard: ClipboardConfig,
     pub displays: DisplaysConfig,
     pub hooks: HooksConfig,
@@ -1263,7 +1349,7 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         BarConfig {
-            modules: ModuleId::ALL.to_vec(),
+            modules: ModuleId::defaults(),
             height: DEFAULT_HEIGHT,
             font: FontConfig::default(),
             clock: ClockConfig::default(),
@@ -1279,6 +1365,7 @@ impl Default for BarConfig {
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
             timer: TimerConfig::default(),
+            keyboard: KeyboardConfig::default(),
             clipboard: ClipboardConfig::default(),
             displays: DisplaysConfig::default(),
             hooks: HooksConfig::default(),
@@ -1328,6 +1415,8 @@ struct Raw {
     #[serde(default)]
     timer: TimerConfig,
     #[serde(default)]
+    keyboard: KeyboardConfig,
+    #[serde(default)]
     clipboard: ClipboardConfig,
     #[serde(default)]
     displays: DisplaysConfig,
@@ -1354,7 +1443,7 @@ impl BarConfig {
 
     pub fn from_text(s: &str) -> Result<BarConfig, String> {
         let b: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
-        let modules = b.modules.unwrap_or_else(|| ModuleId::ALL.to_vec());
+        let modules = b.modules.unwrap_or_else(ModuleId::defaults);
         for (i, m) in modules.iter().enumerate() {
             if modules[..i].contains(m) {
                 return Err(format!("duplicate module \"{}\"", m.name()));
@@ -1477,6 +1566,15 @@ impl BarConfig {
         if !o.backlight_dir.is_absolute() {
             return Err("osd.backlight_dir must be an absolute path".into());
         }
+        for (i, kind) in o.kinds.iter().enumerate() {
+            if o.kinds[..i].contains(kind) {
+                return Err(format!("osd.kinds: duplicate {:?}", kind.name()));
+            }
+        }
+        // Do-not-disturb is the notification server's: without the module there is nothing to follow.
+        if o.kinds.contains(&OsdKind::Dnd) && !modules.contains(&ModuleId::Notifications) {
+            return Err("osd.kinds: \"dnd\" needs \"notifications\" in modules".into());
+        }
         if !b.privacy.dev_dir.is_absolute() {
             return Err("privacy.dev_dir must be an absolute path".into());
         }
@@ -1521,6 +1619,7 @@ impl BarConfig {
             osd: b.osd,
             quick: b.quick,
             timer: b.timer,
+            keyboard: b.keyboard,
             clipboard: b.clipboard,
             displays: b.displays,
             hooks: b.hooks,

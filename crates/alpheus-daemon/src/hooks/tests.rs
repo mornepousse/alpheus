@@ -3,7 +3,7 @@
 //! wants.
 
 use super::*;
-use crate::config::HooksConfig;
+use crate::config::{HooksConfig, OsdConfig};
 use crate::privacy::Indicator;
 use crate::system::BtDevice;
 
@@ -445,16 +445,37 @@ fn failed_units_gives_each_managers_count_once_known() {
 #[test]
 fn an_event_is_read_only_when_its_modules_are_in_modules() {
     use crate::config::ModuleId as M;
-    assert!(HookId::Started.reads(&[], false) && HookId::ThemeMode.reads(&[], false));
-    assert!(!HookId::Dnd.reads(&[M::Clock], false) && HookId::Dnd.reads(&[M::Notifications], false));
-    assert!(!HookId::Privacy.reads(&[M::Clock], false) && HookId::Privacy.reads(&[M::Privacy], false));
-    assert!(!HookId::Displays.reads(&[M::Clock], false) && HookId::Displays.reads(&[M::Displays], false));
-    assert!(!HookId::BatteryLevel.reads(&[M::Clock], false) && HookId::BatteryLevel.reads(&[M::Battery], false));
-    assert!(HookId::Vpn.reads(&[M::Network], false) && HookId::Vpn.reads(&[M::Quick], false));
-    assert!(HookId::PowerProfile.reads(&[M::Quick], false) && !HookId::PowerProfile.reads(&[M::Network], false));
-    assert!(HookId::Bluetooth.reads(&[M::Bluetooth], false) && HookId::Bluetooth.reads(&[M::Quick], false));
+    assert!(HookId::Started.reads(&[], &OsdConfig::default(), false) && HookId::ThemeMode.reads(&[], &OsdConfig::default(), false));
+    assert!(
+        !HookId::Dnd.reads(&[M::Clock], &OsdConfig::default(), false)
+            && HookId::Dnd.reads(&[M::Notifications], &OsdConfig::default(), false)
+    );
+    assert!(
+        !HookId::Privacy.reads(&[M::Clock], &OsdConfig::default(), false)
+            && HookId::Privacy.reads(&[M::Privacy], &OsdConfig::default(), false)
+    );
+    assert!(
+        !HookId::Displays.reads(&[M::Clock], &OsdConfig::default(), false)
+            && HookId::Displays.reads(&[M::Displays], &OsdConfig::default(), false)
+    );
+    assert!(
+        !HookId::BatteryLevel.reads(&[M::Clock], &OsdConfig::default(), false)
+            && HookId::BatteryLevel.reads(&[M::Battery], &OsdConfig::default(), false)
+    );
+    assert!(HookId::Vpn.reads(&[M::Network], &OsdConfig::default(), false) && HookId::Vpn.reads(&[M::Quick], &OsdConfig::default(), false));
+    assert!(
+        HookId::PowerProfile.reads(&[M::Quick], &OsdConfig::default(), false)
+            && !HookId::PowerProfile.reads(&[M::Network], &OsdConfig::default(), false)
+    );
+    assert!(
+        HookId::Bluetooth.reads(&[M::Bluetooth], &OsdConfig::default(), false)
+            && HookId::Bluetooth.reads(&[M::Quick], &OsdConfig::default(), false)
+    );
     assert_eq!(HookId::Network.needs(), "network or quick");
-    assert!(!HookId::FailedUnits.reads(&[M::Clock], false) && HookId::FailedUnits.reads(&[M::Failed], false));
+    assert!(
+        !HookId::FailedUnits.reads(&[M::Clock], &OsdConfig::default(), false)
+            && HookId::FailedUnits.reads(&[M::Failed], &OsdConfig::default(), false)
+    );
     assert_eq!(HookId::FailedUnits.needs(), "failed");
 }
 
@@ -480,8 +501,8 @@ fn the_shield_event_sets_its_variable_and_fires_like_the_others() {
 fn the_shield_hook_needs_shield_configured() {
     use crate::config::ModuleId as M;
     // No module feeds it: only a configured `[shield]` does, whatever `modules` hold.
-    assert!(!HookId::Shield.reads(&[M::Quick, M::Shield, M::Notifications], false));
-    assert!(HookId::Shield.reads(&[], true));
+    assert!(!HookId::Shield.reads(&[M::Quick, M::Shield, M::Notifications], &OsdConfig::default(), false));
+    assert!(HookId::Shield.reads(&[], &OsdConfig::default(), true));
     assert_eq!(HookId::Shield.needs(), "[shield]");
 }
 

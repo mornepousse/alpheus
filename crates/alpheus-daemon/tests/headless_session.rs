@@ -28,7 +28,7 @@ use common::{
     recorded_argv, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy,
     wl_paste, write_atomically, wtype, wtype_spawn,
 };
-use common::{FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
+use common::{FakePowerProfiles, FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -4639,6 +4639,234 @@ fn osd_the_pills_own_output_going_away_drops_it() {
     assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {log}");
 }
 
+// ---- The OSD's passive kinds: Bluetooth, do-not-disturb, the power profile. ----
+
+/// Waits for the pill's surface line that ends with `what` (`osd::describe`'s words), whatever the
+/// output it is on. The line is written when the surface appears, not for a change it then shows.
+fn osd_shown(d: &Daemon, what: &str) -> bool {
+    let end = format!(": {what}");
+    wait_until(|| d.log().iter().any(|l| l.contains("osd surface on ") && l.ends_with(&end)))
+}
+
+/// The OSD alone with `kinds`, on a private system bus that `serve` fills (a fake BlueZ, a fake
+/// power-profiles-daemon); returned once the source's first state is the baseline and its grace is
+/// over.
+fn osd_passive_daemon<T>(name: &str, kinds: &str, serve: impl FnOnce(&PrivateBus) -> T) -> (PrivateBus, T, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let fake = serve(&bus);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let toml = format!(
+        "modules = [\"osd\", \"clock\"]\n[osd]\nkinds = {kinds}\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    );
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    // The system bus read (the baseline), then past its grace.
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    (bus, fake, sway, hypr, d)
+}
+
+/// A Bluetooth power flip shows its pill, off then on; a device connecting shows nothing. The pill
+/// says on or off, never a device's name; and without a `volume` or `mic` kind the OSD reads no
+/// pw-dump.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_bluetooth_flip_shows_its_pill() {
+    let (_bus, bluez, _sway, _hypr, d) = osd_passive_daemon("osd-bt", "[\"bluetooth\"]", FakeBluez::serve);
+    assert_eq!(d.count("osd surface on"), 0, "the first state is the baseline: {:?}", d.log());
+    bluez.set_connected(CASQUE, true);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("osd surface on"), 0, "a device connecting is not a power flip: {:?}", d.log());
+    bluez.set_powered(false);
+    assert!(osd_shown(&d, "bluetooth off"), "{:?}", d.log());
+    // A change while it shows replaces its content in place (no new surface line): the next one
+    // after it went.
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    bluez.set_powered(true);
+    assert!(osd_shown(&d, "bluetooth on"), "{:?}", d.log());
+    assert!(no_device_logged(&d), "{:?}", d.log());
+    assert_eq!(d.count("osd: sound baseline"), 0, "no pw-dump for a Bluetooth pill: {:?}", d.log());
+}
+
+/// A power profile change shows its pill; the log says it changed, never which profile.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_profile_change_shows_its_pill() {
+    let (_bus, power, _sway, _hypr, d) =
+        osd_passive_daemon("osd-profile", "[\"profile\"]", |bus| FakePowerProfiles::serve(bus, "balanced"));
+    assert_eq!(d.count("osd surface on"), 0, "the first profile is the baseline: {:?}", d.log());
+    power.set_active("performance");
+    assert!(osd_shown(&d, "profile changed"), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.starts_with("osd") && l.contains("performance")), "{:?}", d.log());
+}
+
+/// `alpheus-launch --dnd toggle` shows the do-not-disturb pill, on then off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_dnd_toggle_shows_its_pill() {
+    let toml = "modules = [\"osd\", \"notifications\", \"clock\"]\n[osd]\nkinds = [\"dnd\"]\n";
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("osd-dnd", toml, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first view while serving is the baseline: {:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(osd_shown(&d, "dnd on"), "{:?}", d.log());
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(osd_shown(&d, "dnd off"), "{:?}", d.log());
+}
+
+/// With the default kinds and no `bluetooth` module, BlueZ is never read: not one call reaches it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_kinds_off_read_no_bluez() {
+    let (_bus, bluez, _sway, _hypr, d) = osd_passive_daemon("osd-no-bt", "[\"volume\", \"mic\", \"brightness\"]", FakeBluez::serve);
+    bluez.set_powered(false);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(bluez.calls(), Vec::<String>::new(), "{:?}", d.log());
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
+}
+
+/// With `kinds = ["volume"]`, a microphone mute flip shows nothing (the sound source still
+/// publishes it: the volume kind brings the OSD's scope), and a volume change still shows.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_the_volume_kind_alone_shows_no_microphone_pill() {
+    let (sway, _hypr, d) = osd_daemon("osd-volume-only", 1, "kinds = [\"volume\"]\n", |_| ());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, 100, true));
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("osd surface on"), 0, "a mute flip without the mic kind: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(osd_shown(&d, "volume 90%"), "the volume kind still shows: {:?}", d.log());
+}
+
+/// `--osd brightness` with a backlight but without the `brightness` kind: exit 0, its fixed line,
+/// no pill.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_the_brightness_verb_without_its_kind_shows_nothing() {
+    let (sway, _hypr, d) = osd_daemon("osd-bright-kind", 1, "kinds = [\"volume\", \"mic\"]\n", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("osd: brightness asked, but brightness is not in osd.kinds", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
+}
+
+/// The `bluetooth` module runs the BlueZ source anyway: with the default kinds, a power flip that
+/// reaches the bar still shows no pill.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_bluetooth_flip_without_its_kind_shows_nothing() {
+    let bus = PrivateBus::start("osd-bt-module");
+    let bluez = FakeBluez::serve(&bus);
+    let sway = Sway::start("osd-bt-module", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let toml = format!(
+        "modules = [\"bluetooth\", \"osd\", \"clock\"]\n[osd]\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    );
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    assert!(!bluez.calls().is_empty(), "the bluetooth module reads BlueZ: {:?}", d.log());
+    bluez.set_powered(false);
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(d.count("osd surface on"), 0, "bluetooth is not in the kinds: {:?}", d.log());
+}
+
+// ---- The OSD's layout and track kinds. ----
+
+const OSD_LAYOUT_BAR: &str = "modules = [\"osd\"]\n[osd]\nkinds = [\"layout\"]\n";
+
+/// Under Mango, the OSD alone with the `layout` kind (no keyboard module): the first snapshot's
+/// layout is the baseline, the next snapshot's French layout shows the pill, and the log says the
+/// layout changed, never its name. Then the same under Sway, the harness switching the layout on
+/// its private socket.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_a_layout_change_shows_the_pill() {
+    let (sway, mango, d) = mango_keyboard_daemon("osd-layout-mango", OSD_LAYOUT_BAR);
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first layout is the baseline: {:?}", d.log());
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    assert!(osd_shown(&d, "layout changed"), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "the pill drawn: {:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("French") || l.contains("English")), "{:?}", d.log());
+    drop(d);
+    drop(mango);
+    drop(sway);
+
+    let sway = Sway::start("osd-layout-sway", 1);
+    let _keyboard = sway.keyboard();
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(OSD_LAYOUT_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    assert!(d.wait_for("compositor: Sway ($SWAYSOCK)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    // GET_INPUTS read (the baseline), then past its grace.
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first layout is the baseline: {:?}", d.log());
+    sway.command("input type:keyboard xkb_switch_layout next");
+    assert!(osd_shown(&d, "layout changed"), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("French") || l.contains("English")), "{:?}", d.log());
+}
+
+/// The OSD alone with the `track` kind on a private session bus whose fake player plays "Harbor
+/// Lights": a new title while playing shows the pill; a pause and a resume of that title show no
+/// second one. No title reaches the log.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_track_change_while_playing_shows_the_pill() {
+    let toml = "modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"track\"]\n";
+    let (_bus, _sway, _hypr, d, player) = media_daemon("osd-track", toml, None);
+    assert!(d.wait_for("media: shown", DELAY), "the players are read for the kind: {:?}", d.log());
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first track is the baseline: {:?}", d.log());
+    player.set_track("Tidal Reach", "Wavecrest", 180_000_000);
+    assert!(osd_shown(&d, "track changed"), "{:?}", d.log());
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    player.set_status("Paused");
+    thread::sleep(Duration::from_millis(300));
+    player.set_status("Playing");
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(d.count("osd surface on"), 1, "a pause and a resume of the same title show nothing: {:?}", d.log());
+    let titles = ["Harbor", "Tidal", "Wavecrest", "Tidewave"];
+    assert!(!d.log().iter().any(|l| titles.iter().any(|t| l.contains(t))), "{:?}", d.log());
+}
+
+/// With the default kinds, a layout change under Mango and a new track on the session bus cost
+/// nothing: the players are never read, no pill shows, and the loop does not wake in 5 s.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_the_new_kinds_off_cost_no_wakeup() {
+    let bus = PrivateBus::start("osd-kinds-off");
+    let player = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let sway = Sway::start("osd-kinds-off", 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let options = DaemonOptions {
+        bar_toml: Some("modules = [\"osd\"]\n"),
+        session_bus: Some(&bus.address),
+        backend: Backend::Mango(&mango.socket),
+        ..DaemonOptions::default()
+    };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(wait_until(|| mango.requests() == ["watch all-clients", "watch all-monitors"]), "{:?}", mango.requests());
+    let before = quiet_loop(&d);
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    player.set_track("Tidal Reach", "Wavecrest", 180_000_000);
+    thread::sleep(Duration::from_secs(5));
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "a layout or a track change woke the loop: {:?}", d.log());
+    assert_eq!(player.calls(), Vec::<String>::new(), "the players are never read: {:?}", d.log());
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
+}
+
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";
 /// A press on the volume module: the first one, from cell 1.
 const VOLUME_AT: (u32, u32) = (16, 10);
@@ -5957,6 +6185,186 @@ fn under_mango_the_bar_reads_the_fake_mangos_tags() {
         recorded(&sway, "wm-set"),
         d.log()
     );
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+}
+
+/// A bar under the fake Mango on catppuccin dark with `module_colors = "none"`, `modules` its
+/// `modules = […]` line; returned once both watches are connected and the bar is placed.
+fn mango_keyboard_daemon(name: &str, modules: &str) -> (Sway, FakeMango, Daemon) {
+    let sway = Sway::start(name, 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(modules), backend: Backend::Mango(&mango.socket), ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("compositor: Mango ($MANGO_INSTANCE_SIGNATURE)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(wait_until(|| mango.requests() == ["watch all-clients", "watch all-monitors"]), "{:?}", mango.requests());
+    (sway, mango, d)
+}
+
+/// The pixels of the bar inked in `colour`.
+fn inked_pixels(s: &Ppm, colour: [u8; 3]) -> Vec<(u32, u32)> {
+    (0..BAR_HEIGHT)
+        .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| s.at(x, y).is_some_and(|p| inked_in(p, colour)))
+        .collect()
+}
+
+/// Under Mango, the keyboard module alone: `󰌌 us` in the bar's ink (4 cells, ≈ 34 px, nothing in
+/// the accent), then Mango's next snapshot says `French (AZERTY)` in `resize`: `󰌌 fr` keeps its
+/// width with other letters, and ` resize` follows in the accent (6 letters, ≈ 50 px).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_mango_shows_the_layout_and_follows_a_change() {
+    let (sway, mango, d) = mango_keyboard_daemon("kb-mango", "modules = [\"keyboard\"]\n");
+    let dark = preset("catppuccin").unwrap().dark;
+    let (fg, accent) = (rgb(dark.fg), rgb(dark.accent));
+    let us = Cell::new(None);
+    let shown = sway.wait_for_screen("HEADLESS-1", |s| {
+        us.set(on_the_bar(s, fg));
+        us.get().is_some_and(|(x0, x1)| (22..=38).contains(&(x1 - x0)))
+    });
+    assert!(shown, "the glyph and two letters: {:?} {:?}", us.get(), d.log());
+    let before = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(on_the_bar(&before, accent), None, "the default mode is not shown");
+    let (_, us_end) = us.get().unwrap();
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    let mode = Cell::new(None);
+    let changed = sway.wait_for_screen("HEADLESS-1", |s| {
+        mode.set(on_the_bar(s, accent));
+        mode.get().is_some()
+    });
+    assert!(changed, "the mode drawn after the push: {:?}", d.log());
+    let after = sway.screenshot("HEADLESS-1").expect("grim");
+    let (m0, m1) = on_the_bar(&after, accent).expect("the mode stays");
+    assert!((40..=56).contains(&(m1 - m0)), "` resize`, six letters: {m0}..{m1}");
+    let (f0, f1) = on_the_bar(&after, fg).expect("the layout stays");
+    assert!((22..=38).contains(&(f1 - f0)), "still the glyph and two letters (short): {f0}..{f1}");
+    assert!(f1.abs_diff(us_end) <= 4 && m0 > f1, "the mode after the layout: {f0}..{f1} then {m0}..{m1}");
+    assert_ne!(inked_pixels(&before, fg), inked_pixels(&after, fg), "other letters: fr, not us");
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+}
+
+/// Waits until the loop's wake-up count holds still for 300 ms (the first snapshots drawn; 5 s at
+/// most) and returns it.
+fn quiet_loop(d: &Daemon) -> u64 {
+    let t = Instant::now();
+    let mut last = d.main_thread_wakeups();
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let now = d.main_thread_wakeups();
+        if now == last {
+            return now;
+        }
+        assert!(t.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+        last = now;
+    }
+}
+
+/// With the keyboard module, a snapshot that changes only the layout and the mode (the active
+/// output unchanged) is drawn: the bar's redraw check reads both.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_mango_draws_a_layout_only_change() {
+    let (sway, mango, d) = mango_keyboard_daemon("kb-mango-only", "modules = [\"keyboard\"]\n");
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    let fg = rgb(preset("catppuccin").unwrap().dark.fg);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, fg).is_some()), "the layout drawn: {:?}", d.log());
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, accent).is_some()), "` resize` drawn: {:?}", d.log());
+}
+
+/// Without the keyboard module, a snapshot that changes only the layout and the mode publishes
+/// nothing: the loop does not wake. A snapshot that changes the active output then does wake it,
+/// so the watch was live all along.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_off_under_mango_redraws_nothing_on_a_layout_change() {
+    let (_sway, mango, d) = mango_keyboard_daemon("kb-mango-off", "modules = [\"workspaces\", \"window\"]\n");
+    let before = quiet_loop(&d);
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    thread::sleep(Duration::from_millis(1500));
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "a layout change woke the loop: {:?}", d.log());
+    let before = d.main_thread_wakeups();
+    mango.push_monitors("mango-monitors-layout-fr.json");
+    assert!(wait_until(|| d.main_thread_wakeups() > before), "the active output's change reached the loop: {:?}", d.log());
+}
+
+/// Sway's configuration for the keyboard tests: a `resize` mode (Sway defines modes only while
+/// it reads its configuration).
+const SWAY_RESIZE_MODE: &str = "mode \"resize\" {\n    bindsym Escape mode default\n}\n";
+
+/// The keyboard module alone on the isolated Sway read as the compositor, catppuccin dark with
+/// `module_colors = "none"`. Its virtual keyboard (English (US), then French) is there before the
+/// daemon, so the session's GET_INPUTS names it. Returned once `󰌌 us` is drawn, with the span of
+/// the bar's ink.
+fn sway_keyboard_daemon(name: &str) -> (Sway, common::VirtualKeyboard, Daemon, (u32, u32)) {
+    let sway = Sway::start_with_config(name, 1, SWAY_RESIZE_MODE);
+    let keyboard = sway.keyboard();
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some("modules = [\"keyboard\"]\n"), backend: Backend::Sway, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("compositor: Sway ($SWAYSOCK)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let fg = rgb(preset("catppuccin").unwrap().dark.fg);
+    let us = Cell::new(None);
+    let shown = sway.wait_for_screen("HEADLESS-1", |s| {
+        us.set(on_the_bar(s, fg));
+        us.get().is_some_and(|(x0, x1)| (22..=38).contains(&(x1 - x0)))
+    });
+    assert!(shown, "the glyph and two letters from GET_INPUTS: {:?} {:?}", us.get(), d.log());
+    (sway, keyboard, d, us.get().unwrap())
+}
+
+/// Under Sway: `󰌌 us` from GET_INPUTS, then the harness switches the layout on its private socket
+/// (`xkb_switch_layout next`) and Sway's `input` event brings `󰌌 fr`: the same width, other
+/// letters, no mode (Sway names none before its first `mode` event).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_sway_follows_a_layout_switch() {
+    let (sway, _keyboard, d, (_, us_end)) = sway_keyboard_daemon("kb-sway");
+    let dark = preset("catppuccin").unwrap().dark;
+    let (fg, accent) = (rgb(dark.fg), rgb(dark.accent));
+    let before = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(on_the_bar(&before, accent), None, "no mode before the first mode event");
+    let us = inked_pixels(&before, fg);
+    sway.command("input type:keyboard xkb_switch_layout next");
+    let changed = sway.wait_for_screen("HEADLESS-1", |s| inked_pixels(s, fg) != us && on_the_bar(s, fg).is_some());
+    assert!(changed, "the layout switch drawn: {:?}", d.log());
+    let after = sway.screenshot("HEADLESS-1").expect("grim");
+    let (f0, f1) = on_the_bar(&after, fg).expect("the layout stays");
+    assert!((22..=38).contains(&(f1 - f0)) && f1.abs_diff(us_end) <= 4, "the glyph and two letters, fr: {f0}..{f1}");
+    assert_eq!(on_the_bar(&after, accent), None, "still no mode");
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+}
+
+/// Under Sway, the harness enters the `resize` mode: ` resize` follows `󰌌 us` in the accent; back
+/// to `default`, the mode goes.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_sway_shows_a_mode() {
+    let (sway, _keyboard, d, (_, us_end)) = sway_keyboard_daemon("kb-sway-mode");
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    sway.command("mode resize");
+    let mode = Cell::new(None);
+    let shown = sway.wait_for_screen("HEADLESS-1", |s| {
+        mode.set(on_the_bar(s, accent));
+        mode.get().is_some()
+    });
+    assert!(shown, "the mode drawn: {:?}", d.log());
+    let after = sway.screenshot("HEADLESS-1").expect("grim");
+    let (m0, m1) = on_the_bar(&after, accent).expect("the mode stays");
+    assert!((40..=56).contains(&(m1 - m0)) && m0 > us_end, "` resize`, six letters after `us`: {m0}..{m1}");
+    sway.command("mode default");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, accent).is_none()), "the default mode is not shown: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }
 

@@ -51,11 +51,14 @@ fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace
 
 #[test]
 fn every_click_only_runs_the_workspace_command() {
-    let mut b = Bar::new(BarConfig::default());
+    // Every module, the opt-in keyboard included, which draws from the layout and the mode.
+    let mut b = Bar::new(BarConfig { modules: ModuleId::ALL.to_vec(), ..BarConfig::default() });
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
         toplevels: vec![],
+        layout: Some("English (US)".into()),
+        mode: Some("resize".into()),
         ..CompositorState::default()
     })));
     let fake = FakeExecutor::new();
@@ -79,11 +82,14 @@ fn every_click_only_runs_the_workspace_command() {
 }
 
 fn full_bar() -> Bar {
-    let mut b = Bar::new(BarConfig::default());
+    // Every module, the opt-in keyboard included, which draws from the layout and the mode.
+    let mut b = Bar::new(BarConfig { modules: ModuleId::ALL.to_vec(), ..BarConfig::default() });
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
         toplevels: vec![],
+        layout: Some("English (US)".into()),
+        mode: Some("resize".into()),
         ..CompositorState::default()
     })));
     b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }), ..SoundState::default() })));
@@ -105,6 +111,7 @@ fn full_bar() -> Bar {
 fn every_click_on_a_full_bar_stays_on_the_allowlist() {
     let mut without_quick = full_bar();
     without_quick.config.modules.retain(|m| *m != ModuleId::Quick);
+    assert!(full_bar().grid("eDP-1", 240).text().contains("us resize"), "the keyboard module is drawn");
     let mut calls = Vec::new();
     for b in [full_bar(), without_quick] {
         let fake = FakeExecutor::new();
@@ -146,9 +153,14 @@ fn compositor_requests_are_read_only() {
     assert_eq!(texts, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
     assert_eq!(REQUEST, "\"EventStream\"");
     assert_eq!(mango::REQUESTS, ["watch all-monitors", "watch all-clients"]);
-    assert_eq!(sway::Message::ALL.map(|m| m.code()), [1, 2, 4], "GET_WORKSPACES, SUBSCRIBE, GET_TREE: never RUN_COMMAND (0)");
+    assert_eq!(
+        sway::Message::ALL.map(|m| m.code()),
+        [1, 2, 2, 4, 100],
+        "GET_WORKSPACES, SUBSCRIBE (twice), GET_TREE, GET_INPUTS: never RUN_COMMAND (0)"
+    );
     assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
-    assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), 0]);
+    let payloads: [&[u8]; 5] = [b"", b"[\"workspace\",\"window\"]", b"[\"workspace\",\"window\",\"input\",\"mode\"]", b"", b""];
+    assert_eq!(sway::Message::ALL.map(sway::Message::payload), payloads, "the bytes each message carries, not only their lengths");
 }
 
 /// Every other way to write on a socket, refused in the Mango and Sway sources: their one
@@ -173,18 +185,28 @@ fn mango_writes_only_its_request_lines() {
 }
 
 /// The Sway source writes one thing, a `Message`'s frame; adding a
-/// message type must update this exhaustive match (and so this review). No other way to write on
-/// a socket (`OTHER_WRITES`) is used.
+/// message type must update this exhaustive match (and so this review). Five messages: the two
+/// reads, the two subscriptions (the keyboard's adds the `input` and `mode` events) and
+/// GET_INPUTS, a read with no payload (docs/decisions.md, "Sway is asked for its inputs once per
+/// session, and only with the keyboard"). No other way to write on a socket (`OTHER_WRITES`) is
+/// used.
 #[test]
-fn sway_writes_only_its_three_messages() {
+fn sway_writes_only_its_messages() {
     fn name(m: sway::Message) -> &'static str {
         match m {
             sway::Message::GetWorkspaces => "GET_WORKSPACES",
             sway::Message::Subscribe => "SUBSCRIBE",
+            sway::Message::SubscribeKeyboard => "SUBSCRIBE with input and mode",
             sway::Message::GetTree => "GET_TREE",
+            sway::Message::GetInputs => "GET_INPUTS",
         }
     }
-    assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "GET_TREE"]);
+    assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "SUBSCRIBE with input and mode", "GET_TREE", "GET_INPUTS"]);
+    assert_eq!(sway::Message::ALL.map(sway::Message::code), [1, 2, 2, 4, 100]);
+    let payloads: [&[u8]; 5] = [b"", b"[\"workspace\",\"window\"]", b"[\"workspace\",\"window\",\"input\",\"mode\"]", b"", b""];
+    assert_eq!(sway::Message::ALL.map(sway::Message::payload), payloads, "the three reads, GET_INPUTS among them, carry nothing");
+    assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
+    assert_eq!(sway::SUBSCRIPTION_KEYBOARD, "[\"workspace\",\"window\",\"input\",\"mode\"]");
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/sway.rs")).unwrap();
     let prod = production_code(&text);
     assert_eq!(prod.matches("write_all(").count(), 1, "one write in the Sway source");
@@ -2971,6 +2993,128 @@ fn the_osd_has_no_panicking_path() {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }
+}
+
+/// The placeholders an OSD log line may interpolate: an error's word, the output's connector name
+/// (or a fixed phrase), `describe`'s words, a buffer's size, a drop's literal reason and a count.
+const OSD_LOG_PLACEHOLDERS: [&str; 7] = ["{word}", "{place}", "{what}", "{w}", "{h}", "{why}", "{shown}"];
+
+/// The first `log(` call in `code` that is not fixed words, if any: its argument must be a string
+/// literal, or `&format!` of one whose placeholders are `OSD_LOG_PLACEHOLDERS` (`word` bound to
+/// `crate::log::error_word(&e)` and nothing else).
+fn osd_unfixed_log(code: &str) -> Option<String> {
+    let mut rest = code;
+    while let Some(i) = rest.find("log(") {
+        let before = rest[..i].chars().next_back();
+        let call = &rest[i..];
+        // A longer name (`catalog(`) is not the call.
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            rest = &call["log(".len()..];
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = call.len();
+        for (j, c) in call.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = call[..end].replace(", word = crate::log::error_word(&e)", "");
+        for ok in OSD_LOG_PLACEHOLDERS {
+            text = text.replace(ok, "");
+        }
+        let arg = text["log(".len()..text.len().saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2 && !arg[1..arg.len() - 1].contains('"');
+        if !literal || text.contains('{') {
+            return Some(call[..end].to_string());
+        }
+        rest = &call[end..];
+    }
+    None
+}
+
+/// The OSD's log lines are fixed words: never a layout, a profile, a title or a device name (a pill
+/// may show them, the journal never). Every `log(` in `OSD_FILES` is a literal or interpolates only
+/// `OSD_LOG_PLACEHOLDERS`; `what` is only ever `osd::describe`'s, a drop's reason only a literal; and
+/// `describe`'s arms are literals plus numbers only.
+#[test]
+fn the_osd_logs_are_fixed_words() {
+    let files = source_files();
+    let mut seen = 0;
+    for &name in OSD_FILES {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let code = production_code_without_comments(t);
+        assert_eq!(osd_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+        seen += code.matches("log(").count();
+    }
+    assert!(seen >= 8, "the OSD's log calls were found: {seen}");
+    let surface =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "osd/surface.rs").expect("surface.rs").1);
+    // `what` comes from `describe` alone, and travels by `osd_sync(&what)` to the surface's line.
+    assert_eq!(surface.matches("let what = ").count(), 1, "one place makes `what`");
+    assert!(surface.contains("let what = osd::describe(&pill);"), "`what` is describe's");
+    // `place` is the output's connector name (the bubbles' target) or a literal, nothing else.
+    assert_eq!(surface.matches("let place = ").count(), 1, "one place makes `place`");
+    assert!(
+        surface.contains("let place = output_name.as_deref().unwrap_or(\"the compositor's choice of output\");"),
+        "`place` is the connector name or a literal"
+    );
+    assert_eq!(surface.matches("output_name) = self.bubbles_target();").count(), 1, "`output_name` is the bubbles' target");
+    assert_eq!(surface.matches("let (output, output_name) = ").count(), 1, "one place makes `output_name`");
+    for (i, _) in surface.match_indices("self.osd_sync(") {
+        let arg = &surface[i + "self.osd_sync(".len()..];
+        assert!(arg.starts_with("&what)"), "osd_sync takes describe's words only: {}", &arg[..arg.find(')').unwrap_or(0)]);
+    }
+    for (i, _) in surface.match_indices("self.osd_drop(").chain(surface.match_indices("app.osd_drop(")) {
+        let arg = &surface[i..];
+        let arg = &arg[arg.find('(').unwrap_or(0) + 1..];
+        assert!(arg.starts_with('"'), "a drop's reason is a literal: {}", &arg[..arg.find(')').unwrap_or(0)]);
+    }
+    let model = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "osd/mod.rs").expect("mod.rs").1);
+    let describe = function_body(&model, "pub fn describe(");
+    // Each arm is a literal, or a format of numbers: a level's percent and its "muted" word.
+    let mut arms = 0;
+    for arm in describe.split("Pill::").skip(1) {
+        arms += 1;
+        let value = &arm[arm.find("=>").unwrap_or_else(|| panic!("an arm: {arm}")) + 2..];
+        let value = value[..value.find(",\n").unwrap_or(value.len())].trim();
+        let literal = value.starts_with('"') && value.ends_with("\".into()") && value.matches('"').count() == 2;
+        // A format: its string's placeholders are empty or `p` (a percent), its arguments numbers.
+        let numbers = value.strip_prefix("format!(\"").and_then(|v| v.strip_suffix(')')).is_some_and(|v| {
+            let Some(q) = v.find('"') else { return false };
+            let (text, args) = (&v[..q], &v[q + 1..]);
+            let placeholders_ok = text.split('{').skip(1).all(|p| p.starts_with('}') || p.starts_with("p}"));
+            let args_ok = args
+                .split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .all(|a| ["v.percent", "muted(v)", "volume.percent", "muted(volume)"].contains(&a));
+            placeholders_ok && args_ok
+        });
+        assert!(literal || numbers, "describe's arm is not fixed words and numbers: {value}");
+    }
+    assert!(arms >= 7, "describe's arms were found: {arms}");
+}
+
+#[test]
+fn the_osd_log_guardrail_bites() {
+    assert_eq!(osd_unfixed_log("log(\"osd: sound baseline\");"), None);
+    assert_eq!(osd_unfixed_log("log(&format!(\"osd surface on {place}: {what}\"));"), None);
+    assert_eq!(osd_unfixed_log("log(&format!(\"osd: input region: {word}, not shown\", word = crate::log::error_word(&e)));"), None);
+    assert!(osd_unfixed_log("log(&format!(\"osd: layout {layout}\"));").is_some());
+    assert!(osd_unfixed_log("log(&format!(\"osd: {word}\", word = name));").is_some(), "word bound to something else");
+    assert!(osd_unfixed_log("log(&format!(\"osd: {}\", name));").is_some());
+    assert!(osd_unfixed_log("log(&label);").is_some(), "a variable is not fixed words");
+    assert!(osd_unfixed_log("log(\"a\"); log(&format!(\"{what} {title}\"));").is_some());
 }
 
 /// Resources popup: no panic in the model's production code, nor in the wiring's (it runs on every

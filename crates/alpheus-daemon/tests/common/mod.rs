@@ -19,12 +19,15 @@
 
 use alpheus_common::launcher_ipc::{Reply, Request, socket_path};
 use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
-use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry};
+use smithay_client_toolkit::reexports::client::protocol::{wl_pointer, wl_registry, wl_seat};
 use smithay_client_toolkit::reexports::client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use smithay_client_toolkit::reexports::protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+use smithay_client_toolkit::reexports::protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1;
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 use std::cell::OnceCell;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -73,6 +76,31 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NoEvents {
 }
 delegate_noop!(NoEvents: ignore ZwlrVirtualPointerManagerV1);
 delegate_noop!(NoEvents: ignore ZwlrVirtualPointerV1);
+delegate_noop!(NoEvents: ignore wl_seat::WlSeat);
+delegate_noop!(NoEvents: ignore ZwpVirtualKeyboardManagerV1);
+delegate_noop!(NoEvents: ignore ZwpVirtualKeyboardV1);
+
+/// The keymap of `VirtualKeyboard`: two named layouts, one key. Sway never applies its `input`
+/// configuration to a virtual keyboard (the client's keymap is kept), so the layouts it reports
+/// and switches between are these.
+const TWO_LAYOUTS: &str = r#"xkb_keymap {
+xkb_keycodes "alpheus" { minimum = 8; maximum = 255; <AC01> = 38; };
+xkb_types "alpheus" { include "complete" };
+xkb_compat "alpheus" { include "complete" };
+xkb_symbols "alpheus" { name[Group1] = "English (US)"; name[Group2] = "French"; key <AC01> { [ a ], [ q ] }; };
+};
+"#;
+
+/// A virtual keyboard on THIS test's headless sway with two layouts, "English (US)" then
+/// "French" (`TWO_LAYOUTS`): the seat has no other keyboard with a named layout (wtype's keymap
+/// names none), so `input type:keyboard xkb_switch_layout next` switches this one, and Sway sends
+/// its `input` event. Gone with the value. Connected through sway's socket path, never
+/// WAYLAND_DISPLAY.
+pub struct VirtualKeyboard {
+    _connection: Connection,
+    _queue: EventQueue<NoEvents>,
+    _keyboard: ZwpVirtualKeyboardV1,
+}
 
 impl VirtualPointer {
     fn create(sway: &Sway) -> VirtualPointer {
@@ -111,12 +139,18 @@ pub const OUTPUT_SIZE: (u32, u32) = (1280, 720);
 
 impl Sway {
     pub fn start(name: &str, outputs: u32) -> Sway {
+        Sway::start_with_config(name, outputs, "")
+    }
+
+    /// `start` with `config` as sway's configuration (a `mode` block, for one: Sway defines modes
+    /// only while it reads its configuration).
+    pub fn start_with_config(name: &str, outputs: u32, config: &str) -> Sway {
         let runtime = env::temp_dir().join(format!("alpheus-it-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&runtime);
         fs::create_dir_all(&runtime).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         let conf = runtime.join("sway.conf");
-        fs::write(&conf, "").unwrap();
+        fs::write(&conf, config).unwrap();
         let mut command = Command::new("sway");
         command
             .arg("-c")
@@ -195,6 +229,28 @@ impl Sway {
         let connection = Connection::from_socket(stream).unwrap();
         let (globals, _queue) = registry_queue_init::<NoEvents>(&connection).unwrap();
         globals.contents().with_list(|list| list.iter().any(|g| g.interface == interface))
+    }
+
+    /// A new `VirtualKeyboard` on this sway, once sway has its keymap (a round trip).
+    pub fn keyboard(&self) -> VirtualKeyboard {
+        let stream = UnixStream::connect(self.runtime.join(&self.wayland)).unwrap();
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<NoEvents>(&connection).unwrap();
+        let qh = queue.handle();
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).expect("wl_seat");
+        let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).expect("zwp_virtual_keyboard_manager_v1");
+        let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+        // The keymap travels as a file descriptor, NUL-terminated; the file lives in this sway's
+        // own runtime directory.
+        static KEYMAPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = KEYMAPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = self.runtime.join(format!("keymap-{n}"));
+        fs::write(&path, [TWO_LAYOUTS.as_bytes(), b"\0"].concat()).unwrap();
+        let file = fs::File::open(&path).unwrap();
+        // 1: WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1.
+        keyboard.keymap(1, file.as_fd(), TWO_LAYOUTS.len() as u32 + 1);
+        queue.roundtrip(&mut NoEvents).unwrap();
+        VirtualKeyboard { _connection: connection, _queue: queue, _keyboard: keyboard }
     }
 
     /// Command to THIS test's headless sway (its own IPC socket).

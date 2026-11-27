@@ -173,12 +173,14 @@ fn sound_drawing(f: &Feed<SoundState>, drawn: bool) -> Option<Feed<Option<crate:
     })
 }
 
-/// Same bar drawing from the compositor: its workspaces and focused window.
-/// The launcher's `toplevels` are not drawn: a background title change
-/// (niri publishes every one) is stored without a redraw.
+/// Same bar drawing from the compositor: its workspaces, focused window, keyboard layout and mode
+/// (None unless the keyboard is wanted). The launcher's `toplevels` are not drawn: a background
+/// title change (niri publishes every one) is stored without a redraw.
 fn same_drawing(a: &Feed<CompositorState>, b: &Feed<CompositorState>) -> bool {
     match (a, b) {
-        (Feed::Ready(a), Feed::Ready(b)) => a.workspaces == b.workspaces && a.window == b.window,
+        (Feed::Ready(a), Feed::Ready(b)) => {
+            a.workspaces == b.workspaces && a.window == b.window && a.layout == b.layout && a.mode == b.mode
+        }
         (Feed::Waiting, Feed::Waiting) | (Feed::Down, Feed::Down) => true,
         _ => false,
     }
@@ -413,6 +415,20 @@ mod tests {
         assert!(b.apply(Msg::Compositor(Some(e.clone()))), "the focused window drawn: redraw");
         e.workspaces[0].windows = 3;
         assert!(b.apply(Msg::Compositor(Some(e))), "workspaces drawn: redraw");
+    }
+
+    /// The keyboard module draws the layout and the mode: a change of either alone redraws (Sway's
+    /// `input` and `mode` events change nothing else).
+    #[test]
+    fn a_layout_or_mode_only_change_redraws() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(b.apply(Msg::Compositor(Some(example()))));
+        let mut e = example();
+        e.layout = Some("French".into());
+        assert!(b.apply(Msg::Compositor(Some(e.clone()))), "the layout drawn: redraw");
+        e.mode = Some("resize".into());
+        assert!(b.apply(Msg::Compositor(Some(e.clone()))), "the mode drawn: redraw");
+        assert!(!b.apply(Msg::Compositor(Some(e))), "the same: nothing to redraw");
     }
 
     #[test]

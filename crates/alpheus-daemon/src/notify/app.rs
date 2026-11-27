@@ -163,6 +163,8 @@ impl App {
     /// The bell's new view: repainted when the bar shows a change, one line per changed state.
     pub(crate) fn notify_view(&mut self, view: NotifyView) {
         let before = self.bar.notifications;
+        // The bell's view never passes `on_bar_message`: the OSD's do-not-disturb pill reads it here.
+        self.osd_passive(&Msg::Notifications(view));
         if self.bar.apply(Msg::Notifications(view)) {
             self.dirty = true;
         }

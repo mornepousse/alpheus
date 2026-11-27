@@ -3,7 +3,9 @@
 //! window counts, the focused window and the launcher's list from the tree, walked without
 //! recursion (bounded depth) along each container's `focus` array, most recent first. The
 //! scratchpad (`__i3` output, `__i3_scratch` workspace) is skipped. `Model` keeps one focus
-//! history across workspaces (Sway's arrays are per container) for the launcher's order.
+//! history across workspaces (Sway's arrays are per container) for the launcher's order and,
+//! with `Model::keyboard(true)` only, the keyboard layout (GET_INPUTS once, then the `input`
+//! events) and the bind mode (the `mode` events: none before the first).
 
 use super::{CompositorState, MAX_NESTING, Toplevel, Window, Workspace, too_deep};
 use crate::text::clean;
@@ -117,6 +119,45 @@ struct Container {
     id: u64,
 }
 
+/// One input device of GET_INPUTS, or an `input` event's: the keyboard's active layout.
+#[derive(serde::Deserialize)]
+struct Input {
+    #[serde(rename = "type")]
+    kind: String,
+    xkb_active_layout_name: Option<String>,
+}
+
+impl Input {
+    /// A keyboard's layout name, cleaned; a pointer, or a keyboard with no name: None.
+    fn layout(&self) -> Option<String> {
+        if self.kind != "keyboard" {
+            return None;
+        }
+        Some(clean(self.xkb_active_layout_name.as_deref()?)).filter(|n| !n.is_empty())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct InputEvent {
+    change: String,
+    input: Input,
+}
+
+/// A `mode` event: `change` is the mode's name.
+#[derive(serde::Deserialize)]
+struct ModeEvent {
+    change: String,
+}
+
+/// `T` from `bytes`; nested past MAX_NESTING or unreadable: None (refused before serde_json
+/// recurses).
+fn read<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    if too_deep(bytes) {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
+}
+
 /// Sway keeps a focus order per container only; the model keeps one across workspaces, fed by
 /// the window events' `focus` changes and each tree's focused window.
 #[derive(Debug, Default)]
@@ -124,9 +165,65 @@ pub struct Model {
     /// Con ids that had focus, oldest first, the most recent last; at most MAX_WINDOWS, and after
     /// each tree only ids it holds.
     mru: Vec<u64>,
+    /// The keyboard is wanted: `inputs`, `input_event` and `mode_event` are read, and the states
+    /// carry `layout` and `mode`. Off, they read nothing.
+    keyboard: bool,
+    layout: Option<String>,
+    mode: Option<String>,
 }
 
 impl Model {
+    /// A model that follows the keyboard layout and mode when `keyboard`; `Model::default()` does not.
+    pub fn keyboard(keyboard: bool) -> Model {
+        Model { keyboard, ..Model::default() }
+    }
+
+    /// GET_INPUTS' reply: the first keyboard with a layout name gives the layout. Unreadable, or
+    /// no such keyboard: unchanged, never an error.
+    pub fn inputs(&mut self, reply: &[u8]) {
+        if !self.keyboard {
+            return;
+        }
+        if let Some(layout) = read::<Vec<Input>>(reply).and_then(|list| list.iter().find_map(Input::layout)) {
+            self.layout = Some(layout);
+        }
+    }
+
+    /// An `input` event: a keyboard's new layout (`xkb_layout`) or new keymap (`xkb_keymap`)
+    /// names the layout, the last keyboard that changed winning. Anything else (a device added or
+    /// removed, a pointer), or an unreadable payload: unchanged.
+    pub fn input_event(&mut self, payload: &[u8]) {
+        if !self.keyboard {
+            return;
+        }
+        if let Some(e) = read::<InputEvent>(payload)
+            && matches!(e.change.as_str(), "xkb_layout" | "xkb_keymap")
+            && let Some(layout) = e.input.layout()
+        {
+            self.layout = Some(layout);
+        }
+    }
+
+    /// A `mode` event names the mode now in force ("default" included); empty or unreadable:
+    /// unchanged.
+    pub fn mode_event(&mut self, payload: &[u8]) {
+        if !self.keyboard {
+            return;
+        }
+        if let Some(e) = read::<ModeEvent>(payload) {
+            let mode = clean(&e.change);
+            if !mode.is_empty() {
+                self.mode = Some(mode);
+            }
+        }
+    }
+
+    /// `last` with the model's layout and mode: what an `input` or `mode` event changes, without
+    /// reading the tree again.
+    pub fn with_keyboard(&self, last: &CompositorState) -> CompositorState {
+        CompositorState { layout: self.layout.clone(), mode: self.mode.clone(), ..last.clone() }
+    }
+
     fn focus(&mut self, id: u64) {
         self.mru.retain(|m| *m != id);
         self.mru.push(id);
@@ -194,7 +291,7 @@ impl Model {
                 focused: w.focused,
             })
             .collect();
-        Ok(CompositorState { workspaces, window, toplevels, ..Default::default() })
+        Ok(CompositorState { workspaces, window, toplevels, layout: self.layout.clone(), mode: self.mode.clone(), ..Default::default() })
     }
 
     /// Hyprland's order: the previous window first, older ones next, windows never seen focused
@@ -527,6 +624,121 @@ mod tests {
         assert_eq!(found(MAX_DEPTH), ["deep"], "a window at MAX_DEPTH is found");
         assert!(found(MAX_DEPTH + 1).is_empty(), "one level deeper: ignored");
         assert!(found(200).is_empty());
+    }
+
+    const INPUTS: &[u8] = include_bytes!("../../tests/fixtures/sway-inputs.json");
+    const INPUT_EVENT: &[u8] = include_bytes!("../../tests/fixtures/sway-event-input-xkb-layout.json");
+    const MODE_EVENT: &[u8] = include_bytes!("../../tests/fixtures/sway-event-mode.json");
+
+    /// (layout, mode) of the state `m` gives for the captured session.
+    fn keys(m: &mut Model) -> (Option<String>, Option<String>) {
+        let e = m.state(WORKSPACES, TREE).unwrap();
+        (e.layout, e.mode)
+    }
+
+    fn named(layout: Option<&str>, mode: Option<&str>) -> (Option<String>, Option<String>) {
+        (layout.map(str::to_string), mode.map(str::to_string))
+    }
+
+    /// The headless Sway's GET_INPUTS: wtype's keyboard (no layout name) first, the two-layout
+    /// keyboard next, a pointer: the first keyboard with a name gives the layout.
+    #[test]
+    fn sway_get_inputs_picks_the_first_keyboards_active_name() {
+        let mut m = Model::keyboard(true);
+        m.inputs(INPUTS);
+        assert_eq!(keys(&mut m), named(Some("English (US)"), None));
+        let pointer_first = br#"[{"type":"pointer","xkb_active_layout_name":"Pointer"},{"type":"keyboard","xkb_active_layout_name":"French"},{"type":"keyboard","xkb_active_layout_name":"German"}]"#;
+        m.inputs(pointer_first);
+        assert_eq!(keys(&mut m).0.as_deref(), Some("French"), "never a pointer's, the first keyboard's");
+    }
+
+    /// The event carries the keyboard's new active layout: the last keyboard that changed wins.
+    #[test]
+    fn sway_input_xkb_layout_event_changes_the_layout() {
+        let mut m = Model::keyboard(true);
+        m.inputs(INPUTS);
+        m.input_event(INPUT_EVENT);
+        assert_eq!(keys(&mut m).0.as_deref(), Some("French"));
+        m.input_event(br#"{"change":"xkb_keymap","input":{"type":"keyboard","xkb_active_layout_name":"German"}}"#);
+        assert_eq!(keys(&mut m).0.as_deref(), Some("German"), "a new keymap names its layout too");
+        // A BEL, escaped as JSON escapes it.
+        let name = format!("{}\\u0007{}", "x".repeat(100), "y".repeat(900));
+        m.input_event(format!(r#"{{"change":"xkb_layout","input":{{"type":"keyboard","xkb_active_layout_name":"{name}"}}}}"#).as_bytes());
+        let layout = keys(&mut m).0.unwrap();
+        assert_eq!(layout.chars().count(), crate::text::MAX_TEXT, "cleaned and capped");
+        assert!(!layout.contains('\u{7}'));
+    }
+
+    #[test]
+    fn sway_input_removed_or_a_pointer_event_changes_nothing() {
+        let mut m = Model::keyboard(true);
+        m.inputs(INPUTS);
+        for event in [
+            br#"{"change":"removed","input":{"type":"keyboard","xkb_active_layout_name":"French"}}"#.as_slice(),
+            br#"{"change":"added","input":{"type":"keyboard","xkb_active_layout_name":"French"}}"#,
+            br#"{"change":"xkb_layout","input":{"type":"pointer","xkb_active_layout_name":"French"}}"#,
+            br#"{"change":"xkb_layout","input":{"type":"keyboard","xkb_active_layout_name":null}}"#,
+            br#"{"change":"xkb_layout","input":{"type":"keyboard","xkb_active_layout_name":""}}"#,
+            br#"{"change":"libinput_config","input":{"type":"pointer"}}"#,
+        ] {
+            m.input_event(event);
+            assert_eq!(keys(&mut m).0.as_deref(), Some("English (US)"), "{}", String::from_utf8_lossy(event));
+        }
+    }
+
+    #[test]
+    fn sway_mode_event_names_the_mode() {
+        let mut m = Model::keyboard(true);
+        m.mode_event(MODE_EVENT);
+        assert_eq!(keys(&mut m), named(None, Some("resize")));
+        m.mode_event(br#"{"change":"default","pango_markup":false}"#);
+        assert_eq!(keys(&mut m).1.as_deref(), Some("default"), "the segment hides it, the state says it");
+        m.mode_event(br#"{"change":"","pango_markup":false}"#);
+        assert_eq!(keys(&mut m).1.as_deref(), Some("default"), "an empty name changes nothing");
+    }
+
+    /// Sway gives no mode at start (GET_INPUTS and the tree carry none): no mode until the first
+    /// `mode` event.
+    #[test]
+    fn sway_no_mode_before_the_first_mode_event() {
+        let mut m = Model::keyboard(true);
+        m.inputs(INPUTS);
+        m.input_event(INPUT_EVENT);
+        assert_eq!(keys(&mut m), named(Some("French"), None));
+    }
+
+    /// Without the keyboard the model reads none of it: the state never carries a layout or a mode.
+    #[test]
+    fn sway_keyboard_fields_stay_none_without_keyboard() {
+        for mut m in [Model::default(), Model::keyboard(false)] {
+            m.inputs(INPUTS);
+            m.input_event(INPUT_EVENT);
+            m.mode_event(MODE_EVENT);
+            assert_eq!(keys(&mut m), (None, None));
+        }
+    }
+
+    /// An unreadable reply or event, or one nested past MAX_NESTING, changes nothing and is never
+    /// an error.
+    #[test]
+    fn sway_inputs_unreadable_or_too_deep_changes_nothing() {
+        let mut deep = String::from("0");
+        for _ in 0..=MAX_NESTING {
+            deep = format!("[{deep}]");
+        }
+        let mut m = Model::keyboard(true);
+        m.inputs(INPUTS);
+        m.mode_event(MODE_EVENT);
+        for bad in [b"not json".as_slice(), b"{", b"{}", b"[]", deep.as_bytes(), &[0xff, 0xfe]] {
+            m.inputs(bad);
+            m.input_event(bad);
+            m.mode_event(bad);
+            assert_eq!(keys(&mut m), named(Some("English (US)"), Some("resize")), "{}", String::from_utf8_lossy(bad));
+        }
+        let deep_keyboard =
+            format!(r#"{{"change":"xkb_layout","input":{{"type":"keyboard","xkb_active_layout_name":"French","x":{deep}}}}}"#);
+        m.input_event(deep_keyboard.as_bytes());
+        assert_eq!(keys(&mut m).0.as_deref(), Some("English (US)"), "refused before serde_json recurses");
     }
 
     #[test]

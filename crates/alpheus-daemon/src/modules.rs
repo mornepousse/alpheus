@@ -18,7 +18,7 @@
 //! See: docs/adding-a-module.md (the recipe, step by step), docs/features/bar.md (the table of
 //! modules a reader sees), docs/ARCHITECTURE.md ("The core").
 
-use crate::config::ModuleId;
+use crate::config::{ModuleId, OsdConfig};
 use crate::grid::{GroupKind, Hue};
 use crate::layout::{Segment, bar_clock, window, workspaces};
 use crate::popup::ModulePopup;
@@ -51,6 +51,8 @@ impl Needs {
     pub(crate) const OSD_SCOPE: Needs = Needs(1 << 10);
     /// systemd's failed-units count (the D-Bus `Units` domain): the `failed` module.
     pub(crate) const UNITS: Needs = Needs(1 << 11);
+    /// The compositor source's keyboard layout and mode (`startup::keyboard_wanted`).
+    pub(crate) const KEYBOARD: Needs = Needs(1 << 12);
 
     pub(crate) const fn or(self, other: Needs) -> Needs {
         Needs(self.0 | other.0)
@@ -64,6 +66,17 @@ impl Needs {
     pub(crate) fn of(modules: &[ModuleId]) -> Needs {
         modules.iter().fold(Needs::NONE, |n, m| n.or(m.spec().needs))
     }
+}
+
+/// What `modules` ask for, with the OSD's kinds when `osd` is among them: each kind brings the source
+/// it reads (`OsdKind::needs`), and kinds without the module bring nothing. See docs/decisions.md,
+/// "An OSD kind is opt-in and brings the source it reads".
+pub(crate) fn needs_of(modules: &[ModuleId], osd: &OsdConfig) -> Needs {
+    let needs = Needs::of(modules);
+    if !modules.contains(&ModuleId::Osd) {
+        return needs;
+    }
+    osd.kinds.iter().fold(needs, |n, k| n.or(k.needs()))
 }
 
 /// One module's facts.
@@ -102,7 +115,7 @@ const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
     ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
 }
 
-pub(crate) const COUNT: usize = 20;
+pub(crate) const COUNT: usize = 21;
 
 pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec { segment: Some(|_, _| Some(segments::launcher())), ..row(ModuleId::Launcher, "launcher", GroupKind::Launcher) },
@@ -114,6 +127,13 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         hue: Some(Hue::Purple),
         segment: Some(|bar, _| window(&bar.compositor, bar.module_colors)),
         ..row(ModuleId::Window, "window", GroupKind::Title)
+    },
+    // The layout and the bind mode from the compositor's own state; display only, so no tab, popup
+    // nor click, and no hue (a neutral status, like the bell).
+    ModuleSpec {
+        segment: Some(|bar, _| segments::keyboard(&bar.compositor, &bar.config.keyboard)),
+        needs: Needs::KEYBOARD,
+        ..row(ModuleId::Keyboard, "keyboard", GroupKind::Status)
     },
     ModuleSpec {
         hue: Some(Hue::Purple),
@@ -194,8 +214,9 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         needs: Needs::NOTIFICATIONS,
         ..row(ModuleId::Notifications, "notifications", GroupKind::Status)
     },
-    // The OSD draws its own surface (osd/surface.rs), never in the bar.
-    ModuleSpec { needs: Needs::SOUND.or(Needs::OSD_SCOPE), ..row(ModuleId::Osd, "osd", GroupKind::Status) },
+    // The OSD draws its own surface (osd/surface.rs), never in the bar. Its sources are its kinds'
+    // (`needs_of`), not the row's.
+    row(ModuleId::Osd, "osd", GroupKind::Status),
     // The quick panel is a popup (quick/mod.rs), never a segment. It reads the sink list, NetworkManager
     // (the Wi-Fi row), BlueZ (the Bluetooth row) and the power profile.
     ModuleSpec {

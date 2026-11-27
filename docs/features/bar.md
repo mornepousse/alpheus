@@ -31,7 +31,8 @@ it:
 
 ### The modules
 
-The table follows the default `modules` list, left to right. A module that is not in `modules` runs
+The table follows `ModuleId::ALL`'s order, which is the default `modules` list, left to right,
+without the opt-in `keyboard`. A module that is not in `modules` runs
 nothing: its source is never started. Its code is still linked in, a one-time cost of the binary
 ([measurements](../measurements.md)).
 
@@ -40,6 +41,7 @@ nothing: its source is never started. Its code is still linked in, a one-time co
 | `launcher` | an icon that opens the launcher | [the launcher](launcher.md) |
 | `workspaces` | one dot per window, the active workspace on `accent_container` | below |
 | `window` | the active window's app icon and title | below |
+| `keyboard` | `󰌌 us`, and the bind mode when not `default`; not in the default list | [the keyboard module](keyboard.md) |
 | `media` | `▶ Title` while a player plays, `⏸ Title` paused, nothing when nothing plays | [media](media.md) |
 | `privacy` | one glyph per capture: microphone, camera, screen | [privacy indicators](privacy.md) |
 | `shield` | `󰒘`, green, only while Shield mode is on | [Shield mode](shield.md) |
@@ -96,7 +98,7 @@ and then `–`.
 ### On a narrow screen
 
 Modules disappear in a fixed order until the bar fits: the resources, the tray, media, the window
-title, then Bluetooth, the network, the volume, the battery, the launcher button, the timer chip, the
+title, the keyboard layout, then Bluetooth, the network, the volume, the battery, the launcher button, the timer chip, the
 failed-units count, the Shield glyph, the privacy indicators, and last the power button. The
 workspaces, the clock and the notification bell always stay.
 
@@ -197,7 +199,7 @@ These are enforced by tests, so a change that breaks one fails the build.
   compositor are the workspace command and the output configurations, built in `outputs/wlr.rs` and
   sent only from `outputs/app.rs`, plus the clipboard's own selection for a re-copy
   ([clipboard](clipboard.md)). `compositor_requests_are_read_only`,
-  `mango_writes_only_its_request_lines`, `sway_writes_only_its_three_messages` and
+  `mango_writes_only_its_request_lines`, `sway_writes_only_its_messages` and
   `compositor_sockets_opened_only_in_sources` pin each backend's requests, and
   `output_power_management_never_appears` keeps `dpms` and output power management out of alpheus
   altogether.

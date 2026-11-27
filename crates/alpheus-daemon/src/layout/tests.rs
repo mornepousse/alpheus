@@ -941,3 +941,13 @@ fn the_timer_leaves_after_the_launcher_and_before_privacy() {
         assert!(timer_gone && privacy_gone, "{style:?}: narrow enough to lose both");
     }
 }
+
+/// The keyboard module leaves a narrow bar right after the title: it says what the user set, not
+/// what changed, so it goes before the status icons.
+#[test]
+fn the_keyboard_leaves_right_after_the_title() {
+    assert_eq!(REMOVAL.len(), 15);
+    let at = |m| REMOVAL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Keyboard), at(ModuleId::Window) + 1);
+    assert_eq!(at(ModuleId::Bluetooth), at(ModuleId::Keyboard) + 1, "then the system indicators");
+}

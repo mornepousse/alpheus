@@ -21,11 +21,16 @@ struct Run {
 
 impl Run {
     fn start(f: &FakeSway, stack: Option<usize>) -> Run {
+        Run::start_with(f, stack, false)
+    }
+
+    /// `start`, the session following the keyboard when `keyboard`.
+    fn start_with(f: &FakeSway, stack: Option<usize>, keyboard: bool) -> Run {
         let (tx, states) = mpsc::channel();
         let (done, result) = mpsc::channel();
         let socket = f.socket.clone();
         let work = move || {
-            let r = session(&socket, &mut |e| tx.send(e).is_ok());
+            let r = session(&socket, keyboard, &mut |e| tx.send(e).is_ok());
             let _ = done.send(r);
         };
         let builder = std::thread::Builder::new();
@@ -156,7 +161,7 @@ fn eof_ends_the_session() {
 
 #[test]
 fn sway_absent_error() {
-    assert!(session(Path::new("/nonexistent/sway-ipc.sock"), &mut |_| true).is_err());
+    assert!(session(Path::new("/nonexistent/sway-ipc.sock"), false, &mut |_| true).is_err());
 }
 
 /// The tree's reply, nested `levels` deep in the shape that costs serde_json the most stack.
@@ -199,4 +204,104 @@ fn focus_events_order_the_launchers_windows() {
     f.push(&reply(0x8000_0003, br#"{"change":"focus","container":{"id":7}}"#));
     let next = r.states.recv_timeout(DELAY).unwrap();
     assert_eq!(order(&next), ["id:10", "id:8", "id:7"]);
+}
+
+/// An input event (type 0x80000015) as sway frames it: the keyboard's layout is now `layout`.
+fn input_event(layout: &str) -> Vec<u8> {
+    let payload = format!(r#"{{"change":"xkb_layout","input":{{"type":"keyboard","xkb_active_layout_name":"{layout}"}}}}"#);
+    reply(0x8000_0015, payload.as_bytes())
+}
+
+/// A mode event (type 0x80000002) as sway frames it.
+fn mode_event(mode: &str) -> Vec<u8> {
+    reply(0x8000_0002, format!(r#"{{"change":"{mode}","pango_markup":false}}"#).as_bytes())
+}
+
+/// A workspace event (type 0x80000000): sway's carry whole workspaces, never parsed.
+fn workspace_event() -> Vec<u8> {
+    reply(0x8000_0000, br#"{"change":"focus","current":{"id":3}}"#)
+}
+
+/// Every type sent, in order, on both connections.
+fn kinds(f: &FakeSway) -> Vec<u32> {
+    f.received().into_iter().map(|(_, k, _)| k).collect()
+}
+
+/// Without the keyboard: the two events, the two reads, never GET_INPUTS (type 100).
+#[test]
+fn keyboard_off_subscribes_to_two_events_and_never_asks_inputs() {
+    let f = FakeSway::start("kb-off", Script::default());
+    let r = run(&f);
+    let first = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!((first.layout, first.mode), (None, None));
+    f.push(&workspace_event());
+    assert_eq!(reads(&f, 4), [1, 4, 1, 4]);
+    let received = f.received();
+    assert_eq!(received[0], (0, 2, SUBSCRIPTION.as_bytes().to_vec()));
+    assert!(!kinds(&f).contains(&100), "{:?}", kinds(&f));
+}
+
+/// With the keyboard: the four events, and GET_INPUTS once per session, however many events
+/// follow; the first state carries its layout.
+#[test]
+fn keyboard_on_subscribes_to_four_events_and_asks_inputs_once() {
+    let f = FakeSway::start("kb-on", Script::default());
+    let r = Run::start_with(&f, None, true);
+    let first = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!((first.layout.as_deref(), first.mode.as_deref()), (Some("English (US)"), None));
+    let received = f.received();
+    assert_eq!(received[0], (0, 2, SUBSCRIPTION_KEYBOARD.as_bytes().to_vec()));
+    assert_eq!(received[1], (1, 100, Vec::new()), "GET_INPUTS on the requests' connection, empty");
+    f.push(&workspace_event());
+    std::thread::sleep(QUIET);
+    f.push(&workspace_event());
+    std::thread::sleep(QUIET);
+    f.push(&input_event("French"));
+    r.states.recv_timeout(DELAY).unwrap();
+    std::thread::sleep(QUIET);
+    assert_eq!(kinds(&f).iter().filter(|k| **k == 100).count(), 1, "{:?}", kinds(&f));
+}
+
+/// An input event carries the layout: published at once, the tree not read again.
+#[test]
+fn an_input_event_updates_the_layout_without_reading_the_tree() {
+    let f = FakeSway::start("kb-input", Script::default());
+    let r = Run::start_with(&f, None, true);
+    let first = r.states.recv_timeout(DELAY).unwrap();
+    let before = reads(&f, 3);
+    assert_eq!(before, [100, 1, 4]);
+    f.push(&input_event("French"));
+    let next = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!(next.layout.as_deref(), Some("French"));
+    assert_eq!(CompositorState { layout: first.layout.clone(), ..next.clone() }, first, "only the layout changed");
+    std::thread::sleep(QUIET);
+    assert_eq!(reads(&f, 3), before, "no read after an input event");
+    f.push(&input_event("French"));
+    assert!(r.states.recv_timeout(QUIET).is_err(), "the same layout: not published again");
+}
+
+#[test]
+fn a_mode_event_is_published_without_reading_the_tree() {
+    let f = FakeSway::start("kb-mode", Script::default());
+    let r = Run::start_with(&f, None, true);
+    r.states.recv_timeout(DELAY).unwrap();
+    f.push(&mode_event("resize"));
+    let next = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!((next.layout.as_deref(), next.mode.as_deref()), (Some("English (US)"), Some("resize")));
+    std::thread::sleep(QUIET);
+    assert_eq!(reads(&f, 3), [100, 1, 4], "no read after a mode event");
+}
+
+/// Input and window events in one burst: the tree read once, the layout kept through it.
+#[test]
+fn a_burst_of_input_and_window_events_reads_the_tree_once() {
+    let f = FakeSway::start("kb-burst", Script::default());
+    let r = Run::start_with(&f, None, true);
+    r.states.recv_timeout(DELAY).unwrap();
+    let burst = [input_event("French"), window_event(), input_event("German"), window_event(), mode_event("resize")].concat();
+    f.push(&burst);
+    let next = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!((next.layout.as_deref(), next.mode.as_deref()), (Some("German"), Some("resize")));
+    std::thread::sleep(QUIET);
+    assert_eq!(reads(&f, 5), [100, 1, 4, 1, 4], "one re-read for the burst");
 }

@@ -28,9 +28,9 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus,
-    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder,
-    fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
-    wait_until_executable, write_atomically, wtype, wtype_spawn,
+    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, VirtualKeyboard, Workstation, assert_no_spin, capture_delta, capture_gone,
+    fake_env_recorder, fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub,
+    start_daemon_with, volume_delta, wait_until_executable, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -532,6 +532,10 @@ fn startup_pss_per_source() {
     if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none() {
         // `[failed]` at its defaults: `subscribe = true`.
         cases.push(("+ failed", concat!(every_module!(), ", \"failed\""), ""));
+        // A Bluetooth pill alone: the BlueZ domain without its module, and no pw-dump.
+        cases.push(("+ osd kinds", "\"workspaces\", \"window\", \"osd\", \"clock\"", "[osd]\nkinds = [\"bluetooth\"]\n"));
+        // The keyboard module on the isolated Sway: one GET_INPUTS and two more events.
+        cases.push(("+ keyboard", concat!(every_module!(), ", \"keyboard\""), ""));
     }
     let mut report = Vec::new();
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
@@ -551,6 +555,15 @@ fn startup_pss_per_source() {
     // The failed count is a number per manager and a listener, nothing kept.
     if let Some((_, failed)) = report.iter().find(|(what, _)| *what == "+ failed") {
         assert!(*failed <= everything + 256, "+ failed {failed} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
+    // The layout and the mode are two short strings: no source of their own.
+    if let Some((_, keyboard)) = report.iter().find(|(what, _)| *what == "+ keyboard") {
+        assert!(*keyboard <= everything + 256, "+ keyboard {keyboard} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
+    // A kind brings its source and nothing else: at most the D-Bus case's cost over the bar alone.
+    if let Some((_, kinds)) = report.iter().find(|(what, _)| *what == "+ osd kinds") {
+        let (bar, dbus) = (kb("bar only"), kb("+ D-Bus"));
+        assert!(*kinds <= dbus.max(bar) + 256, "+ osd kinds {kinds} KB vs + D-Bus {dbus} KB: more than one domain's cost");
     }
     // The history on, nothing copied yet, reports a small step (report, never raise).
     let clipboard = kb("+ clipboard");
@@ -1449,17 +1462,27 @@ fn osd_pss_idle_shown_and_gone() {
     assert!(gone <= idle + 256, "gone: {gone} KB vs {idle} KB before it — the surface and its pool must go");
 }
 
-/// Once a pill went, no timer, no wake-up, no spin.
+/// Once a pill went, no timer, no wake-up, no spin; a passive pill too (a Bluetooth flip on the fake
+/// BlueZ, the build under test knowing `[osd] kinds`).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_the_osd() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("osd-rest");
-    let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
+    let bluez = FakeBluez::serve(&bus);
+    // A base from before the kinds would refuse the key: it runs the plain bar.
+    let passive = std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none();
+    let toml = if passive { format!("{OSD_BAR}kinds = [\"volume\", \"mic\", \"bluetooth\"]\n") } else { OSD_BAR.to_string() };
+    let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(&toml), PwDump::Fifo);
     assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(1300)); // the start-up grace
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
     assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    if passive {
+        bluez.set_powered(false);
+        assert!(d.wait_for("bluetooth off", DELAY), "{:?}", d.log());
+        assert!(d.wait_for_count("osd surface dropped (timeout", 2, DELAY), "{:?}", d.log());
+    }
     std::thread::sleep(TRAY_SETTLE);
     const REST: Duration = Duration::from_secs(10);
     away_from_the_minute(REST);
@@ -1989,6 +2012,134 @@ fn at_rest_no_wakeups_after_the_vpn_detail() {
     assert_eq!((root, actives), (2, 2), "closed: the domain's own reads only, one per signal: {since:?}");
 }
 
+/// The passive kinds' bar: their modules either way (BlueZ, power profiles and the bell are read
+/// with or without the kinds), so the difference is the kinds' own state.
+const KINDS_BAR: &str = "modules = [\"workspaces\", \"bluetooth\", \"notifications\", \"osd\", \"quick\", \"clock\"]\n[osd]\n";
+
+/// The default kinds against the five passive ones added: the anonymous memory they keep (a few
+/// words each), then one Bluetooth pill shown and gone.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_kinds_pss_off_and_on() {
+    require_release(cfg!(debug_assertions));
+    if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_some() {
+        eprintln!("osd kinds: the build under test predates [osd] kinds, skipped");
+        return;
+    }
+    let bus = PrivateBus::start("osd-kinds");
+    let bluez = FakeBluez::serve(&bus);
+    let (off_pss, off_anon) = {
+        let (_sway, _hypr, d) = start("osd-kinds-off", 1, &bus, None, Some(KINDS_BAR), PwDump::Fifo);
+        std::thread::sleep(TRAY_SETTLE);
+        (d.pss_kb(), d.anonymous_kb())
+    };
+    let on =
+        format!("{KINDS_BAR}kinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\", \"layout\", \"track\"]\n");
+    let (_sway, _hypr, d) = start("osd-kinds-on", 1, &bus, None, Some(&on), PwDump::Fifo);
+    std::thread::sleep(TRAY_SETTLE);
+    let (on_pss, on_anon) = (d.pss_kb(), d.anonymous_kb());
+    bluez.set_powered(false);
+    assert!(d.wait_for("bluetooth off", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500)); // configured and painted
+    let shown = d.pss_kb();
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (gone_pss, gone_anon) = (d.pss_kb(), d.anonymous_kb());
+    eprintln!(
+        "osd kinds PSS (KB): {off_pss} default kinds, {on_pss} with the five passive kinds, {shown} with a Bluetooth pill, \
+         {gone_pss} once gone; anonymous (KB): {off_anon} default, {on_anon} on, {gone_anon} gone"
+    );
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
+    let delta = on_anon.saturating_sub(off_anon);
+    assert!(delta <= 64, "the kinds keep {delta} KB of anonymous memory (a few words each: ≤ 64 KB)");
+    assert!(gone_anon <= on_anon + 64, "gone: {gone_anon} KB anonymous vs {on_anon} KB before the pill");
+}
+
+/// The OSD alone with the layout and track kinds (no clock: its minute tick is a planned wake-up of
+/// its own), a pill hidden 600 ms after the last change.
+const LAYOUT_TRACK_BAR: &str = "modules = [\"osd\"]\n[osd]\nkinds = [\"layout\", \"track\"]\ntimeout_ms = 600\n";
+
+/// Pushes one layout change to the fake Mango or, `track`, a new title to the fake player. `i`
+/// picks which: an even `i` is the French snapshot (the first one served is English), an odd one
+/// the English; each `i` is its own title.
+fn layout_or_track(fake: &FakeMango, player: &FakePlayer, i: u32, track: bool) {
+    if track {
+        player.set_track(&format!("Lantern {i}"), "Paper", 180_000_000 + i64::from(i));
+    } else {
+        fake.push_monitors(if i.is_multiple_of(2) { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
+    }
+}
+
+/// The layout and track pills under the fake Mango with a fake player on a private session bus:
+/// one of each first (the glyphs' and the surface's first use), then 100 layout changes and 100 new
+/// titles, each showing a pill. The anonymous memory may grow by 64 KB at most (each kind keeps one
+/// short string), and once the last pill is gone the loop sleeps (0 wake-ups in 5 s).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_layout_and_track_pills_no_growth() {
+    require_release(cfg!(debug_assertions));
+    if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_some() {
+        eprintln!("osd layout and track: the build under test predates their pills, skipped");
+        return;
+    }
+    let bus = PrivateBus::start("osd-lt");
+    let session = PrivateBus::start("osd-lt-session");
+    let player = FakePlayer::start(&session, PlayerSpec::playing("lantern", "Paper Lanterns"));
+    let sway = Sway::start("osd-lt", 1);
+    let fake = FakeMango::start(&sway.runtime);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(LAYOUT_TRACK_BAR),
+            system_bus: Some(&bus.address),
+            session_bus: Some(&session.address),
+            pw_dump: PwDump::Silent,
+            backend: Backend::Mango(&fake.socket),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_until_read(&fake, &d);
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE); // past the kinds' grace
+    let gone = |n: usize| {
+        let t = Instant::now();
+        while d.count("osd surface dropped (timeout") < n {
+            assert!(t.elapsed() < DELAY, "pill {n} never went: {:?}", d.log());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    for (n, track) in [(1, false), (2, true)] {
+        layout_or_track(&fake, &player, 0, track);
+        assert!(d.wait_for(if track { "track changed" } else { "layout changed" }, DELAY), "{:?}", d.log());
+        gone(n);
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let (before_pss, before) = (d.pss_kb(), d.anonymous_kb());
+    for (n, track) in [(3, false), (4, true)] {
+        for i in 1..101 {
+            layout_or_track(&fake, &player, i, track);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        gone(n);
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let (after_pss, after) = (d.pss_kb(), d.anonymous_kb());
+    quiet_loop(&d);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "after the layout and track pills");
+    let main = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!(
+        "osd layout and track pills, PSS (anonymous) KB: {before_pss} ({before}) after one of each, {after_pss} ({after}) after 100 \
+         layout changes and 100 titles; loop wake-ups in 5 s after: {main}"
+    );
+    assert!(after_pss < STARTUP_MAX_KB, "{after_pss} KB >= 15 MB — report it, never raise");
+    assert!(after <= before + 64, "100 layout and 100 track pills kept {} KB anonymous", after.saturating_sub(before));
+    assert_eq!(main, 0, "{main} loop wake-ups in 5 s after the last pill");
+    assert!(!d.log().iter().any(|l| l.contains("Lantern") || l.contains("French")), "{:?}", d.log());
+}
+
 /// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the
 /// Bluetooth tap are there either way); `[osd] backlight_dir` a fake directory of the test's own.
 fn bt_bar(backlight_dir: &Path) -> String {
@@ -2338,6 +2489,161 @@ fn at_rest_no_wakeups_under_sway_and_mango() {
         assert_eq!(compositor, 0, "the {what} source wakes at rest");
         assert!(delta <= 4, "{delta} wake-ups in 5 s at rest under {what}");
         assert!(d.log().iter().all(|l| !l.contains("source down")), "every source up: {:?}", d.log());
+    }
+}
+
+/// The keyboard module's bars under Mango: without it (the baseline) and with it.
+const NO_KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+const KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"keyboard\", \"clock\"]\n";
+
+/// The keyboard module under the fake Mango: PSS without it, with it, and after 100 then 200 layout
+/// changes (two snapshots that differ only by the layout and the mode, alternated). Printed for
+/// docs/measurements.md; the anonymous memory bounds the module (two short strings), the first 100
+/// changes (the new letters' first rasterisation and the allocator's settling: flat from there on,
+/// measured up to 500) and the next 100 (nothing kept per change: a slow leak cannot hide in the
+/// first figure).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn keyboard_module_pss_under_mango() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-pss");
+    let _workstation = Workstation::serve(&bus);
+    let mut figures = Vec::new();
+    for (name, bar) in [("kb-off", NO_KEYBOARD_BAR), ("kb-on", KEYBOARD_BAR)] {
+        let (_sway, fake, d) = start_reading(name, 1, &bus, Some(bar), true);
+        let fake = fake.expect("the fake Mango");
+        wait_until_read(&fake, &d);
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        figures.push((d.pss_kb(), d.anonymous_kb()));
+        if bar == KEYBOARD_BAR {
+            for _ in 0..2 {
+                for i in 0..100 {
+                    fake.push_monitors(if i % 2 == 0 { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                std::thread::sleep(Duration::from_secs(2)); // the last change drawn
+                figures.push((d.pss_kb(), d.anonymous_kb()));
+            }
+            assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+        }
+    }
+    report_keyboard_figures("Mango", &figures);
+}
+
+/// Prints and bounds the figures of a `keyboard_module_pss_under_*` run: (PSS, anonymous) KB off,
+/// on, after 100 and after 200 layout changes.
+fn report_keyboard_figures(what: &str, figures: &[(u64, u64)]) {
+    let [(off, off_anon), (on, on_anon), (half, half_anon), (after, after_anon)] = figures[..] else { panic!("four figures: {figures:?}") };
+    eprintln!(
+        "keyboard module under {what}, PSS (anonymous) KB: off {off} ({off_anon}), on {on} ({on_anon}), after 100 layout changes {half} ({half_anon}), after 200 {after} ({after_anon})"
+    );
+    assert!(on_anon <= off_anon + 64, "the module costs {} KB anonymous", on_anon.saturating_sub(off_anon));
+    assert!(half_anon <= on_anon + 64, "100 layout changes kept {} KB anonymous", half_anon.saturating_sub(on_anon));
+    assert!(after_anon <= half_anon + 8, "the next 100 layout changes kept {} KB anonymous", after_anon.saturating_sub(half_anon));
+}
+
+/// Waits until the loop's wake-up count holds still for 300 ms (a redraw and its frame callback
+/// done; 5 s at most).
+fn quiet_loop(d: &Daemon) {
+    let t = Instant::now();
+    let mut last = d.main_thread_wakeups();
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let now = d.main_thread_wakeups();
+        if now == last {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+        last = now;
+    }
+}
+
+/// The bar under the isolated Sway read as the compositor, with its two-layout virtual keyboard
+/// there before the daemon (the session's GET_INPUTS names it); the system bus `bus`, pw-dump
+/// silent. Returned once the compositor is read.
+fn start_sway_keyboard(name: &str, bus: &PrivateBus, bar_toml: &str) -> (Sway, VirtualKeyboard, Daemon) {
+    let sway = Sway::start(name, 1);
+    let keyboard = sway.keyboard();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(bar_toml),
+            system_bus: Some(&bus.address),
+            pw_dump: PwDump::Silent,
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("compositor: Sway", DELAY), "{:?}", d.log());
+    (sway, keyboard, d)
+}
+
+/// The keyboard module under Sway: PSS without it, with it (the `input` and `mode` events and one
+/// GET_INPUTS), and after 100 then 200 layout switches by the harness (`xkb_switch_layout next` on
+/// its private socket: English (US), French, alternated). Printed for docs/measurements.md, bounded
+/// as under Mango.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn keyboard_module_pss_under_sway() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-pss-sway");
+    let _workstation = Workstation::serve(&bus);
+    let mut figures = Vec::new();
+    for (name, bar) in [("kb-sway-off", NO_KEYBOARD_BAR), ("kb-sway-on", KEYBOARD_BAR)] {
+        let (sway, _keyboard, d) = start_sway_keyboard(name, &bus, bar);
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        figures.push((d.pss_kb(), d.anonymous_kb()));
+        if bar == KEYBOARD_BAR {
+            for _ in 0..2 {
+                for _ in 0..100 {
+                    sway.command("input type:keyboard xkb_switch_layout next");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                std::thread::sleep(Duration::from_secs(2)); // the last switch drawn
+                figures.push((d.pss_kb(), d.anonymous_kb()));
+            }
+            assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+        }
+    }
+    report_keyboard_figures("Sway", &figures);
+}
+
+/// With the keyboard module, under Mango and under Sway, once a layout change is drawn the daemon
+/// sleeps: no wake-up of the loop nor of the compositor thread in a 5 s window (no timer, no
+/// polling).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_the_keyboard_module() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-rest");
+    let _workstation = Workstation::serve(&bus);
+    // No clock: its minute tick is a planned wake-up of its own.
+    let bar = "modules = [\"workspaces\", \"window\", \"keyboard\"]\n";
+    for what in ["Mango", "Sway"] {
+        // Kept to the end of the window: the fake Mango, or the Sway and its keyboard.
+        let (_sway, _fake, _keyboard, d) = if what == "Mango" {
+            let (sway, fake, d) = start_reading("kb-rest", 1, &bus, Some(bar), true);
+            let fake = fake.expect("the fake Mango");
+            wait_until_read(&fake, &d);
+            std::thread::sleep(Duration::from_secs(2)); // end of startup
+            fake.push_monitors("mango-monitors-layout-fr-only.json");
+            (sway, Some(fake), None, d)
+        } else {
+            let (sway, keyboard, d) = start_sway_keyboard("kb-rest-sway", &bus, bar);
+            std::thread::sleep(Duration::from_secs(2)); // end of startup
+            sway.command("input type:keyboard xkb_switch_layout next");
+            (sway, None, Some(keyboard), d)
+        };
+        quiet_loop(&d); // the change drawn, its frame done
+        let (main_before, compositor_before, ticks) =
+            (d.main_thread_wakeups(), d.thread_wakeups("compositor").expect("the compositor thread runs"), d.cpu_ticks());
+        std::thread::sleep(Duration::from_secs(5));
+        assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "with the keyboard module");
+        let main = d.main_thread_wakeups().saturating_sub(main_before);
+        let compositor = d.thread_wakeups("compositor").unwrap().saturating_sub(compositor_before);
+        eprintln!("wake-ups at rest with the keyboard module under {what} (5 s): loop {main}, compositor thread {compositor}");
+        assert_eq!((main, compositor), (0, 0), "the keyboard module wakes the daemon at rest under {what}");
     }
 }
 

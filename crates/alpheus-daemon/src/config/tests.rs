@@ -324,7 +324,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 20);
+    assert_eq!(ModuleId::ALL.len(), 21);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -481,7 +481,8 @@ fn osd_defaults_and_settings() {
             width: 32,
             margin: 48,
             backlight: String::new(),
-            backlight_dir: PathBuf::from("/sys/class/backlight")
+            backlight_dir: PathBuf::from("/sys/class/backlight"),
+            kinds: vec![OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness],
         }
     );
     assert!(d.modules.contains(&ModuleId::Osd), "on by default");
@@ -498,7 +499,8 @@ fn osd_defaults_and_settings() {
             width: 40,
             margin: 0,
             backlight: "intel_backlight".into(),
-            backlight_dir: PathBuf::from("/tmp/fake")
+            backlight_dir: PathBuf::from("/tmp/fake"),
+            kinds: vec![OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness],
         }
     );
     for t in ["[osd]\ntimeout_ms = 600", "[osd]\ntimeout_ms = 5000", "[osd]\nwidth = 24", "[osd]\nwidth = 60", "[osd]\nmargin = 400"] {
@@ -929,7 +931,7 @@ fn clipboard_is_off_by_default() {
     assert!(!d.clipboard.enabled);
     assert!(!BarConfig::from_text("").unwrap().clipboard.enabled);
     assert!(!BarConfig::from_text("[clipboard]\n").unwrap().clipboard.enabled);
-    assert_eq!(d.modules, ModuleId::ALL.to_vec());
+    assert_eq!(d.modules, ModuleId::defaults());
     assert!(BarConfig::from_text("[clipboard]\nenabled = true\n").unwrap().clipboard.enabled);
     let e = BarConfig::from_text("[clipboard]\nenabeld = true\n").unwrap_err();
     assert!(e.contains("enabeld"), "{e}");
@@ -1155,4 +1157,103 @@ fn airplane_keys_default_and_parse() {
 fn a_relative_rfkill_dir_is_refused() {
     let err = BarConfig::from_text("[quick]\nrfkill_dir = \"rfkill\"\n").unwrap_err();
     assert!(err.contains("quick.rfkill_dir must be an absolute path"), "{err}");
+}
+
+#[test]
+fn keyboard_defaults() {
+    let d = KeyboardConfig::default();
+    assert_eq!((d.short, d.show_mode), (true, true));
+    assert_eq!(BarConfig::default().keyboard, d);
+    assert_eq!(BarConfig::from_text("height = 22").unwrap().keyboard, d, "absent: defaults");
+    let c = BarConfig::from_text("[keyboard]\nshort = false\nshow_mode = false\n").unwrap();
+    assert_eq!((c.keyboard.short, c.keyboard.show_mode), (false, false));
+}
+
+#[test]
+fn keyboard_unknown_key_is_invalid() {
+    let e = BarConfig::from_text("[keyboard]\nshow_locks = true\n").unwrap_err();
+    assert!(e.contains("show_locks"), "{e}");
+}
+
+/// The keyboard module is opt-in: a `bar.toml` without `modules` does not get it (it would read
+/// the layout on every snapshot for a bar that never asked), but it parses and sits after the title.
+#[test]
+fn keyboard_is_not_a_default_module() {
+    assert!(!BarConfig::default().modules.contains(&ModuleId::Keyboard));
+    assert!(!BarConfig::from_text("").unwrap().modules.contains(&ModuleId::Keyboard));
+    let others: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Keyboard).collect();
+    assert_eq!(BarConfig::default().modules, others, "every other module, in ALL's order");
+    assert_eq!(ModuleId::Keyboard.name(), "keyboard");
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Keyboard), at(ModuleId::Window) + 1, "right after the title");
+    let c = BarConfig::from_text("modules = [\"keyboard\", \"clock\"]").unwrap();
+    assert_eq!(c.modules, vec![ModuleId::Keyboard, ModuleId::Clock]);
+}
+
+#[test]
+fn osd_kinds_default_is_the_three_levels() {
+    assert_eq!(OsdConfig::default().kinds, [OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness]);
+    let c = BarConfig::from_text("[osd]\nwidth = 40\n").unwrap();
+    assert_eq!(c.osd.kinds, [OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness], "absent: the three levels");
+}
+
+#[test]
+fn osd_kinds_parses_every_name() {
+    let c = BarConfig::from_text(
+        "[osd]\nkinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\", \"layout\", \"track\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        c.osd.kinds,
+        [
+            OsdKind::Volume,
+            OsdKind::Mic,
+            OsdKind::Brightness,
+            OsdKind::Bluetooth,
+            OsdKind::Dnd,
+            OsdKind::Profile,
+            OsdKind::Layout,
+            OsdKind::Track
+        ]
+    );
+    assert_eq!(BarConfig::from_text("[osd]\nkinds = []\n").unwrap().osd.kinds, [], "no pill at all");
+    assert_eq!(BarConfig::from_text("[osd]\nkinds = [\"bluetooth\"]\n").unwrap().osd.kinds, [OsdKind::Bluetooth]);
+}
+
+#[test]
+fn osd_kinds_unknown_name_is_invalid() {
+    let e = BarConfig::from_text("[osd]\nkinds = [\"wifi\"]\n").unwrap_err();
+    assert!(e.contains("wifi"), "{e}");
+    let e = BarConfig::from_text("[osd]\nkinds = [\"Volume\"]\n").unwrap_err();
+    assert!(e.contains("Volume"), "lower case only: {e}");
+    let e = BarConfig::from_text("[osd]\nkinds = [\"mic\", \"mic\"]\n").unwrap_err();
+    assert!(e.contains("osd.kinds: duplicate \"mic\""), "{e}");
+    let (c, w) = BarConfig::load(&file("osd-kinds", "[osd]\nkinds = [\"wifi\"]\n"));
+    assert_eq!(c, BarConfig::default());
+    assert!(w.is_some_and(|w| w.contains("bar.toml invalid")));
+}
+
+#[test]
+fn osd_dnd_kind_needs_the_notifications_module() {
+    let e = BarConfig::from_text("modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"dnd\"]\n").unwrap_err();
+    assert!(e.contains("osd.kinds: \"dnd\" needs \"notifications\" in modules"), "{e}");
+    let c = BarConfig::from_text("modules = [\"osd\", \"notifications\"]\n[osd]\nkinds = [\"dnd\"]\n").unwrap();
+    assert_eq!(c.osd.kinds, [OsdKind::Dnd]);
+    assert!(BarConfig::from_text("[osd]\nkinds = [\"dnd\"]\n").is_ok(), "the default modules hold notifications");
+    assert!(
+        BarConfig::from_text("modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"bluetooth\", \"profile\"]\n").is_ok(),
+        "no other kind needs a module"
+    );
+}
+
+#[test]
+fn each_osd_kind_needs_its_source() {
+    assert_eq!(OsdKind::Volume.needs(), Needs::SOUND.or(Needs::OSD_SCOPE));
+    assert_eq!(OsdKind::Mic.needs(), Needs::SOUND.or(Needs::OSD_SCOPE));
+    assert_eq!(OsdKind::Brightness.needs(), Needs::NONE);
+    assert_eq!(OsdKind::Bluetooth.needs(), Needs::BLUETOOTH);
+    assert_eq!(OsdKind::Dnd.needs(), Needs::NONE);
+    assert_eq!(OsdKind::Profile.needs(), Needs::POWER_PROFILE);
+    assert_eq!(OsdKind::Layout.needs(), Needs::KEYBOARD);
+    assert_eq!(OsdKind::Track.needs(), Needs::MEDIA);
 }

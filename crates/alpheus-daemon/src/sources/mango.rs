@@ -95,9 +95,10 @@ fn wait(streams: &[Stream; 2]) -> io::Result<[bool; 2]> {
     Ok(fds.map(|f| f.revents != 0))
 }
 
-pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
+/// One session on `socket`; `keyboard`: the states carry the keyboard layout and mode.
+pub fn session(socket: &Path, keyboard: bool, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
     let mut streams = [Stream::open(socket, Watch::Monitors)?, Stream::open(socket, Watch::Clients)?];
-    let mut model = Model::default();
+    let mut model = Model::new(keyboard);
     let mut chunk = vec![0u8; CHUNK];
     let mut last: Option<CompositorState> = None;
     loop {
@@ -242,11 +243,15 @@ mod tests {
     /// channel: a mutant that never ends it fails on a timeout instead of hanging the run on a
     /// `join`.
     fn run(f: &FakeMango) -> (mpsc::Receiver<CompositorState>, Ended) {
+        run_with(f, false)
+    }
+
+    fn run_with(f: &FakeMango, keyboard: bool) -> (mpsc::Receiver<CompositorState>, Ended) {
         let (tx, rx) = mpsc::channel();
         let (done, result) = mpsc::channel();
         let socket = f.socket.clone();
         std::thread::spawn(move || {
-            let r = session(&socket, &mut |e| tx.send(e).is_ok());
+            let r = session(&socket, keyboard, &mut |e| tx.send(e).is_ok());
             let _ = done.send(r);
         });
         (rx, Ended(result))
@@ -372,8 +377,37 @@ mod tests {
         assert!(err.to_string().contains("over 1 MiB"), "{err}");
     }
 
+    /// The same monitors with another layout.
+    fn relayout() -> Vec<u8> {
+        let other = MONITORS.replace("\"keyboardlayout\": \"English (US)\"", "\"keyboardlayout\": \"French (AZERTY)\"");
+        assert_ne!(other, MONITORS);
+        line(&other)
+    }
+
+    /// Without the keyboard module a layout switch changes nothing the bar shows: no publication,
+    /// no wake-up of the loop.
+    #[test]
+    fn a_layout_change_without_keyboard_publishes_nothing() {
+        let f = FakeMango::start("layout-off", Some(MONITORS), Some(CLIENTS));
+        let (rx, _h) = run_with(&f, false);
+        assert_eq!(rx.recv_timeout(DELAY).unwrap().layout, None);
+        f.push("watch all-monitors", &relayout());
+        assert!(rx.recv_timeout(QUIET).is_err(), "layout only, module off: no publication");
+    }
+
+    #[test]
+    fn a_layout_change_with_keyboard_publishes_it() {
+        let f = FakeMango::start("layout-on", Some(MONITORS), Some(CLIENTS));
+        let (rx, _h) = run_with(&f, true);
+        assert_eq!(rx.recv_timeout(DELAY).unwrap().layout.as_deref(), Some("English (US)"));
+        f.push("watch all-monitors", &relayout());
+        let e = rx.recv_timeout(DELAY).unwrap();
+        assert_eq!(e.layout.as_deref(), Some("French (AZERTY)"));
+        assert_eq!(e.mode.as_deref(), Some("default"));
+    }
+
     #[test]
     fn mango_absent_error() {
-        assert!(session(Path::new("/nonexistent/mango.sock"), &mut |_| true).is_err());
+        assert!(session(Path::new("/nonexistent/mango.sock"), false, &mut |_| true).is_err());
     }
 }

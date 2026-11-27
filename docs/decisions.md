@@ -288,12 +288,13 @@ Date: 2026-11-15 · Source: tests `the_bucket_gives_five_then_one_every_three_se
 
 ### A hook never adds a source
 
-Events come from what the configured modules already read. An event whose module is not in
-`modules` never fires, and the daemon says so once at start (`hooks: <event> never fires (needs
-<modules>)`). A hook on `bluetooth` with no Bluetooth module would otherwise make the daemon read
-BlueZ: a cost hidden behind a hook.
+Events come from what the configured modules already read, an OSD kind's source included (the
+`bluetooth` kind starts BlueZ, so a `bluetooth` hook fires with it). An event nothing reads never
+fires, and the daemon says so once at start (`hooks: <event> never fires (needs <modules>)`). A hook
+on `bluetooth` with no Bluetooth module would otherwise make the daemon read BlueZ: a cost hidden
+behind a hook.
 
-Date: 2026-11-15 · Source: tests `an_event_is_read_only_when_its_modules_are_in_modules` and `the_start_lines_name_each_hook_that_never_fires`; headless `hooks_say_what_never_fires`
+Date: 2026-11-15 · Source: tests `an_event_is_read_only_when_its_modules_are_in_modules`, `the_start_lines_name_each_hook_that_never_fires` and `the_start_lines_count_the_source_an_osd_kind_starts`; headless `hooks_say_what_never_fires`
 
 ### A hook runs in its own systemd scope
 
@@ -2141,3 +2142,54 @@ delay and a second, about 11 s on i915). The xe tree is taken from the kernel's 
 (`xe_tile_sysfs.c`, `xe_gt_sysfs.c`, `xe_gt_idle.c`), not checked on xe hardware.
 
 Date: 2026-11-27 · Source: tests `gpu_usage_from_rc6_is_one_minus_the_idle_share`, `busy_from_idle_clamps_and_refuses_a_counter_going_back`, `the_older_rc6_path_is_read_when_gt0_is_absent`, `a_suspension_drops_the_idle_baseline`, `xe_idle_residency_is_read_from_the_tile_tree`, `the_intel_estimate_reads_active`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md` (draft Q2)
+
+### The keyboard layout comes from the compositor's own state, never from the keyboard
+
+The keyboard layout's name and the bind mode are read from what the compositor connection already
+gives: Mango's monitors snapshot (`keyboardlayout`, `keymode`, two more fields in a line already
+parsed, the active monitor's), and Sway's IPC on the connections already open. Never `wl_keyboard`
+(its events reach only the focused surface, and the bar never has focus), never evdev or
+`/dev/input` (a key-logger by shape), never a `watch keyboardlayout` child of Mango's command-line
+client (a resident process for one field). The fields are read only when a module asks
+(`Needs::KEYBOARD`): otherwise a layout switch changes no published state: the compositor thread still reads the
+snapshot, but it publishes nothing, so the main loop does not wake. The
+Caps Lock and Num Lock indicators are left out: no source is both event-driven and private without
+keyboard focus (see the spec).
+
+Date: 2026-11-27 · Source: tests `mango_the_monitors_carry_keymode_and_keyboardlayout`, `mango_layout_comes_from_the_active_monitor`, `mango_without_keyboard_publishes_no_layout_nor_mode` (`compositor/mango.rs`), `a_layout_change_without_keyboard_publishes_nothing`, `a_layout_change_with_keyboard_publishes_it` (`sources/mango.rs`), `keyboard_wanted_follows_needs` (`startup/tests.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`
+
+### Sway is asked for its inputs once per session, and only with the keyboard
+
+The Sway source's messages are a fixed list, checked by `sway_writes_only_its_messages`. The
+owner extended it on 2026-11-27 (decision 1 of that day) for the keyboard module, with two read-only
+additions: `GET_INPUTS` (type 100, no payload), sent once at the start of each session, and a
+second subscription that adds the `input` and `mode` events to the workspace and window ones. Both
+are sent only when the keyboard is wanted (`Needs::KEYBOARD`); without the module the source sends
+exactly what it sent before. The `input` event carries the keyboard's new active layout and the
+`mode` event the mode's name, so neither costs a read: no `GET_INPUTS` after an event, no tree read
+either, the last published state with the new layout or mode is published. Sway names no mode at
+start (neither `GET_INPUTS` nor the tree says it), so none is shown until the first `mode` event.
+With several keyboards, the first one with a layout name gives the start, and then the last one
+that changed wins. Still never the command message nor any other request.
+
+Date: 2026-11-27 · Source: tests `sway_writes_only_its_messages`, `compositor_requests_are_read_only` (`tests/guardrails.rs`), `keyboard_off_subscribes_to_two_events_and_never_asks_inputs`, `keyboard_on_subscribes_to_four_events_and_asks_inputs_once`, `an_input_event_updates_the_layout_without_reading_the_tree` (`sources/sway/tests.rs`), `sway_get_inputs_picks_the_first_keyboards_active_name`, `sway_no_mode_before_the_first_mode_event` (`compositor/sway.rs`)
+
+### An OSD kind is opt-in and brings the source it reads
+
+`[osd] kinds` lists the pills that show. The three levels (`volume`, `mic`, `brightness`) are on by
+default, as before; the passive kinds (`bluetooth`, `dnd`, `profile`, `layout` and `track`) are
+opt-in, so a pill at every Bluetooth or profile change is something the user asked for.
+A kind brings the source it reads, as the module brought `pw-dump` (`OsdKind::needs`, added by
+`modules::needs_of` only with `osd` in `modules`): `bluetooth` the BlueZ domain, `profile`
+power-profiles-daemon, `volume` and `mic` `pw-dump` and its OSD scope, `layout` the compositor's
+layout (`Needs::KEYBOARD`; under Sway, `GET_INPUTS` and the input and mode events), `track` the
+MPRIS players. No log line names a layout, a title or an artist. A list without `volume` and
+`mic` therefore starts no `pw-dump` for the OSD, and without `brightness` the verb shows nothing.
+`dnd` brings nothing and needs the `notifications` module instead: the flag is the server's, and
+alpheus must hold the notification name for it to mean anything, so a `dnd` kind without the module
+makes the file invalid rather than silently showing nothing. Each passive kind follows the sound
+pill's rules (`osd::Passive`): the first state after its source (re)starts is the baseline, a 1 s
+grace follows, a source going down takes a new baseline. Bluetooth shows on a power flip only,
+never a device, and no pill or log line names a device or a profile.
+
+Date: 2026-11-27 · Source: tests `osd_kinds_default_is_the_three_levels`, `osd_dnd_kind_needs_the_notifications_module` (`config/tests.rs`), `osd_without_sound_kinds_needs_no_sound`, `osd_kinds_bring_their_source`, `kinds_without_the_osd_module_bring_nothing` (`startup/tests.rs`), `passive_first_value_is_the_baseline`, `passive_a_source_going_down_takes_a_new_baseline`, `bluetooth_device_changes_do_not_show` (`osd/tests.rs`), `the_osd_logs_are_fixed_words` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`

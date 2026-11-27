@@ -1,12 +1,15 @@
 //! Sway, READ ONLY, over the i3 IPC on `$SWAYSOCK`: one connection SUBSCRIBEd to the workspace and
 //! window events, one for GET_WORKSPACES and GET_TREE, read at session start and once after each
-//! burst of events. `Message` is the whole list of what is ever sent (checked by
-//! tests/guardrails.rs): no command, no other request. The thread blocks on the event connection
-//! with no timeout; a zero-timeout `poll` only drains a burst.
+//! burst of workspace or window events. With the keyboard wanted, the subscription adds the
+//! `input` and `mode` events and GET_INPUTS is read once per session; those events carry what
+//! they change, so they never cost a read. `Message` is the whole list of what is ever sent
+//! (checked by tests/guardrails.rs): no command, no other request. The thread blocks on the event
+//! connection with no timeout; a zero-timeout `poll` only drains a burst.
 //!
 //! Never:
-//! - send anything outside `Message` (`sway_writes_only_its_three_messages`), and never the i3
-//!   command message; Sway's client is a forbidden word in the daemon's sources too;
+//! - send anything outside `Message`'s five messages (`sway_writes_only_its_messages`): the two
+//!   subscriptions and three reads, GET_INPUTS being a read with no payload; never the i3 command
+//!   message; Sway's client is a forbidden word in the daemon's sources too;
 //! - poll with a timeout: the event connection blocks, and a zero-timeout `poll` only drains a
 //!   burst that has already arrived;
 //! - panic on a reply (`the_mango_and_sway_backends_have_no_panicking_path`).
@@ -26,8 +29,13 @@ pub const MAGIC: &[u8; 6] = b"i3-ipc";
 pub const MAX_REPLY: usize = 4 << 20;
 /// The SUBSCRIBE payload: the two event kinds the bar follows.
 pub const SUBSCRIPTION: &str = "[\"workspace\",\"window\"]";
-/// An i3-ipc window event's type (the high bit marks an event).
+/// The SUBSCRIBE payload with the keyboard wanted: the layout and the bind mode too.
+pub const SUBSCRIPTION_KEYBOARD: &str = "[\"workspace\",\"window\",\"input\",\"mode\"]";
+/// The i3-ipc events' types (the high bit marks an event).
+const WORKSPACE_EVENT: u32 = 0x8000_0000;
+const MODE_EVENT: u32 = 0x8000_0002;
 const WINDOW_EVENT: u32 = 0x8000_0003;
+const INPUT_EVENT: u32 = 0x8000_0015;
 /// The requests' connection only; the event connection has none.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// Events drained in one go before the state is read again: an endless stream of events still
@@ -39,26 +47,34 @@ const MAX_BURST: usize = 256;
 pub enum Message {
     GetWorkspaces,
     Subscribe,
+    /// SUBSCRIBE with the `input` and `mode` events, sent in place of `Subscribe` when the
+    /// keyboard is wanted.
+    SubscribeKeyboard,
     GetTree,
+    /// A read: the input devices, each keyboard's active layout among them.
+    GetInputs,
 }
 
 impl Message {
-    pub const ALL: [Message; 3] = [Message::GetWorkspaces, Message::Subscribe, Message::GetTree];
+    pub const ALL: [Message; 5] =
+        [Message::GetWorkspaces, Message::Subscribe, Message::SubscribeKeyboard, Message::GetTree, Message::GetInputs];
 
     /// Its i3-ipc type.
     pub fn code(self) -> u32 {
         match self {
             Message::GetWorkspaces => 1,
-            Message::Subscribe => 2,
+            Message::Subscribe | Message::SubscribeKeyboard => 2,
             Message::GetTree => 4,
+            Message::GetInputs => 100,
         }
     }
 
-    /// Its payload: the subscription for SUBSCRIBE, nothing for the two reads.
+    /// Its payload: the subscription for a SUBSCRIBE, nothing for the three reads.
     pub fn payload(self) -> &'static [u8] {
         match self {
             Message::Subscribe => SUBSCRIPTION.as_bytes(),
-            Message::GetWorkspaces | Message::GetTree => b"",
+            Message::SubscribeKeyboard => SUBSCRIPTION_KEYBOARD.as_bytes(),
+            Message::GetWorkspaces | Message::GetTree | Message::GetInputs => b"",
         }
     }
 }
@@ -131,42 +147,67 @@ fn readable_now(s: &UnixStream) -> io::Result<bool> {
     Ok(ready > 0 && fd.revents != 0)
 }
 
-/// A window event (the workspace events, which carry whole workspaces, are never parsed) goes to
-/// the model's focus history.
-fn follow(model: &mut Model, (kind, payload): (u32, Vec<u8>)) {
-    if kind == WINDOW_EVENT {
-        model.event(&payload);
+/// One event into the model; true: the tree must be read again. A window event also goes to
+/// the focus history; a workspace event (whole workspaces, never parsed) is only that cue. An
+/// `input` or `mode` event carries what it changes: into the model, no read.
+// The workspace event spelled out beside the arm for the events never subscribed to.
+#[allow(clippy::match_same_arms)]
+fn follow(model: &mut Model, (kind, payload): (u32, Vec<u8>)) -> bool {
+    match kind {
+        WINDOW_EVENT => {
+            model.event(&payload);
+            true
+        }
+        INPUT_EVENT => {
+            model.input_event(&payload);
+            false
+        }
+        MODE_EVENT => {
+            model.mode_event(&payload);
+            false
+        }
+        WORKSPACE_EVENT => true,
+        // Never subscribed to: read again, as for any change.
+        _ => true,
     }
 }
 
-pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
+/// `keyboard`: subscribe to the `input` and `mode` events too, and read GET_INPUTS once, at the
+/// session's start; the states carry the layout and the mode.
+pub fn session(socket: &Path, keyboard: bool, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
     // The events first: one that happens while the state is read waits in the socket.
+    let subscribe = if keyboard { Message::SubscribeKeyboard } else { Message::Subscribe };
     let mut events = UnixStream::connect(socket)?;
-    send(&mut events, Message::Subscribe)?;
+    send(&mut events, subscribe)?;
     let (kind, reply) = read_frame(&mut events)?;
-    if kind != Message::Subscribe.code() || !subscribed(&reply) {
+    if kind != subscribe.code() || !subscribed(&reply) {
         return Err(io::Error::other("sway refused the subscription"));
     }
     let mut requests = UnixStream::connect(socket)?;
     requests.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     requests.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    // The focus history lives as long as the session: a new session starts from the tree.
-    let mut model = Model::default();
+    // The focus history and the keyboard live as long as the session: a new session starts from
+    // the tree and GET_INPUTS. Then the `input` events alone follow the layout.
+    let mut model = Model::keyboard(keyboard);
+    if keyboard {
+        model.inputs(&ask(&mut requests, Message::GetInputs)?);
+    }
     let mut last = snapshot(&mut requests, &mut model)?;
     if !publish(last.clone()) {
         return Ok(());
     }
     let mut events = BufReader::new(events);
     loop {
-        // Blocks with no timeout: no wake-up at rest. Any event means "read again"; a window
-        // event's focus change also feeds the focus history.
-        follow(&mut model, read_frame(&mut events)?);
+        // Blocks with no timeout: no wake-up at rest. A workspace or window event means "read
+        // again" (a window event's focus change also feeds the focus history); a burst of
+        // `input` and `mode` events alone reads nothing.
+        let mut reread = follow(&mut model, read_frame(&mut events)?);
         let mut drained = 1;
         while drained < MAX_BURST && (!events.buffer().is_empty() || readable_now(events.get_ref())?) {
-            follow(&mut model, read_frame(&mut events)?);
+            reread |= follow(&mut model, read_frame(&mut events)?);
             drained += 1;
         }
-        let now = snapshot(&mut requests, &mut model)?;
+        let now = if reread { snapshot(&mut requests, &mut model)? } else { model.with_keyboard(&last) };
         if now != last {
             if !publish(now.clone()) {
                 return Ok(());
@@ -192,6 +233,7 @@ pub(crate) mod fake {
     pub const WORKSPACES: &[u8] = include_bytes!("../../tests/fixtures/sway-workspaces.json");
     pub const TREE: &[u8] = include_bytes!("../../tests/fixtures/sway-tree.json");
     pub const REFUSED: &[u8] = include_bytes!("../../tests/fixtures/sway-subscribe-refused.json");
+    pub const INPUTS: &[u8] = include_bytes!("../../tests/fixtures/sway-inputs.json");
 
     /// A whole message as sway frames it.
     pub fn reply(kind: u32, payload: &[u8]) -> Vec<u8> {
@@ -202,17 +244,19 @@ pub(crate) mod fake {
         m
     }
 
-    /// What the fake answers: the bytes for a SUBSCRIBE and for a GET_TREE (GET_WORKSPACES always
-    /// gets the fixture); `flapper`: the subscribed connection is closed right after its answer.
+    /// What the fake answers: the bytes for a SUBSCRIBE, a GET_TREE and a GET_INPUTS
+    /// (GET_WORKSPACES always gets the fixture); `flapper`: the subscribed connection is closed
+    /// right after its answer.
     pub struct Script {
         pub subscribe: Vec<u8>,
         pub tree: Vec<u8>,
+        pub inputs: Vec<u8>,
         pub flapper: bool,
     }
 
     impl Default for Script {
         fn default() -> Self {
-            Script { subscribe: reply(2, b"{\"success\": true}"), tree: reply(4, TREE), flapper: false }
+            Script { subscribe: reply(2, b"{\"success\": true}"), tree: reply(4, TREE), inputs: reply(100, INPUTS), flapper: false }
         }
     }
 
@@ -249,6 +293,7 @@ pub(crate) mod fake {
                                 1 => reply(1, WORKSPACES),
                                 2 => script.subscribe.clone(),
                                 4 => script.tree.clone(),
+                                100 => script.inputs.clone(),
                                 _ => return,
                             };
                             if c.write_all(&answer).is_err() {

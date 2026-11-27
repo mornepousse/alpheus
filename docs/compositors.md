@@ -32,9 +32,10 @@ Displays row: the protocol code is shared, but only Sway's was run, headless).
 
 | Feature | Hyprland | niri | Sway | Mango | Other layer-shell |
 |---|---|---|---|---|---|
-| Workspaces in the bar | yes: socket events | yes: event stream | yes: i3 IPC (workspace and window events) | yes: one workspace per (output, tag); empty inactive tags hidden | no: the bar shows "–" |
+| Workspaces in the bar | yes: socket events | yes: event stream | yes: i3 IPC (workspace and window events; the `input` and `mode` events too with the `keyboard` module) | yes: one workspace per (output, tag); empty inactive tags hidden | no: the bar shows "–" |
 | Switching workspace (click, wheel) | via `[workspaces] command` (`wm-set workspace` by default) | same | same | same | n/a |
 | Window title | yes | yes | yes | yes (the active output's client) | no |
+| Keyboard layout and mode | no (retired) | no (retired) | yes: `GET_INPUTS` once per session (the first keyboard with a layout name), then the `input` and `mode` events, which carry the new layout or mode; no mode before the first `mode` event; read only with the `keyboard` module | yes: the monitors snapshot (`keyboardlayout`, `keymode`), the active monitor's; read only with the `keyboard` module | no |
 | Launcher's windows list and focus | yes: `address:0x…` selectors | yes: `id:N` | yes: `id:<con_id>` | yes: `id:<client id>` | no: the list is empty |
 | Order of that list | previous window first, focused last | same | same (Sway's own focus order) | same (a focus history the daemon keeps) | n/a |
 | Screen-capture privacy indicator | yes: PipeWire, plus the compositor's `screencast` events | yes: PipeWire, plus niri's cast events | partial: PipeWire only; a recorder that does not go through PipeWire (wf-recorder) is not seen | partial: PipeWire only, same limit | partial, unverified: PipeWire only |

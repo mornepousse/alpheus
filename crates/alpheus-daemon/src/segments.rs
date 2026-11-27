@@ -1,6 +1,6 @@
 //! The cells of each system module: volume, network, Bluetooth, battery, the resources, the tray,
 //! and the small blocks beside them (the bell, the privacy indicators, the Shield glyph, the
-//! failed-units count, the timer chip, the power button).
+//! failed-units count, the timer chip, the keyboard layout, the power button).
 //!
 //! One function per module, each answering None when it has nothing to show — waiting for its first
 //! reading, or nothing to report. A source that is down shows its icon and then `–`, so a module
@@ -20,7 +20,8 @@
 //! See: docs/features/bar.md (what each module draws), docs/features/themes.md (the hues and what
 //! `module_colors` does), docs/decisions.md ("A source that is down is not a state").
 
-use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
+use crate::compositor::CompositorState;
+use crate::config::{BatteryConfig, BatteryVisibility, KeyboardConfig, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
@@ -62,6 +63,8 @@ pub const SHIELD: char = '\u{f0498}'; // md-shield
 /// The notifications bell, checked in the 3.4.0 post table.
 pub const BELL: char = '\u{f009a}'; // md-bell
 pub const BELL_OFF: char = '\u{f009b}'; // md-bell_off (crossed)
+/// The keyboard module, and a keyboard among the peripherals.
+pub const KEYBOARD: char = '\u{f030c}'; // md-keyboard
 /// The failed-units count.
 pub const FAILED: char = '\u{f0026}'; // md-alert
 /// The most unread notifications the bell counts; beyond, "99+".
@@ -333,10 +336,10 @@ pub fn battery_icon(b: Battery) -> char {
 
 fn peripheral_icon(k: PeripheralKind) -> char {
     match k {
-        PeripheralKind::Mouse => '\u{f037d}',    // md-mouse
-        PeripheralKind::Keyboard => '\u{f030c}', // md-keyboard
-        PeripheralKind::Headset => '\u{f02ce}',  // md-headset
-        PeripheralKind::Gamepad => '\u{f0296}',  // md-gamepad
+        PeripheralKind::Mouse => '\u{f037d}', // md-mouse
+        PeripheralKind::Keyboard => KEYBOARD,
+        PeripheralKind::Headset => '\u{f02ce}', // md-headset
+        PeripheralKind::Gamepad => '\u{f0296}', // md-gamepad
         PeripheralKind::Other => DEVICE,
     }
 }
@@ -570,3 +573,31 @@ pub(crate) fn tray(icons: &[TrayIcon], config: &TrayConfig) -> Option<Segment> {
 
 #[cfg(test)]
 mod tests;
+
+/// A layout's short name: the two or three ASCII letters in its parentheses (`English (US)` →
+/// `us`), else its first two characters (`French (AZERTY)` → `fr`), lower case.
+pub fn short_layout(name: &str) -> String {
+    let inner = name.rsplit_once('(').and_then(|(_, rest)| rest.split_once(')')).map(|(inner, _)| inner);
+    match inner {
+        Some(code) if (2..=3).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphabetic()) => code.to_ascii_lowercase(),
+        _ => name.chars().take(2).flat_map(char::to_lowercase).collect(),
+    }
+}
+
+/// The keyboard module: `󰌌 us`, then the bind mode in the accent when it is not `default` and
+/// `show_mode` is on. None while neither is known (a compositor that gives neither, or before its
+/// first snapshot), and when the source is down: a layout is not a status that can be "down".
+/// No click zone (display only).
+pub(crate) fn keyboard(feed: &Feed<CompositorState>, cfg: &KeyboardConfig) -> Option<Segment> {
+    let Feed::Ready(state) = feed else { return None };
+    let mode = state.mode.as_deref().filter(|m| cfg.show_mode && *m != "default");
+    let layout = state.layout.as_deref().map(|l| if cfg.short { short_layout(l) } else { l.to_string() });
+    if layout.is_none() && mode.is_none() {
+        return None;
+    }
+    let mut pieces = vec![piece(layout.map_or_else(|| KEYBOARD.to_string(), |l| format!("{KEYBOARD} {l}")), Style::NORMAL)];
+    if let Some(m) = mode {
+        pieces.push(piece(format!(" {m}"), Style::ACCENT));
+    }
+    Some(Segment { target: None, ..module_segment(ModuleId::Keyboard, pieces) })
+}

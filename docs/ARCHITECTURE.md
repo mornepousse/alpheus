@@ -206,7 +206,7 @@ does for the user.
   `alpheus-common::compositor`; see [`compositors.md`](compositors.md).
   **Architecture invariant:** the compositor's requests are fixed lists and read-only
   (`compositor_requests_are_read_only`, `mango_writes_only_its_request_lines`,
-  `sway_writes_only_its_three_messages`) and its sockets are opened only under `sources/`
+  `sway_writes_only_its_messages`) and its sockets are opened only under `sources/`
   (`compositor_sockets_opened_only_in_sources`); the D-Bus rules are in [Rules](#rules), 4, and
   systemd is held to them too: `sources/dbus/` names no acting systemd method and calls
   `subscribe_units(` only from `units.rs` and the files that define or fake it
