@@ -4731,6 +4731,57 @@ fn osd_kinds_off_read_no_bluez() {
     assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
 }
 
+/// With `kinds = ["volume"]`, a microphone mute flip shows nothing (the sound source still
+/// publishes it: the volume kind brings the OSD's scope), and a volume change still shows.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_the_volume_kind_alone_shows_no_microphone_pill() {
+    let (sway, _hypr, d) = osd_daemon("osd-volume-only", 1, "kinds = [\"volume\"]\n", |_| ());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, 100, true));
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("osd surface on"), 0, "a mute flip without the mic kind: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(osd_shown(&d, "volume 90%"), "the volume kind still shows: {:?}", d.log());
+}
+
+/// `--osd brightness` with a backlight but without the `brightness` kind: exit 0, its fixed line,
+/// no pill.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn osd_the_brightness_verb_without_its_kind_shows_nothing() {
+    let (sway, _hypr, d) = osd_daemon("osd-bright-kind", 1, "kinds = [\"volume\", \"mic\"]\n", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("osd: brightness asked, but brightness is not in osd.kinds", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
+}
+
+/// The `bluetooth` module runs the BlueZ source anyway: with the default kinds, a power flip that
+/// reaches the bar still shows no pill.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_bluetooth_flip_without_its_kind_shows_nothing() {
+    let bus = PrivateBus::start("osd-bt-module");
+    let bluez = FakeBluez::serve(&bus);
+    let sway = Sway::start("osd-bt-module", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let toml = format!(
+        "modules = [\"bluetooth\", \"osd\", \"clock\"]\n[osd]\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    );
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    assert!(!bluez.calls().is_empty(), "the bluetooth module reads BlueZ: {:?}", d.log());
+    bluez.set_powered(false);
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(d.count("osd surface on"), 0, "bluetooth is not in the kinds: {:?}", d.log());
+}
+
 // ---- The OSD's layout and track kinds. ----
 
 const OSD_LAYOUT_BAR: &str = "modules = [\"osd\"]\n[osd]\nkinds = [\"layout\"]\n";

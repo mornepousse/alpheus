@@ -3062,6 +3062,14 @@ fn the_osd_logs_are_fixed_words() {
     // `what` comes from `describe` alone, and travels by `osd_sync(&what)` to the surface's line.
     assert_eq!(surface.matches("let what = ").count(), 1, "one place makes `what`");
     assert!(surface.contains("let what = osd::describe(&pill);"), "`what` is describe's");
+    // `place` is the output's connector name (the bubbles' target) or a literal, nothing else.
+    assert_eq!(surface.matches("let place = ").count(), 1, "one place makes `place`");
+    assert!(
+        surface.contains("let place = output_name.as_deref().unwrap_or(\"the compositor's choice of output\");"),
+        "`place` is the connector name or a literal"
+    );
+    assert_eq!(surface.matches("output_name) = self.bubbles_target();").count(), 1, "`output_name` is the bubbles' target");
+    assert_eq!(surface.matches("let (output, output_name) = ").count(), 1, "one place makes `output_name`");
     for (i, _) in surface.match_indices("self.osd_sync(") {
         let arg = &surface[i + "self.osd_sync(".len()..];
         assert!(arg.starts_with("&what)"), "osd_sync takes describe's words only: {}", &arg[..arg.find(')').unwrap_or(0)]);

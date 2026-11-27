@@ -92,8 +92,11 @@ the session bus (as the `media` module does), `layout` the compositor's keyboard
 `brightness` reads on the
 verb only, and `dnd` reads the bell, which the `notifications` module owns. So a list without
 `volume` and `mic` starts no `pw-dump` for the OSD (another module may still start it), and kinds
-bring nothing while `osd` is not in `modules`. See [decisions](../decisions.md), "An OSD kind is
-opt-in and brings the source it reads".
+bring nothing while `osd` is not in `modules`. A source an OSD kind started feeds the hooks like any
+other (`Hooks::on_msg` reads every message), but the start-up line that says a hook never fires
+reads `modules` only (`HookId::reads`), so it can say so for a Bluetooth or power profile hook that
+an OSD kind's source does fire. See [decisions](../decisions.md), "An OSD kind is opt-in and
+brings the source it reads".
 
 ## How it is built
 
