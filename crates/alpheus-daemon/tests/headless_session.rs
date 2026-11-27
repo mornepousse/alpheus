@@ -2042,6 +2042,27 @@ fn a_user_binding_runs_its_argv_on_a_click() {
     assert!(d.log().iter().all(|l| !l.contains(&program)), "never the command in the log: {:?}", d.log());
 }
 
+/// A binding on a button that has a default replaces it: `[bindings.clock] left = [recorder]` runs
+/// the recorder on every left click and never also shows the calendar.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_bound_left_click_never_shows_the_calendar() {
+    let sway = Sway::start("binding-left", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "left");
+    let toml = format!("modules = [\"clock\"]\n[bindings.clock]\nleft = [\"{}\", \"{{output}}\"]\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    sway.click(40, 10, "button1");
+    assert!(wait_until(|| recorded_argv(&sway, "left").len() == 1), "{:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(wait_until(|| recorded_argv(&sway, "left").len() == 2), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "left"), [["HEADLESS-1"], ["HEADLESS-1"]]);
+    thread::sleep(Duration::from_millis(300)); // a calendar would have shown by now
+    assert_eq!(d.count("calendar shown"), 0, "the bound left click is the binding's alone: {:?}", d.log());
+}
+
 /// "YYYY-MM" of every "calendar shown/shows" line, in order.
 fn calendar_months(d: &Daemon) -> Vec<String> {
     d.log().iter().filter_map(|l| l.split_once("calendar show").map(|(_, r)| r.rsplit(' ').next().unwrap_or("").to_string())).collect()

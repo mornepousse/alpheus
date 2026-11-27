@@ -119,7 +119,8 @@ it) or a verb: `none` (the button does nothing), `popup` (the module's own popup
 quick panel), `open_tab` (`[actions] open_tab` with the module's tab), `launcher`, `dnd` and `mute`
 (the default output's mute). A button left out keeps the behaviour above. The window, and the clock
 with `[clock] calendar = false`, have no click of their own: a binding gives them a zone that does
-only what is bound. The workspaces and the tray take no binding.
+only what is bound. The workspaces and the tray take no binding. A wheel bound to `popup`, `quick`
+or `launcher` toggles it once per notch: a second notch closes what the first opened.
 
 **From a script or a key bind.** `alpheus-launch` drives the launcher, the notepad, the clipboard
 history, the Tools menu, do-not-disturb, the notification history, the OSD, the quick panel, the
@@ -234,7 +235,9 @@ These are enforced by tests, so a change that breaks one fails the build.
 - `every_user_binding_runs_as_written`: every button of every bindable module bound to an argv runs
   exactly that program and those arguments, `{tab}` and `{output}` replaced, through the executor:
   never `sh`, never `-c`, never `dpms`. `empty_bindings_change_no_click_byte_for_byte`: empty
-  `[bindings.<module>]` tables change no zone, command or popup.
+  `[bindings.<module>]` tables change no zone, command or popup. The headless
+  `a_bound_left_click_never_shows_the_calendar`: a bound button that has a default runs the binding
+  alone.
 - `a_passive_zone_takes_no_click_of_its_own`: a zone added for a binding gives its module no
   command, popup, launcher, do-not-disturb, timer or media action of its own.
 - `d_bus_is_confined_to_sources_and_read_only`: the `dbus` crate appears in six files only — one

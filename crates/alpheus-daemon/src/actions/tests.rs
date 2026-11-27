@@ -247,7 +247,6 @@ fn indicators_open_their_tab() {
 /// `[actions] resources`; the other buttons do nothing.
 #[test]
 fn resources_left_opens_the_popup_right_runs_the_monitor() {
-    use ModulePopup;
     let mut b = without_quick(full());
     b.config.actions.resources = vec!["foot".into(), "htop".into()];
     let r = Target::Module(ModuleId::Resources);
