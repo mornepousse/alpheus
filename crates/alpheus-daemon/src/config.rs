@@ -457,6 +457,21 @@ pub const BINDING_ARGV_MAX: usize = 16;
 /// non-blank program, no NUL, `{tab}` (only where the module has a tab) and `{output}` each a whole
 /// argument at most once; a verb only where what it acts on exists. A table for a module absent from
 /// `modules` is accepted (it costs nothing). The message names the key, never the command.
+/// The words a binding's argv may not hold, as a whole word in any case: a suspend froze the
+/// DisplayLink dock, and the power rows never offer one either.
+const SLEEP_WORDS: [&str; 3] = ["suspend", "hibernate", "hybrid-sleep"];
+
+/// Whether `arg` holds one of `SLEEP_WORDS` as a whole word (no letter, digit or `_` right before
+/// or after it), whatever its case: `suspend-then-hibernate` and `/usr/bin/suspend` do,
+/// `suspended` does not.
+fn sleeps(arg: &str) -> bool {
+    let arg = arg.to_lowercase();
+    let word_char = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    SLEEP_WORDS.iter().any(|w| {
+        arg.match_indices(w).any(|(at, _)| !word_char(arg[..at].chars().next_back()) && !word_char(arg[at + w.len()..].chars().next()))
+    })
+}
+
 fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) -> Result<(), String> {
     let has = |m: ModuleId| modules.contains(&m);
     for (&m, buttons) in b {
@@ -480,6 +495,9 @@ fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) 
                     }
                     if argv.iter().any(|a| a.contains('\0')) {
                         return Err(format!("{key}: an argument holds a NUL"));
+                    }
+                    if argv.iter().any(|a| sleeps(a)) {
+                        return Err(format!("{key}: a binding never puts the machine to sleep"));
                     }
                     let tab = usize::from(spec.tab.is_some());
                     check_placeholders(&key, argv, &[("{tab}", 0, tab), ("{output}", 0, 1)])?;
