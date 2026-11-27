@@ -683,9 +683,10 @@ pub fn base_config() -> bool {
 }
 
 /// What the harness writes as bar.toml: the test's `text`, with the camera watch's `[privacy]`
-/// roots and the DisplayLink detection's `[displays] drm_dir` pointed at empty directories under
-/// `runtime` (never the machine's /dev, /proc or /sys) unless the test sets its own; `base`
-/// (`base_config`) leaves `[displays]` out.
+/// roots, the DisplayLink detection's `[displays] drm_dir` and the quick panel's
+/// `[quick] kbd_backlight_dir` pointed at empty directories under `runtime` (never the machine's
+/// /dev, /proc or /sys) unless the test sets its own; `base` (`base_config`) leaves `[displays]`
+/// and the keys a base build does not know out.
 pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     let (dev, proc, drm) = (runtime.join("privacy-dev"), runtime.join("privacy-proc"), runtime.join("displays-drm"));
     let mut text = text.to_string();
@@ -700,6 +701,11 @@ pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     }
     if !base && !text.contains("drm_dir") {
         text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
+    }
+    // The keyboard backlight row reads LEDs there, never the machine's /sys/class/leds.
+    if !base && !text.contains("kbd_backlight_dir") {
+        let leds = runtime.join("quick-leds");
+        text = under_table(&text, "quick", &format!("kbd_backlight_dir = \"{}\"\n", leds.display()));
     }
     text
 }
@@ -726,6 +732,12 @@ fn coreutils_dir() -> PathBuf {
     for real in ["pkexec", "usbguard"] {
         assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
     }
+    // Nor the quick panel's hardware tools: `brightnessctl` would set the machine's keyboard
+    // backlight and `rfkill` cut its radios (by type, whatever directory the test points at); only
+    // a recorder on the private PATH may stand in for them.
+    for real in ["brightnessctl", "rfkill"] {
+        assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
+    }
     dir
 }
 
@@ -745,7 +757,7 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc"] {
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc", "quick-leds"] {
         fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
     fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();

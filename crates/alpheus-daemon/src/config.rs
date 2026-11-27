@@ -78,6 +78,8 @@
 //! vpn_more = ["foot", "-e", "nmtui-edit"]                   # More… in the VPN detail; absent: launcher.toml's terminal, then nmtui-edit; [] hides it
 //! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
 //! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
+//! kbd_backlight = true                                      # the keyboard backlight row (hidden without a *::kbd_backlight LED); false: nothing read
+//! kbd_backlight_dir = "/sys/class/leds"                     # where LEDs are listed (an absolute path); read when the panel opens, never written
 //! [timer]                                                   # the focus timer (with "timer" in modules); read at start
 //! countdown = 10                                            # minutes, the popup's Timer row at start, 1 to 180
 //! work = 25                                                 # Pomodoro, minutes, 1 to 180
@@ -950,6 +952,11 @@ pub struct QuickConfig {
     pub mixer: Option<Vec<String>>,
     /// The do-not-disturb detail's "Until" entry, `HH:MM` (local time).
     pub dnd_until: String,
+    /// The keyboard backlight row (still hidden without a `*::kbd_backlight` LED); false: nothing
+    /// read at open.
+    pub kbd_backlight: bool,
+    /// Where LEDs are listed (absolute): the keyboard backlight is read there, never written.
+    pub kbd_backlight_dir: PathBuf,
 }
 
 impl QuickConfig {
@@ -977,6 +984,8 @@ impl Default for QuickConfig {
             vpn_more: None,
             mixer: None,
             dnd_until: "08:00".into(),
+            kbd_backlight: true,
+            kbd_backlight_dir: PathBuf::from("/sys/class/leds"),
         }
     }
 }
@@ -1083,6 +1092,9 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
             return Err(format!("{key}.state without a toggle (the row shows only with one)"));
         }
         state_form(&t.state).map_err(|m| format!("{key}.state: {m}"))?;
+    }
+    if !q.kbd_backlight_dir.is_absolute() {
+        return Err("quick.kbd_backlight_dir must be an absolute path".into());
     }
     Ok(())
 }

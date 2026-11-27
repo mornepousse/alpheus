@@ -25,6 +25,7 @@ pub mod grid;
 pub mod hooks;
 pub mod icons;
 pub mod inotify;
+pub mod kbd_backlight;
 pub mod keys;
 pub mod launcher;
 pub mod layout;

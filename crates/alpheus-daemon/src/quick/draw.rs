@@ -23,7 +23,9 @@
 //!
 //! See: docs/features/quick-settings.md and docs/decisions.md ("The selected slider row is banded across the whole row").
 
-use super::{FAILED_TAG, GLYPH_AT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines};
+use super::{
+    FAILED_TAG, GLYPH_AT, KBD_BACKLIGHT, Line, Live, MORE_AT, PERCENT_AT, PROFILE, Question, Quick, RUNNING_TAG, Row, WIDTH, lines,
+};
 use crate::grid::{Grid, Style, text_width};
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
@@ -106,6 +108,13 @@ pub(super) fn draw_headset(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
 pub(super) fn draw_brightness(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
     if let Some(b) = &q.backlight {
         slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
+    }
+}
+
+/// The keyboard backlight row: the slider, its level as a percentage of the device's maximum.
+pub(super) fn draw_kbd(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    if let Some(k) = &q.kbd {
+        slider(g, KBD_BACKLIGHT, Volume { percent: k.percent(), muted: false }, false, selected);
     }
 }
 

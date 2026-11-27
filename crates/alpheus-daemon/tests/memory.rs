@@ -1520,6 +1520,81 @@ fn quick_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
+/// The radio rows' cost: one daemon with a fake keyboard backlight (`fake::kbd_backlight`, 1 of 2)
+/// and `[quick] kbd_backlight = true`, one with `false`; the panel opened and closed by the verb as
+/// in `quick_pss_idle_open_and_closed`. The row is one more line and a short `String`: the open
+/// panel may add 64 KB more anonymous memory over rest with it than without it, and nothing of it
+/// stays once closed (anonymous memory, the leak figure; total PSS is printed).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn quick_pss_with_the_radio_rows() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("quick-radios");
+    let _workstation = Workstation::serve(&bus);
+    let backlight = fake_backlight("quick-radios-backlight");
+    let leds = TempDir::new("quick-radios-leds");
+    let led = leds.0.join("fake::kbd_backlight");
+    std::fs::create_dir_all(&led).unwrap();
+    std::fs::write(led.join("brightness"), "1\n").unwrap();
+    std::fs::write(led.join("max_brightness"), "2\n").unwrap();
+    // (rest, open, closed, cycled) PSS, and (rest, closed, cycled) anonymous memory.
+    let run = |name: &str, on: bool| {
+        let bar = format!(
+            "{}[quick]\nkbd_backlight = {on}\nkbd_backlight_dir = {:?}\n",
+            quick_bar(true, &backlight.0),
+            leds.0.display().to_string()
+        );
+        let (sway, _hypr, d) = start(name, 1, &bus, None, Some(&bar), PwDump::Fifo);
+        assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+        std::thread::sleep(TRAY_SETTLE);
+        let (rest, rest_anon) = (d.pss_kb(), d.anonymous_kb());
+        let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
+        toggle();
+        assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+        let shown = d.log().into_iter().find(|l| l.contains("quick shown")).unwrap_or_default();
+        assert_eq!(shown.contains("kbd-backlight"), on, "{shown}");
+        std::thread::sleep(Duration::from_secs(1)); // configured and painted
+        let (open, open_anon) = (d.pss_kb(), d.anonymous_kb());
+        toggle();
+        assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+        std::thread::sleep(TRAY_SETTLE);
+        let (closed, closed_anon) = (d.pss_kb(), d.anonymous_kb());
+        for n in 2..=21 {
+            toggle();
+            assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+            std::thread::sleep(PAST_DEBOUNCE);
+            toggle();
+            assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        }
+        std::thread::sleep(TRAY_SETTLE);
+        let (cycled, cycled_anon) = (d.pss_kb(), d.anonymous_kb());
+        assert!(!d.log().iter().any(|l| l.contains("keyboard backlight")), "no key, no command: {:?}", d.log());
+        ((rest, open, closed, cycled), (rest_anon, open_anon, closed_anon, cycled_anon))
+    };
+    let (without, without_anon) = run("quick-radios-a", false);
+    let (with, with_anon) = run("quick-radios-b", true);
+    for (what, (rest, open, closed, cycled), (rest_anon, open_anon, closed_anon, cycled_anon)) in
+        [("without the row", without, without_anon), ("with the row", with, with_anon)]
+    {
+        eprintln!(
+            "quick PSS {what} (KB): {rest} at rest, {open} open (+{}), {closed} closed, {cycled} after 20 more cycles; \
+             anonymous {rest_anon} at rest, {open_anon} open, {closed_anon} closed, {cycled_anon} cycled",
+            open.saturating_sub(rest)
+        );
+        assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report it, never raise");
+        assert!(closed_anon <= rest_anon + 256, "{what}: closed anonymous {closed_anon} KB vs {rest_anon} KB at rest");
+        assert!(cycled_anon <= closed_anon + 128, "{what}: 20 cycles must keep nothing ({cycled_anon} vs {closed_anon} KB)");
+    }
+    // Two daemons' total PSS differ by 0.1–0.5 MB from one run to the next (shared libraries, the
+    // page cache, whatever else runs), and their anonymous memory at rest by up to 96 KB (arena
+    // granularity), both far above the row's cost: the PSS is printed, and the bound is on what
+    // opening adds to each daemon's own anonymous memory, with the row against without it.
+    let pss_delta = with.1 as i64 - without.1 as i64;
+    let row_cost = (with_anon.1 as i64 - with_anon.0 as i64) - (without_anon.1 as i64 - without_anon.0 as i64);
+    eprintln!("the keyboard backlight row, open: {pss_delta:+} KB PSS, {row_cost:+} KB anonymous");
+    assert!(row_cost <= 64, "the keyboard backlight row costs {row_cost} KB anonymous open (one line and a short String: <= 64 KB)");
+}
+
 /// Once the panel closed, no timer, no wake-up, no spin.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]

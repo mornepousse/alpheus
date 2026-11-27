@@ -4,10 +4,10 @@
 //! This is the half of the panel that touches the outside; the model it drives is `mod.rs`. The
 //! panel opens from a click on the volume, network or Bluetooth module, or from
 //! `alpheus-launch --quick`. It is filled from the bar's state, from the sound thread's sink list
-//! (`pipewire::SoundTap`), from the backlight and from the configured toggles' states. Each key
-//! and click goes to the model, and the `QuickAction` that comes back is carried out here: a
-//! command is spawned through the daemon's executor and never waited for, the panel is closed or
-//! repainted. The wiring of the other lists is in `bt_app.rs` (Bluetooth) and `shield/app.rs`
+//! (`pipewire::SoundTap`), from the backlight and the keyboard's (`kbd_backlight.rs`), and from the
+//! configured toggles' states. Each key and click goes to the model, and the `QuickAction` that
+//! comes back is carried out here: a command is spawned through the daemon's executor and never
+//! waited for, the panel is closed or repainted. The wiring of the other lists is in `bt_app.rs` (Bluetooth) and `shield/app.rs`
 //! (Shield).
 //!
 //! One `DeadlineTimer` (`QuickApp::timer`) is armed only while something is pending: a slider's
@@ -33,6 +33,7 @@ use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::Target;
+use crate::kbd_backlight::{self, Kbd, KbdReread};
 use crate::keys::Key;
 use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
@@ -450,6 +451,15 @@ impl App {
         backlight::named_level(&o.backlight_dir, &o.backlight).map(|(device, percent)| Backlight { device, percent })
     }
 
+    /// The keyboard backlight, read once at open; nothing read with `[quick] kbd_backlight = false`.
+    fn quick_kbd(&self) -> Option<Kbd> {
+        let c = &self.bar.config.quick;
+        if !c.kbd_backlight {
+            return None;
+        }
+        kbd_backlight::find(&c.kbd_backlight_dir)
+    }
+
     /// A configured toggle's state, read now; None without its toggle.
     pub(crate) fn quick_toggle_state(&self, t: Toggle) -> Option<bool> {
         let c = t.config(&self.bar.config.quick);
@@ -544,11 +554,13 @@ impl App {
         };
         self.shield_before_panel();
         let backlight = self.quick_backlight();
+        let kbd = self.quick_kbd();
         let toggles = [self.quick_toggle_state(Toggle::KeepAwake), self.quick_toggle_state(Toggle::NightLight)];
         let built = {
             let live = quick::live(&self.bar, &self.dnd_timed.model);
             let mut q = Quick::new(focus, &live, sinks, backlight, toggles, room);
             q.set_headset(headset);
+            q.set_kbd(kbd);
             if q.is_empty(&live) {
                 None
             } else {
@@ -785,8 +797,10 @@ impl App {
     /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick.timer.fired();
-        let (mut due, device) = match app.popup_body_mut() {
-            Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
+        let (mut due, device, kbd) = match app.popup_body_mut() {
+            Some(PopupBody::Quick(q)) => {
+                (q.due(now), q.backlight.as_ref().map(|b| b.device.clone()), q.kbd.as_ref().map(|k| k.device.clone()))
+            }
             _ => {
                 // No panel: a followed attempt's timeout.
                 if let Some(outcome) = app.quick.wifi_follow.as_mut().map(|f| f.due(now)) {
@@ -816,6 +830,8 @@ impl App {
         // `then` gives Some(..) only for a re-read that is due; `map_or` reads the device when there
         // is one and says it is `Gone` when there is none.
         let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
+        let kbd_dir = &app.bar.config.quick.kbd_backlight_dir;
+        let kbd_level = due.kbd.then(|| kbd.as_deref().map_or(KbdReread::Gone, |d| kbd_backlight::reread(kbd_dir, d)));
         // One entry per toggle: Some(its state, read now) when its re-read is due, else None.
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
         if due.shield_failed {
@@ -824,6 +840,9 @@ impl App {
         if let Some(PopupBody::Quick(q)) = app.popup_body_mut() {
             if let Some(level) = level {
                 q.set_backlight(level);
+            }
+            if let Some(level) = kbd_level {
+                q.set_kbd_reread(level);
             }
             for t in Toggle::ALL {
                 if let Some(on) = states[t.index()] {

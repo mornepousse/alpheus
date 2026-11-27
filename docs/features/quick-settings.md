@@ -1,7 +1,7 @@
 # The quick settings panel
 
 A panel opened from the bar for everyday settings, without opening the control center: the volume
-and the output, the brightness, the microphone, do-not-disturb, the power profile, two toggles you
+and the output, the brightness, the keyboard backlight, the microphone, do-not-disturb, the power profile, two toggles you
 configure, the Wi-Fi, Bluetooth and VPN lists, Shield mode and the session buttons. This page says
 what it does, how to use it, how to configure it, how it is built, which rules the tests enforce on
 it, and what it costs. It describes the code as it is today.
@@ -23,6 +23,14 @@ A row whose tool, hardware or command is missing is not shown.
   `wpctl set-default`). The panel never raises the volume above 100 %.
 - **Brightness.** Read from `[osd] backlight` in `[osd] backlight_dir`; set with `brightnessctl`,
   re-read 150 ms after, and never lower than 1 % from the panel. Hidden without a backlight device.
+- **Keyboard backlight.** Right under the brightness: a slider over the device's own levels (three
+  on a ThinkPad: off, low, high), shown as a percentage of its maximum. Read from the first
+  `*::kbd_backlight` LED in `[quick] kbd_backlight_dir` (sorted order; a maximum of 1 to 255), set
+  with `brightnessctl --class=leds --device=<led> set <level>`, re-read 150 ms after. 0 is allowed:
+  an unlit keyboard is not a black screen. Hidden without such an LED, and nothing is read with
+  `kbd_backlight = false`. The log names no device: `quick: keyboard backlight 2`.
+  **Not yet verified:** that brightnessctl, unable to write the LED's root-owned file, reaches it
+  through logind's `SetBrightness` on the `leds` subsystem for the active session.
 - **Microphone.** `Microphone`, muted or live. Hidden without a default source.
 - **Mixer.** `Mixer…` opens a terminal mixer (`[quick] mixer`).
 - **Do not disturb.** Space toggles it. Enter or → opens a detail with six choices (`Off`,
@@ -239,7 +247,8 @@ nothing.
 
 **Keys.** ↑ ↓ and Home End move between rows (Ctrl+P and Ctrl+N too); ← → change a slider by
 `[quick] step` percent, or move between session buttons; Space and Enter toggle a row, Enter on the
-volume opens the outputs; Esc leaves a detail, else closes the panel. Only the moving keys (arrows,
+volume opens the outputs; on the keyboard backlight ← → move one level (or `step` percent of a
+maximum above 10) and Space or Enter cycle the levels, the maximum wrapping to 0; Esc leaves a detail, else closes the panel. Only the moving keys (arrows,
 Ctrl+P and Ctrl+N) and erasing repeat when held. The wheel over a slider changes it; elsewhere it moves the window over the rows when they do
 not fit.
 
@@ -277,6 +286,8 @@ ignored (`quick: toggle debounced`), because Hyprland fires a press bind again.
 | `vpn_more` | launcher.toml's terminal and `nmtui-edit` | the VPN detail's `More…`; `[]` hides the row |
 | `mixer` | launcher.toml's terminal and `wiremix` | the `Mixer…` row; `[]` hides it |
 | `dnd_until` | `"08:00"` | the time of the do-not-disturb detail's `Until` entry, `HH:MM` local |
+| `kbd_backlight` | `true` | the keyboard backlight row (still hidden without a `*::kbd_backlight` LED); `false` reads nothing |
+| `kbd_backlight_dir` | `"/sys/class/leds"` | where LEDs are listed, an absolute path; read only |
 
 A toggle's `state` is `""` (unknown: the row shows `·`), `"file:<path>"` (on while the file exists;
 the path starts with `/`, `~/` or `$XDG_RUNTIME_DIR/`) or `"process:<name>"` (on while a process
@@ -312,6 +323,9 @@ pure model, pure details, and the wiring that touches the outside world.
 - `wifi.rs`, `bt.rs`, `vpn.rs` and `bt_app.rs`: the Wi-Fi, Bluetooth and VPN lists. Their reads are
   on the D-Bus thread (`sources/dbus/wifi.rs`, `bt.rs`, `vpn.rs`); Bluetooth's calls go through its
   own connection (`sources/dbus/bt_act.rs`).
+- `kbd_backlight.rs` (outside this folder, next to `backlight.rs`): the keyboard backlight's LED,
+  found and re-read in sysfs (at most 64 names, capped reads), and its steps, cycle and nearest
+  level. Read only, no command: the row's `brightnessctl` is a `QuickAction` like the others.
 - `session.rs` (outside this folder): the session entries and the confirmation rule, shared with the
   power menu.
 - The tests sit next to each file (`tests.rs`, `app/tests.rs`, `dnd/tests.rs`, `shield/tests.rs`,
@@ -380,6 +394,11 @@ These are enforced by tests, so a change that breaks one fails the build.
   code of the Wi-Fi and VPN readers on the D-Bus thread (`sources/dbus/wifi.rs`, `vpn.rs`).
 - `the_tray_spawns_no_thread`: the quick panel's model files and `bt_app.rs` are on its
   `NO_THREAD_NOR_COMMAND` list, so they run no command and start no thread.
+- `the_radio_readers_only_read` and `the_radio_readers_have_no_panicking_path`: `kbd_backlight.rs`
+  writes nothing, makes no raw system call and has no panicking path; it is on
+  `NO_THREAD_NOR_COMMAND` too. The allowlist knows its one shape,
+  `brightnessctl --class=leds --device=<led> set <level>`, and the harness points
+  `kbd_backlight_dir` at an empty folder and keeps `brightnessctl` and `rfkill` off its `PATH`.
 - `the_quick_panels_timer_follows_the_view_from_the_open`: the timer is synced as the panel opens, so
   a `failed` shown at open clears at its 4 s.
 - `the_bluetooth_connection_goes_with_the_panel` and `the_vpn_tap_follows_the_panel`: the acting
@@ -407,6 +426,10 @@ Figures are those recorded when each part merged, in release, back to back with 
   +0.6 MB (`shield_pss_detail_open_and_closed`). The leak bounds for the details read anonymous
   memory (closed within 256 KB of rest, ten cycles within 128 KB of closed): the file-backed share
   moves with the tests run before.
+- **The keyboard backlight row:** +16 KiB in the stripped binary and nothing measurable at start
+  (`startup_pss_per_source`, back to back); shown, +8…+20 KB of anonymous memory while the panel is
+  open, none kept once closed (`quick_pss_with_the_radio_rows`). Closed, or with
+  `kbd_backlight = false`, it holds nothing: no fd, thread or timer.
 - **The acting Bluetooth connection:** +54…+116 KB while the detail is open
   (`bluetooth_acting_connection_cost`), the headset row +12…+20 KB (`bluetooth_headset_row_cost`).
 - **Wake-ups:** none at rest after the panel closes, for the loop and for the D-Bus thread

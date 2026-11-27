@@ -1058,3 +1058,19 @@ fn the_tool_placeholders_are_whole_arguments_where_each_tool_needs_them() {
         assert!(!e.contains("satty") && !e.contains("tesseract") && !e.contains("wf-recorder"), "no command in the message: {e}");
     }
 }
+
+#[test]
+fn kbd_backlight_keys_default_and_parse() {
+    let d = QuickConfig::default();
+    assert!(d.kbd_backlight, "on by default (still hidden without a device)");
+    assert_eq!(d.kbd_backlight_dir, PathBuf::from("/sys/class/leds"));
+    let c = BarConfig::from_text("[quick]\nkbd_backlight = false\nkbd_backlight_dir = \"/tmp/leds\"\n").unwrap();
+    assert!(!c.quick.kbd_backlight);
+    assert_eq!(c.quick.kbd_backlight_dir, PathBuf::from("/tmp/leds"));
+}
+
+#[test]
+fn a_relative_kbd_backlight_dir_is_refused() {
+    let err = BarConfig::from_text("[quick]\nkbd_backlight_dir = \"leds\"\n").unwrap_err();
+    assert!(err.contains("quick.kbd_backlight_dir must be an absolute path"), "{err}");
+}
