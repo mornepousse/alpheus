@@ -28,6 +28,7 @@
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
 //! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem), "gpu"
 //! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
+//! net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
@@ -341,6 +342,9 @@ impl Default for ActionsConfig {
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
+/// Longest interface name the kernel accepts (`IFNAMSIZ` 16, less the final NUL).
+pub const NET_INTERFACE_MAX: usize = 15;
+
 /// One figure of the resources module, in the order `[resources] show` lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -381,6 +385,8 @@ pub struct ResourcesConfig {
     pub show: Vec<ResourceItem>,
     /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia); empty = automatic.
     pub gpu_sensor: String,
+    /// The interface whose throughput `net` shows; empty = the IPv4 default route's.
+    pub net_interface: String,
 }
 
 impl Default for ResourcesConfig {
@@ -391,6 +397,7 @@ impl Default for ResourcesConfig {
             sensor: String::new(),
             show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
             gpu_sensor: String::new(),
+            net_interface: String::new(),
         }
     }
 }
@@ -1351,6 +1358,10 @@ impl BarConfig {
             if b.resources.show[..i].contains(item) {
                 return Err(format!("resources.show: duplicate {:?}", item.name()));
             }
+        }
+        let n = &b.resources.net_interface;
+        if n.len() > NET_INTERFACE_MAX || n.contains(['/', ':']) || n.chars().any(char::is_whitespace) {
+            return Err("resources.net_interface: not an interface name (at most 15 bytes, no '/', ':' or space)".into());
         }
         for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {

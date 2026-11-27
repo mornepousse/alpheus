@@ -57,6 +57,7 @@ In `bar.toml`, read at start (a change needs a restart of the bar).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[resources] show` | `["cpu", "memory", "temperature"]` | the items, in order: also `net`, `disk`, `gpu`; one block each in the popup |
+| `[resources] net_interface` | `""` | the interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's; absent, `net` shows no figure |
 | `[resources] interval` | `2` | seconds between two readings, 1 to 60; the graphs span 60 of them, so `last N min` where N is the interval |
 | `[actions] resources` | `["foot", "-e", "btop"]` | the command of `Monitor…` and of the right click, run as written (no shell); `[]` removes the row |
 

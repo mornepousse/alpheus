@@ -670,6 +670,41 @@ fn resources_pss_default_and_every_item() {
     );
 }
 
+/// Every `[resources]` key that changes what a pass reads, on top of `EVERY_ITEM`.
+const EVERY_KEY: &str = "net_interface = \"lo\"\n";
+
+/// The keys of `EVERY_KEY`: their one-time cost over `EVERY_ITEM` alone (two fresh daemons, same
+/// tick rate), then, in the daemon with every key, what ~60 more passes keep. Both bounds read
+/// `Pss_Anon` (smaps_rollup: heap, stacks, caches; no file pages, no shm pools): the file pages'
+/// PSS moved by ±250 KB between runs with other daemons up on the machine, in both directions,
+/// and a leak is anonymous memory. PSS is printed alongside.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_pss_every_key() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("res-keys");
+    let bar = |extra: &str| format!("modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n{EVERY_ITEM}{extra}");
+    let (item_pss, item_anon) = {
+        let (_sway, _hypr, d) = start("res-keys-a", 1, &bus, None, Some(&bar("")), PwDump::Silent);
+        std::thread::sleep(Duration::from_secs(3));
+        (d.pss_kb(), d.pss_anon_kb())
+    };
+    let (_sway, _hypr, d) = start("res-keys-b", 1, &bus, None, Some(&bar(EVERY_KEY)), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(3));
+    let (key_pss, key_anon) = (d.pss_kb(), d.pss_anon_kb());
+    std::thread::sleep(Duration::from_secs(60));
+    let later_anon = d.pss_anon_kb();
+    eprintln!(
+        "resources PSS (KB): {item_pss} with every item, {key_pss} with every key too; Pss_Anon {item_anon} with every item, {key_anon} with every key, {later_anon} after ~60 more passes"
+    );
+    assert!(key_anon <= item_anon + 128, "every key costs {} KB over every item (Pss_Anon)", key_anon.saturating_sub(item_anon));
+    assert!(
+        later_anon <= key_anon + 64,
+        "~60 passes with every key grew the daemon's anonymous memory by {} KB",
+        later_anon.saturating_sub(key_anon)
+    );
+}
+
 /// All six items tick at the configured rate: none adds a timer of its own.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]

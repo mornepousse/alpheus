@@ -125,8 +125,9 @@ See [the calendar](features/calendar.md).
 | `interval` | integer (seconds) | `2` | 1 to 60 | Seconds between two readings of `/proc` (the popup's graph spans 60 × `interval`). |
 | `graph` | integer | `20` | 0 to 60 | Ignored; accepted so older files stay valid. |
 | `sensor` | string | `""` | | An hwmon name or a thermal zone type for the temperature; `""`: automatic. |
-| `show` | list | `["cpu", "memory", "temperature"]` | not empty, no repeat; items `cpu`, `memory`, `temperature`, `net`, `disk`, `gpu` | The figures shown, in this order. `net` is the IPv4 default route's interface (receive and send rates), `disk` is `$HOME`'s filesystem (percent used, rounded up like `df`; `statvfs` on the event loop at each pass: a hung network `$HOME` would block the bar), `gpu` is the GPU's hwmon temperature. Nothing is read for an item left out. |
+| `show` | list | `["cpu", "memory", "temperature"]` | not empty, no repeat; items `cpu`, `memory`, `temperature`, `net`, `disk`, `gpu` | The figures shown, in this order. `net` is the IPv4 default route's interface, or `net_interface` (receive and send rates), `disk` is `$HOME`'s filesystem (percent used, rounded up like `df`; `statvfs` on the event loop at each pass: a hung network `$HOME` would block the bar), `gpu` is the GPU's hwmon temperature. Nothing is read for an item left out. |
 | `gpu_sensor` | string | `""` | | A GPU hwmon name (`amdgpu`, `nouveau`, `i915`, `xe`, `nvidia`); `""`: automatic. Reading a discrete GPU's hwmon can wake it on a hybrid laptop: name the integrated GPU's driver. |
+| `net_interface` | string | `""` | at most 15 bytes, no `/`, `:` or space | The interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's. Named, `/proc/net/route` is never read; absent from `/proc/net/dev`, `net` shows no figure. |
 
 See [the resources popup](features/resources.md).
 
@@ -367,6 +368,7 @@ graph = 20           # ignored; accepted so older files stay valid
 sensor = ""          # an hwmon name or a thermal zone type; "": automatic
 show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem, statvfs on the event loop), "gpu"
 gpu_sensor = ""      # a GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic. A discrete GPU's hwmon can wake it on a hybrid laptop: name the iGPU's driver
+net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
 
 [battery]
 peripherals = "always"   # "always" | "low" | "never": peripherals with a real percentage

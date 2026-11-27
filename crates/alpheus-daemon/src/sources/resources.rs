@@ -287,6 +287,8 @@ pub struct Reader {
     cpu_sensor: Option<Sensor>,
     gpu_sensor: Option<Sensor>,
     previous: Option<CpuTimes>,
+    /// `[resources] net_interface`; None (empty in the file): the default route's interface.
+    net_interface: Option<String>,
     /// The interface of the last successful net reading, its counters and when.
     net: Option<(String, NetCounters, Instant)>,
 }
@@ -370,7 +372,8 @@ impl Reader {
         let sensor = |item, kind, hint: &str| show.contains(&item).then(|| Sensor::new(kind, hint, &roots.root));
         let cpu_sensor = sensor(ResourceItem::Temperature, SensorKind::Cpu, &config.sensor);
         let gpu_sensor = sensor(ResourceItem::Gpu, SensorKind::Gpu, &config.gpu_sensor);
-        Reader { roots, show, cpu_sensor, gpu_sensor, previous: None, net: None }
+        let net_interface = Some(config.net_interface.clone()).filter(|n| !n.is_empty());
+        Reader { roots, show, cpu_sensor, gpu_sensor, previous: None, net_interface, net: None }
     }
 
     fn shows(&self, item: ResourceItem) -> bool {
@@ -382,11 +385,15 @@ impl Reader {
         self.cpu_sensor.as_ref()?.sensors.first().map(|(p, _)| p.as_path())
     }
 
-    /// Net throughput of the default route's interface against the last reading of that same
-    /// interface; the new counters replace the old ones on every successful read.
+    /// Net throughput of the named interface, or else of the default route's, against the last
+    /// reading of that same interface; the new counters replace the old ones on every successful
+    /// read. A named interface never reads /proc/net/route.
     fn net(&mut self, now: Instant) -> Option<NetRate> {
-        let route = std::fs::read_to_string(self.roots.root.join("proc/net/route")).ok().and_then(|t| default_route(&t));
-        let Some(iface) = route else {
+        let iface = match &self.net_interface {
+            Some(name) => Some(name.clone()),
+            None => std::fs::read_to_string(self.roots.root.join("proc/net/route")).ok().and_then(|t| default_route(&t)),
+        };
+        let Some(iface) = iface else {
             self.net = None;
             return None;
         };
@@ -874,6 +881,48 @@ mod tests {
         assert!(r.sample_at(t0 + Duration::from_secs(6)).net.is_some());
         std::fs::remove_file(t.0.join("proc/net/route")).unwrap();
         assert_eq!(r.sample_at(t0 + Duration::from_secs(8)).net, None, "no route");
+    }
+
+    /// Two fictional interfaces in /proc/net/dev and a /proc/net/route that cannot be read (a
+    /// directory): a figure can only come from the named interface.
+    fn named_tree(name: &str) -> Tree {
+        let t = workstation(name);
+        std::fs::create_dir_all(t.0.join("proc/net/route")).unwrap();
+        t
+    }
+
+    const DEV_HEAD: &str = "Inter-|   Receive\n face |bytes\n";
+
+    fn named_dev(rx0: u64, tx0: u64, rx1: u64, tx1: u64) -> String {
+        format!("{DEV_HEAD}  fict0: {rx0} 1 0 0 0 0 0 0 {tx0} 1 0 0 0 0 0 0\n  fict1: {rx1} 1 0 0 0 0 0 0 {tx1} 1 0 0 0 0 0 0\n")
+    }
+
+    fn named_reader(root: &Path, iface: &str) -> Reader {
+        let config = ResourcesConfig { show: vec![ResourceItem::Net], net_interface: iface.to_string(), ..ResourcesConfig::default() };
+        Reader::new(roots(root, None, refuse), &config)
+    }
+
+    #[test]
+    fn net_interface_named_skips_the_route_read() {
+        let t = named_tree("named");
+        assert!(std::fs::read_to_string(t.0.join("proc/net/route")).is_err());
+        put(&t.0, "proc/net/dev", &named_dev(5_000, 600, 1_000, 200));
+        let mut r = named_reader(&t.0, "fict1");
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).net, None, "the first pass only records");
+        put(&t.0, "proc/net/dev", &named_dev(9_000, 700, 4_000, 1_200));
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(1)).net, Some(NetRate { down: 3_000, up: 1_000 }));
+    }
+
+    #[test]
+    fn net_interface_absent_gives_no_figure() {
+        let t = named_tree("absent");
+        put(&t.0, "proc/net/dev", &named_dev(5_000, 600, 1_000, 200));
+        let mut r = named_reader(&t.0, "fict9");
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).net, None);
+        put(&t.0, "proc/net/dev", &named_dev(9_000, 700, 4_000, 1_200));
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(1)).net, None);
     }
 
     fn gpu_tree(name: &str) -> Tree {

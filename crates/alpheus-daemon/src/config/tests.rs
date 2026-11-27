@@ -92,6 +92,25 @@ fn actions_and_resources_defaults_and_settings() {
 }
 
 #[test]
+fn net_interface_defaults_empty_and_parses() {
+    assert_eq!(BarConfig::default().resources.net_interface, "");
+    let c = BarConfig::from_text("[resources]\nnet_interface = \"wlan0\"\n").unwrap();
+    assert_eq!(c.resources.net_interface, "wlan0");
+    let longest = "a".repeat(NET_INTERFACE_MAX);
+    let c = BarConfig::from_text(&format!("[resources]\nnet_interface = \"{longest}\"\n")).unwrap();
+    assert_eq!(c.resources.net_interface, longest, "15 bytes accepted");
+}
+
+#[test]
+fn net_interface_rejects_a_bad_name_without_naming_it() {
+    for bad in ["a".repeat(NET_INTERFACE_MAX + 1), "a/b".into(), "a:b".into(), "a b".into()] {
+        let e = BarConfig::from_text(&format!("[resources]\nnet_interface = \"{bad}\"\n")).unwrap_err();
+        assert!(e.contains("resources.net_interface"), "{e}");
+        assert!(!e.contains(&bad), "the value stays out of the message: {e}");
+    }
+}
+
+#[test]
 fn resources_show_defaults_and_validation() {
     use crate::config::ResourceItem::*;
     let d = BarConfig::default();
