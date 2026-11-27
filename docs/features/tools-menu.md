@@ -17,7 +17,7 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
   disturb, Keep awake and Night light, the control center's tabs, Notes, Timer, Clipboard, Emoji,
-  Wallpaper (only with `[wallpaper]` set and its folder there: its level lists the folder's images by
+  Wallpaper (only with `[wallpaper]` set: its level lists the folder's images by
   name, see [wallpaper.md](wallpaper.md)), the captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
   picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
   Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a

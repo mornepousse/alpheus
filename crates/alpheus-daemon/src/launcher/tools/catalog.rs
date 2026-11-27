@@ -208,7 +208,7 @@ pub struct Context {
     pub ocr: bool,
     /// `[captures] record` is set and its program is on the `$PATH`.
     pub record: bool,
-    /// `[wallpaper]` is set and its folder is a directory.
+    /// `[wallpaper]` is set (its folder resolved; whether it is there is the reader thread's to find).
     pub wallpaper: bool,
 }
 

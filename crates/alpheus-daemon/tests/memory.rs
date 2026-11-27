@@ -4699,7 +4699,7 @@ fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
     let run = tools_mem_script(&sway, "fake-run", "exit 0");
     wait_until_executable(&run);
     let (bar, mut launcher_toml) = tools_mem_config(&on, &run);
-    // `[wallpaper]` set (its entry shown, its folder checked at each open, never read): only for a
+    // `[wallpaper]` set (its entry shown, its folder never stat'ed nor read): only for a
     // daemon that knows the table (a base build would refuse the whole file).
     if binary_knows(&daemon_binary(), "wallpaper.dir must be") {
         let walls = sway.runtime.join("walls");
@@ -4968,6 +4968,9 @@ fn tools_wallpaper_2000_files() {
         cycled.1,
         cycled.1 as i64 - again.1 as i64
     );
+    // The open figure is read after a fixed wait: a listing still on its way would read low and
+    // pass every bound below, so the names must show in it (+0.8 to +0.95 MB measured).
+    assert!(open.1 >= closed.1 + 300, "open {} KB anon vs {} KB closed: the names were not drawn yet when read", open.1, closed.1);
     // The bounds of `tools_choices_2000_lines` (the same level, the same delivery).
     assert!(again.1 <= closed.1 + 384, "closed again {} KB anon vs {} KB before: more than 384 KB kept", again.1, closed.1);
     assert!(cycled.1 <= again.1 + 128, "5 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);

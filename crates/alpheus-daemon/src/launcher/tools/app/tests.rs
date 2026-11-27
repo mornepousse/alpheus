@@ -593,8 +593,9 @@ fn the_wallpaper_builtin_spawns_nothing_through_the_tools_glue() {
     assert_eq!(builtin_argv(builtin_by_id("wallpaper.pick"), &c), Ok(None));
 }
 
-/// The folder listed: `[wallpaper]` set and its folder a directory; off, a missing folder, a file in
-/// its place or a relative one list nothing.
+/// The folder listed: `[wallpaper]` set and its folder resolved, with nothing read (a missing
+/// folder, or a file in its place, is the reader thread's to find); off or a relative one lists
+/// nothing.
 #[test]
 fn the_wallpaper_folder_is_a_set_directory() {
     let bin = Bin::new("wallpaper-folder", &["a.png"]);
@@ -603,7 +604,7 @@ fn the_wallpaper_folder_is_a_set_directory() {
     assert_eq!(wallpaper_folder(&set(&dir), None), Some(bin.0.clone()));
     assert_eq!(wallpaper_folder(&set("~/"), Some(&bin.0)), Some(bin.0.join("")));
     assert_eq!(wallpaper_folder(&WallpaperConfig { dir: dir.clone(), ..WallpaperConfig::default() }, None), None, "no setter: off");
-    assert_eq!(wallpaper_folder(&set(&format!("{dir}/a.png")), None), None, "a file is no folder");
-    assert_eq!(wallpaper_folder(&set(&format!("{dir}/gone")), None), None);
+    assert_eq!(wallpaper_folder(&set(&format!("{dir}/a.png")), None), Some(bin.0.join("a.png")), "not checked on the loop");
+    assert_eq!(wallpaper_folder(&set(&format!("{dir}/gone")), None), Some(bin.0.join("gone")), "not checked on the loop");
     assert_eq!(wallpaper_folder(&set("~/walls"), None), None, "no home");
 }

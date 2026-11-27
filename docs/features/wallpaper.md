@@ -48,12 +48,14 @@ used the tool, never the file's name.
   `state_file.rs` (`$XDG_STATE_HOME/alpheus/wallpaper`, owner-only, atomic) and starts `then` in its
   systemd scope (`run::launch`).
 - The Tools menu (`launcher/tools/`): `BuiltinAction::Wallpaper`, shown when `Context.wallpaper`
-  (`[wallpaper]` set and its folder a directory: one `metadata` per open, none while off). Its
+  (`[wallpaper]` set: no syscall on the event loop, a missing folder is the reader's to find). Its
   choices are `Choices::Command`: never in the flat search, never recorded. Enter on it hands the
   reader a `Job::Folder` (`ToolsState::with_folder` only keeps the folder), listed by `wallpaper::list`
   on the `alpheus-tools` thread and delivered as a choices read. The chosen name is recorded as
   `tool:builtin:wallpaper.pick` alone and handed to `wallpaper_apply` with the open's `[wallpaper]`
-  once the box closed. A folder that cannot be read logs `tools: folder read failed`.
+  once the box closed. A folder that cannot be read (missing, or a file in its place) logs
+  `tools: folder read failed` and its level shows empty; one over 2,000 images logs
+  `tools: folder cut, 2000 kept`.
 - `wallpaper/app.rs`: the glue on `App`. `wallpaper_apply` runs on the event loop's thread, so the
   setter's PDEATHSIG is the daemon's own: the setter dies with the daemon. Each setter's pidfd is a
   calloop `Generic` source, silent until it ends. Logs are fixed words: `wallpaper: applied`,
@@ -69,7 +71,9 @@ used the tool, never the file's name.
   `wallpaper/setter.rs` (the owner's go, 2026-11-27).
 - `the_wallpaper_logs_fixed_words_only` (guardrail): every `log(` takes one string literal.
 - `the_wallpaper_entry_is_absent_without_a_dir`, `the_folder_is_read_only_when_its_level_opens`,
-  `a_folder_job_lists_names_like_a_choices_cmd`, `a_wallpaper_name_is_never_in_the_flat_search`,
+  `a_folder_job_lists_names_like_a_choices_cmd`, `a_folder_cut_at_the_cap_says_so_in_a_fixed_note`,
+  `the_wallpaper_folder_is_a_set_directory` (resolved, never stat'ed on the loop),
+  `a_wallpaper_name_is_never_in_the_flat_search`,
   `a_wallpaper_choice_is_recorded_without_its_name`,
   `the_wallpaper_builtin_spawns_nothing_through_the_tools_glue`.
 - Headless, with a fake setter on the private `PATH`: `tools_wallpaper_picks_and_starts_the_setter`
@@ -87,7 +91,7 @@ used the tool, never the file's name.
   [../measurements.md](../measurements.md)); nothing is read or started.
 - A setter running: its handle, one pidfd and one calloop source, no wake-up until it ends. The
   setter itself is the user's program.
-- The Tools menu with `[wallpaper]` set: one `metadata` per open, the anonymous memory within noise
+- The Tools menu with `[wallpaper]` set: no syscall per open, the anonymous memory within noise
   of main. The Wallpaper level on 2,000 images: about +0.8 to +0.95 MB anonymous while the names
   show, back within +20 to +140 KB once closed, the reader thread gone (figures in
   [../measurements.md](../measurements.md)).

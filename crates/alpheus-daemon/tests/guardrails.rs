@@ -6769,11 +6769,16 @@ fn the_wallpaper_ends_only_the_setter_it_started() {
     let start = function_body(&setter, "pub fn start(");
     let spawn = start.find("spawn_watched(").expect("the start spawns");
     let mut replacements = 0;
-    for what in ["self.child = ", "self.pending = ", "self.child.take()", "self.pending.take()", ".take()", "mem::take", "mem::replace"] {
+    for what in ["self.child = ", "self.pending = ", "self.child.take()", "self.pending.take()", "mem::take", "mem::replace"] {
         for (at, _) in start.match_indices(what) {
             replacements += 1;
             assert!(spawn < at, "{what}: the old handle is dropped only after the new setter started");
         }
+    }
+    // Any other `.take()` may drop a handle too: never before the spawn, but it does not count as
+    // the replacement (an unrelated `Option::take` must not stand in for one).
+    for (at, _) in start.match_indices(".take()") {
+        assert!(spawn < at, ".take(): the old handle is dropped only after the new setter started");
     }
     assert!(replacements > 0, "the start replaces a handle");
 }

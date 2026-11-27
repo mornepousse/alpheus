@@ -335,3 +335,19 @@ fn a_folder_job_lists_names_like_a_choices_cmd() {
     assert_eq!(last, JobEvent::Choices { entry: 3, token: 10, lines: Vec::new(), failed: true });
     assert_eq!(notes, ["tools: folder read failed"]);
 }
+
+/// A folder of more images than the level holds is cut at `MAX_FILES` names, and one fixed note
+/// says so (the count kept, never the folder or a name), as a cut `choices_cmd` does.
+#[test]
+fn a_folder_cut_at_the_cap_says_so_in_a_fixed_note() {
+    let d = TempDir::new("tools-folder-cut");
+    for i in 0..=crate::wallpaper::MAX_FILES {
+        std::fs::write(d.join(format!("secret-{i:04}.png")), b"").unwrap();
+    }
+    let mut notes = Vec::new();
+    let job = Job::Folder { entry: 1, dir: d.to_path_buf(), token: 2 };
+    let last = run_job(job, &FakeExecutor::new(), &AtomicBool::new(false), &mut |_| {}, &mut |n| notes.push(n.to_string()));
+    let JobEvent::Choices { lines, failed, .. } = last else { panic!("a choices read: {last:?}") };
+    assert_eq!((lines.len(), failed), (crate::wallpaper::MAX_FILES, false));
+    assert_eq!(notes, ["tools: folder cut, 2000 kept"]);
+}

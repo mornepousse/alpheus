@@ -147,7 +147,13 @@ pub fn run_job(
         // A folder's names are delivered as a choices read's lines: the level, its token check and
         // its drawing are the same. Never the folder or a name in a note.
         Job::Folder { entry, dir, token } => match crate::wallpaper::list(&dir, crate::wallpaper::MAX_FILES) {
-            Ok(listing) => JobEvent::Choices { entry, token, lines: listing.names, failed: false },
+            Ok(listing) => {
+                if listing.cut {
+                    let n = listing.names.len();
+                    note(&format!("tools: folder cut, {n} kept"));
+                }
+                JobEvent::Choices { entry, token, lines: listing.names, failed: false }
+            }
             Err(_) => {
                 note("tools: folder read failed");
                 JobEvent::Choices { entry, token, lines: Vec::new(), failed: true }

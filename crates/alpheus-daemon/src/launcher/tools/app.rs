@@ -92,18 +92,20 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         annotate: false,
         ocr: false,
         record: false,
-        // The folder is checked by `tools_catalog` (one `metadata`), which sets it.
+        // Set by `tools_catalog` from `[wallpaper]` alone (no syscall), which sets it.
         wallpaper: false,
     }
 }
 
-/// The folder the Wallpaper built-in lists: `[wallpaper]` set and its folder a directory (one
-/// `metadata`). None, with nothing read, while `[wallpaper]` is off.
+/// The folder the Wallpaper built-in lists: `[wallpaper]` set and its folder resolved. Never a
+/// syscall on the event loop (a network folder that hangs would freeze the bar): a missing or
+/// unreadable folder is found by the `Job::Folder` on the reader thread, whose fixed note says so
+/// and whose level shows empty. None, with nothing read, while `[wallpaper]` is off.
 pub fn wallpaper_folder(w: &WallpaperConfig, home: Option<&Path>) -> Option<PathBuf> {
     if !w.enabled() {
         return None;
     }
-    resolve_dir(&w.dir, home).filter(|dir| dir.is_dir())
+    resolve_dir(&w.dir, home)
 }
 
 /// Whether the program of `argv` (its first element) is on `path_dirs`; false for an empty argv.
