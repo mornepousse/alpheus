@@ -348,3 +348,22 @@ Drawing the level in the panel's box costs nothing measurable: its PSS open is t
 as at Task 2 (where the plain list already had the panel's box), and its anonymous memory open,
 closed and cycled stays within Task 2's spread. One run of the branch's `tools_pss_open_and_closed`
 read +180 KB closed again; the two others +44 and +48, inside the bases' spread.
+
+Task 4, Sway's dialect (on pc-simu, release, base Task 3 b328e3e8 and the branch d73ca9f3
+alternated, 3 rounds, each run holding the memory lock exclusively through the turnstile,
+2026-11-27). The memory test now runs on both dialects: `binds_pss_open_and_closed` (Mango, as
+before) and `binds_pss_open_and_closed_on_sway` (the harness's sway is the compositor read, the
+same 100 bindings in 5 groups written as `bindsym $mod+…` with a `set` variable). The base has no
+Sway parser, so its Mango run is the comparison:
+
+| Test | Base Task 3 (Mango) | Branch, Sway | Branch, Mango (1 run) |
+|---|---|---|---|
+| PSS open over closed | +1,981…+1,989 KB | +1,957…+1,997 KB | +1,977 KB |
+| anonymous open over closed / closed again | +272…+280 / −100 KB | +248…+288 / −92 KB | +268 / −104 KB |
+| anonymous after 10 more / after 20 more | +52…+68 / +68…+100 KB | +44…+68 / +64…+80 KB | +56 / +68 KB |
+| threads | 3 → 3 | 3 → 3 | 3 → 3 |
+
+Reading Sway's config costs what reading Mango's does: the same 100 bindings, the same bounds,
+freed with the level. Sway's cold PSS reads ~50 KB above Mango's (9,201 against 9,149–9,169 KB):
+the daemon's own Sway backend in place of the FakeMango client, not the parser. Mango's figures on
+the branch stay within the base's.
