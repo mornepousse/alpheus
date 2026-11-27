@@ -672,7 +672,7 @@ decodes a wallpaper; it starts your setter with the chosen file.
 | `then` | command | `[]` | non-blank program that is not `{file}`; `{file}` at most once, as a whole element | Run after a successful set (matugen, so the bar's colours follow); `[]`: nothing. |
 | `remember` | bool | `true` | | Keep the last choice's name in `$XDG_STATE_HOME/alpheus/wallpaper` and apply it again when the daemon starts. |
 
-File names, the folder and the commands are never logged.
+A link in the folder may point to a file elsewhere: it is listed like the others, and the setter reads its target. A name holding a control or invisible formatting character (a right-to-left override, for example) is not listed. File names, the folder and the commands are never logged.
 
 ```toml
 # --- examples, not defaults: pick one setter ---

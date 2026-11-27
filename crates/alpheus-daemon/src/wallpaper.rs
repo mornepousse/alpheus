@@ -83,13 +83,15 @@ fn check_command(key: &str, argv: &[String], required: bool) -> Result<(), Strin
 }
 
 /// `dir` with a leading `~/` replaced by `home`; None unless the result is absolute (no home, a
-/// relative home, `~user`, a relative `dir`): the folder is never relative to the daemon's.
+/// relative home, `~user`, a relative `dir`): the folder is never relative to the daemon's. None
+/// too for a home that is not UTF-8: `fill` puts the path in an argv as text, and the path must
+/// reach the setter unchanged.
 pub fn resolve_dir(dir: &str, home: Option<&Path>) -> Option<PathBuf> {
     let path = match dir.strip_prefix("~/") {
         Some(rest) => home?.join(rest),
         None => PathBuf::from(dir),
     };
-    path.is_absolute().then_some(path)
+    (path.is_absolute() && path.to_str().is_some()).then_some(path)
 }
 
 /// Whether `name` ends in `.<extension>` of EXTENSIONS (any case), with something before the dot.
@@ -114,16 +116,18 @@ pub struct Listing {
 }
 
 /// One `read_dir` of `dir`: the image names (`is_image_name`) of regular files and of links to
-/// them, sorted, at most `cap`. A name that is not UTF-8 or holds a control character (it would not
-/// show on one line) is skipped. Reading stops at the `cap + 1`-th image: it only says the list was
-/// cut (which `cap` names are kept is then the folder's order).
+/// them, sorted, at most `cap`. A name that is not UTF-8, holds a control character or a line
+/// separator (it would not show on one line) or an invisible formatting character (a bidirectional
+/// override draws `evil\u{202E}gnp.exe.png` as another name) is skipped. Reading stops at the
+/// `cap + 1`-th image: it only says the list was cut (which `cap` names are kept is then the
+/// folder's order).
 pub fn list(dir: &Path, cap: usize) -> std::io::Result<Listing> {
     let mut names = Vec::new();
     let mut cut = false;
     for entry in std::fs::read_dir(dir)? {
         let Ok(entry) = entry else { continue };
         let Ok(name) = entry.file_name().into_string() else { continue };
-        if !is_plain_name(&name) || name.contains(char::is_control) || !is_image_name(&name) {
+        if !is_plain_name(&name) || !is_image_name(&name) || name.contains(drawn_otherwise) {
             continue;
         }
         let file = match entry.file_type() {
@@ -144,8 +148,15 @@ pub fn list(dir: &Path, cap: usize) -> std::io::Result<Listing> {
     Ok(Listing { names, cut })
 }
 
+/// Whether `c` would not draw as itself on one line: a control character, a line or paragraph
+/// separator, or one of the invisible formatting characters (`crate::text::invisible`).
+fn drawn_otherwise(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') || crate::text::invisible(c)
+}
+
 /// `argv` with the element exactly `{file}` replaced by `file`, whole: a name with spaces or a
-/// leading dash stays one argument (and `file` is absolute, so it never starts with `-`).
+/// leading dash stays one argument (and `file` is absolute, so it never starts with `-`). `file` is
+/// a `resolve_dir` folder joined to a listed name, both UTF-8, so the conversion never alters it.
 pub fn fill(argv: &[String], file: &Path) -> Vec<String> {
     argv.iter().map(|a| if a == FILE_PLACEHOLDER { file.to_string_lossy().into_owned() } else { a.clone() }).collect()
 }

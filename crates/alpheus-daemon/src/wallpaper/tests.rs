@@ -88,6 +88,10 @@ fn resolve_dir_expands_home_and_refuses_relative() {
     assert_eq!(resolve_dir("/srv/walls", None), Some(PathBuf::from("/srv/walls")));
     assert_eq!(resolve_dir("~/Walls", None), None, "no home: never a relative folder");
     assert_eq!(resolve_dir("~/Walls", Some(Path::new("relative-home"))), None);
+    // A home that is not UTF-8: the path would change on its way into the setter's argv.
+    use std::os::unix::ffi::OsStrExt;
+    let odd = Path::new(std::ffi::OsStr::from_bytes(b"/home/some\xffone"));
+    assert_eq!(resolve_dir("~/Walls", Some(odd)), None, "a folder that is not UTF-8 is refused");
     for dir in ["", "walls", "~", "~walls", "./walls"] {
         assert_eq!(resolve_dir(dir, Some(home)), None, "{dir:?}");
     }
@@ -126,6 +130,31 @@ fn the_folder_listing_keeps_images_sorted_and_bounded() {
     assert_eq!(l.names.len(), 2);
 
     assert!(list(&d.join("absent"), 2).is_err());
+}
+
+/// A name that would draw other than it reads (a right-to-left override, a mark, a line separator)
+/// is not listed, so the level never shows a spoofed name.
+#[test]
+fn a_name_with_a_formatting_character_is_not_listed() {
+    let d = TempDir::new("wallpaper-listing-format");
+    for name in ["plain.png", "evil\u{202E}gnp.exe.png", "mark\u{200F}.png", "iso\u{2066}late.png", "sep\u{2028}x.png", "bom\u{FEFF}.png"] {
+        std::fs::write(d.join(name), b"x").unwrap();
+    }
+    assert_eq!(list(&d, 10).unwrap().names, ["plain.png"]);
+}
+
+/// The listing is sorted whatever order the folder yields: names created scrambled, enough of them
+/// that a folder already in order by chance is unlikely.
+#[test]
+fn the_listing_is_sorted_whatever_the_folders_order() {
+    let d = TempDir::new("wallpaper-listing-order");
+    let created = ["k.png", "c.png", "q.png", "a.png", "m.png", "x.png", "f.png", "b.png", "t.png", "h.png", "z.png", "d.png"];
+    for name in created {
+        std::fs::write(d.join(name), b"x").unwrap();
+    }
+    let mut sorted = created.map(String::from).to_vec();
+    sorted.sort();
+    assert_eq!(list(&d, MAX_FILES).unwrap().names, sorted);
 }
 
 #[test]
