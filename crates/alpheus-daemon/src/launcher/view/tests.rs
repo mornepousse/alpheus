@@ -2122,3 +2122,200 @@ fn a_click_on_a_chip_maps_to_it() {
     let past = chips.last().map(|c| c.col + c.width + 2).unwrap();
     assert_eq!(hit(&l, &b, ring(usize::from(past)), ring(y + 1)), Some(Click::Result(0)));
 }
+
+// --- the Keybindings level (spec 2026-11-27-session-binds-design.md, "Cheatsheet") ---
+
+use crate::launcher::tools::binds::{Bind, Binds};
+
+/// Invented bindings in three groups: General, Windows, Desktops.
+fn three_groups() -> Binds {
+    let bind = |combo: &str, description: &str, command: &str, group: usize, file: usize| Bind {
+        combo: combo.into(),
+        description: description.into(),
+        command: command.into(),
+        group,
+        file,
+    };
+    Binds {
+        groups: vec!["General".into(), "Windows".into(), "Desktops".into()],
+        binds: vec![
+            bind("Super+Return", "Open a terminal", "spawn,foo-term", 0, 0),
+            bind("Super+B", "Run browser", "spawn,browser --new-window", 0, 0),
+            bind("Super+Q", "Close window", "killclient", 1, 0),
+            bind("Super+F", "Toggle fullscreen", "togglefullscreen", 1, 0),
+            bind("Super+Shift+Left", "Move window left", "exchange_client,left", 1, 1),
+            bind("Super+1", "Go to desktop 1", "view,1", 2, 1),
+            bind("Super+2", "Go to desktop 2", "view,2", 2, 1),
+            bind("Super+Shift+1", "Send to desktop 1", "tag,1", 2, 1),
+        ],
+        files: vec!["config.conf".into(), "keys.conf".into()],
+        not_understood: 0,
+        found: true,
+        cut: Default::default(),
+    }
+}
+
+/// The panel's box at the Keybindings level on `binds`, opened from its built-in.
+fn binds_panel(binds: Binds) -> (Launcher, BoxLayout) {
+    binds_panel_on(binds, 232)
+}
+
+/// `binds_panel` on an output `columns` cells wide (49 rows).
+fn binds_panel_on(binds: Binds, columns: u16) -> (Launcher, BoxLayout) {
+    use crate::launcher::tools::catalog::{BUILTINS, Catalog, EntryKind};
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = Catalog::build(&config.tools, &every_builtin(), &mut |_| {});
+    let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
+    let (c, r) = panel_room(columns, 49);
+    l.open_panel(c, r);
+    let b = tools_layout(columns, 49, l.panel_size().expect("the panel is opened"));
+    l.set_list_rows(model_rows(&l, &b));
+    let t = l.tools().unwrap();
+    let e = t.catalog.entries.iter().position(|e| matches!(e.kind, EntryKind::Builtin(b) if BUILTINS[b].id == "tools.binds")).unwrap();
+    l.selected = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(e))).unwrap();
+    assert_eq!(l.key(Key::Enter), crate::launcher::model::Outcome::OpenBinds);
+    l.open_binds(binds);
+    fit(&mut l, &b);
+    (l, b)
+}
+
+#[test]
+fn the_tab_strip_draws_the_same_after_taking_names() {
+    let (mut l, b) = panel_box("");
+    insta::assert_snapshot!("panel_home", snapshot_with_shapes(&draw_in(&l, &b)));
+    l.key(Key::Tab);
+    insta::assert_snapshot!("panel_category", snapshot_with_shapes(&draw_in(&l, &b)));
+}
+
+#[test]
+fn binds_all_snapshot() {
+    let (l, b) = binds_panel(three_groups());
+    assert_eq!((b.columns, b.rows), (106, 30), "the panel's box, kept below its root");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows);
+    assert!(text[2].contains(" All ") && text[2].contains(" General ") && text[2].contains(" Desktops "), "the tabs: {text:#?}");
+    assert!(text[4].contains("GENERAL"), "the first group's label first: {text:#?}");
+    assert!(text.iter().any(|t| t.contains("Super+Return") && t.contains("Open a terminal")), "{text:#?}");
+    assert!(text.iter().any(|t| t.contains("spawn,foo-term")), "the command, under it: {text:#?}");
+    let card = card_text(&rows);
+    assert!(card.iter().any(|t| t == "Super+Return"), "the combo: {card:#?}");
+    assert!(card.iter().any(|t| t == "General"), "the group: {card:#?}");
+    assert!(card.iter().any(|t| t == "Command"), "{card:#?}");
+    assert!(card.iter().any(|t| t == "From config.conf"), "the file, by name only: {card:#?}");
+    let footer = &text[text.len() - 1];
+    assert!(footer.contains("Tab  Group") && footer.contains("type to search") && footer.contains("Esc  Back"), "{footer}");
+    insta::assert_snapshot!("binds_all", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn binds_group_tab_snapshot() {
+    let (mut l, b) = binds_panel(three_groups());
+    l.key(Key::Tab);
+    l.key(Key::Tab);
+    let rows = draw_in(&l, &b);
+    let active: Vec<&Shape> = rows.shapes.iter().filter(|s| s.kind == ShapeKind::Chip(Tint::AccentContainer)).collect();
+    assert_eq!(active.len(), 1, "one active tab: {}", snapshot_with_shapes(&rows));
+    let list = list_text(&rows);
+    assert!(!list.iter().any(|t| t.contains("WINDOWS")), "no label on a group's tab: {list:#?}");
+    assert!(list.iter().any(|t| t.contains("Close window")) && !list.iter().any(|t| t.contains("Open a terminal")), "{list:#?}");
+    insta::assert_snapshot!("binds_group_tab", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn binds_search_snapshot() {
+    let (mut l, b) = binds_panel(three_groups());
+    typed(&mut l, "desk");
+    let rows = draw_in(&l, &b);
+    let list = list_text(&rows);
+    assert!(list.iter().any(|t| t.contains("DESKTOPS")), "the results under their group: {list:#?}");
+    assert!(list.iter().any(|t| t.contains("Go to desktop 1")), "{list:#?}");
+    assert!(!list.iter().any(|t| t.contains("Close window")), "{list:#?}");
+    insta::assert_snapshot!("binds_search", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn binds_not_understood_and_empty_lines() {
+    let mut binds = three_groups();
+    binds.not_understood = 3;
+    let (l, b) = binds_panel(binds);
+    let rows = draw_in(&l, &b);
+    let y = rows.rows.iter().position(|r| r.text().contains("3 lines not understood")).expect("the note under the list");
+    let at = rows.rows[y].text().find("3 lines").unwrap();
+    let col = rows.rows[y].text()[..at].chars().count();
+    assert_eq!(rows.rows[y].styles().chars().nth(col), Some('m'), "dim");
+    assert!(y + 3 >= rows.rows.len() - 1, "at the list's foot: row {y}");
+
+    let mut one = three_groups();
+    one.not_understood = 1;
+    let (l, b) = binds_panel(one);
+    assert!(tool_text(&draw_in(&l, &b)).iter().any(|t| t.contains("1 line not understood")));
+    let (l, b) = binds_panel(three_groups());
+    assert!(!tool_text(&draw_in(&l, &b)).iter().any(|t| t.contains("not understood")), "nothing skipped: no note");
+
+    let (l, b) = binds_panel(Binds::default());
+    let text = tool_text(&draw_in(&l, &b));
+    assert!(text.iter().any(|t| t.contains("No keybindings found")), "{text:#?}");
+    let (mut l, b) = binds_panel(three_groups());
+    typed(&mut l, "zzzz");
+    let text = tool_text(&draw_in(&l, &b));
+    assert!(text.iter().any(|t| t.contains("no match")), "{text:#?}");
+    assert!(!text.iter().any(|t| t.contains("No keybindings found")), "{text:#?}");
+}
+
+#[test]
+fn the_binds_detail_card_shows_the_whole_command() {
+    let mut binds = three_groups();
+    let words: Vec<String> = (0..25).map(|i| format!("arg-{i:03}")).collect();
+    let command = format!("spawn,foo-term {}", words.join(" "));
+    assert!(command.len() >= 200, "{}", command.len());
+    binds.binds[0].command = command;
+    let (l, b) = binds_panel(binds);
+    let rows = draw_in(&l, &b);
+    let card = card_text(&rows).join(" ");
+    for w in &words {
+        assert!(card.contains(w.as_str()), "{w} in the card: {card}");
+    }
+    assert!(!card.contains('…'), "never cut: {card}");
+}
+
+#[test]
+fn a_click_on_a_bind_tab_opens_it() {
+    let (mut l, b) = binds_panel(three_groups());
+    let rows = draw_in(&l, &b);
+    let y = 2;
+    let x = rows.rows[y].text().find("Windows").map(|i| rows.rows[y].text()[..i].chars().count()).expect("the Windows tab");
+    // Ring coordinates: one more than the drawn row and column.
+    let click = hit(&l, &b, u16::try_from(x + 1).unwrap(), u16::try_from(y + 1).unwrap());
+    assert_eq!(click, Some(Click::Tab(2)));
+    assert_eq!(l.click_tab(2), crate::launcher::model::Outcome::Redraw);
+    assert_eq!(l.tools().unwrap().bind_tab(), 2);
+    let list = list_text(&draw_in(&l, &b));
+    assert!(list.iter().any(|t| t.contains("Close window")) && !list.iter().any(|t| t.contains("Open a terminal")), "{list:#?}");
+    // A bind's first line is its result.
+    let y = rows_with(&draw_in(&l, &b), "Toggle fullscreen");
+    assert_eq!(hit(&l, &b, 5, u16::try_from(y + 1).unwrap()), Some(Click::Result(1)));
+}
+
+/// The first rendered row showing `text`.
+fn rows_with(rows: &Boxed, text: &str) -> usize {
+    rows.rows.iter().position(|r| r.text().contains(text)).unwrap_or_else(|| panic!("{text}: {}", snapshot(rows)))
+}
+
+#[test]
+fn nothing_of_the_binds_level_is_drawn_outside_the_box() {
+    let mut binds = three_groups();
+    let long = "x".repeat(300);
+    binds.binds[0].combo = format!("Super+Ctrl+Alt+Shift+{long}");
+    binds.binds[0].description = format!("described {long}");
+    binds.binds[0].command = long.clone();
+    binds.groups[1] = format!("Group {long}");
+    binds.files[0] = format!("{long}.conf");
+    for columns in [232, 90, 64] {
+        let (l, b) = binds_panel_on(binds.clone(), columns);
+        let rows = draw_in(&l, &b);
+        let (w, h) = (usize::from(b.columns - 2), rows.rows.len());
+        for s in &rows.shapes {
+            assert!(usize::from(s.col) + usize::from(s.width) <= w && s.row + usize::from(s.rows) <= h, "{columns}: {s:?} in {w}×{h}");
+        }
+    }
+}

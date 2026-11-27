@@ -509,6 +509,17 @@ impl ToolsState {
         true
     }
 
+    /// Opens the Keybindings tab `tab` (0 is All, k is group k-1; a click on it): false off that
+    /// level or with no such tab.
+    pub fn open_bind_tab(&mut self, tab: usize) -> bool {
+        if self.binds().is_none_or(|b| tab > b.groups.len()) {
+            return false;
+        }
+        self.bind_tab = tab;
+        self.rev += 1;
+        true
+    }
+
     /// Opens the Keybindings level on `binds`, on its All tab (`selected`: the row to restore on
     /// the level left, by `up`).
     pub fn open_binds(&mut self, binds: Binds, selected: usize) {

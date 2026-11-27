@@ -42,17 +42,17 @@ const ON_ACCENT: Style = Style { fg: Tint::OnAccent, bg: Tint::Bg, bold: true };
 
 /// Where the panel's parts lie in a box (ring coordinates, ends exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Geometry {
-    tabs: usize,
-    pane_top: usize,
-    pane_rows: usize,
+pub(super) struct Geometry {
+    pub(super) tabs: usize,
+    pub(super) pane_top: usize,
+    pub(super) pane_rows: usize,
     /// The list pane's columns.
-    list: (u16, u16),
+    pub(super) list: (u16, u16),
     /// The detail card's columns, when the box has room for it.
-    card: Option<(u16, u16)>,
+    pub(super) card: Option<(u16, u16)>,
 }
 
-fn geometry(b: &BoxLayout) -> Geometry {
+pub(super) fn geometry(b: &BoxLayout) -> Geometry {
     let (start, end) = (1 + TOOLS_INSET, b.columns.saturating_sub(1 + TOOLS_INSET));
     let inner = end.saturating_sub(start);
     // About 60 % for the list, the rest for the card, one blank column between.
@@ -159,7 +159,7 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         tools_chip(l, b, row, &mut shapes, 1);
     }
     if let Some(row) = grid.get_mut(g.tabs) {
-        tab_strip(t, panel, b, row, &mut shapes, g.tabs);
+        tab_strip(&tab_names(t, panel), panel.active, b, row, &mut shapes, g.tabs);
     }
     let list = list_rows(l, t, panel);
     let search = l.panel_search();
@@ -219,8 +219,8 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
 
 /// The tabs a strip shows: each drawn tab's index, first column, width and name; whether tabs are
 /// cut off at the left and at the right.
-struct Strip<'a> {
-    tabs: Vec<(usize, u16, u16, Cow<'a, str>)>,
+pub(super) struct Strip<'a> {
+    pub(super) tabs: Vec<(usize, u16, u16, Cow<'a, str>)>,
     cut_left: bool,
     cut_right: bool,
 }
@@ -228,42 +228,51 @@ struct Strip<'a> {
 /// The strip in box `b`: a pill per tab from the left; when they do not fit, it starts as far
 /// right as the open tab needs, two cells kept at each cut end for its mark (at the left only
 /// once it starts past the first tab).
-fn strip<'a>(t: &'a ToolsState, panel: &Panel, b: &BoxLayout) -> Strip<'a> {
-    // A tab's name, borrowed: only one wider than `TAB_MAX`, cut, is a new string.
-    let name = |tab: Tab| match tab {
-        Tab::All => "All",
-        Tab::Category(k) => t.catalog.categories.get(k).map_or("", |c| c.name.as_str()),
-    };
-    let shown = |name: &'a str| if text_width(name) <= TAB_MAX { Cow::Borrowed(name) } else { Cow::Owned(truncate(name, TAB_MAX)) };
-    let widths: Vec<u16> = panel.tabs.iter().map(|&tab| text_width(&shown(name(tab))) + 2).collect();
+pub(super) fn strip<'a>(names: &[Cow<'a, str>], active: usize, b: &BoxLayout) -> Strip<'a> {
+    // A borrowed name stays borrowed: only one wider than `TAB_MAX`, cut, is a new string.
+    let shown = |name: &Cow<'a, str>| if text_width(name) <= TAB_MAX { name.clone() } else { Cow::Owned(truncate(name, TAB_MAX)) };
+    let widths: Vec<u16> = names.iter().map(|name| text_width(&shown(name)) + 2).collect();
     let (start, end) = (1 + TOOLS_INSET, b.columns.saturating_sub(1 + TOOLS_INSET));
     let span = |from: usize, to: usize| widths[from..=to].iter().map(|w| w + 1).sum::<u16>().saturating_sub(1);
     let last = widths.len().saturating_sub(1);
     let cut = !widths.is_empty() && span(0, last) > end.saturating_sub(start);
     let to = if cut { end.saturating_sub(2) } else { end };
     let from = |first: usize| if first > 0 { start + 2 } else { start };
-    let mut first = 0;
-    while cut && first < panel.active && span(first, panel.active) > to.saturating_sub(from(first)) {
+    let (mut first, active) = (0, active.min(last));
+    while cut && first < active && span(first, active) > to.saturating_sub(from(first)) {
         first += 1;
     }
     let mut x = from(first);
     let mut tabs = Vec::new();
-    for (i, (&tab, w)) in panel.tabs.iter().zip(widths).enumerate().skip(first) {
+    for (i, (name, w)) in names.iter().zip(widths).enumerate().skip(first) {
         if x + w > to {
             break;
         }
-        tabs.push((i, x, w, shown(name(tab))));
+        tabs.push((i, x, w, shown(name)));
         x += w + 1;
     }
     let drawn = tabs.last().map_or(first, |(i, ..)| i + 1);
-    Strip { tabs, cut_left: first > 0, cut_right: drawn < panel.tabs.len() }
+    Strip { tabs, cut_left: first > 0, cut_right: drawn < names.len() }
 }
 
-/// The tab strip on row `y`: a pill per tab, the open one filled, `‹` and `›` at the cut ends.
-fn tab_strip(t: &ToolsState, panel: &Panel, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
-    let s = strip(t, panel, b);
+/// The panel's tab names, borrowed from its catalog: `All`, then each category's.
+fn tab_names<'a>(t: &'a ToolsState, panel: &Panel) -> Vec<Cow<'a, str>> {
+    panel
+        .tabs
+        .iter()
+        .map(|&tab| match tab {
+            Tab::All => Cow::Borrowed("All"),
+            Tab::Category(k) => Cow::Borrowed(t.catalog.categories.get(k).map_or("", |c| c.name.as_str())),
+        })
+        .collect()
+}
+
+/// The tab strip on row `y`: a pill per tab of `names`, the `active` one filled, `‹` and `›` at
+/// the cut ends.
+pub(super) fn tab_strip(names: &[Cow<'_, str>], active: usize, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
+    let s = strip(names, active, b);
     for (i, x, w, name) in &s.tabs {
-        let active = *i == panel.active;
+        let active = *i == active;
         let tint = if active { Tint::AccentContainer } else { Tint::Pill };
         shapes.push(ring_shape(y, *x, *w, 1, ShapeKind::Chip(tint)));
         g.write(x + 1, x + w - 1, name, if active { ON_ACCENT } else { Style::NORMAL });
@@ -278,7 +287,7 @@ fn tab_strip(t: &ToolsState, panel: &Panel, b: &BoxLayout, g: &mut Grid, shapes:
 }
 
 /// A section label: dim capitals; a category's after its hue's dot.
-fn section(t: &ToolsState, label: Label, list: (u16, u16), g: &mut Grid) {
+pub(super) fn section(t: &ToolsState, label: Label, list: (u16, u16), g: &mut Grid) {
     let x = list.0 + 1;
     match label {
         Label::Pinned => g.write(x, list.1, "PINNED", Style::MUTED),
@@ -566,7 +575,7 @@ pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
     let Some(panel) = t.panel() else { return Click::Inside };
     let row = usize::from(row);
     if row == g.tabs {
-        return strip(t, panel, b)
+        return strip(&tab_names(t, panel), panel.active, b)
             .tabs
             .iter()
             .find(|(_, x, w, _)| (*x..x + w).contains(&column))

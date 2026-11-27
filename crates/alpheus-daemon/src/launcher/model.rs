@@ -489,10 +489,12 @@ impl Launcher {
         self.tool_marks.get(index).map_or(&[], Vec::as_slice)
     }
 
-    /// A click on the panel's tab `tab`: opens it as Tab would, on its first tool; from the search
-    /// too, which it ends. Nothing without a panel at the root or such a tab.
+    /// A click on the panel's tab `tab`, or the Keybindings level's: opens it as Tab would, on its
+    /// first row; from the search too, which it ends. Nothing without a panel at the root or the
+    /// level, or such a tab.
     pub fn click_tab(&mut self, tab: usize) -> Outcome {
-        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(|t| t.open_tab(tab)) {
+        let open = |t: &mut ToolsState| if t.binds().is_some() { t.open_bind_tab(tab) } else { t.open_tab(tab) };
+        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(open) {
             return Outcome::Nothing;
         }
         if let Some(t) = self.tools.as_mut() {

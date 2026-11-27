@@ -180,6 +180,16 @@ was on. Nothing of it is kept once it is left.
   a blank line, not a group's header), else the function in words (`spawn,firefox` is
   `Run firefox`, `view,2` is `Go to desktop 2`, `killclient` is `Close window`; an unknown function
   shows as written).
+- **What you see:** in the command panel's box, the search field, a tab strip (`All`, then one tab
+  per group; a click opens one as Tab does), the list on the left and the selected binding's card on
+  the right. Each binding takes two lines: its combo in a capsule, then its description (the
+  descriptions in one column), and its command dim under it. The card shows the combo, the group
+  dim, the description, a thin line, `Command` and the whole command wrapped (a word wider than the
+  card is broken, never cut; only past the card's foot does a last `…` say it goes on), then
+  `From <file name>` dim, by name only. The footer offers `Tab Group · type to search · Esc Back`
+  (Tab only with two groups or more). Under the list, `N lines not understood` when the parser
+  skipped some; `No keybindings found` when nothing was found, `no match` for a search that finds
+  nothing. With `[tools] panel = false` the level is the plain one-line list.
 - **Keys:** each row is `<combo>  <description>`, the combo as `Super+Shift+A`; letters are always
   text here, so typing filters at once, by description first, then by combo and command, the results
   grouped by group in the order of their best match. Enter and → on a binding do nothing: it is shown,
@@ -316,7 +326,9 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 
 The drawing is the launcher's view: `launcher/view/panel.rs` draws the panel in the box's cells
 (search field, tab strip, the list beside the detail card, footer) and maps a click to a tab, a row
-or a chip; `view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
+or a chip; `launcher/view/binds.rs` draws the Keybindings level in the same box with the same pieces
+(the tab strip takes names, so the groups are its tabs) and maps a click to a tab or a binding;
+`view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
 shapes (`list::ShapeKind`: `Card` for the detail card, `Tile` for a tool's tile, `Chip` for a
 capsule, a tab or the search field, `Band` for the selection over a tool's two lines, `Switch` for a
 known state), drawn in pixels under the cells. A tile is `pill_bg` inside a ring of `fg_dim` over

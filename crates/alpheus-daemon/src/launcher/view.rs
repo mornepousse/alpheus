@@ -673,6 +673,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     if tools && panel::shown(l) {
         return Boxed { edge: edge(l), ..panel::render(l, b) };
     }
+    if tools && binds::shown(l) {
+        return Boxed { edge: edge(l), ..binds::render(l, b) };
+    }
     let unpaned = without_preview(l, b);
     let b = &unpaned;
     // A level below the panel's root: its rows in the list pane, the entry's card at the right.
@@ -907,6 +910,9 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if l.mode == Mode::Tools && panel::shown(l) {
         return Some(panel::hit(l, b, column, row));
     }
+    if l.mode == Mode::Tools && binds::shown(l) {
+        return Some(binds::hit(l, b, column, row));
+    }
     // A level below the panel's root: the card right of its rows is no row.
     let listed = if l.mode == Mode::Tools { panel::level_card(l, b).map(|(_, end, _)| list_pane(b, end)) } else { None };
     let b = listed.as_ref().unwrap_or(b);
@@ -933,6 +939,7 @@ pub fn snapshot(b: &Boxed) -> String {
     format!("{}\n\n{}\n\ndivider: {divider}", texts.join("\n"), styles.join("\n"))
 }
 
+mod binds;
 mod panel;
 pub use panel::{fit, model_rows};
 
