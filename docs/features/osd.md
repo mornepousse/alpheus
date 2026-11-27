@@ -29,7 +29,8 @@ word where the percentage sits; "off" dims the glyph:
   connecting or leaving shows nothing, and the pill never names a device.
 - **Do not disturb**: `󰂛 Do not disturb … on` or `󰂚 … off`, from the bell's state, and only
   while alpheus serves the notifications (another server's flag is not ours to show). A toggle by
-  `alpheus-launch --dnd`, the bell, the quick panel or `dnd_while_sharing` all show it.
+  `alpheus-launch --dnd`, the bell, the quick panel or `dnd_while_sharing` all show it; so today
+  the pill `dnd_while_sharing` causes shows while the screen is being shared.
 - **Power profile**: `󰾅 Power profile … balanced` (the quick panel's word: `saver`, `balanced`,
   `performance`), when power-profiles-daemon's active profile changes.
 - **Keyboard layout**: `󰌌 French (AZERTY)`, the layout's full name as the compositor gives it
@@ -39,7 +40,11 @@ word where the percentage sits; "off" dims the glyph:
   active player's title changes while it plays. A track skipped while paused shows nothing when it
   resumes, a pause and a resume of the same track show nothing, and neither does the burst of
   metadata in the second after a player appears. The title is on screen only when `track` is
-  listed, and it is never logged (the log says `track changed`).
+  listed, and it is never logged (the log says `track changed`). Titles are compared as the bar
+  holds them, already cut to `[media] title_max`, so two long titles with the same cut start show
+  no pill. A player that clears its metadata between tracks (browsers do) can show two quick pills,
+  the first with the player's name (the bar's fallback title) and then the new title. Switching
+  to, or pinning, another player that is playing shows its title.
 
 The same rules hold for each: the first state after its source (re)starts is the baseline and shows
 nothing, nor does a change in the second after it; a source going down (BlueZ or the adapter gone,
