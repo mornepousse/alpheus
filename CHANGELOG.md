@@ -66,8 +66,9 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   of a module (`left`, `middle`, `right`, `wheel_up`, `wheel_down`) a command run as written, with
   `{tab}` and `{output}` replaced, or a verb: `none`, `popup`, `quick`, `open_tab`, `launcher`,
   `dnd`, `mute`; a button left out keeps its default, and the window, and the clock without its
-  calendar, get a zone that does only what is bound. An argv naming a suspend, a hibernate or a
-  hybrid sleep is refused, and a refused binding's message names the key, never the command.
+  calendar, get a zone that does only what is bound. A best-effort list of sleep commands is
+  refused (suspend, hibernate, hybrid sleep, `systemctl sleep`, `rtcwake`, `zzz`), and a refused
+  binding's message names the key, never the command.
   Resting the pointer half a second on the clock, volume, network, Bluetooth, battery, resources,
   window, notifications or `failed` module shows one line saying what its glyphs mean, on the
   tray's own hover timer and popup; a tooltip tells nothing the bar does not draw (no SSID, device
