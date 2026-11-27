@@ -956,6 +956,46 @@ impl Fonts {
                     self.rounded(px, width, height, knob, y, clip, roles.fg, d / (2 * e), scale);
                 }
             }
+            if let Some((ch, tint)) = sh.glyph {
+                self.centred_glyph(ch, x, y, color(roles, fill, tint), px, width, height);
+            }
+        }
+    }
+
+    /// `ch` in `ink`, its inked pixels centred in x ∈ [x.0, x.1) × y ∈ [y.0, y.1) (a tile's glyph,
+    /// whatever its width: a wide one's whole ink is centred). Its pixels are read twice from the
+    /// glyph cache, once to measure them and once to blend them; nothing is drawn for a glyph
+    /// without ink.
+    #[allow(clippy::too_many_arguments)]
+    fn centred_glyph(&mut self, ch: char, x: (u32, u32), y: (u32, u32), ink: Rgb, px: &mut [u8], width: u32, height: u32) {
+        if self.cache.image_cache.len() >= MAX_CACHE {
+            self.cache.image_cache.clear();
+            self.cache.outline_command_cache.clear();
+        }
+        let Rgb(r, g, b) = ink;
+        let base = Color::rgb(r, g, b);
+        let shaped = self.shaped(ch, false);
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for g in &shaped {
+            self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
+                if c.a() > 0 {
+                    (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
+                    (top, bottom) = (top.min(g.y + dy), bottom.max(g.y + dy));
+                }
+            });
+        }
+        if left > right {
+            return;
+        }
+        // Twice the offset: the rectangle's centre less the ink's, both doubled to stay in integers.
+        let span = |a: u32, b: u32| i64::from(a) + i64::from(b);
+        let shift = |rect: i64, lo: i32, hi: i32| i32::try_from((rect - i64::from(lo) - i64::from(hi) - 1).div_euclid(2)).unwrap_or(0);
+        let (ox, oy) = (shift(span(x.0, x.1), left, right), shift(span(y.0, y.1), top, bottom));
+        for g in &shaped {
+            let tint = g.color_opt.unwrap_or(base);
+            self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
+                blend(px, width, height, ox.saturating_add(g.dx + dx), oy.saturating_add(g.y + dy), c);
+            });
         }
     }
 

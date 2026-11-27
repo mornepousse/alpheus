@@ -1341,7 +1341,7 @@ mod shapes {
     }
 
     fn shape(row: usize, col: u16, width: u16, rows: u16, kind: ShapeKind) -> Shape {
-        Shape { row, col, width, rows, kind }
+        Shape { row, col, width, rows, kind, glyph: None }
     }
 
     #[test]
@@ -1396,6 +1396,51 @@ mod shapes {
         assert_eq!(s.at((x0 + x1) / 2, (y0 + y1) / 2), r.selection, "the band: the selection's fill");
         assert_eq!(s.at((x0 + x1) / 2, y0), r.selection, "the band fills its row");
         assert_eq!(s.at(x0, y0), r.popup_bg, "its corner is rounded off");
+    }
+
+    /// A pixel rectangle: its x span, its y span (ends exclusive).
+    type Rect = ((u32, u32), (u32, u32));
+
+    /// A 3 × 2 tile on cells 2..5 × rows 1..3 of a blank box, carrying `glyph` in cyan, at `scale`.
+    fn tile(p: &mut Fonts, glyph: char, scale: i32) -> (Painted, Rect) {
+        let mut b = blank(10, 4);
+        b.shapes.push(Shape { glyph: Some((glyph, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+        let s = Painted::new(p, &b, scale);
+        let cells = s.cells(p, 1, 2, 3, 2);
+        (s, cells)
+    }
+
+    /// The pixels inside `rect` that differ from the tile's fill.
+    fn inked(s: &Painted, ((x0, x1), (y0, y1)): Rect, fill: Rgb) -> Vec<(u32, u32)> {
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) != fill).collect()
+    }
+
+    #[test]
+    fn a_tile_glyph_is_centred_in_its_shape() {
+        let (mut p, r) = (fonts(), distinct());
+        let (s, ((x0, x1), (y0, y1))) = tile(&mut p, crate::launcher::tools::catalog::FOLDER, 2);
+        // Inside the tile's chip, clear of its rounded corners: only the glyph differs from the fill.
+        let inset = 4 * 2;
+        let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
+        assert!(ink.len() > 20, "the glyph is drawn: {} px", ink.len());
+        let (lx, hx) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
+        let (ly, hy) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
+        let (cx, cy) = (f64::from(lx + hx + 1) / 2.0, f64::from(ly + hy + 1) / 2.0);
+        let (sx, sy) = (f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
+        assert!((cx - sx).abs() <= 2.0, "centred across: ink {cx} vs tile {sx}");
+        assert!((cy - sy).abs() <= 2.0, "centred down: ink {cy} vs tile {sy}");
+        assert!(ink.iter().any(|&(_, y)| y >= y0 + s.rh), "the top row alone does not hold the glyph");
+    }
+
+    #[test]
+    fn a_wide_glyph_is_drawn_in_a_tile() {
+        let (mut p, r) = (fonts(), distinct());
+        let wide = '☕';
+        assert_eq!(crate::grid::text_width(&wide.to_string()), 2, "a two-cell character");
+        let (s, ((x0, x1), (y0, y1))) = tile(&mut p, wide, 2);
+        let inset = 4 * 2;
+        let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
+        assert!(!ink.is_empty(), "the wide glyph is drawn in its tile");
     }
 
     #[test]

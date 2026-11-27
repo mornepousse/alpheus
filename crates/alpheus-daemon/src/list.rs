@@ -51,6 +51,10 @@ pub struct Shape {
     pub width: u16,
     pub rows: u16,
     pub kind: ShapeKind,
+    /// A glyph the painter draws over the shape's fill, in its tint, centred in the shape's pixel
+    /// rectangle on both axes (a tool's tile: the cell grid cannot place a glyph between two rows,
+    /// nor cut a wide one into a narrower span).
+    pub glyph: Option<(char, Tint)>,
 }
 
 /// What a `Shape` is, which sets its fill and its corners (`Fonts::paint_boxed`).

@@ -779,7 +779,7 @@ fn without_preview(l: &Launcher, b: &BoxLayout) -> BoxLayout {
 /// A shape over cells given in the ring's coordinates, as every row is built: `list::boxed` drops
 /// the ring, the shape follows it.
 fn ring_shape(row: usize, col: u16, width: u16, rows: u16, kind: ShapeKind) -> Shape {
-    Shape { row: row.saturating_sub(1), col: col.saturating_sub(1), width, rows, kind }
+    Shape { row: row.saturating_sub(1), col: col.saturating_sub(1), width, rows, kind, glyph: None }
 }
 
 /// A key capsule on row `y` from column `x`: `key` dim between two blank cells, on a chip of
