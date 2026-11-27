@@ -214,6 +214,16 @@ from a key (see "From a key"); then Esc, or ← on an empty query, closes the bo
 - **What the log says**, in counts only: `tools: binds shown (N binds, M groups)`, `tools: binds N
   lines not understood` when a bind line lacks its key or function, and `tools: binds no source`
   when no file was readable.
+- **How it is laid out** (the design left these to the build): the list takes about three fifths
+  of the box's inner width and the card the rest, one blank column between, side by side only from
+  80 columns (below, the list alone, as at the panel's home). The combos' column is as wide as the
+  widest combo shown plus its capsule, at most two fifths of the list, so every description starts
+  at the same column; a longer combo is cut there and shows whole on the card. The footer is the
+  panel's key hints, `Tab Group · type to search · Esc Back`, without `Tab Group` for one group;
+  the empty pane says `No keybindings found` (nothing read) or `no match` (a search), dim, and
+  `N lines not understood` takes the pane's last line. The phrases for a bind without a comment
+  are two closed tables in `launcher/tools/binds/describe.rs`, one per dialect (Mango's functions,
+  Sway's commands); anything else shows as written.
 
 ### The diagnostics tools
 

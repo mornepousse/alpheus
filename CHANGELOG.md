@@ -12,6 +12,32 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Added
 
+- **A keybinding cheatsheet** (27): Tools › Keybindings, or `alpheus-launch --binds`, lists the
+  compositor's own bindings, read once from its config when the level opens (Mango's `config.conf`
+  and its `source=` files, Sway's config and its `include`s; `[tools] binds_files` names other
+  files): each binding's combo in a capsule, its description (the comment beside or above it, else
+  its function in words, `Run firefox`, `Go to desktop 2`), its command dim under it, and a card
+  with the whole command. A comment line `# ── Name ──` (or a Sway `mode`) makes a group with its
+  own tab; typing filters at once. A binding is shown, never run. Hidden on Hyprland and niri.
+  Bounded: 8 files, 512 KiB, 1,000 bindings. Cost against main: +128 KiB in the stripped binary
+  (with the power menu's entry below), about +56 KB PSS before either is used; open, the 100-bind
+  test level costs +256…+272 KB of anonymous memory, freed with it; nothing is read or held while
+  it is closed; 0 wake-ups at rest.
+  [Page](docs/features/tools-menu.md#keybindings),
+  [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
+- **Rows of your own, digits and a countdown in the power menu** (27): `[[power.entry]]` adds up to
+  8 rows after Lock, Log out, Reboot and Power off (a name, an icon, a command, `confirm` to ask
+  first, its own `countdown`); `[power] builtins = false` hides the fixed ones. A row that names a
+  sleep, `dpms`, niri's `power-off-monitors` or `wlopm` makes `bar.toml` invalid. The digits 1 to 9
+  pick and activate a row (the top row's keys by position, so AZERTY needs no Shift; a typed ASCII
+  letter is never read as one). `[power] countdown` counts a few seconds after a confirming
+  activation, `⏻ Power off in 5 s · Esc`, before the row runs; any key but Enter and Space cancels
+  it. Cost against main: the open menu +10…+26 KB more with two rows of your own; closed and cycled
+  within the test's bounds; a countdown wakes the loop about twice a second only while it runs, 0
+  wake-ups at rest.
+  [Page](docs/features/power.md),
+  [configuration](docs/configuration.md#power),
+  [decisions](docs/decisions.md#the-power-menus-countdown-lives-and-dies-with-the-menu).
 - **Resources: a named network interface, up to four disks, GPU usage** (27): `[resources]
   net_interface` names the interface `net` follows instead of the default route's;
   `disk_mounts` lists up to four paths whose filesystems `disk` measures (the bar shows the

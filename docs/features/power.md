@@ -24,6 +24,10 @@ the clock. A left click on it opens a popup under it with one row per session co
 - The menu is as wide as its longest text needs: a row's label, its question when it asks, its
   countdown's line when it has one, so it keeps one size whatever it shows, and a 24-character
   name shows whole.
+- How the capsule sits (the design left it to the build): a pad cell, the longest text and a blank
+  (all three on the band), then a one-cell gap, the capsule's three cells around the digit and a
+  pad cell before the frame: the longest text plus seven cells, 21 with the default rows. Rows 10 to
+  12 have no capsule; their band stops where the others' does.
 - **Lock** and **Log out** run at once, then the menu closes.
 - **Reboot** and **Power off** ask first: the row becomes `󰜉 Reboot? ⏎` or `⏻ Power off? ⏎` in the
   warning colour. A second activation runs the command, and the menu closes.
