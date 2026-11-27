@@ -325,4 +325,26 @@ rounds, the memory lock held exclusively through the turnstile, 2026-11-27):
 
 The level's 100 bindings cost no more than the panel's home open (anonymous open +280…+292 KB
 against the panel's +304…+516) and are freed with the level: closed again +4…+28 KB. The panel's
-figures stay within the base's spread.
+figures stay within the base's spread. The runs were serialised by the lock, but another agent's
+headless session was up on the machine at the time.
+
+Whether the +64…+88 KB after 20 more cycles is a plateau or a trend: the test now also reads the
+anonymous memory after 10 of those cycles. On the branch at Task 3 (below), +48…+76 KB after 10
+and +64…+72 KB after 20: a plateau, the allocator's arenas settling, not a growth per cycle.
+
+Task 3, the level drawn in the panel's box (on pc-simu, release, base `main` 51ced748, base
+Task 2 3c591747 and the branch 911af237 alternated, 3 rounds, each run holding the memory lock
+exclusively through the turnstile, nothing else measured meanwhile, 2026-11-27):
+
+| Test | Base `main` | Base Task 2 | With the drawing |
+|---|---|---|---|
+| `tools_pss_open_and_closed`: PSS open over closed | +2,205…+2,213 KB | +2,125…+2,229 KB | +2,033…+2,213 KB |
+| same: anonymous open over closed / closed again / after 20 more | +480…+488 / +24…+56 / +100…+120 KB | +400…+504 / −76…+48 / +104…+116 KB | +308…+488 / +44…+180 / −36…+96 KB |
+| same: shm pools open over closed; threads | +1,824 KB; 5 → 5 | +1,824 KB; 5 → 5 | +1,824 KB; 5 → 5 |
+| `binds_pss_open_and_closed`: PSS open over closed | — | +1,973…+1,989 KB | +1,977…+1,985 KB |
+| same: anonymous open over closed / closed again / after 10 more / after 20 more | — | +264…+280 / −96…−76 / — / +64…+84 KB | +268…+276 / −104…−100 / +48…+76 / +64…+72 KB; 3 → 3 threads |
+
+Drawing the level in the panel's box costs nothing measurable: its PSS open is the box's shm pools,
+as at Task 2 (where the plain list already had the panel's box), and its anonymous memory open,
+closed and cycled stays within Task 2's spread. One run of the branch's `tools_pss_open_and_closed`
+read +180 KB closed again; the two others +44 and +48, inside the bases' spread.
