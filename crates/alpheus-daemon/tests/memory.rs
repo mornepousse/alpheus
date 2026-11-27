@@ -19,7 +19,9 @@ mod common;
 
 use alpheus_common::displays::wire::{self, TrialState};
 use alpheus_common::displays::{Active, Step};
-use alpheus_common::launcher_ipc::{CaptureVerb, DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, encode_request, socket_path};
+use alpheus_common::launcher_ipc::{
+    CaptureVerb, DmenuFlags, DndVerb, QuickVerb, Reply, Request, TimerVerb, WallpaperVerb, encode_request, socket_path,
+};
 use alpheus_common::theme::presets::preset;
 use common::bluez::FakeBluez;
 use common::displays::{displays, output, outputs_snapshot, snapshot_until};
@@ -3522,29 +3524,57 @@ fn small_features_bar() -> String {
 }
 
 /// The rules, the battery thresholds and the option cost nothing at start (3
-/// outputs, each bar on a daemon of its own, the server answering).
+/// outputs, each bar on a daemon of its own, the server answering); nor does a `[wallpaper]` on an
+/// empty folder with nothing remembered (nothing is listed or started until a pick or `next`).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn small_features_cost_nothing_at_start() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("small-cost");
     let mut kb = Vec::new();
-    for (name, toml) in [("small-cost-a", SMALL_BASE_BAR.to_string()), ("small-cost-b", small_features_bar())] {
+    let cases = [
+        ("small-cost-a", SMALL_BASE_BAR.to_string(), false),
+        ("small-cost-b", small_features_bar(), false),
+        ("small-cost-c", SMALL_BASE_BAR.to_string(), true),
+    ];
+    for (name, toml, wallpaper) in cases {
         let session = PrivateBus::start(&format!("{name}-session"));
-        let (_sway, _hypr, d) = start(name, 3, &bus, Some(&session), Some(&toml), PwDump::Silent);
+        let sway = Sway::start(name, 3);
+        let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+        // An empty folder, a setter that is never started (nothing remembered, no `next`).
+        let launcher_toml = wallpaper.then(|| {
+            let walls = sway.runtime.join("walls");
+            std::fs::create_dir_all(&walls).unwrap();
+            format!("[wallpaper]\ndir = {:?}\nset = [\"fake-setter\", \"{{file}}\"]\n", walls.display().to_string())
+        });
+        let d = start_daemon_with(
+            &sway,
+            &DaemonOptions {
+                bar_toml: Some(&toml),
+                launcher_toml: launcher_toml.as_deref(),
+                system_bus: Some(&bus.address),
+                session_bus: Some(&session.address),
+                pw_dump: PwDump::Silent,
+                ..DaemonOptions::default()
+            },
+        );
+        assert!(d.wait_for("bar placed on HEADLESS-3", DELAY), "{:?}", d.log());
         wait_for_the_notification_server(&session);
         std::thread::sleep(TRAY_SETTLE);
+        assert_eq!(d.count("wallpaper:"), 0, "nothing applied or refused at start: {:?}", d.log());
         kb.push((d.pss_kb(), d.anonymous_kb()));
     }
-    let ((pss_base, base), (pss_with, with)) = (kb[0], kb[1]);
+    let ((pss_base, base), (pss_with, with), (pss_wall, wall)) = (kb[0], kb[1], kb[2]);
     eprintln!(
         "notification-rules at start (KB): PSS {pss_base} notifications, battery and privacy alone, {pss_with} with 32 rules, 4 thresholds and dnd_while_sharing; anonymous {base} and {with}"
     );
+    eprintln!("wallpaper on an empty folder at start (KB): PSS {pss_wall} against {pss_base}; anonymous {wall} against {base}");
     // Anonymous memory, not PSS: the bar's shm pool (a `memfd:smithay-client-toolkit` mapping) reads
     // 112 KB or 220 KB at the same point, depending on whether a second frame buffer was drawn by
     // the time of the reading, which moves PSS by about 108 KB on either daemon; `Anonymous:` holds
     // the heap the configuration allocates and neither the pool nor the file pages.
     assert!(with <= base + 128, "{with} KB vs {base} KB anonymous: more than 128 KB for configuration alone — report, never raise");
+    assert!(wall <= base + 128, "{wall} KB vs {base} KB anonymous: more than 128 KB for an idle [wallpaper] — report, never raise");
 }
 
 /// One `--calc` cycle: open, `6*7` typed, closed by a typed Escape; the n-th of each. The open
@@ -5023,6 +5053,147 @@ fn tools_wallpaper_2000_files() {
     assert!(cycled.1 <= again.1 + 128, "5 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
     assert_eq!(d.threads(), threads, "no thread left behind");
     assert!(d.log().iter().all(|l| !l.contains("0001.png")), "never a name in the log");
+}
+
+// ---- the wallpaper ----
+
+/// A folder of three empty images and a fake setter (never a real one) that, handed a file,
+/// appends its PID to `<runtime>/setter-pids` and sleeps as swaybg would (`wait_until_executable`
+/// runs it bare once: it then exits at once); `remembered` saved in the harness's own state
+/// directory. Returns the daemon's launcher.toml.
+fn wallpaper_mem_setup(sway: &Sway, remembered: Option<&str>) -> String {
+    let walls = sway.runtime.join("walls");
+    std::fs::create_dir_all(&walls).unwrap();
+    for f in ["a.png", "b.png", "c.png"] {
+        std::fs::write(walls.join(f), b"").unwrap();
+    }
+    let pids = sway.runtime.join("setter-pids");
+    let setter =
+        tools_mem_script(sway, "fake-setter", &format!("[ -n \"$1\" ] || exit 0\necho $$ >> '{}'\nexec sleep 600", pids.display()));
+    wait_until_executable(&setter);
+    if let Some(name) = remembered {
+        alpheus_daemon::state_file::save_wallpaper(&sway.runtime.join("state/alpheus"), name).unwrap();
+    }
+    format!("[wallpaper]\ndir = {:?}\nset = [{:?}, \"{{file}}\"]\n", walls.display().to_string(), setter.display().to_string())
+}
+
+/// The fake setters' PIDs, in the order they started (this test's own children, the only
+/// processes it reads).
+fn setter_pids(sway: &Sway) -> Vec<i32> {
+    std::fs::read_to_string(sway.runtime.join("setter-pids")).unwrap_or_default().lines().filter_map(|l| l.parse().ok()).collect()
+}
+
+/// Whether this test's fake setter `pid` still runs (a zombie does not).
+fn setter_alive(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .is_ok_and(|s| s.rsplit_once(')').is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z')))
+}
+
+/// A daemon on headless sway with the clock bar and this launcher.toml, its socket ready.
+fn wallpaper_daemon(sway: &Sway, launcher_toml: &str) -> Daemon {
+    let d = start_daemon_with(
+        sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(launcher_toml),
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    d
+}
+
+/// A setter running (the remembered wallpaper applied at start, a fake setter asleep): its pidfd is
+/// a calloop source silent until the setter ends, so the loop does not wake in 5 s and no thread is
+/// added.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn at_rest_no_wakeups_with_a_wallpaper_setter() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("wallpaper-rest", 1);
+    let toml = wallpaper_mem_setup(&sway, Some("b.png"));
+    let d = wallpaper_daemon(&sway, &toml);
+    assert!(d.wait_for("wallpaper: applied", DELAY), "the remembered wallpaper was not applied: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    let pids = setter_pids(&sway);
+    assert_eq!(pids.len(), 1, "one setter started at start");
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon with a wallpaper setter running");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest with a wallpaper setter (5 s): {delta} whole daemon, {main_delta} loop thread; {} threads", d.threads());
+    assert!(setter_alive(pids[0]), "the setter still runs: {:?}", d.log());
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s with a setter running (no clock tick in the window)");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest with a setter running");
+}
+
+/// 50 `--wallpaper next` (each a setter started, the old one ended by its handle and reaped, the
+/// name saved): one setter left, no thread left, and the daemon's anonymous memory back within the
+/// launcher cycle test's bound. What `next` keeps between calls is this figure.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn wallpaper_setter_replaced_50_times_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("wallpaper-cycles", 1);
+    let toml = wallpaper_mem_setup(&sway, None);
+    let d = wallpaper_daemon(&sway, &toml);
+    std::thread::sleep(Duration::from_secs(3));
+    let next = |n: usize| {
+        assert_eq!(launcher(&sway, &Request::Wallpaper(WallpaperVerb::Next)), Reply::Done, "{:?}", d.log());
+        assert!(d.wait_for_count("wallpaper: applied", n, DELAY), "{:?}", d.log());
+        // "applied" is logged at the spawn: wait for this setter's own PID too, or the next call
+        // could end it before its script ran.
+        let deadline = Instant::now() + DELAY;
+        while setter_pids(&sway).len() < n && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(setter_pids(&sway).len(), n, "setter {n} never ran: {:?}", d.log());
+    };
+    let cold = (d.pss_kb(), anon_kb(&d));
+    // Two first: the setter, its source and the state file's first write exist from then on.
+    next(1);
+    next(2);
+    std::thread::sleep(Duration::from_secs(1));
+    let (threads, warm) = (d.threads(), (d.pss_kb(), anon_kb(&d)));
+    for n in 3..=52 {
+        next(n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = (d.pss_kb(), anon_kb(&d));
+    let pids = setter_pids(&sway);
+    let deadline = Instant::now() + DELAY;
+    while pids.iter().filter(|&&p| setter_alive(p)).count() > 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    eprintln!(
+        "wallpaper next x50 PSS (KB): cold {}, after 2 {}, after 50 more {} ({:+}); anonymous cold {}, after 2 {}, after 50 more {} ({:+}); threads {} -> {}",
+        cold.0,
+        warm.0,
+        end.0,
+        end.0 as i64 - warm.0 as i64,
+        cold.1,
+        warm.1,
+        end.1,
+        end.1 as i64 - warm.1 as i64,
+        threads,
+        d.threads()
+    );
+    assert_eq!(pids.len(), 52, "a setter per next: {:?}", d.log());
+    assert_eq!(pids.iter().filter(|&&p| setter_alive(p)).count(), 1, "one setter left running");
+    assert!(setter_alive(pids[51]), "the last one");
+    assert_eq!(d.threads(), threads, "no thread left behind");
+    // The bound of `launcher_open_close_cycles_no_growth`, on anonymous memory.
+    assert!(end.1 <= warm.1 + 1024, "50 nexts: {} KB anon vs {} KB: more than 1 MB kept", end.1, warm.1);
+    assert!(
+        d.log().iter().all(|l| ["a.png", "b.png", "c.png", "walls"].iter().all(|w| !l.contains(w))),
+        "never a name or the folder: {:?}",
+        d.log()
+    );
 }
 
 /// Nothing at rest after a Tools cycle that read states and asked a question, the box closed by

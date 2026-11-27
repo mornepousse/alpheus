@@ -479,9 +479,23 @@ fn tools_panel_tab_changes_the_tab() {
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn tools_panel_at_rest_no_wakeups_after_a_cycle() {
-    let sway = Sway::start("tools-panel-rest", 1);
+    tools_panel_rest("tools-panel-rest", false);
+}
+
+/// The same with `[wallpaper]` set (its entry shown in Utilities, the folder never read by a move):
+/// still no loop wake-up and no thread left.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_panel_at_rest_no_wakeups_after_a_cycle_with_a_wallpaper() {
+    tools_panel_rest("tools-panel-rest-wall", true);
+}
+
+fn tools_panel_rest(name: &str, wallpaper: bool) {
+    let sway = Sway::start(name, 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
+    let toml = wallpaper.then(|| wallpaper_setup(&sway));
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), launcher_toml: toml.as_deref(), ..DaemonOptions::default() });
     ready(&d);
     thread::sleep(Duration::from_millis(500));
     let threads = d.threads();
@@ -493,6 +507,7 @@ fn tools_panel_at_rest_no_wakeups_after_a_cycle() {
     let rest = rest_over_5_s(&d);
     assert_eq!(rest, 0, "the loop woke {rest} times at rest after a cycle of moves: {:?}", d.log());
     assert_eq!(d.threads(), threads, "no thread left behind");
+    assert!(setter_starts(&sway).is_empty(), "no setter started by a move");
 }
 
 // ---- the Tools menu  ----
