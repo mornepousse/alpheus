@@ -426,16 +426,16 @@ memory ended at or below its at-rest level (984 → 1,080 open → 972 KB with t
 first open brings in follows where the code it runs lies in the binary, and the branch's binary
 (Tasks 1 to 6 added code) lays it out differently from the base's: that is where the +60…+72 KB
 most likely came from (an attribution from that one run, not proven), and Task 7's measurement
-below, against 78dbea11, shows the same +416 KB held after the close on both sides.
+below, against fce652bd, shows the same +416 KB held after the close on both sides.
 
-Task 7, digits in the ⏻ menu (on pc-simu, release, base 78dbea11 (Task 6) and the branch at Task 7
+Task 7, digits in the ⏻ menu (on pc-simu, release, base fce652bd (Task 6) and the branch at Task 7
 alternated, 3 rounds, `power_menu_pss_idle_open_and_closed --exact`, each run holding the memory
 lock exclusively through the turnstile; other agents' work ran on the machine before and between
 the runs: loaded machine, 2026-11-27). Both sides draw the same `POWER_BAR` (the default three rows
 and two `[[power.entry]]` rows); the branch's menu is 21 cells wide instead of 16 (the longest
 text, "⏻ Power off? ⏎", plus the digit's gap and capsule) and carries five capsules:
 
-| Test | Base 78dbea11 | Branch, Task 7 |
+| Test | Base fce652bd | Branch, Task 7 |
 |---|---|---|
 | PSS without the module | 8,731 KB (×3) | 8,739…8,759 KB |
 | with the button at rest | 8,859 KB (×3) | 8,867 KB (×3) |
@@ -449,13 +449,13 @@ the menu holds exactly what the base's does (+416 KB over rest, the first open's
 pages); 20 more cycles keep +12 KB against +8 KB, within the test's bound (+128 KB) and one page
 of noise. No timer is added: the digits act inside `key`.
 
-Task 8, the countdown in the ⏻ menu (on pc-simu, release, base ce0cc064 (the branch just before
+Task 8, the countdown in the ⏻ menu (on pc-simu, release, base 67dbd98f (the branch just before
 Task 8: Task 7 with the owner's decisions 11 and 12) and the branch at Task 8 alternated, 3 rounds,
 `power_menu_pss_idle_open_and_closed --exact`, each run holding the memory lock exclusively through
 the turnstile; the machine was quiet, load average 0.0 to 0.1 through the rounds, 2026-11-27). Both
 sides draw the same `POWER_BAR`, without a countdown, so this measures the code:
 
-| Test | Base ce0cc064 | Branch, Task 8 |
+| Test | Base 67dbd98f | Branch, Task 8 |
 |---|---|---|
 | PSS without the module | 8,739 KB (×3) | 8,735 KB (×3) |
 | with the button at rest | 8,863…8,867 KB | 8,927 KB (×3) |
