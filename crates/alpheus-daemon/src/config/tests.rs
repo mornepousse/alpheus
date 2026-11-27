@@ -147,6 +147,10 @@ fn disk_mounts_rejects_bad_entries_without_naming_them() {
     let e = BarConfig::from_text("[resources]\ndisk_mounts = [\"/fictional/a\", \"/fictional/b\", \"/fictional/a\"]\n").unwrap_err();
     assert!(e.contains("resources.disk_mounts") && e.contains("entry 3"), "{e}");
     assert!(!e.contains("fictional"), "no path in the message: {e}");
+    // A `..` would let a path escape the mount point it is matched against without being resolved.
+    let e = BarConfig::from_text("[resources]\ndisk_mounts = [\"/fictional/data/../nfs\"]\n").unwrap_err();
+    assert!(e.contains("resources.disk_mounts") && e.contains("entry 1") && e.contains(".."), "{e}");
+    assert!(!e.contains("fictional"), "no path in the message: {e}");
     for bad in [0, 301] {
         let e = BarConfig::from_text(&format!("[resources]\ndisk_interval = {bad}\n")).unwrap_err();
         assert!(e.contains("resources.disk_interval"), "{e}");

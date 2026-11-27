@@ -1404,6 +1404,11 @@ impl BarConfig {
             if !path.is_absolute() {
                 return Err(format!("resources.disk_mounts: entry {} is not an absolute path", i + 1));
             }
+            // Never resolved (resolving could hang on a network mount), so a `..` would match the
+            // path against the wrong mount point.
+            if path.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(format!("resources.disk_mounts: entry {} holds a '..' component", i + 1));
+            }
             if mounts[..i].contains(path) {
                 return Err(format!("resources.disk_mounts: entry {} repeats an earlier one", i + 1));
             }

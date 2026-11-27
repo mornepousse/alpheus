@@ -2071,11 +2071,11 @@ the loop; a local automount, such as systemd's `/boot`, then shows `—` too. Th
 is read once at start from `/proc/self/mountinfo`, the mount with the longest mount point
 containing the path winning (the later line on a tie, a mount over another); the path is matched
 by its text, never resolved, since resolving it could hang on that very mount, so a symlink to a
-share is not followed. `$HOME`, used when the
-list is empty, is read whatever it lies on, as before: a session whose home hangs has worse
-troubles than its bar. Paths are never logged.
+share is not followed, and a listed path holding a `..` is refused at load (it would be matched
+against the wrong mount point). `$HOME`, used when the list is empty, is read whatever it lies on,
+as before: a session whose home hangs has worse troubles than its bar. Paths are never logged.
 
-Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`, `a_network_mount_is_found_by_its_longest_mount_point`, `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`, `a_network_mount_is_found_by_its_longest_mount_point`, `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`, `disk_mounts_rejects_bad_entries_without_naming_them`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
 
 ### GPU usage comes from sysfs only; NVIDIA proprietary shows —
 
