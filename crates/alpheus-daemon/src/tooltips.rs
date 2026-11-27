@@ -8,7 +8,7 @@
 //! the tooltip shows and never refreshes it.
 //!
 //! Never:
-//! - tell more than the bar draws: no network name, no sink or source label, no peripheral's own
+//! - tell more than the bar draws: no network name, no sink or source name, no peripheral's own
 //!   name (its kind instead), no app id of a window (decision 7, extended; guarded by
 //!   `tooltips_name_no_private_field`). A Bluetooth device's name and a window's title are drawn
 //!   (cut), so they show whole;

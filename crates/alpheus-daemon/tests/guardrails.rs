@@ -4378,14 +4378,29 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
 
 /// The module tooltips (`tooltips.rs`) tell what the bar already draws, nothing more (decision 7,
 /// extended): no field holding a network's name, a sink or source label, the sink list, the window
-/// list, a notification sender or a window's app id is read there. Like every pure file, it logs
-/// nothing and has no panicking path.
+/// list, a notification's sender, app name or summary, a device label or a window's app id is read
+/// there. Like every pure file, it logs nothing and has no panicking path. A peripheral's `name`
+/// cannot be told from the other `name`s by a word search: the unit test
+/// `the_battery_tooltip_names_kinds_never_devices` (`tooltips/tests.rs`) guards `Peripheral.name`.
 #[test]
 fn tooltips_name_no_private_field() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "tooltips.rs").expect("tooltips.rs").1;
     let production = production_code(t);
-    for word in ["ssid", "sink_name", "source_name", "sinks", "toplevels", "identity", "bus_name", "class"] {
+    for word in [
+        "ssid",
+        "sink_name",
+        "source_name",
+        "sinks",
+        "toplevels",
+        "identity",
+        "bus_name",
+        "class",
+        "app_name",
+        "summary",
+        "sender",
+        "label",
+    ] {
         assert!(!production.to_lowercase().contains(word), "{word} in tooltips.rs: a tooltip tells only what the bar draws");
     }
     for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
