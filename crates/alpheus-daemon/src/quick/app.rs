@@ -810,8 +810,12 @@ impl App {
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick.timer.fired();
         let (mut due, device, kbd) = match app.popup_body_mut() {
+            // The devices' names only for a re-read that is due: no String cloned on the other ticks.
             Some(PopupBody::Quick(q)) => {
-                (q.due(now), q.backlight.as_ref().map(|b| b.device.clone()), q.kbd.as_ref().map(|k| k.device.clone()))
+                let due = q.due(now);
+                let device = due.backlight.then(|| q.backlight.as_ref().map(|b| b.device.clone())).flatten();
+                let kbd = due.kbd.then(|| q.kbd.as_ref().map(|k| k.device.clone())).flatten();
+                (due, device, kbd)
             }
             _ => {
                 // No panel: a followed attempt's timeout.
