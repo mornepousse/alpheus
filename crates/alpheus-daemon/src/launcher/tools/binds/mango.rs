@@ -34,6 +34,8 @@ pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse) -> Vec<PathBuf> {
         };
         let (value, trailing) = split_comment(value.trim());
         match key.trim() {
+            // `~/…` is the home folder, which the glue knows (`RealFiles`): kept as written.
+            "source" if value == "~" || value.starts_with("~/") => sources.push(PathBuf::from(value)),
             "source" if !value.is_empty() => sources.push(here.join(value)),
             "env" => {
                 if let Some((name, val)) = value.split_once(',') {

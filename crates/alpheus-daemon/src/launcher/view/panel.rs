@@ -288,6 +288,10 @@ fn section(t: &ToolsState, label: Label, list: (u16, u16), g: &mut Grid) {
             let name = t.catalog.categories.get(k).map_or_else(String::new, |c| c.name.to_uppercase());
             g.write(x + 1, list.1, &truncate(&name, list.1.saturating_sub(x + 2)), Style::MUTED)
         }
+        Label::Group(k) => {
+            let name = t.binds().and_then(|b| b.groups.get(k)).map_or_else(String::new, |n| n.to_uppercase());
+            g.write(x, list.1, &truncate(&name, list.1.saturating_sub(x + 1)), Style::MUTED)
+        }
     };
 }
 

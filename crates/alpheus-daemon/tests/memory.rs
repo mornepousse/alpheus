@@ -4793,6 +4793,99 @@ fn tools_pss_open_and_closed() {
     assert_eq!(d.threads(), threads, "no thread left behind");
 }
 
+/// One Keybindings cycle: `--tools`, its letter on the pinned Keybindings (the level reads the
+/// 100-bind fixture), Esc back to the panel, the box closed by the verb. Returns the reading taken
+/// with the level open and drawn: (PSS, anonymous) in KB.
+fn binds_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "-k", "y", "-s", "3000", "-k", "Escape", "-s", "10000"]);
+    assert!(d.wait_for_count("tools: binds shown (100 binds, 5 groups)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
+    let open = (d.pss_kb(), anon_kb(d));
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    // Past the Escape: back on the panel, then closed.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (toggle)", n, DELAY), "{:?}", d.log());
+    drop(typing);
+    std::thread::sleep(Duration::from_secs(1));
+    open
+}
+
+/// The Keybindings level on Mango (a FakeMango is the compositor read) with `binds_files` naming
+/// an invented 100-bind file in 5 groups: open, Esc, closed, 20 cycles. The bindings are read at
+/// each open and dropped with their level: the bounds are on the daemon's anonymous memory, as
+/// for `tools_pss_open_and_closed`.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("binds-cost", 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let file = sway.runtime.join("binds.conf");
+    let mut text = String::from("# Invented key bindings for the memory test.\n");
+    for g in 0..5 {
+        text.push_str(&format!("# ── Group {g} ──\n"));
+        for k in 0..20 {
+            text.push_str(&format!("bind=SUPER+SHIFT,k{g}{k},spawn,foo-term --class tool-{g}-{k} # Open tool {g} {k}\n"));
+        }
+    }
+    std::fs::write(&file, &text).unwrap();
+    let toml = format!(
+        "[tools]\nroot = [\"tools.binds\"]\nkeys = {{ \"tools.binds\" = \"y\" }}\nbinds_files = [{:?}]\n",
+        file.display().to_string()
+    );
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(&toml),
+            backend: Backend::Mango(&mango.socket),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    let threads = d.threads();
+    let cold = (d.pss_kb(), anon_kb(&d));
+    let first_open = binds_cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    let open = binds_cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    for n in 3..=22 {
+        binds_cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!(
+        "binds PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
+        cold.0,
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "binds anonymous (KB): cold {}, closed {}, open {} ({:+}), closed again {} ({:+}), after 20 more {} ({:+}); threads {threads} -> {}",
+        cold.1,
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64,
+        d.threads()
+    );
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+    assert!(!d.log().iter().any(|l| l.contains("tools: binds cut") || l.contains("not understood")), "{:?}", d.log());
+}
+
 /// A `choices_cmd` printing 2,000 lines of 200 bytes (400 KB: past the reader's 256 KiB cap, so
 /// the cap is what is measured), drilled into, then closed.
 fn choices_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {

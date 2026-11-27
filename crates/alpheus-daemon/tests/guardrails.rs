@@ -6208,6 +6208,32 @@ fn the_tools_logs_are_fixed_words() {
     assert!(seen >= 8 && found, "the log calls were found: {seen}");
 }
 
+/// The Keybindings level's log lines: the pure `binds::notes` words them in fixed words and counts
+/// (never a path, combo, command or group name), and the glue hands them to the log through the
+/// one relay `|m| log(m)`, nothing else of a load.
+#[test]
+fn binds_logs_are_fixed_words_and_counts() {
+    let files = source_files();
+    let text = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
+    let pure = text("launcher/tools/binds/mod.rs");
+    let mut notes = function_body(&pure, "pub fn notes(").to_string();
+    for line in ["tools: binds no source", "tools: binds shown (", "lines not understood", "tools: binds cut ("] {
+        assert!(notes.contains(line), "binds::notes says {line:?}");
+    }
+    assert!(notes.matches("note(").count() >= 4, "the four lines are note calls");
+    // The counts, each a number of the load: nothing else may be formatted into a line.
+    for count in ["{n}", "{groups}", "{skipped}", "{files}", "{bytes}", "{binds}", "{lines}", "{vars}"] {
+        notes = notes.replace(count, "");
+    }
+    assert_eq!(tools_unfixed_log(&notes), None, "a binds note names more than fixed words and counts");
+    let glue = text("launcher/tools/app.rs");
+    let open = function_body(&glue, "fn tools_open_binds(");
+    assert!(open.contains("binds::notes(&b, &mut |m| log(m))"), "the glue logs a load through binds::notes");
+    assert_eq!(open.matches("log(").count(), 1, "and nothing else");
+}
+
 #[test]
 fn the_tools_log_guardrail_helper_bites() {
     assert_eq!(tools_unfixed_log("log(\"tools: read failed\");"), None);

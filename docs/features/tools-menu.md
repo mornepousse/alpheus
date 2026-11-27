@@ -20,8 +20,8 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
   captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
   picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
   Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a
-  process, Lock, the Power menu, an optional "Reload the bar", and the Diagnostics entries (network
-  scan, USB events and reset, the journal presets). The table has 45.
+  process, Keybindings (on Mango and Sway), Lock, the Power menu, an optional "Reload the bar", and
+  the Diagnostics entries (network scan, USB events and reset, the journal presets). The table has 46.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
   with a confirmation, an on/off state, choices, or a text typed in the box.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.
@@ -158,6 +158,39 @@ choice `Cancel shutdown (in 1h20)` cancels it. A duration replaces the shutdown 
 chip, the warning a minute before, the state file, `--timer shutdown`) is the timer's: see
 [the focus timer](timer.md#the-scheduled-shutdown).
 
+### Keybindings
+
+Tools › System › Keybindings lists the compositor's key bindings, read from its config files when the
+level opens (shown only on Mango and Sway; on another compositor the entry hides). Enter opens it in
+the box; Esc, ← on an empty query or Backspace go back to where it was opened, the panel on the tab it
+was on. Nothing of it is kept once it is left.
+
+- **Sources:** `[tools] binds_files` when set (at most 8 paths, `~/` is your home folder), else the
+  compositor's own config: Mango's `$XDG_CONFIG_HOME/mango/config.conf` (else
+  `~/.config/mango/config.conf`), following its `source=` lines (relative to the file that names them,
+  or `~/…`). Sway's config is read but its lines are not listed yet.
+- **What a line becomes:** `bind`, `bindl`, `bindsl` and `bindr` (`MODS,key,function[,args]`) are
+  listed; `mousebind`, `axisbind`, `gesturebind` and every other key are skipped silently. `$NAME`
+  is replaced when an `env=NAME,value` of the files read defines it, else kept as written.
+- **Groups:** a comment line `# ── Name ──` opens the group `Name`; the binds before any are in
+  `General`. All lists every group as a section, in the order the groups are first met; **Tab** and
+  **Shift+Tab** move to one group's own tab and back, wrapping.
+- **Descriptions:** the bind's trailing `# comment`, else the comment line right above it (not across
+  a blank line, not a group's header), else the function in words (`spawn,firefox` is
+  `Run firefox`, `view,2` is `Go to desktop 2`, `killclient` is `Close window`; an unknown function
+  shows as written).
+- **Keys:** each row is `<combo>  <description>`, the combo as `Super+Shift+A`; letters are always
+  text here, so typing filters at once, by description first, then by combo and command, the results
+  grouped by group in the order of their best match. Enter and → on a binding do nothing: it is shown,
+  never run.
+- **Bounds:** 8 files, 512 KiB in all, 1,000 bindings, 32 groups, 64 variables, a line cut at
+  1 KiB; past one, the first are kept and the log says `tools: binds cut (…)` in counts. A file
+  sourced twice is read once; a FIFO, a device or a folder named as a file is refused. Control
+  characters are dropped from what is shown.
+- **What the log says**, in counts only: `tools: binds shown (N binds, M groups)`, `tools: binds N
+  lines not understood` when a bind line lacks its key or function, and `tools: binds no source`
+  when no file was readable.
+
 ### The diagnostics tools
 
 The scans, the USB events and the USB reset run in `terminal_hold`, so `sudo` can ask there and the
@@ -252,7 +285,7 @@ twice in Mod+Space's search: drop the source once the menu is yours).
 
 In `crates/alpheus-daemon/src/launcher/tools/`:
 
-- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 45
+- `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 46
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
   entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
 - `panel.rs`: pure. The command panel's model: its tabs (`Tab`), the rows of the open tab (All's
@@ -261,6 +294,11 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
   what a tool is. `nav.rs`'s `ToolsState` holds the panel, its box size (fixed for the open), the
   picked chips and the tab moves; `catalog.rs` holds the descriptions, the default letters and
   `claim_letters`.
+- `binds/`: pure. The Keybindings level's parser (`mod.rs`: `roots`, `load` and its bounds behind the
+  `Files` seam, `rows` and `group_hits` for the level's list, `notes` for its log lines; `mango.rs`;
+  `describe.rs`: combos and the functions in words). `nav.rs` holds the level (`Level::Binds`) and
+  the bindings while it is open; `app.rs` is the one file that reads the disk for it (`RealFiles`),
+  at once and once per open, on `Outcome::OpenBinds`.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
   `choices_cmd`, through the executor's `capture`.
 - `app.rs`: the wiring on the daemon's state. `context` builds the `Context` from the configuration and

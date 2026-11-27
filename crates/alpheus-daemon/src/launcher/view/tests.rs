@@ -1196,6 +1196,7 @@ fn every_builtin() -> crate::launcher::tools::catalog::Context {
         annotate: true,
         ocr: true,
         record: true,
+        binds: true,
     }
 }
 

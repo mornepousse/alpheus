@@ -510,7 +510,7 @@ fn enter_on_a_plain_tool_runs_it_and_a_builtin_is_handed_out() {
     l.set_tools(catalog);
     typed(&mut l, "notes");
     let Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, .. })) = l.key(Key::Enter) else { panic!() };
-    assert_eq!(crate::launcher::tools::catalog::BUILTINS[b].id, "notes");
+    assert_eq!(BUILTINS[b].id, "notes");
 }
 
 #[test]
@@ -829,7 +829,7 @@ fn diag_box() -> Launcher {
 }
 
 fn builtin_index(id: &str) -> usize {
-    crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == id).unwrap()
+    BUILTINS.iter().position(|b| b.id == id).unwrap()
 }
 
 fn into_scan_choices(l: &mut Launcher) {
@@ -922,7 +922,7 @@ fn a_builtin_choice_activates_the_builtin_with_its_label() {
     select(&mut l, "Schedule shutdown");
     assert_eq!(l.key(Key::Enter), Outcome::Redraw, "an entry with choices drills");
     assert_eq!(texts(&l), ["Cancel shutdown (in 1h20)", "30 min", "1 h", "1 h 30", "2 h", "3 h"]);
-    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let b = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     select(&mut l, "1 h 30");
     assert_eq!(
         l.key(Key::Enter),
@@ -983,7 +983,7 @@ fn a_builtin_choice_is_reachable_from_the_flat_search() {
     typed(&mut l, "shutdown 2 h");
     let t = selected_text(&l);
     assert!(t.contains("2 h"), "{t}");
-    let b = crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
+    let b = BUILTINS.iter().position(|b| b.id == "shutdown").unwrap();
     // The flat row of a fixed choice: Enter drills nowhere, it activates.
     assert_eq!(
         l.key(Key::Enter),

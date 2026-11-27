@@ -29,6 +29,7 @@ fn all() -> Context {
         annotate: true,
         ocr: true,
         record: true,
+        binds: true,
     }
 }
 
@@ -71,9 +72,9 @@ fn every_builtin_has_a_short_description() {
 /// journal", not "NetworkManager's journal"). The verbs the table uses; a new one is added here.
 #[test]
 fn every_description_starts_with_a_verb() {
-    const VERBS: [&str; 20] = [
+    const VERBS: [&str; 21] = [
         "Set", "Pick", "Connect", "Open", "Turn", "Keep", "Jot", "Find", "Copy", "Select", "Record", "End", "Power", "Lock", "Run", "Scan",
-        "Watch", "Restart", "Read", "Follow",
+        "Watch", "Restart", "Read", "Follow", "Show",
     ];
     for b in &BUILTINS {
         let first = b.description.split([' ', ',']).next().unwrap_or_default();
@@ -131,6 +132,7 @@ fn the_table_is_the_specs() {
             "capture.ocr",
             "shutdown",
             "process.kill",
+            "tools.binds",
             "lock",
             "power",
             "reload",
@@ -186,6 +188,7 @@ fn the_table_is_the_specs() {
             "Text from area (OCR)",
             "Schedule shutdown",
             "Kill a process",
+            "Keybindings",
             "Lock",
             "Power menu",
             "Reload the bar",
@@ -209,7 +212,7 @@ fn the_table_is_the_specs() {
     expected.extend([control; 8]);
     expected.extend([utilities; 4]);
     expected.extend([captures; 9]);
-    expected.extend([system; 2]);
+    expected.extend([system; 3]);
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
@@ -230,6 +233,7 @@ fn the_table_is_the_specs() {
     assert_eq!(action("tab.network"), BuiltinAction::Tab);
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
     assert_eq!(action("process.kill"), BuiltinAction::Kill);
+    assert_eq!(action("tools.binds"), BuiltinAction::Binds);
     // Each capture entry replays the verb of its own name.
     for (id, verb) in [
         ("capture.full", CaptureVerb::Full),
@@ -244,6 +248,22 @@ fn the_table_is_the_specs() {
     ] {
         assert_eq!(action(id), BuiltinAction::Capture(verb), "{id}");
     }
+}
+
+/// Keybindings shows only on a compositor whose key bindings `binds/` reads (`Context::binds`:
+/// Mango, Sway), and lists under System with nothing to choose, ask or confirm.
+#[test]
+fn the_binds_builtin_shows_only_with_a_known_dialect() {
+    let binds = BUILTINS.iter().find(|b| b.id == "tools.binds").unwrap();
+    assert_eq!((binds.label, binds.category, binds.glyph, binds.key), ("Keybindings", "System", '\u{F030C}', None));
+    assert_eq!(binds.description, "Show the compositor's key bindings");
+    assert!(!shown(binds, &Context { binds: false, ..all() }), "an unknown compositor hides it");
+    assert!(shown(binds, &Context { binds: true, ..Context::default() }));
+    let (cat, _) = build("", &Context { binds: false, ..all() });
+    assert!(!builtin_ids(&cat).contains(&"tools.binds"));
+    let (cat, _) = build("", &all());
+    let e = cat.entries.iter().find(|e| e.name == "Keybindings").unwrap();
+    assert_eq!((&e.choices, e.confirm, e.ask.as_deref(), e.has_state), (&Choices::None, false, None, false));
 }
 
 #[test]
@@ -267,7 +287,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes, emoji, the kill list and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 15] = [
+    let flips: [Flip; 16] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -295,6 +315,7 @@ fn shown_follows_the_context() {
         (|c| c.nmap = true, &["diag.scan"]),
         (|c| c.usb_reset = true, &["diag.usb_reset"]),
         (|c| c.shutdown = true, &["shutdown"]),
+        (|c| c.binds = true, &["tools.binds"]),
         (
             |c| {
                 c.captures = true;
@@ -316,7 +337,7 @@ fn shown_follows_the_context() {
         flip_off(&mut off, rows);
         assert_eq!(before.len() - ids_shown(&off).len(), rows.len());
     }
-    assert_eq!(ids_shown(&all()).len(), 43, "the table's 45, less the two Record rows hidden while recording");
+    assert_eq!(ids_shown(&all()).len(), 44, "the table's 46, less the two Record rows hidden while recording");
 }
 
 /// `all()` with the flag behind `rows` turned off.
@@ -337,6 +358,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "diag.usb_reset" => c.usb_reset = false,
         "shutdown" => c.shutdown = false,
         "capture.full" => c.captures = false,
+        "tools.binds" => c.binds = false,
         other => panic!("{other}"),
     }
 }
@@ -354,11 +376,11 @@ fn builtin_ids(cat: &Catalog) -> Vec<&'static str> {
 #[test]
 fn hide_and_builtins_false() {
     let (cat, notes) = build("", &all());
-    assert_eq!(builtin_ids(&cat).len(), 43);
+    assert_eq!(builtin_ids(&cat).len(), 44);
     assert!(notes.is_empty());
     let (cat, _) = build("[tools]\nhide = [\"tab.power\", \"notes\"]\n", &all());
     let ids = builtin_ids(&cat);
-    assert_eq!(ids.len(), 41);
+    assert_eq!(ids.len(), 42);
     assert!(!ids.contains(&"tab.power") && !ids.contains(&"notes"));
     let (cat, _) = build("[tools]\nbuiltins = false\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\n", &all());
     assert!(builtin_ids(&cat).is_empty(), "no built-in, not even a root one");

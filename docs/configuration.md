@@ -564,6 +564,7 @@ bound the first ones are kept, with one log line of counts.
 | `panel` | bool | `true` | | `false`: Super+X opens on the category list instead of the command panel, with no letters. |
 | `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that runs a built-in from the command panel, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
+| `binds_files` | list of paths | `[]` | at most 8, none blank, no control character | The files the Keybindings level reads (each with the files it includes), a leading `~/` being your home folder; `[]`: the compositor's own config (Mango `$XDG_CONFIG_HOME/mango/config.conf`, else `~/.config/mango/config.conf`; Sway `$XDG_CONFIG_HOME/sway/config`, else `~/.config/sway/config`). Read only, when the level opens. |
 
 `[tools.builtin]`:
 
@@ -624,6 +625,7 @@ root = []            # built-in ids also listed at the root, first, in this orde
 panel = true         # false: Super+X opens on the category list, with no letters
 keys = {}            # built-in id to the letter that runs it from the panel, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
+binds_files = []     # the files Keybindings reads (at most 8, "~/" is home); [] reads the compositor's own config
 
 [tools.builtin]
 usb_reset = ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]   # "Reset USB (xHCI)", in terminal_hold after a second Enter; [] hides it

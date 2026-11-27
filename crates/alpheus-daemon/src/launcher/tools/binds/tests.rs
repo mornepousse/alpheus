@@ -349,3 +349,109 @@ fn roots_follow_xdg_then_home() {
         Roots::Each(vec![PathBuf::from("/h/k.conf"), PathBuf::from("/abs/m.conf")])
     );
 }
+
+/// Three groups, the second split across two files: binds in file order 0..=5.
+fn grouped() -> Binds {
+    let files = FakeFiles::with(&[
+        (
+            "/c/config.conf",
+            "source=./more.conf\nbind=SUPER,a,spawn,foo-term # Open term\n# ── Windows ──\nbind=SUPER,q,killclient\n# ── Desktops ──\nbind=SUPER,1,view,1\n",
+        ),
+        (
+            "/c/more.conf",
+            "bind=SUPER,b,spawn,browser\n# ── Windows ──\nbind=SUPER,f,togglefullscreen\nbind=SUPER,t,spawn,term-two # Second term\n",
+        ),
+    ]);
+    load(Dialect::Mango, &first_of("/c/config.conf"), &files)
+}
+
+#[test]
+fn open_binds_lists_all_then_a_group_tab() {
+    let b = grouped();
+    assert_eq!(b.groups, ["General", "Windows", "Desktops"]);
+    let groups: Vec<usize> = b.binds.iter().map(|x| x.group).collect();
+    assert_eq!(groups, [0, 1, 2, 0, 1, 1], "file order: config.conf, then more.conf");
+    use PanelRow::{Section, Tool};
+    assert_eq!(
+        rows(&b, 0),
+        [
+            Section(Label::Group(0)),
+            Tool(0),
+            Tool(3),
+            Section(Label::Group(1)),
+            Tool(1),
+            Tool(4),
+            Tool(5),
+            Section(Label::Group(2)),
+            Tool(2)
+        ],
+        "All: every group in group order, its binds in file order"
+    );
+    assert_eq!(rows(&b, 2), [Tool(1), Tool(4), Tool(5)], "tab 2 is group 1, with no section");
+    assert!(rows(&b, 9).is_empty(), "no such tab");
+
+    // A group with no bind left (none here once a header past the bound) shows no section.
+    let mut b = b;
+    b.groups.push("Empty".into());
+    assert!(!rows(&b, 0).contains(&Section(Label::Group(3))));
+    assert!(rows(&Binds::default(), 0).is_empty());
+}
+
+#[test]
+fn typing_groups_the_results_by_their_best_hit() {
+    let b = grouped();
+    let rows: Vec<ToolRow> = (0..b.binds.len())
+        .map(|i| ToolRow { id: RowId::Bind(i), icon: None, text: String::new(), trail: crate::launcher::tools::nav::Trail::None })
+        .collect();
+    let hit = |i: usize| Hit { source: Source::Tool(i), score: 0, frecency: 0 };
+    // Ranked: group 1's bind 5, group 0's bind 0, group 1's bind 4, group 2's bind 2.
+    let got = group_hits(&[hit(5), hit(0), hit(4), hit(2)], &rows, &b);
+    assert_eq!(got, [hit(5), hit(4), hit(0), hit(2)], "Windows first (its best hit), its hits in rank order, then General, then Desktops");
+    assert!(group_hits(&[], &rows, &b).is_empty());
+}
+
+#[test]
+fn a_tilde_source_is_left_to_the_glue() {
+    let files = FakeFiles::with(&[("/c/config.conf", "source=~/keys.conf\nsource=./here.conf\n")]);
+    load(Dialect::Mango, &first_of("/c/config.conf"), &files);
+    assert_eq!(files.reads("~/keys.conf"), 1, "kept as written: the glue's `Files` knows the home folder");
+    assert_eq!(files.reads("/c/~/keys.conf"), 0);
+    assert_eq!(files.reads("/c/here.conf"), 1);
+}
+
+#[test]
+fn the_notes_are_fixed_words_and_counts() {
+    let mut said = Vec::new();
+    notes(&Binds::default(), &mut |m| said.push(m.to_string()));
+    assert_eq!(said, ["tools: binds no source"]);
+
+    let secret = "SECRET";
+    let b = Binds {
+        groups: vec![format!("{secret}-group")],
+        binds: vec![Bind {
+            combo: format!("{secret}+A"),
+            description: secret.into(),
+            command: format!("spawn,{secret}"),
+            group: 0,
+            file: 0,
+        }],
+        files: vec![format!("{secret}.conf")],
+        not_understood: 3,
+        found: true,
+        cut: Cut { files: 1, bytes: 2, binds: 3, groups: 4, lines: 5, vars: 6 },
+    };
+    let mut said = Vec::new();
+    notes(&b, &mut |m| said.push(m.to_string()));
+    assert_eq!(
+        said,
+        [
+            "tools: binds shown (1 binds, 1 groups)",
+            "tools: binds 3 lines not understood",
+            "tools: binds cut (files 1, bytes 2, binds 3, groups 4, lines 5, vars 6)",
+        ]
+    );
+    assert!(said.iter().all(|l| !l.contains(secret)));
+    let mut said = Vec::new();
+    notes(&Binds { not_understood: 0, cut: Cut::default(), ..b }, &mut |m| said.push(m.to_string()));
+    assert_eq!(said.len(), 1, "nothing skipped, nothing cut: one line");
+}

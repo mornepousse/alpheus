@@ -3,7 +3,8 @@
 //! thread, no command, no log; the model (`Launcher`) owns the query and the selection and ranks
 //! the rows with its own `Ranker`, the host runs the jobs and arms the deadline.
 
-use super::catalog::{Catalog, Choices, EntryKind, Item};
+use super::binds::{self, Binds};
+use super::catalog::{BUILTINS, BuiltinAction, Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
 use super::panel::{Panel, PanelRow, window};
 use crate::launcher::matching::ToolHitRow;
@@ -56,6 +57,8 @@ pub enum Level {
     Prompt {
         entry: usize,
     },
+    /// The compositor's key bindings (`ToolsState::binds`), on the tab `bind_tab`.
+    Binds,
 }
 
 /// A row's identity, stable while the rows around it change: the question and the selection
@@ -68,6 +71,8 @@ pub enum RowId {
     Choice(usize, usize),
     /// The prompt row of the entry.
     Prompt(usize),
+    /// A key binding of the Keybindings level: an index into `Binds::binds`.
+    Bind(usize),
 }
 
 /// What a row shows at its right edge.
@@ -132,6 +137,8 @@ pub enum Step {
     /// Too soon after the question: nothing.
     Wait,
     Run(ToolAction),
+    /// The Keybindings built-in: the glue reads the bindings, then `open_binds` opens the level.
+    Binds,
 }
 
 pub struct ToolsState {
@@ -172,6 +179,10 @@ pub struct ToolsState {
     recent: Vec<usize>,
     /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search, if any.
     picked: Vec<Option<usize>>,
+    /// The key bindings the open Keybindings level lists, and its tab (0: All, k: group k-1):
+    /// held only while that level is open, dropped when it is left.
+    binds: Option<Binds>,
+    bind_tab: usize,
 }
 
 impl ToolsState {
@@ -195,6 +206,8 @@ impl ToolsState {
             home: None,
             recent: Vec::new(),
             picked: Vec::new(),
+            binds: None,
+            bind_tab: 0,
         };
         state.build_flat();
         state
@@ -413,6 +426,7 @@ impl ToolsState {
     /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
+            Level::Binds => self.bind_rows(),
             Level::Root if self.home.is_some() => self.home.iter().flat_map(Panel::tools).filter_map(|e| self.entry_row(e)).collect(),
             Level::Root => self
                 .catalog
@@ -447,6 +461,67 @@ impl ToolsState {
         }
     }
 
+    /// The open tab's key bindings, in the order its list draws them: `<combo>  <description>`,
+    /// their group at the right.
+    fn bind_rows(&self) -> Vec<ToolRow> {
+        let Some(b) = self.binds.as_ref() else { return Vec::new() };
+        binds::rows(b, self.bind_tab)
+            .into_iter()
+            .filter_map(|r| if let PanelRow::Tool(i) = r { Some(i) } else { None })
+            .filter_map(|i| {
+                let bind = b.binds.get(i)?;
+                let group = b.groups.get(bind.group).cloned().unwrap_or_default();
+                Some(ToolRow {
+                    id: RowId::Bind(i),
+                    icon: None,
+                    text: format!("{}  {}", bind.combo, bind.description),
+                    trail: Trail::Category(group),
+                })
+            })
+            .collect()
+    }
+
+    /// The key bindings the open Keybindings level lists: none at any other level.
+    pub fn binds(&self) -> Option<&Binds> {
+        self.binds.as_ref().filter(|_| self.level == Level::Binds)
+    }
+
+    /// Whether bindings are held at all, at any level: what leaving the level must have freed.
+    #[cfg(test)]
+    pub fn holds_binds(&self) -> bool {
+        self.binds.is_some()
+    }
+
+    /// The Keybindings level's open tab: 0 is All, k is group k-1.
+    pub fn bind_tab(&self) -> usize {
+        self.bind_tab
+    }
+
+    /// Opens the Keybindings tab `step` places from the open one, wrapping: false off that level
+    /// or with one group at most (All is then that group).
+    pub fn next_bind_tab(&mut self, step: i32) -> bool {
+        let Some(groups) = self.binds().map(|b| b.groups.len()).filter(|&n| n > 1) else { return false };
+        let n = i64::try_from(groups + 1).unwrap_or(1);
+        let to = (i64::try_from(self.bind_tab).unwrap_or(0) + i64::from(step)).rem_euclid(n);
+        self.bind_tab = usize::try_from(to).unwrap_or(0);
+        self.rev += 1;
+        true
+    }
+
+    /// Opens the Keybindings level on `binds`, on its All tab (`selected`: the row to restore on
+    /// the level left, by `up`).
+    pub fn open_binds(&mut self, binds: Binds, selected: usize) {
+        self.open(Level::Binds, selected);
+        self.binds = Some(binds);
+        self.bind_tab = 0;
+    }
+
+    /// Drops the bindings held: what leaving the Keybindings level, by any way, does.
+    fn drop_binds(&mut self) {
+        self.binds = None;
+        self.bind_tab = 0;
+    }
+
     fn category_row(&self, c: usize) -> Option<ToolRow> {
         let category = self.catalog.categories.get(c)?;
         Some(ToolRow { id: RowId::Category(c), icon: Some(category.icon), text: category.name.clone(), trail: Trail::Chevron })
@@ -461,6 +536,17 @@ impl ToolsState {
                 Some(Choices::Fixed(list)) => list.get(k).map(|c| self.catalog.choice_key(e, c)),
                 _ => None,
             },
+            // A binding is searched by its description, then by its combo and command; never recorded.
+            RowId::Bind(i) => {
+                let bind = self.binds.as_ref().and_then(|b| b.binds.get(i));
+                return ToolHitRow {
+                    name: bind.map(|b| b.description.clone()).unwrap_or_default(),
+                    path_text: bind.map(|b| format!("{} {}", b.combo, b.command)).unwrap_or_default(),
+                    key: String::new(),
+                    parent: None,
+                    category: None,
+                };
+            }
             RowId::Category(_) | RowId::Prompt(_) => None,
         };
         ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default(), parent: None, category: None }
@@ -487,6 +573,10 @@ impl ToolsState {
                 None
             }
             Level::Choices { entry } | Level::Prompt { entry } => Some(entry),
+            Level::Binds => {
+                parts.push("Keybindings".to_string());
+                None
+            }
         };
         if let Some(e) = entry.and_then(|e| self.catalog.entries.get(e)) {
             parts.extend(e.category.and_then(|c| self.catalog.categories.get(c)).map(|c| c.name.clone()));
@@ -532,6 +622,7 @@ impl ToolsState {
     pub fn reset(&mut self) {
         self.stack.clear();
         self.level = Level::Root;
+        self.drop_binds();
         self.question = None;
         self.dynamic = None;
         self.reading = false;
@@ -561,6 +652,9 @@ impl ToolsState {
             self.dynamic = None;
             self.reading = false;
             self.token += 1;
+        }
+        if self.level == Level::Binds {
+            self.drop_binds();
         }
         self.level = level;
         self.question = None;
@@ -596,6 +690,10 @@ impl ToolsState {
             }
             RowId::Entry(e) => {
                 let Some(entry) = self.catalog.entries.get(e) else { return Step::Drill(None) };
+                if matches!(entry.kind, EntryKind::Builtin(b) if BUILTINS.get(b).is_some_and(|b| b.action == BuiltinAction::Binds)) {
+                    self.question = None;
+                    return Step::Binds;
+                }
                 if !matches!(entry.choices, Choices::None) {
                     let selected = self.through_category(e, selected);
                     return self.drill_choices(config, e, selected);
@@ -626,8 +724,9 @@ impl ToolsState {
                 let action = self.action(e, Some(choice), None);
                 self.answer(row, confirm, action, now)
             }
-            // Its answer is the typed text: `submit`.
-            RowId::Prompt(_) => Step::Wait,
+            // A prompt's answer is the typed text (`submit`); a binding is shown, never run (spec
+            // 2026-11-27-session-binds-design.md, "Cheatsheet").
+            RowId::Prompt(_) | RowId::Bind(_) => Step::Wait,
         }
     }
 
@@ -743,6 +842,7 @@ impl ToolsState {
     pub fn goto_entry(&mut self, entry: usize) {
         self.stack.clear();
         self.level = Level::Root;
+        self.drop_binds();
         self.question = None;
         self.cancel_read();
         self.rev += 1;

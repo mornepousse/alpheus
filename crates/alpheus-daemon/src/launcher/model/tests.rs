@@ -1890,6 +1890,7 @@ fn panel_context() -> crate::launcher::tools::catalog::Context {
         annotate: true,
         ocr: true,
         record: true,
+        binds: true,
     }
 }
 
@@ -2505,4 +2506,238 @@ fn a_click_on_a_tab_opens_it() {
     // No panel: nothing to open.
     let mut l = panel_box("[tools]\npanel = false\n");
     assert_eq!(l.click_tab(0), Outcome::Nothing);
+}
+
+// --- the Keybindings level ---
+
+use crate::launcher::tools::binds::{Bind, Binds};
+
+/// Invented bindings: General, Windows, Desktops (groups 0, 1, 2).
+fn some_binds() -> Binds {
+    let bind = |combo: &str, description: &str, command: &str, group: usize| Bind {
+        combo: combo.into(),
+        description: description.into(),
+        command: command.into(),
+        group,
+        file: 0,
+    };
+    Binds {
+        groups: vec!["General".into(), "Windows".into(), "Desktops".into()],
+        binds: vec![
+            bind("Super+Return", "Open term", "spawn,foo-term", 0),
+            bind("Super+Q", "Close window", "killclient", 1),
+            bind("Super+1", "Go to desktop 1", "view,1", 2),
+            bind("Super+B", "Run browser", "spawn,browser", 0),
+            bind("Super+F", "Toggle fullscreen", "togglefullscreen", 1),
+            bind("Super+T", "Second term", "spawn,term-two", 1),
+            bind("Super+M", "Launcher", "spawn,term-menu", 2),
+            bind("Super+L", "Lock", "spawn,termlock", 0),
+        ],
+        files: vec!["config.conf".into()],
+        not_understood: 0,
+        found: true,
+        cut: Default::default(),
+    }
+}
+
+/// Selects the row of catalog entry `e` in the open level's list.
+fn select_entry(l: &mut Launcher, e: usize) {
+    l.selected = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(e))).unwrap();
+}
+
+/// A panel box at the Keybindings level, opened from its built-in on the All tab.
+fn binds_box(text: &str) -> Launcher {
+    let mut l = panel_box(text);
+    let e = builtin_entry(&l, "tools.binds");
+    select_entry(&mut l, e);
+    assert_eq!(l.key(Key::Enter), Outcome::OpenBinds);
+    l.open_binds(some_binds());
+    l
+}
+
+/// The bind indexes the list shows, in order.
+fn bind_hits(l: &Launcher) -> Vec<usize> {
+    l.results
+        .iter()
+        .map(|h| match h.source {
+            Source::Tool(i) => match l.tool_rows()[i].id {
+                RowId::Bind(b) => b,
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn enter_on_the_binds_builtin_opens_the_level() {
+    let mut l = panel_box("");
+    let e = builtin_entry(&l, "tools.binds");
+    select_entry(&mut l, e);
+    let from = l.selected;
+    let now = Instant::now();
+    let config = l.config.tools.clone();
+    assert_eq!(l.tools.as_mut().unwrap().enter(&config, RowId::Entry(e), from, now), Step::Binds, "the state opens nothing by itself");
+    let o = l.key(Key::Enter);
+    assert_eq!(o, Outcome::OpenBinds, "no Activation: the host reads, then opens");
+    assert!(!l.at_binds(), "nothing open until the host hands the bindings");
+    l.open_binds(some_binds());
+    assert!(l.at_binds());
+    let t = l.tools().unwrap();
+    assert_eq!(t.level(), Level::Binds);
+    assert_eq!(t.breadcrumb(), "Tools › Keybindings");
+    assert_eq!(t.bind_tab(), 0);
+    assert!(t.panel().is_none(), "the panel's home is not drawn below its root");
+    assert_eq!(bind_hits(&l), [0, 3, 7, 1, 4, 5, 2, 6], "All: by group, in group order");
+    let first = &l.tool_rows()[0];
+    assert_eq!((first.icon, first.text.as_str()), (None, "Super+Return  Open term"));
+    assert_eq!(first.trail, crate::launcher::tools::nav::Trail::Category("General".into()));
+    // Back where Enter was.
+    l.key(Key::Escape);
+    assert_eq!(l.selected, from);
+}
+
+#[test]
+fn tab_and_shift_tab_switch_bind_tabs_and_wrap() {
+    let mut l = binds_box("");
+    let tab = |l: &Launcher| l.tools().unwrap().bind_tab();
+    assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+    assert_eq!((tab(&l), bind_hits(&l)), (1, vec![0, 3, 7]), "General alone");
+    l.key(Key::Tab);
+    l.key(Key::Tab);
+    assert_eq!((tab(&l), bind_hits(&l)), (3, vec![2, 6]));
+    l.key(Key::Tab);
+    assert_eq!(tab(&l), 0, "past the last group: All");
+    l.key(Key::BackTab);
+    assert_eq!(tab(&l), 3, "Shift+Tab wraps back");
+    // One group: nothing to switch to.
+    let mut one = some_binds();
+    one.groups.truncate(1);
+    one.binds.iter_mut().for_each(|b| b.group = 0);
+    let mut l = panel_box("");
+    let e = builtin_entry(&l, "tools.binds");
+    select_entry(&mut l, e);
+    l.key(Key::Enter);
+    l.open_binds(one);
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing);
+    assert_eq!(tab(&l), 0);
+}
+
+#[test]
+fn typing_filters_the_binds_and_groups_results() {
+    let mut l = binds_box("");
+    for c in "term".chars() {
+        l.key(Key::Char(c));
+    }
+    let got = bind_hits(&l);
+    // Descriptions hit: Open term (General), Second term (Windows); the rest only by their
+    // command: Launcher (Desktops), Lock (General).
+    let mut sorted = got.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, [0, 5, 6, 7]);
+    let first = *got.first().unwrap();
+    assert!(first == 0 || first == 5, "a description hit first: {got:?}");
+    // Grouped: Lock (a command hit) comes beside Open term, in General; Launcher's group comes last.
+    let at = |b: usize| got.iter().position(|&x| x == b).unwrap();
+    assert_eq!(at(7), at(0) + 1, "{got:?}");
+    assert_eq!(*got.last().unwrap(), 6, "{got:?}");
+    // On a group's tab only its binds.
+    l.key(Key::CtrlU);
+    l.key(Key::Tab);
+    l.key(Key::Tab);
+    for c in "term".chars() {
+        l.key(Key::Char(c));
+    }
+    assert_eq!(bind_hits(&l), [5]);
+}
+
+#[test]
+fn letters_are_text_in_the_binds_level() {
+    // Notes (`n`) pinned at home, where its capsule shows.
+    let text = "[tools]\nroot = [\"notes\"]\n";
+    let home = panel_box(text);
+    let (top, selected) = home.panel_window();
+    assert!(home.tools.as_ref().is_some_and(|t| t.root_letters(top, selected)));
+    let mut l = binds_box(text);
+    assert!(!l.letters_live());
+    let o = l.key(Key::Char('n'));
+    assert_eq!(o, Outcome::Redraw);
+    assert!(!matches!(o, Outcome::Activate(_)));
+    assert_eq!(l.query, "n");
+    assert!(l.at_binds());
+}
+
+#[test]
+fn enter_and_right_on_a_bind_do_nothing() {
+    let mut l = binds_box("");
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.key(Key::Right), Outcome::Nothing);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+    assert!(l.at_binds());
+}
+
+#[test]
+fn the_binds_level_is_dropped_on_up_and_on_close() {
+    // Esc: back to the panel's home, on the tab it was opened from.
+    let mut l = panel_box("");
+    l.key(Key::Tab);
+    let tab = l.tools().unwrap().panel().unwrap().active;
+    let e = builtin_entry(&l, "tools.binds");
+    // Keybindings is on the System tab: go there.
+    while !l.results.iter().any(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(e))) {
+        l.key(Key::Tab);
+    }
+    let tab_open = l.tools().unwrap().panel().unwrap().active;
+    assert_ne!(tab_open, tab);
+    select_entry(&mut l, e);
+    l.key(Key::Enter);
+    l.open_binds(some_binds());
+    l.key(Key::Tab);
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert!(!l.tools().unwrap().holds_binds() && !l.at_binds());
+    assert_eq!(l.tools().unwrap().bind_tab(), 0);
+    assert_eq!(l.tools().unwrap().panel().unwrap().active, tab_open, "the panel's home with its tab");
+    assert_eq!(l.selected_tool(), Some(RowId::Entry(e)));
+
+    // ← on an empty query.
+    let mut l = binds_box("");
+    l.key(Key::Char('x'));
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "with a query, ← stays");
+    l.key(Key::Backspace);
+    assert_eq!(l.key(Key::Left), Outcome::Redraw);
+    assert!(!l.tools().unwrap().holds_binds());
+
+    // A reset, and a jump to an entry.
+    let mut l = binds_box("");
+    l.tools.as_mut().unwrap().reset();
+    assert!(!l.tools().unwrap().holds_binds());
+    let mut l = binds_box("");
+    l.tools.as_mut().unwrap().goto_entry(0);
+    assert!(!l.tools().unwrap().holds_binds());
+
+    // Esc again closes the box; the bindings go with the state.
+    let mut l = binds_box("");
+    l.key(Key::Escape);
+    assert_eq!(l.key(Key::Escape), Outcome::Close);
+    drop(l);
+}
+
+#[test]
+fn keybindings_from_mod_space_opens_in_the_tools_mode() {
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = panel_catalog(&config);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(catalog);
+    for c in "keybindings".chars() {
+        l.key(Key::Char(c));
+    }
+    let e = builtin_entry(&l, "tools.binds");
+    l.selected = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(e))).unwrap();
+    assert_eq!(l.key(Key::Enter), Outcome::OpenBinds);
+    assert_eq!(l.mode, Mode::Tools);
+    l.open_binds(some_binds());
+    assert!(l.at_binds());
+    // Leaving the Tools mode drops them.
+    l.click_mode(Mode::All);
+    assert!(!l.tools().unwrap().holds_binds());
 }

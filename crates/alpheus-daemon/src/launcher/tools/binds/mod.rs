@@ -17,6 +17,9 @@
 pub mod describe;
 mod mango;
 
+use super::nav::{RowId, ToolRow};
+use super::panel::{Label, PanelRow};
+use crate::launcher::matching::{Hit, Source};
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -352,6 +355,70 @@ impl Parse {
 /// bidirectional overrides dropped (the file is the user's, but a pasted line can hold them).
 fn clean(text: &str) -> String {
     alpheus_common::text::clean_line(text, MAX_LINE)
+}
+
+/// What a load is worth saying, in fixed words and counts (never a path, combo, command or group
+/// name): one `note` per line, which the glue logs.
+pub fn notes(b: &Binds, note: &mut dyn FnMut(&str)) {
+    if !b.found {
+        note("tools: binds no source");
+        return;
+    }
+    let (n, groups) = (b.binds.len(), b.groups.len());
+    note(&format!("tools: binds shown ({n} binds, {groups} groups)"));
+    let skipped = b.not_understood;
+    if skipped > 0 {
+        note(&format!("tools: binds {skipped} lines not understood"));
+    }
+    let Cut { files, bytes, binds, groups, lines, vars } = b.cut;
+    if b.cut != Cut::default() {
+        note(&format!("tools: binds cut (files {files}, bytes {bytes}, binds {binds}, groups {groups}, lines {lines}, vars {vars})"));
+    }
+}
+
+/// The level's list on tab `tab` (0: All, k: group k-1): All shows each group that holds a bind
+/// as a section, its binds under it; a group's tab shows its binds alone. `PanelRow::Tool` holds
+/// an index into `Binds::binds`.
+pub fn rows(binds: &Binds, tab: usize) -> Vec<PanelRow> {
+    let of = |g: usize| binds.binds.iter().enumerate().filter(move |(_, b)| b.group == g).map(|(i, _)| PanelRow::Tool(i));
+    match tab.checked_sub(1) {
+        None => {
+            let mut out = Vec::with_capacity(binds.binds.len() + binds.groups.len());
+            for g in 0..binds.groups.len() {
+                let at = out.len();
+                out.extend(of(g));
+                if out.len() > at {
+                    out.insert(at, PanelRow::Section(Label::Group(g)));
+                }
+            }
+            out
+        }
+        Some(g) => of(g).collect(),
+    }
+}
+
+/// A search's `hits` (over the level's `rows`) grouped by group: the groups in the order of their
+/// best hit, the hits of one group in rank order. Stable; a hit on no bind keeps its place last.
+pub fn group_hits(hits: &[Hit], rows: &[ToolRow], binds: &Binds) -> Vec<Hit> {
+    let group = |h: &Hit| match h.source {
+        Source::Tool(i) => match rows.get(i).map(|r| r.id) {
+            Some(RowId::Bind(b)) => binds.binds.get(b).map(|b| b.group),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut order: Vec<Option<usize>> = Vec::new();
+    for h in hits {
+        let g = group(h);
+        if !order.contains(&g) {
+            order.push(g);
+        }
+    }
+    let mut out = Vec::with_capacity(hits.len());
+    for g in order {
+        out.extend(hits.iter().filter(|h| group(h) == g).copied());
+    }
+    out
 }
 
 /// `path` with its `.` components dropped and each `..` taking off the component before, so the

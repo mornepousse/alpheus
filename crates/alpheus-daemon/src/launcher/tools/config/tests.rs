@@ -525,3 +525,19 @@ fn an_entry_key_is_one_lowercase_letter() {
         assert!(parse(&entry(&format!("key = \"{bad}\"\n"))).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn binds_files_holds_at_most_8_paths_none_blank() {
+    assert!(ToolsConfig::default().binds_files.is_empty(), "none by default: the compositor's own config");
+    let list = |n: usize| (1..=n).map(|i| format!("\"~/k{i}.conf\"")).collect::<Vec<_>>().join(", ");
+    let eight = parse(&format!("[tools]\nbinds_files = [{}]\n", list(8))).unwrap().tools;
+    assert_eq!(eight.binds_files.len(), 8);
+    assert_eq!(eight.binds_files[0], "~/k1.conf");
+    let e = parse(&format!("[tools]\nbinds_files = [{}]\n", list(9))).unwrap_err();
+    assert!(e.contains("tools.binds_files") && e.contains('8'), "{e}");
+    for bad in ["\"\"", "\"  \"", "\"a\\u0007b\""] {
+        let e = parse(&format!("[tools]\nbinds_files = [{bad}]\n")).unwrap_err();
+        assert!(e.contains("tools.binds_files"), "{bad}: {e}");
+        assert!(!e.contains("a\u{7}b"), "the path is never quoted: {e}");
+    }
+}
