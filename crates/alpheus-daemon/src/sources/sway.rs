@@ -296,14 +296,16 @@ pub(crate) mod fake {
                                 100 => script.inputs.clone(),
                                 _ => return,
                             };
+                            // The subscribed connection is kept before its answer goes out: once
+                            // answered, the session may publish and the test close it at once.
+                            if kind == 2 && !script.flapper {
+                                *e.lock().unwrap() = c.try_clone().ok();
+                            }
                             if c.write_all(&answer).is_err() {
                                 return;
                             }
-                            if kind == 2 {
-                                if script.flapper {
-                                    return; // dropped: sway gone
-                                }
-                                *e.lock().unwrap() = c.try_clone().ok();
+                            if kind == 2 && script.flapper {
+                                return; // dropped: sway gone
                             }
                         }
                     });
