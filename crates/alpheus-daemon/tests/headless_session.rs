@@ -4645,7 +4645,8 @@ const VOLUME_AT: (u32, u32) = (16, 10);
 
 /// The quick panel's bar (catppuccin dark): the volume and the panel, a private system bus with no
 /// power-profiles-daemon (the D-Bus source settles instead of retrying), the `Fifo` fake pw-dump,
-/// fake `wpctl`, `brightnessctl` and `alpheus-toggle` recording their calls, a fake backlight.
+/// fake `wpctl`, `brightnessctl`, `rfkill` and `alpheus-toggle` recording their calls, a fake
+/// backlight.
 fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     quick_daemon_on(name, QUICK_BAR, extra)
 }
@@ -4663,7 +4664,7 @@ fn quick_daemon_on_outputs(name: &str, outputs: u32, modules: &str, extra: &str)
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    for program in ["wpctl", "brightnessctl", "alpheus-toggle"] {
+    for program in ["wpctl", "brightnessctl", "rfkill", "alpheus-toggle"] {
         fake_recorder(&sway, program);
     }
     fake_backlight(&sway, "intel_backlight", 9696, 19393);
@@ -4986,6 +4987,119 @@ fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
     assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
     assert!(d.wait_for("quick: asked, but the quick module is not in modules", DELAY), "{:?}", d.log());
     assert_eq!(d.count("quick shown"), 0);
+}
+
+/// The radio rows' keys, on in the test bar (both are on by default; said here so the test reads
+/// alone).
+const RADIO_ROWS: &str = "[quick]\nkbd_backlight = true\nairplane = true\n";
+
+/// The program `name` resolves to on the daemon's own PATH, read from its environment (this test's
+/// child, never the session's daemon), as `which` would: the first folder that holds it.
+fn on_the_daemons_path(d: &Daemon, name: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let environ = std::fs::read(format!("/proc/{}/environ", d.pid())).unwrap();
+    let path = environ.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"PATH="))?;
+    std::env::split_paths(std::ffi::OsStr::from_bytes(path)).map(|dir| dir.join(name)).find(|p| p.is_file())
+}
+
+/// `quick_daemon` with the radio rows' keys, a fake keyboard backlight in the harness's LED folder
+/// (`fake::kbd_backlight`, 0 of 2) and a fake rfkill folder (`rfkill0` wlan, `rfkill1` bluetooth,
+/// neither blocked), both read when the panel opens. `rfkill` and `brightnessctl` act on the
+/// machine: before any key, the daemon's PATH is checked to reach the recorders, and only them.
+fn radios_daemon(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let (bus, sway, hypr, d) = quick_daemon(name, RADIO_ROWS);
+    let led = sway.runtime.join("quick-leds/fake::kbd_backlight");
+    std::fs::create_dir_all(&led).unwrap();
+    std::fs::write(led.join("brightness"), "0\n").unwrap();
+    std::fs::write(led.join("max_brightness"), "2\n").unwrap();
+    for (entry, kind) in [("rfkill0", "wlan"), ("rfkill1", "bluetooth")] {
+        let dir = sway.runtime.join("quick-rfkill").join(entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, text) in [("type", kind), ("soft", "0"), ("hard", "0")] {
+            std::fs::write(dir.join(file), format!("{text}\n")).unwrap();
+        }
+    }
+    for program in ["rfkill", "brightnessctl"] {
+        let found = on_the_daemons_path(&d, program);
+        assert_eq!(found, Some(sway.runtime.join("bin").join(program)), "{program}: the recorder, never the machine's");
+        let script = std::fs::read_to_string(found.unwrap()).unwrap();
+        assert!(script.contains(&format!("Fake {program} of the quick settings tests")), "{script}");
+    }
+    (bus, sway, hypr, d)
+}
+
+/// Opens the panel by the verb (its `n`-th open, at the volume row) and returns how many ↓ reach
+/// `row`, from the rows the log names; the bar holds the keyboard once it returns.
+fn open_on_row(sway: &Sway, d: &Daemon, n: usize, row: &str) -> usize {
+    assert_eq!(quick_verb(sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for_count("quick shown (rows: ", n, DELAY), "{:?}", d.log());
+    let line = d.log().into_iter().filter(|l| l.contains("quick shown (rows: ")).nth(n - 1).unwrap();
+    let rows = line.split("(rows: ").nth(1).unwrap().split(';').next().unwrap();
+    let downs = rows.split_whitespace().position(|r| r == row).unwrap_or_else(|| panic!("no {row} row: {line}"));
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "open: the bar is Exclusive");
+    downs
+}
+
+/// ↓ to `row` (`downs` from `open_on_row`), then `key`.
+fn on_row_press(sway: &Sway, downs: usize, key: &'static str) {
+    let mut names = vec!["Down"; downs];
+    names.push(key);
+    keys(sway, &names);
+}
+
+/// The keyboard backlight row: → from level 0 of 2 sets level 1 through `brightnessctl` on the LED
+/// class and the fake device; the log names the level, never the device.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn quick_kbd_backlight_right_sends_brightnessctl_leds() {
+    let (_bus, sway, _hypr, d) = radios_daemon("quick-kbd");
+    let downs = open_on_row(&sway, &d, 1, "kbd-backlight");
+    on_row_press(&sway, downs, "Right");
+    let call = "brightnessctl --class=leds --device=fake::kbd_backlight set 1";
+    assert!(wait_for_call(&sway, "brightnessctl", call), "{:?} {:?}", recorded(&sway, "brightnessctl"), d.log());
+    assert!(d.wait_for("quick: keyboard backlight 1", DELAY), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("fake::")), "the device never reaches the log: {:?}", d.log());
+}
+
+/// The airplane mode row: Space with Wi-Fi and Bluetooth on blocks the three radio types in one
+/// `rfkill` command (the recorder: never the machine's radios).
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn quick_airplane_space_blocks_through_rfkill() {
+    let (_bus, sway, _hypr, d) = radios_daemon("quick-airplane");
+    let downs = open_on_row(&sway, &d, 1, "airplane");
+    on_row_press(&sway, downs, "space");
+    let call = "rfkill block wlan bluetooth wwan";
+    assert!(wait_for_call(&sway, "rfkill", call), "{:?} {:?}", recorded(&sway, "rfkill"), d.log());
+    assert!(d.wait_for("quick: airplane on", DELAY), "{:?}", d.log());
+    assert_eq!(recorded(&sway, "rfkill").len(), 1, "one command: {:?}", recorded(&sway, "rfkill"));
+}
+
+/// After the keyboard backlight's → and airplane mode's Space (their pacing, settle and re-read
+/// timers), the panel closed: neither the loop nor any other thread of the daemon wakes in 5 s.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn at_rest_no_wakeups_after_the_radio_rows() {
+    let (_bus, sway, _hypr, d) = radios_daemon("quick-radios-rest");
+    let downs = open_on_row(&sway, &d, 1, "kbd-backlight");
+    on_row_press(&sway, downs, "Right");
+    assert!(d.wait_for("quick: keyboard backlight 1", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    let downs = open_on_row(&sway, &d, 2, "airplane");
+    on_row_press(&sway, downs, "space");
+    assert!(d.wait_for("quick: airplane on", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for_count("popup closed (escape)", 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 2, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // wtype's keyboard going settles
+    away_from_the_minute();
+    thread::sleep(Duration::from_millis(300));
+    let (whole, main, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks().saturating_sub(ticks), Duration::from_secs(5), "the daemon");
+    assert_eq!(d.main_thread_wakeups().saturating_sub(main), 0, "the loop thread at rest: {:?}", d.log());
+    assert_eq!(d.wakeups().saturating_sub(whole), 0, "the whole daemon at rest: {:?}", d.log());
 }
 
 /// The network module and the panel; `More…` a fake; the backlight directory one with no device
