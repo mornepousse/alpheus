@@ -30,7 +30,7 @@
 //! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia), also the card's driver for usage; "": automatic
 //! gpu_metric = "auto"   # "auto" | "usage" | "temp" | "both": auto shows usage when a card offers it (amdgpu, i915, xe), else the temperature
 //! net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
-//! disk_mounts = []   # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem; a path on a network filesystem (nfs, cifs, sshfs…) shows —
+//! disk_mounts = []   # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem; a path on a network filesystem (nfs, cifs, sshfs…) or an automount shows —
 //! disk_interval = 15   # seconds between disk readings, 1 to 300; the last figures repeat in between
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage

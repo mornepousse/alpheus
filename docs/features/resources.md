@@ -84,7 +84,7 @@ In `bar.toml`, read at start (a change needs a restart of the bar).
 | `[resources] gpu_metric` | `"auto"` | `usage`, `temp` or `both`; `auto`: usage when a card offering it is found at start, else the temperature; only what it names is read |
 | `[resources] gpu_sensor` | `""` | the GPU's hwmon name, and the driver (`amdgpu`, `i915`, `xe`) of the card read for usage; `""`: automatic (an `evdi` or NVIDIA card never wins) |
 | `[resources] net_interface` | `""` | the interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's; absent, `net` shows no figure |
-| `[resources] disk_mounts` | `[]` | up to 4 absolute paths `disk` measures, one block each; `[]`: `$HOME`'s filesystem, one block named `Disk`. A path on a network filesystem (`nfs`, `cifs`, `sshfs`…, found once at start in `/proc/self/mountinfo`) is never read and shows `—`: `statvfs` runs on the event loop, and a hung server would stall the bar |
+| `[resources] disk_mounts` | `[]` | up to 4 absolute paths `disk` measures, one block each; `[]`: `$HOME`'s filesystem, one block named `Disk`. A path on a network filesystem (`nfs`, `cifs`, `sshfs`, any FUSE type not known to be local…) or an automount point (`autofs`), found once at start in `/proc/self/mountinfo`, is never read and shows `—`: `statvfs` runs on the event loop, where a hung server would stall the bar and an automount would mount its share; a local automount (systemd's `/boot`) shows `—` too |
 | `[resources] disk_interval` | `15` | seconds between two readings of the disks, 1 to 300; the last figures repeat in between |
 | `[resources] interval` | `2` | seconds between two readings, 1 to 60; the graphs span 60 of them, so `last N min` where N is the interval |
 | `[actions] resources` | `["foot", "-e", "btop"]` | the command of `Monitor…` and of the right click, run as written (no shell); `[]` removes the row |
@@ -144,7 +144,8 @@ reading. The popup owns no timer: opening it adds no wake-up.
   `a_monitor_only_card_never_wins` and `gpu_nvidia_proprietary_gives_nothing_and_no_panic`: an
   `evdi` or NVIDIA card is never picked for usage.
 - `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`: a listed path on a network filesystem
-  is never asked, so a hung server cannot block the loop.
+  is never asked, so a hung server cannot block the loop; `a_network_mount_is_found_by_its_longest_mount_point`:
+  an automount point and an unknown FUSE type count as remote.
 - `gpu_usage_from_rc6_is_one_minus_the_idle_share` and `a_suspension_drops_the_idle_baseline`: the
   Intel estimate is 100 minus the idle share between two readings, never across a sleep;
   `the_intel_estimate_reads_active`: the popup says so.

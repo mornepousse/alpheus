@@ -273,10 +273,22 @@ pub fn disk_percent(fs: FsBlocks) -> Option<u8> {
     Some(((used * 100).div_ceil(denom)).min(100) as u8)
 }
 
-/// Filesystem types served over the network: a `disk_mounts` path on one is never `statvfs`-ed, so
-/// a server that stops answering can never block the loop (docs/decisions.md, "Disks are read every
-/// `disk_interval` seconds, the last figures repeat between reads").
-const NETWORK_FS: [&str; 9] = ["nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "sshfs", "9p", "ceph", "glusterfs"];
+/// Filesystem types a `statvfs` could block on: served over the network, or an automount point
+/// (`autofs`), which a `statvfs` would mount there and then (a NAS share, on the loop). A
+/// `disk_mounts` path on one is never `statvfs`-ed, so a server that stops answering can never
+/// block the loop (docs/decisions.md, "Disks are read every `disk_interval` seconds, the last
+/// figures repeat between reads"). A local automount (systemd's `/boot`) shows — as well.
+const NETWORK_FS: [&str; 14] =
+    ["nfs", "nfs4", "cifs", "smb3", "smbfs", "sshfs", "9p", "ceph", "glusterfs", "davfs", "afs", "lustre", "autofs", "fuse"];
+
+/// FUSE filesystems known to be local: every other `fuse.*` type (sshfs, rclone, gvfs…) counts as
+/// remote, as an unknown one could be served over the network.
+const LOCAL_FUSE: [&str; 3] = ["fuse.gocryptfs", "fuse.cryfs", "fuse.encfs"];
+
+/// Whether a `statvfs` on a filesystem of type `fstype` (mountinfo's field after ` - `) could block.
+fn remote_fs(fstype: &str) -> bool {
+    NETWORK_FS.contains(&fstype) || (fstype.starts_with("fuse.") && !LOCAL_FUSE.contains(&fstype))
+}
 
 /// A mount point of `/proc/self/mountinfo`, its `\NNN` octal escapes (a space is `\040`) undone.
 fn unescape(field: &str) -> PathBuf {
@@ -312,7 +324,7 @@ pub fn on_network_fs(mountinfo: &str, path: &Path) -> bool {
         let Some(fstype) = line.split_once(" - ").and_then(|(_, rest)| rest.split(' ').next()) else { continue };
         let depth = point.components().count();
         if path.starts_with(&point) && best.is_none_or(|(d, _)| depth >= d) {
-            best = Some((depth, NETWORK_FS.contains(&fstype)));
+            best = Some((depth, remote_fs(fstype)));
         }
     }
     best.is_some_and(|(_, remote)| remote)
@@ -1178,8 +1190,9 @@ mod tests {
     }
 
     /// A trimmed /proc/self/mountinfo: local ext4 and btrfs, an NFS share with a btrfs mounted inside
-    /// it, an sshfs, a CIFS share whose mount point holds a space, and a tmpfs mounted over the
-    /// NFS share's `over` directory. Fictional paths and devices.
+    /// it, an sshfs, a CIFS share whose mount point holds a space, a tmpfs mounted over the NFS
+    /// share's `over` directory, an automount point not yet mounted, the other network types, an
+    /// rclone and a gocryptfs FUSE mount, and a `fuseblk` USB disk. Fictional paths and devices.
     const MOUNTINFO: &str = "\
 22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/fictional2 rw
 30 22 259:3 / /fictional/data rw,relatime shared:2 - btrfs /dev/fictional3 rw
@@ -1189,6 +1202,14 @@ mod tests {
 44 22 0:52 / /fictional/my\\040share rw shared:6 - cifs //server/share rw
 45 41 0:53 / /fictional/nfs/over rw shared:7 - nfs4 server:/other rw
 46 41 0:54 / /fictional/nfs/over rw shared:8 - tmpfs tmpfs rw
+50 22 0:60 / /fictional/nas rw,relatime shared:9 - autofs systemd-1 rw,fd=50,pgrp=1,timeout=0
+51 22 0:61 / /fictional/smb rw shared:10 - smbfs //server/old rw
+52 22 0:62 / /fictional/dav rw shared:11 - davfs https://server/dav rw
+53 22 0:63 / /fictional/afs rw shared:12 - afs AFS rw
+54 22 0:64 / /fictional/lustre rw shared:13 - lustre server@tcp:/fs rw
+55 22 0:65 / /fictional/rclone rw shared:14 - fuse.rclone remote: rw
+56 22 0:66 / /fictional/vault rw shared:15 - fuse.gocryptfs /fictional/data/cipher rw
+57 22 8:17 / /fictional/usb rw shared:16 - fuseblk /dev/fictional5 rw
 ";
 
     #[test]
@@ -1203,6 +1224,13 @@ mod tests {
         assert!(!remote("/fictional/nfsx"), "matched by components, not by text");
         assert!(remote("/fictional/ssh/home"));
         assert!(remote("/fictional/my share"), "the mount point's escapes are undone");
+        assert!(remote("/fictional/nas/films"), "an automount point: a statvfs would mount the share");
+        for p in ["/fictional/smb", "/fictional/dav", "/fictional/afs", "/fictional/lustre"] {
+            assert!(remote(p), "{p}");
+        }
+        assert!(remote("/fictional/rclone"), "an unknown FUSE type counts as remote");
+        assert!(!remote("/fictional/vault"), "a FUSE type known to be local");
+        assert!(!remote("/fictional/usb"), "fuseblk sits on a block device");
         assert!(!on_network_fs("", Path::new("/fictional/nfs")), "no mountinfo: nothing is skipped");
     }
 

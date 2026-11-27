@@ -2061,14 +2061,19 @@ A disk's fill changes slowly, so the disks are read on the first pass and then o
 `[resources] disk_interval` seconds (15 by default) have passed, inside the existing resources
 tick: no second timer, no thread. In between, every sample carries the last figures, so the graph
 has no gaps. `statvfs` stays on the event loop (a timeout would need a thread), so a `disk_mounts`
-path on a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `fuse.sshfs`, `sshfs`, `9p`, `ceph`,
-`glusterfs`) is never `statvfs`-ed at all and shows `—`: a server that stops answering can never
-block the bar (owner's decision, 2026-11-27). The filesystem type is read once at start from
-`/proc/self/mountinfo`, the mount with the longest mount point containing the path winning (the
-later line on a tie, a mount over another); the path is matched by its text, never resolved, since
-resolving it could hang on that very mount, so a symlink to a share is not followed. `$HOME`, used
-when the list is empty, is read whatever it lies on, as before: a session whose home hangs has
-worse troubles than its bar. Paths are never logged.
+path on a network filesystem (`nfs`, `nfs4`, `cifs`, `smb3`, `smbfs`, `sshfs`, `9p`, `ceph`,
+`glusterfs`, `davfs`, `afs`, `lustre`, an untyped `fuse`, and every `fuse.*` type except the
+local `fuse.gocryptfs`, `fuse.cryfs` and `fuse.encfs`: an unknown FUSE type may be served over
+the network) is never `statvfs`-ed at all and shows `—`: a server that stops answering can never
+block the bar (owner's decision, 2026-11-27). An automount point (`autofs` in mountinfo until it
+is first accessed) is skipped as well, since a `statvfs` would mount the share there and then, on
+the loop; a local automount, such as systemd's `/boot`, then shows `—` too. The filesystem type
+is read once at start from `/proc/self/mountinfo`, the mount with the longest mount point
+containing the path winning (the later line on a tie, a mount over another); the path is matched
+by its text, never resolved, since resolving it could hang on that very mount, so a symlink to a
+share is not followed. `$HOME`, used when the
+list is empty, is read whatever it lies on, as before: a session whose home hangs has worse
+troubles than its bar. Paths are never logged.
 
 Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`, `a_network_mount_is_found_by_its_longest_mount_point`, `a_disk_mount_on_a_network_filesystem_is_never_statvfs_ed`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
 
