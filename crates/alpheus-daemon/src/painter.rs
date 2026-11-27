@@ -57,6 +57,9 @@ const CHIP_RADIUS: u32 = 4;
 const BAND_RADIUS: u32 = 5;
 /// How much of `fg_dim` an off switch's track takes over the surface under it, in percent.
 const OFF_TRACK_ALPHA: u16 = 70;
+/// How much of `fg_dim` a tool's tile's ring takes over the surface under it, in percent (its fill
+/// stays `pill_bg`, dark enough under its glyph on every surface).
+const TILE_RING_ALPHA: u16 = 70;
 /// Logical px between a chip or a switch's track and the top and bottom of its rows.
 const CHIP_INSET: u32 = 2;
 /// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
@@ -246,14 +249,16 @@ pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
 }
 
 /// A shape's fill on a surface of `base`: a card `raised`, a chip its tint, the band the
-/// selection's, a switch's track green when on and `pill_bg` when off (`paint_shapes` paints an
-/// off track `fg_dim` over what lies under it instead).
+/// selection's, a tile `pill_bg` (inside a ring `paint_shapes` draws), a switch's track green when
+/// on and `pill_bg` when off (`paint_shapes` paints an off track `fg_dim` over what lies under it
+/// instead).
 fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
     match kind {
         ShapeKind::Card => r.raised,
         ShapeKind::Chip(t) => color(r, base, t),
         ShapeKind::Band => color(r, base, Tint::Selection),
         ShapeKind::Switch(on) => color(r, base, if on { Tint::Hue(Hue::Green) } else { Tint::Pill }),
+        ShapeKind::Tile => r.pill_bg,
     }
 }
 
@@ -261,7 +266,7 @@ fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
 fn shape_columns(sh: &Shape) -> u16 {
     match sh.kind {
         ShapeKind::Switch(_) => 2,
-        ShapeKind::Card | ShapeKind::Chip(_) | ShapeKind::Band => sh.width,
+        ShapeKind::Card | ShapeKind::Chip(_) | ShapeKind::Band | ShapeKind::Tile => sh.width,
     }
 }
 
@@ -967,14 +972,26 @@ impl Fonts {
                 frame.top.saturating_add(row.saturating_mul(row_height)),
                 frame.top.saturating_add(row.saturating_add(u32::from(sh.rows)).saturating_mul(row_height)),
             );
-            let fill = shape_fill(roles, roles.popup_bg, sh.kind);
             let inset = CHIP_INSET * e;
+            let fill = shape_fill(roles, roles.popup_bg, sh.kind);
+            // A tile's ring and an off track take `fg_dim` over whatever they lie on (the list,
+            // the selected row's band, a card), read from the pixels already painted, so each
+            // stands out of all of them.
+            let under = |px: &[u8], x: u32, y: u32| pixel(px, width, x, y).unwrap_or(roles.popup_bg);
             match sh.kind {
                 ShapeKind::Card => self.rounded(px, width, height, x, y, clip, fill, CARD_RADIUS, scale),
                 ShapeKind::Band => self.rounded(px, width, height, x, y, clip, fill, BAND_RADIUS, scale),
                 ShapeKind::Chip(_) => {
                     let y = (y.0.saturating_add(inset), y.1.saturating_sub(inset));
                     self.rounded(px, width, height, x, y, clip, fill, CHIP_RADIUS, scale);
+                }
+                ShapeKind::Tile => {
+                    // A ring one logical px wide, then the fill inside it, rounded onto the ring.
+                    let y = (y.0.saturating_add(inset), y.1.saturating_sub(inset));
+                    let ring = mix(roles.fg_dim, under(px, x.0, y.0.midpoint(y.1)), TILE_RING_ALPHA);
+                    self.rounded(px, width, height, x, y, clip, ring, CHIP_RADIUS, scale);
+                    let inner = ((x.0.saturating_add(e), x.1.saturating_sub(e)), (y.0.saturating_add(e), y.1.saturating_sub(e)));
+                    self.rounded(px, width, height, inner.0, inner.1, clip, fill, CHIP_RADIUS - 1, scale);
                 }
                 ShapeKind::Switch(on) => {
                     // A capsule five eighths as tall as it is wide (at most its rows less the
@@ -984,8 +1001,7 @@ impl Fonts {
                     let top = y.0.saturating_add((y.1.saturating_sub(y.0) - h) / 2);
                     // Off, `fg_dim` over whatever the track lies on (the list, the selected row's
                     // band, a card), so it stands out of each.
-                    let fill =
-                        if on { fill } else { mix(roles.fg_dim, pixel(px, width, x.0, top).unwrap_or(roles.popup_bg), OFF_TRACK_ALPHA) };
+                    let fill = if on { fill } else { mix(roles.fg_dim, under(px, x.0, top), OFF_TRACK_ALPHA) };
                     self.rounded(px, width, height, x, (top, top.saturating_add(h)), clip, fill, h / (2 * e), scale);
                     let d = h.saturating_sub(2 * e);
                     let left = if on { x.1.saturating_sub(e + d) } else { x.0.saturating_add(e) };

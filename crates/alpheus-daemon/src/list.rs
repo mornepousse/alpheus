@@ -81,6 +81,9 @@ pub enum ShapeKind {
     Band,
     /// A switch, on or off: a track two cells wide from `col` (`width` is not read) and its knob.
     Switch(bool),
+    /// A tool's tile: a chip in `fg_dim` over what it lies on (the list, the selected row's band,
+    /// the detail card), so it shows on each; its glyph drawn larger than the text's.
+    Tile,
 }
 
 /// A graph over a rectangle of cells of a `Boxed` (in its own coordinates, after `boxed` drops

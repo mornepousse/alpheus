@@ -1250,7 +1250,7 @@ fn snapshot_with_shapes(b: &Boxed) -> String {
 
 /// The list pane's tool tiles: 2 × 3 pill chips (a card's tile is right of the list).
 fn tiles(b: &Boxed) -> Vec<&Shape> {
-    b.shapes.iter().filter(|s| s.kind == ShapeKind::Chip(Tint::Pill) && s.width == 3 && s.rows == 2).collect()
+    b.shapes.iter().filter(|s| s.kind == ShapeKind::Tile).collect()
 }
 
 fn switches(b: &Boxed) -> Vec<&Shape> {

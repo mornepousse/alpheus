@@ -1468,7 +1468,7 @@ mod shapes {
     /// it) in cyan, at `scale`.
     fn tile(p: &mut Fonts, glyph: char, scale: i32) -> (Painted, Rect) {
         let mut b = blank(10, 4);
-        b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+        b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Tile) });
         let s = Painted::new(p, &b, scale);
         let cells = s.cells(p, 1, 2, 3, 2);
         (s, cells)
@@ -1616,6 +1616,47 @@ mod shapes {
                     let what = format!("{theme}, on {under:?}, scale {scale}: track {track:?} on {around:?}");
                     assert!(ratio(track, around) >= 1.5, "{what}: {:.2}", ratio(track, around));
                     assert!(ratio(knob, track) >= 3.0, "{what}: the knob {:.2}", ratio(knob, track));
+                }
+            }
+        }
+    }
+
+    /// A tool's tile stands out of whatever it lies on (the list, the selected row's band, the
+    /// detail card) in the Ink theme and the default one, by the off track's measure: its ring at a
+    /// luminance ratio of at least 1.5 to the surface around it (`pill_bg` alone, the tile before,
+    /// was 1.09 on Ink's list), and its glyph, in any category hue, at least 3:1 on its fill
+    /// (WCAG 2's floor for a graphic). A fill light enough to stand out by itself took the glyphs
+    /// down to 1.5.
+    #[test]
+    fn a_tile_stands_out_of_the_surface_under_it() {
+        let mut p = fonts();
+        let ink = alpheus_common::theme::presets::preset("ink").expect("the Ink theme").dark;
+        for (theme, r) in [("ink", ink), ("default", Roles::default())] {
+            for under in [None, Some(ShapeKind::Band), Some(ShapeKind::Card)] {
+                let mut b = blank(20, 4);
+                if let Some(kind) = under {
+                    b.shapes.push(shape(0, 2, 16, 4, kind));
+                }
+                b.shapes.push(shape(1, 8, 3, 2, ShapeKind::Tile));
+                for scale in [1, 2] {
+                    let (advance, frame) = (p.advance(scale), p.frame(scale));
+                    let (cols, rows) = b.cells();
+                    let rh = DEFAULT_HEIGHT * scale as u32;
+                    let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
+                    let mut px = vec![0x11u8; (w * h * 4) as usize];
+                    p.paint_boxed(&b, &r, &mut px, w, h, rh, scale, FrameInk::Border);
+                    let at = |x: u32, y: u32| {
+                        let o = ((y * w + x) * 4) as usize;
+                        Rgb(px[o + 2], px[o + 1], px[o])
+                    };
+                    let (x0, x1) = (frame.side + p.edge(8), frame.side + p.edge(11));
+                    let cy = frame.top + 2 * rh;
+                    let (tile, ring, around) = (at((x0 + x1) / 2, cy), at(x0, cy), at(x0 - 2, cy));
+                    let what = format!("{theme}, on {under:?}, scale {scale}: ring {ring:?} on {around:?}");
+                    assert!(ratio(ring, around) >= 1.5, "{what}: {:.2}", ratio(ring, around));
+                    for hue in [r.hues.red, r.hues.orange, r.hues.yellow, r.hues.green, r.hues.cyan, r.hues.blue, r.hues.purple] {
+                        assert!(ratio(hue, tile) >= 3.0, "{what}: a glyph in {hue:?} on the fill {tile:?}: {:.2}", ratio(hue, tile));
+                    }
                 }
             }
         }

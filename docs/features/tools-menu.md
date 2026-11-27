@@ -277,9 +277,11 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 The drawing is the launcher's view: `launcher/view/panel.rs` draws the panel in the box's cells
 (search field, tab strip, the list beside the detail card, footer) and maps a click to a tab, a row
 or a chip; `view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
-shapes (`list::ShapeKind`: `Card` for the detail card, `Chip` for a tile, a capsule, a tab or the
-search field, `Band` for the selection over a tool's two lines, `Switch` for a known state), drawn
-in pixels under the cells. One font, one size: the card's title is bold, not larger.
+shapes (`list::ShapeKind`: `Card` for the detail card, `Tile` for a tool's tile, `Chip` for a
+capsule, a tab or the search field, `Band` for the selection over a tool's two lines, `Switch` for a
+known state), drawn in pixels under the cells. A tile is `pill_bg` inside a ring of `fg_dim` over
+whatever it lies on, as an off switch's track is: it stands out of the list, the band and the card
+alike (a luminance ratio of 1.5 at least), and its glyph keeps 3:1 on its fill in every hue. One font, one size: the card's title is bold, not larger.
 `launcher/matching.rs`'s `holds_every_word` decides which chip a query picks.
 
 The kill list is a mode of the launcher (`Mode::Processes`), not a file of the Tools folder:

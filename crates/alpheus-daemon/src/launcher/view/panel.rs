@@ -364,7 +364,7 @@ fn push_tile(t: &ToolsState, entry: &Entry, y: usize, x: u16, shapes: &mut Vec<S
     let fallback = entry.category.and_then(|c| t.catalog.categories.get(c)).map_or(FOLDER, |c| c.icon);
     let glyph = entry.icon.unwrap_or(fallback);
     let ink = category_hue(t, entry.category).fg;
-    shapes.push(Shape { glyph: Some((glyph, fallback, ink)), ..ring_shape(y, x, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+    shapes.push(Shape { glyph: Some((glyph, fallback, ink)), ..ring_shape(y, x, 3, 2, ShapeKind::Tile) });
 }
 
 /// The columns a row's chips take in the list pane `list`: from past its tile to before its switch
