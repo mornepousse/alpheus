@@ -87,7 +87,8 @@ pub(super) fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     if let Some(row) = grid.get_mut(1) {
         tools_chip(l, b, row, &mut shapes, 1);
     }
-    if let Some(row) = grid.get_mut(g.tabs) {
+    // One group or none: All is the only tab, so no strip.
+    if let Some(row) = grid.get_mut(g.tabs).filter(|_| binds.groups.len() > 1) {
         panel::tab_strip(&tab_names(binds), t.bind_tab(), b, row, &mut shapes, g.tabs);
     }
     let list = list_rows(l, t, binds);
@@ -210,7 +211,14 @@ fn wrap_whole(text: &str, width: u16) -> Vec<String> {
 /// Binding `k`'s card over `columns` and the pane's rows: its combo in a capsule, its group dim,
 /// its description wrapped, a thin line, `Command` and the whole command wrapped, then the file it
 /// came from, by name. A line that does not fit is left out.
-fn bind_card(binds: &Binds, k: usize, columns: (u16, u16), (top, rows): (usize, usize), grid: &mut [Grid], shapes: &mut Vec<Shape>) {
+pub(super) fn bind_card(
+    binds: &Binds,
+    k: usize,
+    columns: (u16, u16),
+    (top, rows): (usize, usize),
+    grid: &mut [Grid],
+    shapes: &mut Vec<Shape>,
+) {
     let Some(bind) = binds.binds.get(k) else { return };
     shapes.push(ring_shape(top, columns.0, columns.1.saturating_sub(columns.0), u16::try_from(rows).unwrap_or(u16::MAX), ShapeKind::Card));
     let (x, end) = (columns.0 + 2, columns.1.saturating_sub(2));
@@ -240,20 +248,22 @@ fn bind_card(binds: &Binds, k: usize, columns: (u16, u16), (top, rows): (usize, 
         put(grid, &mut y, line, Style::NORMAL);
     }
     put(grid, &mut y, &"─".repeat(usize::from(width)), Style::MUTED);
-    put(grid, &mut y, "Command", Style::MUTED);
-    // The command whole, its file's line kept under it; past the card's foot the last line kept
-    // says it goes on.
+    // `Command` and the command whole, its file's line kept under them; past the card's foot the
+    // last line kept says it goes on. No room for one line of it: no label either.
     let from = binds.files.get(bind.file).map(|f| format!("From {f}"));
-    let room = bottom.saturating_sub(y + usize::from(from.is_some()));
-    let mut command = wrap_whole(&bind.command, width);
-    if command.len() > room {
-        command.truncate(room);
-        if let Some(last) = command.last_mut() {
-            *last = truncate(&format!("{last}…"), width);
+    let room = bottom.saturating_sub(y + 1 + usize::from(from.is_some()));
+    if room > 0 {
+        put(grid, &mut y, "Command", Style::MUTED);
+        let mut command = wrap_whole(&bind.command, width);
+        if command.len() > room {
+            command.truncate(room);
+            if let Some(last) = command.last_mut() {
+                *last = truncate(&format!("{last}…"), width);
+            }
         }
-    }
-    for line in &command {
-        put(grid, &mut y, line, Style::NORMAL);
+        for line in &command {
+            put(grid, &mut y, line, Style::NORMAL);
+        }
     }
     if let Some(from) = from {
         put(grid, &mut y, &from, Style::MUTED);
@@ -266,7 +276,7 @@ pub(super) fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Click {
     let Some((t, binds)) = l.tools().and_then(|t| Some((t, t.binds()?))) else { return Click::Inside };
     let g = panel::geometry(b);
     let row = usize::from(row);
-    if row == g.tabs {
+    if row == g.tabs && binds.groups.len() > 1 {
         return panel::strip(&tab_names(binds), t.bind_tab(), b)
             .tabs
             .iter()

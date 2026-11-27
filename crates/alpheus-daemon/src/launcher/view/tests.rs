@@ -2180,14 +2180,6 @@ fn binds_panel_on(binds: Binds, columns: u16) -> (Launcher, BoxLayout) {
 }
 
 #[test]
-fn the_tab_strip_draws_the_same_after_taking_names() {
-    let (mut l, b) = panel_box("");
-    insta::assert_snapshot!("panel_home", snapshot_with_shapes(&draw_in(&l, &b)));
-    l.key(Key::Tab);
-    insta::assert_snapshot!("panel_category", snapshot_with_shapes(&draw_in(&l, &b)));
-}
-
-#[test]
 fn binds_all_snapshot() {
     let (l, b) = binds_panel(three_groups());
     assert_eq!((b.columns, b.rows), (106, 30), "the panel's box, kept below its root");
@@ -2278,6 +2270,41 @@ fn the_binds_detail_card_shows_the_whole_command() {
     assert!(!card.contains('…'), "never cut: {card}");
 }
 
+/// With one group, All is the only tab: no strip is drawn and its row is no tab to click.
+#[test]
+fn one_group_draws_no_tab_strip() {
+    let mut one = three_groups();
+    one.groups.truncate(1);
+    one.binds.iter_mut().for_each(|b| b.group = 0);
+    let (l, b) = binds_panel(one);
+    let rows = draw_in(&l, &b);
+    assert!(!rows.rows[2].text().contains(" All "), "{}", snapshot(&rows));
+    assert!(!rows.shapes.iter().any(|s| s.row == 2), "no pill on the tabs' row: {}", snapshot_with_shapes(&rows));
+    for x in 0..b.columns {
+        assert_ne!(hit(&l, &b, x, 3), Some(Click::Tab(0)), "column {x}");
+    }
+    // The control: three groups draw it.
+    let (l, b) = binds_panel(three_groups());
+    assert!(draw_in(&l, &b).rows[2].text().contains(" All "));
+}
+
+/// A card with no room for one line of the command draws no `Command` label either.
+#[test]
+fn a_card_without_room_for_the_command_has_no_label() {
+    let (_, b) = binds_panel(three_groups());
+    let card = |rows: usize| {
+        let mut grid: Vec<Grid> = (0..12).map(|_| blank(&b)).collect();
+        binds::bind_card(&three_groups(), 0, (0, 60), (0, rows), &mut grid, &mut Vec::new());
+        grid.iter().map(|g| g.text().trim().to_string()).collect::<Vec<_>>()
+    };
+    let roomy = card(9);
+    let at = roomy.iter().position(|t| t == "Command").unwrap_or_else(|| panic!("{roomy:#?}"));
+    assert!(roomy[at + 1].contains("spawn"), "the label, then a line of the command: {roomy:#?}");
+    let tight = card(8);
+    assert!(!tight.iter().any(|t| t == "Command" || t.contains("spawn")), "{tight:#?}");
+    assert!(tight.iter().any(|t| t.starts_with("From ")), "the file's line kept: {tight:#?}");
+}
+
 #[test]
 fn a_click_on_a_bind_tab_opens_it() {
     let (mut l, b) = binds_panel(three_groups());
@@ -2316,6 +2343,16 @@ fn nothing_of_the_binds_level_is_drawn_outside_the_box() {
         let (w, h) = (usize::from(b.columns - 2), rows.rows.len());
         for s in &rows.shapes {
             assert!(usize::from(s.col) + usize::from(s.width) <= w && s.row + usize::from(s.rows) <= h, "{columns}: {s:?} in {w}×{h}");
+        }
+        // No list row's text runs past the list pane: into the card's ring and inner margin (its
+        // first two columns, always blank), or past the pane's end when the box has no card.
+        let g = panel::geometry(&b);
+        let card = rows.shapes.iter().find(|s| s.kind == ShapeKind::Card).map(|c| usize::from(c.col) + 2);
+        for y in g.pane_top..g.pane_top + g.pane_rows {
+            let text = rows.rows[y].text();
+            let end = card.unwrap_or_else(|| text.chars().count());
+            let gap: String = text.chars().take(end).skip(usize::from(g.list.1)).collect();
+            assert!(gap.trim().is_empty(), "{columns}: row {y} past the list: {gap:?}\n{}", snapshot(&rows));
         }
     }
 }

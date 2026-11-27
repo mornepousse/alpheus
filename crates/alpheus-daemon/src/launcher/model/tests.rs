@@ -2655,6 +2655,26 @@ fn typing_filters_the_binds_and_groups_results() {
     assert_eq!(bind_hits(&l), [5]);
 }
 
+/// A click on a bind tab, as Tab: the typed query stays and filters inside the group.
+#[test]
+fn a_click_on_a_bind_tab_keeps_the_query() {
+    let mut l = binds_box("");
+    for c in "term".chars() {
+        l.key(Key::Char(c));
+    }
+    assert_eq!(l.click_tab(2), Outcome::Redraw);
+    assert_eq!((l.tools().unwrap().bind_tab(), l.query.as_str()), (2, "term"));
+    assert_eq!(bind_hits(&l), [5], "Windows' hit alone");
+    assert_eq!(l.click_tab(9), Outcome::Nothing, "no such tab");
+    // The edge: the last group's tab is `groups.len()` (tab 0 is All), one past it is none.
+    let n = l.tools().unwrap().binds().unwrap().groups.len();
+    let t = l.tools.as_mut().unwrap();
+    assert!(t.open_bind_tab(n));
+    assert_eq!(t.bind_tab(), n);
+    assert!(!t.open_bind_tab(n + 1));
+    assert_eq!(t.bind_tab(), n, "unchanged");
+}
+
 #[test]
 fn letters_are_text_in_the_binds_level() {
     // Notes (`n`) pinned at home, where its capsule shows.

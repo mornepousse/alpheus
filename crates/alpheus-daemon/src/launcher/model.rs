@@ -490,18 +490,22 @@ impl Launcher {
     }
 
     /// A click on the panel's tab `tab`, or the Keybindings level's: opens it as Tab would, on its
-    /// first row; from the search too, which it ends. Nothing without a panel at the root or the
-    /// level, or such a tab.
+    /// first row. On the panel it ends the search; on the level, as Tab there, the typed query
+    /// stays and filters inside the group. Nothing without a panel at the root or the level, or
+    /// such a tab.
     pub fn click_tab(&mut self, tab: usize) -> Outcome {
-        let open = |t: &mut ToolsState| if t.binds().is_some() { t.open_bind_tab(tab) } else { t.open_tab(tab) };
+        let binds = self.at_binds();
+        let open = |t: &mut ToolsState| if binds { t.open_bind_tab(tab) } else { t.open_tab(tab) };
         if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(open) {
             return Outcome::Nothing;
         }
         if let Some(t) = self.tools.as_mut() {
             t.cancel();
         }
-        self.query.clear();
-        self.searching = false;
+        if !binds {
+            self.query.clear();
+            self.searching = false;
+        }
         self.message = None;
         self.ranker.forget();
         self.refilter();
