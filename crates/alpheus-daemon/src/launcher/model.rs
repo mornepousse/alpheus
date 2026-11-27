@@ -424,6 +424,14 @@ impl Launcher {
         self.level_changed();
     }
 
+    /// `alpheus-launch --binds`: the Keybindings level opened on `binds` with nothing beneath it,
+    /// so Esc and ← close the box instead of landing on a panel never shown.
+    pub fn open_binds_alone(&mut self, binds: Binds) {
+        let Some(t) = self.tools.as_mut() else { return };
+        t.open_binds_alone(binds);
+        self.level_changed();
+    }
+
     /// Whether the Tools mode shows the Keybindings level.
     pub fn at_binds(&self) -> bool {
         self.mode == Mode::Tools && self.tools.as_ref().is_some_and(|t| t.binds().is_some())
@@ -960,6 +968,9 @@ impl Launcher {
             Key::Left if self.query.is_empty() => {
                 if self.tools_up() {
                     Outcome::Redraw
+                } else if self.at_binds() {
+                    // A `--binds` open: nothing beneath the level, ← closes as Esc does.
+                    Outcome::Close
                 } else {
                     Outcome::Nothing
                 }

@@ -2789,3 +2789,22 @@ fn esc_from_keybindings_opened_by_the_flat_search_lands_in_its_category() {
     assert!(t.breadcrumb().ends_with("System"), "{}", t.breadcrumb());
     assert_eq!(l.selected_tool(), Some(RowId::Entry(e)), "on Keybindings, as every other drill");
 }
+
+/// `--binds` opens the level alone: Esc, and ← on an empty query, close the box (no panel
+/// beneath to land on), the bindings listed as from the panel.
+#[test]
+fn esc_on_a_binds_open_closes_the_box() {
+    let mut l = panel_box("");
+    l.open_binds_alone(some_binds());
+    assert!(l.at_binds());
+    assert_eq!(l.tools().unwrap().breadcrumb(), "Tools › Keybindings");
+    assert_eq!(bind_hits(&l), [0, 3, 7, 1, 4, 5, 2, 6]);
+    assert_eq!(l.key(Key::Escape), Outcome::Close);
+    let mut l = panel_box("");
+    l.open_binds_alone(some_binds());
+    assert_eq!(l.key(Key::Left), Outcome::Close);
+    // From the panel, ← still goes back to it.
+    let mut l = binds_box("");
+    assert_eq!(l.key(Key::Left), Outcome::Redraw);
+    assert!(!l.at_binds());
+}

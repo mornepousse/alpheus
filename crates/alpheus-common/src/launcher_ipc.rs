@@ -322,6 +322,9 @@ pub enum Request {
     /// Opens the Tools menu in the launcher, or closes it. An older daemon refuses
     /// it as an unknown request.
     Tools,
+    /// Opens the Tools menu's Keybindings level alone in the launcher, or closes it: an error when
+    /// no dialect reads the session's compositor. An older daemon refuses it as an unknown request.
+    Binds,
     /// Opens the kill list (the user's processes) in the launcher, or closes it. An older daemon
     /// refuses it as an unknown request.
     Kill,
@@ -472,6 +475,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Clipboard => format!("{MAGIC} clipboard\n").into_bytes(),
         Request::ClipboardClear => format!("{MAGIC} clipboard-clear\n").into_bytes(),
         Request::Tools => format!("{MAGIC} tools\n").into_bytes(),
+        Request::Binds => format!("{MAGIC} binds\n").into_bytes(),
         Request::Kill => format!("{MAGIC} kill\n").into_bytes(),
         Request::Power => format!("{MAGIC} power\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
@@ -523,6 +527,7 @@ enum Header {
     Clipboard,
     ClipboardClear,
     Tools,
+    Binds,
     Kill,
     Power,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
@@ -682,6 +687,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Clipboard => Some(Request::Clipboard),
         Header::ClipboardClear => Some(Request::ClipboardClear),
         Header::Tools => Some(Request::Tools),
+        Header::Binds => Some(Request::Binds),
         Header::Kill => Some(Request::Kill),
         Header::Power => Some(Request::Power),
         Header::Dnd(v) => Some(Request::Dnd(v)),
@@ -715,6 +721,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["clipboard"] => Ok(Header::Clipboard),
         ["clipboard-clear"] => Ok(Header::ClipboardClear),
         ["tools"] => Ok(Header::Tools),
+        ["binds"] => Ok(Header::Binds),
         ["kill"] => Ok(Header::Kill),
         ["power"] => Ok(Header::Power),
         ["dnd", word] => {

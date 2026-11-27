@@ -528,6 +528,16 @@ impl ToolsState {
         self.bind_tab = 0;
     }
 
+    /// Opens the Keybindings level on `binds` with nothing beneath it (`--binds`): `up` gives None.
+    pub fn open_binds_alone(&mut self, binds: Binds) {
+        self.stack.clear();
+        self.level = Level::Binds;
+        self.question = None;
+        self.binds = Some(binds);
+        self.bind_tab = 0;
+        self.rev += 1;
+    }
+
     /// Drops the bindings held: what leaving the Keybindings level, by any way, does.
     fn drop_binds(&mut self) {
         self.binds = None;

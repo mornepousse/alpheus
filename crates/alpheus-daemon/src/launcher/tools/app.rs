@@ -109,6 +109,12 @@ pub(crate) fn binds_dialect(c: Option<&Compositor>) -> Option<Dialect> {
     }
 }
 
+/// Why `--binds` is refused on this compositor: none for Mango and Sway, the documented text for
+/// any other (or none detected).
+pub(crate) fn binds_refusal(c: Option<&Compositor>) -> Option<&'static str> {
+    binds_dialect(c).is_none().then_some("no key bindings source for this compositor")
+}
+
 /// At most this many entries of a folder `list` gives (an include glob's): the walk reads
 /// `binds::MAX_FILES` of them at most anyway.
 const MAX_LISTED: usize = 256;
@@ -543,6 +549,20 @@ impl App {
         }
     }
 
+    /// `alpheus-launch --binds`: the Tools model opened with the panel sized, then its Keybindings
+    /// level opened alone on the compositor's bindings (read now, once) before the box is first
+    /// drawn (a draw waits for the configure). No states read: the panel's root is never reached
+    /// from here.
+    pub(crate) fn launcher_open_binds(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+        let config = crate::launcher::host::read_config(&paths::config_dir(), &mut |m| log(m));
+        let now = crate::launcher::host::unix_now();
+        let history = crate::launcher::host::load_history(&config, now);
+        let catalog = self.tools_catalog(&config, true);
+        let model = Launcher::for_tools(config, catalog, history, now);
+        self.launcher_open(qh, model, None, requested_at);
+        self.tools_open_binds(true);
+    }
+
     /// The generation of the open launcher, when one is open.
     fn tools_current(&self) -> Option<u64> {
         // `map` because clippy rejects the plain `match` here: None when no launcher is open.
@@ -750,16 +770,21 @@ impl App {
         }
     }
 
-    /// Enter on Keybindings (`Outcome::OpenBinds`): the compositor's bindings read now, at once
-    /// and once, then the level opens on them. Logged in counts only.
-    pub(crate) fn tools_open_binds(&mut self) {
+    /// Enter on Keybindings (`Outcome::OpenBinds`), or `--binds` (`alone`: nothing beneath the
+    /// level): the compositor's bindings read now, at once and once, then the level opens on them.
+    /// Logged in counts only.
+    pub(crate) fn tools_open_binds(&mut self, alone: bool) {
         let Some(open) = self.launcher.as_mut() else { return };
         let var = |k: &str| std::env::var_os(k);
         let compositor = alpheus_common::compositor::detect(var);
         let files = RealFiles { home: var("HOME").map(PathBuf::from).filter(|h| h.is_absolute()) };
         let b = load_binds(compositor.as_ref(), var, &open.model.config.tools.binds_files, &files);
         binds::notes(&b, &mut |m| log(m));
-        open.model.open_binds(b);
+        if alone {
+            open.model.open_binds_alone(b);
+        } else {
+            open.model.open_binds(b);
+        }
         self.launcher_redraw();
     }
 

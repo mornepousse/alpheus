@@ -396,6 +396,7 @@ impl App {
             | Request::Clipboard
             | Request::ClipboardClear
             | Request::Tools
+            | Request::Binds
             | Request::Kill
             | Request::Power
             | Request::Outputs

@@ -303,6 +303,7 @@ fn route(request: &Request) -> Route {
         | Request::Windows
         | Request::Clipboard
         | Request::Tools
+        | Request::Binds
         | Request::Kill
         | Request::Dmenu { .. } => Route::Launcher,
     }

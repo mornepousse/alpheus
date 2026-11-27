@@ -686,3 +686,17 @@ fn the_dialect_is_mango_or_sway() {
     assert_eq!(binds_dialect(Some(&Compositor::Niri { socket: PathBuf::from("/n") })), None);
     assert_eq!(binds_dialect(None), None);
 }
+
+/// `--binds` on a compositor with no dialect (Hyprland, niri, none detected) is refused with the
+/// documented text; Mango and Sway are not.
+#[test]
+fn the_binds_verb_is_refused_without_a_dialect() {
+    let refused = Some("no key bindings source for this compositor");
+    let hyprland = Compositor::Hyprland { directory: PathBuf::from("/run/hypr/x") };
+    let niri = Compositor::Niri { socket: PathBuf::from("/run/niri.sock") };
+    assert_eq!(binds_refusal(Some(&hyprland)), refused);
+    assert_eq!(binds_refusal(Some(&niri)), refused);
+    assert_eq!(binds_refusal(None), refused);
+    assert_eq!(binds_refusal(Some(&mango())), None);
+    assert_eq!(binds_refusal(Some(&Compositor::Sway { socket: PathBuf::from("/run/sway.sock") })), None);
+}

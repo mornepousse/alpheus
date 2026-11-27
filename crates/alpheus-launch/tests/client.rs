@@ -882,3 +882,27 @@ fn shield_verbs_send_their_request_and_map_the_answers() {
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
 }
+
+/// `--binds` sends its request and exits 0 on Done; a daemon too old for it answers the unknown
+/// request: exit 3, one request; a compositor with no bindings source is exit 2 with its text.
+#[test]
+fn the_client_maps_binds_and_an_old_daemon_to_3() {
+    let (socket, daemon) = answering("binds", Reply::Done);
+    assert_eq!(launch(&["--binds"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Binds);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("binds-old", Reply::Error("malformed request: unknown request \"binds\"".into()));
+    let (code, out, err) = launch(&["--binds"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--binds"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    let refusal = "no key bindings source for this compositor";
+    let (socket, _connections, stop, daemon) = replying_daemon("binds-refused", Reply::Error(refusal.into()));
+    let (code, out, err) = launch(&["--binds"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains(refusal), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+}

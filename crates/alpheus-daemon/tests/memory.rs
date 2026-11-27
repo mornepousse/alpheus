@@ -4803,6 +4803,7 @@ fn binds_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
     assert!(d.wait_for_count("tools: binds shown (100 binds, 5 groups)", n, DELAY), "{:?}", d.log());
     std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
     let open = (d.pss_kb(), anon_kb(d));
+    eprintln!("binds shm pools open (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
     assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
     // Past the Escape: back on the panel, then closed.
     std::thread::sleep(Duration::from_millis(2500));
@@ -4820,7 +4821,7 @@ fn binds_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn binds_pss_open_and_closed() {
-    binds_cost(false);
+    binds_cost(false, false);
 }
 
 /// The same on Sway (the harness's sway is the compositor read), the 100 binds written in Sway's
@@ -4828,11 +4829,37 @@ fn binds_pss_open_and_closed() {
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn binds_pss_open_and_closed_on_sway() {
-    binds_cost(true);
+    binds_cost(true, false);
 }
 
-/// `binds_pss_open_and_closed`, on Sway's dialect when `on_sway`, else on Mango's.
-fn binds_cost(on_sway: bool) {
+/// The same on Mango, the level opened alone by `alpheus-launch --binds` and closed by a second
+/// `--binds`: the verb's own cost, against `binds_pss_open_and_closed` on a base without it.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed_by_the_verb() {
+    binds_cost(false, true);
+}
+
+/// One `--binds` cycle: the verb opens the level alone (the 100-bind fixture read), the reading
+/// is taken with it drawn, a second `--binds` past the debounce closes the box. Returns that
+/// reading: (PSS, anonymous) in KB.
+fn binds_verb_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("tools: binds shown (100 binds, 5 groups)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
+    let open = (d.pss_kb(), anon_kb(d));
+    eprintln!("binds shm pools open (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (toggle)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    open
+}
+
+/// `binds_pss_open_and_closed`, on Sway's dialect when `on_sway`, else on Mango's; each cycle
+/// through the Tools menu, or through `--binds` when `by_verb`.
+fn binds_cost(on_sway: bool, by_verb: bool) {
     require_release(cfg!(debug_assertions));
     let sway = Sway::start(if on_sway { "binds-cost-sway" } else { "binds-cost" }, 1);
     let mango = FakeMango::start(&sway.runtime);
@@ -4868,19 +4895,21 @@ fn binds_cost(on_sway: bool) {
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(3));
+    let cycle = if by_verb { binds_verb_cycle } else { binds_cycle };
     let threads = d.threads();
     let cold = (d.pss_kb(), anon_kb(&d));
-    let first_open = binds_cycle(&sway, &d, 1);
+    let first_open = cycle(&sway, &d, 1);
     let closed = (d.pss_kb(), anon_kb(&d));
-    let open = binds_cycle(&sway, &d, 2);
+    eprintln!("binds shm pools closed (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
+    let open = cycle(&sway, &d, 2);
     let again = (d.pss_kb(), anon_kb(&d));
     // A reading half way through the 20 more: a plateau or a trend.
     for n in 3..=12 {
-        binds_cycle(&sway, &d, n);
+        cycle(&sway, &d, n);
     }
     let ten = (d.pss_kb(), anon_kb(&d));
     for n in 13..=22 {
-        binds_cycle(&sway, &d, n);
+        cycle(&sway, &d, n);
     }
     let cycled = (d.pss_kb(), anon_kb(&d));
     eprintln!("binds anonymous after 10 more cycles (KB): {} ({:+}); PSS {}", ten.1, ten.1 as i64 - again.1 as i64, ten.0);

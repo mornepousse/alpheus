@@ -80,6 +80,8 @@ pub enum Action {
     OpenClipboard,
     /// `--tools`: the Tools menu alone, replacing any other open launcher.
     OpenTools,
+    /// `--binds`: the Tools menu's Keybindings level alone, replacing any other open launcher.
+    OpenBinds,
     /// `--kill`: the kill list alone, replacing any other open launcher.
     OpenProcesses,
     /// `--windows` while the switcher is open: select the next window.
@@ -105,7 +107,7 @@ pub enum ScriptOwner {
 }
 
 /// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, the
-/// window switcher, the clipboard history, the Tools menu, or the kill list.
+/// window switcher, the clipboard history, the Tools menu, its Keybindings level, or the kill list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opened {
     Apps,
@@ -113,6 +115,8 @@ pub enum Opened {
     Switcher,
     Clipboard,
     Tools,
+    /// The Tools menu on its Keybindings level, opened by `--binds` or from the menu.
+    Binds,
     Processes,
 }
 
@@ -126,6 +130,8 @@ pub fn opened(model: &Launcher) -> Opened {
         Opened::Clipboard
     } else if model.mode == crate::launcher::matching::Mode::Processes {
         Opened::Processes
+    } else if model.at_binds() {
+        Opened::Binds
     } else if model.mode == crate::launcher::matching::Mode::Tools {
         // A Mod+Space open that jumped in with `/` counts: `--tools` closes it.
         Opened::Tools
@@ -166,9 +172,15 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         // `--tools` toggles the menu (with the debounce against a re-fired press
         // bind) and replaces anything else open, as `--clipboard` does.
         (Request::Tools, None) => (Action::OpenTools, Some(Reply::Done)),
-        (Request::Tools, Some(Opened::Tools)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
-        (Request::Tools, Some(Opened::Tools)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        (Request::Tools, Some(Opened::Tools | Opened::Binds)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Tools, Some(Opened::Tools | Opened::Binds)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Tools, Some(_)) => (Action::OpenTools, Some(Reply::Done)),
+        // `--binds` toggles the Keybindings level alone the same way, and replaces anything else
+        // open, the Tools menu at another level included.
+        (Request::Binds, None) => (Action::OpenBinds, Some(Reply::Done)),
+        (Request::Binds, Some(Opened::Binds)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Binds, Some(Opened::Binds)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        (Request::Binds, Some(_)) => (Action::OpenBinds, Some(Reply::Done)),
         // `--kill` toggles the list (with the same debounce) and replaces anything else open.
         (Request::Kill, None) => (Action::OpenProcesses, Some(Reply::Done)),
         (Request::Kill, Some(Opened::Processes)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
@@ -217,6 +229,7 @@ pub fn open_after(open: Option<Opened>, action: &Action) -> Option<Opened> {
         Action::OpenWindows => Some(Opened::Switcher),
         Action::OpenClipboard => Some(Opened::Clipboard),
         Action::OpenTools => Some(Opened::Tools),
+        Action::OpenBinds => Some(Opened::Binds),
         Action::OpenProcesses => Some(Opened::Processes),
     }
 }
@@ -396,7 +409,19 @@ impl App {
             conn.reply(&Reply::Error(why.into()));
             return;
         }
-        let is_tools = request == Request::Tools;
+        // No dialect reads this compositor: said before `decide`, so nothing else open is replaced.
+        if request == Request::Binds
+            && let Some(why) =
+                crate::launcher::tools::app::binds_refusal(alpheus_common::compositor::detect(|k| std::env::var_os(k)).as_ref())
+        {
+            conn.reply(&Reply::Error(why.into()));
+            return;
+        }
+        let debounced = match request {
+            Request::Tools => "launcher: --tools debounced",
+            Request::Binds => "launcher: --binds debounced",
+            _ => "",
+        };
         match decide(request, open, since_open) {
             (Action::OpenScript { prompt, lines, flags }, _) => {
                 if self.launcher_is_open() {
@@ -428,6 +453,12 @@ impl App {
                         }
                         self.launcher_open_tools(qh, requested_at);
                     }
+                    Action::OpenBinds => {
+                        if self.launcher_is_open() {
+                            self.launcher_close(CloseReason::Replaced);
+                        }
+                        self.launcher_open_binds(qh, requested_at);
+                    }
                     Action::OpenProcesses => {
                         if self.launcher_is_open() {
                             self.launcher_close(CloseReason::Replaced);
@@ -447,8 +478,8 @@ impl App {
                         }
                     }
                     Action::Close(reason) => self.launcher_close(reason),
-                    // The only `--tools` that does nothing is the one inside the debounce.
-                    Action::Nothing if is_tools => log("launcher: --tools debounced"),
+                    // The only `--tools` or `--binds` that does nothing is the one inside the debounce.
+                    Action::Nothing if !debounced.is_empty() => log(debounced),
                     Action::Nothing | Action::OpenScript { .. } => {}
                 }
             }
@@ -721,7 +752,7 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
-        use Opened::{Apps, Clipboard, Processes, Script, Switcher, Tools};
+        use Opened::{Apps, Binds, Clipboard, Processes, Script, Switcher, Tools};
         let script =
             Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
         let not_ours = || Action::Nothing;
@@ -760,6 +791,17 @@ mod tests {
             (Request::Tools, Some(Script), Action::OpenTools, done()),
             (Request::Tools, Some(Switcher), Action::OpenTools, done()),
             (Request::Tools, Some(Clipboard), Action::OpenTools, done()),
+            // `--binds` toggles the Keybindings level alone and replaces anything else open; a
+            // `--tools` or a Toggle on it closes the box, as on the Tools menu.
+            (Request::Binds, None, Action::OpenBinds, done()),
+            (Request::Binds, Some(Binds), Action::Close(R::Toggle), done()),
+            (Request::Binds, Some(Tools), Action::OpenBinds, done()),
+            (Request::Binds, Some(Apps), Action::OpenBinds, done()),
+            (Request::Binds, Some(Script), Action::OpenBinds, done()),
+            (Request::Binds, Some(Processes), Action::OpenBinds, done()),
+            (Request::Tools, Some(Binds), Action::Close(R::Toggle), done()),
+            (Request::Toggle, Some(Binds), Action::Close(R::Toggle), done()),
+            (Request::Kill, Some(Binds), Action::OpenProcesses, done()),
             (Request::Kill, None, Action::OpenProcesses, done()),
             (Request::Kill, Some(Processes), Action::Close(R::Toggle), done()),
             (Request::Kill, Some(Apps), Action::OpenProcesses, done()),
@@ -1059,6 +1101,29 @@ mod tests {
         }
         assert_eq!(open_after(None, &Action::OpenProcesses), open);
         assert_eq!(opened(&Launcher::for_processes(LauncherConfig::default(), vec![])), Opened::Processes);
+    }
+
+    /// A second `--binds` inside the debounce is a press-bind refire: ignored, still answered Done.
+    #[test]
+    fn a_repeated_binds_inside_the_debounce_is_ignored() {
+        let open = Some(Opened::Binds);
+        assert_eq!(decide(Request::Binds, open, Duration::from_millis(10)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Binds, open, PAST_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        assert_eq!(open_after(None, &Action::OpenBinds), open);
+    }
+
+    /// A Tools model on the Keybindings level is `Opened::Binds`, wherever the level was opened from.
+    #[test]
+    fn a_tools_model_at_its_binds_level_is_opened_binds() {
+        use crate::launcher::tools::binds::Binds;
+        use crate::launcher::tools::catalog::{Catalog, Context};
+        let config = LauncherConfig::default();
+        let context = Context { binds: true, ..Context::default() };
+        let catalog = Catalog::build(&config.tools, &context, &mut |_| {});
+        let mut m = Launcher::for_tools(config, catalog, History::empty(200), 0);
+        assert_eq!(opened(&m), Opened::Tools);
+        m.open_binds_alone(Binds::default());
+        assert_eq!(opened(&m), Opened::Binds);
     }
 
     /// A Mod+Space open that jumped into the Tools mode is one `--tools` closes; a `--tools` open too.

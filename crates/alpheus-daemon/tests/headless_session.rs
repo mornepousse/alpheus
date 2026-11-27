@@ -594,6 +594,45 @@ fn binds_on_sway_lists_the_fixture() {
     assert!(log.iter().all(|l| !l.contains("fake-binds") && !l.contains("Super+")), "never a bind: {log:?}");
 }
 
+/// `alpheus-launch --binds` on the harness's own Sway: the Keybindings level opens alone (no scan),
+/// the log counts the fixture's binds; a second `--binds` past the debounce closes the box; a
+/// third opens it again and one Esc closes it (no panel beneath).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn binds_verb_opens_and_toggles() {
+    let sway = Sway::start("binds-verb", 1);
+    let config = sway.runtime.join("binds-verb.conf");
+    std::fs::write(&config, "# Invented Sway bindings.\nset $mod Mod4\nbindsym $mod+Return exec foo-term\nbindsym $mod+q kill\n").unwrap();
+    let toml = format!("[tools]\nbinds_files = [{:?}]\n", config.display().to_string());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tools: binds shown (2 binds, 1 groups)", DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "one Esc closes a --binds open: {:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the level alone scans nothing: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("foo-term") && !l.contains("Super+")), "never a bind: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// `--binds` where no dialect reads the compositor (the fake Hyprland): refused with its text,
+/// nothing opened.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_verb_is_refused_on_hyprland() {
+    let (sway, _hypr, mut d) = tools_daemon("binds-refused", "");
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Error("no key bindings source for this compositor".into()));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count(SHOWN), 0, "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
 /// A category, an entry with fixed choices and `run = [rec, "fixed", "{choice}"]`: the argv the
 /// recorder gets is one element per line, the choice whole (`a b`, `it's "q"`), never split or quoted.
 #[test]

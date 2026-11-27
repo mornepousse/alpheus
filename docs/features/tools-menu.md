@@ -163,7 +163,8 @@ chip, the warning a minute before, the state file, `--timer shutdown`) is the ti
 Tools › System › Keybindings lists the compositor's key bindings, read from its config files when the
 level opens (shown only on Mango and Sway; on another compositor the entry hides). Enter opens it in
 the box; Esc, ← on an empty query or Backspace go back to where it was opened, the panel on the tab it
-was on. Nothing of it is kept once it is left.
+was on. Nothing of it is kept once it is left. `alpheus-launch --binds` opens the same level alone,
+from a key (see "From a key"); then Esc, or ← on an empty query, closes the box.
 
 - **Sources:** `[tools] binds_files` when set (at most 8 paths, each absolute or starting with `~/`,
   your home folder; a relative one makes `launcher.toml` invalid), else the
@@ -254,6 +255,12 @@ is on [the captures page](captures.md).
 bar is not running or is older than the verb, the one code on which a script falls back to another menu.
 `alpheus-launch --power` exits 2 when no `[quick]` session command is set.
 
+**`alpheus-launch --binds`** opens the Keybindings level alone, with nothing beneath it: Esc, or ← on
+an empty query, closes the box. It replaces any other open launcher, the Tools menu at another level
+included, then toggles like `--tools` (a second `--binds` within 250 ms of its open is ignored, and a
+`--tools` closes it too). It exits 2 with `no key bindings source for this compositor` on Hyprland,
+niri or a compositor not detected, and then replaces nothing; 3 as `--tools` does.
+
 ## Configuration
 
 `[tools]` and its tables in `launcher.toml` (the struct is `ToolsConfig` in `launcher/tools/config.rs`),
@@ -293,7 +300,9 @@ terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-categ
 not moved to the root.
 
 **Binding it.** Bind `alpheus-launch --tools` yourself (Mango `bind=SUPER,x,spawn,alpheus-launch --tools`,
-Sway `bindsym $mod+x exec alpheus-launch --tools`). Exit 3 means the daemon is too old or not running, and
+Sway `bindsym $mod+x exec alpheus-launch --tools`), and the cheatsheet the same way (Mango
+`bind=SUPER+SHIFT,slash,spawn,alpheus-launch --binds`, Sway
+`bindsym $mod+Shift+slash exec alpheus-launch --binds`). Exit 3 means the daemon is too old or not running, and
 a bind can fall back to a menu of your own on that code. Names, commands and lines are never logged (an
 entry is named by its position in the file).
 
