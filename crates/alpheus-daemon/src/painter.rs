@@ -54,6 +54,8 @@ const FRAME_RADIUS: u32 = 6;
 const CARD_RADIUS: u32 = 6;
 const CHIP_RADIUS: u32 = 4;
 const BAND_RADIUS: u32 = 5;
+/// How much of `fg_dim` an off switch's track takes over the surface under it, in percent.
+const OFF_TRACK_ALPHA: u16 = 70;
 /// Logical px between a chip or a switch's track and the top and bottom of its rows.
 const CHIP_INSET: u32 = 2;
 /// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
@@ -243,7 +245,8 @@ pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
 }
 
 /// A shape's fill on a surface of `base`: a card `raised`, a chip its tint, the band the
-/// selection's, a switch's track green when on and `pill_bg` when off.
+/// selection's, a switch's track green when on and `pill_bg` when off (`paint_shapes` paints an
+/// off track `fg_dim` over what lies under it instead).
 fn shape_fill(r: &Roles, base: Rgb, kind: ShapeKind) -> Rgb {
     match kind {
         ShapeKind::Card => r.raised,
@@ -343,6 +346,12 @@ fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rg
 
 /// Share of a graph's ink (percent) in the body under its line.
 pub(crate) const BODY_ALPHA: u16 = 40;
+
+/// The colour of the pixel at `x`, `y` of a BGRA buffer `width` px wide; None past its end.
+fn pixel(px: &[u8], width: u32, x: u32, y: u32) -> Option<Rgb> {
+    let o = (y as usize * width as usize + x as usize) * 4;
+    px.get(o..o + 3).map(|p| Rgb(p[2], p[1], p[0]))
+}
 
 /// `c` at `alpha` % over `base`, per channel, rounded.
 pub(crate) fn mix(c: Rgb, base: Rgb, alpha: u16) -> Rgb {
@@ -968,6 +977,10 @@ impl Fonts {
                     let w = x.1.saturating_sub(x.0);
                     let h = y.1.saturating_sub(y.0).saturating_sub(2 * inset).min(w.saturating_mul(5) / 8);
                     let top = y.0.saturating_add((y.1.saturating_sub(y.0) - h) / 2);
+                    // Off, `fg_dim` over whatever the track lies on (the list, the selected row's
+                    // band, a card), so it stands out of each.
+                    let fill =
+                        if on { fill } else { mix(roles.fg_dim, pixel(px, width, x.0, top).unwrap_or(roles.popup_bg), OFF_TRACK_ALPHA) };
                     self.rounded(px, width, height, x, (top, top.saturating_add(h)), clip, fill, h / (2 * e), scale);
                     let d = h.saturating_sub(2 * e);
                     let left = if on { x.1.saturating_sub(e + d) } else { x.0.saturating_add(e) };

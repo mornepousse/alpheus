@@ -1351,6 +1351,7 @@ mod graphs {
 mod shapes {
     use super::*;
     use crate::list::{Shape, ShapeKind};
+    use alpheus_common::theme::contrast::ratio;
 
     /// `b` painted with `distinct()` roles at `scale`, in a box of its cells plus the frame.
     struct Painted {
@@ -1550,7 +1551,7 @@ mod shapes {
     #[test]
     fn a_switch_draws_its_knob_on_the_side_of_its_state() {
         let (mut p, r) = (fonts(), distinct());
-        for (on, track) in [(true, r.hues.green), (false, r.pill_bg)] {
+        for (on, track) in [(true, r.hues.green), (false, mix(r.fg_dim, r.popup_bg, OFF_TRACK_ALPHA))] {
             let mut b = blank(20, 3);
             b.shapes.push(shape(1, 8, 2, 1, ShapeKind::Switch(on)));
             let s = Painted::new(&mut p, &b, 1);
@@ -1563,6 +1564,45 @@ mod shapes {
             assert_eq!(s.at(far, cy), track, "on {on}: the track on the other side");
             assert_eq!(s.at(mid, y0), r.popup_bg, "on {on}: the track is shorter than its row");
             assert!((y0..y1).all(|y| s.at(x0 - 1, y) == r.popup_bg && s.at(x1, y) == r.popup_bg), "on {on}: two cells wide");
+        }
+    }
+
+    /// The off track stands out of whatever it lies on (the list, the selected row's band, a
+    /// card) in the Ink theme and the default one: a luminance ratio of at least 1.5 to the surface
+    /// around it (the theme's frame and separator lines, `border_over`, sit between 1.3 and 1.9;
+    /// a filled track is a whole shape, so a ratio past the weakest line's reads as one), and the
+    /// knob, which carries the state, at least 3:1 on its track (WCAG 2's floor for the parts of a
+    /// control). `pill_bg`, the track before, was 1.09 on Ink's list.
+    #[test]
+    fn the_off_track_stands_out_of_the_surface_under_it() {
+        let mut p = fonts();
+        let ink = alpheus_common::theme::presets::preset("ink").expect("the Ink theme").dark;
+        for (theme, r) in [("ink", ink), ("default", Roles::default())] {
+            for under in [None, Some(ShapeKind::Band), Some(ShapeKind::Card)] {
+                let mut b = blank(20, 3);
+                if let Some(kind) = under {
+                    b.shapes.push(shape(0, 2, 16, 3, kind));
+                }
+                b.shapes.push(shape(1, 8, 2, 1, ShapeKind::Switch(false)));
+                for scale in [1, 2] {
+                    let (advance, frame) = (p.advance(scale), p.frame(scale));
+                    let (cols, rows) = b.cells();
+                    let rh = DEFAULT_HEIGHT * scale as u32;
+                    let (w, h) = ((f32::from(cols) * advance).ceil() as u32 + frame.extra().0, u32::from(rows) * rh + frame.extra().1);
+                    let mut px = vec![0x11u8; (w * h * 4) as usize];
+                    p.paint_boxed(&b, &r, &mut px, w, h, rh, scale, FrameInk::Border);
+                    let at = |x: u32, y: u32| {
+                        let o = ((y * w + x) * 4) as usize;
+                        Rgb(px[o + 2], px[o + 1], px[o])
+                    };
+                    let (x0, x1) = (frame.side + p.edge(8), frame.side + p.edge(10));
+                    let cy = frame.top + rh + rh / 2;
+                    let (track, around, knob) = (at(x1 - 3 * scale as u32, cy), at(x0 - 2, cy), r.fg);
+                    let what = format!("{theme}, on {under:?}, scale {scale}: track {track:?} on {around:?}");
+                    assert!(ratio(track, around) >= 1.5, "{what}: {:.2}", ratio(track, around));
+                    assert!(ratio(knob, track) >= 3.0, "{what}: the knob {:.2}", ratio(knob, track));
+                }
+            }
         }
     }
 
