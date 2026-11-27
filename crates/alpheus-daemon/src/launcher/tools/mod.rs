@@ -3,6 +3,7 @@
 //! See: docs/features/tools-menu.md.
 
 pub mod app;
+pub mod binds;
 pub mod catalog;
 pub mod config;
 pub mod diag;

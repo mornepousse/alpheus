@@ -18,7 +18,7 @@ use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec
 use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
-use crate::launcher::tools::catalog::{Choices, Entry};
+use crate::launcher::tools::catalog::{BUILTINS, BuiltinAction, Choices, Entry, EntryKind};
 use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
 use crate::list::{self, Boxed, Edge, Row, Shape, ShapeKind, tail, wrap};
 use crate::painter::FrameInk;
@@ -401,6 +401,7 @@ fn row_hue(t: &ToolsState, id: RowId) -> Style {
     let category = match id {
         RowId::Category(c) => Some(c),
         RowId::Entry(e) | RowId::Choice(e, _) | RowId::Prompt(e) => t.catalog.entries.get(e).and_then(|e| e.category),
+        RowId::Bind(_) => None,
     };
     category_hue(t, category)
 }
@@ -410,9 +411,12 @@ fn category_hue(t: &ToolsState, category: Option<usize>) -> Style {
     category.and_then(|c| t.catalog.categories.get(c)).and_then(|c| c.hue).map_or(Style::ACCENT, Style::hue)
 }
 
-/// Whether Enter on the entry opens a level (its choices, or the text it asks for).
+/// Whether Enter on the entry opens a level (its choices, the text it asks for, or the
+/// Keybindings level).
 fn opens_level(e: &Entry) -> bool {
-    !matches!(e.choices, Choices::None) || e.ask.is_some()
+    !matches!(e.choices, Choices::None)
+        || e.ask.is_some()
+        || matches!(e.kind, EntryKind::Builtin(b) if BUILTINS.get(b).is_some_and(|b| b.action == BuiltinAction::Binds))
 }
 
 /// A command-source entry: the entry, then its path dimmed two cells after it,
@@ -641,9 +645,12 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 let opens = match row.id {
                     RowId::Category(_) => true,
                     RowId::Entry(e) => l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(opens_level),
-                    RowId::Choice(..) | RowId::Prompt(_) => false,
+                    RowId::Choice(..) | RowId::Prompt(_) | RowId::Bind(_) => false,
                 };
-                out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
+                // A binding is shown, never run: no key to tell.
+                if !matches!(row.id, RowId::Bind(_)) {
+                    out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
+                }
             }
         }
         // Unreachable in practice: a `Source::Line` hit only exists in Script mode, and a
@@ -665,6 +672,9 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let tools = l.mode == Mode::Tools;
     if tools && panel::shown(l) {
         return Boxed { edge: edge(l), ..panel::render(l, b) };
+    }
+    if tools && binds::shown(l) {
+        return Boxed { edge: edge(l), ..binds::render(l, b) };
     }
     let unpaned = without_preview(l, b);
     let b = &unpaned;
@@ -900,6 +910,9 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if l.mode == Mode::Tools && panel::shown(l) {
         return Some(panel::hit(l, b, column, row));
     }
+    if l.mode == Mode::Tools && binds::shown(l) {
+        return Some(binds::hit(l, b, column, row));
+    }
     // A level below the panel's root: the card right of its rows is no row.
     let listed = if l.mode == Mode::Tools { panel::level_card(l, b).map(|(_, end, _)| list_pane(b, end)) } else { None };
     let b = listed.as_ref().unwrap_or(b);
@@ -926,6 +939,7 @@ pub fn snapshot(b: &Boxed) -> String {
     format!("{}\n\n{}\n\ndivider: {divider}", texts.join("\n"), styles.join("\n"))
 }
 
+mod binds;
 mod panel;
 pub use panel::{fit, model_rows};
 

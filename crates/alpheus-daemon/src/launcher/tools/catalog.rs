@@ -58,6 +58,9 @@ pub enum BuiltinAction {
     Capture(CaptureVerb),
     /// The wallpaper folder's images by name (`[wallpaper]`): the chosen one goes to the setter.
     Wallpaper,
+    /// The Keybindings level, listing the compositor's key bindings (`binds/`): opened in the box,
+    /// never run.
+    Binds,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +117,7 @@ const DIAGNOSTICS: &str = "Diagnostics";
 
 /// The built-in table, in its order: one row per line, read as a table.
 #[rustfmt::skip]
-pub const BUILTINS: [Builtin; 46] = [
+pub const BUILTINS: [Builtin; 47] = [
     b("quick.sound", "Sound", QUICK, "Set volume and output in quick settings", '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
     b("quick.wifi", "Wi-Fi", QUICK, "Pick a Wi-Fi network in quick settings", '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)).with_key('w'),
     b("quick.bluetooth", "Bluetooth", QUICK, "Connect a device in quick settings", '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)).with_key('b'),
@@ -147,6 +150,7 @@ pub const BUILTINS: [Builtin; 46] = [
     b("capture.ocr", "Text from area (OCR)", CAPTURES, "Select an area, copy its text", '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)).with_key('o'),
     b("shutdown", "Schedule shutdown", SYSTEM, "Power off after a delay", '\u{F0902}', BuiltinAction::Shutdown).with_key('s'),
     b("process.kill", "Kill a process", SYSTEM, "Pick a process to end", '\u{F068C}', BuiltinAction::Kill).with_key('k'),
+    b("tools.binds", "Keybindings", SYSTEM, "Show the compositor's key bindings", '\u{F030C}', BuiltinAction::Binds),
     b("lock", "Lock", SESSION, "Lock the screen", '\u{F033E}', BuiltinAction::Lock).with_key('l'),
     b("power", "Power menu", SESSION, "Lock, log out, reboot or power off", '\u{F0425}', BuiltinAction::Power).with_key('q'),
     b("reload", "Reload the bar", SESSION, "Run the reload command you set", '\u{F0450}', BuiltinAction::Reload),
@@ -210,6 +214,8 @@ pub struct Context {
     pub record: bool,
     /// `[wallpaper]` is set (its folder resolved; whether it is there is the reader thread's to find).
     pub wallpaper: bool,
+    /// The session's compositor is one whose key bindings `binds/` reads (Mango, Sway).
+    pub binds: bool,
 }
 
 /// Whether the row of capture `verb` shows, the compositor having screencopy: a row whose external
@@ -249,6 +255,7 @@ pub fn shown(b: &Builtin, c: &Context) -> bool {
         BuiltinAction::Preset(_) => c.diagnostics,
         BuiltinAction::Capture(verb) => c.captures && capture_shown(verb, c),
         BuiltinAction::Wallpaper => c.wallpaper,
+        BuiltinAction::Binds => c.binds,
     }
 }
 

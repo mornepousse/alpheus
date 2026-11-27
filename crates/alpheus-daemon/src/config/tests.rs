@@ -1440,3 +1440,102 @@ fn tray_tooltips_false_turns_every_tooltip_off() {
     assert!(!BarConfig::from_text("tooltips = true\n[tray]\ntooltips = false").unwrap().tooltips, "false anywhere wins");
     assert!(BarConfig::from_text("").unwrap().tooltips);
 }
+
+/// No `[power]`: no countdown, the four fixed rows, no row of the user's.
+#[test]
+fn power_defaults_change_nothing_in_the_config() {
+    let c = BarConfig::from_text("").unwrap();
+    assert_eq!(c.power, PowerConfig { countdown: 0, builtins: true, entry: Vec::new() });
+    assert_eq!(BarConfig::default().power, c.power);
+}
+
+/// `[power]` and its rows parse; each bound is refused with its reason, naming the row by its
+/// position, never its name or command.
+#[test]
+fn power_entries_parse_and_bounds() {
+    let c = BarConfig::from_text(
+        "[power]\ncountdown = 5\nbuiltins = false\n[[power.entry]]\nname = \"Quit\"\nrun = [\"fake-quit\", \"--now\"]\n\
+         [[power.entry]]\nname = \"Lock it\"\nicon = \"x\"\nrun = [\"fake-lock\"]\nconfirm = true\ncountdown = 30\n",
+    )
+    .unwrap();
+    assert_eq!((c.power.countdown, c.power.builtins), (5, false));
+    assert_eq!(
+        c.power.entry,
+        [
+            PowerEntryConfig {
+                name: "Quit".into(),
+                icon: None,
+                run: vec!["fake-quit".into(), "--now".into()],
+                confirm: false,
+                countdown: None
+            },
+            PowerEntryConfig {
+                name: "Lock it".into(),
+                icon: Some("x".into()),
+                run: vec!["fake-lock".into()],
+                confirm: true,
+                countdown: Some(30)
+            },
+        ]
+    );
+    let entry = |body: &str| format!("[[power.entry]]\n{body}\n");
+    let ok = "name = \"N\"\nrun = [\"fake\"]";
+    let nine: String = (0..9).map(|_| entry(ok)).collect();
+    let secret = "someone-private";
+    for (text, why) in [
+        (nine, "power.entry: at most 8 (got 9)".to_string()),
+        (entry(&format!("name = \"{}\"\nrun = [\"fake\"]", "n".repeat(25))), "power.entry 1: name must be 1 to 24 characters".into()),
+        (entry("name = \"\"\nrun = [\"fake\"]"), "power.entry 1: name must be 1 to 24 characters".into()),
+        (entry("name = \"  \"\nrun = [\"fake\"]"), "power.entry 1: name must be 1 to 24 characters".into()),
+        (entry("name = \"a\\u0007\"\nrun = [\"fake\"]"), "power.entry 1: name holds a control character".into()),
+        ("[power]\ncountdown = 31\n".to_string(), "power.countdown 31 out of range 0 to 30 s".into()),
+        (entry(&format!("{ok}\ncountdown = 31")), "power.entry 1: countdown out of range 0 to 30 s".into()),
+        (entry("name = \"N\"\nrun = []"), "power.entry 1: run empty (expected: [\"program\", \"argument\", …])".into()),
+        (
+            entry(&format!("{ok}\n[[power.entry]]\nname = \"{secret}\"\nrun = [\" \", \"{secret}\"]")),
+            "power.entry 2: the program is blank".into(),
+        ),
+        (entry(&format!("name = \"N\"\nrun = [\"{secret}\", \"a\\u0000b\"]")), "power.entry 1: an argument holds a NUL".into()),
+        (entry(&format!("{ok}\nicon = \"ab\"")), "power.entry 1: icon must be one character".into()),
+        (entry(&format!("{ok}\nicon = \"\"")), "power.entry 1: icon must be one character".into()),
+    ] {
+        let got = BarConfig::from_text(&text).expect_err(&text);
+        assert_eq!(got, why, "{text}");
+        assert!(!got.contains(secret), "never the row's name or command: {got}");
+    }
+    assert!(BarConfig::from_text(&entry("run = [\"fake\"]")).is_err(), "a row needs its name");
+    assert!(BarConfig::from_text(&entry("name = \"N\"")).is_err(), "a row needs its run");
+    assert!(BarConfig::from_text(&entry(&format!("{ok}\nshell = true"))).is_err(), "an unknown key is refused");
+}
+
+/// A user row whose command names a sleep word, anywhere in any argument and in any case, makes
+/// bar.toml invalid: alpheus never sleeps. The message names the word found (the screens' power
+/// stem as `dpm`, so a path holding it is understood), never the argument.
+#[test]
+fn a_power_entry_naming_sleep_makes_bar_toml_invalid() {
+    for (run, word) in [
+        ("[\"systemctl\", \"Suspend\"]", "suspend"),
+        ("[\"sh\", \"-c\", \"sleep 1 && systemctl hibernate\"]", "hibernate"),
+        ("[\"systemctl\", \"hybrid-sleep\"]", "hybrid-sleep"),
+        ("[\"fake-wm\", \"set-DPM\", \"off\"]", "dpm"),
+        ("[\"fake-run\", \"/home/u/dpm-notes/quit\"]", "dpm"),
+        ("[\"loginctl\", \"suspend-then-hibernate\"]", "suspend"),
+        ("[\"/usr/bin/suspend\"]", "suspend"),
+        ("[\"niri\", \"msg\", \"action\", \"power-off-monitors\"]", "power-off-monitors"),
+        ("[\"fake-wm\", \"Power-Off-Monitors\"]", "power-off-monitors"),
+        ("[\"wlopm\", \"--off\", \"*\"]", "wlopm"),
+        ("[\"/usr/bin/WLOPM\", \"--off\", \"DP-1\"]", "wlopm"),
+    ] {
+        let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
+        let err = BarConfig::from_text(&text).unwrap_err();
+        assert_eq!(
+            err,
+            format!("power.entry 1: an argument of run contains \"{word}\" (a row never sleeps nor powers the screens)"),
+            "{run}"
+        );
+        assert!(!err.contains("fake") && !err.contains("/home"), "never the command: {err}");
+    }
+    assert!(BarConfig::from_text("[[power.entry]]\nname = \"Suspend\"\nrun = [\"fake-lock\"]\n").is_ok(), "the name is only a label");
+    // Sway's output command is too generic to spot without refusing harmless rows: allowed.
+    assert!(BarConfig::from_text("[[power.entry]]\nname = \"N\"\nrun = [\"fake-wm\", \"output\", \"*\", \"power\", \"off\"]\n").is_ok());
+}

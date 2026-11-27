@@ -30,6 +30,7 @@ fn all() -> Context {
         ocr: true,
         record: true,
         wallpaper: true,
+        binds: true,
     }
 }
 
@@ -72,9 +73,9 @@ fn every_builtin_has_a_short_description() {
 /// journal", not "NetworkManager's journal"). The verbs the table uses; a new one is added here.
 #[test]
 fn every_description_starts_with_a_verb() {
-    const VERBS: [&str; 20] = [
+    const VERBS: [&str; 21] = [
         "Set", "Pick", "Connect", "Open", "Turn", "Keep", "Jot", "Find", "Copy", "Select", "Record", "End", "Power", "Lock", "Run", "Scan",
-        "Watch", "Restart", "Read", "Follow",
+        "Watch", "Restart", "Read", "Follow", "Show",
     ];
     for b in &BUILTINS {
         let first = b.description.split([' ', ',']).next().unwrap_or_default();
@@ -133,6 +134,7 @@ fn the_table_is_the_specs() {
             "capture.ocr",
             "shutdown",
             "process.kill",
+            "tools.binds",
             "lock",
             "power",
             "reload",
@@ -189,6 +191,7 @@ fn the_table_is_the_specs() {
             "Text from area (OCR)",
             "Schedule shutdown",
             "Kill a process",
+            "Keybindings",
             "Lock",
             "Power menu",
             "Reload the bar",
@@ -212,7 +215,7 @@ fn the_table_is_the_specs() {
     expected.extend([control; 8]);
     expected.extend([utilities; 5]);
     expected.extend([captures; 9]);
-    expected.extend([system; 2]);
+    expected.extend([system; 3]);
     expected.extend([session; 3]);
     expected.extend([diagnostics; 11]);
     assert_eq!(categories, expected);
@@ -234,6 +237,7 @@ fn the_table_is_the_specs() {
     assert_eq!(action("quick.shield"), BuiltinAction::Shield);
     assert_eq!(action("process.kill"), BuiltinAction::Kill);
     assert_eq!(action("wallpaper.pick"), BuiltinAction::Wallpaper);
+    assert_eq!(action("tools.binds"), BuiltinAction::Binds);
     // Each capture entry replays the verb of its own name.
     for (id, verb) in [
         ("capture.full", CaptureVerb::Full),
@@ -248,6 +252,22 @@ fn the_table_is_the_specs() {
     ] {
         assert_eq!(action(id), BuiltinAction::Capture(verb), "{id}");
     }
+}
+
+/// Keybindings shows only on a compositor whose key bindings `binds/` reads (`Context::binds`:
+/// Mango, Sway), and lists under System with nothing to choose, ask or confirm.
+#[test]
+fn the_binds_builtin_shows_only_with_a_known_dialect() {
+    let binds = BUILTINS.iter().find(|b| b.id == "tools.binds").unwrap();
+    assert_eq!((binds.label, binds.category, binds.glyph, binds.key), ("Keybindings", "System", '\u{F030C}', None));
+    assert_eq!(binds.description, "Show the compositor's key bindings");
+    assert!(!shown(binds, &Context { binds: false, ..all() }), "an unknown compositor hides it");
+    assert!(shown(binds, &Context { binds: true, ..Context::default() }));
+    let (cat, _) = build("", &Context { binds: false, ..all() });
+    assert!(!builtin_ids(&cat).contains(&"tools.binds"));
+    let (cat, _) = build("", &all());
+    let e = cat.entries.iter().find(|e| e.name == "Keybindings").unwrap();
+    assert_eq!((&e.choices, e.confirm, e.ask.as_deref(), e.has_state), (&Choices::None, false, None, false));
 }
 
 #[test]
@@ -271,7 +291,7 @@ fn shown_follows_the_context() {
         "the seven tabs (not diagnostics), notes, emoji, the kill list and the USB events"
     );
     type Flip = (fn(&mut Context), &'static [&'static str]);
-    let flips: [Flip; 16] = [
+    let flips: [Flip; 17] = [
         (|c| c.quick = true, &["quick.sound", "quick.wifi", "quick.bluetooth", "quick.vpn"]),
         (|c| c.notifications = true, &["dnd"]),
         (|c| c.timer = true, &["timer"]),
@@ -300,6 +320,7 @@ fn shown_follows_the_context() {
         (|c| c.usb_reset = true, &["diag.usb_reset"]),
         (|c| c.shutdown = true, &["shutdown"]),
         (|c| c.wallpaper = true, &["wallpaper.pick"]),
+        (|c| c.binds = true, &["tools.binds"]),
         (
             |c| {
                 c.captures = true;
@@ -343,6 +364,7 @@ fn flip_off(c: &mut Context, rows: &[&str]) {
         "shutdown" => c.shutdown = false,
         "wallpaper.pick" => c.wallpaper = false,
         "capture.full" => c.captures = false,
+        "tools.binds" => c.binds = false,
         other => panic!("{other}"),
     }
 }

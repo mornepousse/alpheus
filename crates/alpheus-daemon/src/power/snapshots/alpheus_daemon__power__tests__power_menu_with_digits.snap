@@ -1,0 +1,19 @@
+---
+source: crates/alpheus-daemon/src/power/mod.rs
+expression: "out.join(\"\\n\")"
+---
+ 󰌾 Lock           1  
+.a................m..
+ 󰍃 Log out        2  
+.a................m..
+ 󰜉 Reboot         3  
+SSSSSSSSSSSSSSSS..m..
+ ⏻ Power off? ⏎   4  
+.wwwwwwwwwwwwww...m..
+ • Quit           5  
+.a................m..
+Shape { row: 0, col: 17, width: 3, rows: 1, kind: Chip(Pill), glyph: None }
+Shape { row: 1, col: 17, width: 3, rows: 1, kind: Chip(Pill), glyph: None }
+Shape { row: 2, col: 17, width: 3, rows: 1, kind: Chip(Pill), glyph: None }
+Shape { row: 3, col: 17, width: 3, rows: 1, kind: Chip(Pill), glyph: None }
+Shape { row: 4, col: 17, width: 3, rows: 1, kind: Chip(Pill), glyph: None }

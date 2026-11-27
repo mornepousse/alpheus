@@ -27,6 +27,8 @@ pub const DEFAULT_ORDER: u16 = 50;
 pub const CHOICE_PLACEHOLDER: &str = "{choice}";
 /// The one element of `run` replaced by the typed text (`ask`), whole: never part of an argument.
 pub const TEXT_PLACEHOLDER: &str = "{text}";
+/// At most this many `binds_files`.
+pub const MAX_BINDS_FILES: usize = 8;
 /// The built-in categories; an entry may name one, a `[[tools.category]]` may restyle one.
 pub const BUILTIN_CATEGORIES: [&str; 7] = ["Quick settings", "Control center", "Utilities", "Captures", "System", "Session", "Diagnostics"];
 
@@ -48,6 +50,10 @@ pub struct ToolsConfig {
     pub keys: BTreeMap<String, char>,
     /// The commands of the built-ins that run one (`[tools.builtin]`).
     pub builtin: BuiltinCommands,
+    /// The files the Keybindings level reads (a leading `~/` is the home folder), each with the
+    /// files it includes; empty: the compositor's own config. At most MAX_BINDS_FILES, none blank,
+    /// each absolute or under `~/`.
+    pub binds_files: Vec<String>,
     #[serde(rename = "category")]
     pub categories: Vec<CategoryConfig>,
     #[serde(rename = "entry")]
@@ -64,6 +70,7 @@ impl Default for ToolsConfig {
             panel: true,
             keys: BTreeMap::new(),
             builtin: BuiltinCommands::default(),
+            binds_files: Vec::new(),
             categories: Vec::new(),
             entries: Vec::new(),
         }
@@ -239,6 +246,17 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
     if !t.builtin.usb_reset.is_empty() {
         check_argv("tools.builtin", "usb_reset", &t.builtin.usb_reset)
             .map_err(|_| "tools.builtin.usb_reset: empty program (expected: [\"program\", \"argument\", …], or [] to hide)".to_string())?;
+    }
+    if t.binds_files.len() > MAX_BINDS_FILES {
+        return Err(format!("tools.binds_files: at most {MAX_BINDS_FILES} paths"));
+    }
+    if t.binds_files.iter().any(|p| p.trim().is_empty() || bad_text(p)) {
+        return Err("tools.binds_files: a path is blank or holds a control character".to_string());
+    }
+    // The daemon's working folder is no place a user knows: a relative path would read whatever
+    // lies there.
+    if t.binds_files.iter().any(|p| !(p.starts_with('/') || p.starts_with("~/"))) {
+        return Err("tools.binds_files: a path is neither absolute nor under ~/".to_string());
     }
     // Called before `bounded`: what a bound would cut is checked all the same (the sets keep it linear).
     let mut category_names = HashSet::new();

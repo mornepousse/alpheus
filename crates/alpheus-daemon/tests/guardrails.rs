@@ -15,7 +15,7 @@ use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output,
 use alpheus_daemon::actions::{Button, command, run};
 use alpheus_daemon::appearance::SETTING_RULE;
 use alpheus_daemon::compositor::{CompositorState, Toplevel, Window, Workspace};
-use alpheus_daemon::config::{BarConfig, ModuleId, QuickConfig, ToggleConfig};
+use alpheus_daemon::config::{BarConfig, ModuleId, PowerEntryConfig, QuickConfig, ToggleConfig};
 use alpheus_daemon::kbd_backlight::Kbd;
 use alpheus_daemon::keys::Key;
 use alpheus_daemon::launcher::config::{LauncherConfig, SourceConfig};
@@ -27,11 +27,11 @@ use alpheus_daemon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_daemon::launcher::scan::Catalog;
 use alpheus_daemon::launcher::sources::{Entries, SourceEntry};
 use alpheus_daemon::notify::NotifyView;
-use alpheus_daemon::power::{Power, PowerAction};
+use alpheus_daemon::power::{Power, PowerAction, PowerEntry};
 use alpheus_daemon::privacy::{Capture, Indicator};
 use alpheus_daemon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_daemon::rfkill::Airplane;
-use alpheus_daemon::session::{self, Session};
+use alpheus_daemon::session;
 use alpheus_daemon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_daemon::session_bus::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, SYSTEMD_MANAGER,
@@ -1026,6 +1026,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Clipboard => "clipboard",
             Request::ClipboardClear => "clipboard-clear",
             Request::Tools => "tools",
+            Request::Binds => "binds",
             Request::Kill => "kill",
             Request::Power => "power",
             Request::Dmenu { .. } => "dmenu",
@@ -1054,6 +1055,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Clipboard,
         Request::ClipboardClear,
         Request::Tools,
+        Request::Binds,
         Request::Kill,
         Request::Power,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
@@ -1083,6 +1085,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "clipboard",
             "clipboard-clear",
             "tools",
+            "binds",
             "kill",
             "power",
             "dmenu",
@@ -3900,71 +3903,230 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
 
 /// Whatever keys, hovers and presses reach the menu — every pair of keys at
 /// once, then a third past CONFIRM_AFTER; every row pressed twice, at once and past it — it only ever
-/// runs a `[quick]` session entry whose command is set, each one is reached, and reboot or power
-/// off never run without a second activation CONFIRM_AFTER after the first.
+/// runs a row whose command is set: a `[quick]` session entry (its own `[quick]` command, and only
+/// while the built-ins show) or a `[[power.entry]]` row (its own `run`). Each row is reached, and a
+/// row that asks (reboot, power off, a user row with `confirm`) never runs without a second
+/// activation CONFIRM_AFTER after its own first. No command run holds a sleep word, in any case.
+/// With a countdown, a row that has one never runs from a key or the pointer: only `due`, at or
+/// after the countdown's end, runs it, and a row that asks starts its countdown only from its own
+/// question and a second activation CONFIRM_AFTER later. Every countdown left running is stepped
+/// by the menu's own deadlines to its end.
+/// The configs: the four commands set or not, times no user row, a plain one or one that asks,
+/// times the built-ins shown or hidden, times no countdown or one of 2 s (the global one, and the
+/// plain row's own).
 #[test]
 fn every_power_menu_activation_is_a_configured_session() {
-    let keys = [Key::Up, Key::Down, Key::Tab, Key::BackTab, Key::Enter, Key::Char(' '), Key::Escape, Key::Home, Key::Left, Key::Char('x')];
+    let keys = [
+        Key::Up,
+        Key::Down,
+        Key::Tab,
+        Key::BackTab,
+        Key::Enter,
+        Key::Char(' '),
+        Key::Escape,
+        Key::Home,
+        Key::Left,
+        Key::Char('x'),
+        Key::Char('1'),
+        Key::Char('2'),
+        Key::Char('3'),
+        Key::Char('4'),
+        Key::Char('5'),
+        Key::Char('6'),
+        Key::Char('7'),
+        Key::Char('8'),
+        Key::Char('9'),
+    ];
     let t = Instant::now();
     let later = t + session::CONFIRM_AFTER;
-    for mask in 0..16u8 {
-        let set = |bit: u8, argv: &str| if mask & bit != 0 { vec![argv.to_string()] } else { Vec::new() };
-        let config = QuickConfig {
-            lock: set(1, "fake-lock"),
-            logout: set(2, "fake-logout"),
-            reboot: set(4, "fake-reboot"),
-            poweroff: set(8, "fake-poweroff"),
-            ..QuickConfig::default()
-        };
-        let Some(fresh) = Power::new(&config) else {
-            assert_eq!(mask, 0, "a command set: a menu");
-            continue;
-        };
-        let mut ran: Vec<Session> = Vec::new();
-        // `before`: the question pending just before a late activation; reboot and power off run only
-        // when it was theirs.
-        let mut record = |a: PowerAction, late: bool, before: Option<(Session, Instant)>| {
-            if let PowerAction::RunAndClose(s) = a {
-                assert!(!s.command(&config).is_empty(), "{s:?} has no command (mask {mask:04b})");
-                assert!(
-                    !s.asks() || (late && matches!(before, Some((q, _)) if q == s)),
-                    "{s:?} ran without a question of its own and a second activation 0.4 s later (mask {mask:04b})"
-                );
-                ran.push(s);
-            }
-        };
-        for k1 in keys {
-            for k2 in keys {
-                let mut p = fresh.clone();
-                record(p.key(k1, false, t), false, None);
-                record(p.key(k2, false, t), false, None);
-                for k3 in keys {
-                    let mut q = p.clone();
-                    let before = q.question;
-                    record(q.key(k3, false, later), true, before);
+    for (builtins, cd) in [(true, 0u8), (false, 0), (true, 2), (false, 2)] {
+        // 0: no user row; 1: a plain one; 2: one with `confirm`.
+        for extra in 0..3u8 {
+            for mask in 0..16u8 {
+                let set = |bit: u8, argv: &str| if mask & bit != 0 { vec![argv.to_string()] } else { Vec::new() };
+                let quick = QuickConfig {
+                    lock: set(1, "fake-lock"),
+                    logout: set(2, "fake-logout"),
+                    reboot: set(4, "fake-reboot"),
+                    poweroff: set(8, "fake-poweroff"),
+                    ..QuickConfig::default()
+                };
+                let mut config = BarConfig { quick, ..BarConfig::default() };
+                config.power.builtins = builtins;
+                config.power.countdown = cd;
+                if extra > 0 {
+                    // The plain row has its own countdown when there is one; the confirm row takes
+                    // the global one.
+                    let row = PowerEntryConfig {
+                        name: "Row".into(),
+                        icon: None,
+                        run: vec!["fake-entry".into()],
+                        confirm: extra == 2,
+                        countdown: (extra == 1 && cd > 0).then_some(cd),
+                    };
+                    config.power.entry = vec![row];
+                }
+                let case = format!("mask {mask:04b}, builtins {builtins}, extra {extra}, countdown {cd}");
+                let Some(fresh) = Power::new(&config) else {
+                    assert!(extra == 0 && (mask == 0 || !builtins), "a command set: a menu ({case})");
+                    continue;
+                };
+                // Whether a row asks, read from the config and never from the model: a fixed row by
+                // `Session::asks`, a user row by its `confirm`.
+                let asks = |e: PowerEntry| match e {
+                    PowerEntry::Session(s) => s.asks(),
+                    PowerEntry::User(i) => config.power.entry.get(i).is_some_and(|u| u.confirm),
+                };
+                // Whether a row counts down before it runs, read from the config as well.
+                let counts = |e: PowerEntry| match e {
+                    PowerEntry::Session(s) => s.asks() && cd > 0,
+                    PowerEntry::User(i) => {
+                        config.power.entry.get(i).is_some_and(|u| u.countdown.unwrap_or(if u.confirm { cd } else { 0 }) > 0)
+                    }
+                };
+                let mut ran: Vec<PowerEntry> = Vec::new();
+                // `before`: the question pending just before a late activation; a row that asks runs
+                // (or starts its countdown) only when it was its own. `started`: the row whose
+                // countdown the call started; `ended`: the run came from `due` at the countdown's end.
+                let mut record =
+                    |a: PowerAction, started: Option<PowerEntry>, late: bool, before: Option<(PowerEntry, Instant)>, ended: bool| {
+                        if let Some(e) = started {
+                            assert!(counts(e), "{e:?} counted down without a countdown ({case})");
+                            assert!(
+                                !asks(e) || (late && matches!(before, Some((q, _)) if q == e)),
+                                "{e:?}'s countdown started without a question of its own and a second activation 0.4 s later ({case})"
+                            );
+                        }
+                        if let PowerAction::RunAndClose(e) = a {
+                            assert!(!e.command(&config).is_empty(), "{e:?} has no command ({case})");
+                            if let PowerEntry::Session(s) = e {
+                                assert!(builtins, "{s:?} ran with the built-ins hidden ({case})");
+                                assert_eq!(e.command(&config), s.command(&config.quick), "a fixed row runs its [quick] command ({case})");
+                            }
+                            if counts(e) {
+                                assert!(ended, "{e:?} ran before its countdown's end ({case})");
+                            } else {
+                                assert!(
+                                    !ended && (!asks(e) || (late && matches!(before, Some((q, _)) if q == e))),
+                                    "{e:?} ran without a question of its own and a second activation 0.4 s later ({case})"
+                                );
+                            }
+                            ran.push(e);
+                        }
+                    };
+                for k1 in keys {
+                    for k2 in keys {
+                        let mut p = fresh.clone();
+                        let (a, s) = power_call(&mut p, |p| p.key(k1, false, t));
+                        record(a, s, false, None, false);
+                        let (a, s) = power_call(&mut p, |p| p.key(k2, false, t));
+                        record(a, s, false, None, false);
+                        for k3 in keys {
+                            let mut q = p.clone();
+                            let before = q.question;
+                            let (a, s) = power_call(&mut q, |q| q.key(k3, false, later));
+                            record(a, s, true, before, false);
+                            if let Some(a) = power_countdown_end(&mut q) {
+                                record(a, None, true, None, true);
+                            }
+                        }
+                    }
+                }
+                for row in 0..6u16 {
+                    let mut p = fresh.clone();
+                    let (a, s) = power_call(&mut p, |p| p.press(row, t));
+                    record(a, s, false, None, false);
+                    let (a, s) = power_call(&mut p, |p| p.press(row, t));
+                    record(a, s, false, None, false);
+                    let before = p.question;
+                    let (a, s) = power_call(&mut p, |p| p.press(row, later));
+                    record(a, s, true, before, false);
+                    if let Some(a) = power_countdown_end(&mut p) {
+                        record(a, None, true, None, true);
+                    }
+                    let mut p = fresh.clone();
+                    let (a, s) = power_call(&mut p, |p| p.hover(row));
+                    record(a, s, false, None, false);
+                    let (a, s) = power_call(&mut p, |p| p.key(Key::Enter, false, t));
+                    record(a, s, false, None, false);
+                    let before = p.question;
+                    let (a, s) = power_call(&mut p, |p| p.key(Key::Enter, false, later));
+                    record(a, s, true, before, false);
+                    if let Some(a) = power_countdown_end(&mut p) {
+                        record(a, None, true, None, true);
+                    }
+                }
+                if builtins {
+                    for s in session::configured(&config.quick) {
+                        assert!(ran.contains(&PowerEntry::Session(s)), "{s:?} never reached ({case})");
+                    }
+                }
+                for i in 0..config.power.entry.len() {
+                    assert!(ran.contains(&PowerEntry::User(i)), "user row {i} never reached ({case})");
+                }
+                for e in &ran {
+                    let line = e.command(&config).join(" ").to_lowercase();
+                    assert!(
+                        !["suspend", "hibernate", "hybrid-sleep", "dpms", "power-off-monitors", "wlopm"].iter().any(|w| line.contains(w)),
+                        "{line}"
+                    );
                 }
             }
         }
-        for row in 0..6u16 {
-            let mut p = fresh.clone();
-            record(p.press(row, t), false, None);
-            record(p.press(row, t), false, None);
-            let before = p.question;
-            record(p.press(row, later), true, before);
-            let mut p = fresh.clone();
-            record(p.hover(row), false, None);
-            record(p.key(Key::Enter, false, t), false, None);
-            let before = p.question;
-            record(p.key(Key::Enter, false, later), true, before);
-        }
-        for s in session::configured(&config) {
-            assert!(ran.contains(&s), "{s:?} never reached (mask {mask:04b})");
-        }
-        for s in &ran {
-            let line = s.command(&config).join(" ");
-            assert!(!line.contains("suspend") && !line.contains("hibernate") && !line.to_lowercase().contains("dpms"), "{line}");
+    }
+}
+
+/// One call on the power menu: its answer, and the row whose countdown it started (a row counting
+/// after the call that is not the one counting before it, if any).
+fn power_call(p: &mut Power, f: impl FnOnce(&mut Power) -> PowerAction) -> (PowerAction, Option<PowerEntry>) {
+    let was = p.counting.map(|c| c.entry);
+    let a = f(p);
+    let started = p.counting.map(|c| c.entry).filter(|now| Some(*now) != was);
+    (a, started)
+}
+
+/// A countdown left running, stepped by the menu's own deadlines: nothing runs a millisecond before
+/// its end, every deadline is at most a second after the last (one wake-up a second), and the row
+/// runs at the deadline that reaches the end. None when nothing counts.
+fn power_countdown_end(p: &mut Power) -> Option<PowerAction> {
+    let c = p.counting?;
+    let mut early = p.clone();
+    assert!(!matches!(early.due(c.ends - Duration::from_millis(1)), PowerAction::RunAndClose(_)), "ran before its end: {c:?}");
+    let mut last = c.ends - Duration::from_secs(u64::from(c.left));
+    for _ in 0..=c.left {
+        let at = p.deadline().expect("a countdown has a deadline");
+        assert!(at > last && at - last <= Duration::from_secs(1), "a tick a second: {c:?}");
+        last = at;
+        let a = p.due(at);
+        if let PowerAction::RunAndClose(e) = a {
+            assert!(at >= c.ends && e == c.entry, "{e:?} ran at its end only: {c:?}");
+            assert!(p.counting.is_none() && p.deadline().is_none(), "nothing left after it ran");
+            return Some(a);
         }
     }
+    panic!("the countdown never ended: {c:?}");
+}
+
+/// A `[[power.entry]]` whose `run` names a sleep word, `dpms`, niri's `power-off-monitors` or
+/// `wlopm`, in any argument and any case, makes bar.toml invalid: no user row can sleep or turn the
+/// screens off. Written here because
+/// `output_power_management_never_appears` keeps the word itself out of every source.
+#[test]
+fn a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid() {
+    for run in [
+        "[\"systemctl\", \"suspend\"]",
+        "[\"systemctl\", \"Hibernate\"]",
+        "[\"systemctl\", \"hybrid-sleep\"]",
+        "[\"sh\", \"-c\", \"fake-wm dpms off\"]",
+        "[\"fake-wm\", \"DPMS\", \"off\"]",
+        "[\"fake-dpms-off\"]",
+        "[\"niri\", \"msg\", \"action\", \"power-off-monitors\"]",
+        "[\"WLOPM\", \"--off\", \"*\"]",
+    ] {
+        let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
+        assert!(BarConfig::from_text(&text).is_err(), "{run}");
+    }
+    assert!(BarConfig::from_text("[[power.entry]]\nname = \"N\"\nrun = [\"fake-lock\"]\n").is_ok());
 }
 
 /// No panic in the power menu's production code.
@@ -4374,6 +4536,10 @@ const TOOLS_PURE: &[&str] = &[
     "launcher/tools/nav.rs",
     "launcher/tools/diag.rs",
     "launcher/tools/panel.rs",
+    "launcher/tools/binds/mod.rs",
+    "launcher/tools/binds/mango.rs",
+    "launcher/tools/binds/sway.rs",
+    "launcher/tools/binds/describe.rs",
 ];
 
 #[test]
@@ -4450,6 +4616,50 @@ fn the_wallpaper_pure_files_have_no_panicking_path_and_log_nothing() {
             }
         }
     }
+}
+
+/// The keybinding cheatsheet's parser (`launcher/tools/binds/`) is pure: it reads only through
+/// its `Files` seam (the glue fills it), never writes, runs, spawns or logs, and has no panicking
+/// path (a config line, a path or a command may sit in a message). Production code only; every
+/// file of the folder, present and future.
+#[test]
+fn the_binds_folder_is_pure() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("launcher/tools/binds/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for word in [
+            "File::create",
+            "OpenOptions",
+            "std::fs::",
+            "use std::fs",
+            "fs::read",
+            "UnixStream",
+            "Command",
+            "thread::",
+            "log(",
+            "log::write",
+            "crate::log",
+            ".expect(",
+            ".unwrap()",
+            "panic!(",
+            "unreachable!(",
+            "todo!(",
+            "unimplemented!(",
+        ] {
+            assert!(!production.contains(word), "{word} in {name}'s production code");
+        }
+        for code in production_code_without_comments(&t).lines() {
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+    assert!(seen >= 3, "the binds folder was not found");
 }
 
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
@@ -4697,8 +4907,8 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
 }
 
 /// Whatever closes the menu (Escape, an entry run, an outside click, a restyle,
-/// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
-/// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
+/// the output gone, a replacing popup), its timer goes; a row runs its own command (a fixed row's
+/// `[quick]` command, a user row's `run`) through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
 /// in a unit test: the wiring is checked in the source.
 #[test]
 fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
@@ -4719,7 +4929,14 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let refresh = function_body(&power_app, "fn power_refresh(");
     assert!(refresh.contains("self.power_timer_sync()"), "the timer follows every repaint: {refresh}");
     let spawn = function_body(&power_app, "fn power_spawn(");
-    assert!(spawn.contains("s.command(&self.bar.config.quick)") && spawn.contains("spawn_session("), "{spawn}");
+    assert!(spawn.contains("entry.command(&self.bar.config)") && spawn.contains("spawn_session("), "{spawn}");
+    // The command `power_spawn` hands on is the row's own and nothing else: a fixed row's `[quick]`
+    // command, a user row's `run` (nothing past the rows), in exactly two arms.
+    let power_mod = src("power/mod.rs");
+    let command = function_body(&power_mod, "pub fn command(self, c: &BarConfig) -> &[String]");
+    assert!(command.contains("PowerEntry::Session(s) => s.command(&c.quick),"), "{command}");
+    assert!(command.contains("PowerEntry::User(i) => c.power.entry.get(i).map_or(&[], |e| e.run.as_slice()),"), "{command}");
+    assert_eq!(command.matches("=>").count(), 2, "two arms, nothing else: {command}");
     let session = function_body(&power_app, "pub(crate) fn spawn_session(");
     assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
     assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");
@@ -4729,6 +4946,44 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert!(row.contains("key: App::power_key,"), "{row}");
     let key = function_body(&power_app, "fn power_key(");
     assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
+}
+
+/// The power menu's countdown lives and dies with the menu: it is a field of the menu's `Power`
+/// (dropped whole with its popup) and of nothing else, `power_closed` disarms the timer whatever
+/// closed the menu, and `power_tick` syncs the timer again after every tick, so the countdown's
+/// one-second timer exists only while a countdown runs. No field of `App` holds a countdown, and
+/// no file but `power/mod.rs` builds or stores one.
+#[test]
+fn power_countdown_closed_popup_disarms_the_timer() {
+    let files = source_files();
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
+    let (power_mod, power_app, wayland) = (src("power/mod.rs"), src("power/app.rs"), src("wayland.rs"));
+    let closed = function_body(&power_app, "pub(crate) fn power_closed(");
+    assert!(closed.contains("self.power_timer.sync_opt(self.loop_handle.as_ref(), None, App::power_tick)"), "{closed}");
+    let tick = function_body(&power_app, "pub(crate) fn power_tick(");
+    let (due, sync) = (tick.find(".due("), tick.rfind("app.power_timer_sync()"));
+    assert!(matches!((due, sync), (Some(d), Some(s)) if d < s), "the timer re-synced after every tick: {tick}");
+    let sync = function_body(&power_app, "pub(crate) fn power_timer_sync(");
+    assert!(sync.contains("p.deadline()") && sync.contains("_ => None"), "no menu, no deadline: {sync}");
+    let app = function_body(&wayland, "pub struct App {");
+    for word in ["Countdown", "counting"] {
+        assert!(!app.contains(word), "a field of App holds {word}: the countdown belongs to the menu");
+    }
+    let power = function_body(&power_mod, "pub struct Power {");
+    assert!(power.contains("pub counting: Option<Countdown>,"), "{power}");
+    for (path, text) in &files {
+        let name = relative_path(path);
+        if name == "power/mod.rs" {
+            continue;
+        }
+        let code = production_code_without_comments(text);
+        for form in ["Countdown { entry", "Option<Countdown>", "power::Countdown", ".counting =", "counting: Some"] {
+            assert!(!code.contains(form), "{form} in {name}: only the menu's model holds a countdown");
+        }
+        assert!(!code.lines().any(|l| l.contains("power::") && l.contains("Countdown")), "{name} imports the menu's countdown");
+    }
 }
 
 /// Whatever closes the timer popup, the one-second cadence goes (`timer_sync`
@@ -6296,6 +6551,32 @@ fn the_tools_logs_are_fixed_words() {
         found |= perform_tool.contains("log(");
     }
     assert!(seen >= 8 && found, "the log calls were found: {seen}");
+}
+
+/// The Keybindings level's log lines: the pure `binds::notes` words them in fixed words and counts
+/// (never a path, combo, command or group name), and the glue hands them to the log through the
+/// one relay `|m| log(m)`, nothing else of a load.
+#[test]
+fn binds_logs_are_fixed_words_and_counts() {
+    let files = source_files();
+    let text = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
+    let pure = text("launcher/tools/binds/mod.rs");
+    let mut notes = function_body(&pure, "pub fn notes(").to_string();
+    for line in ["tools: binds no source", "tools: binds shown (", "lines not understood", "tools: binds cut ("] {
+        assert!(notes.contains(line), "binds::notes says {line:?}");
+    }
+    assert!(notes.matches("note(").count() >= 4, "the four lines are note calls");
+    // The counts, each a number of the load: nothing else may be formatted into a line.
+    for count in ["{n}", "{groups}", "{skipped}", "{files}", "{bytes}", "{binds}", "{lines}", "{vars}"] {
+        notes = notes.replace(count, "");
+    }
+    assert_eq!(tools_unfixed_log(&notes), None, "a binds note names more than fixed words and counts");
+    let glue = text("launcher/tools/app.rs");
+    let open = function_body(&glue, "fn tools_open_binds(");
+    assert!(open.contains("binds::notes(&b, &mut |m| log(m))"), "the glue logs a load through binds::notes");
+    assert_eq!(open.matches("log(").count(), 1, "and nothing else");
 }
 
 #[test]

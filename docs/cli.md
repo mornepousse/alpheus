@@ -81,7 +81,7 @@ alpheus-launch [--toggle | --close
                | --shield on|off|toggle|status|allow
                | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
                | --clipboard | --clipboard-clear
-               | --tools
+               | --tools | --binds
                | --kill
                | --power
                | --wallpaper next
@@ -117,8 +117,9 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--clipboard` | open or close the [clipboard history](features/clipboard.md) in the launcher's box; any other open launcher is replaced; a `--clipboard` less than 250 ms after the one that opened it is ignored |
 | `--clipboard-clear` | forget every unpinned entry without touching the current clipboard; exit 2 when `[clipboard] enabled` is not set or the compositor offers no data-control protocol |
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
+| `--binds` | open the compositor's key bindings alone (Tools › System › Keybindings, read from its config files, on Mango and Sway), or close them, also when the Keybindings level was reached from the panel; any other open launcher is replaced, the Tools menu at another level included. Esc, or ← on an empty query, closes the box: there is no panel beneath. A second `--binds` less than 250 ms after the one that opened it is ignored; exit 2 with `no key bindings source for this compositor` on Hyprland, niri or an undetected compositor |
 | `--kill` | open the kill list (your own processes, sorted by memory at open and by CPU 300 ms later), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
-| `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
+| `--power` | open the ⏻ menu (lock, log out, reboot, power off, and `[[power.entry]]` rows) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 with `no power menu row is set …` when the menu has no row (no `[quick]` session command shown and no `[[power.entry]]`) |
 | `--wallpaper next` | apply the next image of `[wallpaper] dir` ([the wallpaper picker](features/wallpaper.md)): `launcher.toml` is read again, the folder listed by name, and the image after the last one applied (remembered, or in memory with `remember = false`; the first when none, or when it is gone) started through `set`, then `then`. For an external timer (below). Exit 2 when `[wallpaper]` is off, the folder cannot be read or holds no image |
 | `-h`, `--help` | print the usage and exit 0 |
 
@@ -178,10 +179,10 @@ and bytes; over the cap is an error before any connection).
 | 0 | done, or a line was chosen (`--osd`: also when there is nothing to show or the `osd` module is off; `--quick`: also without the `quick` module; `--failed-refresh`: also without the `failed` module, where nothing is read) |
 | 1 | the dmenu was cancelled (Escape) |
 | 2 | an error: another menu is open, bad usage, no answer, input too large, the bar restarting mid-request, the notifications module not in `bar.toml` (for `--dnd`, `--clear-notifications`) |
-| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--kill`, `--power`, `--wallpaper`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
+| 3 | `alpheus-demon` is not running (no socket), or is older than the verb or option used (`--index`, `--password`, `--visible`, `--failed-refresh`, `--quick` and its words, `--calc`, `--windows`, `--notes`, `--timer` and its `shutdown` and `shutdown-cancel` words, `--shield`, `--capture`, `--clipboard`, `--clipboard-clear`, `--tools`, `--binds`, `--kill`, `--power`, `--wallpaper`): restart it after an upgrade (a script then falls back to another menu with the same options). The only code on which a caller should fall back to another menu |
 
 Messages go to standard error, prefixed `alpheus-launch:`. The 250 ms rule on
-`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard`, `--tools` and
+`--quick`, `--calc`, `--windows`, `--notes`, `--timer popup`, `--clipboard`, `--tools`, `--binds` and
 `--kill` exists so that a compositor that re-fires a press bind does not close
 what it just opened.
 

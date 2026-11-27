@@ -608,3 +608,121 @@ fn the_wallpaper_folder_is_a_set_directory() {
     assert_eq!(wallpaper_folder(&set(&format!("{dir}/gone")), None), Some(bin.0.join("gone")), "not checked on the loop");
     assert_eq!(wallpaper_folder(&set("~/walls"), None), None, "no home");
 }
+
+// --- the Keybindings level's read ---
+
+/// `RealFiles` behind a count of the reads, per path.
+struct Counted<'a> {
+    real: &'a RealFiles,
+    reads: std::cell::RefCell<Vec<PathBuf>>,
+}
+
+impl Files for Counted<'_> {
+    fn read(&self, path: &Path, max: usize) -> Option<String> {
+        self.reads.borrow_mut().push(path.to_path_buf());
+        self.real.read(path, max)
+    }
+
+    fn list(&self, dir: &Path) -> Vec<PathBuf> {
+        self.real.list(dir)
+    }
+}
+
+fn mango() -> Compositor {
+    Compositor::Mango { socket: PathBuf::from("/run/user/1000/mango-1.sock") }
+}
+
+#[test]
+fn a_glue_load_reads_through_real_files_only_once() {
+    use alpheus_common::temp_path::TempPath;
+    let home = TempPath::dir("binds-glue");
+    let config = home.join(".config/mango");
+    std::fs::create_dir_all(&config).unwrap();
+    // An invented chain: the root, a relative source and a `~/` one.
+    std::fs::write(config.join("config.conf"), "source=./keys.conf\nsource=~/extra.conf\nbind=SUPER,Return,spawn,foo-term\n").unwrap();
+    std::fs::write(config.join("keys.conf"), "source=./config.conf\nbind=SUPER,b,spawn,browser\n").unwrap();
+    std::fs::write(home.join("extra.conf"), "bind=SUPER,q,killclient\n").unwrap();
+    let home_s = home.to_string_lossy().into_owned();
+    let var = |k: &str| (k == "HOME").then(|| std::ffi::OsString::from(&home_s));
+    let real = RealFiles { home: Some(home.to_path_buf()) };
+    let files = Counted { real: &real, reads: Default::default() };
+    let b = load_binds(Some(&mango()), var, &[], &files);
+    assert!(b.found);
+    let combos: Vec<&str> = b.binds.iter().map(|x| x.combo.as_str()).collect();
+    assert_eq!(combos, ["Super+Return", "Super+B", "Super+Q"], "the `~/` source read from the home folder");
+    let reads = files.reads.borrow().clone();
+    assert_eq!(reads.len(), 3, "each file once, the cycle back to the root not followed: {reads:?}");
+
+    // `binds_files` instead of the default place, `~/` expanded.
+    let files = Counted { real: &real, reads: Default::default() };
+    let b = load_binds(Some(&mango()), var, &["~/extra.conf".to_string()], &files);
+    assert_eq!((b.binds.len(), files.reads.borrow().len()), (1, 1));
+
+    // Another compositor reads nothing.
+    let files = Counted { real: &real, reads: Default::default() };
+    let niri = Compositor::Niri { socket: PathBuf::from("/run/niri.sock") };
+    let b = load_binds(Some(&niri), var, &[], &files);
+    assert!(!b.found && files.reads.borrow().is_empty());
+    assert!(load_binds(None, var, &[], &files).binds.is_empty());
+}
+
+#[test]
+fn real_files_read_regular_files_only_and_within_max() {
+    use alpheus_common::temp_path::TempPath;
+    let dir = TempPath::dir("binds-real-files");
+    let real = RealFiles { home: Some(dir.to_path_buf()) };
+    std::fs::write(dir.join("a.conf"), "0123456789").unwrap();
+    assert_eq!(real.read(&dir.join("a.conf"), 4).as_deref(), Some("0123"), "at most max bytes");
+    assert_eq!(real.read(Path::new("~/a.conf"), 100).as_deref(), Some("0123456789"), "`~` is the home folder");
+    assert_eq!(real.read(&dir, 100), None, "a folder is refused");
+    assert_eq!(real.read(&dir.join("missing"), 100), None);
+    // A FIFO with no writer: refused at once, never waited on.
+    let fifo = dir.join("pipe");
+    let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let started = Instant::now();
+    assert_eq!(real.read(&fifo, 100), None);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(real.read(Path::new("/dev/zero"), 100), None, "a device is refused");
+    std::fs::write(dir.join("b.conf"), "").unwrap();
+    let listed = real.list(&dir);
+    let names: Vec<String> = listed.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["a.conf", "b.conf", "pipe"], "sorted");
+}
+
+#[test]
+fn real_files_list_keeps_the_first_names_of_a_big_folder() {
+    use alpheus_common::temp_path::TempPath;
+    let dir = TempPath::dir("binds-real-list");
+    for i in (0..300).rev() {
+        std::fs::write(dir.join(format!("f{i:03}.conf")), "").unwrap();
+    }
+    let real = RealFiles { home: None };
+    let names: Vec<String> = real.list(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    let expected: Vec<String> = (0..256).map(|i| format!("f{i:03}.conf")).collect();
+    assert_eq!(names, expected, "the 256 first by name, sorted");
+}
+
+#[test]
+fn the_dialect_is_mango_or_sway() {
+    assert_eq!(binds_dialect(Some(&mango())), Some(Dialect::Mango));
+    assert_eq!(binds_dialect(Some(&Compositor::Sway { socket: PathBuf::from("/s") })), Some(Dialect::Sway));
+    assert_eq!(binds_dialect(Some(&Compositor::Hyprland { directory: PathBuf::from("/h") })), None);
+    assert_eq!(binds_dialect(Some(&Compositor::Niri { socket: PathBuf::from("/n") })), None);
+    assert_eq!(binds_dialect(None), None);
+}
+
+/// `--binds` on a compositor with no dialect (Hyprland, niri, none detected) is refused with the
+/// documented text; Mango and Sway are not.
+#[test]
+fn the_binds_verb_is_refused_without_a_dialect() {
+    let refused = Some("no key bindings source for this compositor");
+    let hyprland = Compositor::Hyprland { directory: PathBuf::from("/run/hypr/x") };
+    let niri = Compositor::Niri { socket: PathBuf::from("/run/niri.sock") };
+    assert_eq!(binds_refusal(Some(&hyprland)), refused);
+    assert_eq!(binds_refusal(Some(&niri)), refused);
+    assert_eq!(binds_refusal(None), refused);
+    assert_eq!(binds_refusal(Some(&mango())), None);
+    assert_eq!(binds_refusal(Some(&Compositor::Sway { socket: PathBuf::from("/run/sway.sock") })), None);
+}

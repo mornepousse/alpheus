@@ -48,7 +48,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                       | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --failed-refresh | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --windows
                       | --timer start DURATION|pomodoro|stopwatch|pause|resume|toggle|stop|skip|popup
                       | --timer shutdown DURATION | --timer shutdown-cancel | --notes
-                      | --clipboard | --clipboard-clear | --tools | --kill | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
+                      | --clipboard | --clipboard-clear | --tools | --binds | --kill | --power | --shield on|off|toggle|status|allow | --capture full|area|area-save|pick|annotate|ocr|record|record-area|stop
                       | --wallpaper next | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
@@ -84,6 +84,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --clipboard             open or close the clipboard history (with [clipboard] enabled in bar.toml)
   --clipboard-clear       empty the clipboard history (pinned entries stay)
   --tools                 open the Tools menu, or close it
+  --binds                 open the compositor's key bindings (Mango, Sway), or close them
   --kill                  open the kill list (your processes), or close it
   --power                 open the power menu (lock, log out, reboot, power off), or close it
   --shield on|off|toggle  switch Shield mode (the commands of [shield] in bar.toml; the password prompt is theirs)
@@ -100,8 +101,8 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, no [shield] in bar.toml, [wallpaper] off or its folder without an image, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--kill/--power/--shield/--capture/--wallpaper (restarted since the upgrade? until then, use another menu).
+or timer module not in bar.toml, the clipboard history off in bar.toml or without a data-control protocol, no [quick] session command for --power, --binds on a compositor with no key bindings source, no [shield] in bar.toml, [wallpaper] off or its folder without an image, a shield command already running, --shield status with the state unreadable, or --shield allow with the mode off), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc/--windows/--timer/--notes/--failed-refresh/--clipboard/--clipboard-clear/--tools/--binds/--kill/--power/--shield/--capture/--wallpaper (restarted since the upgrade? until then, use another menu).
 
 --shield allow waits for a choice the same way; Escape exits 1.
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -132,6 +133,7 @@ pub enum Invocation {
     Clipboard,
     ClipboardClear,
     Tools,
+    Binds,
     Kill,
     Power,
     Shield(ShieldVerb),
@@ -190,6 +192,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--clipboard" => choose(&mut mode, Invocation::Clipboard)?,
             "--clipboard-clear" => choose(&mut mode, Invocation::ClipboardClear)?,
             "--tools" => choose(&mut mode, Invocation::Tools)?,
+            "--binds" => choose(&mut mode, Invocation::Binds)?,
             "--kill" => choose(&mut mode, Invocation::Kill)?,
             "--power" => choose(&mut mode, Invocation::Power)?,
             "--shield" => choose(
@@ -325,6 +328,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Clipboard => Request::Clipboard,
         Invocation::ClipboardClear => Request::ClipboardClear,
         Invocation::Tools => Request::Tools,
+        Invocation::Binds => Request::Binds,
         Invocation::Kill => Request::Kill,
         Invocation::Power => Request::Power,
         Invocation::Shield(v) => Request::Shield(v),
@@ -435,7 +439,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help"
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --failed-refresh, --osd, --quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --binds, --kill, --power, --shield, --capture, --wallpaper, --help"
                 .into(),
         );
     }
@@ -543,6 +547,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Clipboard
             | Invocation::ClipboardClear
             | Invocation::Tools
+            | Invocation::Binds
             | Invocation::Kill
             | Invocation::Power
             | Invocation::Shield(_)
@@ -608,6 +613,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Clipboard
             | Request::ClipboardClear
             | Request::Tools
+            | Request::Binds
             | Request::Kill
             | Request::Power
             | Request::OutputsTry(_)
@@ -657,6 +663,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         Request::Timer(_) => OLD_TIMER.iter().find(|(refusal, _)| *refusal == error).map(|(_, what)| *what),
         Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         Request::Tools if error == "malformed request: unknown request \"tools\"" => Some("--tools"),
+        Request::Binds if error == "malformed request: unknown request \"binds\"" => Some("--binds"),
         Request::Kill if error == OLD_KILL[0].0 => Some(OLD_KILL[0].1),
         Request::Power if error == "malformed request: unknown request \"power\"" => Some("--power"),
         Request::FailedRefresh if error == "malformed request: unknown request \"failed-refresh\"" => Some("--failed-refresh"),
@@ -787,6 +794,8 @@ mod tests {
         assert_eq!(parse_args(&args(&["--clipboard"])), Ok(Invocation::Clipboard));
         assert_eq!(parse_args(&args(&["--clipboard-clear"])), Ok(Invocation::ClipboardClear));
         assert_eq!(parse_args(&args(&["--tools"])), Ok(Invocation::Tools));
+        assert_eq!(parse_args(&args(&["--binds"])), Ok(Invocation::Binds));
+        assert_eq!(request_of(Invocation::Binds, 0), Ok(Request::Binds));
         assert_eq!(parse_args(&args(&["--kill"])), Ok(Invocation::Kill));
         assert_eq!(request_of(Invocation::Kill, 0), Ok(Request::Kill));
         assert_eq!(parse_args(&args(&["--power"])), Ok(Invocation::Power));
@@ -853,15 +862,17 @@ mod tests {
             (&["--quick", "--close"], "only one of"),
             (
                 &["--calc", "--toggle"],
-                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help",
+                "--quick, --calc, --windows, --timer, --notes, --clipboard, --clipboard-clear, --tools, --binds, --kill, --power, --shield, --capture, --wallpaper, --help",
             ),
             (&["--windows", "--toggle"], "--windows"),
             (&["--notes", "--toggle"], "--notes"),
             (
                 &["--clipboard", "--toggle"],
-                "--notes, --clipboard, --clipboard-clear, --tools, --kill, --power, --shield, --capture, --wallpaper, --help",
+                "--notes, --clipboard, --clipboard-clear, --tools, --binds, --kill, --power, --shield, --capture, --wallpaper, --help",
             ),
             (&["--tools", "--power"], "only one of"),
+            (&["--binds", "--tools"], "only one of"),
+            (&["--binds", "extra"], "unknown option"),
             (&["--tools", "--toggle"], "--tools"),
             (&["--power", "--clipboard"], "only one of"),
             (&["--tools", "extra"], "unknown option"),
@@ -1053,9 +1064,12 @@ mod tests {
     /// naming the flag; a current daemon's error (no session command) stays exit 2.
     #[test]
     fn a_daemon_without_tools_and_power_is_too_old() {
-        for (request, word, flag) in
-            [(Request::Tools, "tools", "--tools"), (Request::Kill, "kill", "--kill"), (Request::Power, "power", "--power")]
-        {
+        for (request, word, flag) in [
+            (Request::Tools, "tools", "--tools"),
+            (Request::Binds, "binds", "--binds"),
+            (Request::Kill, "kill", "--kill"),
+            (Request::Power, "power", "--power"),
+        ] {
             let refusal = format!("malformed request: unknown request \"{word}\"");
             let mut err = Vec::new();
             assert_eq!(reply_to_exit(&request, Reply::Error(refusal), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);

@@ -1,0 +1,27 @@
+# An invented Sway configuration for the parser's tests: no real setup.
+set $mod Mod4
+set $term foo-term
+set $left h
+font pango:monospace 10
+
+bindsym $mod+Return exec $term
+bindsym $mod+Shift+q kill
+bindsym Mod1+Control+t exec $term --hold # Second terminal
+# ── Focus ──
+# Focus the window on the left
+bindsym $mod+$left focus left
+bindsym $mod+Shift+space floating toggle
+
+mode "resize" {
+    # ── Not a group inside a mode ──
+    bindsym $left resize shrink width 10px
+    bindsym Return mode "default"
+}
+bindsym $mod+r mode "resize"
+
+bar {
+    status_command foo-status
+    bindsym button4 workspace next
+}
+
+include ./config.d/*

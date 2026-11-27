@@ -328,14 +328,53 @@ on Sunday, a row shows the ISO week of its Monday.
 
 Date: 2026-10-05 · Source: tests `week_numbers_show_the_iso_week_of_each_rows_monday` and `iso_week_numbers_are_right_at_the_edges_of_a_year`
 
-### The power menu runs the `[quick]` commands and has no setting of its own
+### The power menu runs the `[quick]` commands, and `[power]` adds rows
 
 The ⏻ menu runs `[quick]`'s `lock`, `logout`, `reboot` and `poweroff`, the commands the quick
-panel's session buttons run, so one setting serves both. A `[power]` table would only repeat them.
-An entry whose command is empty is not shown, and with all four empty the menu and its button do not
-exist. alpheus never handles sleep, so there is no suspend or hibernate entry.
+panel's session buttons run, so one setting serves both. An entry whose command is empty is not
+shown. alpheus never handles sleep, so there is no suspend or hibernate entry.
 
-Date: 2026-10-13 · Source: tests `the_rows_follow_the_commands_in_order_and_none_means_no_menu`, `an_entry_spawns_its_command_and_logs_its_word_only` and `the_verb_is_refused_only_without_any_session_command`
+Reversed in part on 2026-11-27: this entry was "The power menu runs the `[quick]` commands and has
+no setting of its own", saying a `[power]` table would only repeat them. The menu still runs them,
+and `[power]` now adds up to eight rows of the user's own after them (`[[power.entry]]`: a name,
+an icon, an argv, whether it asks first) and can hide the four (`builtins = false`), because the
+owner's custom logout and lock need rows beside or instead of the fixed ones, and a `[quick]`
+command could not hold two lock rows or a differently named one. `[quick]` is not repeated: the
+fixed rows keep reading it. The menu and its button exist when any row does, fixed or user.
+
+Date: 2026-10-13, amended 2026-11-27 · Source: tests `the_rows_follow_the_commands_in_order_and_none_means_no_menu`, `power_defaults_change_nothing`, `user_rows_follow_the_fixed_ones_in_file_order`, `builtins_false_hides_the_four_rows`, `the_button_shows_with_user_rows_only`, `an_entry_spawns_its_command_and_logs_its_word_only` and `the_verb_is_refused_only_without_any_session_command`
+
+### A user row of the power menu never sleeps
+
+A `[[power.entry]]` whose `run` holds `suspend`, `hibernate`, `hybrid-sleep`, `dpms`, niri's
+`power-off-monitors` or `wlopm` anywhere in any argument, in any case, makes `bar.toml` invalid,
+with the reason, as every refused key does. A user row would otherwise be a way round "alpheus never
+handles sleep or the screens' power": the menu is alpheus's, so what it runs is too. The match is on
+words inside arguments, so `["sh", "-c", "… hibernate"]` is caught; a script that sleeps without
+naming it is the user's own and cannot be seen. The source matches the stem `dpm`, because the
+guardrail `output_power_management_never_appears` keeps the word itself out of every source file; a
+guardrail test outside the sources checks the word. Niri's `power-off-monitors` and the `wlopm` tool
+are refused the same way (the owner's decision 12, 2026-11-27); Sway's `output … power off` stays
+allowed, its words being too common to spot without refusing harmless rows. A row that asks first
+(`confirm = true`) follows the same rule as Reboot: a second activation 0.4 s to 3 s later.
+
+Date: 2026-11-27 · Source: tests `a_power_entry_naming_sleep_makes_bar_toml_invalid` (`config/tests.rs`) and guardrails `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and `every_power_menu_activation_is_a_configured_session`; `check_power`
+
+### The power menu's countdown lives and dies with the menu
+
+`[power] countdown` (and a row's own `countdown`) turns the run of a row into a countdown: the row
+reads `⏻ Power off in 5 s · Esc` in the warning colour and runs at 0. It is a field of the menu's
+model (`Power::counting`), so closing the menu by any route drops it, and its one-second ticks use
+the menu's own `DeadlineTimer`, armed only while a question or a countdown is pending: no new
+timer, no wake-up at rest. Escape cancels it and leaves the menu open, so a hand that reached for
+Esc too late does not also lose the menu; a second Escape closes. Any other key or a hover or
+press on another row cancels it and does nothing else (a press never runs a second row). Enter
+and Space do nothing, because the key that confirmed may still be down or pressed twice. The
+global countdown applies to the rows that ask; a row's own applies whether it asks or not, and
+counts from its activation when it does not ask. Decision Q2 (a) of the session menu design: no
+countdown on the quick panel's buttons.
+
+Date: 2026-11-27 · Source: tests `the_confirming_activation_starts_the_countdown`, `the_countdown_steps_each_second_then_runs`, `esc_cancels_the_countdown_and_runs_nothing`, `enter_and_space_during_the_countdown_do_nothing`, `any_other_key_or_a_hover_elsewhere_cancels_it`, `a_rows_own_countdown_overrides_the_global_one`, `countdown_zero_runs_at_once`, `the_countdown_logs_its_start_and_its_cancel_in_fixed_words`; guardrails `power_countdown_closed_popup_disarms_the_timer` and `every_power_menu_activation_is_a_configured_session`; headless `power_countdown_escape_runs_nothing`, `power_countdown_runs_at_its_end`; memory `at_rest_no_wakeups_after_the_power_menu`, `power_countdown_wakes_once_a_second`
 
 ### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
 
@@ -369,6 +408,35 @@ first Enter had just asked. The wheel and the right and middle buttons do nothin
 Date: 2026-10-13 · Source: tests `a_held_enter_acts_once` and `the_pointer_selects_and_presses_entries_only`
 
 Status: awaiting confirmation at the trial
+
+### A digit picks a power row, and the same digit confirms
+
+The keys 1 to 9 select their row and activate it, under the same rule as Enter: a row that does
+not ask runs at once; a row that asks (Reboot, Power off, a `confirm` row) asks, and the same
+digit 0.4 s to 3 s later confirms. So `4` `4` powers off, never a lone `4`, and a quick double
+press never confirms. Another digit moves to its row and asks that row's own question, and a held
+digit never acts (the repeat rule above). A digit past the rows is any other key. Each of rows 1
+to 9 shows its digit in a capsule at its right, outside the selection band, and the menu's width
+follows its longest text (label, question or countdown line) instead of a fixed 16 cells, so a
+24-character name shows whole and the popup keeps one size. Decision Q5 (a) of the session menu
+design.
+
+The top row's keys are read by position (evdev `KEY_1` to `KEY_9`) while the menu is open, so on
+AZERTY the `&` key is 1 without Shift; the typed character still counts too, so the keypad with
+NumLock and QWERTY's digits work as before. Only the power menu reads a key by position: every other
+box follows the layout (`keys.rs`), because a letter or a word must mean what the user chose, while
+a row number is a place on the keyboard. Only a top-row key that types no character, or one that
+is not an ASCII letter or digit, is read by position: a typed ASCII letter or digit is that
+character and a named key (an arrow, Enter, Escape) keeps its meaning, whatever code it came on,
+because a virtual keyboard (wtype, squeekboard) numbers its keys as it likes, and a letter it sent
+on code 3 read as row 2 could run Log out (which does not ask) at once. The layouts whose top row
+needs this type punctuation or accented letters there (AZERTY, Bépo, Czech, programmer Dvorak),
+never an ASCII letter, so the rule keeps them. The risk left: a virtual keyboard that sends ASCII
+punctuation on the top row's codes is still read as a row digit while the menu is open, so a row
+that does not ask may run at once; rows that ask still need a second press. The owner's decision 11
+(2026-11-27), after the first version needed Shift on AZERTY.
+
+Date: 2026-11-27 · Source: tests `a_digit_runs_a_row_that_does_not_ask`, `a_digit_on_a_row_that_asks_needs_the_same_digit_again`, `a_held_digit_never_acts`, `rows_past_nine_have_no_capsule`, `the_width_fits_the_longest_row`, `the_top_rows_keys_are_digits_by_position`, `the_power_menu_reads_the_top_rows_digits_by_position`; guardrail `every_power_menu_activation_is_a_configured_session` (digits among its keys); headless `power_a_digit_runs_a_user_row`
 
 ### The power menu has its own timer
 

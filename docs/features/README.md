@@ -20,7 +20,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [The privacy indicators](privacy.md): shows when the microphone, a camera or the screen is captured, and by which app.
 - [The failed-units count](failed.md): `󰀦 N` when systemd has units in the failed state.
 - [The keyboard module](keyboard.md): the keyboard layout and the bind mode, from the compositor, opt-in.
-- [The power menu](power.md): the ⏻ button and its Lock, Log out, Reboot and Power off menu.
+- [The power menu](power.md): the ⏻ button and its Lock, Log out, Reboot and Power off menu, rows of your own, a digit per row and an optional countdown.
 
 ## Panels and overlays
 
@@ -30,7 +30,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [The quick settings panel](quick-settings.md): volume, brightness, microphone, do-not-disturb, Wi-Fi, Bluetooth, VPN, Shield and session buttons without opening the control center.
 - [Notifications](notifications.md): alpheus's own notification server, with bubbles, a bell, a history panel and do-not-disturb.
 - [The on-screen display](osd.md): a pill that shows a volume, microphone or brightness level for a moment.
-- [The Tools menu](tools-menu.md): one launcher-style box for "do something to my session".
+- [The Tools menu](tools-menu.md): one launcher-style box for "do something to my session", with a keybinding cheatsheet read from Mango's or Sway's config.
 - [Captures](captures.md): screenshots of the screen or an area, copied or saved, a colour picker, an area annotated or read as text (OCR) by an external tool, and screen recording, from a key or the Tools menu.
 - [The wallpaper picker](wallpaper.md): a wallpaper picked by name from one folder, your setter restarted with it by its handle, the last choice applied again at start.
 

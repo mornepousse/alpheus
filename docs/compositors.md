@@ -40,6 +40,7 @@ Displays row: the protocol code is shared, but only Sway's was run, headless).
 | Order of that list | previous window first, focused last | same | same (Sway's own focus order) | same (a focus history the daemon keeps) | n/a |
 | Screen-capture privacy indicator | yes: PipeWire, plus the compositor's `screencast` events | yes: PipeWire, plus niri's cast events | partial: PipeWire only; a recorder that does not go through PipeWire (wf-recorder) is not seen | partial: PipeWire only, same limit | partial, unverified: PipeWire only |
 | Displays tab (TUI) and profiles on hotplug | implemented, unverified: through `zwlr_output_manager_v1`, in the daemon | implemented, unverified: same | yes: same, tested against a headless Sway | implemented, unverified: same | unverified: works if the compositor implements `zwlr_output_manager_v1`; otherwise the tab says "the compositor has no output management" |
+| Keybindings cheatsheet (Tools › System) | no: the entry hides | no: the entry hides | yes: reads `~/.config/sway/config` (else `/etc/sway/config`) and its `include`s | yes: reads `~/.config/mango/config.conf` and its `source=` files | no: the entry hides |
 | Keyboard-grab caveat | On every Hyprland version the bar stays non-exclusive while a menu grabs (Hyprland hands the grab the keyboard itself). The `alpheus-launch --quick` panel has no grab and makes the bar exclusive; on Hyprland before 0.56.2 (hyprwm/Hyprland#15729) a click inside it may then close it | none known | a grabbing popup gets no keyboard unless the bar surface is exclusive: alpheus makes it exclusive during a grab | unverified | unverified |
 
 Notes.
@@ -62,6 +63,10 @@ Notes.
   media, notifications, OSD, launcher (apps and commands, not windows),
   privacy and quick panel do not depend on the compositor; what is missing
   is the workspace and window information.
+- The Keybindings cheatsheet reads the compositor's config files, the way
+  the compositor does, and never asks the compositor (no `swaymsg`, no
+  `mmsg`): what it lists is the config on disk, which a binding added at
+  run time does not change. On Hyprland and niri the entry hides.
 - Mango and Sway tree depth is bounded: a reply nested past 90 JSON levels is
   treated as unreadable rather than parsed.
 

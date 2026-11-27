@@ -7,7 +7,8 @@
 //! and the tests feed keysyms directly.
 //!
 //! Never:
-//! - read a scancode or a raw keycode: the layout the user chose must decide what a key means;
+//! - read a scancode or a raw keycode: the layout the user chose must decide what a key means (the
+//!   power menu's row digits alone are read by position, in `power::position_digit`);
 //! - decide what a key does: that belongs to each box's own model (`launcher::model`,
 //!   `notes::keys`, the popups), which is what lets the same key mean different things;
 //! - repeat a key that must act once: the caller tells a repeat from a press

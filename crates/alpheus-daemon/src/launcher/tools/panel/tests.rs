@@ -71,6 +71,7 @@ fn shown(cat: &Catalog, panel: &Panel) -> Vec<String> {
             PanelRow::Section(Label::Pinned) => "[Pinned]".to_string(),
             PanelRow::Section(Label::Recent) => "[Recent]".to_string(),
             PanelRow::Section(Label::Category(k)) => format!("[{}]", cat.categories[k].name),
+            PanelRow::Section(Label::Group(g)) => format!("[group {g}]"),
             PanelRow::Tool(e) => cat.entries[e].name.clone(),
         })
         .collect()

@@ -23,6 +23,8 @@ pub enum Label {
     Recent,
     /// An index into `Catalog::categories`: its hue dot and its name in capitals.
     Category(usize),
+    /// The Keybindings level's All tab: an index into `Binds::groups`, its name in capitals.
+    Group(usize),
 }
 
 /// A row of the open tab: a section label, or a tool (an index into `Catalog::entries`).
@@ -196,6 +198,7 @@ fn opens(action: BuiltinAction) -> bool {
             | BuiltinAction::Emoji
             | BuiltinAction::Power
             | BuiltinAction::Kill
+            | BuiltinAction::Binds
     )
 }
 

@@ -167,6 +167,7 @@ the tests and which from a real session. Updated with every delivery.
 | Power button, linked in but unused (no `power` in `modules`) | −8…+84 KB over six pairings; one run read +288…+336 KB on all three of its pairings (its resources step moved too; a boot shift believed, not proven) vs. the delivery before this one | binary 5.97 → 5.97 MiB (+8 KiB stripped); measured against the base just before this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (no `power` there): the code linked in, unused |
 | Power button, menu closed | 184–192 KB | `power_menu_pss_idle_open_and_closed`, 3 runs (7.4 MB with it, 1 output): a one-cell segment; no surface, no timer; of those, ≈ +128 KB are new pages of the same Nerd Font file already mapped (⏻ U+23FB is in it, no other face is loaded; the kernel's fault-around adds to it) and ≈ +64 KB the module's code pages: file-backed, clean, paid once |
 | Power menu, open | 432 KB, +280 KB over idle once closed | same test; the closed figure is the first open's code and font pages; 20 more open/close cycles +12 KB over closed; its surface and pool exist only while it shows, its timer only while reboot or power off asks; 0 loop wake-ups at rest once it closed, a pending question included (`at_rest_no_wakeups_after_the_power_menu`) |
+| Power menu with rows of your own, digits and a countdown, the session-binds branch back to back against its merge-base with main (529a0bc6) | button at rest 192 KB (base 128); open 506–518 KB over it with two user rows (base 492–496 with none); closed +352…+356 KB over rest (base +344…+348); 20 more cycles +12…+16 KB | `power_menu_pss_idle_open_and_closed`, 3 runs each, alternated (8,697 KB without the module against 8,641: the branch's code); a countdown wakes the loop 11 times in 5 s and leaves no timer behind (`power_countdown_wakes_once_a_second`, `at_rest_no_wakeups_after_the_power_menu`); 2026-11-27, see "Session menu and keybindings" |
 | Privacy indicators, linked in but off (no `privacy` in `modules`) | −80…+116 KB at start vs. the delivery before this one (the `everything` case, nine pairings; the `bar only` case −160…+60 KB) | binary 5.97 → 6.05 MiB (+76 KiB stripped); measured against the base just before this delivery, release, back to back, separate target directories, 3 outputs, 3 runs each of `startup_pss_per_source` and of two variants dumping `/proc/<pid>/smaps` and `status` at the same 3 s point (8.78–8.87 MB before, 8.79–8.89 MB after). The smaps split (`everything`): the binary's code pages +68 KB and its read-only data −56 KB (RssFile +12 KB), heap −12…+36 KB, shm pools unchanged (660 KB in both trees), other anonymous memory one 112 KB step either way in both trees (startup timing): the code linked in, unused, and nothing allocated. A first measurement read +344…+440 KB; its base runs read ≈ 0.4 MB low against the same commit and binary, a harness shift not reproduced since |
 | Privacy indicators, module on at start | −88…+120 KB over the same bar without it (8.79–8.90 MB) | same test, 6 runs; the fake `pw-dump` serves a full-size initial graph (the sound fixture's dump), so this is the "large graph" figure: the capture model keeps only the nodes and links that matter (≤ 1,024 nodes, 4,096 links) |
 | Privacy indicators, a capture shown | −60…+26 KB, −50…−28 KB once it ended | `privacy_pss_with_a_capture_and_after`, 3 runs (8.0–8.1 MB idle, 1 output); no surface unless the popup opens; 20 more capture cycles +16…+30 KB; 0 loop wake-ups at rest after a capture and 0 for the whole daemon (`at_rest_no_wakeups_after_a_capture`): the 0.5 s off-delay timer is armed only while an indicator is going off |
@@ -205,6 +206,7 @@ the tests and which from a real session. Updated with every delivery.
 | Tools menu on the command panel (Super+X), open and closed, back to back against main (c2f53bdd), the same workload on both sides | PSS cold 9,397–9,722 KB against 9,299–9,422 (median +254: the panel's code and descriptions in the binary); open +2,005…+2,209 KB over closed against +1,115…+1,235; closed 10,025–10,387 against 10,099–10,203; after 20 more cycles 10,373–10,557 against 10,237–10,377. The shm pools +1,792 KB open against +878 (the box about 106 × 30 cells), back to 56 KB closed on both. Anonymous memory: open +304…+504 KB over closed against +328…+448; closed again +20…+104 against +0…+152 (bound 256); after 20 more cycles +16…+156 against −68…+88 (bound 128: 1 run of 6 read +156 and failed while another build was running on the machine, a cause not verified; the other 5 read +16…+104; rerun alone 3 times on an idle machine: +96, +120, +60, all passing). 60 cycles, one run on the branch: anonymous memory 1,368 KB closed again, then 1,452 / 1,472 / 1,484 / 1,516 / 1,512 / 1,524 KB after cycles 12, 22, 32, 42, 52 and 62: +84 KB in the first ten, +8 KB over the last twenty, a plateau and not a per-cycle leak | `tools_pss_open_and_closed`, release, headless sway, 1 output, 6 runs each side (runs 1–3: main three times, then the branch three times; runs 4–6 alternated), main built in its own target directory with the branch's `tools_cycle` copied in (four moves per cycle, Down Right Down Left, on both sides: main's category list drills into a level and comes back; its pools read +878 KB open where the earlier no-move run read +1,316, the reading most likely taken on a smaller box after the moves, not verified); 5 threads before and after on both. An earlier comparison mixed workloads (the branch typed four moves per cycle, main none) and is replaced by this one. The 20-cycle growth sits close to its bound: watch it |
 | Tools menu on the command panel, a `choices_cmd` of 2,000 lines | anonymous memory open +1,444…+1,812 KB over closed against +1,396…+1,700; closed again +164…+256 against +144…+256 (bound 384); after 5 more cycles +16…+72 against +4…+52 (bound 128) | `tools_choices_2000_lines`, 3 runs each side alternated, from the first comparison (its cycle is the same on both sides) |
 | Tools menu on the command panel, at rest | 0 loop wake-ups in 5 s after a question closed with the box, after one left to expire, and after moves and a letter that ran its tool (3 runs; main 0 and 0 on its two windows) | `at_rest_no_wakeups_after_tools`; the steady state once on the branch: 10,670 KB at startup, 11,062 KB after 8,215 events and 5 plug cycles (`pss_under_30mb_and_stable`, bound 15 MB) |
+| Keybinding cheatsheet (Tools › Keybindings, `--binds`), the session-binds branch back to back against its merge-base with main (529a0bc6) | open +1,964…+1,980 KB PSS over closed, almost all the box's shm pools (1,934–1,970 KB); anonymous +256…+272 KB open, −88…−80 KB closed again, +48…+52 after 10 more cycles and +72…+84 after 20 (a plateau); 3 → 3 threads; nothing read or held while the level is closed | `binds_pss_open_and_closed`, 3 runs on the branch (Mango through a FakeMango, an invented 100-bind file in 5 groups); the base has no level. Whole branch: stripped daemon 8,807,352 → 8,938,424 B (+128 KiB); `pss_under_budget_and_stable` +48…+93 KB at start, +52…+114 KB after 8,270 events; `tools_pss_open_and_closed` open over closed +2,202…+2,226 KB against +2,098…+2,206; `at_rest_no_wakeups` 0 in all three runs (base 0, 2, 0); 2026-11-27, see "Session menu and keybindings" |
 | Clipboard history, linked in but off (no `[clipboard] enabled`) | −256…+80 KB at start (`everything` −140, −140, −52; `bar only` +80, +78, −256, 3 pairings: the harness drifts, trust the deltas) | binary 7,390,128 → 7,533,488 bytes stripped (+140 KiB: code, no allocation); measured against the base just before this delivery, release, back to back, 3 runs each, separate target directories; off, no protocol object is bound and nothing is allocated |
 | Clipboard history, on, nothing copied (`+ clipboard`) | +160, +64, −24 KB over `everything` | `startup_pss_per_source`, 3 runs (bound 256 KB); the data-control manager and device, no timer, no thread |
 | Clipboard history, full (50 × 4,000 bytes) | +164…+188 KB of anonymous memory over rest; 100 more copies +4 KB; cleared back to about rest | `clipboard_full_history`, 3 runs (bounds 384 / 64 KB on `Anonymous:`; PSS printed: +290…+430 KB); the history, its previews and the one read buffer, all wiped when removed |
@@ -310,3 +312,213 @@ before the exec. The control center's figures include the Diag tab's journal che
 tries to open `/var/log/journal/*/system.journal` and reads nothing from it; no other session
 state, tool or bus is touched. The test also asserts that every call the tabs made was one a
 fake answers, so a changed argv cannot measure error screens.
+
+### Session menu and keybindings
+
+Measured back to back against the branch's start (687fc186, the commit just before the work;
+`main` has since moved to a merge this branch does not contain), release, each build in its own
+target directory, 3 runs each, 2026-11-27.
+
+| Step | Binary (stripped `alpheus-demon`) | `pss_under_budget_and_stable` (startup / after 8,200 events) | `at_rest_no_wakeups` |
+|---|---:|---|---|
+| Task 1: the binds parser (Mango), linked into no path yet | 10,094,416 → 10,094,416 B (+0: the unreferenced code is dropped at link) | base 9,866–9,892 / 11,153–11,173 KB; with it 9,204–9,645 / 9,929–11,197 KB: within noise | 0 in all, 5 threads, both builds, every run |
+
+Task 2, the Keybindings level (on pc-simu, release, base 687fc186 and the branch alternated, 3
+rounds, the memory lock held exclusively through the turnstile, 2026-11-27):
+
+| Test | Base 687fc186 | With the level |
+|---|---|---|
+| `tools_pss_open_and_closed` (20 cycles): PSS open over closed | +2,017…+2,049 KB | +1,997…+2,209 KB |
+| same: anonymous open over closed / closed again / after 20 more | +324…+356 / +32…+144 / −36…+108 KB | +304…+516 / +44…+164 / −20…+120 KB |
+| same: shm pools open over closed; threads | +1,792 KB; 5 → 5 | +1,792 KB; 5 → 5 |
+| `at_rest_no_wakeups_after_a_launcher_cycle` (5 s) | 2, 2, 0 wake-ups (base runs) | 0, 0, 0; 5 threads |
+| `binds_pss_open_and_closed` (new: Mango through a FakeMango, `binds_files` naming an invented 100-bind file in 5 groups, open, Esc, close, 20 cycles) | — | PSS +1,957…+1,969 KB open over closed (the box's pools, as Tools open); anonymous +280…+292 KB open, +4…+28 KB closed again, +64…+88 KB after 20 more; 3 → 3 threads |
+
+The level's 100 bindings cost no more than the panel's home open (anonymous open +280…+292 KB
+against the panel's +304…+516) and are freed with the level: closed again +4…+28 KB. The panel's
+figures stay within the base's spread. The runs were serialised by the lock, but another agent's
+headless session was up on the machine at the time.
+
+Whether the +64…+88 KB after 20 more cycles is a plateau or a trend: the test now also reads the
+anonymous memory after 10 of those cycles. On the branch at Task 3 (below), +48…+76 KB after 10
+and +64…+72 KB after 20: a plateau, the allocator's arenas settling, not a growth per cycle.
+
+Task 3, the level drawn in the panel's box (on pc-simu, release, base `main` 51ced748, base
+Task 2 3c591747 and the branch 911af237 alternated, 3 rounds, each run holding the memory lock
+exclusively through the turnstile, nothing else measured meanwhile, 2026-11-27):
+
+| Test | Base `main` | Base Task 2 | With the drawing |
+|---|---|---|---|
+| `tools_pss_open_and_closed`: PSS open over closed | +2,205…+2,213 KB | +2,125…+2,229 KB | +2,033…+2,213 KB |
+| same: anonymous open over closed / closed again / after 20 more | +480…+488 / +24…+56 / +100…+120 KB | +400…+504 / −76…+48 / +104…+116 KB | +308…+488 / +44…+180 / −36…+96 KB |
+| same: shm pools open over closed; threads | +1,824 KB; 5 → 5 | +1,824 KB; 5 → 5 | +1,824 KB; 5 → 5 |
+| `binds_pss_open_and_closed`: PSS open over closed | — | +1,973…+1,989 KB | +1,977…+1,985 KB |
+| same: anonymous open over closed / closed again / after 10 more / after 20 more | — | +264…+280 / −96…−76 / — / +64…+84 KB | +268…+276 / −104…−100 / +48…+76 / +64…+72 KB; 3 → 3 threads |
+
+Drawing the level in the panel's box costs nothing measurable: its PSS open is the box's shm pools,
+as at Task 2 (where the plain list already had the panel's box), and its anonymous memory open,
+closed and cycled stays within Task 2's spread. One run of the branch's `tools_pss_open_and_closed`
+read +180 KB closed again; the two others +44 and +48, inside the bases' spread.
+
+Task 4, Sway's dialect (on pc-simu, release, base Task 3 b328e3e8 and the branch d73ca9f3
+alternated, 3 rounds, each run holding the memory lock exclusively through the turnstile,
+2026-11-27). The memory test now runs on both dialects: `binds_pss_open_and_closed` (Mango, as
+before) and `binds_pss_open_and_closed_on_sway` (the harness's sway is the compositor read, the
+same 100 bindings in 5 groups written as `bindsym $mod+…` with a `set` variable). The base has no
+Sway parser, so its Mango run is the comparison:
+
+| Test | Base Task 3 (Mango) | Branch, Sway | Branch, Mango (1 run) |
+|---|---|---|---|
+| PSS open over closed | +1,981…+1,989 KB | +1,957…+1,997 KB | +1,977 KB |
+| anonymous open over closed / closed again | +272…+280 / −100 KB | +248…+288 / −92 KB | +268 / −104 KB |
+| anonymous after 10 more / after 20 more | +52…+68 / +68…+100 KB | +44…+68 / +64…+80 KB | +56 / +68 KB |
+| threads | 3 → 3 | 3 → 3 | 3 → 3 |
+
+Reading Sway's config costs what reading Mango's does: the same 100 bindings, the same bounds,
+freed with the level. Sway's cold PSS reads ~50 KB above Mango's (9,201 against 9,149–9,169 KB):
+the daemon's own Sway backend in place of the FakeMango client, not the parser. Mango's figures on
+the branch stay within the base's.
+
+Task 5, `alpheus-launch --binds` (on pc-simu, release, base Task 4 e144d6a0 and the branch
+alternated, 3 rounds, each run holding the memory lock exclusively through the turnstile; other
+agents' builds ran on the machine meanwhile: loaded machine, 2026-11-27). The new
+`binds_pss_open_and_closed_by_the_verb` is `binds_pss_open_and_closed` (Mango, the same 100
+bindings) with each cycle opened by `--binds` and closed by a second `--binds`, instead of
+`--tools`, its letter, Esc and `--tools`. The base has no verb, so its menu run is the comparison:
+
+| Test | Base Task 4, menu | Branch, menu | Branch, `--binds` |
+|---|---|---|---|
+| PSS closed (after the first cycle) / open | 10,511…10,535 / 12,496…12,520 KB | 10,423…10,535 / 12,408…12,524 KB | 10,085…10,093 / 12,897…12,901 KB |
+| PSS open over closed | +1,985…+1,989 KB | +1,985…+1,989 KB | +2,808…+2,812 KB |
+| anonymous open over closed / closed again | +276…+280 / −104…−84 KB | +276…+280 / −96…+16 KB | +72…+76 / +16…+28 KB |
+| anonymous after 10 more / after 20 more | +52…+68 / +80…+100 KB | +48…+68 / +76…+84 KB | +24…+44 / +52…+60 KB |
+| threads | 3 → 3 | 3 → 3 | 3 → 3 |
+
+The verb costs less than the menu, not more. The box's shm pools are the same (3,904 KB mapped,
+the panel's size, both ways); their PSS reads higher open through the verb (2,792 KB against
+1,880 by the menu, one diagnostic run each on the branch), attributed (from that one diagnostic
+run) to the box drawing fewer frames and less of the pools being shared with the compositor at
+the reading. So the absolute open PSS is higher through the verb: about 12,899 KB against
+12,496…12,524 KB by the menu. Without the pools, the
+daemon's own memory open over closed is +56 KB through the verb against +153 KB by the menu, and
+closed it stays ~430 KB lower (10,037 against 10,471 KB): a `--binds` open never draws the panel,
+so the panel's warm-up is never paid. The menu path on the branch stays within the base's.
+
+Task 6, `[power]` and user rows in the ⏻ menu (on pc-simu, release, the base is the branch's
+merge-base with `main` 529a0bc6 and the branch at Task 6 alternated, 3 rounds, each run holding
+the memory lock exclusively through the turnstile; other agents' work ran on the machine
+meanwhile: loaded machine, 2026-11-27). The branch's `POWER_BAR` gains two `[[power.entry]]` rows
+(one plain, one with `confirm`) after the default three; the base's has none (it has no
+`[power]`), so the delta is the code and the two rows together:
+
+| Test | Base 529a0bc6 | Branch, two user rows |
+|---|---|---|
+| PSS without the module | 8,667…8,675 KB | 8,735 KB (×3) |
+| button at rest over without | +128…+136 KB | +128…+132 KB |
+| menu open over at rest | +480…+496 KB | +560 KB (×3) |
+| closed / after 20 more cycles, over without | +476…+556 / +484…+492 KB | +544 / +552…+556 KB |
+| loop wake-ups in 10 s after the menu (a question pending at the last close) | 0, 0, 0 | 0, 0, 0 |
+
+The ~+64 KB without the module is the whole branch's code over the base (the cheatsheet's parser
+and level, Tasks 1 to 5, and this task), the same in every column. The button at rest costs what
+it did. The open menu costs +64…+80 KB more, the two rows' share of a taller popup (five rows
+instead of three: its shm pool and two buffers) and their labels; after the menu closed and after
+20 more cycles the branch keeps +60…+72 KB more over its own baseline than the base, within the
+test's bounds (closed ≤ idle + 512 KB, cycled ≤ closed + 128 KB: +8…+12 KB measured). No wake-up
+at rest after the menu, as before: the rows add no timer.
+
+What stays after the menu closes is not the rows, and not the menu's buffers: one diagnostic run
+(release, Task 7's tree, the same binary started twice, with the two rows and without them, smaps
+by mapping) found the same +412…+416 KB held after the close in both, all of it file-backed pages
+the first open faulted in: the binary's code +256 KB, the Nerd Font +128 KB, two shared libraries
++96 KB; the popup's shm pool went back to nothing at the close, and the anonymous
+memory ended at or below its at-rest level (984 → 1,080 open → 972 KB with the rows, 980 → 1,092 →
+972 KB without). Pages of code are faulted in by the 64 KB around each touched page, so how many a
+first open brings in follows where the code it runs lies in the binary, and the branch's binary
+(Tasks 1 to 6 added code) lays it out differently from the base's: that is where the +60…+72 KB
+most likely came from (an attribution from that one run, not proven), and Task 7's measurement
+below, against fce652bd, shows the same +416 KB held after the close on both sides.
+
+Task 7, digits in the ⏻ menu (on pc-simu, release, base fce652bd (Task 6) and the branch at Task 7
+alternated, 3 rounds, `power_menu_pss_idle_open_and_closed --exact`, each run holding the memory
+lock exclusively through the turnstile; other agents' work ran on the machine before and between
+the runs: loaded machine, 2026-11-27). Both sides draw the same `POWER_BAR` (the default three rows
+and two `[[power.entry]]` rows); the branch's menu is 21 cells wide instead of 16 (the longest
+text, "⏻ Power off? ⏎", plus the digit's gap and capsule) and carries five capsules:
+
+| Test | Base fce652bd | Branch, Task 7 |
+|---|---|---|
+| PSS without the module | 8,731 KB (×3) | 8,739…8,759 KB |
+| with the button at rest | 8,859 KB (×3) | 8,867 KB (×3) |
+| menu open over at rest | +572 KB (×3) | +582 KB (×3) |
+| closed over at rest | +416 KB (×3) | +416 KB (×3) |
+| after 20 more cycles, over closed | +8 KB (×3) | +12 KB (×3) |
+
+The digits' code is +8 KB at rest, in every column. The open menu costs +10 KB more: the wider
+popup's buffers (five more cells per row) and the five capsule shapes, gone with the popup. Closed,
+the menu holds exactly what the base's does (+416 KB over rest, the first open's code and font
+pages); 20 more cycles keep +12 KB against +8 KB, within the test's bound (+128 KB) and one page
+of noise. No timer is added: the digits act inside `key`.
+
+Task 8, the countdown in the ⏻ menu (on pc-simu, release, base 67dbd98f (the branch just before
+Task 8: Task 7 with the owner's decisions 11 and 12) and the branch at Task 8 alternated, 3 rounds,
+`power_menu_pss_idle_open_and_closed --exact`, each run holding the memory lock exclusively through
+the turnstile; the machine was quiet, load average 0.0 to 0.1 through the rounds, 2026-11-27). Both
+sides draw the same `POWER_BAR`, without a countdown, so this measures the code:
+
+| Test | Base 67dbd98f | Branch, Task 8 |
+|---|---|---|
+| PSS without the module | 8,739 KB (×3) | 8,735 KB (×3) |
+| with the button at rest | 8,863…8,867 KB | 8,927 KB (×3) |
+| menu open | 9,433…9,437 KB | 9,433 KB (×3) |
+| closed / after 20 more cycles | 9,279…9,283 / 9,291…9,295 KB | 9,279 / 9,286…9,291 KB |
+
+Open, closed and after the cycles the branch is where the base is, to the page. At rest with the
+button it reads +60…+64 KB, the same in all three runs, and the open menu costs that much less over
+it, so the open total is unchanged: attributed (not traced) to which code pages the first paint of
+the button faults in (64 KB fault-around) in a binary whose layout the countdown's code moved, as
+in Task 6; the menu's first open faults them in on both sides.
+
+The countdown's own figures, on the branch only (`POWER_COUNTDOWN_BAR`: 5 s for the rows that ask
+and of its own for "Row one"; 3 runs each):
+
+| Test | Runs |
+|---|---|
+| loop-thread wake-ups over a 5 s countdown left to run (`power_countdown_wakes_once_a_second`) | 11, 11, 11 |
+| the same with the timer armed every 100 ms (the mutation, one run) | 56 |
+| loop / whole-daemon wake-ups in 10 s after a question and a countdown cancelled by Esc (`at_rest_no_wakeups_after_the_power_menu`) | 0 / 0, 0 / 0, 0 / 0 |
+
+The plan's bound was 6 wake-ups over the countdown (one a second); each second wakes the loop
+twice, its tick and the compositor's reply to the repaint the tick asks (attributed, not traced:
+the buffer release), so the test's bound is 12. The timer exists only while the countdown runs:
+none at rest after it was cancelled.
+
+Close-out, the whole branch against its merge-base with `main` (on pc-simu, release, base
+529a0bc6 in its own worktree and target directory and the branch at a0a40b5b alternated, 3 rounds,
+`--exact` over the five tests below, each run holding the memory lock exclusively through the
+turnstile; the machine was quiet, load average 0.1 to 0.3 through the rounds (1.5 at the first
+run's start, as the base's build ended), 2026-11-27). Stripped `alpheus-demon` 8,807,352 →
+8,938,424 B (+128 KiB, the cheatsheet's parsers and level and the power menu's rows, digits and
+countdown). The branch's `POWER_BAR` has its two `[[power.entry]]` rows, the base's none.
+
+| Test | Base 529a0bc6 | Branch |
+|---|---|---|
+| `pss_under_budget_and_stable`: startup / after ~8,270 events | 10,800…10,804 / 12,096…12,108 KB | 10,852…10,893 / 12,160…12,210 KB |
+| `at_rest_no_wakeups` (5 s) | 0, 2, 0; 5 threads | 0, 0, 0; 5 threads |
+| `tools_pss_open_and_closed`: cold / open over closed / closed again / after 20 more | 9,660…9,724 / +2,098…+2,206 / 10,547…10,671 / 10,659…10,725 KB | 9,756…9,780 / +2,202…+2,226 / 10,663…10,675 / 10,763…10,829 KB |
+| same: anonymous open over closed / closed again / after 20 more | +372…+480 / +48…+144 / +0…+100 KB | +476…+500 / +36…+64 / +80…+100 KB |
+| same: shm pools open over closed; threads | +1,824 KB; 5 → 5 | +1,824 KB; 5 → 5 |
+| `binds_pss_open_and_closed`: PSS open over closed | — | +1,964…+1,980 KB |
+| same: anonymous open over closed / closed again / after 10 more / after 20 more | — | +256…+272 / −88…−80 / +48…+52 / +72…+84 KB; 3 → 3 threads |
+| `power_menu_pss_idle_open_and_closed`: without the module / button at rest | 8,641 (×3) / 8,769 KB (×3) | 8,697 (×3) / 8,889 KB (×3) |
+| same: open / closed / after 20 more cycles | 9,261…9,265 / 9,113…9,117 / 9,125…9,129 KB | 9,395…9,407 / 9,241…9,245 / 9,253…9,257 KB |
+
+The branch costs +48…+114 KB of total PSS at start and after the event load, about the +56 KB that
+every test reads before any of the new features is used: its larger binary's pages. The command
+panel opens and closes as it did, its anonymous memory within the base's spread. The cheatsheet's
+100 bindings cost +256…+272 KB of anonymous memory while shown and are freed with the level, the
+rest of its open PSS being the box's pools, as at Tasks 2 to 5. The power button at rest reads
++64 KB more than the base over the +56 KB, as at Task 8 (attributed to which code pages its first
+paint faults in); the open menu, with two rows more than the base's, +10…+26 KB more over the
+button; closed and cycled, the branch keeps +4…+12 KB more over rest than the base, within the test's
+bounds. No wake-up at rest on the branch in any run.

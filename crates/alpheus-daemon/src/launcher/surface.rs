@@ -735,6 +735,8 @@ impl App {
                 }
                 self.launcher_redraw();
             }
+            // The Keybindings level: its files are read now (launcher/tools/app.rs).
+            Outcome::OpenBinds => self.tools_open_binds(false),
             // A choices level: the reader starts or queues the job.
             Outcome::ReadChoices(job) => {
                 self.tools_offer(job);

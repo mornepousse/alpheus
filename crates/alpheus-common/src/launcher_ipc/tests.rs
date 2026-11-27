@@ -55,6 +55,7 @@ fn requests() -> Vec<Request> {
         Request::Tools,
         Request::Kill,
         Request::Power,
+        Request::Binds,
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsTry("step\tDP-1\t1920x1080@60 0 0 1000 0\nstep\tHDMI-A-1\toff\n".into()),
@@ -82,6 +83,13 @@ fn every_request_round_trips() {
     for r in requests() {
         assert_eq!(decode(&encode_request(&r)), Ok(Some(r.clone())), "{r:?}");
     }
+}
+
+/// `--binds`: one bare header word, decoded back to itself.
+#[test]
+fn binds_request_round_trips() {
+    assert_eq!(encode_request(&Request::Binds), b"alpheus-launcher/1 binds\n");
+    assert_eq!(decode(b"alpheus-launcher/1 binds\n"), Ok(Some(Request::Binds)));
 }
 
 #[test]
@@ -161,6 +169,7 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 tools now\n",
         b"alpheus-launcher/1 kill now\n",
         b"alpheus-launcher/1 power now\n",
+        b"alpheus-launcher/1 binds now\n",
         b"alpheus-launcher/1 clipboard now\n",
         b"alpheus-launcher/1 clipboard-clear now\n",
         b"alpheus-launcher/1  toggle\n",

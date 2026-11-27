@@ -568,6 +568,86 @@ fn tools_opens_with_no_scan_and_toggles() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// The Keybindings level on the harness's own Sway: `binds_files` names an invented config in the
+/// test's runtime folder (a `set` variable, a mode, an include glob); `/keybindings` and Enter open
+/// the level and the log counts the fixture's binds and groups; the binds' `exec` names a recorder
+/// on the private `PATH` that never runs; Esc goes back to the panel, a second Esc closes the box.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn binds_on_sway_lists_the_fixture() {
+    let sway = Sway::start("binds-sway", 1);
+    fake_recorder(&sway, "fake-binds");
+    let dir = sway.runtime.join("sway-binds");
+    std::fs::create_dir_all(dir.join("binds.d")).unwrap();
+    let config = dir.join("config");
+    std::fs::write(
+        &config,
+        "# Invented Sway bindings for the headless test.\nset $mod Mod4\nset $rec fake-binds\n\
+         bindsym $mod+Return exec $rec one\nbindsym --locked $mod+Shift+q kill\n\
+         mode \"resize\" {\n    bindsym h resize shrink width 10px\n    bindsym Escape mode \"default\"\n}\n\
+         bindsym $mod+r mode \"resize\"\ninclude ./binds.d/*\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("binds.d/a.conf"), "# ── Workspaces ──\nbindsym $mod+1 workspace number 1\nbindcode $mod+10 exec $rec two\n")
+        .unwrap();
+    let toml = format!("[tools]\nbinds_files = [{:?}]\n", config.display().to_string());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    let typing =
+        wtype_spawn(&sway, &["-s", "300", "/keybindings", "-k", "Return", "-s", "1500", "-k", "Escape", "-s", "1500", "-k", "Escape"]);
+    assert!(d.wait_for("tools: binds shown (7 binds, 3 groups)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(d.count("launcher closed ("), 0, "the first Esc goes back to the panel: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let log = d.log();
+    assert!(recorded(&sway, "fake-binds").is_empty(), "a listed bind never runs: {log:?}");
+    assert!(!log.iter().any(|l| l.contains("tools: binds cut") || l.contains("not understood")), "{log:?}");
+    assert!(log.iter().all(|l| !l.contains("fake-binds") && !l.contains("Super+")), "never a bind: {log:?}");
+}
+
+/// `alpheus-launch --binds` on the harness's own Sway: the Keybindings level opens alone (no scan),
+/// the log counts the fixture's binds; a second `--binds` past the debounce closes the box; a
+/// third opens it again and one Esc closes it (no panel beneath).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn binds_verb_opens_and_toggles() {
+    let sway = Sway::start("binds-verb", 1);
+    let config = sway.runtime.join("binds-verb.conf");
+    std::fs::write(&config, "# Invented Sway bindings.\nset $mod Mod4\nbindsym $mod+Return exec foo-term\nbindsym $mod+q kill\n").unwrap();
+    let toml = format!("[tools]\nbinds_files = [{:?}]\n", config.display().to_string());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tools: binds shown (2 binds, 1 groups)", DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "one Esc closes a --binds open: {:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the level alone scans nothing: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("foo-term") && !l.contains("Super+")), "never a bind: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// `--binds` where no dialect reads the compositor (the fake Hyprland): refused with its text,
+/// nothing opened.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_verb_is_refused_on_hyprland() {
+    let (sway, _hypr, mut d) = tools_daemon("binds-refused", "");
+    assert_eq!(launcher(&sway, &Request::Binds), Reply::Error("no key bindings source for this compositor".into()));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count(SHOWN), 0, "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
 /// A category, an entry with fixed choices and `run = [rec, "fixed", "{choice}"]`: the argv the
 /// recorder gets is one element per line, the choice whole (`a b`, `it's "q"`), never split or quoted.
 #[test]
@@ -6674,15 +6754,20 @@ const POWER_AT: (u32, u32) = (12, 10);
 /// recording their calls first on the daemon's PATH (the rest of it is coreutils only, checked to
 /// hold neither: never the real ones), the default `[quick]` (lock, reboot, power off).
 fn power_daemon(name: &str) -> (Sway, FakeHyprland, Daemon) {
+    power_daemon_with(name, "modules = [\"power\"]\n", &["loginctl", "systemctl"])
+}
+
+/// `power_daemon` with its own `bar.toml` and a fake recorder for each of `programs`.
+fn power_daemon_with(name: &str, bar: &str, programs: &[&str]) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    for program in ["loginctl", "systemctl"] {
+    for program in programs {
         fake_recorder(&sway, program);
     }
-    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("modules = [\"power\"]\n"), ..DaemonOptions::default() });
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
     (sway, hypr, d)
@@ -6793,6 +6878,87 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
+/// `--power` opens the menu (Lock, Log out, Reboot, Power off, then one user row, the fifth); the
+/// key `5` runs that row's `run` through its fake recorder on the daemon's private PATH, exactly
+/// once, and the menu closes; no other row's command runs.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_a_digit_runs_a_user_row() {
+    let sway = Sway::start("power-digit", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    for program in ["loginctl", "systemctl", "fake-quit"] {
+        fake_recorder(&sway, program);
+    }
+    let bar = "modules = [\"power\"]\n[quick]\nlogout = [\"loginctl\", \"terminate-user\", \"u\"]\n\
+               [[power.entry]]\nname = \"Quit\"\nrun = [\"fake-quit\", \"--now\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Power), Reply::Done);
+    assert!(d.wait_for("power menu shown (lock logout reboot poweroff entry 1)", DELAY), "{:?}", d.log());
+    power_verb_drawn(&sway, &d);
+    keys(&sway, &["5"]);
+    assert!(wait_for_call(&sway, "fake-quit", "fake-quit --now"), "{:?} {:?}", recorded(&sway, "fake-quit"), d.log());
+    assert!(d.wait_for("power: entry 1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // a second run would have landed by now
+    assert_eq!(recorded(&sway, "fake-quit"), ["fake-quit --now"], "once: {:?}", d.log());
+    assert!(recorded(&sway, "loginctl").is_empty() && recorded(&sway, "systemctl").is_empty(), "nothing else ran");
+}
+
+/// A bar with the ⏻ menu, Power off running the fake recorder `fake-off`, and a global countdown of
+/// `secs` seconds.
+fn power_countdown_bar(secs: u8) -> String {
+    format!("modules = [\"power\"]\n[quick]\npoweroff = [\"fake-off\", \"now\"]\n[power]\ncountdown = {secs}\n")
+}
+
+/// ↑ selects Power off, Enter asks, a second Enter 0.8 s later confirms: with a countdown, it starts.
+fn power_off_confirmed(sway: &Sway, d: &Daemon) {
+    assert!(wtype(sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "800", "-k", "Return"]).success());
+    assert!(d.wait_for("power: countdown power off", DELAY), "{:?}", d.log());
+}
+
+/// A 3 s countdown on Power off, confirmed, then Escape a second in: the countdown is cancelled and
+/// the menu stays open; 4 s later (past its end) nothing ran; a second Escape closes the menu.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_countdown_escape_runs_nothing() {
+    let (sway, _hypr, d) = power_daemon_with("power-count-esc", &power_countdown_bar(3), &["loginctl", "systemctl", "fake-off"]);
+    power_open(&sway, &d, 1);
+    power_off_confirmed(&sway, &d);
+    thread::sleep(Duration::from_secs(1));
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("power: countdown cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(4));
+    assert!(recorded(&sway, "fake-off").is_empty(), "Escape runs nothing: {:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "the first Escape only cancels: {:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "the second Escape closes: {:?}", d.log());
+    assert!(recorded(&sway, "fake-off").is_empty() && recorded(&sway, "systemctl").is_empty(), "nothing ran");
+}
+
+/// A 2 s countdown on Power off, confirmed and left alone: Power off's command runs once, about 2 s
+/// after the countdown began, and the menu closes.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_countdown_runs_at_its_end() {
+    let (sway, _hypr, d) = power_daemon_with("power-count-end", &power_countdown_bar(2), &["loginctl", "systemctl", "fake-off"]);
+    power_open(&sway, &d, 1);
+    power_off_confirmed(&sway, &d);
+    let began = Instant::now();
+    assert!(recorded(&sway, "fake-off").is_empty(), "not at once: {:?}", d.log());
+    assert!(wait_for_call(&sway, "fake-off", "fake-off now"), "{:?} {:?}", recorded(&sway, "fake-off"), d.log());
+    let waited = began.elapsed();
+    assert!(waited >= Duration::from_millis(1500), "ran {waited:?} after the countdown's line, before its 2 s: {:?}", d.log());
+    assert!(d.wait_for("power: power off", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // a second run would have landed by now
+    assert_eq!(recorded(&sway, "fake-off"), ["fake-off now"], "once: {:?}", d.log());
+    assert!(recorded(&sway, "systemctl").is_empty() && recorded(&sway, "loginctl").is_empty(), "nothing else ran");
+}
+
 /// Two requests on two connections, both written before either reply is read: the daemon gets the
 /// second right behind the first, with no timing between them.
 fn launcher_pair(sway: &Sway, a: &Request, b: &Request) -> (Reply, Reply) {
@@ -6866,7 +7032,10 @@ fn power_verb_opens_and_closes_the_menu() {
     let bar = "modules = [\"clock\"]\n[quick]\nlock = []\nlogout = []\nreboot = []\npoweroff = []\n";
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    assert_eq!(launcher(&sway, &Request::Power), Reply::Error("no session command is set ([quick] lock, logout, reboot, poweroff)".into()));
+    assert_eq!(
+        launcher(&sway, &Request::Power),
+        Reply::Error("no power menu row is set ([quick] lock, logout, reboot, poweroff, or [[power.entry]])".into())
+    );
     assert_eq!(d.count("power menu shown"), 0, "{:?}", d.log());
 }
 

@@ -21,8 +21,8 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
   name, see [wallpaper.md](wallpaper.md)), the captures (Screenshot, Area, Area (save), Annotate, Record screen, Record area, Stop recording, Colour
   picker, Text from area (OCR): a tool's row only when its `[captures]` program is set and found, the
   Record rows only while nothing records, Stop only while a recording runs), Schedule shutdown, Kill a
-  process, Lock, the Power menu, an optional "Reload the bar", and the Diagnostics entries (network
-  scan, USB events and reset, the journal presets). The table has 46.
+  process, Keybindings (on Mango and Sway), Lock, the Power menu, an optional "Reload the bar", and
+  the Diagnostics entries (network scan, USB events and reset, the journal presets). The table has 47.
 - **Your own entries**, declared in `launcher.toml`: a command with no shell, optionally in the terminal,
   with a confirmation, an on/off state, choices, or a text typed in the box.
 - **A way in from a key:** `alpheus-launch --power` opens the ⏻ menu directly.
@@ -159,6 +159,73 @@ choice `Cancel shutdown (in 1h20)` cancels it. A duration replaces the shutdown 
 chip, the warning a minute before, the state file, `--timer shutdown`) is the timer's: see
 [the focus timer](timer.md#the-scheduled-shutdown).
 
+### Keybindings
+
+Tools › System › Keybindings lists the compositor's key bindings, read from its config files when the
+level opens (shown only on Mango and Sway; on another compositor the entry hides). Enter opens it in
+the box; Esc, ← on an empty query or Backspace go back to where it was opened, the panel on the tab it
+was on. Nothing of it is kept once it is left. `alpheus-launch --binds` opens the same level alone,
+from a key (see "From a key"); then Esc, or ← on an empty query, closes the box.
+
+- **Sources:** `[tools] binds_files` when set (at most 8 paths, each absolute or starting with `~/`,
+  your home folder; a relative one makes `launcher.toml` invalid), else the
+  compositor's own config: Mango's `$XDG_CONFIG_HOME/mango/config.conf` (else
+  `~/.config/mango/config.conf`), following its `source=` lines (relative to the file that names them,
+  or `~/…`); Sway's `$XDG_CONFIG_HOME/sway/config` (else `~/.config/sway/config`), and only when
+  that one cannot be read, the system's `/etc/sway/config`, as Sway itself does. Sway's `include`
+  lines are followed (relative to the file that names them, or `~/…`); a `*` or `?` in the last
+  component reads that folder's matching files in name order (hidden ones only for a pattern
+  starting with `.`), within the same 8 files. A pattern before the last component is not followed.
+- **What a line becomes, on Mango:** `bind`, `bindl`, `bindsl` and `bindr` (`MODS,key,function[,args]`) are
+  listed; `mousebind`, `axisbind`, `gesturebind` and every other key are skipped silently. `$NAME`
+  is replaced when an `env=NAME,value` of the files read defines it, else kept as written.
+- **What a line becomes, on Sway:** `bindsym` and `bindcode` (`[--flags] combo action`, alone or in
+  a `bindsym { … }` block) are listed, their flags (`--release`, `--locked`, `--to-code`, …) skipped
+  over; a `bindcode` key shows as `code:N`. `set $name value` defines a variable the lines after it
+  expand (an undefined one is kept as written). The bindings inside a `bar { … }`, `input { … }` or
+  any other block are skipped; a line ending in `\` goes on with the next.
+- **Groups:** a comment line `# ── Name ──` opens the group `Name`; the binds before any are in
+  `General` on Mango, `Default` on Sway. On Sway, the bindings of a `mode "name" { … }` block are
+  the group `name`, and after its `}` the group before goes on. All lists every group as a section, in the order the groups are first met; **Tab** and
+  **Shift+Tab** move to one group's own tab and back, wrapping.
+- **Descriptions:** the bind's trailing `# comment`, else the comment line right above it (not across
+  a blank line, not a group's header), else the function in words (`spawn,firefox` is
+  `Run firefox`, `view,2` is `Go to desktop 2`, `killclient` is `Close window`; on Sway `exec foo`
+  is `Run foo`, `workspace number 3` is `Go to workspace 3`, `move container to workspace number 3`
+  is `Move window to workspace 3`, `kill` is `Close window`, `mode "resize"` is `Enter mode resize`;
+  an unknown function shows as written).
+- **What you see:** in the command panel's box, the search field, a tab strip (`All`, then one tab
+  per group; a click opens one as Tab does), the list on the left and the selected binding's card on
+  the right. Each binding takes two lines: its combo in a capsule, then its description (the
+  descriptions in one column), and its command dim under it. The card shows the combo, the group
+  dim, the description, a thin line, `Command` and the whole command wrapped (a word wider than the
+  card is broken, never cut; only past the card's foot does a last `…` say it goes on), then
+  `From <file name>` dim, by name only. The footer offers `Tab Group · type to search · Esc Back`
+  (Tab only with two groups or more). Under the list, `N lines not understood` when the parser
+  skipped some; `No keybindings found` when nothing was found, `no match` for a search that finds
+  nothing. With `[tools] panel = false` the level is the plain one-line list.
+- **Keys:** each row is `<combo>  <description>`, the combo as `Super+Shift+A`; letters are always
+  text here, so typing filters at once, by description first, then by combo and command, the results
+  grouped by group in the order of their best match. Enter and → on a binding do nothing: it is shown,
+  never run.
+- **Bounds:** 8 files, 512 KiB in all, 1,000 bindings, 32 groups, 64 variables, a line cut at
+  1 KiB; past one, the first are kept and the log says `tools: binds cut (…)` in counts. A file
+  sourced twice is read once; a FIFO, a device or a folder named as a file is refused. Control
+  characters are dropped from what is shown.
+- **What the log says**, in counts only: `tools: binds shown (N binds, M groups)`, `tools: binds N
+  lines not understood` when a bind line lacks its key or function, and `tools: binds no source`
+  when no file was readable.
+- **How it is laid out** (the design left these to the build): the list takes about three fifths
+  of the box's inner width and the card the rest, one blank column between, side by side only from
+  80 columns (below, the list alone, as at the panel's home). The combos' column is as wide as the
+  widest combo shown plus its capsule, at most two fifths of the list, so every description starts
+  at the same column; a longer combo is cut there and shows whole on the card. The footer is the
+  panel's key hints, `Tab Group · type to search · Esc Back`, without `Tab Group` for one group;
+  the empty pane says `No keybindings found` (nothing read) or `no match` (a search), dim, and
+  `N lines not understood` takes the pane's last line. The phrases for a bind without a comment
+  are two closed tables in `launcher/tools/binds/describe.rs`, one per dialect (Mango's functions,
+  Sway's commands); anything else shows as written.
+
 ### The diagnostics tools
 
 The scans, the USB events and the USB reset run in `terminal_hold`, so `sudo` can ask there and the
@@ -197,7 +264,15 @@ is on [the captures page](captures.md).
 
 **`alpheus-launch --tools`** replaces any other open launcher mode, then toggles; it exits 3 when the
 bar is not running or is older than the verb, the one code on which a script falls back to another menu.
-`alpheus-launch --power` exits 2 when no `[quick]` session command is set.
+`alpheus-launch --power` exits 2 when the ⏻ menu has no row (no `[quick]` session command shown and
+no `[[power.entry]]`).
+
+**`alpheus-launch --binds`** opens the Keybindings level alone, with nothing beneath it: Esc, or ← on
+an empty query, closes the box. It replaces any other open launcher, the Tools menu at another level
+included, then toggles like `--tools`: it closes the box whenever the Keybindings level shows, also
+when the level was reached from the panel (a second `--binds` within 250 ms of its open is ignored, and a
+`--tools` closes it too). It exits 2 with `no key bindings source for this compositor` on Hyprland,
+niri or a compositor not detected, and then replaces nothing; 3 as `--tools` does.
 
 ## Configuration
 
@@ -238,7 +313,9 @@ terminal with `alpheus --tab <name>`. An entry of a category cut by the 16-categ
 not moved to the root.
 
 **Binding it.** Bind `alpheus-launch --tools` yourself (Mango `bind=SUPER,x,spawn,alpheus-launch --tools`,
-Sway `bindsym $mod+x exec alpheus-launch --tools`). Exit 3 means the daemon is too old or not running, and
+Sway `bindsym $mod+x exec alpheus-launch --tools`), and the cheatsheet the same way (Mango
+`bind=SUPER+SHIFT,slash,spawn,alpheus-launch --binds`, Sway
+`bindsym $mod+Shift+slash exec alpheus-launch --binds`). Exit 3 means the daemon is too old or not running, and
 a bind can fall back to a menu of your own on that code. Names, commands and lines are never logged (an
 entry is named by its position in the file).
 
@@ -262,6 +339,12 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
   what a tool is. `nav.rs`'s `ToolsState` holds the panel, its box size (fixed for the open), the
   picked chips and the tab moves; `catalog.rs` holds the descriptions, the default letters and
   `claim_letters`.
+- `binds/`: pure. The Keybindings level's parser (`mod.rs`: `roots`, `load` and its bounds behind the
+  `Files` seam, `rows` and `group_hits` for the level's list, `notes` for its log lines; `mango.rs`;
+  `sway.rs`;
+  `describe.rs`: combos and the functions in words). `nav.rs` holds the level (`Level::Binds`) and
+  the bindings while it is open; `app.rs` is the one file that reads the disk for it (`RealFiles`),
+  at once and once per open, on `Outcome::OpenBinds`.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
   `choices_cmd`, through the executor's `capture`, or of the wallpaper folder (`Job::Folder`: one
   `read_dir`, at most 2,000 names, delivered as a choices read's lines).
@@ -279,7 +362,9 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 
 The drawing is the launcher's view: `launcher/view/panel.rs` draws the panel in the box's cells
 (search field, tab strip, the list beside the detail card, footer) and maps a click to a tab, a row
-or a chip; `view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
+or a chip; `launcher/view/binds.rs` draws the Keybindings level in the same box with the same pieces
+(the tab strip takes names, so the groups are its tabs) and maps a click to a tab or a binding;
+`view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
 shapes (`list::ShapeKind`: `Card` for the detail card, `Tile` for a tool's tile, `Chip` for a
 capsule, a tab or the search field, `Band` for the selection over a tool's two lines, `Switch` for a
 known state), drawn in pixels under the cells. A tile is `pill_bg` inside a ring of `fg_dim` over

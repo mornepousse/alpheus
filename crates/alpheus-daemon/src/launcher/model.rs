@@ -16,6 +16,7 @@ use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::{ProcRow, Sig, SignalError};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
+use crate::launcher::tools::binds::{self, Binds};
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
 use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
 use crate::launcher::tools::panel;
@@ -103,6 +104,9 @@ pub enum Outcome {
     BackToAll,
     /// A confirmation question was asked: the host syncs its timer.
     Asked,
+    /// Enter on the Keybindings built-in: the host reads the compositor's bindings and hands them
+    /// to `open_binds`.
+    OpenBinds,
     /// The kill list's Enter (`Sig::Term`) or its confirmed Ctrl+Enter (`Sig::Kill`): the glue
     /// sends the signal if the pid still started at `start`, then reports back (`signal_result`).
     Signal {
@@ -240,6 +244,9 @@ pub struct Launcher {
     /// auto-repeats do nothing until a fresh press, wherever the press led (a level below, a
     /// prompt, the search).
     acted: Option<Key>,
+    /// The row Enter on the Keybindings built-in was on: where `up` lands once `open_binds` opened
+    /// the level.
+    binds_from: Option<usize>,
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
@@ -302,6 +309,7 @@ impl Launcher {
             by_prefix: false,
             searching: false,
             acted: None,
+            binds_from: None,
             list_rows,
             moved: false,
             switcher: false,
@@ -413,6 +421,28 @@ impl Launcher {
         self.tools.as_ref()
     }
 
+    /// The bindings the host read for `Outcome::OpenBinds`: the Keybindings level opens on them,
+    /// its query empty, ← and Esc back on the row it was entered from.
+    pub fn open_binds(&mut self, binds: Binds) {
+        let from = self.binds_from.take().unwrap_or(0);
+        let Some(t) = self.tools.as_mut() else { return };
+        t.open_binds(binds, from);
+        self.level_changed();
+    }
+
+    /// `alpheus-launch --binds`: the Keybindings level opened on `binds` with nothing beneath it,
+    /// so Esc and ← close the box instead of landing on a panel never shown.
+    pub fn open_binds_alone(&mut self, binds: Binds) {
+        let Some(t) = self.tools.as_mut() else { return };
+        t.open_binds_alone(binds);
+        self.level_changed();
+    }
+
+    /// Whether the Tools mode shows the Keybindings level.
+    pub fn at_binds(&self) -> bool {
+        self.mode == Mode::Tools && self.tools.as_ref().is_some_and(|t| t.binds().is_some())
+    }
+
     /// Opens the Super+X panel in a box of `columns` × `rows` cells (sized once, for the open's
     /// output), when `[tools] panel` is on: the root's letters then run their tools. Off, the root
     /// stays the list of categories with no letter.
@@ -473,17 +503,23 @@ impl Launcher {
         self.tool_marks.get(index).map_or(&[], Vec::as_slice)
     }
 
-    /// A click on the panel's tab `tab`: opens it as Tab would, on its first tool; from the search
-    /// too, which it ends. Nothing without a panel at the root or such a tab.
+    /// A click on the panel's tab `tab`, or the Keybindings level's: opens it as Tab would, on its
+    /// first row. On the panel it ends the search; on the level, as Tab there, the typed query
+    /// stays and filters inside the group. Nothing without a panel at the root or the level, or
+    /// such a tab.
     pub fn click_tab(&mut self, tab: usize) -> Outcome {
-        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(|t| t.open_tab(tab)) {
+        let binds = self.at_binds();
+        let open = |t: &mut ToolsState| if binds { t.open_bind_tab(tab) } else { t.open_tab(tab) };
+        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(open) {
             return Outcome::Nothing;
         }
         if let Some(t) = self.tools.as_mut() {
             t.cancel();
         }
-        self.query.clear();
-        self.searching = false;
+        if !binds {
+            self.query.clear();
+            self.searching = false;
+        }
         self.message = None;
         self.ranker.forget();
         self.refilter();
@@ -938,6 +974,9 @@ impl Launcher {
             Key::Left if self.query.is_empty() => {
                 if self.tools_up() {
                     Outcome::Redraw
+                } else if self.at_binds() {
+                    // A `--binds` open: nothing beneath the level, ← closes as Esc does.
+                    Outcome::Close
                 } else {
                     Outcome::Nothing
                 }
@@ -960,6 +999,17 @@ impl Launcher {
             Key::Tab | Key::BackTab if self.at_panel() => {
                 let step = if k == Key::Tab { 1 } else { -1 };
                 if self.tools.as_mut().is_some_and(|t| t.next_tab(step)) {
+                    self.ranker.forget();
+                    self.refilter();
+                    Outcome::Redraw
+                } else {
+                    Outcome::Nothing
+                }
+            }
+            // The Keybindings level's tabs (All, then each group), wrapping.
+            Key::Tab | Key::BackTab if self.at_binds() => {
+                let step = if k == Key::Tab { 1 } else { -1 };
+                if self.tools.as_mut().is_some_and(|t| t.next_bind_tab(step)) {
                     self.ranker.forget();
                     self.refilter();
                     Outcome::Redraw
@@ -1021,6 +1071,15 @@ impl Launcher {
             if t.prompting() {
                 t.up();
                 self.query.clear();
+            }
+            // Nor does it come back to the bindings: they are dropped with their level, and the
+            // level's rows with them (their text holds each binding's combo and description).
+            if t.binds().is_some() {
+                t.up();
+                self.query.clear();
+                self.tool_level = Vec::new();
+                self.tool_level_hits = Vec::new();
+                self.tool_level_key = None;
             }
         }
     }
@@ -1100,6 +1159,10 @@ impl Launcher {
             return Outcome::Nothing;
         };
         match step {
+            Step::Binds(at) => {
+                self.binds_from = Some(at);
+                Outcome::OpenBinds
+            }
             Step::Drill(job) => {
                 self.level_changed();
                 job.map_or(Outcome::Redraw, Outcome::ReadChoices)
@@ -1128,7 +1191,7 @@ impl Launcher {
         let (entry, choice) = match row {
             RowId::Entry(e) => (e, None),
             RowId::Choice(e, k) => (e, Some(k)),
-            RowId::Category(_) | RowId::Prompt(_) => return Outcome::Nothing,
+            RowId::Category(_) | RowId::Prompt(_) | RowId::Bind(_) => return Outcome::Nothing,
         };
         let Some(e) = t.catalog.entries.get(entry) else { return Outcome::Nothing };
         // The fixed choice's own text, for the entries whose choices ask differently (the scan's sweep).
@@ -1150,6 +1213,13 @@ impl Launcher {
             let now = self.at.unwrap_or_else(Instant::now);
             return match t.enter(&self.config.tools, row, 0, now) {
                 Step::Run(action) => Outcome::Activate(Activation::Tool(action)),
+                // The Keybindings level opens in the Tools mode, at the entry's level.
+                Step::Binds(_) => {
+                    t.goto_entry(entry);
+                    self.enter_tools_mode();
+                    self.binds_from = self.tools.as_mut().map(|t| t.here(row));
+                    Outcome::OpenBinds
+                }
                 _ => Outcome::Nothing,
             };
         }
@@ -1344,6 +1414,8 @@ impl Launcher {
                 .collect();
             self.results = groups.hits;
             self.tool_chips = groups.chips;
+        } else if let Some(b) = t.binds() {
+            self.results = binds::group_hits(&ranked, &self.tool_level, b);
         } else {
             self.results = group_choices(ranked, tools);
         }

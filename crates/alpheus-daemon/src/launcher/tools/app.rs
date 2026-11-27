@@ -40,6 +40,7 @@ use crate::launcher::model::Launcher;
 use crate::launcher::run::{self, RunContext};
 use crate::launcher::scan::{ScanEnv, has_program};
 use crate::launcher::tools;
+use crate::launcher::tools::binds::{self, Dialect, Files};
 use crate::launcher::tools::catalog::{BUILTINS, Builtin, BuiltinAction, Catalog, Context, Entry, EntryKind};
 use crate::launcher::tools::diag::{self, Scan, Subnet};
 use crate::launcher::tools::nav::{Counts, Job, StateJob};
@@ -50,9 +51,11 @@ use crate::startup::Mail;
 use crate::timer::shutdown::ShutdownChoice;
 use crate::wallpaper::{WallpaperConfig, resolve_dir};
 use crate::wayland::App;
+use alpheus_common::compositor::Compositor;
 use alpheus_common::launcher_ipc::{DndVerb, Reply, Request, TimerVerb};
 use alpheus_common::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,7 +80,7 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         keep_awake: !Toggle::KeepAwake.config(&bar.quick).toggle.is_empty(),
         night_light: !Toggle::NightLight.config(&bar.quick).toggle.is_empty(),
         lock: !bar.quick.lock.is_empty(),
-        session: crate::session::any_configured(&bar.quick),
+        session: crate::power::any_rows(bar),
         reload: !launcher.tools.reload.is_empty(),
         shield: join.shield,
         clipboard: join.clipboard,
@@ -94,6 +97,8 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         record: false,
         // Set by `tools_catalog` from `[wallpaper]` alone (no syscall), which sets it.
         wallpaper: false,
+        // The session's compositor is the daemon's, added by `tools_context`.
+        binds: false,
     }
 }
 
@@ -106,6 +111,85 @@ pub fn wallpaper_folder(w: &WallpaperConfig, home: Option<&Path>) -> Option<Path
         return None;
     }
     resolve_dir(&w.dir, home)
+}
+
+/// The dialect of `binds/` that reads the session's compositor: Mango and Sway; none for another
+/// (the Keybindings built-in then hides).
+pub(crate) fn binds_dialect(c: Option<&Compositor>) -> Option<Dialect> {
+    match c? {
+        Compositor::Mango { .. } => Some(Dialect::Mango),
+        Compositor::Sway { .. } => Some(Dialect::Sway),
+        Compositor::Hyprland { .. } | Compositor::Niri { .. } => None,
+    }
+}
+
+/// Why `--binds` is refused on this compositor: none for Mango and Sway, the documented text for
+/// any other (or none detected).
+pub(crate) fn binds_refusal(c: Option<&Compositor>) -> Option<&'static str> {
+    binds_dialect(c).is_none().then_some("no key bindings source for this compositor")
+}
+
+/// At most this many entries of a folder `list` gives (an include glob's): the walk reads
+/// `binds::MAX_FILES` of them at most anyway.
+const MAX_LISTED: usize = 256;
+
+/// The disk, for `binds::load`: the Keybindings level's one read, synchronous, when it opens. A
+/// path starting with `~` (Mango's `source=~/…`) is under `home`.
+pub(crate) struct RealFiles {
+    pub(crate) home: Option<PathBuf>,
+}
+
+impl RealFiles {
+    /// `path` with a leading `~` component replaced by the home folder (kept as is without one).
+    fn expand(&self, path: &Path) -> PathBuf {
+        match (path.strip_prefix("~"), &self.home) {
+            (Ok(rest), Some(home)) => home.join(rest),
+            _ => path.to_path_buf(),
+        }
+    }
+}
+
+impl Files for RealFiles {
+    /// At most `max` bytes of a regular file. Opened without blocking and checked once open, so a
+    /// FIFO, a device or a folder named in a config is refused, never waited on nor read forever.
+    fn read(&self, path: &Path, max: usize) -> Option<String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(self.expand(path)).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(u64::try_from(max).unwrap_or(u64::MAX)).read_to_end(&mut bytes).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The folder's entries, sorted (at most MAX_LISTED, the first by name): kept in a heap of
+    /// MAX_LISTED while the folder is walked, so a huge folder never grows a list.
+    fn list(&self, dir: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(self.expand(dir)) else { return Vec::new() };
+        let mut first = std::collections::BinaryHeap::with_capacity(MAX_LISTED + 1);
+        for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            first.push(path);
+            if first.len() > MAX_LISTED {
+                // The greatest name goes: the heap keeps the first ones.
+                first.pop();
+            }
+        }
+        first.into_sorted_vec()
+    }
+}
+
+/// The session's compositor's key bindings: `[tools] binds_files`, else its own config, read
+/// through `files` (the one read of a Keybindings open). An unknown compositor reads nothing.
+pub(crate) fn load_binds(
+    compositor: Option<&Compositor>,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    binds_files: &[String],
+    files: &dyn Files,
+) -> binds::Binds {
+    let Some(dialect) = binds_dialect(compositor) else { return binds::Binds::default() };
+    let roots = binds::roots(dialect, var, binds_files);
+    binds::load(dialect, &roots, files)
 }
 
 /// Whether the program of `argv` (its first element) is on `path_dirs`; false for an empty argv.
@@ -263,7 +347,8 @@ pub fn builtin_argv(b: &Builtin, c: &Commands) -> Result<Option<Vec<String>>, St
         | BuiltinAction::Shield
         | BuiltinAction::Kill
         | BuiltinAction::Capture(_)
-        | BuiltinAction::Wallpaper => return Ok(None),
+        | BuiltinAction::Wallpaper
+        | BuiltinAction::Binds => return Ok(None),
     };
     let Some(program) = argv.first() else { return Err("nothing to run".to_string()) };
     if !has_program(c.path_dirs, program) {
@@ -402,7 +487,9 @@ impl App {
             nmap: has_program(&path_dirs, "nmap"),
         };
         let tools = &self.bar.config.captures;
+        let compositor = alpheus_common::compositor::detect(|k| std::env::var_os(k));
         let mut c = Context {
+            binds: binds_dialect(compositor.as_ref()).is_some(),
             captures: self.screencopy.is_some(),
             recording: self.capture.is_recording(),
             annotate: program_is_present(&tools.annotate, &path_dirs),
@@ -480,6 +567,20 @@ impl App {
         if let Some(job) = job {
             self.tools_offer(job);
         }
+    }
+
+    /// `alpheus-launch --binds`: the Tools model opened with the panel sized, then its Keybindings
+    /// level opened alone on the compositor's bindings (read now, once) before the box is first
+    /// drawn (a draw waits for the configure). No states read: the panel's root is never reached
+    /// from here.
+    pub(crate) fn launcher_open_binds(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+        let config = crate::launcher::host::read_config(&paths::config_dir(), &mut |m| log(m));
+        let now = crate::launcher::host::unix_now();
+        let history = crate::launcher::host::load_history(&config, now);
+        let (catalog, _folder) = self.tools_catalog(&config, true);
+        let model = Launcher::for_tools(config, catalog, history, now);
+        self.launcher_open(qh, model, None, requested_at);
+        self.tools_open_binds(true);
     }
 
     /// The generation of the open launcher, when one is open.
@@ -631,7 +732,8 @@ impl App {
             BuiltinAction::Notes => Some(self.notes_verb(qh, &Request::Notes)),
             BuiltinAction::Timer => Some(self.timer_verb(&Request::Timer(TimerVerb::Popup))),
             // Chosen without a duration or a name (never from the menu: they have choices): nothing to do.
-            BuiltinAction::Shutdown | BuiltinAction::Wallpaper => None,
+            // The Keybindings level opens in the box (`Outcome::OpenBinds`), never handed out to run.
+            BuiltinAction::Shutdown | BuiltinAction::Wallpaper | BuiltinAction::Binds => None,
             BuiltinAction::Clipboard => {
                 tools::join::open_clipboard(self, qh);
                 None
@@ -691,6 +793,24 @@ impl App {
         if spawn_builtin(self.exec.as_ref(), &paths::runtime_dir(), &path_dirs, argv).is_err() {
             log(&format!("tools: built-in {id} could not start"));
         }
+    }
+
+    /// Enter on Keybindings (`Outcome::OpenBinds`), or `--binds` (`alone`: nothing beneath the
+    /// level): the compositor's bindings read now, at once and once, then the level opens on them.
+    /// Logged in counts only.
+    pub(crate) fn tools_open_binds(&mut self, alone: bool) {
+        let Some(open) = self.launcher.as_mut() else { return };
+        let var = |k: &str| std::env::var_os(k);
+        let compositor = alpheus_common::compositor::detect(var);
+        let files = RealFiles { home: var("HOME").map(PathBuf::from).filter(|h| h.is_absolute()) };
+        let b = load_binds(compositor.as_ref(), var, &open.model.config.tools.binds_files, &files);
+        binds::notes(&b, &mut |m| log(m));
+        if alone {
+            open.model.open_binds_alone(b);
+        } else {
+            open.model.open_binds(b);
+        }
+        self.launcher_redraw();
     }
 
     /// The emoji picker: the apps launcher with the `:` prefix typed.

@@ -2765,9 +2765,20 @@ fn at_rest_no_wakeups_with_the_keyboard_module() {
     }
 }
 
-/// The power menu's bars: the button and the clock, then the clock alone (the baseline).
-const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n";
+/// The power menu's bars: the button and the clock, with two `[[power.entry]]` rows after the
+/// default three (their command, `true`, never runs: no test activates them), then the clock alone
+/// (the baseline).
+const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n[[power.entry]]\nname = \"Row one\"\nrun = [\"true\"]\n[[power.entry]]\nname = \"Row two\"\nrun = [\"true\"]\nconfirm = true\n";
 const NO_POWER_BAR: &str = "modules = [\"clock\"]\n";
+/// `POWER_BAR` with countdowns: 5 s for the rows that ask, and 5 s of its own for "Row one" (the
+/// fourth row), which counts down at its first press. Reboot and Power off run `true`, so a
+/// countdown that reaches its end runs nothing that matters (the harness PATH has neither
+/// `systemctl` nor `loginctl` anyway).
+const POWER_COUNTDOWN_BAR: &str = "modules = [\"power\", \"clock\"]\n[quick]\nreboot = [\"true\"]\npoweroff = [\"true\"]\n\
+                                   [power]\ncountdown = 5\n[[power.entry]]\nname = \"Row one\"\nrun = [\"true\"]\ncountdown = 5\n\
+                                   [[power.entry]]\nname = \"Row two\"\nrun = [\"true\"]\nconfirm = true\n";
+/// The menu's fourth row ("Row one"), cell 4: as `POWER_OFF_ROW`, one row lower.
+const ROW_ONE: (u32, u32) = (POWER_OFF_ROW.0, POWER_OFF_ROW.1 + 22);
 /// The power button: cell 1 of the bar.
 const POWER_BUTTON: (u32, u32) = (12, 10);
 /// The menu's third row (Power off, with the default `[quick]`), cell 4: the menu hangs from cell 1
@@ -2937,14 +2948,14 @@ fn power_menu_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
-/// Once the menu closed — the last time with its question pending — no timer, no
-/// wake-up, no spin.
+/// Once the menu closed — once with its question pending, then once after a countdown cancelled
+/// by Escape — no timer, no wake-up, no spin.
 #[test]
-#[ignore = "headless sway and dbus-daemon (nix develop)"]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn at_rest_no_wakeups_after_the_power_menu() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("power-rest");
-    let (sway, _hypr, d) = start("power-rest", 1, &bus, None, Some(POWER_BAR), PwDump::Silent);
+    let (sway, _hypr, d) = start("power-rest", 1, &bus, None, Some(POWER_COUNTDOWN_BAR), PwDump::Silent);
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     for n in 1..=3 {
         power_click(&sway, &d, "power menu shown", n);
@@ -2960,8 +2971,18 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     sway.click(POWER_OFF_ROW.0, POWER_OFF_ROW.1, "button1"); // the question asked, by the mouse alone
     power_asking(&sway, &d); // a click before the map would dismiss the menu and ask nothing
     power_click(&sway, &d, "popup closed", 4);
-    assert_eq!(d.count("power menu shown"), 4, "{:?}", d.log());
-    assert_eq!(d.count("popup closed (outside click)"), 4, "the 4th close is the button's own second click: {:?}", d.log());
+    // A countdown, cancelled by Escape: its one-second timer must go with it, and the menu too.
+    power_click(&sway, &d, "power menu shown", 5);
+    std::thread::sleep(Duration::from_millis(300));
+    sway.click(ROW_ONE.0, ROW_ONE.1, "button1"); // Row one counts down at once
+    assert!(d.wait_for("power: countdown entry 1", DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("power: countdown cancelled", DELAY), "{:?}", d.log());
+    power_click(&sway, &d, "popup closed", 5);
+    assert_eq!(d.count("power: entry 1"), 0, "the cancelled row never ran: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // wtype's virtual keyboard going settles (one late wake-up)
+    assert_eq!(d.count("power menu shown"), 5, "{:?}", d.log());
+    assert_eq!(d.count("popup closed (outside click)"), 5, "the closes are the button's own second click: {:?}", d.log());
     assert_eq!(d.count("popup closed (dismissed)"), 0, "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(300));
     let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
@@ -2970,8 +2991,37 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after the power menu (10 s): {delta} whole daemon, {main_delta} loop thread");
-    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's timer went with the menu");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's and the countdown's timer went with the menu");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The most loop-thread wake-ups over a 5 s countdown: two a second, each tick's own and the
+/// compositor's reply to the repaint it asks (its buffer release), plus the end's. 11 measured
+/// in each of three runs (2026-11-27, release); a timer armed every 100 ms gave 56.
+const COUNTDOWN_WAKEUPS_MAX: u64 = 12;
+
+/// A 5 s countdown left to run: the loop thread wakes once a second for it (its tick, and the
+/// compositor's reply to the repaint), never more, and the row runs at its end.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn power_countdown_wakes_once_a_second() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("power-count");
+    let (sway, _hypr, d) = start("power-count", 1, &bus, None, Some(POWER_COUNTDOWN_BAR), PwDump::Silent);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    away_from_the_minute(Duration::from_secs(15)); // no clock tick inside the window
+    power_click(&sway, &d, "power menu shown", 1);
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    sway.click(ROW_ONE.0, ROW_ONE.1, "button1");
+    assert!(d.wait_for("power: countdown entry 1", DELAY), "{:?}", d.log());
+    let (before, ticks, began) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks(), Instant::now());
+    assert!(d.wait_for("popup closed (activated)", Duration::from_secs(10)), "{:?}", d.log());
+    let (wakeups, took) = (d.main_thread_wakeups().saturating_sub(before), began.elapsed());
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), took, "the countdown");
+    eprintln!("loop-thread wake-ups over a 5 s countdown: {wakeups} in {took:?}");
+    assert!(d.wait_for("power: entry 1", DELAY), "the row ran at its end: {:?}", d.log());
+    assert!(took >= Duration::from_millis(4500), "ran after {took:?}, before its 5 s");
+    assert!(wakeups <= COUNTDOWN_WAKEUPS_MAX, "{wakeups} loop-thread wake-ups over a 5 s countdown");
 }
 
 /// The resources popup measurements' bar: the module alone (a one-cell-wide click target at the
@@ -4951,6 +5001,154 @@ fn tools_pss_open_and_closed() {
     assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
     assert!(again_pools <= closed_pools + 128, "the pools closed again {again_pools} KB vs {closed_pools} KB: the box's pool kept");
     assert_eq!(d.threads(), threads, "no thread left behind");
+}
+
+/// One Keybindings cycle: `--tools`, its letter on the pinned Keybindings (the level reads the
+/// 100-bind fixture), Esc back to the panel, the box closed by the verb. Returns the reading taken
+/// with the level open and drawn: (PSS, anonymous) in KB.
+fn binds_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "-k", "y", "-s", "3000", "-k", "Escape", "-s", "10000"]);
+    assert!(d.wait_for_count("tools: binds shown (100 binds, 5 groups)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
+    let open = (d.pss_kb(), anon_kb(d));
+    eprintln!("binds shm pools open (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    // Past the Escape: back on the panel, then closed.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (toggle)", n, DELAY), "{:?}", d.log());
+    drop(typing);
+    std::thread::sleep(Duration::from_secs(1));
+    open
+}
+
+/// The Keybindings level on Mango (a FakeMango is the compositor read) with `binds_files` naming
+/// an invented 100-bind file in 5 groups: open, Esc, closed, 20 cycles. The bindings are read at
+/// each open and dropped with their level: the bounds are on the daemon's anonymous memory, as
+/// for `tools_pss_open_and_closed`.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed() {
+    binds_cost(false, false);
+}
+
+/// The same on Sway (the harness's sway is the compositor read), the 100 binds written in Sway's
+/// dialect with a `set` variable.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed_on_sway() {
+    binds_cost(true, false);
+}
+
+/// The same on Mango, the level opened alone by `alpheus-launch --binds` and closed by a second
+/// `--binds`: the verb's own cost, against `binds_pss_open_and_closed` on a base without it.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn binds_pss_open_and_closed_by_the_verb() {
+    binds_cost(false, true);
+}
+
+/// One `--binds` cycle: the verb opens the level alone (the 100-bind fixture read), the reading
+/// is taken with it drawn, a second `--binds` past the debounce closes the box. Returns that
+/// reading: (PSS, anonymous) in KB.
+fn binds_verb_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64) {
+    assert_eq!(launcher(sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("tools: binds shown (100 binds, 5 groups)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
+    let open = (d.pss_kb(), anon_kb(d));
+    eprintln!("binds shm pools open (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Binds), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (toggle)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    open
+}
+
+/// `binds_pss_open_and_closed`, on Sway's dialect when `on_sway`, else on Mango's; each cycle
+/// through the Tools menu, or through `--binds` when `by_verb`.
+fn binds_cost(on_sway: bool, by_verb: bool) {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start(if on_sway { "binds-cost-sway" } else { "binds-cost" }, 1);
+    let mango = FakeMango::start(&sway.runtime);
+    let file = sway.runtime.join("binds.conf");
+    let mut text = String::from("# Invented key bindings for the memory test.\n");
+    if on_sway {
+        text.push_str("set $mod Mod4\n");
+    }
+    for g in 0..5 {
+        text.push_str(&format!("# ── Group {g} ──\n"));
+        for k in 0..20 {
+            text.push_str(&if on_sway {
+                format!("bindsym $mod+Shift+k{g}{k} exec foo-term --class tool-{g}-{k} # Open tool {g} {k}\n")
+            } else {
+                format!("bind=SUPER+SHIFT,k{g}{k},spawn,foo-term --class tool-{g}-{k} # Open tool {g} {k}\n")
+            });
+        }
+    }
+    std::fs::write(&file, &text).unwrap();
+    let toml = format!(
+        "[tools]\nroot = [\"tools.binds\"]\nkeys = {{ \"tools.binds\" = \"y\" }}\nbinds_files = [{:?}]\n",
+        file.display().to_string()
+    );
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(AT_REST_NO_RESOURCES),
+            launcher_toml: Some(&toml),
+            backend: if on_sway { Backend::Sway } else { Backend::Mango(&mango.socket) },
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    let cycle = if by_verb { binds_verb_cycle } else { binds_cycle };
+    let threads = d.threads();
+    let cold = (d.pss_kb(), anon_kb(&d));
+    let first_open = cycle(&sway, &d, 1);
+    let closed = (d.pss_kb(), anon_kb(&d));
+    eprintln!("binds shm pools closed (KB): PSS {}, mapped {}", d.pss_and_shm_kb().1, d.shm_size_kb());
+    let open = cycle(&sway, &d, 2);
+    let again = (d.pss_kb(), anon_kb(&d));
+    // A reading half way through the 20 more: a plateau or a trend.
+    for n in 3..=12 {
+        cycle(&sway, &d, n);
+    }
+    let ten = (d.pss_kb(), anon_kb(&d));
+    for n in 13..=22 {
+        cycle(&sway, &d, n);
+    }
+    let cycled = (d.pss_kb(), anon_kb(&d));
+    eprintln!("binds anonymous after 10 more cycles (KB): {} ({:+}); PSS {}", ten.1, ten.1 as i64 - again.1 as i64, ten.0);
+    eprintln!(
+        "binds PSS (KB): cold {}, first open {}, closed {}, open {} (+{}), closed again {}, after 20 more {}",
+        cold.0,
+        first_open.0,
+        closed.0,
+        open.0,
+        open.0.saturating_sub(closed.0),
+        again.0,
+        cycled.0
+    );
+    eprintln!(
+        "binds anonymous (KB): cold {}, closed {}, open {} ({:+}), closed again {} ({:+}), after 20 more {} ({:+}); threads {threads} -> {}",
+        cold.1,
+        closed.1,
+        open.1,
+        open.1 as i64 - closed.1 as i64,
+        again.1,
+        again.1 as i64 - closed.1 as i64,
+        cycled.1,
+        cycled.1 as i64 - again.1 as i64,
+        d.threads()
+    );
+    assert!(again.1 <= closed.1 + 256, "closed again {} KB anon vs {} KB before: more than 256 KB kept", again.1, closed.1);
+    assert!(cycled.1 <= again.1 + 128, "20 more cycles: {} KB anon vs {} KB: more than 128 KB kept", cycled.1, again.1);
+    assert_eq!(d.threads(), threads, "no thread left behind");
+    assert!(!d.log().iter().any(|l| l.contains("tools: binds cut") || l.contains("not understood")), "{:?}", d.log());
 }
 
 /// A `choices_cmd` printing 2,000 lines of 200 bytes (400 KB: past the reader's 256 KiB cap, so

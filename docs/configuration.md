@@ -68,7 +68,7 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[bindings.<module>]`](#bindingsmodule), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[bindings.<module>]`](#bindingsmodule), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[power]`](#power), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
@@ -302,6 +302,35 @@ the ⏻ menu, the quick panel and the control center's Power tab share `lock`, `
 button there too). See
 [the quick settings panel](features/quick-settings.md) and [the power menu](features/power.md).
 
+### `[power]`
+
+The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as before.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `countdown` | integer (seconds) | `0` | 0 to 30 | Seconds counted after the confirming activation of a row that asks (Reboot, Power off, a `confirm` row) before it runs; 0 is off. Esc, any key but Enter and Space, another row, or closing the menu cancels it. |
+| `builtins` | bool | `true` | | `false` hides the four fixed rows (Lock, Log out, Reboot, Power off) from the ⏻ menu only; the quick panel keeps its session buttons. |
+
+`[[power.entry]]`: a row of your own, after the fixed ones in file order, **at most 8**.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `name` | string | required | 1 to 24 characters, not blank, no control character | The row's label. |
+| `icon` | string | absent (`•`) | exactly one character | The row's glyph. |
+| `run` | command | required | not empty, non-blank program, no NUL, no sleep word | Run as given, never through a shell, never waited for. |
+| `confirm` | bool | `false` | | The row asks first, as Reboot and Power off do: a second activation 0.4 s to 3 s later runs it. |
+| `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one, whether it asks or not (a row that does not ask counts from its activation); 0 turns it off for the row. |
+
+A `run` holding `suspend`, `hibernate`, `hybrid-sleep`, `dpms`, niri's `power-off-monitors` or
+`wlopm` anywhere in any argument, in any case, makes `bar.toml` invalid: alpheus never handles sleep
+or the screens' power. The check reads the stem `dpm`, so any argument containing it is refused, a
+path such as `~/dpm-notes/quit` too; the message then says `an argument of run contains "dpm"`.
+Sway's `output … power off` is not refused (its words are too common to spot); keep such a row out
+of `[power]` yourself. The ⏻ button and `alpheus-launch --power` exist when any row does, fixed or
+yours. A message about a row names it by its position (`power.entry 2: …`) and the word found,
+never by its name or command, and so does the log (`power: entry 2`). See [the power
+menu](features/power.md).
+
 ### `[timer]`
 
 | Key | Type | Default | Bounds | Meaning |
@@ -511,6 +540,15 @@ kbd_backlight_dir = "/sys/class/leds"       # where LEDs are listed (absolute); 
 airplane = true                             # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
 rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (absolute); read when the panel opens, never written
 
+[power]
+countdown = 0        # seconds counted after a confirming activation (0 to 30); 0: off
+builtins = true      # false hides the four [quick] rows from the ⏻ menu
+# [[power.entry]]    # a row of your own after the fixed ones, at most 8; never suspend, hibernate, hybrid-sleep, dpms, power-off-monitors or wlopm
+# name = "Quit session"            # 1 to 24 characters
+# icon = "•"                       # one character; absent: •
+# run = ["my-session-quit"]        # argv, run as given, never through a shell
+# confirm = false                  # true: asks first, a second activation 0.4 s to 3 s later runs it
+
 [timer]
 countdown = 10       # minutes, the popup's Timer row at start (1 to 180)
 work = 25            # Pomodoro, minutes (1 to 180)
@@ -622,6 +660,7 @@ bound the first ones are kept, with one log line of counts.
 | `panel` | bool | `true` | | `false`: Super+X opens on the category list instead of the command panel, with no letters. |
 | `keys` | table of id to letter | `{}` | each letter one lowercase ASCII letter, `a` to `z` | The letter that runs a built-in from the command panel, for example `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored. |
 | `reload` | command | `[]` | non-blank program | The "Reload the bar" built-in's command, for example `["my-reload"]`; `[]` hides it. |
+| `binds_files` | list of paths | `[]` | at most 8, none blank, no control character, each absolute or starting with `~/` | The files the Keybindings level reads (each with the files it includes), a leading `~/` being your home folder; `[]`: the compositor's own config (Mango `$XDG_CONFIG_HOME/mango/config.conf`, else `~/.config/mango/config.conf`; Sway `$XDG_CONFIG_HOME/sway/config`, else `~/.config/sway/config`). Read only, when the level opens. |
 
 `[tools.builtin]`:
 
@@ -682,6 +721,7 @@ root = []            # built-in ids also listed at the root, first, in this orde
 panel = true         # false: Super+X opens on the category list, with no letters
 keys = {}            # built-in id to the letter that runs it from the panel, e.g. { "quick.wifi" = "w" }; an unknown id is logged and ignored
 reload = []          # the "Reload the bar" built-in's argv, e.g. ["my-reload"]; [] hides it
+binds_files = []     # the files Keybindings reads (at most 8, absolute or "~/…"); [] reads the compositor's own config
 
 [tools.builtin]
 usb_reset = ["sh", "-c", "sudo modprobe -r xhci_pci && sudo modprobe xhci_pci"]   # "Reset USB (xHCI)", in terminal_hold after a second Enter; [] hides it
