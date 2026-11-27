@@ -1500,6 +1500,60 @@ mod shapes {
         }
     }
 
+    /// The pixels `b` with its last shape's glyph paints differently from `b` without it.
+    fn glyph_pixels(p: &mut Fonts, b: &Boxed, scale: i32) -> Vec<(u32, u32)> {
+        let mut bare = b.clone();
+        if let Some(sh) = bare.shapes.last_mut() {
+            sh.glyph = None;
+        }
+        let (with, without) = (Painted::new(p, b, scale), Painted::new(p, &bare, scale));
+        (0..with.h).flat_map(|y| (0..with.w).map(move |x| (x, y))).filter(|&(x, y)| with.at(x, y) != without.at(x, y)).collect()
+    }
+
+    /// The span of `ink` on each axis, ends inclusive.
+    fn span(ink: &[(u32, u32)]) -> ((u32, u32), (u32, u32)) {
+        let xs = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
+        (xs, (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap()))
+    }
+
+    /// A tile's glyph is drawn from the same face at a larger size than the text's (the P1 render's
+    /// tiles: no second font, one `FontSystem`), and a glyph too wide for that keeps the text's
+    /// size and stays inside the tile's ring.
+    #[test]
+    fn a_tile_glyph_is_larger_than_the_text_and_stays_inside_its_tile() {
+        let mut p = fonts();
+        let wifi = '\u{f05a9}';
+        for scale in [1, 2] {
+            let mut text = blank(10, 4);
+            text.rows[1].write(2, 10, &wifi.to_string(), Style::NORMAL);
+            let in_text = Painted::new(&mut p, &text, scale);
+            let ((x0, x1), (y0, y1)) = in_text.cells(&p, 1, 2, 1, 1);
+            let cell: Vec<(u32, u32)> =
+                (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| in_text.at(x, y) != distinct().popup_bg).collect();
+            let mut b = blank(10, 4);
+            b.shapes.push(Shape { glyph: Some((wifi, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Tile) });
+            let tile = glyph_pixels(&mut p, &b, scale);
+            let (c, t) = (span(&cell), span(&tile));
+            let (ch, th) = (c.1.1 - c.1.0 + 1, t.1.1 - t.1.0 + 1);
+            assert!(th * 10 >= ch * 14, "scale {scale}: the tile's glyph {th} px tall, the text's {ch}: at least 1.4 times");
+            // A tile two cells wide has no room for a zoomed icon: it keeps the text's size.
+            for (glyph, cols) in [('☕', 3), (wifi, 3), (crate::launcher::tools::catalog::FOLDER, 3), (wifi, 2), ('☕', 2)] {
+                let mut b = blank(10, 4);
+                b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, cols, 2, ShapeKind::Tile) });
+                let s = Painted::new(&mut p, &b, scale);
+                let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 2, usize::from(cols), 2);
+                let e = scale as u32;
+                let ((lx, hx), (ly, hy)) = span(&glyph_pixels(&mut p, &b, scale));
+                // Inside the ring (one px) with a px to spare, and the chip's inset.
+                assert!(lx >= x0 + 2 * e && hx < x1 - 2 * e, "scale {scale}, {glyph:?} in {cols} cells: across {lx}..={hx} in {x0}..{x1}");
+                assert!(
+                    ly >= y0 + (CHIP_INSET + 2) * e && hy < y1 - (CHIP_INSET + 2) * e,
+                    "scale {scale}, {glyph:?}: down {ly}..={hy} in {y0}..{y1}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_wide_glyph_is_drawn_in_a_tile() {
         let (mut p, r) = (fonts(), distinct());

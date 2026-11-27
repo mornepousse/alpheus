@@ -60,6 +60,9 @@ const OFF_TRACK_ALPHA: u16 = 70;
 /// How much of `fg_dim` a tool's tile's ring takes over the surface under it, in percent (its fill
 /// stays `pill_bg`, dark enough under its glyph on every surface).
 const TILE_RING_ALPHA: u16 = 70;
+/// How many times the text's size a tile's glyph is drawn at, from the same face (the P1 render's
+/// tiles), when it fits.
+const TILE_GLYPH_ZOOM: f32 = 1.75;
 /// Logical px between a chip or a switch's track and the top and bottom of its rows.
 const CHIP_INSET: u32 = 2;
 /// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
@@ -176,7 +179,10 @@ struct ShapedGlyph {
 /// nothing extra in `glyph` and needs no change to `Grid::write`'s column
 /// accounting: the cell stays exactly as wide as the character's own
 /// width already made it, just with nothing painted into it.
-fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool) -> Vec<ShapedGlyph> {
+///
+/// `zoom` rasterises the glyph that many times larger from the same face and shaping (a tile's
+/// glyph): cosmic-text scales the size in its `CacheKey`, so no second buffer or font system.
+fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool, zoom: f32) -> Vec<ShapedGlyph> {
     let mut s = [0u8; 4];
     buffer.set_text(ch.encode_utf8(&mut s), &attrs(family, bold), Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
@@ -186,7 +192,7 @@ fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold:
             if gl.glyph_id == 0 {
                 continue;
             }
-            let phys = gl.physical((-gl.x, 0.0), 1.0);
+            let phys = gl.physical((-gl.x * zoom, 0.0), zoom);
             shaped.push(ShapedGlyph { cache_key: phys.cache_key, dx: phys.x, y: run.line_y as i32 + phys.y, color_opt: gl.color_opt });
         }
     }
@@ -214,7 +220,8 @@ pub struct Fonts {
     /// a scale change (`set_scale`), since a shape's `cache_key` and
     /// physical offsets are only valid for the metrics they were measured
     /// at.
-    shapes: HashMap<(char, bool), Rc<[ShapedGlyph]>>,
+    /// A tile's glyph, drawn larger (`TILE_GLYPH_ZOOM`), is memoized apart: (char, bold, zoomed).
+    shapes: HashMap<(char, bool, bool), Rc<[ShapedGlyph]>>,
     /// The bar shapes' corner masks, made on first use per radius and scale.
     masks: MaskCache,
 }
@@ -1021,9 +1028,10 @@ impl Fonts {
     }
 
     /// `ch` in `ink`, its inked pixels centred in x ∈ [x.0, x.1) × y ∈ [y.0, y.1) (a tile's glyph,
-    /// whatever its width: a wide one's whole ink is centred). Its pixels are read twice from the
-    /// glyph cache, once to measure them and once to blend them. Whether it inked anything: a
-    /// character no loaded face has draws nothing.
+    /// whatever its width: a wide one's whole ink is centred), `TILE_GLYPH_ZOOM` times the text's
+    /// size, or the text's when that would not fit inside the tile's ring with a pixel to spare.
+    /// Its pixels are read twice from the glyph cache, once to measure them and once to blend
+    /// them. Whether it inked anything: a character no loaded face has draws nothing.
     #[allow(clippy::too_many_arguments)]
     fn centred_glyph(&mut self, ch: char, x: (u32, u32), y: (u32, u32), ink: Rgb, px: &mut [u8], width: u32, height: u32) -> bool {
         if self.cache.image_cache.len() >= MAX_CACHE {
@@ -1032,19 +1040,20 @@ impl Fonts {
         }
         let Rgb(r, g, b) = ink;
         let base = Color::rgb(r, g, b);
-        let shaped = self.shaped(ch, false);
-        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for g in shaped.iter() {
-            self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
-                if c.a() > 0 {
-                    (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
-                    (top, bottom) = (top.min(g.y + dy), bottom.max(g.y + dy));
-                }
-            });
-        }
-        if left > right {
-            return false;
-        }
+        // Room inside the ring (one px) and a px more on each side, and the chip's inset.
+        let e = self.scale.max(1) as u32;
+        let room = (x.1.saturating_sub(x.0).saturating_sub(4 * e), y.1.saturating_sub(y.0).saturating_sub(2 * (CHIP_INSET + 2) * e));
+        let fits = |(l, t, r, b): (i32, i32, i32, i32)| i64::from(r - l) < i64::from(room.0) && i64::from(b - t) < i64::from(room.1);
+        let zoomed = self.shaped_at(ch, false, true);
+        let (shaped, (left, top, right, bottom)) = match self.ink_bounds(&zoomed, base) {
+            None => return false,
+            Some(bounds) if fits(bounds) => (zoomed, bounds),
+            Some(_) => {
+                let plain = self.shaped(ch, false);
+                let Some(bounds) = self.ink_bounds(&plain, base) else { return false };
+                (plain, bounds)
+            }
+        };
         // Twice the offset: the rectangle's centre less the ink's, both doubled to stay in integers.
         let span = |a: u32, b: u32| i64::from(a) + i64::from(b);
         let shift = |rect: i64, lo: i32, hi: i32| i32::try_from((rect - i64::from(lo) - i64::from(hi) - 1).div_euclid(2)).unwrap_or(0);
@@ -1118,15 +1127,36 @@ impl Fonts {
     /// rasterized glyph cache does.
     /// Shared, not copied: a hit costs a reference count, never an allocation per glyph drawn.
     fn shaped(&mut self, ch: char, bold: bool) -> Rc<[ShapedGlyph]> {
-        if let Some(s) = self.shapes.get(&(ch, bold)) {
+        self.shaped_at(ch, bold, false)
+    }
+
+    /// `shaped`, at the text's size or, `zoomed`, a tile glyph's (`TILE_GLYPH_ZOOM`).
+    fn shaped_at(&mut self, ch: char, bold: bool, zoomed: bool) -> Rc<[ShapedGlyph]> {
+        if let Some(s) = self.shapes.get(&(ch, bold, zoomed)) {
             return Rc::clone(s);
         }
         if self.shapes.len() >= MAX_CACHE {
             self.shapes.clear();
         }
-        let s: Rc<[ShapedGlyph]> = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold).into();
-        self.shapes.insert((ch, bold), Rc::clone(&s));
+        let zoom = if zoomed { TILE_GLYPH_ZOOM } else { 1.0 };
+        let s: Rc<[ShapedGlyph]> = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold, zoom).into();
+        self.shapes.insert((ch, bold, zoomed), Rc::clone(&s));
         s
+    }
+
+    /// The inked pixels' bounds (left, top, right, bottom, inclusive) of `shaped` drawn at the
+    /// origin, None when it inks nothing.
+    fn ink_bounds(&mut self, shaped: &[ShapedGlyph], base: Color) -> Option<(i32, i32, i32, i32)> {
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for g in shaped {
+            self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
+                if c.a() > 0 {
+                    (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
+                    (top, bottom) = (top.min(g.y + dy), bottom.max(g.y + dy));
+                }
+            });
+        }
+        (left <= right).then_some((left, top, right, bottom))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -281,7 +281,11 @@ shapes (`list::ShapeKind`: `Card` for the detail card, `Tile` for a tool's tile,
 capsule, a tab or the search field, `Band` for the selection over a tool's two lines, `Switch` for a
 known state), drawn in pixels under the cells. A tile is `pill_bg` inside a ring of `fg_dim` over
 whatever it lies on, as an off switch's track is: it stands out of the list, the band and the card
-alike (a luminance ratio of 1.5 at least), and its glyph keeps 3:1 on its fill in every hue. One font, one size: the card's title is bold, not larger.
+alike (a luminance ratio of 1.5 at least), and its glyph keeps 3:1 on its fill in every hue. One
+font, one size for the text: the card's title is bold, not larger. A tile's glyph alone is drawn
+larger, 1.75 times, from the same face and the same shaping (cosmic-text scales the size in its
+glyph cache's key; no second font or font system), and at the text's size when that would not fit
+inside its ring.
 `launcher/matching.rs`'s `holds_every_word` decides which chip a query picks.
 
 The kill list is a mode of the launcher (`Mode::Processes`), not a file of the Tools folder:
