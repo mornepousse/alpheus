@@ -1237,7 +1237,7 @@ fn snapshot_with_shapes(b: &Boxed) -> String {
         .shapes
         .iter()
         .map(|s| {
-            let glyph = s.glyph.map_or_else(String::new, |(c, ink)| format!(" glyph {c:?} in {ink:?}"));
+            let glyph = s.glyph.map_or_else(String::new, |(c, _, ink)| format!(" glyph {c:?} in {ink:?}"));
             format!("{:?} at row {} col {} width {} rows {}{glyph}", s.kind, s.row, s.col, s.width, s.rows)
         })
         .collect();
@@ -1290,7 +1290,7 @@ fn tile_glyphs(b: &Boxed) -> (Vec<Option<char>>, bool) {
     let tiles = tiles(b);
     let blank =
         tiles.iter().all(|t| b.rows[t.row..t.row + 2].iter().all(|r| r.text().chars().skip(usize::from(t.col)).take(3).all(|c| c == ' ')));
-    (tiles.iter().map(|t| t.glyph.map(|(c, _)| c)).collect(), blank)
+    (tiles.iter().map(|t| t.glyph.map(|(c, ..)| c)).collect(), blank)
 }
 
 #[test]
@@ -1301,6 +1301,20 @@ fn a_user_entry_without_icon_shows_its_category_s_icon() {
     let (glyphs, blank) = tile_glyphs(&rows);
     assert_eq!(glyphs, [Some('N'), Some('N')], "the list's tile and the card's: {}", snapshot_with_shapes(&rows));
     assert!(blank, "the tiles' cells stay blank: {}", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn an_entry_s_icon_falls_back_to_its_category_s_then_the_generic_glyph() {
+    use crate::launcher::tools::catalog::FOLDER;
+    let fallbacks = |cfg: &str| {
+        let (l, b) = panel_box(cfg);
+        let rows = draw_in(&l, &b);
+        tiles(&rows).iter().map(|t| t.glyph.map(|(_, f, _)| f)).collect::<Vec<_>>()
+    };
+    let nix = "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Nix\"\nicon = \"N\"\n[[tools.entry]]\nname = \"Fire\"\nicon = \"🔥\"\ncategory = \"Nix\"\nrun = [\"x\"]\n";
+    assert_eq!(fallbacks(nix), [Some('N'), Some('N')], "the category's icon behind the entry's");
+    let root = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Fire\"\nicon = \"🔥\"\nrun = [\"x\"]\n";
+    assert_eq!(fallbacks(root), [Some(FOLDER), Some(FOLDER)], "no category: the generic glyph");
 }
 
 #[test]

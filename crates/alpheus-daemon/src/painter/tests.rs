@@ -1401,10 +1401,14 @@ mod shapes {
     /// A pixel rectangle: its x span, its y span (ends exclusive).
     type Rect = ((u32, u32), (u32, u32));
 
-    /// A 3 × 2 tile on cells 2..5 × rows 1..3 of a blank box, carrying `glyph` in cyan, at `scale`.
+    /// The fallback the tiles of these tests carry.
+    const FALLBACK: char = 'X';
+
+    /// A 3 × 2 tile on cells 2..5 × rows 1..3 of a blank box, carrying `glyph` (`FALLBACK` behind
+    /// it) in cyan, at `scale`.
     fn tile(p: &mut Fonts, glyph: char, scale: i32) -> (Painted, Rect) {
         let mut b = blank(10, 4);
-        b.shapes.push(Shape { glyph: Some((glyph, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+        b.shapes.push(Shape { glyph: Some((glyph, FALLBACK, Tint::Hue(Hue::Cyan))), ..shape(1, 2, 3, 2, ShapeKind::Chip(Tint::Pill)) });
         let s = Painted::new(p, &b, scale);
         let cells = s.cells(p, 1, 2, 3, 2);
         (s, cells)
@@ -1441,6 +1445,20 @@ mod shapes {
         let inset = 4 * 2;
         let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
         assert!(!ink.is_empty(), "the wide glyph is drawn in its tile");
+    }
+
+    #[test]
+    fn an_icon_no_font_draws_falls_back() {
+        let (mut p, r) = (fonts(), distinct());
+        let inset = 4 * 2;
+        let inner = |((x0, x1), (y0, y1)): Rect| ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset));
+        // No face of the dev shell's font folder has an emoji.
+        let (s, rect) = tile(&mut p, '🔥', 2);
+        let ink = inked(&s, inner(rect), r.pill_bg);
+        let (direct, rect) = tile(&mut p, FALLBACK, 2);
+        let expected = inked(&direct, inner(rect), r.pill_bg);
+        assert!(!expected.is_empty(), "the fallback inks the tile");
+        assert_eq!(ink, expected, "the fallback is drawn in the glyph's place, centred the same");
     }
 
     #[test]

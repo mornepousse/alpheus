@@ -215,7 +215,7 @@ most 128) has:
 
 | Key | What it does |
 | --- | --- |
-| `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root (the panel's Pinned) |
+| `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root (the panel's Pinned). `icon` is a Nerd Font glyph or a character the bar's font has; one it lacks, and an entry without one, shows its category's icon |
 | `key` | One letter, `a` to `z`, that runs the entry from the command panel |
 | `description` | One line (1 to 80 characters) under its name in the panel; none shows its category's name |
 | `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}`; with `ask`, exactly one element is `{text}` |

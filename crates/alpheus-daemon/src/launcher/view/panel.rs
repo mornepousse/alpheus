@@ -360,12 +360,13 @@ fn tool_row(l: &Launcher, t: &ToolsState, row: &ToolLine, list: (u16, u16), grid
 
 /// A tool's 3 × 2 tile on rows `y` and `y + 1` from column `x`, its cells left blank: its glyph (its
 /// own, else its category's, else the generic folder) in its category's hue, which the painter
-/// centres in the shape (a cell cannot hold a glyph between two rows, nor a wide one in one cell).
+/// centres in the shape (a cell cannot hold a glyph between two rows, nor a wide one in one cell);
+/// the category's, else the folder, drawn instead when no loaded face has its own.
 fn push_tile(t: &ToolsState, entry: &Entry, y: usize, x: u16, shapes: &mut Vec<Shape>) {
-    let category = entry.category.and_then(|c| t.catalog.categories.get(c));
-    let glyph = entry.icon.or(category.map(|c| c.icon)).unwrap_or(FOLDER);
+    let fallback = entry.category.and_then(|c| t.catalog.categories.get(c)).map_or(FOLDER, |c| c.icon);
+    let glyph = entry.icon.unwrap_or(fallback);
     let ink = category_hue(t, entry.category).fg;
-    shapes.push(Shape { glyph: Some((glyph, ink)), ..ring_shape(y, x, 3, 2, ShapeKind::Chip(Tint::Pill)) });
+    shapes.push(Shape { glyph: Some((glyph, fallback, ink)), ..ring_shape(y, x, 3, 2, ShapeKind::Chip(Tint::Pill)) });
 }
 
 /// The columns a row's chips take in the list pane `list`: from past its tile to before its switch

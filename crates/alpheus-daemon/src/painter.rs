@@ -956,18 +956,22 @@ impl Fonts {
                     self.rounded(px, width, height, knob, y, clip, roles.fg, d / (2 * e), scale);
                 }
             }
-            if let Some((ch, tint)) = sh.glyph {
-                self.centred_glyph(ch, x, y, color(roles, fill, tint), px, width, height);
+            if let Some((ch, fallback, tint)) = sh.glyph {
+                let ink = color(roles, fill, tint);
+                // A character no loaded face draws inks nothing: its fallback takes its place.
+                if !self.centred_glyph(ch, x, y, ink, px, width, height) {
+                    self.centred_glyph(fallback, x, y, ink, px, width, height);
+                }
             }
         }
     }
 
     /// `ch` in `ink`, its inked pixels centred in x ∈ [x.0, x.1) × y ∈ [y.0, y.1) (a tile's glyph,
     /// whatever its width: a wide one's whole ink is centred). Its pixels are read twice from the
-    /// glyph cache, once to measure them and once to blend them; nothing is drawn for a glyph
-    /// without ink.
+    /// glyph cache, once to measure them and once to blend them. Whether it inked anything: a
+    /// character no loaded face has draws nothing.
     #[allow(clippy::too_many_arguments)]
-    fn centred_glyph(&mut self, ch: char, x: (u32, u32), y: (u32, u32), ink: Rgb, px: &mut [u8], width: u32, height: u32) {
+    fn centred_glyph(&mut self, ch: char, x: (u32, u32), y: (u32, u32), ink: Rgb, px: &mut [u8], width: u32, height: u32) -> bool {
         if self.cache.image_cache.len() >= MAX_CACHE {
             self.cache.image_cache.clear();
             self.cache.outline_command_cache.clear();
@@ -985,7 +989,7 @@ impl Fonts {
             });
         }
         if left > right {
-            return;
+            return false;
         }
         // Twice the offset: the rectangle's centre less the ink's, both doubled to stay in integers.
         let span = |a: u32, b: u32| i64::from(a) + i64::from(b);
@@ -997,6 +1001,7 @@ impl Fonts {
                 blend(px, width, height, ox.saturating_add(g.dx + dx), oy.saturating_add(g.y + dy), c);
             });
         }
+        true
     }
 
     /// Fills x ∈ [x.0, x.1) × y ∈ [y.0, y.1), cut to `clip` (x and y spans), with `fill` and
