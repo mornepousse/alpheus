@@ -1179,6 +1179,17 @@ mod graphs {
         assert_eq!(mix(Rgb(255, 0, 100), Rgb(1, 1, 1), 100), Rgb(255, 0, 100));
     }
 
+    /// A pixel past the right edge of its row is no pixel, not the next row's first one.
+    #[test]
+    fn a_pixel_past_the_row_s_end_is_none() {
+        // 2 x 2, BGRA: row 0 is (1, 2), row 1 is (3, 4) in the red channel.
+        let px = [0, 0, 1, 255, 0, 0, 2, 255, 0, 0, 3, 255, 0, 0, 4, 255];
+        assert_eq!(pixel(&px, 2, 1, 0), Some(Rgb(2, 0, 0)));
+        assert_eq!(pixel(&px, 2, 0, 1), Some(Rgb(3, 0, 0)));
+        assert_eq!(pixel(&px, 2, 2, 0), None, "x = width is off the row");
+        assert_eq!(pixel(&px, 2, 0, 2), None, "y = height is off the buffer");
+    }
+
     /// 60 points over fewer than 60 px: some blocks are empty, the others tile the width exactly.
     #[test]
     fn plot_tiles_columns_exactly_at_every_scale() {

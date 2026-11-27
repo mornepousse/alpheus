@@ -348,8 +348,12 @@ fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rg
 /// Share of a graph's ink (percent) in the body under its line.
 pub(crate) const BODY_ALPHA: u16 = 40;
 
-/// The colour of the pixel at `x`, `y` of a BGRA buffer `width` px wide; None past its end.
+/// The colour of the pixel at `x`, `y` of a BGRA buffer `width` px wide; None past its row's end
+/// or the buffer's.
 fn pixel(px: &[u8], width: u32, x: u32, y: u32) -> Option<Rgb> {
+    if x >= width {
+        return None;
+    }
     let o = (y as usize * width as usize + x as usize) * 4;
     px.get(o..o + 3).map(|p| Rgb(p[2], p[1], p[0]))
 }
