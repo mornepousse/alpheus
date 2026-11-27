@@ -6,6 +6,25 @@ not released yet goes under a new *Unreleased* heading above the latest version.
 code it touches). Costs are measured in release builds, back to back with the build before; the method and the
 tables are in [docs/measurements.md](docs/measurements.md). The number in parentheses after a title is the day of the month the delivery merged.
 
+## [Unreleased]
+
+### 2026-11
+
+#### Changed
+
+- **The Tools menu opens on a command panel** (27): `alpheus-launch --tools` (Super+X) shows a search
+  field, tabs (All, with Pinned, Recent and every category as a section, then each category), each tool
+  on two lines with what it does, a detail card with its actions and keys, and a letter that runs a
+  tool in one key. A letter acts only on a tool whose capsule is drawn on
+  screen (a tool scrolled out of the pane starts the search with its letter); `/` or Space
+  start the search; Mod+Space never shows the panel nor has live letters. The search groups its
+  results by category and shows fixed choices as chips; no chip is picked until ←/→, a click or the
+  query picks one. New keys: `[tools] panel` (`false` keeps the category list) and `keys`, an entry's
+  `key` and `description`. Cost against main, the same cycle on both sides: open +2.0…+2.2 MB PSS (main +1.1…+1.2), of which +1.8 MB is the larger box's pools (main +0.9); +0.25 MB at rest before any open; anonymous memory levels off over 60 cycles; 0 wake-ups at rest. [Page](docs/features/tools-menu.md#the-command-panel),
+  [configuration](docs/configuration.md#tools-toolscategory-toolsentry).
+- **Resident budget: 15 MB at rest** (27) instead of 120 MB; the memory suite holds the steady state to it.
+  [Decision](docs/decisions.md#everything-alpheus-keeps-resident-fits-in-15-mb-at-rest).
+
 ## [0.1.0] - 2026-11-25
 
 The first public release of alpheus, a light Wayland desktop shell written in Rust: a layer-shell

@@ -5,15 +5,21 @@
 
 use super::config::{BUILTIN_CATEGORIES, DEFAULT_ORDER, ToolsConfig};
 use super::diag::{PORTS_PROMPT, Scan, TARGET_PROMPT};
+use crate::grid::Hue;
 use crate::quick::Toggle;
 use alpheus_common::diagnostics::query::Preset;
 use alpheus_common::launcher_ipc::{CaptureVerb, QuickVerb};
+use std::borrow::Cow;
 
 /// A category with no glyph of its own.
 pub const FOLDER: char = '\u{F024B}';
 
 /// The built-in categories' orders, in `BUILTIN_CATEGORIES`' order.
 const BUILTIN_ORDERS: [u16; 7] = [10, 20, 30, 40, 80, 90, 70];
+/// Their hues, in the same order.
+const BUILTIN_HUES: [Hue; 7] = [Hue::Blue, Hue::Purple, Hue::Cyan, Hue::Orange, Hue::Yellow, Hue::Red, Hue::Green];
+/// The hues user categories take in turn, by their place among the user categories.
+const USER_HUES: [Hue; 7] = [Hue::Blue, Hue::Cyan, Hue::Green, Hue::Yellow, Hue::Orange, Hue::Red, Hue::Purple];
 /// Their glyphs (Nerd Font Material Design), in the same order.
 const BUILTIN_GLYPHS: [char; 7] = ['\u{F0493}', '\u{F056E}', '\u{F05B7}', '\u{F0100}', '\u{F08D6}', '\u{F0343}', '\u{F00E4}'];
 
@@ -57,11 +63,21 @@ pub struct Builtin {
     pub id: &'static str,
     pub label: &'static str,
     pub category: &'static str,
+    /// What it does, in one plain line from the user's side: at most 40 characters, no trailing
+    /// period (the command panel's second line and detail card).
+    pub description: &'static str,
     pub glyph: char,
     pub action: BuiltinAction,
+    /// The default letter that runs it from the Tools menu's root (`[tools] keys` overrides it).
+    pub key: Option<char>,
 }
 
 impl Builtin {
+    /// The table row `self` with a default letter.
+    const fn with_key(self, key: char) -> Builtin {
+        Builtin { key: Some(key), ..self }
+    }
+
     /// The control center tab a `Tab` built-in opens: its id after `tab.` (`tab.network` is
     /// `network`). Derived, not written twice, so the diagnostics tab's name lives in
     /// `join.rs` alone (the branches' hook points are named only there).
@@ -73,8 +89,15 @@ impl Builtin {
     }
 }
 
-const fn b(id: &'static str, label: &'static str, category: &'static str, glyph: char, action: BuiltinAction) -> Builtin {
-    Builtin { id, label, category, glyph, action }
+const fn b(
+    id: &'static str,
+    label: &'static str,
+    category: &'static str,
+    description: &'static str,
+    glyph: char,
+    action: BuiltinAction,
+) -> Builtin {
+    Builtin { id, label, category, description, glyph, action, key: None }
 }
 
 // `BUILTIN_CATEGORIES`' names, spelled out (a const cannot be indexed here without a panicking
@@ -87,53 +110,54 @@ const SYSTEM: &str = "System";
 const SESSION: &str = "Session";
 const DIAGNOSTICS: &str = "Diagnostics";
 
-/// The built-in table, in its order.
+/// The built-in table, in its order: one row per line, read as a table.
+#[rustfmt::skip]
 pub const BUILTINS: [Builtin; 45] = [
-    b("quick.sound", "Sound", QUICK, '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
-    b("quick.wifi", "Wi-Fi", QUICK, '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)),
-    b("quick.bluetooth", "Bluetooth", QUICK, '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)),
-    b("quick.vpn", "VPN", QUICK, '\u{F0582}', BuiltinAction::Quick(QuickVerb::Vpn)),
-    b("quick.shield", "Shield", QUICK, '\u{F0498}', BuiltinAction::Shield),
-    b("dnd", "Do not disturb", QUICK, '\u{F009B}', BuiltinAction::Dnd),
-    b("keep_awake", "Keep awake", QUICK, '\u{F0176}', BuiltinAction::Toggle(Toggle::KeepAwake)),
-    b("night_light", "Night light", QUICK, '\u{F0594}', BuiltinAction::Toggle(Toggle::NightLight)),
-    b("tab.home", "Home", CONTROL, '\u{F02DC}', BuiltinAction::Tab),
-    b("tab.sound", "Sound", CONTROL, '\u{F057E}', BuiltinAction::Tab),
-    b("tab.network", "Network", CONTROL, '\u{F06F3}', BuiltinAction::Tab),
-    b("tab.bluetooth", "Bluetooth", CONTROL, '\u{F00AF}', BuiltinAction::Tab),
-    b("tab.power", "Power", CONTROL, '\u{F0079}', BuiltinAction::Tab),
-    b("tab.displays", "Displays", CONTROL, '\u{F0379}', BuiltinAction::Tab),
-    b("tab.appearance", "Theme", CONTROL, '\u{F03D8}', BuiltinAction::Tab),
-    b("tab.diagnostics", "Diagnostics", CONTROL, '\u{F04D9}', BuiltinAction::Tab),
-    b("notes", "Notes", UTILITIES, '\u{F039E}', BuiltinAction::Notes),
-    b("timer", "Timer", UTILITIES, '\u{F051B}', BuiltinAction::Timer),
-    b("clipboard", "Clipboard", UTILITIES, '\u{F014C}', BuiltinAction::Clipboard),
-    b("emoji", "Emoji", UTILITIES, '\u{F0C68}', BuiltinAction::Emoji),
-    b("capture.full", "Screenshot", CAPTURES, '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)),
-    b("capture.area", "Area", CAPTURES, '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)),
-    b("capture.area_save", "Area (save)", CAPTURES, '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
-    b("capture.annotate", "Annotate", CAPTURES, '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)),
-    b("capture.record", "Record screen", CAPTURES, '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)),
-    b("capture.record_area", "Record area", CAPTURES, '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
-    b("capture.stop", "Stop recording", CAPTURES, '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)),
-    b("capture.pick", "Colour picker", CAPTURES, '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)),
-    b("capture.ocr", "Text from area (OCR)", CAPTURES, '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)),
-    b("shutdown", "Schedule shutdown", SYSTEM, '\u{F0902}', BuiltinAction::Shutdown),
-    b("process.kill", "Kill a process", SYSTEM, '\u{F068C}', BuiltinAction::Kill),
-    b("lock", "Lock", SESSION, '\u{F033E}', BuiltinAction::Lock),
-    b("power", "Power menu", SESSION, '\u{F0425}', BuiltinAction::Power),
-    b("reload", "Reload the bar", SESSION, '\u{F0450}', BuiltinAction::Reload),
-    b("diag.scan", "Network scan", DIAGNOSTICS, '\u{F0437}', BuiltinAction::Scan),
-    b("diag.usb_events", "USB events", DIAGNOSTICS, '\u{F0553}', BuiltinAction::UsbEvents),
-    b("diag.usb_reset", "Reset USB (xHCI)", DIAGNOSTICS, '\u{F0709}', BuiltinAction::UsbReset),
-    b("diag.preset.errors", "Errors this boot", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ErrorsThisBoot)),
-    b("diag.preset.usb", "USB", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Usb)),
-    b("diag.preset.suspend", "Suspend and resume", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::SuspendResume)),
-    b("diag.preset.oom", "Out of memory", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::OutOfMemory)),
-    b("diag.preset.thermal", "Thermal and throttling", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Thermal)),
-    b("diag.preset.network", "NetworkManager", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::NetworkManager)),
-    b("diag.preset.live", "Live journal", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::Live)),
-    b("diag.preset.service", "Logs of a service…", DIAGNOSTICS, '\u{F0219}', BuiltinAction::Preset(Preset::ServiceLogs)),
+    b("quick.sound", "Sound", QUICK, "Set volume and output in quick settings", '\u{F057E}', BuiltinAction::Quick(QuickVerb::Sound)),
+    b("quick.wifi", "Wi-Fi", QUICK, "Pick a Wi-Fi network in quick settings", '\u{F05A9}', BuiltinAction::Quick(QuickVerb::Wifi)).with_key('w'),
+    b("quick.bluetooth", "Bluetooth", QUICK, "Connect a device in quick settings", '\u{F00AF}', BuiltinAction::Quick(QuickVerb::Bluetooth)).with_key('b'),
+    b("quick.vpn", "VPN", QUICK, "Connect a VPN in quick settings", '\u{F0582}', BuiltinAction::Quick(QuickVerb::Vpn)).with_key('v'),
+    b("quick.shield", "Shield", QUICK, "Open Shield in quick settings", '\u{F0498}', BuiltinAction::Shield).with_key('h'),
+    b("dnd", "Do not disturb", QUICK, "Turn do not disturb on or off", '\u{F009B}', BuiltinAction::Dnd).with_key('d'),
+    b("keep_awake", "Keep awake", QUICK, "Keep the screen on, or let it sleep", '\u{F0176}', BuiltinAction::Toggle(Toggle::KeepAwake)).with_key('z'),
+    b("night_light", "Night light", QUICK, "Turn warmer screen colours on or off", '\u{F0594}', BuiltinAction::Toggle(Toggle::NightLight)).with_key('i'),
+    b("tab.home", "Home", CONTROL, "Open the control center's Home tab", '\u{F02DC}', BuiltinAction::Tab),
+    b("tab.sound", "Sound", CONTROL, "Open the control center's Sound tab", '\u{F057E}', BuiltinAction::Tab),
+    b("tab.network", "Network", CONTROL, "Open the control center's Network tab", '\u{F06F3}', BuiltinAction::Tab),
+    b("tab.bluetooth", "Bluetooth", CONTROL, "Open the control center's Bluetooth tab", '\u{F00AF}', BuiltinAction::Tab),
+    b("tab.power", "Power", CONTROL, "Open the control center's Power tab", '\u{F0079}', BuiltinAction::Tab),
+    b("tab.displays", "Displays", CONTROL, "Open the control center's Displays tab", '\u{F0379}', BuiltinAction::Tab),
+    b("tab.appearance", "Theme", CONTROL, "Open the control center's Theme tab", '\u{F03D8}', BuiltinAction::Tab),
+    b("tab.diagnostics", "Diagnostics", CONTROL, "Open the control center's Diag tab", '\u{F04D9}', BuiltinAction::Tab),
+    b("notes", "Notes", UTILITIES, "Jot down a note", '\u{F039E}', BuiltinAction::Notes).with_key('n'),
+    b("timer", "Timer", UTILITIES, "Set a focus timer", '\u{F051B}', BuiltinAction::Timer).with_key('t'),
+    b("clipboard", "Clipboard", UTILITIES, "Pick from the clipboard history", '\u{F014C}', BuiltinAction::Clipboard).with_key('c'),
+    b("emoji", "Emoji", UTILITIES, "Find an emoji and copy it", '\u{F0C68}', BuiltinAction::Emoji).with_key('m'),
+    b("capture.full", "Screenshot", CAPTURES, "Copy a screenshot of this screen", '\u{F0E51}', BuiltinAction::Capture(CaptureVerb::Full)).with_key('f'),
+    b("capture.area", "Area", CAPTURES, "Select an area, copy it", '\u{F0489}', BuiltinAction::Capture(CaptureVerb::Area)).with_key('a'),
+    b("capture.area_save", "Area (save)", CAPTURES, "Select an area, save it to Pictures", '\u{F0193}', BuiltinAction::Capture(CaptureVerb::AreaSave)),
+    b("capture.annotate", "Annotate", CAPTURES, "Select an area, draw on it", '\u{F03EB}', BuiltinAction::Capture(CaptureVerb::Annotate)).with_key('e'),
+    b("capture.record", "Record screen", CAPTURES, "Record this screen to Videos", '\u{F044A}', BuiltinAction::Capture(CaptureVerb::Record)).with_key('r'),
+    b("capture.record_area", "Record area", CAPTURES, "Select an area, record it", '\u{F0567}', BuiltinAction::Capture(CaptureVerb::RecordArea)),
+    b("capture.stop", "Stop recording", CAPTURES, "End the recording and save it", '\u{F04DB}', BuiltinAction::Capture(CaptureVerb::Stop)).with_key('r'),
+    b("capture.pick", "Colour picker", CAPTURES, "Copy the colour of a pixel", '\u{F020A}', BuiltinAction::Capture(CaptureVerb::Pick)).with_key('p'),
+    b("capture.ocr", "Text from area (OCR)", CAPTURES, "Select an area, copy its text", '\u{F113D}', BuiltinAction::Capture(CaptureVerb::Ocr)).with_key('o'),
+    b("shutdown", "Schedule shutdown", SYSTEM, "Power off after a delay", '\u{F0902}', BuiltinAction::Shutdown).with_key('s'),
+    b("process.kill", "Kill a process", SYSTEM, "Pick a process to end", '\u{F068C}', BuiltinAction::Kill).with_key('k'),
+    b("lock", "Lock", SESSION, "Lock the screen", '\u{F033E}', BuiltinAction::Lock).with_key('l'),
+    b("power", "Power menu", SESSION, "Lock, log out, reboot or power off", '\u{F0425}', BuiltinAction::Power).with_key('q'),
+    b("reload", "Reload the bar", SESSION, "Run the reload command you set", '\u{F0450}', BuiltinAction::Reload),
+    b("diag.scan", "Network scan", DIAGNOSTICS, "Scan hosts and ports with nmap", '\u{F0437}', BuiltinAction::Scan),
+    b("diag.usb_events", "USB events", DIAGNOSTICS, "Watch USB devices come and go", '\u{F0553}', BuiltinAction::UsbEvents).with_key('u'),
+    b("diag.usb_reset", "Reset USB (xHCI)", DIAGNOSTICS, "Restart the USB controller", '\u{F0709}', BuiltinAction::UsbReset).with_key('x'),
+    b("diag.preset.errors", "Errors this boot", DIAGNOSTICS, "Read journal errors since this boot", '\u{F0219}', BuiltinAction::Preset(Preset::ErrorsThisBoot)).with_key('j'),
+    b("diag.preset.usb", "USB", DIAGNOSTICS, "Read journal lines about USB", '\u{F0219}', BuiltinAction::Preset(Preset::Usb)),
+    b("diag.preset.suspend", "Suspend and resume", DIAGNOSTICS, "Read journal lines on suspend and resume", '\u{F0219}', BuiltinAction::Preset(Preset::SuspendResume)),
+    b("diag.preset.oom", "Out of memory", DIAGNOSTICS, "Read out-of-memory kills in the journal", '\u{F0219}', BuiltinAction::Preset(Preset::OutOfMemory)),
+    b("diag.preset.thermal", "Thermal and throttling", DIAGNOSTICS, "Read the journal on heat and throttling", '\u{F0219}', BuiltinAction::Preset(Preset::Thermal)),
+    b("diag.preset.network", "NetworkManager", DIAGNOSTICS, "Read NetworkManager's journal", '\u{F0219}', BuiltinAction::Preset(Preset::NetworkManager)),
+    b("diag.preset.live", "Live journal", DIAGNOSTICS, "Follow the journal as it is written", '\u{F0219}', BuiltinAction::Preset(Preset::Live)),
+    b("diag.preset.service", "Logs of a service…", DIAGNOSTICS, "Read one service's journal", '\u{F0219}', BuiltinAction::Preset(Preset::ServiceLogs)),
 ];
 
 /// What decides which built-ins show: plain booleans, so the
@@ -259,6 +283,11 @@ pub struct Entry {
     pub has_state: bool,
     /// The history key; a fixed choice appends `/<choice>` (`Catalog::choice_key`).
     pub key: String,
+    /// The letter that runs it from the Tools menu's root: `None` when it wants none or lost it to an earlier claimant.
+    pub letter: Option<char>,
+    /// One line on what it does: a built-in's table text (borrowed, never copied), a user entry's
+    /// `description`, or none.
+    pub description: Option<Cow<'static, str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +295,8 @@ pub struct Category {
     pub name: String,
     pub icon: char,
     pub order: u16,
+    /// Its hue: its tools' glyphs and its section label's dot; `None` draws them in the accent.
+    pub hue: Option<Hue>,
 }
 
 /// A row of the root: a category or an entry.
@@ -336,8 +367,17 @@ fn icon_of(s: &Option<String>) -> Option<char> {
     s.as_deref().and_then(|s| s.chars().next())
 }
 
+/// The letter `e` wants: a user entry its `key`, a built-in its `[tools] keys` letter, else its
+/// default.
+fn wanted_letter(e: &Entry, t: &ToolsConfig) -> Option<char> {
+    match e.kind {
+        EntryKind::Builtin(b) => BUILTINS.get(b).and_then(|b| t.keys.get(b.id).copied().or(b.key)),
+        EntryKind::User(u) => t.entries.get(u).and_then(|u| u.key),
+    }
+}
+
 impl Catalog {
-    /// The catalog for `t` under `c`. An unknown id in `hide` or `root` is noted once per list,
+    /// The catalog for `t` under `c`. An unknown id in `hide`, `root` or `keys` is noted once per list,
     /// however many it holds (never quoted), and ignored, so a file written for a newer alpheus stays valid.
     pub fn build(t: &ToolsConfig, c: &Context, note: &mut dyn FnMut(&str)) -> Catalog {
         let known = |id: &String| BUILTINS.iter().any(|b| b.id == id);
@@ -347,12 +387,17 @@ impl Catalog {
         if !t.root.iter().all(known) {
             note("tools: unknown built-in id in [tools] root");
         }
+        if !t.keys.keys().all(known) {
+            note("tools: unknown built-in id in [tools] keys");
+        }
         let mut categories: Vec<Category> = BUILTIN_CATEGORIES
             .iter()
             .zip(BUILTIN_GLYPHS)
             .zip(BUILTIN_ORDERS)
-            .map(|((name, icon), order)| Category { name: (*name).to_string(), icon, order })
+            .zip(BUILTIN_HUES)
+            .map(|(((name, icon), order), hue)| Category { name: (*name).to_string(), icon, order, hue: Some(hue) })
             .collect();
+        let mut user_categories = 0;
         for u in &t.categories {
             match categories.iter_mut().find(|k| k.name == u.name) {
                 // A user category of a built-in's name restyles it.
@@ -360,11 +405,15 @@ impl Catalog {
                     k.icon = icon_of(&u.icon).unwrap_or(k.icon);
                     k.order = u.order.unwrap_or(k.order);
                 }
-                None => categories.push(Category {
-                    name: u.name.clone(),
-                    icon: icon_of(&u.icon).unwrap_or(FOLDER),
-                    order: u.order.unwrap_or(DEFAULT_ORDER),
-                }),
+                None => {
+                    categories.push(Category {
+                        name: u.name.clone(),
+                        icon: icon_of(&u.icon).unwrap_or(FOLDER),
+                        order: u.order.unwrap_or(DEFAULT_ORDER),
+                        hue: USER_HUES.get(user_categories % USER_HUES.len()).copied(),
+                    });
+                    user_categories += 1;
+                }
             }
         }
         // An entry of a category cut past the bound never gets here (`config::bounded` drops it).
@@ -386,6 +435,8 @@ impl Catalog {
                         ask_overrides,
                         has_state: matches!(b.action, BuiltinAction::Dnd | BuiltinAction::Toggle(_)),
                         key: format!("tool:builtin:{}", b.id),
+                        letter: None,
+                        description: Some(Cow::Borrowed(b.description)),
                     });
                 }
             }
@@ -410,6 +461,8 @@ impl Catalog {
                 ask_overrides: Vec::new(),
                 has_state: !e.state.is_empty(),
                 key: format!("tool:user:{}/{}", e.category.as_deref().unwrap_or(""), e.name),
+                letter: None,
+                description: e.description.clone().map(Cow::Owned),
             });
         }
         let mut root = Vec::new();
@@ -421,7 +474,44 @@ impl Catalog {
                 root.push(at);
             }
         }
-        Catalog { categories, entries, root }
+        let mut catalog = Catalog { categories, entries, root };
+        catalog.claim_letters(t);
+        catalog
+    }
+
+    /// Gives each entry the letter it wants unless an earlier one took it, in display order: the
+    /// root's entries (All's Pinned section), then each category's in category order. A user entry wants its `key`,
+    /// a built-in its `[tools] keys` letter, else its default.
+    fn claim_letters(&mut self, t: &ToolsConfig) {
+        let rows = self.root_rows();
+        let mut order: Vec<usize> = rows.iter().filter_map(|r| if let Item::Entry(e) = *r { Some(e) } else { None }).collect();
+        for r in &rows {
+            if let Item::Category(k) = *r {
+                order.extend(self.category_rows(k));
+            }
+        }
+        let mut taken: Vec<char> = Vec::new();
+        for i in order {
+            let Some(e) = self.entries.get_mut(i) else { continue };
+            if let Some(l) = wanted_letter(e, t)
+                && !taken.contains(&l)
+            {
+                taken.push(l);
+                e.letter = Some(l);
+            }
+        }
+    }
+
+    /// How many entries want a letter an earlier claimant took (the glue logs the count, never
+    /// which).
+    pub fn lost_letters(&self, t: &ToolsConfig) -> usize {
+        self.entries.iter().filter(|e| e.letter.is_none() && wanted_letter(e, t).is_some()).count()
+    }
+
+    /// Whether entry `e` is one of the root's (`[tools] root`, or a user entry with no category):
+    /// what the panel's Pinned section lists.
+    pub fn is_pinned(&self, e: usize) -> bool {
+        self.root.contains(&e) || self.entries.get(e).is_some_and(|x| x.category.is_none())
     }
 
     /// The root's rows: the built-ins `[tools] root` lists, then the categories that hold an

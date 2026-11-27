@@ -93,7 +93,7 @@ outright read the comments too — and fails on a forbidden pattern.
    neither builds a shell line (`only_the_runners_capture_and_never_through_a_shell`);
    `spawn_with_env` only runs hooks (`spawn_with_env_only_runs_hooks`).
 6. **Lightness.** Memory is measured per feature against the commit before it and recorded in
-   [`measurements.md`](measurements.md) (budget 120 MB; the daemon sits at about 8 to 11 MB); an
+   [`measurements.md`](measurements.md) (budget 15 MB at rest, see [`decisions.md`](decisions.md); the daemon sits at about 11 to 12 MB); an
    unused option costs nothing; at rest nothing wakes (no polling beyond the resources module's
    interval); no heavy dependency for configuration (plain TOML parsing, and protocol clients
    written by hand instead of an async runtime; D-Bus is dbus-rs over the system libdbus); the

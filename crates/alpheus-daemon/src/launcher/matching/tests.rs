@@ -703,7 +703,13 @@ fn rank_emoji_matches_non_ascii_names() {
 }
 
 fn tool_row(name: &str, path: &str) -> ToolHitRow {
-    ToolHitRow { name: name.into(), path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") }, key: String::new() }
+    ToolHitRow {
+        name: name.into(),
+        path_text: if path.is_empty() { String::new() } else { format!("{path} {name}") },
+        key: String::new(),
+        parent: None,
+        category: None,
+    }
 }
 
 /// Tool rows join All on a typed query only, never the other modes.
@@ -760,4 +766,137 @@ fn tool_frecency_orders_equal_hits_and_the_tools_mode_keeps_the_level_order_othe
     l.tools = vec![key("Zed one"), key("Beta one")];
     assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(0)], "All: by name between equals");
     assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(0), Source::Tool(1)], "the Tools mode: the level's order");
+}
+
+/// The Tools search keeps an entry's choices right after it, whatever ranks between them; a
+/// choice whose entry missed keeps its own place; All ranks them as they come.
+#[test]
+fn the_tools_search_groups_choices_after_their_entry() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let key = |n: &str| ToolHitRow { key: format!("tool:user:/{n}"), ..tool_row(n, "") };
+    let choice = |n: &str, parent, k| ToolHitRow { parent: Some((parent, k)), ..key(n) };
+    l.tools = vec![key("Lock one"), key("Zed one"), choice("Lock one · now", 0, 0), choice("Lock one · later", 0, 1)];
+    l.history = History::empty(10);
+    l.history.record("tool:user:/Lock one · later", NOW);
+    l.history.record("tool:user:/Zed one", NOW - 10);
+    l.history.record("tool:user:/Zed one", NOW - 20);
+    assert_eq!(l.sources(Mode::All, "one"), [Source::Tool(1), Source::Tool(3), Source::Tool(0), Source::Tool(2)], "All: as ranked");
+    let grouped =
+        |text: &str| -> Vec<Source> { group_choices(l.rank(Mode::Tools, text), &l.tools).into_iter().map(|h| h.source).collect() };
+    assert_eq!(
+        grouped("one"),
+        [Source::Tool(1), Source::Tool(0), Source::Tool(3), Source::Tool(2)],
+        "the entry where it ranks, its choices after it in their own order"
+    );
+    assert_eq!(grouped("now"), [Source::Tool(2)], "a choice alone keeps its place");
+}
+
+/// The panel's search: groups by category, each where its best result ranks, its results in rank
+/// order (here the frecency decides, every name matching alike).
+#[test]
+fn results_are_grouped_by_category_in_best_rank_order() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str, category| ToolHitRow { key: format!("tool:user:/{n}"), category, ..tool_row(n, "") };
+    l.tools = vec![
+        tool("Alpha one", Some(1)),
+        tool("Beta one", Some(0)),
+        tool("Gamma one", Some(1)),
+        tool("Delta", Some(2)),
+        tool("Eta one", None),
+    ];
+    l.history = History::empty(10);
+    for (name, uses) in [("Gamma one", 4), ("Beta one", 3), ("Eta one", 2), ("Alpha one", 1)] {
+        for k in 0..uses {
+            l.history.record(&format!("tool:user:/{name}"), NOW - k);
+        }
+    }
+    assert_eq!(l.sources(Mode::Tools, "one"), [Source::Tool(2), Source::Tool(1), Source::Tool(4), Source::Tool(0)], "as ranked");
+    let g = grouped(&l, "one");
+    let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
+    assert_eq!(order, [Source::Tool(2), Source::Tool(0), Source::Tool(1), Source::Tool(4)], "Gamma's group, then Beta's, then the root's");
+    assert!(g.chips.is_empty());
+}
+
+/// The panel's search of `text` over `l`'s tools, choices found by a ranker as the model finds them.
+fn grouped(l: &Lists, text: &str) -> ToolGroups {
+    group_by_category(&l.rank(Mode::Tools, text), &l.tools, |choice| holds_every_word(text, choice))
+}
+
+/// A hit on a choice stands for its entry (listed once, where its best hit ranks) and picks that
+/// choice, the best-ranked one of each entry, when the query finds the choice's own text.
+#[test]
+fn a_hit_on_a_choice_lists_its_entry_once_and_picks_the_choice() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str, category| ToolHitRow { key: format!("tool:user:/{n}"), category, ..tool_row(n, "") };
+    let choice = |n: &str, parent, k| ToolHitRow { parent: Some((parent, k)), ..tool(n, Some(0)) };
+    l.tools = vec![
+        tool("Lock", Some(0)),
+        tool("Sleep", Some(0)),
+        choice("Lock · two", 0, 0),
+        choice("Lock · one", 0, 1),
+        choice("Sleep · zero", 1, 0),
+        choice("Sleep · twofold", 1, 1),
+    ];
+    let g = grouped(&l, "two");
+    let order: Vec<Source> = g.hits.iter().map(|h| h.source).collect();
+    assert_eq!(order, [Source::Tool(0), Source::Tool(1)], "each entry once, never a choice row");
+    assert_eq!(g.chips, [(0, 0), (1, 1)], "each entry's own matching choice");
+    // `lock` finds the entry's own name: its choices match only through it, none is picked.
+    let g = grouped(&l, "lock");
+    assert_eq!(g.hits.iter().map(|h| h.source).collect::<Vec<_>>(), [Source::Tool(0)]);
+    assert!(g.chips.is_empty(), "{:?}", g.chips);
+}
+
+/// A query that matches `Entry · choice` only across the separator (`sh`: the `S` of `Scan`, the
+/// `h` of `Host`) picks no chip; one that finds the choice's own text does.
+#[test]
+fn a_choice_matched_only_across_its_entry_picks_no_chip() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str| ToolHitRow { category: Some(0), ..tool_row(n, "") };
+    let choice = |n: &str, k| ToolHitRow { parent: Some((0, k)), ..tool(n) };
+    l.tools = vec![tool("Scan"), choice("Scan · Host discovery", 0), choice("Scan · Quick", 1)];
+    assert!(l.sources(Mode::Tools, "sh").contains(&Source::Tool(1)), "the composite name matches");
+    let g = grouped(&l, "sh");
+    assert_eq!(g.hits.iter().map(|h| h.source).collect::<Vec<_>>(), [Source::Tool(0)]);
+    assert!(g.chips.is_empty(), "{:?}", g.chips);
+    assert_eq!(grouped(&l, "host").chips, [(0, 0)]);
+}
+
+/// A query picks a chip only when each of its words is in the choice's own text, whatever the
+/// case: a fuzzy match scattered over it (`sn` in `Quick scan`) picks nothing.
+#[test]
+fn a_chip_is_picked_only_by_words_found_in_its_text() {
+    let mut l = Lists::new();
+    l.apps = vec![];
+    let tool = |n: &str| ToolHitRow { category: Some(0), ..tool_row(n, "") };
+    let choice = |n: &str, k| ToolHitRow { parent: Some((0, k)), ..tool(n) };
+    l.tools = vec![tool("Probe"), choice("Probe · Quick scan (common ports)", 0), choice("Probe · Host discovery", 1)];
+    assert!(l.sources(Mode::Tools, "sn").contains(&Source::Tool(1)), "the fuzzy search finds it");
+    assert!(grouped(&l, "sn").chips.is_empty(), "{:?}", grouped(&l, "sn").chips);
+    assert_eq!(grouped(&l, "scan").chips, [(0, 0)]);
+    assert!(holds_every_word("SCAN", "Quick scan"), "whatever the case");
+    assert_eq!(grouped(&l, "quick ports").chips, [(0, 0)], "every word in it");
+    assert!(holds_every_word("Scan", "Quick scan"));
+    assert!(!holds_every_word("quick host", "Quick scan"), "one word missing");
+    assert!(!holds_every_word("  ", "Quick scan"), "no word, no pick");
+}
+
+/// The characters a query matched in a name, as character positions, sorted, each once.
+#[test]
+fn matched_positions_are_the_characters_the_query_found() {
+    let mut r = Ranker::new();
+    assert_eq!(r.marks("sh", "Schedule shutdown"), [9, 10], "the word start wins over a scattered match");
+    assert_eq!(r.marks("dn sch", "Schedule shutdown"), [0, 1, 2, 13, 16], "every atom's, sorted");
+    assert!(r.marks("zz", "Schedule shutdown").is_empty(), "nothing matched: no position");
+    assert_eq!(r.marks("cafe", "Café"), [0, 1, 2, 3], "folded as the ranking folds");
+    // A decomposed `é` is one grapheme of two characters: no position rather than shifted ones.
+    let decomposed = "Cafe\u{301} bar";
+    let marks = r.marks("bar", decomposed);
+    let chars: Vec<char> = decomposed.chars().collect();
+    let found: String = marks.iter().map(|&i| chars[i as usize]).collect();
+    assert!(marks.is_empty() || found == "bar", "{marks:?} marks {found:?}");
 }

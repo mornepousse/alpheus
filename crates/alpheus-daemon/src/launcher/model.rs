@@ -11,13 +11,14 @@ use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
-use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow};
+use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source, ToolHitRow, group_by_category, group_choices, holds_every_word};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::{ProcRow, Sig, SignalError};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::launcher::tools::catalog::Catalog as ToolsCatalog;
 use crate::launcher::tools::nav::{Job, Level, RowId, Step, ToolAction, ToolRow, ToolsState};
+use crate::launcher::tools::panel;
 use crate::list;
 use crate::session;
 use alpheus_common::launcher_ipc::{DmenuFlags, wipe};
@@ -218,6 +219,11 @@ pub struct Launcher {
     tool_level_builds: u32,
     /// Whether `Source::Tool` hits index the flat search's rows (All, and a typed root query).
     tool_flat_shown: bool,
+    /// The panel's search: the chips its last ranking matched, (entry, choice), picked by the
+    /// next `refilter`; and per result the positions of the characters the query matched in the
+    /// name. Empty otherwise.
+    tool_chips: Vec<(usize, usize)>,
+    tool_marks: Vec<Vec<u32>>,
     /// When the Clear row asked `Clear? ⏎`: it never expires (no timer), only another key or click cancels it.
     clear_asked: Option<Instant>,
     /// The instant of the key or click being handled: the host sets it before each one and the
@@ -227,6 +233,13 @@ pub struct Launcher {
     /// The current mode was entered by typing its prefix: Backspace on the
     /// empty query goes back to All.
     by_prefix: bool,
+    /// At the Tools panel's root, `/` or Space asked for the search: letters are text from then on,
+    /// though the query is still empty. Backspace on the empty query gives them back.
+    searching: bool,
+    /// The character key that last acted at the panel's root (a letter, `/` or Space): its
+    /// auto-repeats do nothing until a fresh press, wherever the press led (a level below, a
+    /// prompt, the search).
+    acted: Option<Key>,
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
@@ -281,10 +294,14 @@ impl Launcher {
             #[cfg(test)]
             tool_level_builds: 0,
             tool_flat_shown: true,
+            tool_chips: Vec::new(),
+            tool_marks: Vec::new(),
             clear_asked: None,
             at: None,
             ranker: Ranker::new(),
             by_prefix: false,
+            searching: false,
+            acted: None,
             list_rows,
             moved: false,
             switcher: false,
@@ -373,7 +390,8 @@ impl Launcher {
 
     /// The Tools catalog of a Mod+Space open (its typed search ranks the entries, the `/` prefix
     /// jumps in): refilters, keeping the selection by identity like `set_entries`. A catalog with
-    /// no entry installs nothing (the `/` stays text).
+    /// no entry installs nothing (the `/` stays text). It drops an opened panel: a `--tools` open
+    /// must open it again (`open_panel`).
     pub fn set_tools(&mut self, catalog: ToolsCatalog) {
         if catalog.entries.is_empty() {
             return;
@@ -387,6 +405,121 @@ impl Launcher {
 
     pub fn tools(&self) -> Option<&ToolsState> {
         self.tools.as_ref()
+    }
+
+    /// Opens the Super+X panel in a box of `columns` × `rows` cells (sized once, for the open's
+    /// output), when `[tools] panel` is on: the root's letters then run their tools. Off, the root
+    /// stays the list of categories with no letter.
+    pub fn open_panel(&mut self, columns: u16, rows: u16) {
+        if !self.config.tools.panel {
+            return;
+        }
+        // A Mod+Space box never shows the panel: its Tools mode is a jump.
+        if self.origin != Origin::Tools {
+            return;
+        }
+        let Some(t) = self.tools.as_mut() else { return };
+        let recent = panel::recent_entries(&t.catalog, &self.history.tool_ids_newest_first(), panel::RECENT_MAX);
+        t.open_panel(columns, rows, recent);
+        // The root lists the panel's All tab from now on.
+        self.ranker.forget();
+        self.refilter();
+    }
+
+    /// The cells the panel's box was sized to (columns, rows), at any level of the open
+    /// (`view::tools_layout`). None when no panel was opened (today's box).
+    pub fn panel_size(&self) -> Option<(u16, u16)> {
+        self.tools.as_ref()?.panel_size()
+    }
+
+    /// Whether a letter runs its tool: the Tools mode at its panel's root, nothing typed, no search
+    /// asked, never in a Mod+Space box nor after its `/` prefix (a typed path never runs a tool).
+    pub fn letters_live(&self) -> bool {
+        self.origin != Origin::Apps && self.at_panel() && !self.searching && !self.by_prefix
+    }
+
+    /// The Tools mode shows the panel's root: opened as the panel, with nothing typed (a typed
+    /// query lists the flat search instead).
+    fn at_panel(&self) -> bool {
+        self.mode == Mode::Tools && self.query.is_empty() && self.tools.as_ref().is_some_and(ToolsState::at_panel)
+    }
+
+    /// The panel's list as the view lays it out: scrolled to tool `top`, the selected tool (none
+    /// on an empty list) shown whole.
+    fn panel_window(&self) -> (usize, Option<usize>) {
+        (self.top, (!self.results.is_empty()).then_some(self.selected))
+    }
+
+    /// Whether a letter runs anything at the panel's root: a tool drawn there carries a capsule.
+    pub fn root_letters(&self) -> bool {
+        let (top, selected) = self.panel_window();
+        self.tools.as_ref().is_some_and(|t| t.root_letters(top, selected))
+    }
+
+    /// The lines of the panel's list pane in the box drawn (`view::fit`).
+    pub fn set_pane_lines(&mut self, lines: usize) {
+        if let Some(t) = self.tools.as_mut() {
+            t.set_pane_lines(lines);
+        }
+    }
+
+    /// Whether the Tools mode shows the panel's search: its panel open at the root, a query typed.
+    pub fn panel_search(&self) -> bool {
+        self.mode == Mode::Tools && !self.query.trim().is_empty() && self.tools.as_ref().is_some_and(|t| t.panel().is_some())
+    }
+
+    /// The positions of the characters the panel's search matched in result `index`'s name.
+    pub fn tool_marks(&self, index: usize) -> &[u32] {
+        self.tool_marks.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// A click on the panel's tab `tab`: opens it as Tab would, on its first tool; from the search
+    /// too, which it ends. Nothing without a panel at the root or such a tab.
+    pub fn click_tab(&mut self, tab: usize) -> Outcome {
+        if self.mode != Mode::Tools || !self.tools.as_mut().is_some_and(|t| t.open_tab(tab)) {
+            return Outcome::Nothing;
+        }
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel();
+        }
+        self.query.clear();
+        self.searching = false;
+        self.message = None;
+        self.ranker.forget();
+        self.refilter();
+        Outcome::Redraw
+    }
+
+    /// A click on chip `chip` of result `index` in the panel's search: selects the row and picks
+    /// the chip, as ←/→ would; it never runs it (Enter does). Nothing off the search, on a row
+    /// without such a chip, or on the chip already picked of the selected row.
+    pub fn click_chip(&mut self, index: usize, chip: usize) -> Outcome {
+        // As `click`: the instant given for this click is spent, whatever it does.
+        self.at = None;
+        if !self.panel_search() {
+            return Outcome::Nothing;
+        }
+        let Some(RowId::Entry(e)) = self.results.get(index).and_then(|h| match h.source {
+            Source::Tool(i) => self.tool_rows().get(i).map(|r| r.id),
+            _ => None,
+        }) else {
+            return Outcome::Nothing;
+        };
+        let Some(t) = self.tools.as_mut() else { return Outcome::Nothing };
+        let picked = t.pick_chip(e, chip);
+        // The chip already picked still selects its row when another one was.
+        if !picked && (t.chip(e) != Some(chip) || self.selected == index) {
+            return Outcome::Nothing;
+        }
+        // As any other key would: a pending question is dropped.
+        if let Some(t) = self.tools.as_mut() {
+            t.cancel();
+        }
+        self.message = None;
+        self.moved = true;
+        self.selected = index;
+        self.keep_visible();
+        Outcome::Redraw
     }
 
     /// The rows the `Source::Tool` hits index.
@@ -642,6 +775,15 @@ impl Launcher {
             self.at = None;
             return Outcome::Nothing;
         }
+        // The same for a held letter at the panel's root: one press, one tool (and no typed run of it),
+        // even once that press opened a level, a prompt or the search.
+        if repeat && matches!(k, Key::Char(_)) && self.mode == Mode::Tools && (self.letters_live() || self.acted == Some(k)) {
+            self.at = None;
+            return Outcome::Nothing;
+        }
+        if !repeat {
+            self.acted = None;
+        }
         if repeat && matches!(k, Key::Enter | Key::CtrlEnter | Key::Delete) {
             let hit = self.selected_hit().map(|h| h.source);
             let guarded = match k {
@@ -662,6 +804,12 @@ impl Launcher {
         let cancelled_tool = k != Key::Enter && self.tools.as_mut().is_some_and(ToolsState::cancel);
         // The kill list's question is answered by Enter or asked again by Ctrl+Enter; any other key ends it.
         let cancelled_proc = !matches!(k, Key::Enter | Key::CtrlEnter) && self.proc_ask.take().is_some();
+        // A letter that cancels a question at the panel's root does only that: pressing a confirm
+        // tool's letter twice never runs it, nor asks again at once.
+        if cancelled_tool && matches!(k, Key::Char(_)) && self.letters_live() {
+            self.at = None;
+            return Outcome::Redraw;
+        }
         let o = self.apply(k);
         self.at = None;
         if (had_message || cancelled || cancelled_tool || cancelled_proc) && o == Outcome::Nothing { Outcome::Redraw } else { o }
@@ -745,6 +893,7 @@ impl Launcher {
         self.mode = mode;
         self.query.clear();
         self.by_prefix = true;
+        self.searching = false;
         if mode != Mode::Tools {
             return None;
         }
@@ -766,7 +915,17 @@ impl Launcher {
     // Left in a typed query is spelled out, so it never falls to a later arm.
     #[allow(clippy::match_same_arms)]
     fn apply_tools(&mut self, k: Key) -> Option<Outcome> {
+        if self.letters_live()
+            && let Key::Char(c) = k
+        {
+            return self.tools_letter(c);
+        }
         Some(match k {
+            // Backspace after `/` or Space at the panel's root: the letters again.
+            Key::Backspace if self.query.is_empty() && self.searching => {
+                self.searching = false;
+                Outcome::Redraw
+            }
             Key::Backspace if self.query.is_empty() => {
                 if self.tools_up() {
                     Outcome::Redraw
@@ -783,8 +942,12 @@ impl Launcher {
                     Outcome::Nothing
                 }
             }
-            Key::Left => Outcome::Nothing,
-            Key::Right => self.tools_drill(),
+            // On the panel's search a row's chips; nothing else moves the row.
+            Key::Left => self.step_chip(-1).unwrap_or(Outcome::Nothing),
+            Key::Right => match self.step_chip(1) {
+                Some(o) => o,
+                None => self.tools_drill(),
+            },
             Key::Escape => {
                 if self.tools_up() {
                     Outcome::Redraw
@@ -793,15 +956,50 @@ impl Launcher {
                 }
             }
             Key::Enter => self.tools_enter(),
+            // The panel's tabs, wrapping; a new tab opens on its first tool.
+            Key::Tab | Key::BackTab if self.at_panel() => {
+                let step = if k == Key::Tab { 1 } else { -1 };
+                if self.tools.as_mut().is_some_and(|t| t.next_tab(step)) {
+                    self.ranker.forget();
+                    self.refilter();
+                    Outcome::Redraw
+                } else {
+                    Outcome::Nothing
+                }
+            }
             Key::Tab | Key::BackTab | Key::CtrlEnter | Key::Delete => Outcome::Nothing,
             _ => return None,
         })
+    }
+
+    /// A character at the panel's root while letters are live: `/` or Space starts the search (and is
+    /// not typed), a shown tool's letter runs it as Enter on its row would (asks, drills), any other
+    /// character falls through to be typed, starting the search with it.
+    fn tools_letter(&mut self, c: char) -> Option<Outcome> {
+        if c == '/' || c == ' ' {
+            self.searching = true;
+            self.acted = Some(Key::Char(c));
+            return Some(Outcome::Redraw);
+        }
+        let (top, selected) = self.panel_window();
+        let (k, row) = self.tools.as_ref().and_then(|t| t.letter(c, top, selected))?;
+        self.acted = Some(Key::Char(c));
+        // On its row (home lists the tab's tools in order): a question shows there and the second
+        // Enter answers it.
+        if self.results.get(k).is_some_and(|h| matches!(h.source, Source::Tool(i) if self.tool_rows().get(i).is_some_and(|r| r.id == row)))
+        {
+            self.selected = k;
+            self.moved = true;
+            self.keep_visible();
+        }
+        Some(self.tools_activate(row))
     }
 
     /// Up one level (the query dropped, the parent's selection back): false at the root.
     fn tools_up(&mut self) -> bool {
         let Some(selected) = self.tools.as_mut().and_then(ToolsState::up) else { return false };
         self.query.clear();
+        self.searching = false;
         self.message = None;
         // The parent's list may have as many rows as the one left: its facts are not that list's.
         self.ranker.forget();
@@ -815,6 +1013,7 @@ impl Launcher {
     fn forget_tools(&mut self) {
         // The Tools list's prepared facts are not another mode's, whatever its row count.
         self.ranker.forget();
+        self.searching = false;
         if let Some(t) = self.tools.as_mut() {
             t.cancel_read();
             // A prompt's query is an answer, not a filter: it stays in no other mode, and the
@@ -843,6 +1042,15 @@ impl Launcher {
         }
     }
 
+    /// ←/→ on the selected row of the panel's search: picks the chip `step` places away (stopping at
+    /// either end). None when the row has no chips.
+    fn step_chip(&mut self, step: i32) -> Option<Outcome> {
+        let Some(RowId::Entry(e)) = self.selected_tool().filter(|_| self.panel_search()) else { return None };
+        let t = self.tools.as_mut()?;
+        t.chips(e)?;
+        Some(if t.step_chip(e, step) { Outcome::Redraw } else { Outcome::Nothing })
+    }
+
     /// → on a category or an entry with choices opens it like Enter; elsewhere nothing.
     fn tools_drill(&mut self) -> Outcome {
         let drills = match (self.selected_tool(), &self.tools) {
@@ -869,7 +1077,10 @@ impl Launcher {
                 _ => Outcome::Nothing,
             };
         }
+        // A row of the panel's search with chips runs its entry with the picked one.
+        let chip = |e: usize| self.tools.as_ref().and_then(|t| t.chip(e)).filter(|_| self.panel_search());
         match self.selected_tool() {
+            Some(RowId::Entry(e)) if let Some(k) = chip(e) => self.tools_activate(RowId::Choice(e, k)),
             Some(row) => self.tools_activate(row),
             None => Outcome::Nothing,
         }
@@ -902,6 +1113,7 @@ impl Launcher {
     /// The open level changed (a drill, a jump): a fresh query and rows, the first selected.
     fn level_changed(&mut self) {
         self.query.clear();
+        self.searching = false;
         self.message = None;
         self.ranker.forget();
         self.refilter();
@@ -991,6 +1203,8 @@ impl Launcher {
     }
 
     fn rank(&mut self) {
+        self.tool_chips.clear();
+        self.tool_marks.clear();
         // `--password`: no list to rank, and a nucleo pattern built from the query would copy
         // the secret into heap buffers the drop cannot wipe.
         if self.password {
@@ -1117,7 +1331,22 @@ impl Launcher {
             history: &self.history,
             now: self.now,
         };
-        self.results = self.ranker.rank(&q);
+        let ranked = self.ranker.rank(&q);
+        if flat && t.panel().is_some() {
+            let groups = group_by_category(&ranked, tools, |choice| holds_every_word(&self.query, choice));
+            self.tool_marks = groups
+                .hits
+                .iter()
+                .map(|h| match h.source {
+                    Source::Tool(i) => tools.get(i).map(|r| self.ranker.marks(&self.query, &r.name)).unwrap_or_default(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            self.results = groups.hits;
+            self.tool_chips = groups.chips;
+        } else {
+            self.results = group_choices(ranked, tools);
+        }
     }
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
@@ -1127,6 +1356,10 @@ impl Launcher {
     fn refilter(&mut self) {
         self.proc_lost = false;
         self.rank();
+        // A new query picks the chips it matched, every other row its first.
+        if let Some(t) = self.tools.as_mut() {
+            t.pick_chips(&self.tool_chips);
+        }
         self.selected = 0;
         self.top = 0;
         self.moved = false;

@@ -60,7 +60,7 @@ for the words, [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
   serials, host names, user names, monitor models. Use neutral invented values.
   A raw capture is never committed.
 - **Budgets.** Total resident memory of everything alpheus runs stays at or
-  below 120 MB; the control center's first render stays under 100 ms; the
+  below 15 MB at rest (`docs/decisions.md`, "Everything alpheus keeps resident fits in 15 MB at rest"); the control center's first render stays under 100 ms; the
   daemon makes no wake-up at rest apart from planned timers. Anything that
   becomes resident (a thread, a timer, a connection, a cache) is measured by
   the release memory suite, which refuses debug builds:

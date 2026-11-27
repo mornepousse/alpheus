@@ -5,6 +5,7 @@
 
 use super::catalog::{Catalog, Choices, EntryKind, Item};
 use super::config::ToolsConfig;
+use super::panel::{Panel, PanelRow, window};
 use crate::launcher::matching::ToolHitRow;
 use crate::launcher::sources::PATH_JOIN;
 use crate::session::{self, Activation as Ask};
@@ -158,6 +159,19 @@ pub struct ToolsState {
     /// choice. Never a dynamic choice.
     flat: Vec<ToolRow>,
     flat_hits: Vec<ToolHitRow>,
+    /// The cells (columns, rows) the Super+X box is sized to, once `open_panel` opened it: set
+    /// once per open, kept at every level. While set, the root's letters run their tools.
+    panel: Option<(u16, u16)>,
+    /// The lines of the panel's list pane as drawn: the rows it was sized to at open, then the
+    /// box's own (`set_pane_lines`, a size the compositor imposed). A letter reaches only the
+    /// tools drawn in them.
+    pane_lines: usize,
+    /// The panel's tabs and rows, while it is opened: the root lists its open tab's tools.
+    home: Option<Panel>,
+    /// Its Recent section, read once at open.
+    recent: Vec<usize>,
+    /// Per catalog entry with fixed choices: the chip picked on its row in the panel's search, if any.
+    picked: Vec<Option<usize>>,
 }
 
 impl ToolsState {
@@ -176,6 +190,11 @@ impl ToolsState {
             rev: 0,
             flat: Vec::new(),
             flat_hits: Vec::new(),
+            panel: None,
+            pane_lines: 0,
+            home: None,
+            recent: Vec::new(),
+            picked: Vec::new(),
         };
         state.build_flat();
         state
@@ -196,7 +215,8 @@ impl ToolsState {
             let category = e.category.and_then(|c| self.catalog.categories.get(c)).map(|c| c.name.as_str());
             let path_text = category.map(|c| format!("{c} {text}")).unwrap_or_default();
             flat.push(ToolRow { id, icon: e.icon, text: text.clone(), trail: Trail::Category(category.unwrap_or_default().to_string()) });
-            hits.push(ToolHitRow { name: text, path_text, key });
+            // `Catalog::flat` lists every entry first, in order: an entry's row is its index.
+            hits.push(ToolHitRow { name: text, path_text, key, parent: f.choice.map(|k| (f.entry, k)), category: e.category });
         }
         self.flat = flat;
         self.flat_hits = hits;
@@ -213,6 +233,154 @@ impl ToolsState {
 
     pub fn at_root(&self) -> bool {
         self.level == Level::Root
+    }
+
+    /// Opens the Tools menu as the Super+X panel, its box sized to `columns` × `rows` cells, on its
+    /// All tab with `recent` as its Recent section. The caller decides whether the panel is on
+    /// (`[tools] panel`). From then on the root lists the open tab's tools.
+    pub fn open_panel(&mut self, columns: u16, rows: u16, recent: Vec<usize>) {
+        // No room (a very short or narrow output): not opened, the root and the box stay today's.
+        self.panel = (columns > 0 && rows > 0).then_some((columns, rows));
+        self.pane_lines = usize::from(rows);
+        self.home = self.panel.map(|_| Panel::build(&self.catalog, &recent, 0));
+        self.recent = recent;
+        self.rev += 1;
+    }
+
+    /// The panel, at its root (spec 2026-11-26-superx-panel-design.md, "Tabs and sections").
+    pub fn panel(&self) -> Option<&Panel> {
+        self.home.as_ref().filter(|_| self.level == Level::Root)
+    }
+
+    /// Opens the tab `step` places from the open one, wrapping: false with no panel at the root or
+    /// with All the only tab (nothing to rebuild, nothing to redraw).
+    pub fn next_tab(&mut self, step: i32) -> bool {
+        let Some(home) = self.panel().filter(|p| p.tabs.len() > 1) else { return false };
+        let n = i64::try_from(home.tabs.len()).unwrap_or(1).max(1);
+        let to = (i64::try_from(home.active).unwrap_or(0) + i64::from(step)).rem_euclid(n);
+        self.open_tab(usize::try_from(to).unwrap_or(0))
+    }
+
+    /// Opens tab `tab` (an index into `Panel::tabs`, a click on it): false with no panel at the
+    /// root or no such tab.
+    pub fn open_tab(&mut self, tab: usize) -> bool {
+        if self.panel().is_none_or(|p| tab >= p.tabs.len()) {
+            return false;
+        }
+        self.home = Some(Panel::build(&self.catalog, &self.recent, tab));
+        self.rev += 1;
+        true
+    }
+
+    /// The fixed choices `entry`'s row shows as chips in the panel's search: none for an entry
+    /// without them (a `choices_cmd` one keeps its level).
+    pub fn chips(&self, entry: usize) -> Option<&[String]> {
+        match self.catalog.entries.get(entry).map(|e| &e.choices) {
+            Some(Choices::Fixed(list)) if !list.is_empty() => Some(list),
+            _ => None,
+        }
+    }
+
+    /// The chip picked on `entry`'s row in the panel's search, if one is: none is picked until ←/→
+    /// or a query that matches a choice's text picks it (Enter never runs a choice the user did
+    /// not pick).
+    pub fn chip(&self, entry: usize) -> Option<usize> {
+        let list = self.chips(entry)?;
+        self.picked.get(entry).copied().flatten().filter(|&k| k < list.len())
+    }
+
+    /// No chip picked on any row, but those `matched` names (entry, choice): what a new query picks.
+    pub fn pick_chips(&mut self, matched: &[(usize, usize)]) {
+        self.picked.clear();
+        self.picked.resize(self.catalog.entries.len(), None);
+        for &(e, k) in matched {
+            if let Some(slot) = self.picked.get_mut(e) {
+                *slot = Some(k);
+            }
+        }
+    }
+
+    /// Picks the chip `step` places from `entry`'s picked one, stopping at the first and the last;
+    /// with none picked, → (a positive step) picks the first and ← nothing. False when it did not
+    /// move (no chips, already at that end, or ← with none picked).
+    pub fn step_chip(&mut self, entry: usize, step: i32) -> bool {
+        let Some(n) = self.chips(entry).map(<[String]>::len) else { return false };
+        let to = match self.chip(entry) {
+            None if step > 0 => 0,
+            None => return false,
+            Some(at) => {
+                let to = usize::try_from(i64::try_from(at).unwrap_or(0) + i64::from(step)).unwrap_or(0).min(n.saturating_sub(1));
+                if to == at {
+                    return false;
+                }
+                to
+            }
+        };
+        if self.picked.len() < self.catalog.entries.len() {
+            self.picked.resize(self.catalog.entries.len(), None);
+        }
+        if let Some(slot) = self.picked.get_mut(entry) {
+            *slot = Some(to);
+        }
+        true
+    }
+
+    /// Picks chip `k` on `entry`'s row (a click on it): false when it has no such chip or it is
+    /// already the picked one.
+    pub fn pick_chip(&mut self, entry: usize, k: usize) -> bool {
+        if self.chips(entry).is_none_or(|list| k >= list.len()) || self.chip(entry) == Some(k) {
+            return false;
+        }
+        if self.picked.len() < self.catalog.entries.len() {
+            self.picked.resize(self.catalog.entries.len(), None);
+        }
+        if let Some(slot) = self.picked.get_mut(entry) {
+            *slot = Some(k);
+        }
+        true
+    }
+
+    /// The cells the box was sized to at open, at any level: the box keeps its size for the whole open.
+    pub fn panel_size(&self) -> Option<(u16, u16)> {
+        self.panel
+    }
+
+    /// Whether the root shows as the panel's: opened by `open_panel` and at the root.
+    pub fn at_panel(&self) -> bool {
+        self.panel.is_some() && self.level == Level::Root
+    }
+
+    /// The lines of the panel's list pane in the box drawn (the view, at each layout).
+    pub fn set_pane_lines(&mut self, lines: usize) {
+        self.pane_lines = lines;
+    }
+
+    /// The open tab's tools the pane draws whole, the list scrolled to tool `top` and tool
+    /// `selected` selected: (index into `Panel::tools`, entry), in row order.
+    fn drawn(&self, top: usize, selected: Option<usize>) -> Vec<(usize, usize)> {
+        let Some(panel) = self.panel() else { return Vec::new() };
+        let (lines, start) = window(&panel.rows, top, selected, self.pane_lines);
+        lines
+            .iter()
+            .filter(|x| x.drawn(start, self.pane_lines))
+            .filter_map(|x| if let PanelRow::Tool(e) = x.row { Some((x.tool, e)) } else { None })
+            .collect()
+    }
+
+    /// The tool the letter `c` runs, the list scrolled to `top` with `selected` selected: one the
+    /// open tab draws whose letter it is, its capsule on screen (index into `Panel::tools`, row;
+    /// a tool drawn twice is its first row). A tool listed but not drawn, or not listed, leaves
+    /// its letter inert (the key starts the search): no key runs what the user did not see.
+    pub fn letter(&self, c: char, top: usize, selected: Option<usize>) -> Option<(usize, RowId)> {
+        self.drawn(top, selected)
+            .into_iter()
+            .find(|&(_, e)| self.catalog.entries.get(e).is_some_and(|e| e.letter == Some(c)))
+            .map(|(k, e)| (k, RowId::Entry(e)))
+    }
+
+    /// Whether a letter runs anything at the panel's root: one of the tools drawn carries a capsule.
+    pub fn root_letters(&self, top: usize, selected: Option<usize>) -> bool {
+        self.drawn(top, selected).into_iter().any(|(_, e)| self.catalog.entries.get(e).is_some_and(|e| e.letter.is_some()))
     }
 
     /// The flat search's rows (every entry, then every fixed choice) and their candidates.
@@ -245,6 +413,7 @@ impl ToolsState {
     /// The rows of the current level, in its order.
     pub fn rows(&self) -> Vec<ToolRow> {
         match self.level {
+            Level::Root if self.home.is_some() => self.home.iter().flat_map(Panel::tools).filter_map(|e| self.entry_row(e)).collect(),
             Level::Root => self
                 .catalog
                 .root_rows()
@@ -294,7 +463,7 @@ impl ToolsState {
             },
             RowId::Category(_) | RowId::Prompt(_) => None,
         };
-        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default() }
+        ToolHitRow { name: row.text.clone(), path_text: String::new(), key: key.unwrap_or_default(), parent: None, category: None }
     }
 
     /// The question a pending `row` shows: `<name>? ⏎` (the icon is the row's own), a choice of a
@@ -466,7 +635,12 @@ impl ToolsState {
     /// the breadcrumb shows: ← and Esc land on it. Returns the selection to restore in the next
     /// level (`selected` when already below the root).
     fn through_category(&mut self, e: usize, selected: usize) -> usize {
+        // The panel has no category level (its categories are tabs): Esc lands on the tool's row.
+        if self.home.is_some() && self.level == Level::Root {
+            return self.position(Level::Root, RowId::Entry(e));
+        }
         if let (Level::Root, Some(c)) = (self.level, self.catalog.entries.get(e).and_then(|e| e.category)) {
+            // `up` lands on the category's row, the root row the entry is reached through.
             let from = self.position(Level::Root, RowId::Category(c));
             self.open(Level::Category(c), from);
             return self.position(Level::Category(c), RowId::Entry(e));

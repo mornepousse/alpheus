@@ -324,7 +324,7 @@ fn calc_opens_the_calculator_and_enter_copies() {
 }
 
 /// Tools menu, `--tools`: the menu opens with no scan; a second `--tools` past the debounce closes
-/// it; typing `reload` and Enter runs `[tools] reload` through a stub (never `shell-ctl`) after the
+/// it; `/` then `reload` and Enter runs `[tools] reload` through a stub (never `shell-ctl`) after the
 /// box closed, and the log names the built-in by id, never the command.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -343,12 +343,136 @@ fn tools_opens_and_a_builtin_runs_after_the_box_closed() {
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "reload", "-k", "Return"]).success());
+    assert!(wtype(&sway, &["-s", "300", "/reload", "-k", "Return"]).success());
     assert!(wait_for_call(&sway, "fake-reload", "fake-reload --now"), "{:?} {:?}", recorded(&sway, "fake-reload"), d.log());
     assert!(d.wait_for("tools: built-in reload", DELAY), "{:?}", d.log());
     assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
     assert!(!d.log().iter().any(|l| l.contains("fake-reload") || l.contains("--now")), "never the command: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// The letters of the Tools root: `y`, a user entry's own `key`, runs its command once (a recorder
+/// on the private `PATH`); `n`, Notes' letter (Notes pinned at the root, where its capsule shows),
+/// replays its verb once, the pad shown after the box closed.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_a_letter_runs_its_builtin_after_the_box_closed() {
+    let sway = Sway::start("tools-letter", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_recorder(&sway, "fake-mine");
+    let toml =
+        format!("[tools]\nroot = [\"notes\"]\n[[tools.entry]]\nname = \"Mine\"\nrun = [\"{}\", \"--go\"]\nkey = \"y\"\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["y"]);
+    assert!(wait_for_call(&sway, "fake-mine", "fake-mine --go"), "{:?} {:?}", recorded(&sway, "fake-mine"), d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["n"]);
+    assert!(d.wait_for("tools: built-in notes", DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "the letter replays the pad's verb: {:?}", d.log());
+    thread::sleep(Duration::from_millis(600));
+    let log = d.log();
+    let at = |what: &str, nth: usize| log.iter().enumerate().filter(|(_, l)| l.contains(what)).nth(nth).map(|(i, _)| i);
+    let (closed, shown) = (at("launcher closed (activated)", 1), at(NOTES_SHOWN, 0));
+    assert!(closed.is_some() && shown.is_some() && closed < shown, "the pad opened before the box closed: {log:?}");
+    assert_eq!(recorded(&sway, "fake-mine").len(), 1, "one letter, one run: {log:?}");
+    assert_eq!(d.count("tools: built-in notes"), 1, "one letter, one verb: {log:?}");
+    assert_eq!(d.count(NOTES_SHOWN), 1, "{log:?}");
+    assert!(log.iter().all(|l| !l.contains("fake-mine") && !l.contains("--go")), "never the command: {log:?}");
+}
+
+/// `/` or Space at the Tools root starts the search: the letters after it are text, nothing runs and
+/// the box stays open; Enter then runs the search's hit. A root user entry claims `n` before Notes
+/// (the root's entries claim first) and the loss is one count in the log; plain `n`, the control,
+/// runs it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_panel_slash_then_letters_search() {
+    let sway = Sway::start("tools-slash-letters", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_recorder(&sway, "fake-mine");
+    let toml = format!("[[tools.entry]]\nname = \"Mine\"\nrun = [\"{}\"]\nkey = \"n\"\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    // The control: `n` alone is live, and runs the entry that claimed it first.
+    tools_open_and_type(&sway, &d, 1, &["n"]);
+    assert!(wait_until(|| recorded(&sway, "fake-mine").len() == 1), "{:?}", d.log());
+    assert!(d.wait_for("tools: 1 letters taken twice", DELAY), "Notes lost its letter, counted: {:?}", d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // `/` then `notes`: a search, held open by the typist; Enter 1.5 s later runs its hit.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(&sway, &["-s", "300", "/notes", "-s", "1500", "-k", "Return"]);
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(recorded(&sway, "fake-mine").len(), 1, "a letter after `/` ran its tool: {:?}", d.log());
+    assert_eq!(d.count("tools: built-in"), 0, "{:?}", d.log());
+    assert_eq!(d.count("launcher closed ("), 1, "the box stays open while searching: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for("tools: built-in notes", DELAY), "the search found Notes: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    // Space then `n`: text too; Escape closes.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(&sway, &["-s", "300", "-k", "space", "n", "-s", "1500", "-k", "Escape"]);
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(d.count("launcher closed ("), 2, "the box stays open while searching: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-mine").len(), 1, "a letter after Space ran its tool: {:?}", d.log());
+    assert_eq!(d.count("tools: built-in"), 1, "{:?}", d.log());
+}
+
+/// Tab changes the panel's tab: Enter on All's first tool runs Alpha's entry (the control); Tab
+/// twice opens Beta's tab and Enter runs its first tool; Shift+Tab from All wraps to the last tab.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_panel_tab_changes_the_tab() {
+    let sway = Sway::start("tools-panel-tab", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let a = fake_recorder(&sway, "fake-alpha");
+    let b = fake_recorder(&sway, "fake-beta");
+    let toml = format!(
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Alpha\"\n[[tools.category]]\nname = \"Beta\"\n\
+         [[tools.entry]]\nname = \"First\"\ncategory = \"Alpha\"\nrun = [\"{}\"]\n\
+         [[tools.entry]]\nname = \"Second\"\ncategory = \"Beta\"\nrun = [\"{}\"]\n",
+        a.display(),
+        b.display()
+    );
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-alpha").len() == 1), "All's first tool: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 1, DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 2, &["-k", "Tab", "-k", "Tab", "-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-beta").len() == 1), "Beta's tab: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    tools_open_and_type(&sway, &d, 3, &["-M", "shift", "-k", "Tab", "-m", "shift", "-k", "Return"]);
+    assert!(wait_until(|| recorded(&sway, "fake-beta").len() == 2), "Shift+Tab wraps to Beta: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 3, DELAY), "{:?}", d.log());
+    assert_eq!(recorded(&sway, "fake-alpha").len(), 1, "a tab change runs nothing: {:?}", d.log());
+}
+
+/// Nothing at rest after a cycle of moves: opened with every shown built-in, moved through the
+/// panel's rows (→ and ← on a tool without choices do nothing), closed by Escape; no loop wake-up in 5 s, the thread count where it was.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn tools_panel_at_rest_no_wakeups_after_a_cycle() {
+    let sway = Sway::start("tools-panel-rest", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
+    ready(&d);
+    thread::sleep(Duration::from_millis(500));
+    let threads = d.threads();
+    tools_open_and_type(&sway, &d, 1, &["-k", "Down", "-k", "Right", "-k", "Down", "-k", "Left", "-k", "Up", "-k", "Escape"]);
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("tools: built-in"), 0, "a move runs nothing: {:?}", d.log());
+    thread::sleep(Duration::from_millis(1500));
+    away_from_the_minute();
+    let rest = rest_over_5_s(&d);
+    assert_eq!(rest, 0, "the loop woke {rest} times at rest after a cycle of moves: {:?}", d.log());
+    assert_eq!(d.threads(), threads, "no thread left behind");
 }
 
 // ---- the Tools menu  ----
@@ -424,17 +548,17 @@ fn tools_drills_runs_and_keeps_argv_whole() {
     );
     let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
     ready(&d);
-    // Return (the category), Return (the entry's choices), Down, Down, Return: the third choice.
-    tools_open_and_type(&sway, &d, 1, &["-k", "Return", "-k", "Return", "-k", "Down", "-k", "Down", "-k", "Return"]);
+    // Return (the entry's choices: the panel's first tool), Down, Down, Return: the third choice.
+    tools_open_and_type(&sway, &d, 1, &["-k", "Return", "-k", "Down", "-k", "Down", "-k", "Return"]);
     assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 1), "{:?}", d.log());
     assert_eq!(recorded_argv(&sway, "argv-rec")[0], ["fixed", "c"]);
     assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
     // Typed: the filter keeps the choice whole, spaces included.
-    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-k", "Return", "-s", "200", "a b", "-k", "Return"]);
+    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-s", "200", "a b", "-k", "Return"]);
     assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 2), "{:?}", d.log());
     assert_eq!(recorded_argv(&sway, "argv-rec")[1], ["fixed", "a b"]);
     assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
-    tools_open_and_type(&sway, &d, 3, &["-k", "Return", "-k", "Return", "-s", "200", "q", "-k", "Return"]);
+    tools_open_and_type(&sway, &d, 3, &["-k", "Return", "-s", "200", "q", "-k", "Return"]);
     assert!(wait_until(|| recorded_argv(&sway, "argv-rec").len() == 3), "{:?}", d.log());
     assert_eq!(recorded_argv(&sway, "argv-rec")[2], ["fixed", "it's \"q\""], "quotes survive: one argument");
     assert!(
@@ -538,8 +662,8 @@ fn tools_choices_cmd_filters_and_runs() {
     assert!(d.log().iter().all(|l| !l.contains("two three")), "never a line in the log: {:?}", d.log());
 }
 
-/// Enter held on a category drills once: the repeats do nothing (they would otherwise run the
-/// category's first entry), so a key held past a box never acts in what it opened.
+/// Enter held on an entry with choices drills once: the repeats do nothing (they would otherwise run
+/// its first choice), so a key held past a box never acts in what it opened.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn tools_a_held_enter_drills_once_and_runs_nothing() {
@@ -547,7 +671,8 @@ fn tools_a_held_enter_drills_once_and_runs_nothing() {
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     fake_recorder(&sway, "fake-plain");
     let toml = format!(
-        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [\"{}\"]\n",
+        "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [\"{}\", \"{{choice}}\"]\n\
+         choices = [\"one\"]\n",
         sway.runtime.join("bin/fake-plain").display()
     );
     let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
@@ -566,9 +691,10 @@ fn tools_wifi_builtin_opens_the_quick_detail_and_the_repeat_stays_out() {
     let (_bus, nm, sway, _hypr, d) = wifi_daemon("tools-wifi");
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
-    // `wifi` finds the one row; Return held 1.2 s: the press runs it, the repeats (after 600 ms) come
-    // after the panel took the keyboard.
-    let held = wtype_spawn(&sway, &["-s", "300", "wifi", "-s", "200", "-P", "Return", "-s", "1200", "-p", "Return"]);
+    // `/` starts the search (`w` is Wi-Fi's letter at the Tools root), `wifi` finds the one row;
+    // Return held 1.2 s: the press runs it, the repeats (after 600 ms) come after the panel took the
+    // keyboard.
+    let held = wtype_spawn(&sway, &["-s", "300", "/wifi", "-s", "200", "-P", "Return", "-s", "1200", "-p", "Return"]);
     assert!(d.wait_for("tools: built-in quick.wifi", DELAY), "{:?}", d.log());
     assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
     assert!(wait_for_call(&sway, "nmcli", "nmcli device wifi rescan"), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
@@ -595,7 +721,8 @@ fn tools_clipboard_builtin_opens_the_history() {
     thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "clip", "-k", "Return"]).success());
+    // `/` starts the search: `c` is the Clipboard's letter at the Tools root.
+    assert!(wtype(&sway, &["-s", "300", "/clip", "-k", "Return"]).success());
     assert!(d.wait_for("tools: built-in clipboard", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "the history box shown: {:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
@@ -605,7 +732,7 @@ fn tools_clipboard_builtin_opens_the_history() {
     let (sway, d) = clip_daemon("tools-clip-off", None);
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "clip", "-k", "Return"]).success());
+    assert!(wtype(&sway, &["-s", "300", "/clip", "-k", "Return"]).success());
     thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("tools: built-in"), 0, "{:?}", d.log());
     assert_eq!(d.count("launcher closed (activated)"), 0, "{:?}", d.log());
@@ -796,12 +923,12 @@ fn tools_at_rest_no_wakeups_after_a_cycle() {
     ready(&d);
     thread::sleep(Duration::from_millis(500));
     let threads = d.threads();
-    // A question asked (Enter on the category, Enter on the entry), the box then closed by the verb
+    // A question asked (Enter on the entry, the panel's first tool), the box then closed by the verb
     // with the question still pending (inside its 3 s; Escape would cancel it first). wtype keeps
     // its keyboard up meanwhile, so nothing but the verb closes the box.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
-    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "20000"]);
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-s", "20000"]);
     assert!(d.wait_for("tools: states read (1 on, 0 off, 0 unknown)", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(1200)); // asked at ~0.3 s, expires at ~3.3 s
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
@@ -813,12 +940,7 @@ fn tools_at_rest_no_wakeups_after_a_cycle() {
     let first = rest_over_5_s(&d);
     assert_eq!(first, 0, "the loop woke {first} times at rest after a question closed with the box: {:?}", d.log());
     // A question left to expire (3.5 s), then the box closed.
-    tools_open_and_type(
-        &sway,
-        &d,
-        2,
-        &["-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "3500", "-k", "Escape", "-k", "Escape", "-k", "Escape"],
-    );
+    tools_open_and_type(&sway, &d, 2, &["-k", "Return", "-s", "100", "-k", "Return", "-s", "3500", "-k", "Escape"]);
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(1500));
     away_from_the_minute();
@@ -832,7 +954,7 @@ fn tools_at_rest_no_wakeups_after_a_cycle() {
     }
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
-    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "100", "-k", "Return", "-s", "25000"]);
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-s", "100", "-k", "Return", "-s", "25000"]);
     thread::sleep(Duration::from_millis(4000)); // asked at 0.4 s, expired at 3.4 s, redrawn
     let open = rest_over_5_s(&d);
     assert_eq!(open, 0, "the loop woke {open} times with the box open after the question expired: {:?}", d.log());

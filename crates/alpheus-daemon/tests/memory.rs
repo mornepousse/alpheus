@@ -1,5 +1,5 @@
 //! Startup PSS < 15 MB (firm),
-//! < 30 MB at steady state and no growth, under a busy compositor and a
+//! < 15 MB at steady state and no growth, under a busy compositor and a
 //! busy PipeWire; at rest with the resources module hidden, no wake-up —
 //! none at all for the sound and D-Bus threads; with resources, the loop
 //! wakes at the configured interval, no faster; threads counted, none left
@@ -161,7 +161,7 @@ fn populate(d: &Daemon, session: &PrivateBus) -> Vec<FakeItem> {
 }
 
 /// Once every icon is shown: the last Gets' buffers and startup's own
-/// release_memory settle (the same 3 s as pss_under_30mb_and_stable).
+/// release_memory settle (the same 3 s as pss_under_budget_and_stable).
 const TRAY_SETTLE: Duration = Duration::from_secs(3);
 
 /// ≈ 300 synthetic applications, each with an action: the size of a real
@@ -252,7 +252,7 @@ fn launcher_open_close_cycles_no_growth() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("cycles");
     let (sway, _hypr, d) = start_launcher("cycles", &bus, None, &many_apps(), None);
-    std::thread::sleep(Duration::from_secs(3)); // startup settled, as in pss_under_30mb_and_stable
+    std::thread::sleep(Duration::from_secs(3)); // startup settled, as in pss_under_budget_and_stable
     let closed = d.pss_kb();
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
@@ -276,7 +276,7 @@ fn launcher_open_close_cycles_no_growth() {
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1));
     // Baseline after one warm-up cycle: the bar's bounded glyph cache now
-    // holds the box's glyphs (same convention as pss_under_30mb_and_stable).
+    // holds the box's glyphs (same convention as pss_under_budget_and_stable).
     let baseline = d.pss_kb();
     // 50 cycles, 17 of them closed by a typed Escape (a keyboard bound and
     // released each time), the others by Mod+Space's toggle.
@@ -451,7 +451,7 @@ fn large_dmenu_pss_is_reported() {
 
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
-fn pss_under_30mb_and_stable() {
+fn pss_under_budget_and_stable() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("memory");
     let _workstation = Workstation::serve(&bus);
@@ -485,7 +485,9 @@ fn pss_under_30mb_and_stable() {
     eprintln!(
         "PSS: {initial} KB at startup, {baseline} KB after warm-up, {end} KB after {n} events, 5 plug cycles, pw-dump deltas every 10 ms"
     );
-    assert!(end < 30 * 1024, "PSS {end} KB >= 30 MB");
+    // The resident budget of docs/decisions.md ("Everything alpheus keeps resident fits in
+    // 15 MB at rest"); measured 11.3 to 11.9 MB, never raise.
+    assert!(end < 15 * 1024, "PSS {end} KB >= 15 MB");
     assert!(end <= baseline + 1024, "growth: {baseline} -> {end} KB");
     const RETURN_MARGIN_KB: u64 = 2 * 1024;
     assert!(end.abs_diff(initial) <= RETURN_MARGIN_KB, "PSS does not come back close to the start: {initial} KB -> {end} KB");
@@ -535,7 +537,7 @@ fn startup_pss_per_source() {
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
         let toml = format!("modules = [{modules}]\n{extra}");
         let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, None, Some(&toml), PwDump::Silent);
-        std::thread::sleep(Duration::from_secs(3)); // as in pss_under_30mb_and_stable
+        std::thread::sleep(Duration::from_secs(3)); // as in pss_under_budget_and_stable
         report.push((*what, d.pss_kb()));
     }
     eprintln!("startup PSS per source (KB): {report:?}");
@@ -1173,7 +1175,7 @@ fn media_module_pss_without_and_with_players() {
 /// Bar step 5: 100 track changes (each a new title, drawn) leave no growth behind. The titles
 /// cycle through the glyphs the warm-up already drew: fresh glyphs on every title would only
 /// measure the bounded glyph cache filling up (`painter::MAX_CACHE`, 2,048 glyphs; its bound is
-/// `pss_under_30mb_and_stable`'s), not the media path.
+/// `pss_under_budget_and_stable`'s), not the media path.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn track_changes_no_growth() {
@@ -4280,19 +4282,22 @@ fn tools_mem_start(name: &str, bus: &PrivateBus) -> (Sway, Daemon) {
     (sway, d)
 }
 
-/// One `--tools` cycle, closed by the verb (no key: no repeat timer): the n-th open waits for its
-/// states line. Returns the reading taken with the menu open and drawn: (PSS, anonymous, shm
-/// pools) in KB.
+/// One `--tools` cycle: four moves through the panel's rows (the typist then holds its
+/// keyboard, so no focus loss closes the box), the box closed by the verb; the n-th open waits for
+/// its states line. Returns the reading taken with the menu open and drawn after the moves: (PSS,
+/// anonymous, shm pools) in KB.
 fn tools_cycle(sway: &Sway, d: &Daemon, n: usize) -> (u64, u64, u64) {
     assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "-k", "Down", "-k", "Right", "-k", "Down", "-k", "Left", "-s", "10000"]);
     assert!(d.wait_for_count("tools: states read (", n, DELAY), "{:?}", d.log());
-    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(300));
+    std::thread::sleep(PAST_DEBOUNCE + Duration::from_millis(700));
     let (pss, pools) = d.pss_and_shm_kb();
     let open = (pss, anon_kb(d), pools);
     assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
     assert_eq!(launcher(sway, &Request::Tools), Reply::Done);
-    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (toggle)", n, DELAY), "{:?}", d.log());
+    drop(typing);
     std::thread::sleep(Duration::from_secs(1));
     open
 }
@@ -4443,8 +4448,8 @@ fn tools_choices_2000_lines() {
 }
 
 /// Nothing at rest after a Tools cycle that read states and asked a question, the box closed by
-/// the `--tools` verb (past the debounce) with the question still pending, and after one left to
-/// expire: no loop wake-up in 5 s (SCTK's key-repeat firing, once ~0.6 s after a key, is past
+/// the `--tools` verb (past the debounce) with the question still pending, after one left to
+/// expire, and after moves and a root entry's letter that ran it: no loop wake-up in 5 s (SCTK's key-repeat firing, once ~0.6 s after a key, is past
 /// before the window starts), the thread count where it was.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
@@ -4456,9 +4461,11 @@ fn at_rest_no_wakeups_after_tools() {
     let run = tools_mem_script(&sway, "fake-run", "exit 0");
     let toml = format!(
         "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Fake\"\n[[tools.entry]]\nname = \"Danger\"\ncategory = \"Fake\"\n\
-         run = [{:?}]\nconfirm = true\nstate = [{:?}]\n",
+         run = [{:?}]\nconfirm = true\nstate = [{:?}]\n\
+         [[tools.entry]]\nname = \"Plain\"\ncategory = \"Fake\"\nrun = [{:?}]\nkey = \"p\"\n",
         run.display().to_string(),
-        on.display().to_string()
+        on.display().to_string(),
+        run.display().to_string()
     );
     let d = start_daemon_with(
         &sway,
@@ -4484,9 +4491,9 @@ fn at_rest_no_wakeups_after_tools() {
         eprintln!("loop-thread wake-ups at rest {what} (5 s): {delta}");
         assert_eq!(delta, 0, "{delta} loop-thread wake-ups in 5 s {what}: {:?}", d.log());
     };
-    // A question asked (Enter on the category, Enter on the entry), the box closed by the verb
-    // with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The
-    // typist stays alive for 2.5 s so that no focus loss closes the box before the verb.
+    // A question asked (Enter on Danger, the panel's first tool, then a second Enter inside 0.4 s
+    // that does not answer it), the box closed by the verb with it pending (0.3 s after the open, past the debounce; the question lives 3 s). The typist stays alive for 2.5 s so that no focus loss
+    // closes the box before the verb.
     assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
     let typing = wtype_spawn(&sway, &["-s", "300", "-k", "Return", "-k", "Return", "-s", "2500"]);
@@ -4509,6 +4516,14 @@ fn at_rest_no_wakeups_after_tools() {
     );
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     rest("after an expired question");
+    // Moves through the panel's rows (Plain sits after Danger in Fake's section, its capsule
+    // shown), then Plain's letter runs it and closes the box.
+    assert_eq!(launcher(&sway, &Request::Tools), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 3, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Down", "-k", "Right", "-k", "Up", "-k", "Left", "-s", "100", "p"]).success());
+    assert!(d.wait_for("tools: entry 2 run", DELAY), "the letter ran its entry: {:?}", d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 1, DELAY), "{:?}", d.log());
+    rest("after moves and a letter");
     assert_eq!(d.threads(), threads, "no thread left behind");
 }
 

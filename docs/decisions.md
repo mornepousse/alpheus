@@ -1959,3 +1959,42 @@ action of a device that left the list and BlueZ's pending confirmation is then r
 of a device the panel does not list reads nothing.
 
 Date: 2026-11-25 · Source: tests `removed_device_goes`, `a_removal_the_service_denies_keeps_the_device` (`sources/dbus/bt.rs`)
+
+### Everything alpheus keeps resident fits in 15 MB at rest
+
+With the menus closed, everything alpheus keeps in memory (bar, notifications, OSD, wallpaper)
+fits in 15 MB. What opens on demand may exceed it while it is open and gives the memory back when it
+closes. This replaces the 120 MB of the scope (`docs/SCOPE.md`, requirement 1): the measured
+resident total was already near 15 MB, so the larger figure no longer constrained anything.
+
+Date: 2026-11-26 · Source: `tests/memory.rs` (startup budget `STARTUP_MAX_KB`; the steady state is tightened by the measurement task of the Super+X overview plan)
+
+### The control center becomes its own layer-shell program
+
+The control center is launched on demand as its own layer-shell program, outside the resident
+daemon, for isolation and for the resident budget. It reuses the daemon's grid and painter through a
+shared crate. A command that needs a terminal still opens one.
+
+Date: 2026-11-26 · Source: none yet (its design comes after the Super+X overview)
+
+### The Tools menu opens on a command panel; a letter runs only a tool whose capsule shows, never after `/` or Space nor from Mod+Space; a choice runs only once the user picks it
+
+Super+X opens on a command panel: tabs (All, then each category), each tool on two lines with what it
+does, a detail card for the selected one, and a letter that runs a tool in one key. The owner chose
+this layout over a grid of category cards after seeing both drawn by the daemon: nothing is hidden
+(All scrolls through every category), and each tool says what it does. A key that runs something
+at once must never surprise, so a letter acts only on a tool whose capsule is drawn on screen: a tool
+the open tab lists but has scrolled out of the pane starts the search with its letter, as a letter
+without a capsule does;
+`/` or Space start the search, and every letter after them is text; a held key never acts twice;
+Mod+Space never shows the panel nor has live letters, since its users type to search. In the search,
+no choice is picked by default: with a first chip picked, one Enter on Schedule shutdown would
+schedule a 30-minute shutdown, and one on Network scan would start a sweep, actions the user never
+chose. A chip is picked by ←/→, by a click on it (which runs nothing), or by a query whose every word
+is a case-insensitive substring of the chip's own text (a fuzzy match could pick a chip the user never
+aimed at); Enter on a row with chips and none picked opens its choices. Recent is read from the
+launcher's existing history (no new file), so a tool run from Mod+Space counts too. The box is
+sized once per open and keeps that size, so nothing jumps on the first key; one font size only, so
+no second font is loaded. `[tools] panel = false` keeps the category list.
+
+Date: 2026-11-26 · Source: tests `a_letter_runs_the_tool_its_capsule_shows`, `a_letter_of_a_tool_not_in_the_tab_starts_the_search`, `a_held_letter_runs_nothing`, `a_mod_space_jump_into_tools_never_runs_a_letter`, `enter_without_a_picked_chip_opens_the_choices`, `a_click_on_a_chip_picks_it_and_runs_nothing`, `panel_off_keeps_today_s_root` (`launcher/model/tests.rs`), `a_chip_is_picked_only_by_words_found_in_its_text` (`launcher/matching/tests.rs`), `tools_panel_slash_then_letters_search`, `tools_panel_tab_changes_the_tab` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-26-superx-panel-design.md`

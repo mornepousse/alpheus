@@ -38,13 +38,17 @@ floor); the lightweight alternatives aren't polished enough.
 
 ## Requirements (validated by the owner on 2026-10-02)
 
-1. **Resident budget: 120 MB maximum** for EVERYTHING that stays in memory
-   (bar, notifications, OSD, wallpaper). Whatever opens on demand (the TUI)
-   doesn't count, but must be fast.
+1. **Resident budget: 15 MB at rest** for EVERYTHING that stays in memory
+   (bar, notifications, OSD, wallpaper), menus closed (it was 120 MB; see
+   "Everything alpheus keeps resident fits in 15 MB at rest" in
+   `docs/decisions.md`). Whatever opens on demand may exceed it while open
+   and gives it back on close, but must be fast.
 2. **Replace everything**: bar, notification toasts, OSD — eventually no
    more waybar, mako, swayosd.
 3. **TUI spirit, both ways**: a minimalist bar with a terminal look
-   (character grid, monospace) + TUI panels opened on demand.
+   (character grid, monospace) + TUI panels opened on demand. The control
+   center moves to layer-shell (see "The control center becomes its own
+   layer-shell program" in `docs/decisions.md`).
 4. **Mouse AND keyboard** everywhere, with **standard conventions** from
    TUIs and apps (command palette `Ctrl+P`, shortcut bar, Space toggles,
    Enter activates) — not vim habits. Expected to evolve with use.

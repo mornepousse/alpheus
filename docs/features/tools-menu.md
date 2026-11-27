@@ -7,9 +7,12 @@ and `join.rs`); the other files of the folder are summarised in "How it is built
 
 ## What it does
 
-`alpheus-launch --tools` opens the launcher in a Tools mode: categories to browse, and a search that
-looks at every entry of every category at once. Typing `/` as the whole query in Mod+Space jumps into it
-too, so typing a path that starts with `/` does as well, from its first character (`[prefixes] tools = ""`
+`alpheus-launch --tools` (Super+X) opens the launcher on the command panel: a search field, a strip of
+tabs (All, then each category), the open tab's tools on two lines each (name, then what the tool
+does) beside a detail card for the selected one, and a footer of keys. Each tool may carry a letter
+that runs it in one key. The search looks at every tool of every category at once. Typing `/` as
+the whole query in Mod+Space jumps into the Tools mode too (as a plain list, never the panel), so
+typing a path that starts with `/` does as well, from its first character (`[prefixes] tools = ""`
 gives the key back). Nothing is resident while it is closed: no thread, no timer, no catalog.
 
 - **Built-in entries**, each shown only when it can work: Sound, Wi-Fi, Bluetooth, VPN, Shield, Do not
@@ -25,13 +28,74 @@ gives the key back). Nothing is resident while it is closed: no thread, no timer
 
 ## Using it
 
-**Browsing.** With the query empty the box lists categories by their order (`Quick settings` 10,
+### The command panel
+
+**The box.** It is sized once, at open, for the output it opens on: about 106 cells wide and 30 rows
+tall on a wide output, never narrower than the launcher's usual box, at most 90 % of the output's
+width and 80 % of its height. It keeps that size for the whole open: the search and the levels draw
+inside it. A Kill a process picked from the panel reopens the box at the kill list's own size.
+`launcher.toml`'s `rows` does not size it.
+
+**Tabs.** All is the tab at open. It lists `PINNED` (the built-ins of `[tools] root` and your entries
+with no `category`), `RECENT` (the last 4 distinct tools run, read from the launcher's existing
+history, so a tool run from Mod+Space's search counts too; a pinned tool is not repeated there, and a
+tool that no longer shows is skipped), then one section per category, in category order, under its
+name in capitals and its colour dot. An empty section is not shown. A category tab lists that
+category's tools alone. **Tab** and **Shift+Tab** move between tabs, wrapping; a click on a tab opens
+it (and ends a search). ↑ ↓, PageUp, PageDown and the wheel move the selection; the list scrolls to
+keep it in view.
+
+**A tool's row** has its glyph on a tile in its category's colour, its name, and under it its
+description (a built-in's is fixed; an entry of yours shows its `description`, else its category's
+name). At the right: a drawn switch for a tool whose state is known (the slot is kept while the
+state is read), `›` for one that opens a level, and its letter's capsule.
+
+**The detail card**, at the right of the list (the list takes the box alone when it is narrower than
+80 cells), shows the selected tool: its tile, its name in bold, `<Category> · built-in` or `· yours`,
+its description, then its actions derived from what the tool is (`Run ⏎` or `Open ⏎`, `Choose →`,
+`Type <label> ⏎`, `Turn on/off ⏎`, `Confirm ⏎ ⏎`, `Quick key <letter>`), and `Pinned` for a pinned
+tool. The levels below a tool (its choices, its prompt) keep the card.
+
+**Letters.** A letter acts on the tool whose capsule is drawn on screen as Enter on its row
+would: it runs it and closes the box, opens its level, or asks its question first (`confirm`). A tool shown twice (pinned and in its category)
+keeps one letter. Letters are given in display order: Pinned first, then each category in order; a
+user entry wants its `key`, a built-in its `[tools] keys` letter, else its default. A letter wanted
+twice goes to the first, and one log line counts the letters taken twice (`tools: N letters taken
+twice`), never which. A tool the open tab lists but has
+scrolled out of the pane (or a box drawn shorter cuts off) is not drawn: its letter starts the
+search, as a letter without a capsule does, until the list scrolls to it. A letter is never live:
+
+- after `/` or Space, which start the search (the letters then are text);
+- for a letter with no capsule in the open tab: it starts the search with itself;
+- in Mod+Space: its box never shows the panel, and its `/` jump has no live letters;
+- held: the repeat of a key never acts twice (a letter that opened a level types nothing below).
+
+**Searching.** Typing (after `/` or Space, or a character with no capsule) filters every tool of every
+category. The results are grouped by category, the groups ordered by their best result, each under its
+label; tools with no category sit under `PINNED`. The matched characters are drawn in the accent
+colour. Erasing the query, then ⌫ once more after `/` or Space, gives the letters back; Esc closes
+the box. Esc on a level opened from the search goes back to the tool's row in the open tab.
+
+**Chips.** In the search, an entry with fixed choices shows them as chips on its second line. No chip is
+ever picked by default: a chip is picked by ← and →, by a click on it (which never runs it), or by a
+query whose every word is found, case aside, in the chip's own text (`quick ports` picks
+`Quick scan (common ports)`). Enter runs the entry with the picked chip; with none picked, Enter opens
+its choices as a level. A `choices_cmd` entry has no chips: Enter or → opens its level.
+
+**Confirming** works as below; while a question waits for its second Enter, the box's frame turns
+to the urgent colour.
+
+**Turned off.** `[tools] panel = false` keeps the category list described next, with no letters.
+
+### The category list
+
+**Browsing.** With `panel = false` and the query empty the box lists categories by their order (`Quick settings` 10,
 `Control center` 20, `Utilities` 30, `Captures` 40 (only with screencopy), `Diagnostics` 70, `System` 80,
 `Session` 90, and your own, 50 by default; a category with nothing to show is not listed). Enter or → opens one; ← or Esc goes back up; Esc at the root
 closes. Every action closes the box: a run, a built-in opening its feature, a toggle. Only opening a
 level, going up, a confirmation question and a program not on the `$PATH` (said in the box) keep it open.
 
-**Searching.** Typing filters the current level: at the root, every entry of every category, the
+**Searching.** In the category list, typing filters the current level: at the root, every entry of every category, the
 category dimmed after the entry and fixed choices as `Entry · Choice`; inside a category or a list of
 choices, that level only. Entries also rank in Mod+Space's normal search.
 
@@ -140,7 +204,9 @@ and `[prefixes] tools` (default `/`; `""` turns the prefix off).
 | --- | --- | --- |
 | `builtins` | `true` | `false` shows no built-in entry |
 | `hide` | `[]` | Built-in ids never shown (`"tab.power"`, `"quick.shield"`, …); an unknown id is logged and ignored |
-| `root` | `[]` | Built-in ids also listed at the root, first, in this order |
+| `root` | `[]` | Built-in ids also listed at the root, first, in this order (the panel's Pinned) |
+| `panel` | `true` | `false` keeps the category list, with no letters |
+| `keys` | `{}` | A built-in id to its letter, `{ "quick.wifi" = "w" }`; an unknown id is logged and ignored |
 | `reload` | `[]` | The argv of "Reload the bar"; empty hides the entry |
 | `[tools.builtin] usb_reset` | `sh -c 'sudo modprobe -r xhci_pci && …'` | The argv of "Reset USB (xHCI)", run in `terminal_hold`; `[]` hides the entry |
 
@@ -149,7 +215,9 @@ most 128) has:
 
 | Key | What it does |
 | --- | --- |
-| `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root |
+| `name`, `category`, `icon`, `order` | How the entry is listed; no `category` puts it at the root (the panel's Pinned). `icon` is a Nerd Font glyph or a character the bar's font has; one it lacks, and an entry without one, shows its category's icon |
+| `key` | One letter, `a` to `z`, that runs the entry from the command panel |
+| `description` | One line (1 to 80 characters) under its name in the panel; none shows its category's name |
 | `run` | The argv, run as written (no shell); with choices, exactly one element is `{choice}`; with `ask`, exactly one element is `{text}` |
 | `terminal`, `hold` | Run in launcher.toml's `terminal`, or its `terminal_hold` |
 | `confirm` | Ask `Name? ⏎` first (see above); not with `ask` |
@@ -184,6 +252,12 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 - `config.rs`, `catalog.rs`, `nav.rs`: pure. The configuration and its bounds; the table of the 45
   built-ins (`BUILTINS`), the `Context` of booleans that decides which show, and the merged categories and
   entries; the levels (including the prompt level of an `ask` entry), rows and confirmation question.
+- `panel.rs`: pure. The command panel's model: its tabs (`Tab`), the rows of the open tab (All's
+  Pinned, Recent and category sections, or one category's tools), `recent_entries` (the last 4
+  distinct tools of the history that still show) and `actions`, the detail card's actions derived from
+  what a tool is. `nav.rs`'s `ToolsState` holds the panel, its box size (fixed for the open), the
+  picked chips and the tab moves; `catalog.rs` holds the descriptions, the default letters and
+  `claim_letters`.
 - `read.rs`: the reader. One short-lived thread named `alpheus-tools` per read of states or of a
   `choices_cmd`, through the executor's `capture`.
 - `app.rs`: the wiring on the daemon's state. `context` builds the `Context` from the configuration and
@@ -197,6 +271,14 @@ In `crates/alpheus-daemon/src/launcher/tools/`:
 - `diag.rs`: pure. The ten scans (`Scan`), the argv of each (`scan_argv`), the check of a typed port
   list, the USB events script, and the `Subnet` seam whose real form (`ProcSubnet`) reads
   `/proc/net/route` once, when the sweep is chosen.
+
+The drawing is the launcher's view: `launcher/view/panel.rs` draws the panel in the box's cells
+(search field, tab strip, the list beside the detail card, footer) and maps a click to a tab, a row
+or a chip; `view::tools_layout` sizes the box once per open. Its rounded parts are the painter's
+shapes (`list::ShapeKind`: `Card` for the detail card, `Chip` for a tile, a capsule, a tab or the
+search field, `Band` for the selection over a tool's two lines, `Switch` for a known state), drawn
+in pixels under the cells. One font, one size: the card's title is bold, not larger.
+`launcher/matching.rs`'s `holds_every_word` decides which chip a query picks.
 
 The kill list is a mode of the launcher (`Mode::Processes`), not a file of the Tools folder:
 
@@ -268,6 +350,24 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
   box, however it ends.
 - The thread and timer inventory in `guardrails.rs` counts the reader's `thread::Builder` and the one
   `DeadlineTimer`.
+- The command panel's pure tests: `all_lists_pinned_recent_then_categories`,
+  `recent_is_deduplicated_and_skips_pinned`, `recent_holds_at_most_four` and
+  `recent_skips_tools_that_do_not_show` (`tools/panel/tests.rs`) pin the tabs and sections;
+  `a_letter_runs_the_tool_its_capsule_shows`, `a_letter_of_a_tool_not_in_the_tab_starts_the_search`,
+  `a_letter_without_a_capsule_starts_the_search_with_it`, `a_held_letter_runs_nothing`,
+  `a_tool_shown_twice_keeps_one_letter`, `a_mod_space_jump_into_tools_never_runs_a_letter` and
+  `panel_off_keeps_today_s_root` (`model/tests.rs`) pin when a letter acts;
+  `enter_without_a_picked_chip_opens_the_choices`, `a_query_picks_the_matching_chip_of_each_entry`,
+  `a_click_on_a_chip_picks_it_and_runs_nothing` and `a_click_on_a_picked_chip_selects_its_row` pin
+  that a choice runs only once the user picks it; `every_description_starts_with_a_verb` the
+  descriptions' style. The view's snapshots (`panel_home`, `panel_category`, `panel_search`) and
+  `a_panel_drawn_in_a_narrower_box_keeps_its_shapes_inside` keep the drawing inside the box.
+- `launcher/tools/panel.rs` is in the pure files of
+  `the_tools_pure_parts_have_no_panicking_path_and_log_nothing`.
+- The headless tests `tools_a_letter_runs_its_builtin_after_the_box_closed`,
+  `tools_panel_slash_then_letters_search` (after `/` or Space a letter is text; the letters taken
+  twice are one count in the log), `tools_panel_tab_changes_the_tab` and
+  `tools_panel_at_rest_no_wakeups_after_a_cycle` drive the panel through a disposable Sway.
 - The headless tests (`tools_opens_and_a_builtin_runs_after_the_box_closed`,
   `tools_drills_runs_and_keeps_argv_whole`, `tools_confirm_needs_a_second_enter_after_0_4_s`,
   `tools_states_are_read_and_a_hung_one_killed`, `tools_choices_cmd_filters_and_runs`,
@@ -282,19 +382,30 @@ it when there is none; `tools_tick` expires the question. `launcher_close` and `
   spawns runs in its own scope", "The Tools menu reads states and choices one job at a time on a short-lived
   thread", "Only the user's own processes are offered, and a reused pid is never signalled", "A typed
   text is one argv element and is never logged", "The diagnostics tools run in the held terminal, and
-  the scan's target is typed".
+  the scan's target is typed", "The Tools menu opens on a command panel; a letter runs only a tool
+  whose capsule shows, never after `/` or Space nor from Mod+Space; a choice runs only once the user
+  picks it".
 
 ## What it costs
 
-One release run on the branch, with no back-to-back base (the [memory tables](../measurements.md) have the figures):
+The command panel, 6 release runs back to back against `main` (c2f53bdd, the category list) built in
+its own target directory, the same cycle on both sides (four moves per open; the [memory
+tables](../measurements.md) have the figures):
 
-- **Open, 20 cycles:** the daemon's own anonymous memory +336 KB open over closed, +12 KB closed again,
-  +64 KB after 20 more cycles; the shm pools +1,316 KB open and back to 56 KB closed; 6 threads before
-  and after (`tools_pss_open_and_closed`).
-- **A `choices_cmd` of 2,000 lines:** anonymous memory +1,880 KB open, +144 KB closed again
-  (`tools_choices_2000_lines`).
-- **At rest:** 0 loop wake-ups in 5 s after a cycle, with a question pending and closed and after one
-  left to expire (`at_rest_no_wakeups_after_tools`).
+- **Open, 20 cycles:** PSS +2,005…+2,209 KB open over closed (main +1,115…+1,235), of which the shm
+  pools +1,792 KB (main +878: the larger box), back to 56 KB closed; the daemon's own anonymous
+  memory +304…+504 KB open (main +328…+448), +20…+104 KB closed again (main +0…+152; bound 256),
+  +16…+156 KB after 20 more cycles (main −68…+88; bound 128, read over once in 6 runs while another build ran, a cause not verified; +60…+120 in 3 runs alone on an idle machine);
+  5 threads before and after (`tools_pss_open_and_closed`).
+- **60 cycles:** the anonymous memory levels off, +84 KB over the first ten cycles then +8 KB over
+  the last twenty: a plateau, not a leak.
+- **At rest, closed:** PSS about +250 KB cold over main before any open (the panel's code and
+  descriptions in the binary); the steady state stays at 11.1 MB against the 15 MB budget
+  (`pss_under_budget_and_stable`). No second font size is loaded.
+- **A `choices_cmd` of 2,000 lines:** anonymous memory +1,444…+1,812 KB open, +164…+256 KB closed
+  again (main +144…+256) (`tools_choices_2000_lines`).
+- **At rest:** 0 loop wake-ups in 5 s after a question closed with the box, after one left to expire,
+  and after moves and a letter that ran its tool (`at_rest_no_wakeups_after_tools`).
 - **The kill list**, 3 release runs on the branch with no base (new code): PSS +990…+994 KB at the
   first open, +418…+422 KB over cold once closed (the first open's code and glyph pages); the daemon's
   own anonymous memory +4…+24 KB closed again and −8…+20 KB after 20 more cycles; 5 threads before

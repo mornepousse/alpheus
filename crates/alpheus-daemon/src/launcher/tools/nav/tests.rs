@@ -990,3 +990,80 @@ fn a_builtin_choice_is_reachable_from_the_flat_search() {
         Outcome::Activate(Activation::Tool(ToolAction::Builtin { index: b, choice: Some("2 h".into()), text: None }))
     );
 }
+
+/// A letter runs only from the opened panel's root, and only a tool the open tab lists; below the
+/// root, every letter is inert.
+#[test]
+fn a_letter_runs_only_a_tool_of_the_open_tab() {
+    let text = format!("{CFG}key = \"y\"\n[[tools.entry]]\nname = \"Rooted\"\nrun = [\"x\"]\nkey = \"r\"\n");
+    let (_, cat) = catalog(&text);
+    let nixify = cat.entries.iter().position(|e| e.name == "Nixify").unwrap();
+    let rooted = cat.entries.iter().position(|e| e.name == "Rooted").unwrap();
+    let mut t = ToolsState::new(cat);
+    // The list on its first tool, every tool drawn (30 lines).
+    let letter = |t: &ToolsState, c| t.letter(c, 0, Some(0)).map(|(_, row)| row);
+    assert_eq!(letter(&t, 'r'), None, "not opened as the panel");
+    assert!(!t.root_letters(0, Some(0)));
+    assert!(!t.next_tab(1), "no panel, no tab");
+    t.open_panel(104, 30, Vec::new());
+    assert_eq!(letter(&t, 'r'), Some(RowId::Entry(rooted)), "pinned, on All");
+    assert_eq!(letter(&t, 'y'), Some(RowId::Entry(nixify)), "Zed's section, on All");
+    assert!(t.next_tab(1), "the Nix tab");
+    assert_eq!(letter(&t, 'r'), None);
+    assert_eq!(letter(&t, 'y'), None, "Nixify is in Zed");
+    assert!(!t.root_letters(0, Some(0)), "nothing in Nix has a letter");
+    assert!(t.next_tab(1), "the Zed tab");
+    assert_eq!(letter(&t, 'y'), Some(RowId::Entry(nixify)));
+    t.open(Level::Category(0), 0);
+    assert_eq!(letter(&t, 'y'), None, "below the root");
+    assert!(t.panel().is_none());
+    assert!(!t.root_letters(0, Some(0)));
+    assert!(!t.next_tab(1));
+}
+
+/// A letter reaches only a tool the pane draws whole: in six lines Rooted (second under Pinned)
+/// shows, Nixify far below does not, until the list scrolls to it; the pane follows the box drawn.
+#[test]
+fn a_letter_runs_only_a_tool_drawn_in_the_pane() {
+    let text = format!("{CFG}key = \"y\"\n[[tools.entry]]\nname = \"Rooted\"\nrun = [\"x\"]\nkey = \"r\"\n");
+    let (_, cat) = catalog(&text);
+    let nixify = cat.entries.iter().position(|e| e.name == "Nixify").unwrap();
+    let rooted = cat.entries.iter().position(|e| e.name == "Rooted").unwrap();
+    let mut t = ToolsState::new(cat);
+    t.open_panel(104, 6, Vec::new());
+    let tools: Vec<usize> = t.panel().unwrap().tools().collect();
+    let (r, k) = (tools.iter().position(|&e| e == rooted).unwrap(), tools.iter().position(|&e| e == nixify).unwrap());
+    assert_eq!(r, 1, "Rooted's two lines end on the pane's fifth");
+    assert_eq!(t.letter('r', 0, Some(0)), Some((r, RowId::Entry(rooted))));
+    assert_eq!(t.letter('y', 0, Some(0)), None, "Nixify is below the pane");
+    assert_eq!(t.letter('y', k, Some(k)), Some((k, RowId::Entry(nixify))), "scrolled to it");
+    assert!(t.root_letters(0, Some(0)));
+    // A box drawn shorter (a size the compositor imposed): Rooted is cut, its letter inert.
+    t.set_pane_lines(4);
+    assert_eq!(t.letter('r', 0, Some(0)), None);
+    assert!(!t.root_letters(0, Some(0)), "no capsule drawn, no letter hint");
+}
+
+#[test]
+fn a_panel_with_no_room_is_not_opened() {
+    let (_, cat) = catalog(CFG);
+    let mut t = ToolsState::new(cat);
+    t.open_panel(104, 0, Vec::new());
+    assert_eq!(t.panel_size(), None);
+    assert!(!t.at_panel());
+    t.open_panel(104, 30, Vec::new());
+    assert_eq!(t.panel_size(), Some((104, 30)));
+}
+
+/// With All the only tab, Tab and Shift+Tab change nothing: no rebuild, nothing to redraw.
+#[test]
+fn next_tab_with_one_tab_does_nothing() {
+    let (_, cat) = catalog("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Lone\"\nrun = [\"x\"]\n");
+    let mut t = ToolsState::new(cat);
+    t.open_panel(104, 30, Vec::new());
+    assert_eq!(t.panel().unwrap().tabs.len(), 1, "All alone");
+    let rev = t.rev();
+    assert!(!t.next_tab(1));
+    assert!(!t.next_tab(-1));
+    assert_eq!(t.rev(), rev, "the rows were not rebuilt");
+}

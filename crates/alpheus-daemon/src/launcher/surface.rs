@@ -10,7 +10,7 @@ use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
 use crate::launcher::host::ScriptOwner;
-use crate::launcher::model::{Activation, Launcher, Outcome};
+use crate::launcher::model::{Activation, Launcher, Origin, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
 use crate::launcher::socket::Pending;
@@ -18,7 +18,7 @@ use crate::launcher::tools::nav::ToolAction;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::painter::{self, Frame, FrameInk};
+use crate::painter::{self, Frame};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
@@ -130,8 +130,25 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
 /// has one (the switcher's has no modes row, so one row less). Driven by the model's kind alone, never by the selection.
+/// An opened Tools panel sizes the box to its own cells instead (`view::tools_layout`), at every
+/// level of the open, so search and levels draw inside it.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
-    view::layout(output_columns, output_rows, model.config.rows, !model.has_modes(), !model.is_bare())
+    match model.panel_size() {
+        Some(wanted) => view::tools_layout(output_columns, output_rows, wanted),
+        None => view::layout(output_columns, output_rows, model.config.rows, !model.has_modes(), !model.is_bare()),
+    }
+}
+
+/// Opens the Super+X panel at open, in the room the box's cap leaves on this output
+/// (`view::panel_room`): an `alpheus-launch --tools` open only. A Mod+Space box reaching the
+/// Tools mode (the `/` prefix, a Tools hit) keeps today's root list and size; `[tools] panel =
+/// false` is `Launcher::open_panel`'s own no-op. Before `open_layout`, which sizes the box to it.
+pub(crate) fn open_panel_for_open(output_columns: u16, output_rows: u16, model: &mut Launcher) {
+    if model.origin != Origin::Tools {
+        return;
+    }
+    let (columns, rows) = view::panel_room(output_columns, output_rows);
+    model.open_panel(columns, rows);
 }
 
 /// The size a configure imposes, when it is not the one asked: a 0
@@ -184,7 +201,11 @@ pub(crate) fn layout_within(
     let (extra_w, extra_h) = frame.extra();
     let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance_phys);
     let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u32::from(u16::MAX)) as u16);
-    open_layout(columns.saturating_add(4), rows.saturating_add(2), model)
+    match model.panel_size() {
+        // The output's cap was applied when the box was asked: only the imposed cells bound it here.
+        Some(wanted) => view::tools_box(columns.saturating_add(2), rows.saturating_add(2), wanted),
+        None => open_layout(columns.saturating_add(4), rows.saturating_add(2), model),
+    }
 }
 
 /// What a scale change recomputes the box's layout within: the
@@ -444,8 +465,9 @@ impl App {
             model.path_dirs = open_path_dirs(true, |k| std::env::var_os(k));
         }
         // Once per open: the box keeps this size whatever gets selected.
+        open_panel_for_open(columns, rows, &mut model);
         let layout = open_layout(columns, rows, &model);
-        model.set_list_rows(layout.list_rows as usize);
+        view::fit(&mut model, &layout);
         let size = layout_size(&layout, advance, row_height, scale, &self.fonts.frame(scale));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let outputs = self.outputs.outputs().count();
@@ -603,7 +625,7 @@ impl App {
         let row_height = height * e as u32;
         let frame = fonts.frame(e);
         let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e, &frame);
-        open.model.set_list_rows(layout.list_rows as usize);
+        view::fit(&mut open.model, &layout);
         open.layout = layout;
         match plan_redraw(open.size, wanted, open.configured) {
             Redraw::Wait => {}
@@ -664,7 +686,9 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e, FrameInk::Border);
+        // A Tools question waiting for its second Enter turns the frame urgent; its row changes
+        // with it, so the `last` check above never skips that frame.
+        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e, view::frame_ink(&open.model));
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -847,8 +871,10 @@ impl App {
                         let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout, open.size);
                         match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
-                            (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
+                            (Some(Click::Result(i) | Click::Chip(i, _)), Button::Right) => open.model.click(i, true),
                             (Some(Click::Mode(m)), Button::Left) => open.model.click_mode(m),
+                            (Some(Click::Tab(tab)), Button::Left) => open.model.click_tab(tab),
+                            (Some(Click::Chip(i, k)), Button::Left) => open.model.click_chip(i, k),
                             _ => Outcome::Nothing,
                         }
                     }
@@ -907,7 +933,7 @@ impl App {
                 let e = open.scale.max(1);
                 let frame = fonts.frame(e);
                 let layout = layout_within(imposed, &open.model, fonts.advance(e), height * e as u32, e, &frame);
-                open.model.set_list_rows(layout.list_rows as usize);
+                view::fit(&mut open.model, &layout);
                 open.layout = layout;
                 open.size = imposed;
                 open.imposed_size = Some(imposed);
@@ -1205,5 +1231,124 @@ mod tests {
         assert!(owns_surface(true, true, false), "the box");
         assert!(owns_surface(true, false, true), "a scrim");
         assert!(!owns_surface(true, false, false), "open, but neither surface matches: the bar's own");
+    }
+
+    // --- the panel's box size (spec "Box") ---
+
+    use crate::keys::Key;
+    use crate::launcher::tools::catalog::{Catalog, Context};
+
+    /// Every built-in a default launcher.toml shows with these answers.
+    fn builtins() -> Context {
+        Context {
+            quick: true,
+            timer: true,
+            lock: true,
+            session: true,
+            shutdown: true,
+            captures: true,
+            diagnostics: true,
+            ..Context::default()
+        }
+    }
+
+    fn tools_open(text: &str) -> Launcher {
+        let config = LauncherConfig::from_text(text).unwrap();
+        let catalog = Catalog::build(&config.tools, &builtins(), &mut |_| {});
+        Launcher::for_tools(config, catalog, history::History::empty(200), 0)
+    }
+
+    /// A Mod+Space open with the Tools catalog, as `launcher_open_apps` builds it.
+    fn apps_with_tools(text: &str) -> Launcher {
+        let config = LauncherConfig::from_text(text).unwrap();
+        let catalog = Catalog::build(&config.tools, &builtins(), &mut |_| {});
+        let mut l = Launcher::for_apps(config, Vec::new(), history::History::empty(200), 0);
+        l.set_tools(catalog);
+        l
+    }
+
+    #[test]
+    fn a_tools_open_is_sized_to_its_panel() {
+        let mut l = tools_open("");
+        open_panel_for_open(232, 49, &mut l);
+        let size = l.panel_size().expect("a --tools open opens the panel");
+        let b = open_layout(232, 49, &l);
+        assert_eq!(b, view::tools_layout(232, 49, size));
+        assert_eq!(b.columns, view::PANEL_COLUMNS + 2, "the panel's full width on a wide output");
+        assert!(b.columns <= 232 * 9 / 10 && b.rows <= 49 * 8 / 10, "{b:?}");
+    }
+
+    #[test]
+    fn the_box_keeps_its_size_from_panel_to_search() {
+        let mut l = tools_open("[[tools.entry]]\nname = \"Ping\"\nrun = [\"ping\", \"{text}\"]\nask = \"Host\"\n");
+        open_panel_for_open(232, 49, &mut l);
+        let at_open = open_layout(232, 49, &l);
+        assert!(l.panel_size().is_some(), "the panel is opened at open");
+        for c in "/w".chars() {
+            l.key(Key::Char(c));
+        }
+        assert_eq!(l.query, "w", "searching");
+        assert_eq!(open_layout(232, 49, &l), at_open, "typing never resizes the box");
+        l.key(Key::Backspace);
+        l.key(Key::Backspace);
+        // Another tab, then a tool's prompt (a level below the root): the box stays.
+        l.key(Key::Tab);
+        assert_eq!(l.tools().unwrap().panel().map(|p| p.active), Some(1), "the second tab");
+        assert_eq!(open_layout(232, 49, &l), at_open, "a tab never resizes the box");
+        for c in "/ping".chars() {
+            l.key(Key::Char(c));
+        }
+        l.key(Key::Enter);
+        assert!(!l.tools().unwrap().at_root(), "a level below the root");
+        assert_eq!(open_layout(232, 49, &l), at_open, "a level never resizes the box");
+        let size = layout_size(&at_open, 8.25, 22, 1, &frame1());
+        assert_eq!(layout_within(size, &l, 8.25, 22, 1, &frame1()), at_open, "its own size refits to the same layout");
+    }
+
+    #[test]
+    fn rows_still_caps_the_other_modes() {
+        let capped = "rows = 4\n";
+        let mut apps = apps_with_tools(capped);
+        open_panel_for_open(232, 49, &mut apps);
+        assert_eq!(open_layout(232, 49, &apps).list_rows, 4, "Mod+Space keeps `rows`");
+        let mut tools = tools_open(capped);
+        open_panel_for_open(232, 49, &mut tools);
+        assert!(open_layout(232, 49, &tools).list_rows > 4, "`rows` does not cap the panel's box");
+    }
+
+    #[test]
+    fn panel_off_keeps_today_s_size() {
+        let mut l = tools_open("[tools]\npanel = false\n");
+        open_panel_for_open(232, 49, &mut l);
+        assert!(l.panel_size().is_none(), "off: never opened");
+        assert_eq!(open_layout(232, 49, &l), view::layout(232, 49, l.config.rows, true, true), "today's box");
+    }
+
+    #[test]
+    fn a_mod_space_open_never_opens_the_panel() {
+        let mut l = apps_with_tools("");
+        let today = open_layout(232, 49, &l);
+        open_panel_for_open(232, 49, &mut l);
+        assert!(l.panel_size().is_none(), "Mod+Space keeps today's Tools root");
+        assert_eq!(open_layout(232, 49, &l), today, "and today's size");
+        l.key(Key::Char('/'));
+        let unopened = {
+            let mut m = apps_with_tools("");
+            m.key(Key::Char('/'));
+            m.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>()
+        };
+        assert!(!l.tools().unwrap().at_panel(), "the `/` prefix shows no panel");
+        assert_eq!(l.tool_rows().iter().map(|r| r.id).collect::<Vec<_>>(), unopened, "today's root rows");
+        assert_eq!(open_layout(232, 49, &l), today, "the `/` prefix never resizes the box");
+    }
+
+    #[test]
+    fn an_output_too_short_for_the_panel_shows_today_s_box() {
+        let mut l = tools_open("");
+        open_panel_for_open(232, 6, &mut l);
+        assert!(l.panel_size().is_none(), "no room: no panel");
+        assert!(!l.letters_live(), "nor its letters");
+        let unopened = tools_open("");
+        assert_eq!(open_layout(232, 6, &l), open_layout(232, 6, &unopened), "today's box");
     }
 }

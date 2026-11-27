@@ -36,6 +36,39 @@ pub struct Boxed {
     pub divider: Option<u16>,
     /// Graphs drawn in pixels over rectangles of cells (their cells stay blank).
     pub graphs: Vec<Graph>,
+    /// Rounded shapes drawn in pixels under rectangles of cells, in order (a later one over an
+    /// earlier one): the cells' text goes over them.
+    pub shapes: Vec<Shape>,
+}
+
+/// A rounded shape under a rectangle of cells of a `Boxed` (in its own coordinates, after `boxed`
+/// drops the ring: set it after calling `boxed`, as a `Graph`), drawn in pixels by the painter
+/// before the cells. A cell on it whose background is `Tint::Bg` keeps the shape's fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    pub row: usize,
+    pub col: u16,
+    pub width: u16,
+    pub rows: u16,
+    pub kind: ShapeKind,
+    /// A glyph the painter draws over the shape's fill, in its tint, centred in the shape's pixel
+    /// rectangle on both axes (a tool's tile: the cell grid cannot place a glyph between two rows,
+    /// nor cut a wide one into a narrower span): the first character, or the second when no loaded
+    /// face draws the first.
+    pub glyph: Option<(char, char, Tint)>,
+}
+
+/// What a `Shape` is, which sets its fill and its corners (`Fonts::paint_boxed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    /// A card on the surface: `raised`.
+    Card,
+    /// A capsule in its tint, a little shorter than its rows (a key, the search field).
+    Chip(Tint),
+    /// The selection's band: `Tint::Selection`.
+    Band,
+    /// A switch, on or off: a track two cells wide from `col` (`width` is not read) and its knob.
+    Switch(bool),
 }
 
 /// A graph over a rectangle of cells of a `Boxed` (in its own coordinates, after `boxed` drops
@@ -78,6 +111,7 @@ pub fn boxed(rows: &[Grid], separators: &[usize], divider: Option<u16>) -> Boxed
         separators: separators.iter().filter_map(|r| r.checked_sub(1)).filter(|r| *r < inner).collect(),
         divider: divider.and_then(|c| c.checked_sub(1)),
         graphs: Vec::new(),
+        shapes: Vec::new(),
     }
 }
 
@@ -100,7 +134,7 @@ pub fn padded(content: &[Grid]) -> Boxed {
             g
         })
         .collect();
-    Boxed { rows, separators: Vec::new(), divider: None, graphs: Vec::new() }
+    Boxed { rows, separators: Vec::new(), divider: None, graphs: Vec::new(), shapes: Vec::new() }
 }
 
 /// One list row's content.

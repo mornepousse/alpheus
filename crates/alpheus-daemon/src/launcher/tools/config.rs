@@ -2,8 +2,8 @@
 //! structure, its validation and its bounds. Pure: no thread, no command, no log (the bound
 //! notes go through a callback the caller logs).
 
-use serde::Deserialize;
-use std::collections::HashSet;
+use serde::{Deserialize, Deserializer};
+use std::collections::{BTreeMap, HashSet};
 
 /// At most this many `[[tools.category]]`; the first ones are kept.
 pub const MAX_CATEGORIES: usize = 16;
@@ -15,6 +15,8 @@ pub const MAX_CHOICES: usize = 32;
 pub const MAX_STATES: usize = 16;
 /// A category's or an entry's name: 1 to TOOL_NAME_MAX characters (not bytes).
 pub const TOOL_NAME_MAX: usize = 48;
+/// An entry's `description`: 1 to DESCRIPTION_MAX characters.
+pub const DESCRIPTION_MAX: usize = 80;
 /// A fixed choice: 1 to CHOICE_MAX characters.
 pub const CHOICE_MAX: usize = 64;
 /// `order` is 0 to ORDER_MAX.
@@ -39,6 +41,11 @@ pub struct ToolsConfig {
     pub root: Vec<String>,
     /// The "Reload the bar" built-in's argv; empty hides it.
     pub reload: Vec<String>,
+    /// `false`: Super+X opens on the category list instead of the command panel.
+    pub panel: bool,
+    /// Built-in id to the letter that runs it from the panel (one lowercase ASCII letter); an unknown id is noted and ignored.
+    #[serde(deserialize_with = "letter_map")]
+    pub keys: BTreeMap<String, char>,
     /// The commands of the built-ins that run one (`[tools.builtin]`).
     pub builtin: BuiltinCommands,
     #[serde(rename = "category")]
@@ -54,6 +61,8 @@ impl Default for ToolsConfig {
             hide: Vec::new(),
             root: Vec::new(),
             reload: Vec::new(),
+            panel: true,
+            keys: BTreeMap::new(),
             builtin: BuiltinCommands::default(),
             categories: Vec::new(),
             entries: Vec::new(),
@@ -106,6 +115,11 @@ pub struct EntryConfig {
     pub choices_cmd: Vec<String>,
     /// A label: the entry asks for a text (after its choice, if any) and `run` holds `{text}`.
     pub ask: Option<String>,
+    /// The letter that runs the entry from the Tools panel: one lowercase ASCII letter.
+    #[serde(deserialize_with = "letter")]
+    pub key: Option<char>,
+    /// One line on what the entry does, shown under its name; absent: its category's name.
+    pub description: Option<String>,
     /// 1-based position in the file (what logs name an entry by); set after parsing.
     #[serde(skip)]
     pub position: usize,
@@ -116,6 +130,23 @@ impl EntryConfig {
     pub fn has_choices(&self) -> bool {
         !self.choices.is_empty() || !self.choices_cmd.is_empty()
     }
+}
+
+/// One character of `a` to `z`.
+fn letter_of<E: serde::de::Error>(s: &str) -> Result<char, E> {
+    let mut cs = s.chars();
+    match (cs.next(), cs.next()) {
+        (Some(c @ 'a'..='z'), None) => Ok(c),
+        _ => Err(E::custom("expected one lowercase letter, a to z")),
+    }
+}
+
+fn letter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<char>, D::Error> {
+    Option::<String>::deserialize(d)?.map(|s| letter_of(&s)).transpose()
+}
+
+fn letter_map<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, char>, D::Error> {
+    BTreeMap::<String, String>::deserialize(d)?.into_iter().map(|(id, s)| Ok((id, letter_of(&s)?))).collect()
 }
 
 /// Numbers the entries by their place in the file (1-based).
@@ -236,6 +267,9 @@ pub fn validate(t: &ToolsConfig) -> Result<(), String> {
         }
         check_icon(&at, &e.icon)?;
         check_order(&at, e.order)?;
+        if let Some(d) = &e.description {
+            check_text(&at, "description", d, DESCRIPTION_MAX)?;
+        }
         if e.terminal && e.hold {
             return Err(format!("{at}: terminal and hold are both set"));
         }

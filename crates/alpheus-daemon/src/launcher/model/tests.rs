@@ -1864,3 +1864,645 @@ fn a_question_is_about_a_pid_and_its_start_time() {
     let (key, _) = l.proc_ask.expect("asked");
     assert_eq!(key, (200, 2000));
 }
+
+// The Super+X panel's root: letters and the search's start (the root still lists today's rows).
+
+/// Every built-in shown but "Stop recording".
+fn panel_context() -> crate::launcher::tools::catalog::Context {
+    crate::launcher::tools::catalog::Context {
+        quick: true,
+        notifications: true,
+        timer: true,
+        keep_awake: true,
+        night_light: true,
+        lock: true,
+        session: true,
+        reload: true,
+        shield: true,
+        clipboard: true,
+        diagnostics: true,
+        nmap: true,
+        usb_reset: true,
+        shutdown: true,
+        shutdown_left: None,
+        captures: true,
+        recording: false,
+        annotate: true,
+        ocr: true,
+        record: true,
+    }
+}
+
+fn panel_catalog(config: &LauncherConfig) -> crate::launcher::tools::catalog::Catalog {
+    crate::launcher::tools::catalog::Catalog::build(&config.tools, &panel_context(), &mut |_| {})
+}
+
+/// A `--tools` open of `text`'s launcher.toml, its panel opened in 104×35 cells.
+fn panel_box(text: &str) -> Launcher {
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = panel_catalog(&config);
+    let mut l = Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000);
+    l.open_panel(104, 35);
+    l
+}
+
+/// Wi-Fi and the USB reset pinned at the root, where their capsules show.
+const PINNED: &str = "[tools]\nroot = [\"quick.wifi\", \"diag.usb_reset\"]\n";
+
+/// The catalog index of the built-in `id`.
+fn builtin_entry(l: &Launcher, id: &str) -> usize {
+    use crate::launcher::tools::catalog::{BUILTINS, EntryKind};
+    let t = l.tools().unwrap();
+    t.catalog.entries.iter().position(|e| matches!(e.kind, EntryKind::Builtin(b) if BUILTINS[b].id == id)).unwrap()
+}
+
+fn builtin_index(id: &str) -> usize {
+    crate::launcher::tools::catalog::BUILTINS.iter().position(|b| b.id == id).unwrap()
+}
+
+fn selected_row(l: &Launcher) -> Option<RowId> {
+    l.selected_tool()
+}
+
+fn runs_builtin(o: &Outcome, id: &str) -> bool {
+    matches!(o, Outcome::Activate(Activation::Tool(ToolAction::Builtin { index, .. })) if *index == builtin_index(id))
+}
+
+#[test]
+fn a_letter_runs_the_tool_its_capsule_shows() {
+    let mut l = panel_box(PINNED);
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('w'));
+    assert!(runs_builtin(&o, "quick.wifi"), "{o:?}");
+    assert_eq!(l.query, "");
+}
+
+#[test]
+fn a_letter_without_a_capsule_starts_the_search_with_it() {
+    let mut l = panel_box(PINNED);
+    let o = l.key(Key::Char('y'));
+    assert_eq!(o, Outcome::Redraw);
+    assert_eq!(l.query, "y");
+    assert!(!l.letters_live());
+    // Once the query is not empty every letter is text.
+    assert_eq!(l.key(Key::Char('w')), Outcome::Redraw);
+    assert_eq!(l.query, "yw");
+}
+
+#[test]
+fn slash_or_space_starts_the_search_and_is_not_typed() {
+    let mut l = panel_box(PINNED);
+    assert_eq!(l.key(Key::Char('/')), Outcome::Redraw);
+    assert!(l.searching && !l.letters_live());
+    assert_eq!(l.query, "");
+    assert_eq!(l.key(Key::Char('w')), Outcome::Redraw);
+    assert_eq!(l.query, "w");
+
+    let mut l = panel_box(PINNED);
+    assert_eq!(l.key(Key::Char(' ')), Outcome::Redraw);
+    assert_eq!(l.query, "");
+    l.key(Key::Char('w'));
+    assert_eq!(l.query, "w");
+
+    // Backspace on the empty query after `/`: back to the letters, the box stays open.
+    let mut l = panel_box(PINNED);
+    l.key(Key::Char('/'));
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
+    assert!(l.letters_live());
+    assert!(runs_builtin(&l.key(Key::Char('w')), "quick.wifi"));
+}
+
+#[test]
+fn a_prefix_entry_never_runs_a_letter() {
+    // Opened or not (a Mod+Space open is not the panel's), the letters stay text.
+    for placed in [false, true] {
+        let config = LauncherConfig::from_text(PINNED).unwrap();
+        let catalog = panel_catalog(&config);
+        let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+        l.set_tools(catalog);
+        if placed {
+            l.open_panel(104, 35);
+        }
+        assert!(matches!(l.key(Key::Char('/')), Outcome::EnterTools(_)));
+        assert_eq!(l.mode, Mode::Tools);
+        assert!(l.tools().unwrap().panel().is_none(), "a Mod+Space open has no panel");
+        assert!(!l.letters_live(), "placed: {placed}");
+        let o = l.key(Key::Char('w'));
+        assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+        assert_eq!(l.query, "w");
+    }
+}
+
+#[test]
+fn a_held_letter_runs_nothing() {
+    let mut l = panel_box(PINNED);
+    assert_eq!(l.key_repeat(Key::Char('w'), true), Outcome::Nothing);
+    assert_eq!(l.key_repeat(Key::Char('y'), true), Outcome::Nothing, "a held letter types nothing either");
+    assert_eq!(l.query, "");
+}
+
+#[test]
+fn a_confirm_tool_s_letter_asks_first() {
+    let mut l = panel_box(PINNED);
+    let t = Instant::now();
+    let reset = RowId::Entry(builtin_entry(&l, "diag.usb_reset"));
+    set_at(&mut l, t, 0);
+    assert_eq!(l.key(Key::Char('x')), Outcome::Asked);
+    assert_eq!(selected_row(&l), Some(reset), "the question shows on its row");
+    // The same letter again is another key: the question is cancelled, nothing runs.
+    set_at(&mut l, t, 100);
+    assert_eq!(l.key(Key::Char('x')), Outcome::Redraw);
+    assert!(!l.tools().unwrap().asking(reset));
+    let t = t + Duration::from_secs(1);
+    set_at(&mut l, t, 0);
+    assert_eq!(l.key(Key::Char('x')), Outcome::Asked);
+    set_at(&mut l, t, 300);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "too soon");
+    set_at(&mut l, t, 500);
+    let o = l.key(Key::Enter);
+    assert!(runs_builtin(&o, "diag.usb_reset"), "{o:?}");
+}
+
+/// A letter runs only a tool shown in the open tab's rows: on the Utilities tab, Wi-Fi's letter
+/// (Quick settings) starts the search with it.
+#[test]
+fn a_letter_of_a_tool_not_in_the_tab_starts_the_search() {
+    let mut l = panel_box("");
+    let wifi = builtin_entry(&l, "quick.wifi");
+    assert_eq!(l.tools().unwrap().catalog.entries[wifi].letter, Some('w'), "the letter is claimed");
+    open_tab(&mut l, "Utilities");
+    assert!(!l.tool_rows().iter().any(|r| r.id == RowId::Entry(wifi)), "not in the tab");
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('w'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "w");
+}
+
+/// A letter runs only a tool whose capsule the pane draws: at open Lock is listed on the All tab
+/// but below the pane's 23 lines, so `l` starts the search; once Lock is scrolled into view, `l`
+/// runs it.
+#[test]
+fn a_letter_of_a_tool_scrolled_out_of_view_starts_the_search() {
+    // The planned pane (`view/panel.rs` PANE_ROWS).
+    let lines = 23;
+    let open = || {
+        let config = LauncherConfig::from_text("").unwrap();
+        let catalog = panel_catalog(&config);
+        let mut l = Launcher::for_tools(config, catalog, History::empty(200), 1_800_000_000);
+        l.open_panel(104, 23);
+        l.set_list_rows(lines / 2);
+        l
+    };
+    let mut l = open();
+    let lock = builtin_entry(&l, "lock");
+    let at = panel_of(&l).tools().position(|e| e == lock).expect("Lock is listed on the All tab");
+    assert!(at >= lines / 2, "Lock is below the pane at open (tool {at})");
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('l'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "l");
+
+    let mut l = open();
+    while l.selected < at {
+        l.key(Key::Down);
+    }
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('l'));
+    assert!(runs_builtin(&o, "lock"), "{o:?}");
+}
+
+fn panel_of(l: &Launcher) -> &panel::Panel {
+    l.tools().unwrap().panel().expect("the panel")
+}
+
+/// Tab until the tab of the category `name` is open.
+fn open_tab(l: &mut Launcher, name: &str) {
+    use crate::launcher::tools::panel::Tab;
+    let t = l.tools().unwrap();
+    let k = t.catalog.categories.iter().position(|c| c.name == name).unwrap();
+    let at = panel_of(l).tabs.iter().position(|t| *t == Tab::Category(k)).unwrap();
+    while panel_of(l).active != at {
+        l.key(Key::Tab);
+    }
+}
+
+/// The list shows the open tab's tools, in its order: `selected` indexes `Panel::tools`.
+fn assert_lists_the_tab(l: &Launcher) {
+    let listed: Vec<RowId> = l
+        .results
+        .iter()
+        .map(|h| match h.source {
+            Source::Tool(i) => l.tool_rows()[i].id,
+            other => panic!("not a tool row: {other:?}"),
+        })
+        .collect();
+    let tools: Vec<RowId> = panel_of(l).tools().map(RowId::Entry).collect();
+    assert_eq!(listed, tools);
+}
+
+#[test]
+fn tab_and_shift_tab_switch_tabs_and_wrap() {
+    let mut l = panel_box("");
+    let n = panel_of(&l).tabs.len();
+    assert!(n > 2, "All and the categories");
+    assert_eq!(panel_of(&l).active, 0);
+    assert_lists_the_tab(&l);
+    l.key(Key::Down);
+    assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, 1);
+    assert_eq!(l.selected, 0, "a tab opens on its first tool");
+    assert_lists_the_tab(&l);
+    l.key(Key::BackTab);
+    assert_eq!(l.key(Key::BackTab), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, n - 1, "Shift+Tab wraps to the last tab");
+    assert_lists_the_tab(&l);
+    l.key(Key::Tab);
+    assert_eq!(panel_of(&l).active, 0, "Tab wraps to All");
+    assert!(l.letters_live());
+}
+
+/// Notes pinned and in Utilities: both rows show `n`, and `n` runs Notes once, from its first row.
+#[test]
+fn a_tool_shown_twice_keeps_one_letter() {
+    let mut l = panel_box("[tools]\nroot = [\"notes\"]\n");
+    let notes = builtin_entry(&l, "notes");
+    assert_eq!(panel_of(&l).tools().filter(|&e| e == notes).count(), 2, "Pinned and Utilities");
+    assert_eq!(l.tools().unwrap().catalog.entries[notes].letter, Some('n'));
+    let o = l.key(Key::Char('n'));
+    assert!(runs_builtin(&o, "notes"), "{o:?}");
+    assert_eq!(l.selected, 0, "its Pinned row");
+}
+
+#[test]
+fn letters_run_from_a_category_tab_too() {
+    let mut l = panel_box("");
+    open_tab(&mut l, "Utilities");
+    assert!(l.letters_live());
+    let o = l.key(Key::Char('n'));
+    assert!(runs_builtin(&o, "notes"), "{o:?}");
+}
+
+#[test]
+fn page_down_moves_a_page_of_tools() {
+    let mut l = panel_box("");
+    l.set_list_rows(4);
+    assert!(l.results.len() > 8);
+    l.key(Key::PageDown);
+    assert_eq!(l.selected, 4);
+    l.key(Key::PageDown);
+    assert_eq!(l.selected, 8);
+    l.key(Key::PageUp);
+    assert_eq!(l.selected, 4);
+    assert!(l.letters_live(), "moving keeps the letters");
+}
+
+/// A Recent section from the launcher's history, newest first: what was read at open.
+#[test]
+fn recent_comes_from_the_launcher_s_history() {
+    use crate::launcher::tools::panel::{Label, PanelRow};
+    let config = LauncherConfig::from_text("").unwrap();
+    let catalog = panel_catalog(&config);
+    let history = History::parse("100\t1\ttool:builtin:emoji\n300\t1\ttool:builtin:timer\n200\t1\tapp:x.desktop\n", 200, 1_000);
+    let mut l = Launcher::for_tools(config, catalog, history, 1_000);
+    l.open_panel(104, 35);
+    let rows = &panel_of(&l).rows;
+    let at = rows.iter().position(|r| *r == PanelRow::Section(Label::Recent)).expect("a Recent section");
+    let (timer, emoji) = (builtin_entry(&l, "timer"), builtin_entry(&l, "emoji"));
+    assert_eq!(rows[at + 1..at + 3], [PanelRow::Tool(timer), PanelRow::Tool(emoji)]);
+    assert_eq!(rows.get(at + 3).copied(), Some(PanelRow::Section(Label::Category(0))), "then the first category");
+}
+
+#[test]
+fn panel_off_keeps_today_s_root() {
+    let mut l = panel_box("[tools]\npanel = false\nroot = [\"quick.wifi\"]\n");
+    assert!(l.panel_size().is_none());
+    assert!(l.tools().unwrap().panel().is_none());
+    assert!(l.tool_rows().iter().any(|r| matches!(r.id, RowId::Category(_))), "today's categories");
+    assert!(!l.letters_live());
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing, "no tab to switch");
+    let o = l.key(Key::Char('w'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "w");
+}
+
+/// A tool found by the search opens its levels right above the panel (categories are tabs, not
+/// levels): Esc lands on the tool's choices, then on its row of the open tab.
+#[test]
+fn escape_from_a_searched_tool_lands_on_its_row() {
+    let mut l = panel_box(PINNED);
+    typed(&mut l, "/network scan");
+    let scan = builtin_entry(&l, "diag.scan");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
+    l.key(Key::Right);
+    l.key(Key::Right); // its second chip, which asks for a target
+    l.key(Key::Enter);
+    assert_eq!(l.tools().unwrap().level(), Level::Prompt { entry: scan });
+    assert_eq!(l.tools().unwrap().breadcrumb(), "Tools › Diagnostics › Network scan › Quick scan (common ports)");
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: scan });
+    assert_eq!(l.key(Key::Escape), Outcome::Redraw);
+    assert!(l.tools().unwrap().at_panel());
+    assert_eq!(l.query, "");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(scan)));
+}
+
+/// A held letter that opened a level below the root types nothing there: not into the choices'
+/// filter, not into the prompt's answer.
+#[test]
+fn a_held_letter_that_drilled_types_nothing_below() {
+    let text = "[[tools.entry]]\nname = \"Pick\"\nrun = [\"x\", \"{choice}\"]\nchoices = [\"p\", \"q\"]\nkey = \"g\"\n\
+                [[tools.entry]]\nname = \"Say\"\nrun = [\"x\", \"{text}\"]\nask = \"Text\"\nkey = \"y\"\n";
+    let mut l = panel_box(text);
+    let pick = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Pick").unwrap();
+    l.key(Key::Char('g'));
+    assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: pick });
+    assert_eq!(l.key_repeat(Key::Char('g'), true), Outcome::Nothing);
+    assert_eq!(l.key_repeat(Key::Char('g'), true), Outcome::Nothing);
+    assert_eq!(l.query, "");
+    // A fresh press is typed as usual.
+    l.key(Key::Char('p'));
+    assert_eq!(l.query, "p");
+
+    let mut l = panel_box(text);
+    l.key(Key::Char('y'));
+    assert!(l.tools().unwrap().prompting());
+    assert_eq!(l.key_repeat(Key::Char('y'), true), Outcome::Nothing);
+    assert_eq!(l.query, "", "the answer starts empty");
+}
+
+#[test]
+fn a_held_space_or_slash_types_nothing() {
+    for c in [' ', '/'] {
+        let mut l = panel_box(PINNED);
+        l.key(Key::Char(c));
+        assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
+        assert_eq!(l.key_repeat(Key::Char(c), true), Outcome::Nothing);
+        assert_eq!(l.query, "");
+        assert!(l.searching);
+    }
+}
+
+#[test]
+fn erasing_a_capsule_less_first_character_gives_the_letters_back() {
+    let mut l = panel_box(PINNED);
+    l.key(Key::Char('y'));
+    assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
+    assert!(l.letters_live());
+    assert!(runs_builtin(&l.key(Key::Char('w')), "quick.wifi"));
+}
+
+#[test]
+fn another_character_cancels_the_question_and_does_nothing_else() {
+    let mut l = panel_box(PINNED);
+    let reset = RowId::Entry(builtin_entry(&l, "diag.usb_reset"));
+    assert_eq!(l.key(Key::Char('x')), Outcome::Asked);
+    assert_eq!(l.key(Key::Char('w')), Outcome::Redraw, "Wi-Fi does not run");
+    assert!(!l.tools().unwrap().asking(reset));
+    assert_eq!(l.query, "");
+}
+
+/// A Mod+Space hit that drills into the Tools mode (no `/` prefix) back at the root: still no live
+/// letters, whatever was opened.
+#[test]
+fn a_mod_space_jump_into_tools_never_runs_a_letter() {
+    let config = LauncherConfig::from_text(PINNED).unwrap();
+    let catalog = panel_catalog(&config);
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), 1_800_000_000);
+    l.set_tools(catalog);
+    l.open_panel(104, 35);
+    typed(&mut l, "network scan");
+    l.key(Key::Enter);
+    assert_eq!(l.mode, Mode::Tools);
+    while !l.tools().unwrap().at_root() {
+        l.key(Key::Escape);
+    }
+    assert_eq!(l.query, "");
+    assert!(!l.letters_live());
+    let o = l.key(Key::Char('w'));
+    assert!(!matches!(o, Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "w");
+}
+
+// The panel's search: fixed choices as chips on their entry's row (spec "Search").
+
+/// Two entries whose choices share words, one whose choices are read, one without any.
+const CHIPS: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Mine"
+[[tools.category]]
+name = "Yours"
+[[tools.entry]]
+name = "Alpha"
+category = "Mine"
+run = ["x", "{choice}"]
+choices = ["one", "two words"]
+[[tools.entry]]
+name = "Beta"
+category = "Yours"
+run = ["x", "{choice}"]
+choices = ["zero", "nine", "two words"]
+[[tools.entry]]
+name = "Gamma"
+category = "Mine"
+run = ["x", "{choice}"]
+choices_cmd = ["list"]
+[[tools.entry]]
+name = "Plain"
+category = "Mine"
+run = ["x"]
+"#;
+
+fn user_entry(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+fn chip(l: &Launcher, name: &str) -> Option<usize> {
+    l.tools().unwrap().chip(user_entry(l, name))
+}
+
+/// ←/→ pick a chip on the selected row (none is picked at first: → picks the first, ← nothing)
+/// and stop at the first and the last; on a row without chips they do nothing; neither ever leaves
+/// the row, the search or the root.
+#[test]
+fn arrows_on_chips_stay_on_the_row() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/alpha");
+    let alpha = RowId::Entry(user_entry(&l, "Alpha"));
+    assert_eq!(selected_row(&l), Some(alpha));
+    assert_eq!(chip(&l, "Alpha"), None, "no chip is picked");
+    let stays = |l: &Launcher| {
+        assert_eq!(selected_row(l), Some(alpha));
+        assert_eq!(l.tools().unwrap().level(), Level::Root);
+        assert_eq!(l.query, "alpha");
+    };
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "nothing picked: ← picks nothing");
+    assert_eq!(chip(&l, "Alpha"), None);
+    stays(&l);
+    assert_eq!(l.key(Key::Right), Outcome::Redraw, "→ picks the first");
+    assert_eq!(chip(&l, "Alpha"), Some(0));
+    assert_eq!(l.key(Key::Left), Outcome::Nothing, "already the first");
+    stays(&l);
+    assert_eq!(l.key(Key::Right), Outcome::Redraw);
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    assert_eq!(l.key(Key::Right), Outcome::Nothing, "already the last: no level opens");
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    stays(&l);
+    assert_eq!(l.key(Key::Left), Outcome::Redraw);
+    assert_eq!(chip(&l, "Alpha"), Some(0));
+    stays(&l);
+
+    // A row without chips: nothing moves, nothing opens.
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/plain");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(user_entry(&l, "Plain"))));
+    assert_eq!(chip(&l, "Plain"), None);
+    assert_eq!(l.key(Key::Right), Outcome::Nothing);
+    assert_eq!(l.key(Key::Left), Outcome::Nothing);
+    assert_eq!((l.tools().unwrap().level(), l.query.as_str()), (Level::Root, "plain"));
+
+    // At home ← goes nowhere.
+    let mut l = panel_box(CHIPS);
+    assert_eq!(l.key(Key::Left), Outcome::Nothing);
+    assert!(l.tools().unwrap().at_panel());
+}
+
+/// Enter on a row with chips runs the entry with the picked one; the search lists no choice row.
+#[test]
+fn enter_runs_the_picked_chip() {
+    let mut l = panel_box("");
+    typed(&mut l, "/schedule");
+    let shutdown = builtin_entry(&l, "shutdown");
+    assert_eq!(selected_row(&l), Some(RowId::Entry(shutdown)));
+    assert!(!l.results.iter().any(|h| matches!(h.source, Source::Tool(i) if matches!(l.tool_rows()[i].id, RowId::Choice(..)))));
+    for _ in 0..3 {
+        l.key(Key::Right);
+    }
+    let o = l.key(Key::Enter);
+    let want = ToolAction::Builtin { index: builtin_index("shutdown"), choice: Some("1 h 30".into()), text: None };
+    assert_eq!(o, Outcome::Activate(Activation::Tool(want)));
+}
+
+/// A query that matches a choice picks that chip, on each entry its own; the next query that
+/// matches none puts every row back on its first chip.
+#[test]
+fn a_query_picks_the_matching_chip_of_each_entry() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/words");
+    assert_eq!(l.results.len(), 2, "Alpha and Beta, once each");
+    assert_eq!((chip(&l, "Alpha"), chip(&l, "Beta")), (Some(1), Some(2)));
+    let o = l.key(Key::Enter);
+    let first = selected_row(&l).unwrap();
+    let RowId::Entry(e) = first else { panic!("{first:?}") };
+    assert_eq!(o, Outcome::Activate(Activation::Tool(ToolAction::User { entry: e, choice: Some("two words".into()), text: None })));
+
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/alph");
+    l.key(Key::Right);
+    l.key(Key::Right);
+    assert_eq!(chip(&l, "Alpha"), Some(1));
+    typed(&mut l, "a");
+    assert_eq!(chip(&l, "Alpha"), None, "a new query that matches no choice picks none");
+}
+
+/// With no chip picked, Enter or a click on a row with chips opens its choices, as at home:
+/// nothing runs that the user did not pick (`sh` finds no choice's own text: none is picked).
+#[test]
+fn enter_without_a_picked_chip_opens_the_choices() {
+    for click in [false, true] {
+        let mut l = panel_box("");
+        typed(&mut l, "/sh");
+        let (shutdown, scan) = (builtin_entry(&l, "shutdown"), builtin_entry(&l, "diag.scan"));
+        let t = l.tools().unwrap();
+        assert_eq!((t.chip(shutdown), t.chip(scan)), (None, None), "`sh` picks no chip");
+        let at =
+            l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(shutdown))).unwrap();
+        let o = if click {
+            l.click(at, false)
+        } else {
+            while l.selected < at {
+                l.key(Key::Down);
+            }
+            l.key(Key::Enter)
+        };
+        assert_eq!(o, Outcome::Redraw, "click: {click}");
+        assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: shutdown }, "click: {click}");
+    }
+}
+
+/// A click on a chip selects its row and picks that chip, never runs it: Enter then runs it.
+#[test]
+fn a_click_on_a_chip_picks_it_and_runs_nothing() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/a");
+    let beta = user_entry(&l, "Beta");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(beta))).unwrap();
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw);
+    assert_eq!(l.selected, at, "its row is selected");
+    assert_eq!(chip(&l, "Beta"), Some(1), "the clicked chip is picked");
+    assert_eq!((l.tools().unwrap().level(), l.query.as_str()), (Level::Root, "a"), "nothing opened");
+    assert_eq!(l.click_chip(at, 1), Outcome::Nothing, "already picked");
+    assert_eq!(l.click_chip(at, 9), Outcome::Nothing, "no such chip");
+    assert_eq!(chip(&l, "Beta"), Some(1));
+    let o = l.key(Key::Enter);
+    assert_eq!(o, Outcome::Activate(Activation::Tool(ToolAction::User { entry: beta, choice: Some("nine".into()), text: None })));
+    // At home no row has chips: nothing.
+    let mut l = panel_box(CHIPS);
+    assert_eq!(l.click_chip(0, 0), Outcome::Nothing);
+}
+
+/// A click on the chip already picked of a row that is not selected selects that row, and every
+/// chip click forgets the instant it was given, as a row click does.
+#[test]
+fn a_click_on_a_picked_chip_selects_its_row() {
+    let mut l = panel_box(CHIPS);
+    typed(&mut l, "/a");
+    let beta = user_entry(&l, "Beta");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(beta))).unwrap();
+    l.set_now(Instant::now());
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw);
+    assert_eq!(l.at, None, "the click's instant is spent");
+    let other = (0..l.results.len()).find(|&i| i != at).expect("another row");
+    l.selected = other;
+    l.set_now(Instant::now());
+    assert_eq!(l.click_chip(at, 1), Outcome::Redraw, "the row moves under the click");
+    assert_eq!(l.selected, at);
+    assert_eq!(chip(&l, "Beta"), Some(1), "still picked");
+    assert_eq!(l.at, None);
+    assert_eq!(l.click_chip(at, 1), Outcome::Nothing, "already picked and selected");
+}
+
+/// A `choices_cmd` entry has no chips: Enter or → opens its level, which reads them.
+#[test]
+fn a_choices_cmd_entry_keeps_its_level() {
+    for k in [Key::Enter, Key::Right] {
+        let mut l = panel_box(CHIPS);
+        typed(&mut l, "/gamma");
+        let gamma = user_entry(&l, "Gamma");
+        assert_eq!(selected_row(&l), Some(RowId::Entry(gamma)));
+        assert_eq!(chip(&l, "Gamma"), None);
+        assert!(matches!(l.key(k), Outcome::ReadChoices(_)), "{k:?}");
+        assert_eq!(l.tools().unwrap().level(), Level::Choices { entry: gamma });
+    }
+}
+
+/// A click on a tab opens it, as Tab would; from the search too, which it ends.
+#[test]
+fn a_click_on_a_tab_opens_it() {
+    let mut l = panel_box("");
+    l.key(Key::Down);
+    assert_eq!(l.click_tab(2), Outcome::Redraw);
+    assert_eq!(panel_of(&l).active, 2);
+    assert_eq!(l.selected, 0, "on its first tool");
+    assert_lists_the_tab(&l);
+    assert_eq!(l.click_tab(99), Outcome::Nothing, "no such tab");
+    typed(&mut l, "/sh");
+    assert_eq!(l.click_tab(1), Outcome::Redraw);
+    assert_eq!((panel_of(&l).active, l.query.as_str()), (1, ""));
+    assert_lists_the_tab(&l);
+    assert!(l.letters_live(), "the tab's home, letters live");
+    // No panel: nothing to open.
+    let mut l = panel_box("[tools]\npanel = false\n");
+    assert_eq!(l.click_tab(0), Outcome::Nothing);
+}

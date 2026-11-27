@@ -56,6 +56,44 @@ fn category_names(cat: &Catalog, items: &[Item]) -> Vec<String> {
         .collect()
 }
 
+/// Spec "Descriptions and actions": one plain line each, at most 40 characters, no trailing period.
+#[test]
+fn every_builtin_has_a_short_description() {
+    for b in &BUILTINS {
+        let n = b.description.chars().count();
+        assert!(n > 0 && n <= 40, "{}: {n} characters", b.id);
+        assert!(!b.description.ends_with('.'), "{}: a trailing period", b.id);
+        assert_eq!(b.description.trim(), b.description, "{}: blanks at an end", b.id);
+    }
+}
+
+/// One style for every description: a verb phrase from the user's side ("Read NetworkManager's
+/// journal", not "NetworkManager's journal"). The verbs the table uses; a new one is added here.
+#[test]
+fn every_description_starts_with_a_verb() {
+    const VERBS: [&str; 20] = [
+        "Set", "Pick", "Connect", "Open", "Turn", "Keep", "Jot", "Find", "Copy", "Select", "Record", "End", "Power", "Lock", "Run", "Scan",
+        "Watch", "Restart", "Read", "Follow",
+    ];
+    for b in &BUILTINS {
+        let first = b.description.split([' ', ',']).next().unwrap_or_default();
+        assert!(VERBS.contains(&first), "{}: {:?} does not start with a verb", b.id, b.description);
+    }
+}
+
+/// A built-in's entry carries its table text, a user entry its own `description` (none: None).
+#[test]
+fn an_entry_carries_its_description() {
+    let text = "[[tools.entry]]\nname = \"Mine\"\nrun = [\"x\"]\ndescription = \"Do my thing\"\n\n[[tools.entry]]\nname = \"Bare\"\nrun = [\"x\"]\n";
+    let (cat, _) = build(text, &all());
+    let wifi = cat.entries.iter().find(|e| e.name == "Wi-Fi").unwrap();
+    let table = BUILTINS.iter().find(|b| b.id == "quick.wifi").unwrap();
+    assert_eq!(wifi.description.as_deref(), Some(table.description));
+    let user = |name: &str| cat.entries.iter().find(|e| e.name == name).unwrap().description.clone();
+    assert_eq!(user("Mine").as_deref(), Some("Do my thing"));
+    assert_eq!(user("Bare"), None);
+}
+
 #[test]
 fn the_table_is_the_specs() {
     let ids: Vec<&str> = BUILTINS.iter().map(|b| b.id).collect();
@@ -679,4 +717,134 @@ fn every_capture_row_has_its_own_glyph() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), glyphs.len(), "{glyphs:?}");
+}
+
+#[test]
+fn a_key_for_an_unknown_builtin_is_noted_once_and_never_quoted() {
+    let (_, notes) = build("[tools]\nkeys = { \"nope\" = \"a\", \"also.nope\" = \"b\", \"notes\" = \"n\" }\n", &all());
+    assert_eq!(notes, ["tools: unknown built-in id in [tools] keys"]);
+    let (_, notes) = build("[tools]\nkeys = { \"notes\" = \"n\", \"quick.shield\" = \"s\" }\n", &Context::default());
+    assert!(notes.is_empty(), "known ids are fine, shown or not");
+}
+
+/// The letter each shown entry claimed, by built-in id or user entry name.
+fn letter_of(cat: &Catalog, id: &str) -> Option<char> {
+    cat.entries
+        .iter()
+        .find(|e| match e.kind {
+            EntryKind::Builtin(b) => BUILTINS[b].id == id,
+            EntryKind::User(_) => e.name == id,
+        })
+        .unwrap_or_else(|| panic!("{id} not shown"))
+        .letter
+}
+
+#[test]
+fn default_letters_are_the_table_s() {
+    let c = Context { recording: false, ..all() };
+    let (cat, _) = build("", &c);
+    let table = [
+        ("capture.area", 'a'),
+        ("capture.full", 'f'),
+        ("capture.annotate", 'e'),
+        ("capture.record", 'r'),
+        ("capture.pick", 'p'),
+        ("capture.ocr", 'o'),
+        ("quick.wifi", 'w'),
+        ("quick.bluetooth", 'b'),
+        ("quick.vpn", 'v'),
+        ("quick.shield", 'h'),
+        ("dnd", 'd'),
+        ("keep_awake", 'z'),
+        ("night_light", 'i'),
+        ("shutdown", 's'),
+        ("process.kill", 'k'),
+        ("lock", 'l'),
+        ("power", 'q'),
+        ("notes", 'n'),
+        ("timer", 't'),
+        ("clipboard", 'c'),
+        ("emoji", 'm'),
+        ("diag.usb_events", 'u'),
+        ("diag.usb_reset", 'x'),
+        ("diag.preset.errors", 'j'),
+    ];
+    assert_eq!(cat.entries.len(), BUILTINS.len() - 1, "every built-in but Stop");
+    for e in &cat.entries {
+        let EntryKind::Builtin(b) = e.kind else { panic!("a user entry") };
+        let id = BUILTINS[b].id;
+        let want = table.iter().find(|(t, _)| *t == id).map(|(_, l)| *l);
+        assert_eq!(e.letter, want, "{id}");
+    }
+}
+
+#[test]
+fn stop_takes_record_s_letter_while_recording() {
+    let (cat, _) = build("", &all());
+    assert_eq!(letter_of(&cat, "capture.stop"), Some('r'));
+}
+
+#[test]
+fn a_taken_letter_leaves_the_later_claimant_without_one() {
+    // Utilities (order 30) comes after Quick settings (10).
+    let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
+    assert_eq!(letter_of(&cat, "Mine"), None);
+    assert_eq!(letter_of(&cat, "quick.wifi"), Some('w'));
+    // At the root, the entry is in the Pinned section, which claims first.
+    let (cat, _) = build("[[tools.entry]]\nname = \"Mine\"\nrun = [\"true\"]\nkey = \"w\"\n", &all());
+    assert_eq!(letter_of(&cat, "Mine"), Some('w'));
+    assert_eq!(letter_of(&cat, "quick.wifi"), None);
+    // `[tools] keys` overrides a built-in's default and frees it.
+    let (cat, _) = build("[tools]\nkeys = { \"quick.vpn\" = \"w\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.vpn"), None, "Wi-Fi comes first in Quick settings");
+    let (cat, _) = build("[tools]\nkeys = { \"quick.wifi\" = \"y\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.wifi"), Some('y'));
+    // A pinned built-in claims before its category's rows.
+    let (cat, _) = build("[tools]\nroot = [\"quick.vpn\"]\nkeys = { \"quick.vpn\" = \"w\" }\n", &all());
+    assert_eq!(letter_of(&cat, "quick.vpn"), Some('w'));
+    assert_eq!(letter_of(&cat, "quick.wifi"), None);
+}
+
+#[test]
+fn hidden_tools_free_their_letters() {
+    let (cat, _) = build(
+        "[tools]\nhide = [\"quick.wifi\"]\n[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n",
+        &all(),
+    );
+    assert_eq!(letter_of(&cat, "Mine"), Some('w'));
+}
+
+#[test]
+fn builtin_categories_have_their_hues() {
+    use crate::grid::Hue;
+    let text = (0..9).map(|i| format!("[[tools.category]]\nname = \"U{i}\"\n")).collect::<String>()
+        + "[[tools.category]]\nname = \"System\"\norder = 5\n";
+    let (cat, _) = build(&text, &all());
+    let hue = |name: &str| cat.categories.iter().find(|k| k.name == name).unwrap().hue;
+    for (name, h) in [
+        ("Quick settings", Hue::Blue),
+        ("Control center", Hue::Purple),
+        ("Utilities", Hue::Cyan),
+        ("Captures", Hue::Orange),
+        ("System", Hue::Yellow),
+        ("Session", Hue::Red),
+        ("Diagnostics", Hue::Green),
+    ] {
+        assert_eq!(hue(name), Some(h), "{name}");
+    }
+    let cycle = [Hue::Blue, Hue::Cyan, Hue::Green, Hue::Yellow, Hue::Orange, Hue::Red, Hue::Purple];
+    for i in 0..9 {
+        assert_eq!(hue(&format!("U{i}")), Some(cycle[i % 7]), "U{i}");
+    }
+}
+
+#[test]
+fn lost_letters_counts_the_claimants_left_without_theirs() {
+    let (cat, _) = build("", &all());
+    assert_eq!(cat.lost_letters(&tools("")), 0, "the table's letters never collide");
+    let text = "[[tools.entry]]\nname = \"Mine\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"w\"\n\
+                [[tools.entry]]\nname = \"Also\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"b\"\n\
+                [[tools.entry]]\nname = \"Free\"\ncategory = \"Utilities\"\nrun = [\"true\"]\nkey = \"y\"\n";
+    let (cat, _) = build(text, &all());
+    assert_eq!(cat.lost_letters(&tools(text)), 2, "Mine and Also lost theirs; Free kept its own");
 }

@@ -479,3 +479,49 @@ ask = "Value"
     assert_eq!(t.entries[1].choices, v(&["a", "b"]));
     assert_eq!(parse(&entry("")).unwrap().tools.entries[0].ask, None, "no ask by default");
 }
+
+#[test]
+fn panel_defaults_on_and_parses_off() {
+    assert!(parse("").unwrap().tools.panel, "on by default");
+    assert!(ToolsConfig::default().panel);
+    assert!(!parse("[tools]\npanel = false\n").unwrap().tools.panel);
+}
+
+/// The branch never shipped `overview`: no migration, an unknown key like any other.
+#[test]
+fn the_old_overview_key_is_refused() {
+    assert!(parse("[tools]\noverview = false\n").is_err());
+}
+
+#[test]
+fn an_entry_description_is_at_most_80_characters() {
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].description, None, "none by default");
+    let ok = "é".repeat(80);
+    assert_eq!(parse(&entry(&format!("description = \"{ok}\"\n"))).unwrap().tools.entries[0].description.as_deref(), Some(ok.as_str()));
+    let e = parse(&entry(&format!("description = \"{}\"\n", "d".repeat(81)))).unwrap_err();
+    assert!(e.contains("tools.entry 1: description"), "{e}");
+    assert!(!e.contains("ddd"), "never the text: {e}");
+    for bad in ["", " ", "a\\u0007b"] {
+        assert!(parse(&entry(&format!("description = \"{bad}\"\n"))).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn keys_take_one_lowercase_ascii_letter() {
+    let c = parse("[tools]\nkeys = { \"quick.wifi\" = \"w\", \"tab.power\" = \"z\" }\n").unwrap();
+    assert_eq!(c.tools.keys.get("quick.wifi"), Some(&'w'));
+    assert_eq!(c.tools.keys.get("tab.power"), Some(&'z'));
+    assert!(parse("").unwrap().tools.keys.is_empty());
+    for bad in ["W", "ww", "1", "é", "", "`", "{"] {
+        assert!(parse(&format!("[tools]\nkeys = {{ \"quick.wifi\" = \"{bad}\" }}\n")).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn an_entry_key_is_one_lowercase_letter() {
+    assert_eq!(parse(&entry("key = \"g\"\n")).unwrap().tools.entries[0].key, Some('g'));
+    assert_eq!(parse(&entry("")).unwrap().tools.entries[0].key, None);
+    for bad in ["G", "gg", "1", "é", "", "@", "["] {
+        assert!(parse(&entry(&format!("key = \"{bad}\"\n"))).is_err(), "{bad:?}");
+    }
+}

@@ -874,7 +874,7 @@ fn tools_category_snapshot_with_switch_and_chevron() {
     let update = l.tools().unwrap().catalog.entries.iter().position(|e| e.name == "Update").unwrap();
     l.adopt_state(update, Some(true));
     let (_, rows) = draw(&mut l, 100);
-    insta::assert_snapshot!("tools_category", snapshot(&rows));
+    insta::assert_snapshot!("tools_category", snapshot_with_shapes(&rows));
     l.adopt_state(update, Some(false));
     let (_, rows) = draw(&mut l, 100);
     assert!(tool_text(&rows).iter().any(|t| t.contains("Update") && t.contains("○ off")), "{}", snapshot(&rows));
@@ -893,7 +893,7 @@ fn the_prompt_shows_its_label_the_typed_text_and_its_own_hint() {
     let text = tool_text(&rows);
     assert!(text[0].contains("Tools › Ping") && text[0].contains("10.0.0.1"), "breadcrumb and typed text: {text:?}");
     assert!(text.iter().any(|t| t.contains("Host to ping")), "the label is the one row: {text:?}");
-    assert!(text.iter().any(|t| t.contains("⏎ run · esc back")), "the prompt's own hint: {text:?}");
+    assert!(text.iter().any(|t| t.contains("⏎  Run") && t.contains("Esc  Back")), "the prompt's own hint: {text:?}");
 }
 
 #[test]
@@ -902,10 +902,11 @@ fn tools_flat_search_snapshot() {
     typed(&mut l, "gen");
     let (_, rows) = draw(&mut l, 100);
     insta::assert_snapshot!("tools_flat", snapshot(&rows));
-    // The category is dimmed after the entry, two cells on; a root entry has none.
+    // The category is dim at the right; a choice comes right after its entry.
     let text = tool_text(&rows);
-    assert!(text.iter().any(|t| t.contains("Generation  Nix")), "{text:?}");
-    assert!(text.iter().any(|t| t.contains("Generation · list  Nix")), "{text:?}");
+    let at = text.iter().position(|t| t.contains("Generation ") && !t.contains(" · ")).unwrap_or_else(|| panic!("{text:?}"));
+    assert!(text[at].trim_end().ends_with("Nix"), "{text:?}");
+    assert!(text[at + 1].contains("Generation · list") && text[at + 1].trim_end().ends_with("Nix"), "{text:?}");
 }
 
 #[test]
@@ -969,12 +970,12 @@ fn tools_empty_level_says_nothing_here_and_a_missed_search_no_match() {
 fn tools_help_rows() {
     let mut l = tools_box(TOOLS_CFG);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · esc close")));
-    assert!(!tool_text(&rows).iter().any(|t| t.contains("⌫") || t.contains("← back")), "← does nothing at the root");
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    Esc  Close")), "{}", snapshot(&rows));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("⌫") || t.contains("Back")), "← does nothing at the root");
     keys(&mut l, &[Key::Down, Key::Enter]);
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ← esc back")));
-    assert!(!tool_text(&rows).iter().any(|t| t.contains("esc close")));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    ←   Esc  Back")), "{}", snapshot(&rows));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("Close")));
 }
 
 #[test]
@@ -986,7 +987,7 @@ fn the_help_row_of_an_apps_origin_root_offers_backspace_to_all() {
     l.set_tools(catalog);
     typed(&mut l, "/");
     let (_, rows) = draw(&mut l, 100);
-    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎ open/run · ⌫ all · esc close")), "{}", snapshot(&rows));
+    assert!(tool_text(&rows).iter().any(|t| t.contains("⏎  Open    ⌫  All    Esc  Close")), "{}", snapshot(&rows));
 }
 
 #[test]
@@ -1166,4 +1167,848 @@ fn with_nothing_selected_no_row_is_highlighted() {
     let (b, rows) = draw(&mut l, 100);
     let top = usize::from(b.list_top) - 1;
     assert!((0..2).all(|i| selected_cells(&rows.rows[top + i]) == 0), "no highlight when nothing is selected");
+}
+
+// --- the Super+X panel's root (today's rows until the panel's own) ---
+
+/// Every built-in shown but "Stop recording".
+fn every_builtin() -> crate::launcher::tools::catalog::Context {
+    crate::launcher::tools::catalog::Context {
+        quick: true,
+        notifications: true,
+        timer: true,
+        keep_awake: true,
+        night_light: true,
+        lock: true,
+        session: true,
+        reload: true,
+        shield: true,
+        clipboard: true,
+        diagnostics: true,
+        nmap: true,
+        usb_reset: true,
+        shutdown: true,
+        shutdown_left: None,
+        captures: true,
+        recording: false,
+        annotate: true,
+        ocr: true,
+        record: true,
+    }
+}
+
+/// A `--tools` open of `text`'s launcher.toml with every built-in, its panel opened in the room a
+/// 232×49 output leaves, and the box `tools_layout` sizes for it.
+fn panel_box(text: &str) -> (Launcher, BoxLayout) {
+    use crate::launcher::tools::catalog::Catalog;
+    let config = LauncherConfig::from_text(text).unwrap();
+    let catalog = Catalog::build(&config.tools, &every_builtin(), &mut |_| {});
+    let mut l = Launcher::for_tools(config, catalog, History::empty(200), NOW);
+    let (columns, rows) = panel_room(232, 49);
+    l.open_panel(columns, rows);
+    let b = tools_layout(232, 49, l.panel_size().expect("the panel is opened"));
+    l.set_list_rows(model_rows(&l, &b));
+    (l, b)
+}
+
+/// Wi-Fi and the USB reset pinned at the root, where their capsules show.
+const PINNED: &str = "[tools]\nroot = [\"quick.wifi\", \"diag.usb_reset\"]\n";
+
+/// The letter capsules on the list's rows: not the search field's, not the footer's.
+fn capsules(b: &Boxed) -> Vec<&Shape> {
+    b.shapes
+        .iter()
+        .filter(|s| s.kind == ShapeKind::Chip(Tint::Pill) && s.width == 3 && s.rows == 1 && s.row > 0 && s.row + 1 < b.rows.len())
+        .collect()
+}
+
+/// Renders `l` in `b`, every row as wide as the box less its ring.
+fn draw_in(l: &Launcher, b: &BoxLayout) -> Boxed {
+    let rows = render(l, b);
+    for (i, r) in rows.rows.iter().enumerate() {
+        assert_eq!(r.width(), b.columns - 2, "row {i} of {}", snapshot(&rows));
+    }
+    rows
+}
+
+/// The snapshot, the separators, then the shapes one per line.
+fn snapshot_with_shapes(b: &Boxed) -> String {
+    let shapes: Vec<String> = b
+        .shapes
+        .iter()
+        .map(|s| {
+            let glyph = s.glyph.map_or_else(String::new, |(c, _, ink)| format!(" glyph {c:?} in {ink:?}"));
+            format!("{:?} at row {} col {} width {} rows {}{glyph}", s.kind, s.row, s.col, s.width, s.rows)
+        })
+        .collect();
+    format!("{}\nseparators: {:?}\n\nshapes:\n{}", snapshot(b), b.separators, shapes.join("\n"))
+}
+
+// --- the panel drawn (spec "Layout") ---
+
+/// The list pane's tool tiles: 2 × 3 pill chips (a card's tile is right of the list).
+fn tiles(b: &Boxed) -> Vec<&Shape> {
+    b.shapes.iter().filter(|s| s.kind == ShapeKind::Chip(Tint::Pill) && s.width == 3 && s.rows == 2).collect()
+}
+
+fn switches(b: &Boxed) -> Vec<&Shape> {
+    b.shapes.iter().filter(|s| matches!(s.kind, ShapeKind::Switch(_))).collect()
+}
+
+/// The detail card's shape.
+fn card(b: &Boxed) -> &Shape {
+    b.shapes.iter().find(|s| s.kind == ShapeKind::Card).unwrap_or_else(|| panic!("a detail card: {}", snapshot_with_shapes(b)))
+}
+
+/// The text of the card's rows, cut to its columns.
+fn card_text(b: &Boxed) -> Vec<String> {
+    let c = card(b);
+    b.rows[c.row..c.row + usize::from(c.rows)]
+        .iter()
+        .map(|r| r.text().chars().skip(usize::from(c.col)).take(usize::from(c.width)).collect::<String>().trim().to_string())
+        .collect()
+}
+
+/// The text of every row left of the detail card: the list pane and what is above and below it.
+fn list_text(b: &Boxed) -> Vec<String> {
+    let c = card(b);
+    b.rows.iter().map(|r| r.text().chars().take(usize::from(c.col)).collect()).collect()
+}
+
+/// Selects the first row of the open tab showing `name`.
+fn select_tool(l: &mut Launcher, name: &str) {
+    let e = entry_named(l, name);
+    let at = l.tools().unwrap().panel().unwrap().tools().position(|t| t == e).unwrap_or_else(|| panic!("{name} in the tab"));
+    while l.selected != at {
+        l.key(if l.selected < at { Key::Down } else { Key::Up });
+    }
+}
+
+/// The glyphs the tiles of `b` carry (the list's, then the card's), and whether every tile's cells
+/// are blank: the painter draws the glyph, centred in the shape.
+fn tile_glyphs(b: &Boxed) -> (Vec<Option<char>>, bool) {
+    let tiles = tiles(b);
+    let blank =
+        tiles.iter().all(|t| b.rows[t.row..t.row + 2].iter().all(|r| r.text().chars().skip(usize::from(t.col)).take(3).all(|c| c == ' ')));
+    (tiles.iter().map(|t| t.glyph.map(|(c, ..)| c)).collect(), blank)
+}
+
+#[test]
+fn a_user_entry_without_icon_shows_its_category_s_icon() {
+    let cfg = "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Nix\"\nicon = \"N\"\n[[tools.entry]]\nname = \"Rebuild\"\ncategory = \"Nix\"\nrun = [\"x\"]\n";
+    let (l, b) = panel_box(cfg);
+    let rows = draw_in(&l, &b);
+    let (glyphs, blank) = tile_glyphs(&rows);
+    assert_eq!(glyphs, [Some('N'), Some('N')], "the list's tile and the card's: {}", snapshot_with_shapes(&rows));
+    assert!(blank, "the tiles' cells stay blank: {}", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn an_entry_s_icon_falls_back_to_its_category_s_then_the_generic_glyph() {
+    use crate::launcher::tools::catalog::FOLDER;
+    let fallbacks = |cfg: &str| {
+        let (l, b) = panel_box(cfg);
+        let rows = draw_in(&l, &b);
+        tiles(&rows).iter().map(|t| t.glyph.map(|(_, f, _)| f)).collect::<Vec<_>>()
+    };
+    let nix = "[tools]\nbuiltins = false\n[[tools.category]]\nname = \"Nix\"\nicon = \"N\"\n[[tools.entry]]\nname = \"Fire\"\nicon = \"🔥\"\ncategory = \"Nix\"\nrun = [\"x\"]\n";
+    assert_eq!(fallbacks(nix), [Some('N'), Some('N')], "the category's icon behind the entry's");
+    let root = "[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Fire\"\nicon = \"🔥\"\nrun = [\"x\"]\n";
+    assert_eq!(fallbacks(root), [Some(FOLDER), Some(FOLDER)], "no category: the generic glyph");
+}
+
+#[test]
+fn a_user_entry_without_icon_or_category_shows_the_generic_glyph() {
+    use crate::launcher::tools::catalog::FOLDER;
+    let (l, b) = panel_box("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Rebuild\"\nrun = [\"x\"]\n");
+    let rows = draw_in(&l, &b);
+    let (glyphs, blank) = tile_glyphs(&rows);
+    assert_eq!(glyphs, [Some(FOLDER), Some(FOLDER)], "the list's tile and the card's: {}", snapshot_with_shapes(&rows));
+    assert!(blank, "the tiles' cells stay blank: {}", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn panel_home_snapshot() {
+    let (l, b) = panel_box("");
+    assert_eq!((b.columns, b.rows), (106, 30), "the panel's box on a wide output");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows);
+    assert!(text[0].contains("Search tools"), "the search field first: {text:#?}");
+    assert!(text[1].contains(" All ") && text[1].contains(" Captures "), "the tabs: {text:#?}");
+    assert!(text[3].contains("● QUICK SETTINGS"), "no root tool: the first category's label first: {text:#?}");
+    insta::assert_snapshot!("panel_home", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn a_category_tab_snapshot() {
+    let (mut l, b) = panel_box("");
+    l.key(Key::Tab);
+    let rows = draw_in(&l, &b);
+    let active: Vec<&Shape> = rows.shapes.iter().filter(|s| s.kind == ShapeKind::Chip(Tint::AccentContainer)).collect();
+    assert_eq!(active.len(), 1, "one active tab: {}", snapshot_with_shapes(&rows));
+    assert!(!tool_text(&rows).iter().any(|t| t.contains("PINNED")), "no label on a category tab");
+    insta::assert_snapshot!("panel_category", snapshot_with_shapes(&rows));
+}
+
+#[test]
+fn the_detail_card_of_a_toggle_a_confirm_and_a_choices_tool() {
+    let (mut l, b) = panel_box(PINNED);
+    // Do not disturb: a toggle with a letter, in its category's section.
+    select_tool(&mut l, "Do not disturb");
+    let rows = draw_in(&l, &b);
+    let text = card_text(&rows);
+    assert!(text.iter().any(|t| t == "Do not disturb"), "the name: {text:#?}");
+    assert!(text.iter().any(|t| t.starts_with("Quick settings · built-in")), "its category, dim: {text:#?}");
+    assert!(text.iter().any(|t| t.starts_with("Turn on/off") && t.ends_with('⏎')), "{text:#?}");
+    assert!(text.iter().any(|t| t.starts_with("Quick key") && t.ends_with('d')), "{text:#?}");
+    assert!(!text.iter().any(|t| t == "Pinned"), "not pinned: {text:#?}");
+    let dnd = entry_named(&l, "Do not disturb");
+    l.adopt_state(dnd, Some(true));
+    assert!(card_text(&draw_in(&l, &b)).iter().any(|t| t.starts_with("Turn off")), "the state known, the word follows it");
+    let name = rows.rows.iter().position(|r| r.text().contains("Turn on/off")).unwrap();
+    let c = card(&rows);
+    let keys: Vec<&Shape> = rows.shapes.iter().filter(|s| s.row == name && matches!(s.kind, ShapeKind::Chip(_)) && s.col > c.col).collect();
+    assert_eq!(keys.len(), 1, "one key capsule: {}", snapshot_with_shapes(&rows));
+    assert_eq!(keys[0].col + keys[0].width, c.col + c.width - 2, "at the card's right, inside its padding");
+    // Reset USB: a confirm.
+    select_tool(&mut l, "Reset USB (xHCI)");
+    let rows = draw_in(&l, &b);
+    let text = card_text(&rows);
+    let confirm = rows.rows.iter().position(|r| r.text().contains("Confirm")).unwrap_or_else(|| panic!("{text:#?}"));
+    let keys = rows.shapes.iter().filter(|s| s.row == confirm && matches!(s.kind, ShapeKind::Chip(_)) && s.col > card(&rows).col).count();
+    assert_eq!(keys, 2, "Enter twice: {}", snapshot_with_shapes(&rows));
+    assert!(text.iter().any(|t| t == "Pinned"), "the hint of a pinned tool: {text:#?}");
+    // Schedule shutdown: choices.
+    let (mut l, b) = panel_box("");
+    l.key(Key::Tab);
+    while !l.tools().unwrap().panel().unwrap().tools().any(|t| t == entry_named(&l, "Schedule shutdown")) {
+        l.key(Key::Tab);
+    }
+    select_tool(&mut l, "Schedule shutdown");
+    let rows = draw_in(&l, &b);
+    let text = card_text(&rows);
+    assert!(text.iter().any(|t| t.starts_with("Choose") && t.ends_with('→')), "{text:#?}");
+    assert!(!text.iter().any(|t| t.starts_with("Run")), "choosing is what Enter does: {text:#?}");
+    assert!(!text.iter().any(|t| t == "Pinned"), "not pinned: {text:#?}");
+}
+
+#[test]
+fn the_band_covers_both_lines_of_a_row() {
+    let (mut l, b) = panel_box(PINNED);
+    select_tool(&mut l, "Reset USB (xHCI)");
+    let rows = draw_in(&l, &b);
+    let bands: Vec<&Shape> = rows.shapes.iter().filter(|s| s.kind == ShapeKind::Band).collect();
+    assert_eq!(bands.len(), 1, "{}", snapshot_with_shapes(&rows));
+    let band = bands[0];
+    assert_eq!(band.rows, 2, "both lines: {band:?}");
+    assert!(rows.rows[band.row].text().contains("Reset USB"), "the name on its first line");
+    let description = l.tools().unwrap().catalog.entries[entry_named(&l, "Reset USB (xHCI)")].description.clone().unwrap();
+    assert!(rows.rows[band.row + 1].text().contains(description.as_ref()), "the description on its second");
+    // Under the row's tile and capsule, in the shapes' order.
+    let at = rows.shapes.iter().position(|s| std::ptr::eq(s, band)).unwrap();
+    let tile = rows.shapes.iter().position(|s| tiles(&rows).iter().any(|t| std::ptr::eq(s, *t)) && s.row == band.row).unwrap();
+    assert!(at < tile, "the tile lies on the band");
+    // Every cell of the row keeps the surface's background: the band shows through.
+    for r in [band.row, band.row + 1] {
+        assert!(rows.rows[r].cells().iter().all(|c| c.style.bg == Tint::Bg), "row {r}");
+    }
+}
+
+/// Sixteen user categories, one entry each.
+fn many_categories() -> String {
+    let mut text = String::from("[tools]\nbuiltins = false\n");
+    for k in 0..16 {
+        text.push_str(&format!("[[tools.category]]\nname = \"Category {k:02}\"\n"));
+        text.push_str(&format!("[[tools.entry]]\nname = \"Entry {k:02}\"\ncategory = \"Category {k:02}\"\nrun = [\"x\"]\n"));
+    }
+    text
+}
+
+#[test]
+fn the_active_tab_stays_visible() {
+    let (mut l, b) = panel_box(&many_categories());
+    let rows = draw_in(&l, &b);
+    let strip = rows.rows[1].text();
+    assert!(strip.trim_end().ends_with('›') && !strip.contains('‹'), "cut at the right only: {strip:?}");
+    l.key(Key::BackTab);
+    let rows = draw_in(&l, &b);
+    let strip = rows.rows[1].text();
+    assert!(strip.contains(" Category 15 "), "the last tab is drawn: {strip:?}");
+    assert!(strip.trim_start().starts_with('‹') && !strip.contains('›'), "cut at the left: {strip:?}");
+    let active = rows.shapes.iter().find(|s| s.kind == ShapeKind::Chip(Tint::AccentContainer)).expect("the active pill");
+    let label: String = strip.chars().skip(usize::from(active.col)).take(usize::from(active.width)).collect();
+    assert_eq!(label, " Category 15 ", "{strip:?}");
+    assert!(active.col + active.width <= b.columns - 2);
+}
+
+const LATE_STATE_CFG: &str = r#"
+[tools]
+builtins = false
+[[tools.category]]
+name = "Local"
+[[tools.entry]]
+name = "A long tool name that reaches its switch's slot"
+category = "Local"
+run = ["x"]
+state = ["s"]
+"#;
+
+#[test]
+fn a_late_state_fills_its_slot_without_moving_the_row() {
+    let name = "A long tool name that reaches its switch's slot";
+    let (mut l, b) = panel_box(LATE_STATE_CFG);
+    // A box narrow enough for the name to reach the slot.
+    let b = BoxLayout { columns: 90, ..b };
+    let e = entry_named(&l, name);
+    let before = draw_in(&l, &b);
+    assert!(switches(&before).is_empty(), "no switch before the state is in");
+    l.adopt_state(e, Some(true));
+    let after = draw_in(&l, &b);
+    assert_eq!(list_text(&before), list_text(&after), "the name and the letter stay where they were");
+    let new = switches(&after);
+    assert_eq!(new.len(), 1, "{}", snapshot_with_shapes(&after));
+    assert_eq!(new[0].kind, ShapeKind::Switch(true));
+    let line = &after.rows[new[0].row];
+    let cut = line.text();
+    assert!(cut.contains('…'), "the long name is cut before the slot: {cut:?}");
+    let cells: String = line.cells()[usize::from(new[0].col)..usize::from(new[0].col) + 2].iter().map(|c| c.ch).collect();
+    assert_eq!(cells, "  ", "the switch lies on the reserved blank cells: {cut:?}");
+    assert!(tiles(&after).iter().any(|t| t.row == new[0].row), "on the tool's first line");
+}
+
+#[test]
+fn a_hung_state_leaves_the_slot_empty() {
+    let name = "A long tool name that reaches its switch's slot";
+    let (mut l, b) = panel_box(LATE_STATE_CFG);
+    // A box narrow enough for the name to reach the slot.
+    let b = BoxLayout { columns: 90, ..b };
+    let e = entry_named(&l, name);
+    let before = draw_in(&l, &b);
+    l.adopt_state(e, None);
+    let after = draw_in(&l, &b);
+    assert!(switches(&after).is_empty(), "never a guess");
+    assert_eq!(list_text(&before), list_text(&after), "the slot stays blank");
+}
+
+/// Every shape inside the cells (columns and rows), at home, on a tab, with many tabs, in a small
+/// box and scrolled to the last tool.
+#[test]
+fn nothing_is_drawn_outside_the_box() {
+    let check = |l: &Launcher, b: &BoxLayout| {
+        let rows = draw_in(l, b);
+        assert_eq!(rows.rows.len(), usize::from(b.rows) - 2);
+        for s in &rows.shapes {
+            assert!(s.col + s.width <= b.columns - 2, "{s:?} past the last column of {b:?}");
+            assert!(s.row + usize::from(s.rows) <= rows.rows.len(), "{s:?} past the last row of {b:?}");
+            // The panes' shapes stay above the footer's line.
+            let footer = rows.rows.len() - 1;
+            assert!(s.row == footer || s.row + usize::from(s.rows) < footer, "{s:?} over the footer's line in {b:?}");
+        }
+    };
+    for text in ["", PINNED, &many_categories()] {
+        let (mut l, b) = panel_box(text);
+        check(&l, &b);
+        l.key(Key::End);
+        check(&l, &b);
+        l.key(Key::Tab);
+        check(&l, &b);
+        for (columns, output_rows) in [(80, 30), (70, 20), (232, 14)] {
+            let small = tools_layout(columns, output_rows, panel_room(columns, output_rows));
+            let mut l = panel_box(text).0;
+            l.set_list_rows(model_rows(&l, &small));
+            check(&l, &small);
+            l.key(Key::End);
+            check(&l, &small);
+        }
+    }
+}
+
+#[test]
+fn the_box_holds_six_tool_rows_when_the_output_allows() {
+    for (columns, output_rows) in [(232, 49), (160, 40), (120, 37)] {
+        let room = panel_room(columns, output_rows);
+        let b = tools_layout(columns, output_rows, room);
+        assert!(b.rows <= output_rows * 8 / 10, "{b:?}");
+        // Every section label between the tools: the most a pane can lose to them.
+        let (l, _) = panel_box(&many_categories());
+        let rows = draw_in(&l, &b);
+        assert!(tiles(&rows).len() >= 6, "{columns}×{output_rows}: {}", snapshot_with_shapes(&rows));
+    }
+    // A short output keeps what fits, inside its 80 %.
+    let b = tools_layout(232, 20, panel_room(232, 20));
+    assert!(b.rows <= 16, "{b:?}");
+}
+
+/// The selection below the pane scrolls the list: the selected tool is drawn whole.
+#[test]
+fn the_list_scrolls_to_keep_the_selection_whole() {
+    let (mut l, b) = panel_box("");
+    l.key(Key::End);
+    let rows = draw_in(&l, &b);
+    let band = rows.shapes.iter().find(|s| s.kind == ShapeKind::Band).expect("the last tool is selected and drawn");
+    assert_eq!(band.rows, 2);
+    let last = l.tools().unwrap().panel().unwrap().tools().last().unwrap();
+    let name = l.tools().unwrap().catalog.entries[last].name.clone();
+    assert!(rows.rows[band.row].text().contains(name.as_str()), "{}", snapshot_with_shapes(&rows));
+    // A click on its row selects it.
+    assert_eq!(hit(&l, &b, 5, u16::try_from(band.row).unwrap() + 2), Some(Click::Result(l.selected)));
+}
+
+/// A tool listed at the panel's root shows its letter in a capsule at its row's right, drawn over
+/// the selection band; its name is cut before it.
+#[test]
+fn a_root_tool_shows_its_capsule_over_the_band() {
+    let (l, b) = panel_box(PINNED);
+    let rows = draw_in(&l, &b);
+    let caps = capsules(&rows);
+    let reset = tool_text(&rows).iter().position(|t| t.contains("Reset USB")).unwrap();
+    assert!(caps.iter().any(|c| c.row == reset), "the reset's: {}", snapshot_with_shapes(&rows));
+    let wifi = tool_text(&rows).iter().position(|t| t.contains("Wi-Fi")).unwrap();
+    let cap = caps.iter().find(|c| c.row == wifi).unwrap_or_else(|| panic!("on Wi-Fi's row: {}", snapshot_with_shapes(&rows)));
+    let line = rows.rows[wifi].text();
+    let letter: String = line.chars().skip(usize::from(cap.col)).take(3).collect();
+    assert_eq!(letter, " w ", "{line:?}");
+    let band = rows.shapes.iter().position(|s| s.kind == ShapeKind::Band && s.row == wifi).expect("Wi-Fi is selected");
+    let pane = rows.shapes[band];
+    assert_eq!(cap.col + cap.width + 1, pane.col + pane.width, "at the row's right, one cell from the band's edge");
+    let at = rows.shapes.iter().position(|s| std::ptr::eq(s, *cap)).unwrap();
+    assert!(band < at, "the capsule lies on the band");
+    // Not after `/`: the letters are text there.
+    let mut l = l;
+    l.key(Key::Char('/'));
+    assert!(capsules(&draw_in(&l, &b)).is_empty());
+}
+
+/// The catalog index of the entry named `name`.
+fn entry_named(l: &Launcher, name: &str) -> usize {
+    l.tools().unwrap().catalog.entries.iter().position(|e| e.name == name).unwrap()
+}
+
+// --- the panel's search (spec "Search") ---
+
+/// The rendered row and cell of `text`'s first character, the first time the list (left of the
+/// card) or the tab strip shows it.
+fn find(rows: &Boxed, text: &str) -> (usize, usize) {
+    list_text(rows)
+        .iter()
+        .enumerate()
+        .find_map(|(y, t)| t.find(text).map(|at| (y, t[..at].chars().count())))
+        .unwrap_or_else(|| panic!("{text:?} in {}", snapshot_with_shapes(rows)))
+}
+
+/// The chips on rendered row `y`, left to right: (picked, the text over them).
+fn chips_on(rows: &Boxed, y: usize) -> Vec<(bool, String)> {
+    let mut chips: Vec<&Shape> = rows
+        .shapes
+        .iter()
+        .filter(|s| s.row == y && s.rows == 1 && matches!(s.kind, ShapeKind::Chip(Tint::Pill | Tint::AccentContainer)))
+        .collect();
+    chips.sort_by_key(|s| s.col);
+    let text = rows.rows[y].text();
+    chips
+        .into_iter()
+        .map(|s| {
+            let words: String = text.chars().skip(usize::from(s.col)).take(usize::from(s.width)).collect();
+            (s.kind == ShapeKind::Chip(Tint::AccentContainer), words.trim().to_string())
+        })
+        .collect()
+}
+
+/// The search lists Schedule shutdown once, its durations as chips on its second line (none
+/// picked), under its category's label; → picks the first; the card follows the selection; chips
+/// that do not fit are marked at the cut ends.
+#[test]
+fn fixed_choices_show_as_chips_not_rows() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/sh");
+    let rows = draw_in(&l, &b);
+    let text = tool_text(&rows);
+    assert!(!text.iter().any(|t| t.contains("Schedule shutdown · ")), "no choice row: {text:#?}");
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let chips = chips_on(&rows, y + 1);
+    let words: Vec<&str> = chips.iter().map(|(_, w)| w.as_str()).collect();
+    assert_eq!(words, ["30 min", "1 h", "1 h 30", "2 h", "3 h"], "{}", snapshot_with_shapes(&rows));
+    assert!(chips.iter().all(|(picked, _)| !picked), "no chip picked: {chips:?}");
+    assert!(text[..y].iter().rev().find(|t| t.contains('●')).is_some_and(|t| t.contains("● SYSTEM")), "under its label: {text:#?}");
+    // A row without chips keeps its description.
+    let (wy, _) = find(&rows, "Screenshot");
+    let description = l.tools().unwrap().catalog.entries[entry_named(&l, "Screenshot")].description.clone().unwrap();
+    assert!(chips_on(&rows, wy + 1).is_empty() && text[wy + 1].contains(description.as_ref()), "{text:#?}");
+    // On its row, → moves the pick; the card shows the selected tool.
+    let shutdown = entry_named(&l, "Schedule shutdown");
+    let at = l.results.iter().position(|h| matches!(h.source, Source::Tool(i) if l.tool_rows()[i].id == RowId::Entry(shutdown))).unwrap();
+    while l.selected < at {
+        l.key(Key::Down);
+    }
+    l.key(Key::Right);
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let picked: Vec<String> = chips_on(&rows, y + 1).into_iter().filter(|(p, _)| *p).map(|(_, w)| w).collect();
+    assert_eq!(picked, ["30 min"]);
+    assert!(card_text(&rows).iter().any(|t| t == "Schedule shutdown"), "{:#?}", card_text(&rows));
+    insta::assert_snapshot!("panel_search", snapshot_with_shapes(&rows));
+    // A click on a search row's name is its result (on a chip, that chip: `a_click_on_a_chip_maps_to_it`).
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(hit(&l, &b, ring(8), ring(y)), Some(Click::Result(at)));
+    assert_eq!(hit(&l, &b, ring(8), ring(y + 1)), Some(Click::Chip(at, 0)));
+    // A picked chip past the line's end: the line starts further right so it shows.
+    let scan = entry_named(&l, "Network scan");
+    let (sy, _) = find(&rows, "Network scan");
+    let line = list_text(&rows)[sy + 1].trim().to_string();
+    assert!(line.ends_with('›') && !line.starts_with('‹'), "more chips at the right: {line:?}");
+    l.key(Key::Down);
+    assert_eq!(
+        l.tool_rows()[match l.results[l.selected].source {
+            Source::Tool(i) => i,
+            other => panic!("{other:?}"),
+        }]
+        .id,
+        RowId::Entry(scan)
+    );
+    while l.key(Key::Right) == crate::launcher::model::Outcome::Redraw {}
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Network scan");
+    let chips = chips_on(&rows, y + 1);
+    assert_eq!(chips.last().cloned(), Some((true, "Aggressive scan -A (sudo)".to_string())), "{}", snapshot_with_shapes(&rows));
+    let line = list_text(&rows)[y + 1].trim().to_string();
+    assert!(line.starts_with('‹') && !line.ends_with('›'), "more chips at the left: {line:?}");
+}
+
+/// `sh` found in `Schedule shutdown`: those two cells in the accent, the rest of the name not.
+#[test]
+fn matched_characters_are_accented() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/sh");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, "Schedule shutdown");
+    let styles: Vec<char> = rows.rows[y].styles().chars().collect();
+    let (accent, normal) = (Style::ACCENT.code(), Style::NORMAL.code());
+    let name: Vec<char> = styles[x..x + "Schedule shutdown".len()].to_vec();
+    for (i, c) in name.iter().enumerate() {
+        let want = if (9..=10).contains(&i) { accent } else { normal };
+        assert_eq!(*c, want, "cell {i} of the name: {name:?}");
+    }
+    // At home no name is accented.
+    let (mut l, b) = panel_box("");
+    select_tool(&mut l, "Schedule shutdown");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, "Schedule shutdown");
+    let name: String = rows.rows[y].styles().chars().skip(x).take("Schedule shutdown".len()).collect();
+    assert!(name.chars().all(|c| c == normal), "{name:?}");
+}
+
+/// A click on a tab of the strip is that tab, scrolled or not; between two tabs it is nothing.
+#[test]
+fn a_click_on_a_tab_maps_to_it() {
+    use crate::launcher::tools::panel::Tab;
+    let (l, b) = panel_box("");
+    let rows = draw_in(&l, &b);
+    let (y, x) = find(&rows, " Captures ");
+    let captures = l.tools().unwrap().catalog.categories.iter().position(|c| c.name == "Captures").unwrap();
+    let tab = l.tools().unwrap().panel().unwrap().tabs.iter().position(|t| *t == Tab::Category(captures)).unwrap();
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(y, 1, "the strip's row");
+    assert_eq!(hit(&l, &b, ring(x + 1), ring(y)), Some(Click::Tab(tab)));
+    assert_eq!(hit(&l, &b, ring(x), ring(y)), Some(Click::Tab(tab)), "the pill's own edge");
+    assert_eq!(hit(&l, &b, ring(x - 1), ring(y)), Some(Click::Inside), "the gap before it");
+    // A scrolled strip: the last tab drawn is the last tab.
+    let (mut l, b) = panel_box(&many_categories());
+    l.key(Key::BackTab);
+    let strip = draw_in(&l, &b).rows[1].text();
+    let (y, x) = (1, strip[..strip.find(" Category 15 ").unwrap()].chars().count());
+    let last = l.tools().unwrap().panel().unwrap().tabs.len() - 1;
+    assert_eq!(hit(&l, &b, ring(x + 2), ring(y)), Some(Click::Tab(last)));
+}
+
+#[test]
+fn a_pending_question_turns_the_frame_urgent() {
+    let mut l = tools_box(TOOLS_CFG);
+    assert_eq!(frame_ink(&l), FrameInk::Border);
+    keys(&mut l, &[Key::Down, Key::Enter, Key::Down]); // Collect garbage
+    l.set_now(std::time::Instant::now());
+    assert_eq!(l.key(Key::Enter), crate::launcher::model::Outcome::Asked);
+    assert_eq!(frame_ink(&l), FrameInk::Urgent, "while the question is pending");
+    let (_, rows) = draw(&mut l, 100);
+    let question = tool_text(&rows).into_iter().position(|t| t.contains("Collect garbage? ⏎")).unwrap();
+    assert!(rows.rows[question].styles().contains(Style::URGENT.code()), "the question in the urgent tint");
+    l.key(Key::Down);
+    assert_eq!(frame_ink(&l), FrameInk::Border, "any other key cancels it");
+}
+
+#[test]
+fn the_footer_hides_letters_when_they_are_not_live() {
+    let (mut l, b) = panel_box(PINNED);
+    let footer = |l: &Launcher| draw_in(l, &b).rows.last().unwrap().text();
+    let live = footer(&l);
+    for word in ["⏎", "Run", "→", "Options", "Tab", "Category", "a-z", "Quick key", "Esc", "Close"] {
+        assert!(live.contains(word), "{word} in {live:?}");
+    }
+    l.key(Key::Char('/'));
+    assert!(!l.letters_live());
+    let typing = footer(&l);
+    assert!(!typing.contains("a-z") && !typing.contains("Quick key"), "{typing:?}");
+    assert!(typing.contains("Run") && typing.contains("Close"), "{typing:?}");
+    // No tool of the tab has a letter: none to offer.
+    let (l, b) = panel_box("[tools]\nbuiltins = false\n[[tools.entry]]\nname = \"Plain\"\nrun = [\"x\"]\n");
+    let none = draw_in(&l, &b).rows.last().unwrap().text();
+    assert!(!none.contains("a-z"), "{none:?}");
+}
+
+#[test]
+fn a_tool_row_in_all_keeps_the_flat_selection() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let catalog = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(catalog);
+    typed(&mut l, "lock now");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(matches!(l.selected_hit().map(|h| h.source), Some(Source::Tool(_))), "{}", snapshot(&rows));
+    let row = &rows.rows[usize::from(b.list_top) - 1];
+    assert!(row.text().contains("Lock now") && row.styles().contains(Style::SELECTED.code()), "{}", snapshot(&rows));
+    assert!(rows.shapes.is_empty(), "no band outside the Tools mode");
+}
+
+/// Tool rows in All (Mod+Space, a typed query) keep their own look: no glyph, the category two
+/// cells after the name, the flat selection; the Tools mode's restyle stays in the Tools mode.
+#[test]
+fn tool_rows_in_all_keep_their_look() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let tools = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    l.set_tools(tools);
+    typed(&mut l, "o");
+    let at = (0..l.results.len()).find(|&i| matches!(l.results[i].source, Source::Tool(_))).expect("a tool row");
+    for _ in 0..at {
+        l.key(Key::Down);
+    }
+    let (_, rows) = draw(&mut l, 100);
+    insta::assert_snapshot!("tools_in_all", snapshot(&rows));
+}
+
+/// A Tools question is asked in the Tools mode only: a confirm tool hit in All moves the box to
+/// its level with the question pending, and the frame turns urgent there.
+#[test]
+fn a_confirm_from_all_asks_in_the_tools_mode_with_an_urgent_frame() {
+    use crate::launcher::tools::catalog::{Catalog, Context};
+    let config = LauncherConfig::from_text(TOOLS_CFG).unwrap();
+    let tools = Catalog::build(&config.tools, &Context::default(), &mut |_| {});
+    let mut l = Launcher::for_apps(config, Vec::new(), History::empty(200), NOW);
+    l.set_tools(tools);
+    typed(&mut l, "collect garbage");
+    assert!(matches!(l.selected_hit().map(|h| h.source), Some(Source::Tool(_))));
+    assert_eq!(frame_ink(&l), FrameInk::Border);
+    l.set_now(std::time::Instant::now());
+    l.key(Key::Enter);
+    assert_eq!(l.mode, Mode::Tools, "the question lives in the Tools mode");
+    assert_eq!(frame_ink(&l), FrameInk::Urgent);
+}
+
+// --- the panel's box size (spec "Box") ---
+
+#[test]
+fn the_tools_layout_takes_the_panel_s_size_capped_at_90_and_80_percent() {
+    let b = tools_layout(232, 49, (105, 20));
+    assert_eq!(
+        b,
+        BoxLayout { columns: 107, rows: 27, list_top: 2, list_rows: 23, preview_columns: 0 },
+        "the list and the ring across; the chip, the tabs, a line, the panes, a line and the footer down"
+    );
+    let capped = tools_layout(80, 30, (200, 100));
+    assert_eq!((capped.columns, capped.rows), (72, 24), "90 % of the columns, 80 % of the rows");
+    assert_eq!((capped.list_top, capped.list_rows, capped.preview_columns), (2, 20, 0));
+}
+
+#[test]
+fn the_panel_box_fits_a_small_output() {
+    let room = panel_room(80, 30);
+    let b = tools_layout(80, 30, room);
+    assert!(b.columns <= 72 && b.rows <= 24, "at most 90 % × 80 % of the output: {b:?}");
+    assert_eq!((b.columns, b.rows), (room.0 + 2, room.1 + 7), "the room fits the box: no cut");
+}
+
+#[test]
+fn a_narrow_panel_keeps_today_s_width() {
+    assert_eq!(tools_layout(232, 49, (40, 30)).columns, BOX_COLUMNS, "never narrower than today's box");
+    assert_eq!(super::tools_box(BOX_COLUMNS + 10, 40, (40, 30)).columns, BOX_COLUMNS, "a refit floors the same");
+    assert_eq!(tools_layout(50, 49, (40, 30)).columns, 45, "a narrow output still caps at 90 %");
+}
+
+#[test]
+fn the_panel_is_three_cards_wide_on_a_wide_output() {
+    let room = panel_room(232, 49);
+    assert_eq!(room.0, 104, "three cards of 34 and their two gaps, not 90 % of the output");
+    assert_eq!(tools_layout(232, 49, room).columns, 106, "about 106 cells (spec \"Box\")");
+    assert_eq!(panel_room(80, 30).0, 70, "a smaller output: its 90 % cap, less the ring");
+}
+
+#[test]
+fn a_panel_drawn_in_a_narrower_box_keeps_its_shapes_inside() {
+    let (l, b) = panel_box(PINNED);
+    assert!(b.columns > 100, "opened wider than the box it is drawn in: {b:?}");
+    let narrow = BoxLayout { columns: 100, ..b };
+    let rows = draw_in(&l, &narrow);
+    assert!(!capsules(&rows).is_empty());
+    for s in &rows.shapes {
+        assert!(s.col + s.width <= narrow.columns - 2, "{s:?} past the last column of {narrow:?}");
+    }
+}
+
+/// The model pages by the tools the pane holds at the panel (two lines each), by its rows elsewhere.
+#[test]
+fn the_panel_pages_by_its_two_line_tools() {
+    let (mut l, b) = panel_box("");
+    assert_eq!(model_rows(&l, &b), usize::from(b.rows - 7) / 2);
+    l.key(Key::PageDown);
+    assert_eq!(l.selected, usize::from(b.rows - 7) / 2);
+    let mut apps = launcher();
+    let (b, _) = draw(&mut apps, 100);
+    assert_eq!(model_rows(&apps, &b), usize::from(b.list_rows));
+}
+
+/// A box drawn shorter than planned (a size the compositor imposed) fits the model to it: the USB
+/// reset, cut off there, draws no capsule and its letter `x` starts the search.
+#[test]
+fn a_letter_follows_the_box_drawn() {
+    let (mut l, b) = panel_box(PINNED);
+    // The ring and chrome, then four lines: Pinned's label and Wi-Fi, the USB reset cut off.
+    let short = BoxLayout { rows: 7 + 4, ..b };
+    fit(&mut l, &short);
+    assert_eq!(capsules(&draw_in(&l, &short)).len(), 1, "Wi-Fi's capsule only");
+    let o = l.key(Key::Char('x'));
+    assert!(!matches!(o, crate::launcher::model::Outcome::Activate(_)), "{o:?}");
+    assert_eq!(l.query, "x");
+}
+
+/// The search field keeps the `Super` `X` capsules while its chip has room for them beside the
+/// magnifier and the placeholder: a 60-column box shows them, a 59-column one does not.
+#[test]
+fn the_super_x_capsules_need_room_in_the_search_field() {
+    let (l, b) = panel_box("");
+    let keys = |columns: u16| {
+        let boxed = render(&l, &BoxLayout { columns, ..b });
+        // The search field's row, in the ring's coordinates.
+        boxed.shapes.iter().filter(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Selection)).count()
+    };
+    assert_eq!(keys(60), 2);
+    assert_eq!(keys(59), 0);
+}
+
+// --- the panel's cleanup (Task 13b) ---
+
+/// Opens the tab that lists `name`, from All.
+fn tab_with(l: &mut Launcher, name: &str) {
+    let e = entry_named(l, name);
+    l.key(Key::Tab);
+    while !l.tools().unwrap().panel().unwrap().tools().any(|t| t == e) {
+        l.key(Key::Tab);
+    }
+}
+
+/// A level below the root (the choices of Schedule shutdown) lists its rows on one line each in
+/// the list pane and keeps the entry's detail card at the right; a click on the card is no row.
+#[test]
+fn a_level_below_keeps_the_detail_card() {
+    let (mut l, b) = panel_box("");
+    tab_with(&mut l, "Schedule shutdown");
+    select_tool(&mut l, "Schedule shutdown");
+    l.key(Key::Enter);
+    let shutdown = entry_named(&l, "Schedule shutdown");
+    assert_eq!(l.tools().unwrap().level(), crate::launcher::tools::nav::Level::Choices { entry: shutdown });
+    let rows = draw_in(&l, &b);
+    let text = card_text(&rows);
+    assert!(text.iter().any(|t| t == "Schedule shutdown"), "the entry's card: {}", snapshot_with_shapes(&rows));
+    let list = list_text(&rows);
+    let first = list.iter().position(|t| t.contains("30 min")).unwrap_or_else(|| panic!("{list:#?}"));
+    assert!(list[first + 1].contains("1 h"), "one line per choice: {list:#?}");
+    let c = card(&rows);
+    let band = rows.shapes.iter().find(|s| s.kind == ShapeKind::Band).expect("the selected choice");
+    assert!(band.col + band.width <= c.col, "the band stays left of the card: {band:?} {c:?}");
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    assert_eq!(hit(&l, &b, ring(usize::from(c.col) + 3), ring(first)), Some(Click::Inside), "the card is no row");
+    assert_eq!(hit(&l, &b, ring(4), ring(first)), Some(Click::Result(0)));
+}
+
+/// A pinned tool's card says `Pinned` on a category tab too.
+#[test]
+fn the_pinned_hint_shows_on_a_category_tab() {
+    let (mut l, b) = panel_box(PINNED);
+    tab_with(&mut l, "Reset USB (xHCI)");
+    select_tool(&mut l, "Reset USB (xHCI)");
+    let text = card_text(&draw_in(&l, &b));
+    assert!(text.iter().any(|t| t == "Pinned"), "{text:#?}");
+}
+
+/// The rows of the list pane that hold a section label.
+fn label_rows(rows: &Boxed) -> Vec<usize> {
+    list_text(rows)
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            let t = t.trim_start();
+            t.starts_with('●') || t.starts_with("PINNED") || t.starts_with("RECENT")
+        })
+        .map(|(y, _)| y)
+        .collect()
+}
+
+/// Whatever the selection, a section label is drawn only with its first tool under it.
+#[test]
+fn a_section_label_never_sits_alone_at_the_bottom() {
+    let (mut l, b) = panel_box(PINNED);
+    loop {
+        let rows = draw_in(&l, &b);
+        let tiles: Vec<usize> = tiles(&rows).iter().filter(|s| s.col < card(&rows).col).map(|s| s.row).collect();
+        for y in label_rows(&rows) {
+            assert!(tiles.contains(&(y + 1)), "the label on row {y} with no tool under it: {}", snapshot_with_shapes(&rows));
+        }
+        if l.key(Key::Down) != crate::launcher::model::Outcome::Redraw {
+            break;
+        }
+    }
+}
+
+/// A cut strip that starts at the first tab draws it flush, with no room kept for a `‹`.
+#[test]
+fn a_cut_strip_starts_flush_at_the_first_tab() {
+    let (l, b) = panel_box(&many_categories());
+    let rows = draw_in(&l, &b);
+    let pills: Vec<&Shape> = rows.shapes.iter().filter(|s| s.row == 1 && matches!(s.kind, ShapeKind::Chip(_))).collect();
+    let first = pills.iter().map(|s| s.col).min().unwrap();
+    let field = rows.shapes.iter().find(|s| s.row == 0 && s.kind == ShapeKind::Chip(Tint::Pill)).expect("the search field");
+    assert_eq!(first, field.col, "flush with the search field: {}", snapshot_with_shapes(&rows));
+}
+
+/// On a search row with chips and none picked, Enter opens the choices: the footer says Open.
+#[test]
+fn the_footer_says_open_on_an_unpicked_chip_row() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/schedule");
+    let footer = |l: &Launcher| draw_in(l, &b).rows.last().unwrap().text();
+    let unpicked = footer(&l);
+    assert!(unpicked.contains("Open") && !unpicked.contains("Run"), "{unpicked:?}");
+    l.key(Key::Right);
+    let picked = footer(&l);
+    assert!(picked.contains("Run") && !picked.contains("Open"), "{picked:?}");
+}
+
+/// A click on a chip is that chip of that result; elsewhere on the chip line, the result.
+#[test]
+fn a_click_on_a_chip_maps_to_it() {
+    let (mut l, b) = panel_box("");
+    typed(&mut l, "/schedule");
+    let rows = draw_in(&l, &b);
+    let (y, _) = find(&rows, "Schedule shutdown");
+    let ring = |v: usize| u16::try_from(v + 1).unwrap();
+    let mut chips: Vec<&Shape> =
+        rows.shapes.iter().filter(|s| s.row == y + 1 && s.rows == 1 && matches!(s.kind, ShapeKind::Chip(_))).collect();
+    chips.sort_by_key(|s| s.col);
+    assert_eq!(chips.len(), 5, "{}", snapshot_with_shapes(&rows));
+    for (k, c) in chips.iter().enumerate() {
+        assert_eq!(hit(&l, &b, ring(usize::from(c.col) + 1), ring(y + 1)), Some(Click::Chip(0, k)), "chip {k}");
+    }
+    let past = chips.last().map(|c| c.col + c.width + 2).unwrap();
+    assert_eq!(hit(&l, &b, ring(usize::from(past)), ring(y + 1)), Some(Click::Result(0)));
 }

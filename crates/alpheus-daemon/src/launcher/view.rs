@@ -11,16 +11,17 @@
 //! built (`list::boxed`).
 
 use crate::compositor::Toplevel;
-use crate::grid::{Grid, Style, text_width, truncate};
+use crate::grid::{Grid, Style, Tint, text_width, truncate};
 use crate::icons;
 use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::{Launcher, Origin};
 use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::processes::Sig;
-use crate::launcher::tools::catalog::Choices;
-use crate::launcher::tools::nav::{RowId, Trail};
-use crate::list::{self, Boxed, Row, tail, wrap};
+use crate::launcher::tools::catalog::{Choices, Entry};
+use crate::launcher::tools::nav::{RowId, ToolsState, Trail};
+use crate::list::{self, Boxed, Row, Shape, ShapeKind, tail, wrap};
+use crate::painter::FrameInk;
 use crate::quick;
 use alpheus_common::launcher_ipc::wipe;
 use std::borrow::Cow;
@@ -41,6 +42,22 @@ const CLIPBOARD_PLACEHOLDER: &str = "type to filter the clipboard history";
 /// The kill list's empty input line.
 const PROCESSES_PLACEHOLDER: &str = "type to filter the processes";
 const PROMPT: &str = "❯";
+/// The Tools search field's placeholder at the panel's root.
+const TOOLS_PLACEHOLDER: &str = "Search tools";
+/// The Tools search field's cursor.
+const TOOLS_CURSOR: &str = "▏";
+/// The narrowest search field (its chip's columns) that still shows the `Super` `X` capsules
+/// beside the magnifier and the placeholder.
+const KEY_HINT_COLUMNS: u16 = 56;
+/// The cells of a tool's letter capsule at the right of its row: the letter between two blanks.
+const LETTER_CELLS: u16 = 3;
+/// The widest the Super+X panel's box is asked, its ring left out: 104 cells (spec "Box": about
+/// 106 with the ring), room for the list and the detail card side by side.
+pub const PANEL_COLUMNS: u16 = 104;
+/// The blank column the Tools mode keeps inside the frame at each side: a shape drawn from there
+/// is as far from the frame as the search field's chip is from the top (the painter's margin is
+/// measured to a text's first column, one cell in).
+const TOOLS_INSET: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxLayout {
@@ -76,6 +93,43 @@ pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: b
     let chrome = if script { 4 } else { 5 };
     let list_rows = config_rows.min(output_rows.saturating_sub(chrome)).max(1);
     BoxLayout { columns, rows: chrome + list_rows, list_top: chrome - 2, list_rows, preview_columns }
+}
+
+/// The rows of the Tools panel's box around its panes (`panel::CHROME_ROWS`).
+const PANEL_CHROME_ROWS: u16 = panel::CHROME_ROWS;
+
+/// The most of the output the panel's box takes (spec "Box"): 90 % of its columns, 80 % of
+/// its rows. `launcher.toml`'s `rows` does not cap it; it still caps every other mode.
+fn panel_cap(output_columns: u16, output_rows: u16) -> (u16, u16) {
+    let share = |cells: u16, tenths: u32| u16::try_from(u32::from(cells) * tenths / 10).unwrap_or(u16::MAX);
+    (share(output_columns, 9), share(output_rows, 8))
+}
+
+/// The cells the panel's panes may fill on this output: `PANEL_COLUMNS` across and
+/// `panel::PANE_ROWS` down at most (six two-line tools and their labels), within the cap less the
+/// box's ring and chrome, so `tools_layout` never cuts it.
+pub fn panel_room(output_columns: u16, output_rows: u16) -> (u16, u16) {
+    let (columns, rows) = panel_cap(output_columns, output_rows);
+    (columns.saturating_sub(2).min(PANEL_COLUMNS), rows.saturating_sub(PANEL_CHROME_ROWS).min(panel::PANE_ROWS))
+}
+
+/// The Tools box sized to the panel's `wanted` cells (columns, rows), decided once per open
+/// and kept at every level: the panes and the ring across; the ring, the search field, the tabs,
+/// a line, the panes, a line and the footer down (a level below draws its list from under the
+/// search field). Never more than `panel_cap`, nor less than `BOX_COLUMNS`
+/// when the cap leaves room for it; no preview panel.
+pub fn tools_layout(output_columns: u16, output_rows: u16, wanted: (u16, u16)) -> BoxLayout {
+    let (columns, rows) = panel_cap(output_columns, output_rows);
+    tools_box(columns, rows, wanted)
+}
+
+/// `tools_layout` within `max_columns` × `max_rows` cells, the ring counted (a size the compositor
+/// imposed refits through it, the output's cap already applied when the box was asked).
+pub fn tools_box(max_columns: u16, max_rows: u16, wanted: (u16, u16)) -> BoxLayout {
+    // Never narrower than today's box, unless the room is.
+    let columns = wanted.0.saturating_add(2).min(max_columns).max(BOX_COLUMNS.min(max_columns));
+    let rows = wanted.1.saturating_add(PANEL_CHROME_ROWS).min(max_rows).max(PANEL_CHROME_ROWS);
+    BoxLayout { columns, rows, list_top: 2, list_rows: rows - 4, preview_columns: 0 }
 }
 
 /// The modes row's labels and their columns [start, end).
@@ -209,9 +263,17 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         return;
     }
     if let Source::Tool(i) = l.results[index].source
-        && l.tool_rows().get(i).is_some()
+        && let Some(row) = l.tool_rows().get(i)
     {
-        tool_row(l, b, g, i, selected);
+        // A choice right under its entry (or a sibling choice) in the search.
+        let above = index.checked_sub(1).and_then(|p| l.results.get(p)).and_then(|h| match h.source {
+            Source::Tool(j) => l.tool_rows().get(j),
+            _ => None,
+        });
+        let grouped = l.mode == Mode::Tools
+            && above.is_some_and(|a| matches!((a.id, row.id), (RowId::Entry(a) | RowId::Choice(a, _), RowId::Choice(e, _)) if a == e));
+        // The Tools mode draws its selection as a band under the row (`render`).
+        tool_row(l, b, g, i, grouped, selected && l.mode != Mode::Tools);
         return;
     }
     if let Source::Proc(i) = l.results[index].source
@@ -287,19 +349,31 @@ fn proc_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
     }
 }
 
-/// A Tools row: `<icon> <text>` and its trail at the right edge: ` ›` dim, the quick
-/// panel's switch, or, in a flat search, the category dimmed after the entry (`entry_row`, no glyph).
-/// A pending question replaces the text with `<name>? ⏎` in warn.
-fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool) {
+/// A Tools row: `<icon> <text>` (the icon in its category's hue) and its trail at the right edge:
+/// ` ›` dim, the quick panel's switch, or, in a flat search, the category dim at the right (a
+/// choice `grouped` under its entry leaves its glyph cell blank). A pending question replaces the
+/// text with `<name>? ⏎` in the urgent tint.
+fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, grouped: bool, selected: bool) {
     let (Some(t), Some(row)) = (l.tools(), l.tool_rows().get(i)) else { return };
-    let end = b.pane_end();
+    // The restyle is the Tools mode's: a tool row in All keeps the accent and no glyph in its
+    // flat form (`entry_row`), and no blank column inside the frame.
+    let tools = l.mode == Mode::Tools;
+    let (start, end) = if tools { (1 + TOOLS_INSET, b.pane_end().saturating_sub(TOOLS_INSET)) } else { (1, b.pane_end()) };
+    let icon_style = if tools { row_hue(t, row.id) } else { Style::ACCENT };
+    let icon = if grouped { row.icon.map(|_| ' ') } else { row.icon };
     if t.asking(row.id) {
         let text = t.question_text(row);
-        list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &text, right: "", style: Style::WARN, selected });
+        let style = if tools { Style::URGENT } else { Style::WARN };
+        list::row(g, start, end, &Row { icon, icon_style, text: &text, right: "", style, selected });
         return;
     }
     match &row.trail {
-        Trail::Category(category) => entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected),
+        Trail::Category(category) if !tools => {
+            entry_row(g, 1, end, &row.text, (!category.is_empty()).then_some(category.as_str()), selected);
+        }
+        Trail::Category(category) => {
+            list::row(g, start, end, &Row { icon, icon_style, text: &row.text, right: category, style: Style::NORMAL, selected });
+        }
         Trail::None | Trail::Chevron | Trail::Switch(_) => {
             let right = if row.trail == Trail::Chevron { "›" } else { "" };
             // A switch is drawn over the row's right edge: the name is cut before it, ellipsis
@@ -309,17 +383,36 @@ fn tool_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, i: usize, selected: bool)
                     let (text, style) = quick::switch(Some(on));
                     (
                         Some((text, style)),
-                        truncate(&row.text, end.saturating_sub(text_width(text) + 3 + 2 * u16::from(row.icon.is_some()) + 1)),
+                        truncate(&row.text, end.saturating_sub(start + text_width(text) + 3 + 2 * u16::from(row.icon.is_some()))),
                     )
                 }
                 _ => (None, row.text.clone()),
             };
-            list::row(g, 1, end, &Row { icon: row.icon, icon_style: Style::ACCENT, text: &shown, right, style: Style::NORMAL, selected });
+            list::row(g, start, end, &Row { icon, icon_style, text: &shown, right, style: Style::NORMAL, selected });
             if let Some((text, style)) = switch {
                 g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
             }
         }
     }
+}
+
+/// The style of a Tools row's glyph: its category's hue, the accent for a root entry.
+fn row_hue(t: &ToolsState, id: RowId) -> Style {
+    let category = match id {
+        RowId::Category(c) => Some(c),
+        RowId::Entry(e) | RowId::Choice(e, _) | RowId::Prompt(e) => t.catalog.entries.get(e).and_then(|e| e.category),
+    };
+    category_hue(t, category)
+}
+
+/// A category's hue as a style, the accent without one (a root entry, or a category with no hue).
+fn category_hue(t: &ToolsState, category: Option<usize>) -> Style {
+    category.and_then(|c| t.catalog.categories.get(c)).and_then(|c| c.hue).map_or(Style::ACCENT, Style::hue)
+}
+
+/// Whether Enter on the entry opens a level (its choices, or the text it asks for).
+fn opens_level(e: &Entry) -> bool {
+    !matches!(e.choices, Choices::None) || e.ask.is_some()
 }
 
 /// A command-source entry: the entry, then its path dimmed two cells after it,
@@ -368,11 +461,8 @@ fn help_text(l: &Launcher) -> &'static str {
         return "enter focus · tab next · esc close";
     }
     match l.mode {
-        // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
-        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) && l.origin == Origin::Apps => "⏎ open/run · ⌫ all · esc close",
-        Mode::Tools if l.tools().is_some_and(|t| t.at_root()) => "⏎ open/run · esc close",
-        Mode::Tools if l.tools().is_some_and(|t| t.prompting()) => "⏎ run · esc back",
-        Mode::Tools => "⏎ open/run · ← esc back",
+        // Drawn as capsules: `tools_hints`.
+        Mode::Tools => "",
         Mode::Script => "enter choose · esc cancel",
         Mode::Clipboard => clips_help(l),
         Mode::Processes => processes_help(l),
@@ -550,10 +640,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((String::new(), Style::NORMAL));
                 let opens = match row.id {
                     RowId::Category(_) => true,
-                    RowId::Entry(e) => l
-                        .tools()
-                        .and_then(|t| t.catalog.entries.get(e))
-                        .is_some_and(|e| !matches!(e.choices, Choices::None) || e.ask.is_some()),
+                    RowId::Entry(e) => l.tools().and_then(|t| t.catalog.entries.get(e)).is_some_and(opens_level),
                     RowId::Choice(..) | RowId::Prompt(_) => false,
                 };
                 out.push((if opens { "enter  open" } else { "enter  run" }.to_string(), Style::NORMAL));
@@ -575,6 +662,16 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 // the empty-state texts: one row per mode, so a mode keeps its own line.
 #[allow(clippy::match_same_arms)]
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
+    let tools = l.mode == Mode::Tools;
+    if tools && panel::shown(l) {
+        return panel::render(l, b);
+    }
+    let unpaned = without_preview(l, b);
+    let b = &unpaned;
+    // A level below the panel's root: its rows in the list pane, the entry's card at the right.
+    let level = if tools { panel::level_card(l, b) } else { None };
+    let listed = level.map_or(*b, |(_, end, _)| list_pane(b, end));
+    let mut shapes = Vec::new();
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
     if l.has_modes() {
@@ -583,13 +680,21 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         rows.push(g);
     }
     let mut g = blank(b);
-    input_row(l, b, &mut g);
+    if tools {
+        tools_chip(l, b, &mut g, &mut shapes, rows.len());
+    } else {
+        input_row(l, b, &mut g);
+    }
     rows.push(g);
     for r in 0..usize::from(b.list_rows) {
         let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
-            result_row(l, b, &mut g, index);
+            result_row(l, &listed, &mut g, index);
+            if tools && index == l.selected && !l.selection_lost() {
+                let (from, to) = (1 + TOOLS_INSET, listed.pane_end().saturating_sub(TOOLS_INSET));
+                shapes.push(ring_shape(rows.len(), from, to.saturating_sub(from), 1, ShapeKind::Band));
+            }
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
                 _ if let Some((p, text)) = l.prefixed() => {
@@ -618,10 +723,15 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut g = blank(b);
     match &l.message {
         Some(m) => g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR),
+        None if tools => key_hints(&mut g, &mut shapes, rows.len(), 1 + TOOLS_INSET, end.saturating_sub(TOOLS_INSET), tools_hints(l)),
         None => g.write(2, end.saturating_sub(1), &truncate(help_text(l), end.saturating_sub(3)), Style::MUTED),
     };
     rows.push(g);
     rows.push(blank(b));
+    if let Some((entry, _, card)) = level {
+        let top = usize::from(b.list_top);
+        panel::level_detail(l, entry, card, (top, usize::from(b.list_rows)), &mut rows, &mut shapes);
+    }
     // The panel is reserved for the whole open (2026-10-05: the box never
     // changes width with the selection) and, once reserved, always shows the selected
     // result (2026-10-05, after seeing the real rendering: never blank while one
@@ -649,13 +759,126 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             wipe(text);
         }
     }
-    list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()))
+    let mut boxed = list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()));
+    boxed.shapes = shapes;
+    boxed
+}
+
+/// `b` with its results' pane ending where the panel's list pane does (`end`, exclusive): a level
+/// below the panel's root draws its rows there, its card at the right (`panel::level_card`).
+fn list_pane(b: &BoxLayout, end: u16) -> BoxLayout {
+    BoxLayout { preview_columns: b.columns.saturating_sub(end + TOOLS_INSET + 2), ..*b }
+}
+
+/// The layout the Tools mode draws in: no preview panel (its content, the row's name and "enter
+/// run", repeats the row), the results across the box. Any other mode's is `b` itself.
+fn without_preview(l: &Launcher, b: &BoxLayout) -> BoxLayout {
+    if l.mode == Mode::Tools { BoxLayout { preview_columns: 0, ..*b } } else { *b }
+}
+
+/// A shape over cells given in the ring's coordinates, as every row is built: `list::boxed` drops
+/// the ring, the shape follows it.
+fn ring_shape(row: usize, col: u16, width: u16, rows: u16, kind: ShapeKind) -> Shape {
+    Shape { row: row.saturating_sub(1), col: col.saturating_sub(1), width, rows, kind, glyph: None }
+}
+
+/// A key capsule on row `y` from column `x`: `key` dim between two blank cells, on a chip of
+/// `tint`. The column after it; nothing drawn when it does not fit before `end`.
+fn capsule(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, x: u16, end: u16, key: &str, tint: Tint) -> u16 {
+    let w = text_width(key) + 2;
+    if x + w > end {
+        return x;
+    }
+    shapes.push(ring_shape(y, x, w, 1, ShapeKind::Chip(tint)));
+    g.write(x + 1, x + w - 1, key, Style::MUTED);
+    x + w
+}
+
+/// A footer's offer: keys, each in its capsule, then what they do.
+type Hint = (&'static [&'static str], &'static str);
+
+/// The Tools footer below the panel's home (which draws its own): the root's keys, a level's own.
+fn tools_hints(l: &Launcher) -> &'static [Hint] {
+    let Some(t) = l.tools() else { return &[] };
+    // ← does nothing at the root; Backspace goes back to All only in a Mod+Space open.
+    if t.at_root() && l.origin == Origin::Apps {
+        &[(&["⏎"], "Open"), (&["⌫"], "All"), (&["Esc"], "Close")]
+    } else if t.at_root() {
+        &[(&["⏎"], "Open"), (&["Esc"], "Close")]
+    } else if t.prompting() {
+        &[(&["⏎"], "Run"), (&["Esc"], "Back")]
+    } else {
+        &[(&["⏎"], "Open"), (&["←", "Esc"], "Back")]
+    }
+}
+
+/// `hints` left-aligned on row `y` from column `start`: each group's capsules one blank cell
+/// apart, its label after them, three cells to the next group; a group that does not fit before
+/// `end` is left out with the ones after it.
+fn key_hints(g: &mut Grid, shapes: &mut Vec<Shape>, y: usize, start: u16, end: u16, hints: &[Hint]) -> u16 {
+    let mut x = start;
+    for (keys, label) in hints {
+        let need = keys.iter().map(|k| text_width(k) + 3).sum::<u16>() + text_width(label);
+        if x + need > end {
+            break;
+        }
+        for k in *keys {
+            x = capsule(g, shapes, y, x, end, k, Tint::Pill) + 1;
+        }
+        x = g.write(x, end, label, Style::MUTED) + 3;
+    }
+    x
+}
+
+/// The Tools mode's search field on row `y`: a chip across the box, the magnifier, the breadcrumb
+/// below the root, the query and its cursor (the placeholder at the panel's root), and at its right
+/// the `Super` `X` capsules in a `--tools` open whose field is at least `KEY_HINT_COLUMNS` wide.
+fn tools_chip(l: &Launcher, b: &BoxLayout, g: &mut Grid, shapes: &mut Vec<Shape>, y: usize) {
+    let (start, end) = (1 + TOOLS_INSET, b.pane_end().saturating_sub(TOOLS_INSET));
+    shapes.push(ring_shape(y, start, end.saturating_sub(start), 1, ShapeKind::Chip(Tint::Pill)));
+    let mut stop = end.saturating_sub(1);
+    if l.origin == Origin::Tools && end.saturating_sub(start) >= KEY_HINT_COLUMNS {
+        let mut x = stop;
+        for key in ["X", "Super"] {
+            x = x.saturating_sub(text_width(key) + 2);
+            capsule(g, shapes, y, x, stop, key, Tint::Selection);
+            x = x.saturating_sub(1);
+        }
+        stop = x;
+    }
+    let panel = l.tools().is_some_and(ToolsState::at_panel);
+    let mut x = g.write(start + 1, stop, &SEARCH_ICON.to_string(), Style::MUTED);
+    x = g.write(x, stop, " ", Style::NORMAL);
+    if !panel {
+        // The breadcrumb, cut from the left when too long.
+        let crumb = l.tools().map_or_else(String::new, |t| tail(&t.breadcrumb(), stop.saturating_sub(x) / 2));
+        x = g.write(x, stop, &crumb, Style::BOLD_ACCENT);
+        x = g.write(x, stop, " ", Style::NORMAL);
+    }
+    // One cell kept for the cursor, one for the margin.
+    let mut shown = tail(&l.query, stop.saturating_sub(x).saturating_sub(2));
+    x = g.write(x, stop, &shown, Style::NORMAL);
+    wipe(&mut shown);
+    // A thin bar, as the field's own: a block would spill past the chip's rounded edge.
+    x = g.write(x, stop, TOOLS_CURSOR, Style::ACCENT);
+    if panel && l.query.is_empty() {
+        g.write(x + 1, stop, TOOLS_PLACEHOLDER, Style::MUTED);
+    }
+}
+
+/// The box's frame: the urgent tint while a Tools question waits for its second Enter.
+pub fn frame_ink(l: &Launcher) -> FrameInk {
+    if l.mode == Mode::Tools && l.tools().is_some_and(|t| t.next_deadline().is_some()) { FrameInk::Urgent } else { FrameInk::Border }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     Result(usize),
     Mode(Mode),
+    /// A tab of the Super+X panel's strip: an index into `Panel::tabs`.
+    Tab(usize),
+    /// A chip of a result's row in the Super+X panel's search: the result, the chip.
+    Chip(usize, usize),
     Inside,
 }
 
@@ -664,6 +887,13 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     if column >= b.columns || row >= b.rows {
         return None;
     }
+    let b = &without_preview(l, b);
+    if l.mode == Mode::Tools && panel::shown(l) {
+        return Some(panel::hit(l, b, column, row));
+    }
+    // A level below the panel's root: the card right of its rows is no row.
+    let listed = if l.mode == Mode::Tools { panel::level_card(l, b).map(|(_, end, _)| list_pane(b, end)) } else { None };
+    let b = listed.as_ref().unwrap_or(b);
     let in_pane = column >= 1 && column < b.pane_end();
     if in_pane && row >= b.list_top && row < b.list_top + b.list_rows {
         let index = l.top + usize::from(row - b.list_top);
@@ -686,6 +916,9 @@ pub fn snapshot(b: &Boxed) -> String {
     let divider = b.divider.map_or("none".to_string(), |c| c.to_string());
     format!("{}\n\n{}\n\ndivider: {divider}", texts.join("\n"), styles.join("\n"))
 }
+
+mod panel;
+pub use panel::{fit, model_rows};
 
 #[cfg(test)]
 mod tests;
