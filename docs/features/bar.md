@@ -217,7 +217,8 @@ modules and the walk through one event are in [`docs/ARCHITECTURE.md`](../ARCHIT
 - `layout.rs`: from the state to a screen's grid — the segments laid out left to right in the
   configured order, the elastic window module, the narrow-screen removal order, and the blocks of the
   block styles. A segment with no click zone of its own (the window, the clock without the calendar)
-  gets a `Passive` one when a button of its module is bound (`wants_zone`).
+  gets a `Passive` one when a button of its module is bound, or when the module has a tooltip and
+  `tooltips` is on (`wants_zone`).
 - `actions.rs`: a click or a wheel turn turned into what it does. `bound` reads the button's
   binding first; `wayland.rs`'s `click` runs its argv through the executor, toggles its popup under
   the zone, toggles the launcher (the launcher button's press rule) or do-not-disturb, or does
