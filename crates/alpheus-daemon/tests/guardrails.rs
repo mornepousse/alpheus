@@ -4299,6 +4299,9 @@ const TOOLS_PURE: &[&str] = &[
     "launcher/tools/nav.rs",
     "launcher/tools/diag.rs",
     "launcher/tools/panel.rs",
+    "launcher/tools/binds/mod.rs",
+    "launcher/tools/binds/mango.rs",
+    "launcher/tools/binds/describe.rs",
 ];
 
 #[test]
@@ -4316,6 +4319,47 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
             }
         }
     }
+}
+
+/// The keybinding cheatsheet's parser (`launcher/tools/binds/`) is pure: it reads only through
+/// its `Files` seam (the glue fills it), never writes, runs, spawns or logs, and has no panicking
+/// path (a config line, a path or a command may sit in a message). Production code only; every
+/// file of the folder, present and future.
+#[test]
+fn the_binds_folder_is_pure() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("launcher/tools/binds/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for word in [
+            "File::create",
+            "OpenOptions",
+            "std::fs::",
+            "Command",
+            "thread::",
+            "log(",
+            "log::write",
+            "crate::log",
+            ".expect(",
+            ".unwrap()",
+            "panic!(",
+            "unreachable!(",
+            "todo!(",
+            "unimplemented!(",
+        ] {
+            assert!(!production.contains(word), "{word} in {name}'s production code");
+        }
+        for code in production_code_without_comments(&t).lines() {
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+    assert!(seen >= 3, "the binds folder was not found");
 }
 
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through

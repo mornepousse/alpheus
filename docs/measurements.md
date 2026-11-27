@@ -301,3 +301,13 @@ before the exec. The control center's figures include the Diag tab's journal che
 tries to open `/var/log/journal/*/system.journal` and reads nothing from it; no other session
 state, tool or bus is touched. The test also asserts that every call the tabs made was one a
 fake answers, so a changed argv cannot measure error screens.
+
+### Session menu and keybindings
+
+Measured back to back against the branch's start (687fc186, the commit just before the work;
+`main` has since moved to a merge this branch does not contain), release, each build in its own
+target directory, 3 runs each, 2026-11-27.
+
+| Step | Binary (stripped `alpheus-demon`) | `pss_under_budget_and_stable` (startup / after 8,200 events) | `at_rest_no_wakeups` |
+|---|---:|---|---|
+| Task 1: the binds parser (Mango), linked into no path yet | 10,094,416 → 10,094,416 B (+0: the unreferenced code is dropped at link) | base 9,866–9,892 / 11,153–11,173 KB; with it 9,204–9,645 / 9,929–11,197 KB: within noise | 0 in all, 5 threads, both builds, every run |
