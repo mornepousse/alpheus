@@ -118,7 +118,7 @@ for the answer: no Wayland, no fonts. Exactly one verb is allowed; with none,
 | `--tools` | open the Tools menu (categories, a flat search, built-in entries and `[[tools.entry]]` from `launcher.toml`), or close it; any other open launcher is replaced. A second `--tools` less than 250 ms after the one that opened it is ignored |
 | `--binds` | open the compositor's key bindings alone (Tools › System › Keybindings, read from its config files, on Mango and Sway), or close them, also when the Keybindings level was reached from the panel; any other open launcher is replaced, the Tools menu at another level included. Esc, or ← on an empty query, closes the box: there is no panel beneath. A second `--binds` less than 250 ms after the one that opened it is ignored; exit 2 with `no key bindings source for this compositor` on Hyprland, niri or an undetected compositor |
 | `--kill` | open the kill list (your own processes, sorted by memory at open and by CPU 300 ms later), or close it; any other open launcher is replaced. Enter asks the process to quit, Ctrl+Enter then Enter kills it. A second `--kill` less than 250 ms after the one that opened it is ignored |
-| `--power` | open the ⏻ menu (lock, log out, reboot, power off) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 when no `[quick]` session command is set |
+| `--power` | open the ⏻ menu (lock, log out, reboot, power off, and `[[power.entry]]` rows) under the bar's right end on the focused output, or close it; works without the `power` module, exit 2 with `no power menu row is set …` when the menu has no row (no `[quick]` session command shown and no `[[power.entry]]`) |
 | `-h`, `--help` | print the usage and exit 0 |
 
 `--dmenu` options:

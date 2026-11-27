@@ -87,7 +87,16 @@
 //! kbd_backlight_dir = "/sys/class/leds"                     # where LEDs are listed (an absolute path); read when the panel opens, never written
 //! airplane = true                                           # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
 //! rfkill_dir = "/sys/class/rfkill"                          # where rfkill switches are listed (an absolute path); read when the panel opens, never written
-//! [timer]                                                   # the focus timer (with "timer" in modules); read at start
+//! [power]                                                   # the ⏻ menu's own rows (read at start)
+//! countdown = 0                                             # seconds, 0 to 30 (0: off); stored, not yet used
+//! builtins = true                                           # false hides the four [quick] rows
+//! [[power.entry]]   # a row of your own after the fixed ones, at most 8; never a sleep or screen power word
+//! name = "Quit session"                                     # 1 to 24 characters
+//! icon = "•"                                                # one character; absent: •
+//! run = ["my-session-quit"]                                 # argv, run as given, never through a shell; not empty
+//! confirm = false                                           # true: asks first, a second activation 0.4 s to 3 s later runs it
+//! # countdown = 5                                           # 0 to 30, this row's own; stored, not yet used
+//! [timer]                                                  # the focus timer (with "timer" in modules); read at start
 //! countdown = 10                                            # minutes, the popup's Timer row at start, 1 to 180
 //! work = 25                                                 # Pomodoro, minutes, 1 to 180
 //! short_break = 5                                           # minutes, 1 to 180
@@ -1219,6 +1228,112 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// At most this many `[[power.entry]]` rows.
+pub const POWER_ENTRIES_MAX: usize = 8;
+/// The longest countdown, in seconds (`[power] countdown` and a row's own).
+pub const POWER_COUNTDOWN_MAX: u8 = 30;
+/// The longest row name, in characters.
+pub const POWER_NAME_MAX: usize = 24;
+/// The words a user row's command may never hold, any case, anywhere in any argument: alpheus
+/// never handles sleep or the screens' power (docs/decisions.md, "A user row of the power menu
+/// never sleeps").
+///
+/// The last is the stem of the screens' power word: a guardrail (`tests/guardrails.rs`, "No
+/// output power management anywhere") forbids that word in every source, so its stem is matched
+/// instead, which catches it and its spellings without naming it; a guardrail test outside the
+/// sources checks the word itself.
+pub const POWER_SLEEP_WORDS: [&str; 4] = ["suspend", "hibernate", "hybrid-sleep", "dpm"];
+
+/// `[power]`: the ⏻ menu's own settings. Absent: the four `[quick]` rows, as before.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PowerConfig {
+    /// Seconds counted after a confirming activation, 0 to 30; 0 is off.
+    pub countdown: u8,
+    /// false hides the four fixed rows (Lock, Log out, Reboot, Power off).
+    pub builtins: bool,
+    /// `[[power.entry]]`: the user's rows, after the fixed ones, in file order.
+    pub entry: Vec<PowerEntryConfig>,
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        PowerConfig { countdown: 0, builtins: true, entry: Vec::new() }
+    }
+}
+
+/// One `[[power.entry]]`: a row of the user's own in the ⏻ menu.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerEntryConfig {
+    /// The row's label, 1 to 24 characters.
+    pub name: String,
+    /// One character; None shows `•`.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// The argv run as given, never through a shell; not empty.
+    pub run: Vec<String>,
+    /// Asks first, as Reboot and Power off do.
+    #[serde(default)]
+    pub confirm: bool,
+    /// This row's own countdown, 0 to 30, over the global one.
+    #[serde(default)]
+    pub countdown: Option<u8>,
+}
+
+/// `[power]` checked: the countdowns in range, at most 8 rows, each with a name of 1 to 24
+/// printable characters, an icon of one, a non-empty `run` whose program is not blank, no NUL, and
+/// no sleep word. A message names a row by its position, never its name or command.
+fn check_power(p: &PowerConfig) -> Result<(), String> {
+    if p.countdown > POWER_COUNTDOWN_MAX {
+        return Err(format!("power.countdown {} out of range 0 to {POWER_COUNTDOWN_MAX} s", p.countdown));
+    }
+    if p.entry.len() > POWER_ENTRIES_MAX {
+        return Err(format!("power.entry: at most {POWER_ENTRIES_MAX} (got {})", p.entry.len()));
+    }
+    for (i, e) in p.entry.iter().enumerate() {
+        let at = i + 1;
+        let name = e.name.chars().count();
+        if !(1..=POWER_NAME_MAX).contains(&name) || e.name.trim().is_empty() {
+            return Err(format!("power.entry {at}: name must be 1 to {POWER_NAME_MAX} characters"));
+        }
+        if e.name.chars().any(|c| c.is_control() || crate::text::invisible(c)) {
+            return Err(format!("power.entry {at}: name holds a control character"));
+        }
+        if let Some(icon) = &e.icon {
+            let mut chars = icon.chars();
+            let one = chars.next().filter(|c| !c.is_control() && !c.is_whitespace() && !crate::text::invisible(*c));
+            if one.is_none() || chars.next().is_some() {
+                return Err(format!("power.entry {at}: icon must be one character"));
+            }
+        }
+        if e.run.is_empty() {
+            return Err(format!("power.entry {at}: run empty (expected: [\"program\", \"argument\", …])"));
+        }
+        if e.run.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("power.entry {at}: the program is blank"));
+        }
+        if e.run.iter().any(|a| a.contains('\0')) {
+            return Err(format!("power.entry {at}: an argument holds a NUL"));
+        }
+        if e.run.iter().any(|a| names_sleep(a)) {
+            return Err(format!(
+                "power.entry {at}: run names suspend, hibernate, hybrid-sleep or a screen power word (alpheus never sleeps)"
+            ));
+        }
+        if e.countdown.is_some_and(|c| c > POWER_COUNTDOWN_MAX) {
+            return Err(format!("power.entry {at}: countdown out of range 0 to {POWER_COUNTDOWN_MAX} s"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `arg` holds a sleep word, any case.
+pub fn names_sleep(arg: &str) -> bool {
+    let arg = arg.to_lowercase();
+    POWER_SLEEP_WORDS.iter().any(|w| arg.contains(w))
+}
+
 /// The longest `[timer]` length, in minutes.
 pub const TIMER_MINUTES_MAX: u32 = 180;
 /// The most `[timer] rounds`.
@@ -1337,6 +1452,7 @@ pub struct BarConfig {
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
+    pub power: PowerConfig,
     pub timer: TimerConfig,
     pub keyboard: KeyboardConfig,
     pub clipboard: ClipboardConfig,
@@ -1364,6 +1480,7 @@ impl Default for BarConfig {
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
+            power: PowerConfig::default(),
             timer: TimerConfig::default(),
             keyboard: KeyboardConfig::default(),
             clipboard: ClipboardConfig::default(),
@@ -1412,6 +1529,8 @@ struct Raw {
     osd: OsdConfig,
     #[serde(default)]
     quick: QuickConfig,
+    #[serde(default)]
+    power: PowerConfig,
     #[serde(default)]
     timer: TimerConfig,
     #[serde(default)]
@@ -1585,6 +1704,7 @@ impl BarConfig {
             return Err("displays.drm_dir must be an absolute path".into());
         }
         check_quick(&b.quick)?;
+        check_power(&b.power)?;
         check_hooks(&b.hooks)?;
         check_shield(&b.shield)?;
         check_captures(&b.captures)?;
@@ -1618,6 +1738,7 @@ impl BarConfig {
             },
             osd: b.osd,
             quick: b.quick,
+            power: b.power,
             timer: b.timer,
             keyboard: b.keyboard,
             clipboard: b.clipboard,

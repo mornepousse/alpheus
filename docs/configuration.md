@@ -68,7 +68,7 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[power]`](#power), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
@@ -248,6 +248,31 @@ the ⏻ menu, the quick panel and the control center's Power tab share `lock`, `
 `poweroff` (the control center reads them from this file, once at its start; an empty one hides the
 button there too). See
 [the quick settings panel](features/quick-settings.md) and [the power menu](features/power.md).
+
+### `[power]`
+
+The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as before.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `countdown` | integer (seconds) | `0` | 0 to 30 | Seconds counted after a confirming activation; 0 is off. Read and checked; the countdown itself is not built yet. |
+| `builtins` | bool | `true` | | `false` hides the four fixed rows (Lock, Log out, Reboot, Power off) from the ⏻ menu only; the quick panel keeps its session buttons. |
+
+`[[power.entry]]`: a row of your own, after the fixed ones in file order, **at most 8**.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `name` | string | required | 1 to 24 characters, not blank, no control character | The row's label. |
+| `icon` | string | absent (`•`) | exactly one character | The row's glyph. |
+| `run` | command | required | not empty, non-blank program, no NUL, no sleep word | Run as given, never through a shell, never waited for. |
+| `confirm` | bool | `false` | | The row asks first, as Reboot and Power off do: a second activation 0.4 s to 3 s later runs it. |
+| `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one (stored, not used yet). |
+
+A `run` holding `suspend`, `hibernate`, `hybrid-sleep` or `dpms` anywhere in any argument, in any
+case, makes `bar.toml` invalid: alpheus never handles sleep or the screens' power. The ⏻ button and
+`alpheus-launch --power` exist when any row does, fixed or yours. A message about a row names it
+by its position (`power.entry 2: …`), never by its name or command, and so does the log
+(`power: entry 2`). See [the power menu](features/power.md).
 
 ### `[timer]`
 
@@ -452,6 +477,15 @@ kbd_backlight = true                        # the keyboard backlight row (hidden
 kbd_backlight_dir = "/sys/class/leds"       # where LEDs are listed (absolute); read when the panel opens, never written
 airplane = true                             # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
 rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (absolute); read when the panel opens, never written
+
+[power]
+countdown = 0        # seconds counted after a confirming activation (0 to 30); 0: off (not built yet)
+builtins = true      # false hides the four [quick] rows from the ⏻ menu
+# [[power.entry]]    # a row of your own after the fixed ones, at most 8; never suspend, hibernate, hybrid-sleep or dpms
+# name = "Quit session"            # 1 to 24 characters
+# icon = "•"                       # one character; absent: •
+# run = ["my-session-quit"]        # argv, run as given, never through a shell
+# confirm = false                  # true: asks first, a second activation 0.4 s to 3 s later runs it
 
 [timer]
 countdown = 10       # minutes, the popup's Timer row at start (1 to 180)

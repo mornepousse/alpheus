@@ -328,14 +328,35 @@ on Sunday, a row shows the ISO week of its Monday.
 
 Date: 2026-10-05 · Source: tests `week_numbers_show_the_iso_week_of_each_rows_monday` and `iso_week_numbers_are_right_at_the_edges_of_a_year`
 
-### The power menu runs the `[quick]` commands and has no setting of its own
+### The power menu runs the `[quick]` commands, and `[power]` adds rows
 
 The ⏻ menu runs `[quick]`'s `lock`, `logout`, `reboot` and `poweroff`, the commands the quick
-panel's session buttons run, so one setting serves both. A `[power]` table would only repeat them.
-An entry whose command is empty is not shown, and with all four empty the menu and its button do not
-exist. alpheus never handles sleep, so there is no suspend or hibernate entry.
+panel's session buttons run, so one setting serves both. An entry whose command is empty is not
+shown. alpheus never handles sleep, so there is no suspend or hibernate entry.
 
-Date: 2026-10-13 · Source: tests `the_rows_follow_the_commands_in_order_and_none_means_no_menu`, `an_entry_spawns_its_command_and_logs_its_word_only` and `the_verb_is_refused_only_without_any_session_command`
+Reversed in part on 2026-11-27: this entry was "The power menu runs the `[quick]` commands and has
+no setting of its own", saying a `[power]` table would only repeat them. The menu still runs them,
+and `[power]` now adds up to eight rows of the user's own after them (`[[power.entry]]`: a name,
+an icon, an argv, whether it asks first) and can hide the four (`builtins = false`), because the
+owner's custom logout and lock need rows beside or instead of the fixed ones, and a `[quick]`
+command could not hold two lock rows or a differently named one. `[quick]` is not repeated: the
+fixed rows keep reading it. The menu and its button exist when any row does, fixed or user.
+
+Date: 2026-10-13, amended 2026-11-27 · Source: tests `the_rows_follow_the_commands_in_order_and_none_means_no_menu`, `power_defaults_change_nothing`, `user_rows_follow_the_fixed_ones_in_file_order`, `builtins_false_hides_the_four_rows`, `the_button_shows_with_user_rows_only`, `an_entry_spawns_its_command_and_logs_its_word_only` and `the_verb_is_refused_only_without_any_session_command`
+
+### A user row of the power menu never sleeps
+
+A `[[power.entry]]` whose `run` holds `suspend`, `hibernate`, `hybrid-sleep` or `dpms` anywhere in
+any argument, in any case, makes `bar.toml` invalid, with the reason, as every refused key does.
+A user row would otherwise be a way round "alpheus never handles sleep or the screens' power": the
+menu is alpheus's, so what it runs is too. The match is on words inside arguments, so
+`["sh", "-c", "… hibernate"]` is caught; a script that sleeps without naming it is the user's own
+and cannot be seen. The source matches the stem `dpm`, because the guardrail
+`output_power_management_never_appears` keeps the word itself out of every source file; a
+guardrail test outside the sources checks the word. A row that asks first (`confirm = true`)
+follows the same rule as Reboot: a second activation 0.4 s to 3 s later.
+
+Date: 2026-11-27 · Source: tests `a_power_entry_naming_sleep_makes_bar_toml_invalid` (`config/tests.rs`) and guardrails `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and `every_power_menu_activation_is_a_configured_session`; `check_power`
 
 ### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
 

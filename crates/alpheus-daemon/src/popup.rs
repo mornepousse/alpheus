@@ -1181,7 +1181,7 @@ mod tests {
                 PopupBody::Quick(Box::new(Quick::new(crate::quick::Focus::Top, &live, Vec::new(), None, [None; 2], 40))),
                 Some(ModulePopup::Quick),
             ),
-            (PopupBody::Power(Power::new(&config).unwrap()), Some(ModulePopup::Power)),
+            (PopupBody::Power(Power::new(&crate::config::BarConfig::default()).unwrap()), Some(ModulePopup::Power)),
             (PopupBody::Privacy, Some(ModulePopup::Privacy)),
             (PopupBody::Resources(ResourcesPopup::default()), Some(ModulePopup::Resources)),
             (PopupBody::Timer(TimerPopup::new(10, &crate::timer::Timer::Idle { done: false })), Some(ModulePopup::Timer)),
@@ -1235,7 +1235,7 @@ mod tests {
     /// module; the other buttons do nothing; a second press on it only closes the menu.
     #[test]
     fn a_left_press_on_the_power_button_toggles_its_menu() {
-        use crate::config::{ModuleId, QuickConfig};
+        use crate::config::{BarConfig, ModuleId};
         use crate::grid::Target;
         let power = Target::Module(ModuleId::Power);
         for quick in [false, true] {
@@ -1244,7 +1244,7 @@ mod tests {
                 assert_eq!(ModulePopup::of(&power, b, quick), None, "{b:?}");
             }
         }
-        let body = PopupBody::Power(Power::new(&QuickConfig::default()).expect("the default entries"));
+        let body = PopupBody::Power(Power::new(&BarConfig::default()).expect("the default entries"));
         assert_eq!(body.module_popup(), Some(ModulePopup::Power), "a second press on ⏻ only closes it");
     }
 

@@ -15,7 +15,7 @@ use alpheus_common::exec::{CaptureLimits, Captured, ExecError, Executor, Output,
 use alpheus_daemon::actions::{Button, command, run};
 use alpheus_daemon::appearance::SETTING_RULE;
 use alpheus_daemon::compositor::{CompositorState, Toplevel, Window, Workspace};
-use alpheus_daemon::config::{BarConfig, ModuleId, QuickConfig, ToggleConfig};
+use alpheus_daemon::config::{BarConfig, ModuleId, PowerEntryConfig, QuickConfig, ToggleConfig};
 use alpheus_daemon::kbd_backlight::Kbd;
 use alpheus_daemon::keys::Key;
 use alpheus_daemon::launcher::config::{LauncherConfig, SourceConfig};
@@ -27,11 +27,11 @@ use alpheus_daemon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_daemon::launcher::scan::Catalog;
 use alpheus_daemon::launcher::sources::{Entries, SourceEntry};
 use alpheus_daemon::notify::NotifyView;
-use alpheus_daemon::power::{Power, PowerAction};
+use alpheus_daemon::power::{Power, PowerAction, PowerEntry};
 use alpheus_daemon::privacy::{Capture, Indicator};
 use alpheus_daemon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_daemon::rfkill::Airplane;
-use alpheus_daemon::session::{self, Session};
+use alpheus_daemon::session;
 use alpheus_daemon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_daemon::session_bus::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, SYSTEMD_MANAGER,
@@ -3828,71 +3828,127 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
 
 /// Whatever keys, hovers and presses reach the menu — every pair of keys at
 /// once, then a third past CONFIRM_AFTER; every row pressed twice, at once and past it — it only ever
-/// runs a `[quick]` session entry whose command is set, each one is reached, and reboot or power
-/// off never run without a second activation CONFIRM_AFTER after the first.
+/// runs a row whose command is set: a `[quick]` session entry (its own `[quick]` command, and only
+/// while the built-ins show) or a `[[power.entry]]` row (its own `run`). Each row is reached, and a
+/// row that asks (reboot, power off, a user row with `confirm`) never runs without a second
+/// activation CONFIRM_AFTER after its own first. No command run holds a sleep word, in any case.
+/// The configs: the four commands set or not, times no user row, a plain one or one that asks,
+/// times the built-ins shown or hidden.
 #[test]
 fn every_power_menu_activation_is_a_configured_session() {
     let keys = [Key::Up, Key::Down, Key::Tab, Key::BackTab, Key::Enter, Key::Char(' '), Key::Escape, Key::Home, Key::Left, Key::Char('x')];
     let t = Instant::now();
     let later = t + session::CONFIRM_AFTER;
-    for mask in 0..16u8 {
-        let set = |bit: u8, argv: &str| if mask & bit != 0 { vec![argv.to_string()] } else { Vec::new() };
-        let config = QuickConfig {
-            lock: set(1, "fake-lock"),
-            logout: set(2, "fake-logout"),
-            reboot: set(4, "fake-reboot"),
-            poweroff: set(8, "fake-poweroff"),
-            ..QuickConfig::default()
-        };
-        let Some(fresh) = Power::new(&config) else {
-            assert_eq!(mask, 0, "a command set: a menu");
-            continue;
-        };
-        let mut ran: Vec<Session> = Vec::new();
-        // `before`: the question pending just before a late activation; reboot and power off run only
-        // when it was theirs.
-        let mut record = |a: PowerAction, late: bool, before: Option<(Session, Instant)>| {
-            if let PowerAction::RunAndClose(s) = a {
-                assert!(!s.command(&config).is_empty(), "{s:?} has no command (mask {mask:04b})");
-                assert!(
-                    !s.asks() || (late && matches!(before, Some((q, _)) if q == s)),
-                    "{s:?} ran without a question of its own and a second activation 0.4 s later (mask {mask:04b})"
-                );
-                ran.push(s);
-            }
-        };
-        for k1 in keys {
-            for k2 in keys {
-                let mut p = fresh.clone();
-                record(p.key(k1, false, t), false, None);
-                record(p.key(k2, false, t), false, None);
-                for k3 in keys {
-                    let mut q = p.clone();
-                    let before = q.question;
-                    record(q.key(k3, false, later), true, before);
+    for builtins in [true, false] {
+        // 0: no user row; 1: a plain one; 2: one with `confirm`.
+        for extra in 0..3u8 {
+            for mask in 0..16u8 {
+                let set = |bit: u8, argv: &str| if mask & bit != 0 { vec![argv.to_string()] } else { Vec::new() };
+                let quick = QuickConfig {
+                    lock: set(1, "fake-lock"),
+                    logout: set(2, "fake-logout"),
+                    reboot: set(4, "fake-reboot"),
+                    poweroff: set(8, "fake-poweroff"),
+                    ..QuickConfig::default()
+                };
+                let mut config = BarConfig { quick, ..BarConfig::default() };
+                config.power.builtins = builtins;
+                if extra > 0 {
+                    let row = PowerEntryConfig {
+                        name: "Row".into(),
+                        icon: None,
+                        run: vec!["fake-entry".into()],
+                        confirm: extra == 2,
+                        countdown: None,
+                    };
+                    config.power.entry = vec![row];
+                }
+                let case = format!("mask {mask:04b}, builtins {builtins}, extra {extra}");
+                let Some(fresh) = Power::new(&config) else {
+                    assert!(extra == 0 && (mask == 0 || !builtins), "a command set: a menu ({case})");
+                    continue;
+                };
+                // Whether a row asks, read from the config and never from the model: a fixed row by
+                // `Session::asks`, a user row by its `confirm`.
+                let asks = |e: PowerEntry| match e {
+                    PowerEntry::Session(s) => s.asks(),
+                    PowerEntry::User(i) => config.power.entry.get(i).is_some_and(|u| u.confirm),
+                };
+                let mut ran: Vec<PowerEntry> = Vec::new();
+                // `before`: the question pending just before a late activation; a row that asks runs
+                // only when it was its own.
+                let mut record = |a: PowerAction, late: bool, before: Option<(PowerEntry, Instant)>| {
+                    if let PowerAction::RunAndClose(e) = a {
+                        assert!(!e.command(&config).is_empty(), "{e:?} has no command ({case})");
+                        if let PowerEntry::Session(s) = e {
+                            assert!(builtins, "{s:?} ran with the built-ins hidden ({case})");
+                            assert_eq!(e.command(&config), s.command(&config.quick), "a fixed row runs its [quick] command ({case})");
+                        }
+                        assert!(
+                            !asks(e) || (late && matches!(before, Some((q, _)) if q == e)),
+                            "{e:?} ran without a question of its own and a second activation 0.4 s later ({case})"
+                        );
+                        ran.push(e);
+                    }
+                };
+                for k1 in keys {
+                    for k2 in keys {
+                        let mut p = fresh.clone();
+                        record(p.key(k1, false, t), false, None);
+                        record(p.key(k2, false, t), false, None);
+                        for k3 in keys {
+                            let mut q = p.clone();
+                            let before = q.question;
+                            record(q.key(k3, false, later), true, before);
+                        }
+                    }
+                }
+                for row in 0..6u16 {
+                    let mut p = fresh.clone();
+                    record(p.press(row, t), false, None);
+                    record(p.press(row, t), false, None);
+                    let before = p.question;
+                    record(p.press(row, later), true, before);
+                    let mut p = fresh.clone();
+                    record(p.hover(row), false, None);
+                    record(p.key(Key::Enter, false, t), false, None);
+                    let before = p.question;
+                    record(p.key(Key::Enter, false, later), true, before);
+                }
+                if builtins {
+                    for s in session::configured(&config.quick) {
+                        assert!(ran.contains(&PowerEntry::Session(s)), "{s:?} never reached ({case})");
+                    }
+                }
+                for i in 0..config.power.entry.len() {
+                    assert!(ran.contains(&PowerEntry::User(i)), "user row {i} never reached ({case})");
+                }
+                for e in &ran {
+                    let line = e.command(&config).join(" ").to_lowercase();
+                    assert!(!["suspend", "hibernate", "hybrid-sleep", "dpms"].iter().any(|w| line.contains(w)), "{line}");
                 }
             }
         }
-        for row in 0..6u16 {
-            let mut p = fresh.clone();
-            record(p.press(row, t), false, None);
-            record(p.press(row, t), false, None);
-            let before = p.question;
-            record(p.press(row, later), true, before);
-            let mut p = fresh.clone();
-            record(p.hover(row), false, None);
-            record(p.key(Key::Enter, false, t), false, None);
-            let before = p.question;
-            record(p.key(Key::Enter, false, later), true, before);
-        }
-        for s in session::configured(&config) {
-            assert!(ran.contains(&s), "{s:?} never reached (mask {mask:04b})");
-        }
-        for s in &ran {
-            let line = s.command(&config).join(" ");
-            assert!(!line.contains("suspend") && !line.contains("hibernate") && !line.to_lowercase().contains("dpms"), "{line}");
-        }
     }
+}
+
+/// A `[[power.entry]]` whose `run` names a sleep word or `dpms`, in any argument and any case,
+/// makes bar.toml invalid: no user row can sleep or turn the screens off. Written here because
+/// `output_power_management_never_appears` keeps the word itself out of every source.
+#[test]
+fn a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid() {
+    for run in [
+        "[\"systemctl\", \"suspend\"]",
+        "[\"systemctl\", \"Hibernate\"]",
+        "[\"systemctl\", \"hybrid-sleep\"]",
+        "[\"sh\", \"-c\", \"fake-wm dpms off\"]",
+        "[\"fake-wm\", \"DPMS\", \"off\"]",
+        "[\"fake-dpms-off\"]",
+    ] {
+        let text = format!("[[power.entry]]\nname = \"N\"\nrun = {run}\n");
+        assert!(BarConfig::from_text(&text).is_err(), "{run}");
+    }
+    assert!(BarConfig::from_text("[[power.entry]]\nname = \"N\"\nrun = [\"fake-lock\"]\n").is_ok());
 }
 
 /// No panic in the power menu's production code.
@@ -4611,8 +4667,8 @@ fn the_bluetooth_d_bus_files_have_no_panicking_path() {
 }
 
 /// Whatever closes the menu (Escape, an entry run, an outside click, a restyle,
-/// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
-/// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
+/// the output gone, a replacing popup), its timer goes; a row runs its own command (a fixed row's
+/// `[quick]` command, a user row's `run`) through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
 /// in a unit test: the wiring is checked in the source.
 #[test]
 fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
@@ -4633,7 +4689,14 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let refresh = function_body(&power_app, "fn power_refresh(");
     assert!(refresh.contains("self.power_timer_sync()"), "the timer follows every repaint: {refresh}");
     let spawn = function_body(&power_app, "fn power_spawn(");
-    assert!(spawn.contains("s.command(&self.bar.config.quick)") && spawn.contains("spawn_session("), "{spawn}");
+    assert!(spawn.contains("entry.command(&self.bar.config)") && spawn.contains("spawn_session("), "{spawn}");
+    // The command `power_spawn` hands on is the row's own and nothing else: a fixed row's `[quick]`
+    // command, a user row's `run` (nothing past the rows), in exactly two arms.
+    let power_mod = src("power/mod.rs");
+    let command = function_body(&power_mod, "pub fn command(self, c: &BarConfig) -> &[String]");
+    assert!(command.contains("PowerEntry::Session(s) => s.command(&c.quick),"), "{command}");
+    assert!(command.contains("PowerEntry::User(i) => c.power.entry.get(i).map_or(&[], |e| e.run.as_slice()),"), "{command}");
+    assert_eq!(command.matches("=>").count(), 2, "two arms, nothing else: {command}");
     let session = function_body(&power_app, "pub(crate) fn spawn_session(");
     assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
     assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");

@@ -1,8 +1,8 @@
 # The power menu
 
-A ⏻ button at the bar's end that opens a small menu: Lock, Log out, Reboot, Power off. This page
-says what it does, how to use it, how to configure it, how it is built, which rules the tests
-enforce on it, and what it costs. It describes the code as it is today.
+A ⏻ button at the bar's end that opens a small menu: Lock, Log out, Reboot, Power off, and rows of
+your own. This page says what it does, how to use it, how to configure it, how it is built, which
+rules the tests enforce on it, and what it costs. It describes the code as it is today.
 
 ## What it does
 
@@ -23,9 +23,14 @@ the clock. A left click on it opens a popup under it with one row per session co
 - **Lock** and **Log out** run at once, then the menu closes.
 - **Reboot** and **Power off** ask first: the row becomes `󰜉 Reboot? ⏎` or `⏻ Power off? ⏎` in the
   warning colour. A second activation runs the command, and the menu closes.
-- With all four commands empty there is no menu, and no button.
+- **Rows of your own** (`[[power.entry]]`) come after the fixed ones, in file order: their icon
+  (`•` without one) and their name. One runs at once, or asks first like Reboot when it has
+  `confirm = true`. `[power] builtins = false` hides the four fixed rows.
+- With no row at all (the four commands empty or hidden, and no row of your own) there is no menu,
+  and no button.
 
-alpheus never handles sleep, so the menu has no suspend or hibernate entry.
+alpheus never handles sleep, so the menu has no suspend or hibernate entry, and a row of your own
+that names one is refused (see Configuration).
 
 ## Using it
 
@@ -43,8 +48,8 @@ alpheus never handles sleep, so the menu has no suspend or hibernate entry.
 - **A held key** repeats only to move: a held Enter acts once. The wheel, and the right and middle
   buttons, do nothing in the menu.
 - **From a key.** `alpheus-launch --power` opens the menu under the bar's right end on the focused
-  output (it works without the `power` module, and prints an error and exits 2 when no session
-  command is set or when there is no bar to open the menu under), and the same verb closes it.
+  output (it works without the `power` module, and prints an error and exits 2 when the menu has no
+  row or when there is no bar to open the menu under), and the same verb closes it.
   The keyboard is taken without a grab, because a verb has no pointer press to grab with. It is
   also the Tools menu's `Power menu` entry.
 
@@ -53,8 +58,9 @@ the bar's keyboard on Hyprland.
 
 ## Configuration
 
-The menu has no setting of its own. It runs the commands of `[quick]` in `bar.toml`, the same ones
-the quick panel's session buttons run, read at start (a change needs a restart of the bar).
+The fixed rows run the commands of `[quick]` in `bar.toml`, the same ones the quick panel's
+session buttons run; `[power]` adds rows of your own and can hide the fixed ones. Both are read at
+start (a change needs a restart of the bar).
 
 | Key (under `[quick]`) | Default | Meaning |
 | --- | --- | --- |
@@ -63,13 +69,37 @@ the quick panel's session buttons run, read at start (a change needs a restart o
 | `reboot` | `["systemctl", "reboot"]` | the Reboot row |
 | `poweroff` | `["systemctl", "poweroff"]` | the Power off row |
 
+| Key (under `[power]`) | Default | Meaning |
+| --- | --- | --- |
+| `builtins` | `true` | `false` hides the four rows above from this menu (the quick panel keeps them) |
+| `countdown` | `0` | seconds counted after a confirming activation, 0 to 30; read and checked, the countdown itself is not built yet |
+| `[[power.entry]]` | none, at most 8 | a row of your own: `name` (1 to 24 characters), `icon` (one character, default `•`), `run` (an argument list, not empty), `confirm` (default `false`: runs at once), `countdown` (0 to 30, this row's own; not used yet) |
+
 A command is an argument list, run as written: there is no shell, so no `$VARIABLE` and no `;`. An
-empty list hides the row.
+empty `[quick]` list hides its row.
 
 ```toml
 [quick]
 logout = ["my-logout-command"]
+
+[power]
+builtins = true
+
+[[power.entry]]
+name = "Quit session"
+icon = "x"
+run = ["my-session-quit", "--now"]
+confirm = true
 ```
+
+A row of your own never sleeps: a `run` holding `suspend`, `hibernate`, `hybrid-sleep` or `dpms`
+anywhere in any argument, in any case, makes `bar.toml` invalid (the defaults then apply, with the
+reason in the log, as for any refused key). So do a tenth row, a name past 24 characters, an icon
+of two characters, an empty `run`, a blank program or a NUL. The message names the row by its
+position (`power.entry 2: …`), never by its name or command.
+
+The menu is 16 cells wide today, as before the rows of your own: a long name (or its question) is
+cut at the menu's edge.
 
 A `modules` list of your own needs `"power"` added, after `"clock"`, to show the button. On a
 narrow bar the button is the last module to be removed. Without the `window` module in `modules`,
@@ -81,19 +111,23 @@ stay beside it, is not decided yet).
 
 Two files in `crates/alpheus-daemon/src/power/`, and the rule they share in `session.rs`:
 
-- `mod.rs`: the pure model. `Power` (the entries, the selection, the pending question),
-  `PowerAction` (what a key or the pointer asks of the wiring: nothing, redraw, close, or run an
-  entry and close), `key`, `hover`, `press`, `due`, `deadline` and `render`. The tests sit at the
-  bottom of the file.
+- `mod.rs`: the pure model. `PowerEntry` (what a row runs: a fixed `Session`, or `User(i)`, the
+  `i`th `[[power.entry]]`; its `command` and its log `word`), `PowerRow` (its entry, glyph, label,
+  whether it asks, its countdown), `rows` and `any_rows` (built from `BarConfig` at open), `Power`
+  (the rows, the selection, the pending question), `PowerAction` (what a key or the pointer asks of
+  the wiring: nothing, redraw, close, or run a row and close), `key`, `hover`, `press`, `due`,
+  `deadline` and `render`. The tests sit at the bottom of the file.
 - `app.rs`: the wiring. `OPS` is the menu's row in the table of popups (`popup::POPUPS`).
   `power_toggle` opens the popup from a click or the verb; `power_key` and `power_pointer` hand
-  input to the model; `power_action` carries out what the model answers: redraw, close, or run an
-  entry's command through the daemon's executor (`spawn_session`) and close.
+  input to the model; `power_action` carries out what the model answers: redraw, close, or run a
+  row's command (`PowerEntry::command`) through the daemon's executor (`spawn_session`) and close.
 - `session.rs`: the `Session` enum (glyph, word, prompt, which entries ask, which `[quick]` command),
-  the 3 s and 0.4 s constants and `activate` and `expire`, shared with the quick panel's session
-  buttons, so the panel and the menu cannot drift apart.
+  the 3 s and 0.4 s constants and `ask` and `expire`, shared with the quick panel's session
+  buttons, so the panel and the menu cannot drift apart. A user row with `confirm` asks through the
+  same `ask`.
+- `config.rs`: `PowerConfig` and `PowerEntryConfig` (`[power]`), checked by `check_power` at load.
 
-The button itself is a segment (`segments::power`, none when `session::any_configured` is false)
+The button itself is a segment (`segments::power`, none when `power::any_rows` is false)
 and `ModuleId::Power`, the last of `ModuleId::ALL`; its click zone is the module.
 
 **The question's timer.** `power_timer` is one `DeadlineTimer` that `power_timer_sync` arms to the
@@ -101,33 +135,42 @@ question's end after every repaint, and disarms when there is no question. `powe
 menu's `closed` hook, disarms it whatever closed the menu, so nothing is left running.
 
 **The path of a click.** The bar's click handler finds the module's zone and calls the popup table's
-`toggle` for it, which is `power_toggle`. It builds a `Power` from `[quick]`, asks for the popup,
-paints the rows and logs `power menu shown (lock reboot poweroff)` (the entries, never the
-commands). A key reaches `power_key`, the pointer `power_pointer`; an entry that runs is spawned
-and logged as `power: power off` (`power: <word> could not start (<kind word>)` on a failed start),
-never as its command, which can name the user.
+`toggle` for it, which is `power_toggle`. It builds a `Power` from `[quick]` and `[power]`, asks
+for the popup, paints the rows and logs `power menu shown (lock reboot poweroff entry 1)` (a fixed
+row by its `[quick]` key, a row of your own by its position, never a name or a command). A key
+reaches `power_key`, the pointer `power_pointer`; a row that runs is spawned and logged as
+`power: power off` or `power: entry 2` (`power: <word> could not start (<kind word>)` on a failed
+start), never as its command or its name, which can name the user.
 
 ## Rules it keeps
 
 - `the_tray_spawns_no_thread`: `power/mod.rs` starts no thread, process or command.
 - `the_power_menu_has_no_panicking_path`: neither file's production code panics.
 - `the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry`: the popup's `closed` hook releases
-  the timer, a repaint re-syncs it, and the only command spawned is the entry's own `[quick]`
-  command, once, through the executor.
-- `every_power_menu_activation_is_a_configured_session`: whatever the model is driven through, it
-  only ever asks to run an entry whose command is set, no command mentions sleep, and Reboot and
-  Power off never run without their question and a second activation at least 0.4 s later.
+  the timer, a repaint re-syncs it, and the only command spawned is the row's own (a fixed row's
+  `[quick]` command, a user row's `run`, in the two arms of `PowerEntry::command`), once, through
+  the executor.
+- `every_power_menu_activation_is_a_configured_session`: over the four commands set or not, no row
+  of your own, a plain one or one that asks, and the fixed rows shown or hidden, whatever the model
+  is driven through it only ever asks to run a row whose command is set (a fixed row only while
+  shown, and with its `[quick]` command), every row is reached, no command holds a sleep word, and
+  Reboot, Power off and a `confirm` row never run without their own question and a second
+  activation at least 0.4 s later.
+- `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and
+  `a_power_entry_naming_sleep_makes_bar_toml_invalid`: a row of your own that names a sleep word is
+  refused at load. The source matches the stem `dpm`, since `output_power_management_never_appears`
+  keeps the word itself out of every source file.
 - The headless tests (`power_a_click_opens_the_menu_and_down_enter_locks`,
   `power_a_click_on_a_row_runs_it`, `power_off_asks_then_a_second_enter_after_half_a_second_runs_it`,
   `power_two_enters_a_tenth_of_a_second_apart_run_nothing`,
   `power_escape_closes_it_with_its_question_and_nothing_stays_awake` and
   `power_verb_opens_and_closes_the_menu`) pin the click, the keys, the question and the verb against
   a fake executor that records each command; no test runs a real `loginctl` or `systemctl`.
-- The reasons are in [decisions.md](../decisions.md): "The power menu runs the `[quick]` commands
-  and has no setting of its own", "Reboot and power off ask first, and a second activation
-  confirms from 0.4 s to 3 s", "Nothing is selected when the power menu opens", "A held key repeats
-  only to move, in the power menu", "The power menu has its own timer", "`alpheus-launch --power`
-  opens the menu without a grab".
+- The reasons are in [decisions.md](../decisions.md): "The power menu runs the `[quick]` commands,
+  and `[power]` adds rows", "A user row of the power menu never sleeps", "Reboot and power off ask
+  first, and a second activation confirms from 0.4 s to 3 s", "Nothing is selected when the power
+  menu opens", "A held key repeats only to move, in the power menu", "The power menu has its own
+  timer", "`alpheus-launch --power` opens the menu without a grab".
 
 ## What it costs
 

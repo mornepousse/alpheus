@@ -253,7 +253,8 @@ is on [the captures page](captures.md).
 
 **`alpheus-launch --tools`** replaces any other open launcher mode, then toggles; it exits 3 when the
 bar is not running or is older than the verb, the one code on which a script falls back to another menu.
-`alpheus-launch --power` exits 2 when no `[quick]` session command is set.
+`alpheus-launch --power` exits 2 when the ⏻ menu has no row (no `[quick]` session command shown and
+no `[[power.entry]]`).
 
 **`alpheus-launch --binds`** opens the Keybindings level alone, with nothing beneath it: Esc, or ← on
 an empty query, closes the box. It replaces any other open launcher, the Tools menu at another level

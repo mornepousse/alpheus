@@ -239,7 +239,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     },
     // ⏻ alone; no segment when `[quick]` has no session command.
     ModuleSpec {
-        segment: Some(|bar, _| segments::power(&bar.config.quick)),
+        segment: Some(|bar, _| segments::power(&bar.config)),
         popup: Some(ModulePopup::Power),
         ..row(ModuleId::Power, "power", GroupKind::Power)
     },

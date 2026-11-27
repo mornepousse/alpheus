@@ -6647,7 +6647,10 @@ fn power_verb_opens_and_closes_the_menu() {
     let bar = "modules = [\"clock\"]\n[quick]\nlock = []\nlogout = []\nreboot = []\npoweroff = []\n";
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    assert_eq!(launcher(&sway, &Request::Power), Reply::Error("no session command is set ([quick] lock, logout, reboot, poweroff)".into()));
+    assert_eq!(
+        launcher(&sway, &Request::Power),
+        Reply::Error("no power menu row is set ([quick] lock, logout, reboot, poweroff, or [[power.entry]])".into())
+    );
     assert_eq!(d.count("power menu shown"), 0, "{:?}", d.log());
 }
 

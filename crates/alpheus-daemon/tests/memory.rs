@@ -2647,8 +2647,10 @@ fn at_rest_no_wakeups_with_the_keyboard_module() {
     }
 }
 
-/// The power menu's bars: the button and the clock, then the clock alone (the baseline).
-const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n";
+/// The power menu's bars: the button and the clock, with two `[[power.entry]]` rows after the
+/// default three (their command, `true`, never runs: no test activates them), then the clock alone
+/// (the baseline).
+const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n[[power.entry]]\nname = \"Row one\"\nrun = [\"true\"]\n[[power.entry]]\nname = \"Row two\"\nrun = [\"true\"]\nconfirm = true\n";
 const NO_POWER_BAR: &str = "modules = [\"clock\"]\n";
 /// The power button: cell 1 of the bar.
 const POWER_BUTTON: (u32, u32) = (12, 10);

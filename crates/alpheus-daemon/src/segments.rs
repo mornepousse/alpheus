@@ -21,13 +21,13 @@
 //! `module_colors` does), docs/decisions.md ("A source that is down is not a state").
 
 use crate::compositor::CompositorState;
-use crate::config::{BatteryConfig, BatteryVisibility, KeyboardConfig, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
+use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, KeyboardConfig, ModuleId, Passive, ResourceItem, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::privacy::{CAMERA, MIC, Privacy, SCREEN};
-use crate::session::{self, POWER};
+use crate::session::POWER;
 use crate::session_bus::Status;
 use crate::session_bus::icons::{Icon, TrayIcon};
 use crate::state::{Failed, Feed};
@@ -135,10 +135,11 @@ pub(crate) fn launcher() -> Segment {
     module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
 }
 
-/// The power button: ⏻ alone, one click zone; none when `[quick]`'s lock, logout,
-/// reboot and poweroff are all empty (its menu would have no entry).
-pub(crate) fn power(c: &QuickConfig) -> Option<Segment> {
-    session::any_configured(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
+/// The power button: ⏻ alone, one click zone; none when its menu would have no row (`[quick]`'s
+/// lock, logout, reboot and poweroff all empty or hidden by `[power] builtins = false`, and no
+/// `[[power.entry]]`).
+pub(crate) fn power(c: &BarConfig) -> Option<Segment> {
+    crate::power::any_rows(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
 }
 
 /// The privacy indicators: a glyph per held device, joined by one space, each in

@@ -79,7 +79,7 @@ pub fn context(bar: &BarConfig, launcher: &LauncherConfig, timer: bool, join: Jo
         keep_awake: !Toggle::KeepAwake.config(&bar.quick).toggle.is_empty(),
         night_light: !Toggle::NightLight.config(&bar.quick).toggle.is_empty(),
         lock: !bar.quick.lock.is_empty(),
-        session: crate::session::any_configured(&bar.quick),
+        session: crate::power::any_rows(bar),
         reload: !launcher.tools.reload.is_empty(),
         shield: join.shield,
         clipboard: join.clipboard,

@@ -20,13 +20,13 @@
 //! "`alpheus-launch --power` opens the menu without a grab").
 
 use crate::actions::Button;
+use crate::config::BarConfig;
 use crate::keys::Key;
 use crate::launcher::surface::CloseReason;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
-use crate::power::{Power, PowerAction};
+use crate::power::{Power, PowerAction, PowerEntry};
 use crate::quick::app::verb_debounced;
-use crate::session::Session;
 use crate::wayland::App;
 use alpheus_common::exec::Executor;
 use alpheus_common::launcher_ipc::{Reply, Request};
@@ -46,17 +46,18 @@ pub(crate) const OPS: PopupOps = PopupOps {
     closed: App::power_closed,
 };
 
-/// What `--power` answers when the menu has nothing to show (no `[quick]` session command at all).
-pub(crate) fn power_refusal(config: &crate::config::QuickConfig) -> Option<&'static str> {
-    if crate::session::configured(config).is_empty() {
-        return Some("no session command is set ([quick] lock, logout, reboot, poweroff)");
+/// What `--power` answers when the menu has nothing to show (no `[quick]` session command shown
+/// and no `[[power.entry]]`).
+pub(crate) fn power_refusal(config: &BarConfig) -> Option<&'static str> {
+    if !crate::power::any_rows(config) {
+        return Some("no power menu row is set ([quick] lock, logout, reboot, poweroff, or [[power.entry]])");
     }
     None
 }
 
 /// What `--power` answers when it cannot open the menu now: no command, or no bar (`has_anchor`
 /// false). Decided before anything is closed, so a refused verb leaves an open launcher alone.
-pub(crate) fn power_open_refusal(config: &crate::config::QuickConfig, has_anchor: bool) -> Option<&'static str> {
+pub(crate) fn power_open_refusal(config: &BarConfig, has_anchor: bool) -> Option<&'static str> {
     if let Some(refusal) = power_refusal(config) {
         return Some(refusal);
     }
@@ -66,18 +67,19 @@ pub(crate) fn power_open_refusal(config: &crate::config::QuickConfig, has_anchor
     None
 }
 
-/// Runs `s`'s command `argv` (`[quick]`'s, as given), never waiting for it, and returns the log
-/// line to write: "power: <word>", or "power: <word> could not start (<kind word>)". The line never
-/// holds the command itself, whose program or arguments may name the user (a path in a home
-/// directory). None when `argv` is empty, since there is nothing to run.
-pub(crate) fn spawn_session(exec: &dyn Executor, argv: &[String], s: Session) -> Option<String> {
+/// Runs `entry`'s command `argv` (`[quick]`'s or its `[[power.entry]]` `run`, as given), never
+/// waiting for it, and returns the log line to write: "power: <word>", or "power: <word> could not
+/// start (<kind word>)", the word "power off" for a fixed row and "entry 2" for a user row. The line
+/// never holds the command itself, whose program or arguments may name the user (a path in a home
+/// directory), nor a user row's name. None when `argv` is empty, since there is nothing to run.
+pub(crate) fn spawn_session(exec: &dyn Executor, argv: &[String], entry: PowerEntry) -> Option<String> {
     // `split_first` gives the program and the arguments; on an empty list the `?` ends the
     // function at once with None.
     let (program, args) = argv.split_first()?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Some(match exec.spawn(program, &args) {
-        Ok(()) => format!("power: {}", s.word()),
-        Err(e) => format!("power: {} could not start ({})", s.word(), crate::log::exec_word(&e)),
+        Ok(()) => format!("power: {}", entry.word()),
+        Err(e) => format!("power: {} could not start ({})", entry.word(), crate::log::exec_word(&e)),
     })
 }
 
@@ -123,7 +125,7 @@ impl App {
             return Reply::Done;
         }
         let anchor = self.quick_anchor();
-        if let Some(refusal) = power_open_refusal(&self.bar.config.quick, anchor.is_some() || self.power_shown()) {
+        if let Some(refusal) = power_open_refusal(&self.bar.config, anchor.is_some() || self.power_shown()) {
             return Reply::Error(refusal.into());
         }
         if self.power_shown() {
@@ -152,7 +154,7 @@ impl App {
             self.popup_close(PopupClose::OutsideClick);
             return;
         }
-        let Some(menu) = Power::new(&self.bar.config.quick) else { return };
+        let Some(menu) = Power::new(&self.bar.config) else { return };
         let (rows, entries) = (menu.render(), menu.describe());
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Power(menu), columns, height, input) {
@@ -182,16 +184,17 @@ impl App {
             PowerAction::Nothing => {}
             PowerAction::Redraw => self.power_refresh(),
             PowerAction::Close => self.popup_close(PopupClose::Escape),
-            PowerAction::RunAndClose(s) => {
-                self.power_spawn(s);
+            PowerAction::RunAndClose(entry) => {
+                self.power_spawn(entry);
                 self.popup_close(PopupClose::Activated);
             }
         }
     }
 
-    /// The entry's `[quick]` command, and nothing else.
-    fn power_spawn(&mut self, s: Session) {
-        if let Some(line) = spawn_session(self.exec.as_ref(), s.command(&self.bar.config.quick), s) {
+    /// The row's own command (`[quick]`'s for a fixed row, its `run` for a user row), and nothing
+    /// else.
+    fn power_spawn(&mut self, entry: PowerEntry) {
+        if let Some(line) = spawn_session(self.exec.as_ref(), entry.command(&self.bar.config), entry) {
             log(&line);
         }
     }
@@ -236,77 +239,138 @@ impl App {
 #[cfg(test)]
 mod tests {
     //! Tests of the power menu's wiring that need no compositor: when `--power` is refused, what a
-    //! spawned entry logs, and where the pointer's rows land. The popup itself is checked by the
+    //! spawned row logs, and where the pointer's rows land. The popup itself is checked by the
     //! guardrails and the headless tests.
 
     use super::*;
-    use crate::config::QuickConfig;
+    use crate::config::{PowerEntryConfig, QuickConfig};
+    use crate::session::Session;
     use alpheus_common::exec::ExecError;
     use alpheus_common::exec::fake::FakeExecutor;
+
+    const REFUSED: &str = "no power menu row is set ([quick] lock, logout, reboot, poweroff, or [[power.entry]])";
+
+    /// A bar config whose four `[quick]` session commands are empty.
+    fn no_session() -> BarConfig {
+        let quick =
+            QuickConfig { lock: Vec::new(), logout: Vec::new(), reboot: Vec::new(), poweroff: Vec::new(), ..QuickConfig::default() };
+        BarConfig { quick, ..BarConfig::default() }
+    }
+
+    /// A user row named `name` running `run`.
+    fn user(name: &str, run: &[&str]) -> PowerEntryConfig {
+        PowerEntryConfig {
+            name: name.into(),
+            icon: None,
+            run: run.iter().map(|s| s.to_string()).collect(),
+            confirm: false,
+            countdown: None,
+        }
+    }
 
     /// The verb cannot open the menu with no bar to anchor it under: refused, and (the host's
     /// glue) the open launcher is left alone.
     #[test]
     fn the_verb_is_refused_without_a_bar_to_open_under() {
-        let c = QuickConfig::default();
+        let c = BarConfig::default();
         assert_eq!(power_open_refusal(&c, true), None);
         assert_eq!(power_open_refusal(&c, false), Some("no bar to open the power menu under"));
-        // The session commands' refusal comes first.
-        let none = QuickConfig { lock: Vec::new(), logout: Vec::new(), reboot: Vec::new(), poweroff: Vec::new(), ..QuickConfig::default() };
+        // The rows' refusal comes first.
+        let none = no_session();
         assert_eq!(power_open_refusal(&none, false), power_refusal(&none));
     }
 
-    /// `--power` is refused only with all four `[quick]` commands empty; one is enough to open.
+    /// `--power` is refused only with no row at all; one `[quick]` command is enough to open.
     #[test]
     fn the_verb_is_refused_only_without_any_session_command() {
-        let mut c = QuickConfig::default();
+        let mut c = BarConfig::default();
         assert_eq!(power_refusal(&c), None);
-        (c.lock, c.logout, c.reboot, c.poweroff) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        assert_eq!(power_refusal(&c), Some("no session command is set ([quick] lock, logout, reboot, poweroff)"));
-        c.logout = vec!["leave".into()];
+        c = no_session();
+        assert_eq!(power_refusal(&c), Some(REFUSED));
+        c.quick.logout = vec!["leave".into()];
         assert_eq!(power_refusal(&c), None);
+    }
+
+    /// `builtins = false` and one user row: the button shows and `--power` opens; with the
+    /// built-ins hidden and no user row, neither.
+    #[test]
+    fn the_button_shows_with_user_rows_only() {
+        let mut c = BarConfig::default();
+        c.power.builtins = false;
+        assert_eq!(power_refusal(&c), Some(REFUSED), "the [quick] commands hidden: no row");
+        assert!(crate::segments::power(&c).is_none());
+        c.power.entry = vec![user("Quit", &["fake-quit"])];
+        assert_eq!(power_refusal(&c), None);
+        assert!(crate::segments::power(&c).is_some(), "the ⏻ button shows");
+        let mut none = no_session();
+        none.power.entry = vec![user("Quit", &["fake-quit"])];
+        assert_eq!(power_refusal(&none), None, "a user row alone is enough");
     }
 
     /// The command as given, spawned once; the log line names the entry, never the command (a
     /// configured path may hold the user's name).
     #[test]
     fn an_entry_spawns_its_command_and_logs_its_word_only() {
-        let c = QuickConfig::default();
+        let c = BarConfig::default();
+        let (poweroff, lock, logout) =
+            (PowerEntry::Session(Session::Poweroff), PowerEntry::Session(Session::Lock), PowerEntry::Session(Session::Logout));
         let fake = FakeExecutor::new();
         fake.ok("systemctl poweroff", "");
-        assert_eq!(spawn_session(&fake, Session::Poweroff.command(&c), Session::Poweroff), Some("power: power off".into()));
+        assert_eq!(spawn_session(&fake, poweroff.command(&c), poweroff), Some("power: power off".into()));
         assert_eq!(fake.calls(), ["systemctl poweroff"]);
         let fake = FakeExecutor::new();
         let mine = vec!["/home/someone/bin/leave".to_string(), "--user".into(), "someone".into()];
-        let line = spawn_session(&fake, &mine, Session::Logout).unwrap_or_default();
+        let line = spawn_session(&fake, &mine, logout).unwrap_or_default();
         assert_eq!(line, "power: log out could not start (not found)");
         assert!(!line.contains("someone"), "never the command: {line}");
         assert_eq!(fake.calls(), ["/home/someone/bin/leave --user someone"]);
         let fake = FakeExecutor::new();
         fake.respond("loginctl lock-session", Err(ExecError::Io("busy".into())));
-        assert_eq!(spawn_session(&fake, Session::Lock.command(&c), Session::Lock), Some("power: lock could not start (io)".into()));
+        assert_eq!(spawn_session(&fake, lock.command(&c), lock), Some("power: lock could not start (io)".into()));
         let fake = FakeExecutor::new();
-        assert_eq!(spawn_session(&fake, Session::Logout.command(&c), Session::Logout), None, "empty: nothing to spawn");
+        assert_eq!(spawn_session(&fake, logout.command(&c), logout), None, "empty: nothing to spawn");
         assert!(fake.calls().is_empty());
     }
 
-    /// The pointer's cell rows count from the first entry (the box's ring is not a
-    /// cell), so row 0 is the first entry: hovering it selects it, a left press runs it; another
-    /// button, the wheel, the pointer leaving or off every cell do nothing.
+    /// A user row runs its own `run` through the executor, exactly that argv and nothing else; the
+    /// log says its position, never its name or command.
+    #[test]
+    fn session_user_row_runs_only_its_argv_through_the_fake_executor() {
+        let mut c = BarConfig::default();
+        c.power.entry = vec![user("someone-first", &["fake-first"]), user("someone-quit", &["fake-quit", "--user", "someone"])];
+        let entry = PowerEntry::User(1);
+        let fake = FakeExecutor::new();
+        fake.ok("fake-quit --user someone", "");
+        let line = spawn_session(&fake, entry.command(&c), entry).unwrap_or_default();
+        assert_eq!(line, "power: entry 2");
+        assert_eq!(fake.calls(), ["fake-quit --user someone"], "exactly its argv, once");
+        let fake = FakeExecutor::new();
+        let line = spawn_session(&fake, entry.command(&c), entry).unwrap_or_default();
+        assert_eq!(line, "power: entry 2 could not start (not found)");
+        assert!(!line.contains("someone") && !line.contains("fake"), "never the name or the command: {line}");
+        let fake = FakeExecutor::new();
+        let past = PowerEntry::User(2);
+        assert_eq!(spawn_session(&fake, past.command(&c), past), None, "past the rows: nothing runs");
+        assert!(fake.calls().is_empty());
+    }
+
+    /// The pointer's cell rows count from the first row (the box's ring is not a cell), so row 0
+    /// is the first row: hovering it selects it, a left press runs it; another button, the wheel,
+    /// the pointer leaving or off every cell do nothing.
     #[test]
     fn the_pointers_first_row_is_the_first_entry() {
-        let c = QuickConfig::default();
-        let mut menu = Power::new(&c).expect("the default entries");
-        assert_eq!(menu.render().cells().1 as usize, menu.entries.len(), "one cell row per entry, no ring row");
+        let c = BarConfig::default();
+        let mut menu = Power::new(&c).expect("the default rows");
+        assert_eq!(menu.render().cells().1 as usize, menu.rows.len(), "one cell row per row, no ring row");
         let now = Instant::now();
         assert_eq!(pointer(&mut menu, Some((3, 0)), PopupPointer::Motion, now), PowerAction::Redraw);
-        assert_eq!(menu.selected, Some(0), "row 0: the first entry");
+        assert_eq!(menu.selected, Some(0), "row 0: the first row");
         for kind in [PopupPointer::Press(Button::Right), PopupPointer::Press(Button::Middle), PopupPointer::Scroll(1), PopupPointer::Leave]
         {
             assert_eq!(pointer(&mut menu, Some((3, 0)), kind, now), PowerAction::Nothing, "{kind:?}");
         }
         assert_eq!(pointer(&mut menu, None, PopupPointer::Press(Button::Left), now), PowerAction::Nothing, "off every cell");
-        assert_eq!(pointer(&mut menu, Some((3, 0)), PopupPointer::Press(Button::Left), now), PowerAction::RunAndClose(menu.entries[0]));
-        assert_eq!(menu.entries[0], Session::Lock);
+        assert_eq!(pointer(&mut menu, Some((3, 0)), PopupPointer::Press(Button::Left), now), PowerAction::RunAndClose(menu.rows[0].entry));
+        assert_eq!(menu.rows[0].entry, PowerEntry::Session(Session::Lock));
     }
 }
