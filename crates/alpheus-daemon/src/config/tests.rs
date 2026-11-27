@@ -1381,9 +1381,11 @@ fn binding_errors_never_quote_the_command() {
 }
 
 /// A binding never sleeps the machine: a suspend froze the DisplayLink dock, so `suspend`,
-/// `hibernate` and `hybrid-sleep` are refused as a whole word anywhere in the argv, whatever the
-/// case (a lowercase letter then a capital splits words: `HybridSleep`), and so is `systemctl` or
-/// `loginctl` then `sleep`; the error names the key, never the command.
+/// `hibernate`, `hybrid-sleep`, `rtcwake` and `zzz` are refused as a whole word anywhere in the
+/// argv, whatever the case (a lowercase letter then a capital splits words: `HybridSleep`), and so
+/// is `systemctl` or `loginctl` then `sleep`, an option's value skipped; `systemd-inhibit`'s own
+/// `--what`, `--who` and `--why` only describe the lock it takes (keep-awake), so they are not read;
+/// the error names the key, never the command.
 #[test]
 fn bindings_refuse_the_sleep_words() {
     for argv in [
@@ -1399,6 +1401,13 @@ fn bindings_refuse_the_sleep_words() {
         "[\"systemctl\", \"sleep\"]",
         "[\"/run/current-system/sw/bin/loginctl\", \"--no-ask-password\", \"Sleep\"]",
         "[\"sh\", \"-c\", \"systemctl sleep\"]",
+        "[\"rtcwake\", \"-m\", \"mem\", \"-s\", \"60\"]",
+        "[\"/usr/bin/zzz\"]",
+        "[\"sh\", \"-c\", \"ZZZ -z\"]",
+        "[\"systemctl\", \"--check-inhibitors\", \"yes\", \"sleep\"]",
+        "[\"sh\", \"-c\", \"loginctl -H host sleep\"]",
+        "[\"systemd-inhibit\", \"--what=idle\", \"systemctl\", \"suspend\"]",
+        "[\"systemd-inhibit\", \"--what=sleep\", \"systemctl\", \"--no-wall\", \"sleep\"]",
     ] {
         let e = binding_err(&format!("[bindings.clock]\nright = {argv}"));
         assert!(e.contains("bindings.clock.right"), "{argv}: {e:?}");
@@ -1414,6 +1423,11 @@ fn bindings_refuse_the_sleep_words() {
         "[\"sleep\", \"5\"]",
         "[\"systemctl\", \"status\"]",
         "[\"busctl\", \"mySuspended\"]",
+        "[\"systemctl\", \"--user\", \"status\"]",
+        "[\"systemctl\", \"--user\", \"restart\", \"sleep-watch\"]",
+        "[\"systemd-inhibit\", \"--what=handle-suspend-key\", \"sleep\", \"infinity\"]",
+        "[\"/run/current-system/sw/bin/systemd-inhibit\", \"--what\", \"handle-suspend-key:handle-hibernate-key\", \"--why=No suspend now\", \"--who=keep-awake\", \"cat\"]",
+        "[\"echo\", \"zzzz\"]",
     ] {
         assert!(BarConfig::from_text(&format!("[bindings.clock]\nright = {argv}")).is_ok(), "{argv}: not the whole word");
     }

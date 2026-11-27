@@ -121,9 +121,12 @@ quick panel), `open_tab` (`[actions] open_tab` with the module's tab), `launcher
 with `[clock] calendar = false`, have no click of their own: a binding gives them a zone that does
 only what is bound. The workspaces and the tray take no binding. A wheel bound to `popup`, `quick`
 or `launcher` toggles it once per notch: a second notch closes what the first opened. A bound
-command runs as written: alpheus refuses only an argv naming `suspend`, `hibernate` or
-`hybrid-sleep` (in any case or spelling, `HybridSleep` included) or `systemctl sleep` and `loginctl
-sleep`; what any other command does, a script of the user's own included, is the user's choice.
+command runs as written. alpheus refuses a best-effort list of sleep commands: an argv naming
+`suspend`, `hibernate`, `hybrid-sleep`, `rtcwake` or `zzz` as a whole word, in any case
+(`HybridSleep` included), or `systemctl sleep` and `loginctl sleep`, an option between them
+included; `systemd-inhibit`'s `--what`, `--who` and `--why` are not read, so a keep-awake
+`systemd-inhibit --what=handle-suspend-key …` is accepted. The list is no sandbox: what any other
+command does, a script of the user's own included, is the user's choice.
 
 **Tooltips.** Resting the pointer half a second on a module shows one line saying what its glyphs
 mean, on the tray's own hover timer and popup; the line goes when the pointer leaves. `tooltips =
@@ -264,9 +267,10 @@ These are enforced by tests, so a change that breaks one fails the build.
 - `every_user_binding_runs_as_written`: every button of every bindable module bound to an argv runs
   exactly that program and those arguments, `{tab}` and `{output}` replaced, through the executor:
   never `sh`, never `-c`, never `dpms`. `bindings_refuse_the_sleep_words` (`config/tests.rs`): an
-  argv holding `suspend`, `hibernate` or `hybrid-sleep` as a whole word (a capital after a
-  lowercase letter starts a word: `HybridSleep`), or `systemctl` or `loginctl` then `sleep`, is an
-  error naming only the key. `empty_bindings_change_no_click_byte_for_byte`: empty
+  argv holding `suspend`, `hibernate`, `hybrid-sleep`, `rtcwake` or `zzz` as a whole word (a
+  capital after a lowercase letter starts a word: `HybridSleep`), or `systemctl` or `loginctl` then
+  `sleep` (an option's value skipped), is an error naming only the key; `systemd-inhibit
+  --what=handle-suspend-key …` is accepted. `empty_bindings_change_no_click_byte_for_byte`: empty
   `[bindings.<module>]` tables change no zone, command or popup. The headless
   `a_bound_left_click_never_shows_the_calendar`: a bound button that has a default runs the binding
   alone.

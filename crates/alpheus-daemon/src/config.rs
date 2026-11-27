@@ -455,8 +455,13 @@ pub const BINDING_ARGV_MAX: usize = 16;
 
 /// The words a binding's argv may not hold, as a whole word in any case: a suspend froze the
 /// DisplayLink dock, and the power rows never offer one either. `hybrid-sleep` is the word pair
-/// `hybrid` `sleep` or the one word `hybridsleep`.
-const SLEEP_WORDS: [&str; 3] = ["suspend", "hibernate", "hybridsleep"];
+/// `hybrid` `sleep` or the one word `hybridsleep`; `rtcwake` and `zzz` are the suspend tools of
+/// util-linux and Void. A best-effort list, not a sandbox: a script of the user's own is not read.
+const SLEEP_WORDS: [&str; 5] = ["suspend", "hibernate", "hybridsleep", "rtcwake", "zzz"];
+
+/// `systemd-inhibit`'s options that only describe the lock it takes (`--what=handle-suspend-key`
+/// for keep-awake): their values are not read for sleep words.
+const INHIBIT_LABELS: [&str; 3] = ["--what", "--who", "--why"];
 
 /// The words of `arg`, lowercased: runs of letters, digits and `_`, also cut where a lowercase
 /// letter meets a capital (`SuspendThenHibernate` is three words, `HIBERNATE` one).
@@ -483,18 +488,46 @@ fn words(arg: &str) -> Vec<String> {
 /// Whether `argv` would put the machine to sleep, as far as its words tell: one of `SLEEP_WORDS`
 /// as a whole word (`suspend-then-hibernate`, `/usr/bin/suspend`, `HybridSleep` do; `suspended`
 /// and `my_suspend` do not), or `systemctl` or `loginctl` whose next argument that is no option is
-/// `sleep` (arguments split at blanks too, for a `sh -c` string).
+/// `sleep` (arguments split at blanks too, for a `sh -c` string). When the program is
+/// `systemd-inhibit`, the values of `INHIBIT_LABELS` are skipped; the command it runs is still read.
 fn sleeps(argv: &[String]) -> bool {
+    let inhibit = argv.first().and_then(|p| p.rsplit('/').next()) == Some("systemd-inhibit");
+    let mut label_next = false;
     let by_word = argv.iter().any(|a| {
+        let is_label = inhibit && INHIBIT_LABELS.iter().any(|l| a.split_once('=').map_or(a == l, |(k, _)| k == *l));
+        let value = std::mem::replace(&mut label_next, is_label && !a.contains('='));
+        if is_label || value {
+            return false;
+        }
         let w = words(a);
         w.iter().any(|w| SLEEP_WORDS.contains(&w.as_str())) || w.windows(2).any(|p| p[0] == "hybrid" && p[1] == "sleep")
     });
     let tokens: Vec<&str> = argv.iter().flat_map(|a| a.split_whitespace()).collect();
-    let by_pair = tokens.iter().enumerate().any(|(i, t)| {
-        matches!(t.rsplit('/').next(), Some("systemctl" | "loginctl"))
-            && tokens[i + 1..].iter().find(|t| !t.starts_with('-')).is_some_and(|t| t.eq_ignore_ascii_case("sleep"))
-    });
+    let by_pair = tokens
+        .iter()
+        .enumerate()
+        .any(|(i, t)| matches!(t.rsplit('/').next(), Some("systemctl" | "loginctl")) && verb_is_sleep(&tokens[i + 1..]));
     by_word || by_pair
+}
+
+/// Whether the first argument of `rest` that is neither an option nor an option's value is `sleep`.
+/// Which options take a value is not known here: the word right after a `-x` or `--name` (no `=`)
+/// may be its value, so `sleep` there or just after it counts (`--check-inhibitors yes sleep`).
+fn verb_is_sleep(rest: &[&str]) -> bool {
+    let mut after_option = false;
+    for t in rest {
+        if t.starts_with('-') {
+            after_option = !t.contains('=');
+            continue;
+        }
+        if t.eq_ignore_ascii_case("sleep") {
+            return true;
+        }
+        if !std::mem::take(&mut after_option) {
+            return false;
+        }
+    }
+    false
 }
 
 /// `[bindings]` checked: bindable modules only; an argv of 1 to `BINDING_ARGV_MAX` items with a

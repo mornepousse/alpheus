@@ -2205,9 +2205,11 @@ arguments (never a shell string), or one of seven verbs: `none`, `popup`, `quick
 the same path (`open_tab` is `[actions] open_tab`, `mute` the volume module's own mute): it runs no
 command of its own, writes nothing to the compositor and has no DPMS or idle action. A verb is
 refused at load where what it acts on does not exist (`popup` on a module without one, `quick` or
-`dnd` without their module). An argv that names `suspend`, `hibernate` or `hybrid-sleep`, or
-`systemctl` or `loginctl` then `sleep`, is refused: a suspend froze the DisplayLink dock, and the
-power rows never offer one; what any other command does is the user's choice. A refused binding's
+`dnd` without their module). A best-effort list of sleep commands is
+refused: an argv that names `suspend`, `hibernate`, `hybrid-sleep`, `rtcwake` or `zzz`, or
+`systemctl` or `loginctl` then `sleep`; a suspend froze the DisplayLink dock, and the power rows
+never offer one. `systemd-inhibit`'s `--what`, `--who` and `--why` are not read, so a keep-awake
+inhibitor stays bindable. What any other command does is the user's choice. A refused binding's
 message names the key, never the command. The workspaces and the tray take no binding: their
 clicks are navigation. Prior art: waybar's `on-click` keys and i3status-rust's `[[click]]` arrays;
 one table per module with one key per button leaves no duplicate to detect.
