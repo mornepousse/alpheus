@@ -64,5 +64,6 @@ pub mod system;
 pub mod text;
 pub mod timer;
 pub mod tray;
+pub mod wallpaper;
 pub mod watch;
 pub mod wayland;

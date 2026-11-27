@@ -4318,6 +4318,28 @@ fn the_tools_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
+/// The wallpaper picker's pure files: no panicking path (a file name or the folder may sit in a
+/// message), no log (a name, the folder or an argv never reaches one), no slicing by range.
+/// Production code only; the setter and the glue are pinned by their own test.
+const WALLPAPER_PURE: &[&str] = &["wallpaper.rs"];
+
+#[test]
+fn the_wallpaper_pure_files_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in WALLPAPER_PURE.iter().copied() {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log", "eprintln!(", "println!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for code in production_code_without_comments(t).lines() {
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
+}
+
 /// The Tools menu reaches the parallel deliveries (clipboard, shield, diagnostics) through
 /// `launcher/tools/join.rs` alone: no other production file of the menu names their items.
 /// A plain word search for the shield would hit the emoji table and the VPN model, so the

@@ -658,6 +658,39 @@ run = ["my-gaming", "toggle"]
 state = ["my-gaming", "status"]      # exit 0 = on (a switch is shown), else off; not with choices
 ```
 
+### `[wallpaper]`
+
+The wallpaper picker: one folder's images, by name, and the setter you already use. All off by
+default: with `dir` empty nothing is read, listed or started. alpheus never draws, scales or
+decodes a wallpaper; it starts your setter with the chosen file.
+
+| Key | Type | Default | Bounds | Meaning |
+|---|---|---|---|---|
+| `dir` | path | `""` (feature absent) | absolute or `~/…`, no NUL | The folder; a leading `~/` is your home. Its images are listed by name: `png jpg jpeg webp bmp gif` in any case, regular files and links to them, sorted, at most 2,000. |
+| `set` | command | `[]` | required when `dir` is set; non-blank program that is not `{file}`; `{file}` exactly once, as a whole element | The setter's argv; `{file}` becomes the chosen file's absolute path, as one argument (a name with spaces stays whole; it never starts with `-`). |
+| `restart` | bool | `true` | | `true`: the setter runs until replaced (swaybg, wbg); `false`: it exits once the wallpaper is applied (`swww img`), and success is its exit 0. |
+| `then` | command | `[]` | non-blank program that is not `{file}`; `{file}` at most once, as a whole element | Run after a successful set (matugen, so the bar's colours follow); `[]`: nothing. |
+| `remember` | bool | `true` | | Keep the last choice's name in `$XDG_STATE_HOME/alpheus/wallpaper` and apply it again when the daemon starts. |
+
+File names, the folder and the commands are never logged.
+
+```toml
+# --- examples, not defaults: pick one setter ---
+[wallpaper]
+dir = "~/Pictures/walls"
+set = ["swaybg", "-m", "fill", "-i", "{file}"]   # restart = true (the default): runs until replaced
+
+# set = ["wbg", "{file}"]                        # wbg: also runs until replaced
+
+# swww: its daemon keeps the image, `swww img` exits once applied
+# set = ["swww", "img", "{file}"]
+# restart = false
+
+# matugen after each set, so theme.toml's wallpaper colours follow
+# then = ["matugen", "image", "{file}"]
+# remember = true                                # the default: the last choice comes back at start
+```
+
 ## `theme.toml`
 
 Watched and reloaded live. With no `theme.toml`, or no `theme` key in it, alpheus uses `wallpaper`
