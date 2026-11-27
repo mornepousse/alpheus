@@ -72,6 +72,9 @@ show_mode = false  # never the bind mode
 - **The segment** is `segments::keyboard`, with `segments::short_layout` for the name; it carries
   no click zone. Its row in `modules.rs` has no hue, tab or popup, and `layout.rs` places it in
   `REMOVAL`.
+- **The redraw.** `state::same_drawing` reads the layout and the mode beside the workspaces and
+  the title, so a state that changes only the layout or the mode redraws the bar. Without the
+  module both stay None and never cause a redraw.
 - **The configuration** is `KeyboardConfig` in `config.rs`; `ModuleId::defaults` is the default
   `modules`, every module but this one.
 
@@ -84,7 +87,9 @@ The tests: `short_layout_*` and `keyboard_segment_*` (`segments/tests.rs`), `key
 `keyboard_needs_the_keyboard_fields_only` (`modules/tests.rs`), `keyboard_wanted_with_the_module`
 (`startup/tests.rs`), `the_keyboard_leaves_right_after_the_title` (`layout/tests.rs`), and two
 headless tests under a fake Mango (`keyboard_under_mango_shows_the_layout_and_follows_a_change`,
-`keyboard_off_under_mango_redraws_nothing_on_a_layout_change`).
+`keyboard_under_mango_draws_a_layout_only_change`,
+`keyboard_off_under_mango_redraws_nothing_on_a_layout_change`); `a_layout_or_mode_only_change_redraws`
+(`state.rs`) for the redraw check.
 
 ## Rules it keeps
 
@@ -103,9 +108,13 @@ Measured in release, back to back with the version before it (the full table is 
 [measurements](../measurements.md)).
 
 - **Linked in, `keyboard` not in `modules`:** within the harness's spread at start (−108…−106 KB
-  PSS over three pairings); the stripped daemon grew by 16 KiB.
-- **Module on, under Mango** (`keyboard_module_pss_under_mango`): 0…+4 KB of anonymous memory over
-  the same bar without it (PSS 0…+176 KB).
-- **100 layout changes:** +40…+44 KB anonymous, the same in each run (probably the new letters' first
-  rasterisation), bound 64 KB.
-- **Wake-ups:** none at rest after a change (`at_rest_no_wakeups_with_the_keyboard_module`).
+  PSS over three pairings, taken on a loaded machine; the steady sign is unexplained, probably the
+  shared pages split across the daemons running at the same time); the stripped daemon grew by
+  16 KiB.
+- **Module on, under Mango** (`keyboard_module_pss_under_mango`): +4 KB of anonymous memory over
+  the same bar without it (PSS +68 KB), in each of three runs. The anonymous figure is the one that
+  counts; PSS moves with the shared pages.
+- **Layout changes:** +40 KB anonymous over the first 100 (the new letters' first rasterisation and
+  the allocator settling), then +0 KB over the next 100 (bound 8 KB), in each run; flat up to 500
+  changes in a longer run.
+- **Wake-ups:** none at rest once a change is drawn (`at_rest_no_wakeups_with_the_keyboard_module`).

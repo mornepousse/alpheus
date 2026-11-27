@@ -2345,10 +2345,12 @@ fn at_rest_no_wakeups_under_sway_and_mango() {
 const NO_KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
 const KEYBOARD_BAR: &str = "modules = [\"workspaces\", \"window\", \"keyboard\", \"clock\"]\n";
 
-/// The keyboard module under the fake Mango: PSS without it, with it, and after 100 layout changes
-/// (two snapshots that differ only by the layout and the mode, alternated). Printed for
-/// docs/measurements.md; the anonymous memory bounds the module (two short strings) and the changes
-/// (nothing kept per change).
+/// The keyboard module under the fake Mango: PSS without it, with it, and after 100 then 200 layout
+/// changes (two snapshots that differ only by the layout and the mode, alternated). Printed for
+/// docs/measurements.md; the anonymous memory bounds the module (two short strings), the first 100
+/// changes (the new letters' first rasterisation and the allocator's settling: flat from there on,
+/// measured up to 500) and the next 100 (nothing kept per change: a slow leak cannot hide in the
+/// first figure).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn keyboard_module_pss_under_mango() {
@@ -2363,21 +2365,46 @@ fn keyboard_module_pss_under_mango() {
         std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
         figures.push((d.pss_kb(), d.anonymous_kb()));
         if bar == KEYBOARD_BAR {
-            for i in 0..100 {
-                fake.push_monitors(if i % 2 == 0 { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
-                std::thread::sleep(Duration::from_millis(20));
+            for _ in 0..2 {
+                for i in 0..100 {
+                    fake.push_monitors(if i % 2 == 0 { "mango-monitors-layout-fr-only.json" } else { "mango-all-monitors.json" });
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                std::thread::sleep(Duration::from_secs(2)); // the last change drawn
+                figures.push((d.pss_kb(), d.anonymous_kb()));
             }
-            std::thread::sleep(Duration::from_secs(2)); // the last change drawn
-            figures.push((d.pss_kb(), d.anonymous_kb()));
             assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
         }
     }
-    let [(off, off_anon), (on, on_anon), (after, after_anon)] = figures[..] else { unreachable!() };
+    report_keyboard_figures("Mango", &figures);
+}
+
+/// Prints and bounds the figures of a `keyboard_module_pss_under_*` run: (PSS, anonymous) KB off,
+/// on, after 100 and after 200 layout changes.
+fn report_keyboard_figures(what: &str, figures: &[(u64, u64)]) {
+    let [(off, off_anon), (on, on_anon), (half, half_anon), (after, after_anon)] = figures[..] else { panic!("four figures: {figures:?}") };
     eprintln!(
-        "keyboard module under Mango, PSS (anonymous) KB: off {off} ({off_anon}), on {on} ({on_anon}), after 100 layout changes {after} ({after_anon})"
+        "keyboard module under {what}, PSS (anonymous) KB: off {off} ({off_anon}), on {on} ({on_anon}), after 100 layout changes {half} ({half_anon}), after 200 {after} ({after_anon})"
     );
     assert!(on_anon <= off_anon + 64, "the module costs {} KB anonymous", on_anon.saturating_sub(off_anon));
-    assert!(after_anon <= on_anon + 64, "100 layout changes kept {} KB anonymous", after_anon.saturating_sub(on_anon));
+    assert!(half_anon <= on_anon + 64, "100 layout changes kept {} KB anonymous", half_anon.saturating_sub(on_anon));
+    assert!(after_anon <= half_anon + 8, "the next 100 layout changes kept {} KB anonymous", after_anon.saturating_sub(half_anon));
+}
+
+/// Waits until the loop's wake-up count holds still for 300 ms (a redraw and its frame callback
+/// done; 5 s at most).
+fn quiet_loop(d: &Daemon) {
+    let t = Instant::now();
+    let mut last = d.main_thread_wakeups();
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let now = d.main_thread_wakeups();
+        if now == last {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+        last = now;
+    }
 }
 
 /// With the keyboard module under Mango, once a layout change is drawn the daemon sleeps: no
@@ -2394,7 +2421,7 @@ fn at_rest_no_wakeups_with_the_keyboard_module() {
     wait_until_read(&fake, &d);
     std::thread::sleep(Duration::from_secs(2)); // end of startup
     fake.push_monitors("mango-monitors-layout-fr-only.json");
-    std::thread::sleep(Duration::from_secs(1)); // the change drawn
+    quiet_loop(&d); // the change drawn, its frame done
     let (main_before, compositor_before, ticks) =
         (d.main_thread_wakeups(), d.thread_wakeups("compositor").expect("the compositor thread runs"), d.cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));

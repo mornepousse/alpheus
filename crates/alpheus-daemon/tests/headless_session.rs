@@ -6021,6 +6021,35 @@ fn keyboard_under_mango_shows_the_layout_and_follows_a_change() {
     assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }
 
+/// Waits until the loop's wake-up count holds still for 300 ms (the first snapshots drawn; 5 s at
+/// most) and returns it.
+fn quiet_loop(d: &Daemon) -> u64 {
+    let t = Instant::now();
+    let mut last = d.main_thread_wakeups();
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let now = d.main_thread_wakeups();
+        if now == last {
+            return now;
+        }
+        assert!(t.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+        last = now;
+    }
+}
+
+/// With the keyboard module, a snapshot that changes only the layout and the mode (the active
+/// output unchanged) is drawn: the bar's redraw check reads both.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn keyboard_under_mango_draws_a_layout_only_change() {
+    let (sway, mango, d) = mango_keyboard_daemon("kb-mango-only", "modules = [\"keyboard\"]\n");
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    let fg = rgb(preset("catppuccin").unwrap().dark.fg);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, fg).is_some()), "the layout drawn: {:?}", d.log());
+    mango.push_monitors("mango-monitors-layout-fr-only.json");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| on_the_bar(s, accent).is_some()), "` resize` drawn: {:?}", d.log());
+}
+
 /// Without the keyboard module, a snapshot that changes only the layout and the mode publishes
 /// nothing: the loop does not wake. A snapshot that changes the active output then does wake it,
 /// so the watch was live all along.
@@ -6028,8 +6057,7 @@ fn keyboard_under_mango_shows_the_layout_and_follows_a_change() {
 #[ignore = "headless sway (nix develop)"]
 fn keyboard_off_under_mango_redraws_nothing_on_a_layout_change() {
     let (_sway, mango, d) = mango_keyboard_daemon("kb-mango-off", "modules = [\"workspaces\", \"window\"]\n");
-    thread::sleep(Duration::from_millis(500)); // the first snapshots drawn
-    let before = d.main_thread_wakeups();
+    let before = quiet_loop(&d);
     mango.push_monitors("mango-monitors-layout-fr-only.json");
     thread::sleep(Duration::from_millis(1500));
     assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "a layout change woke the loop: {:?}", d.log());
