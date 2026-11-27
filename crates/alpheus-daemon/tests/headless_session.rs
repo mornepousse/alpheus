@@ -1403,8 +1403,9 @@ fn a_tooltip_appears_after_half_a_second_and_goes_on_leave() {
     assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the icons: {:?}", d.log());
 }
 
-/// The hover timer exists only while the pointer rests on an icon: resting on the clock, the
-/// loop sleeps (the window avoids the clock's minute tick).
+/// The hover timer exists only while the pointer rests on an icon or a module with a tooltip:
+/// resting on the bar's empty middle (no zone), the loop sleeps (the window avoids the clock's
+/// minute tick).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn no_timer_while_the_pointer_is_elsewhere() {
@@ -1413,14 +1414,74 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     while alpheus_daemon::clock::LocalTime::now().0.second > 50 {
         thread::sleep(Duration::from_millis(200));
     }
-    sway.hover(1260, 10); // the clock, at the right end
+    sway.hover(640, 10); // the bar's empty middle, between the tray and the clock
     // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
     thread::sleep(Duration::from_millis(200));
     let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
-    assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
-    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the clock");
+    assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the bar: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the bar");
+    assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
+}
+
+/// The clock's tooltip, on the tray's hover timer: shown after ½ s of rest on the clock, closed
+/// when the pointer leaves the bar, never shown twice.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_module_tooltip_appears_after_half_a_second_and_goes_on_leave() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module", "");
+    sway.hover(640, 400); // the virtual pointer first, off the bar
+    thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    sway.hover(40, 10); // the clock
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
+    assert_eq!(d.count("tooltip shown"), 1);
+    sway.hover(640, 400); // off the bar: its surface's leave
+    assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the clock: {:?}", d.log());
+}
+
+/// Resting on the clock: one tooltip, then the loop sleeps; the hover timer fired once and is gone
+/// (the window avoids the clock's minute tick).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_module_tooltip_fires_once_then_the_loop_sleeps() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module-rest", "");
+    sway.hover(640, 400);
+    while alpheus_daemon::clock::LocalTime::now().0.second > 48 {
+        thread::sleep(Duration::from_millis(200));
+    }
+    sway.hover(40, 10); // the clock
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(200));
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "the loop woke {delta} times with the clock's tooltip shown: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the clock's tooltip shown");
+    assert_eq!(d.count("tooltip shown"), 1, "{:?}", d.log());
+}
+
+/// `tooltips = false`: resting on the clock arms nothing, shows nothing, wakes nothing.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn tooltips_false_shows_nothing_on_a_module() {
+    let (sway, _hypr, d) = clock_bar("tooltip-module-off", "tooltips = false\n");
+    sway.hover(640, 400);
+    while alpheus_daemon::clock::LocalTime::now().0.second > 55 {
+        thread::sleep(Duration::from_millis(200));
+    }
+    thread::sleep(Duration::from_millis(200));
+    sway.hover(40, 10); // the clock: armed with tooltips on, never with them off
+    thread::sleep(Duration::from_millis(200));
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(2));
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(2), "tooltips = false");
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
@@ -2017,6 +2078,50 @@ fn clock_bar(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
     (sway, hypr, d)
+}
+
+/// `[bindings.clock] right = [recorder, "{output}"]`: a right click on the clock runs the recorder
+/// with the bar's connector, one argument, nothing logged of it; the left click keeps the calendar.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_user_binding_runs_its_argv_on_a_click() {
+    let sway = Sway::start("binding-argv", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "bound");
+    let toml = format!("modules = [\"clock\"]\n[bindings.clock]\nright = [\"{}\", \"{{output}}\"]\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    sway.click(40, 10, "button3");
+    assert!(wait_until(|| recorded_argv(&sway, "bound").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "bound"), [["HEADLESS-1"]]);
+    assert_eq!(d.count("calendar shown"), 0, "the right click is the binding's alone: {:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "the left click keeps today's: {:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "bound").len(), 1, "{:?}", d.log());
+    let program = rec.display().to_string();
+    assert!(d.log().iter().all(|l| !l.contains(&program)), "never the command in the log: {:?}", d.log());
+}
+
+/// A binding on a button that has a default replaces it: `[bindings.clock] left = [recorder]` runs
+/// the recorder on every left click and never also shows the calendar.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_bound_left_click_never_shows_the_calendar() {
+    let sway = Sway::start("binding-left", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "left");
+    let toml = format!("modules = [\"clock\"]\n[bindings.clock]\nleft = [\"{}\", \"{{output}}\"]\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    sway.click(40, 10, "button1");
+    assert!(wait_until(|| recorded_argv(&sway, "left").len() == 1), "{:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(wait_until(|| recorded_argv(&sway, "left").len() == 2), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "left"), [["HEADLESS-1"], ["HEADLESS-1"]]);
+    thread::sleep(Duration::from_millis(300)); // a calendar would have shown by now
+    assert_eq!(d.count("calendar shown"), 0, "the bound left click is the binding's alone: {:?}", d.log());
 }
 
 /// "YYYY-MM" of every "calendar shown/shows" line, in order.

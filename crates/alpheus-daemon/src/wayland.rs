@@ -28,7 +28,7 @@
 //! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (a click from the pointer to the command),
 //! docs/features/bar.md, docs/compositors.md (what each compositor gives).
 
-use crate::actions::{self, Button, Wheel};
+use crate::actions::{self, Bound, Button, Wheel};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
@@ -37,7 +37,7 @@ use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::session_bus::ItemKey;
-use crate::session_bus::hover::{self, Hover, HoverChange};
+use crate::session_bus::hover::{self, Hover, HoverChange, HoverKey, HoverRef};
 use crate::session_bus::router::Tray;
 use crate::startup::Mail;
 use crate::state::Bar;
@@ -843,6 +843,7 @@ impl App {
         for i in 0..self.surfaces.len() {
             self.draw(i);
         }
+        self.hover_module_moved();
     }
 
     /// Every bar redrawn even if its grid did not change (a new theme): `draw` skips an unchanged grid.
@@ -964,22 +965,56 @@ impl App {
         s.last = Some(grid);
     }
 
-    /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
-    /// and the zone's target (the quick panel's section).
-    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
+    /// The zone under `x` on bar `i`: its cells (a popup's anchor) and its target.
+    fn zone_anchor(&mut self, i: usize, x: f64) -> Option<(PopupAnchor, Target)> {
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
-        let quick = self.bar.config.modules.contains(&ModuleId::Quick);
         let s = &self.surfaces[i];
         let zone = s.last.as_ref()?.zone_at(column)?;
-        let popup = ModulePopup::of(&zone.target, b, quick)?;
-        Some((popup, PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
+        Some((PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
+    }
+
+    /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
+    /// and the zone's target (the quick panel's section). A bound button toggles its binding's
+    /// popup or none (`actions::bound`), so the press race (`closed_by_done`) and a second press
+    /// closing its own popup follow the binding too.
+    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
+        let quick = self.bar.config.modules.contains(&ModuleId::Quick);
+        let (anchor, target) = self.zone_anchor(i, x)?;
+        let popup = match actions::bound(&self.bar, &anchor.output, &target, b) {
+            Some(Bound::Popup(p)) => p,
+            Some(_) => return None,
+            None => ModulePopup::of(&target, b, quick)?,
+        };
+        Some((popup, anchor, target))
+    }
+
+    /// A bound button (`[bindings.<module>]`) on the zone under `x`: done here, and true; false
+    /// when the button is not bound, so today's click goes on.
+    fn bound_click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) -> bool {
+        let Some((anchor, target)) = self.zone_anchor(i, x) else { return false };
+        let Some(action) = actions::bound(&self.bar, &anchor.output, &target, b) else { return false };
+        match action {
+            Bound::Nothing => {}
+            Bound::Run(argv) => actions::run(self.exec.as_ref(), &argv),
+            Bound::Popup(p) => (p.ops().toggle)(self, qh, anchor, &target),
+            Bound::Launcher => {
+                if decide_click(true, launcher_was_open) == ClickDecision::ToggleLauncher {
+                    self.launcher_toggle(qh);
+                }
+            }
+            Bound::Dnd => self.set_dnd(!self.dnd),
+        }
+        true
     }
 
     /// `launcher_was_open`: whether the launcher was open right before this
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
+        if self.bound_click(qh, i, x, b, launcher_was_open) {
+            return;
+        }
         if let Some((popup, anchor, target)) = self.module_popup_at(i, x, b) {
             (popup.ops().toggle)(self, qh, anchor, &target);
             return;
@@ -1119,6 +1154,7 @@ impl CompositorHandler for App {
             self.surfaces[i].scale = f;
             self.surfaces[i].last = None;
             self.draw(i);
+            self.hover_module_moved();
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
@@ -1158,6 +1194,7 @@ impl OutputHandler for App {
             self.surfaces[i].name = n;
             self.surfaces[i].last = None;
             self.draw(i);
+            self.hover_module_moved();
         }
     }
 
@@ -1298,6 +1335,8 @@ impl LayerShellHandler for App {
             self.awaiting_configure.retain(|s| *s != output);
         }
         self.draw(i);
+        // A resize may move the hovered module from under a pending tooltip.
+        self.hover_module_moved();
         // Signals that came before any bar was configured asked no frame yet:
         // ask it now, on a surface that has a buffer (drawn just above).
         self.tray_sync();
@@ -1533,15 +1572,16 @@ delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
 
 impl App {
-    /// The pointer moved on bar `i` at `x`: over a tray icon, the tooltip's timer (only with tooltips on,
-    /// and never while a grabbing popup or the launcher is open: no tooltip could show then).
+    /// The pointer moved on bar `i` at `x`: over a tray icon or a module with a tooltip, the
+    /// tooltip's timer (only with tooltips on, and never while a grabbing popup or the launcher is
+    /// open: no tooltip could show then).
     fn hover_moved(&mut self, i: usize, x: f64) {
         let busy = self.popup.as_ref().is_some_and(|p| p.grab) || self.launcher_is_open() || self.notes_is_open();
-        let tooltips = self.bar.config.tray.tooltips && !busy;
+        let tooltips = self.bar.config.tooltips && !busy;
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
         // Borrowed from `self.surfaces[i]`: resting on the same
-        // icon allocates nothing, `Hover::moved` only clones the key and the output name on Arm.
+        // zone allocates nothing, `Hover::moved` only clones the key and the output name on Arm.
         let found = self.surfaces[i].last.as_ref().and_then(|g| hover::over(tooltips, g, column));
         let c = self.hover.moved(found, &self.surfaces[i].name, Instant::now());
         if matches!(c, HoverChange::Arm(_)) {
@@ -1570,26 +1610,23 @@ impl App {
         self.hover_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::hover_fire);
     }
 
-    /// The tooltip's item left the tray: its tooltip goes.
+    /// The tooltip's item left the tray: its tooltip goes. A module's tooltip never goes with the tray.
     pub(crate) fn tooltip_item_gone(&mut self) {
         let Some(open) = self.popup.as_ref() else { return };
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
         }
-        // A Tooltip popup is always paired with `menu.tooltip_item` (set together in `hover_fire`,
+        // A Tooltip popup is always paired with `menu.tooltip_owner` (set together in `hover_fire`,
         // cleared together in `popup_close`). Should that ever break, the tooltip closes rather
         // than the daemon panicking. `self.tray` can be None: the session bus just closed,
         // taking every item with it.
-        let gone = match (&self.tray, self.menu.tooltip_item.as_ref()) {
-            (Some(tray), Some(key)) => tray.item(key).is_none(),
-            _ => true,
-        };
-        if gone {
+        let tray = self.tray.as_ref();
+        if hover::owner_gone(self.menu.tooltip_owner.as_ref(), |key| tray.is_some_and(|t| t.item(key).is_some())) {
             self.popup_close(PopupClose::ItemGone);
         }
     }
 
-    /// True when the item `Hover` is tracking (armed, or already shown as a tooltip) lost its
+    /// True when the icon or module `Hover` is tracking (armed, or already shown as a tooltip) lost its
     /// zone, or moved to different columns, in the grid `self.bar` would now paint for the
     /// surface it was armed on — found by `hover_surface`'s
     /// IDENTITY, never `anchor.output`'s name (it can change meanwhile). An unrelated icon changing elsewhere never moves THIS one's
@@ -1602,9 +1639,22 @@ impl App {
         let Some(i) = self.index(surface) else { return true }; // the bar surface itself is gone
         let Some(columns) = self.surfaces[i].last.as_ref().map(Grid::width) else { return true };
         let grid = self.bar.grid(&self.surfaces[i].name, columns);
-        match grid.zones().iter().find(|z| matches!(&z.target, Target::TrayItem(k) if k == key)) {
-            Some(z) => (z.start, z.end) != (anchor.start, anchor.end),
-            None => true, // dropped from the grid: gone
+        hover::zone_moved(&grid, key, anchor)
+    }
+
+    /// A module's tooltip, armed or shown, is anchored to its cells: when a redraw moved them (a
+    /// wider volume, a new window title) or dropped them, it goes, as a moved tray icon's does.
+    /// Read from the grid just painted; nothing at all while no module is hovered.
+    fn hover_module_moved(&mut self) {
+        let Some((key @ HoverRef::Module(_), anchor)) = self.hover.target() else { return };
+        let Some(surface) = self.hover_surface.as_ref() else { return };
+        let moved = match self.index(surface).and_then(|i| self.surfaces[i].last.as_ref()) {
+            Some(grid) => hover::zone_moved(grid, key, anchor),
+            None => true,
+        };
+        if moved {
+            let c = self.hover.cancel();
+            self.hover_apply(c);
         }
     }
 
@@ -1615,7 +1665,14 @@ impl App {
         if app.popup.is_some() || app.launcher_is_open() || app.notes_is_open() {
             return;
         }
-        let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };
+        let text = match &key {
+            HoverKey::Tray(k) => app.tray.as_ref().and_then(|t| t.item(k)).and_then(|i| i.tooltip_text()).map(str::to_owned),
+            // Taken now, never refreshed while shown.
+            HoverKey::Module(m) => m.spec().tooltip.and_then(|f| f(&app.bar)),
+        };
+        // Clean and capped before it is kept (the row draws it so, and the body holds no more);
+        // nothing left to read shows nothing.
+        let Some(text) = hover::shown_text(text) else { return };
         // By `hover_surface`'s IDENTITY, never by
         // re-deriving the bar from `anchor.output`: up to ½ s has passed since `hover_moved` armed
         // this, time enough for `update_output` to rename it, or for the name to be briefly shared.
@@ -1633,7 +1690,7 @@ impl App {
         let qh = app.qh.clone();
         let (columns, height) = rows.cells();
         if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, Input::Tooltip) {
-            app.menu.tooltip_item = Some(key);
+            app.menu.tooltip_owner = Some(key);
             app.popup_paint(rows);
             log("tooltip shown");
         }

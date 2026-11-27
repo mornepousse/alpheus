@@ -970,6 +970,75 @@ fn popups_free_everything_on_close() {
     assert!(end.abs_diff(baseline) <= 512, "popups leak: {baseline} KB -> {end} KB");
 }
 
+/// A bar with only the clock: its text starts at cell 1, so x = 40 is inside it (as in the
+/// headless suite's `clock_bar`).
+const CLOCK_ONLY: (u32, u32) = (40, 10);
+
+/// One module tooltip cycle on the clock: the pointer arrives, the tooltip shows after ½ s, the
+/// pointer leaves the bar and it closes; `n` is the cycle's number from 1.
+fn clock_tooltip_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    sway.hover(640, 400);
+    sway.hover(CLOCK_ONLY.0, CLOCK_ONLY.1);
+    assert!(d.wait_for_count("tooltip shown", n, DELAY), "cycle {n}: {:?}", d.log());
+    sway.hover(640, 400);
+    assert!(d.wait_for_count("popup closed (hover ended)", n, DELAY), "cycle {n}: {:?}", d.log());
+}
+
+/// The clock's tooltip, shown and closed 20 times after one warm-up, keeps nothing: its text, its
+/// row and its popup surface go with it. The bound is on anonymous memory (the pools and the file
+/// pages move with the machine); PSS printed for docs/measurements.md.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn module_tooltips_free_everything_on_close() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("module-tooltips");
+    let (sway, _hypr, d) = start("module-tooltips", 1, &bus, None, Some("modules = [\"clock\"]\n"), PwDump::Silent);
+    std::thread::sleep(Duration::from_millis(500)); // configured and drawn
+    let at_rest = d.pss_kb();
+    // Warm-up: the tooltip's glyphs in the shared cache and its first pool are in the baseline.
+    clock_tooltip_cycle(&sway, &d, 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let (warm_pss, warm_anon) = (d.pss_kb(), d.anonymous_kb());
+    sway.hover(CLOCK_ONLY.0, CLOCK_ONLY.1);
+    assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = d.pss_kb();
+    sway.hover(640, 400);
+    assert!(d.wait_for_count("popup closed (hover ended)", 2, DELAY), "{:?}", d.log());
+    for n in 3..=22 {
+        clock_tooltip_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let (end_pss, end_anon) = (d.pss_kb(), d.anonymous_kb());
+    eprintln!(
+        "module tooltip PSS: {at_rest} KB at rest, {warm_pss} KB after the warm-up, {shown} KB shown, {end_pss} KB after 20 more \
+         cycles; anonymous {warm_anon} -> {end_anon} KB"
+    );
+    assert!(end_anon <= warm_anon + 128, "module tooltips leak: anonymous {warm_anon} KB -> {end_anon} KB after 20 cycles");
+}
+
+/// After a module tooltip was shown and closed, the loop sleeps: no hover timer is left behind.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_module_tooltip() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("module-tooltip-rest");
+    let (sway, _hypr, d) = start("module-tooltip-rest", 1, &bus, None, Some("modules = [\"clock\"]\n"), PwDump::Silent);
+    std::thread::sleep(Duration::from_millis(500));
+    clock_tooltip_cycle(&sway, &d, 1);
+    std::thread::sleep(Duration::from_secs(1));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon after a module tooltip");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after a module tooltip (5 s): {delta} whole daemon, {main_delta} loop thread; {} threads", d.threads());
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s at rest after a module tooltip");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after a module tooltip");
+}
+
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn startup_pss_with_the_tray_under_15_mb() {

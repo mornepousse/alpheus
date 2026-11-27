@@ -62,6 +62,25 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
   [configuration](docs/configuration.md#quick),
   [decisions](docs/decisions.md#airplane-mode-blocks-wi-fi-bluetooth-and-wwan-through-rfkill-and-leaving-it-unblocks-all-three).
 
+- **Bar bindings and module tooltips** (27): `[bindings.<module>]` in `bar.toml` gives any button
+  of a module (`left`, `middle`, `right`, `wheel_up`, `wheel_down`) a command run as written, with
+  `{tab}` and `{output}` replaced, or a verb: `none`, `popup`, `quick`, `open_tab`, `launcher`,
+  `dnd`, `mute`; a button left out keeps its default, and the window, and the clock without its
+  calendar, get a zone that does only what is bound. A best-effort list of sleep commands is
+  refused (suspend, hibernate, hybrid sleep, `systemctl sleep`, `rtcwake`, `zzz`), and a refused
+  binding's message names the key, never the command.
+  Resting the pointer half a second on the clock, volume, network, Bluetooth, battery, resources,
+  window, notifications or `failed` module shows one line saying what its glyphs mean, on the
+  tray's own hover timer and popup; a tooltip tells nothing the bar does not draw (no SSID, device
+  label or window class). New top-level key `tooltips` (`false` turns every tooltip off, the
+  tray's included; `[tray] tooltips` is its old spelling). Cost against main: +60 KiB in the
+  stripped binary; at start and in the steady state within noise, nothing grew; the first tooltip
+  +248 KB once, +16 KB while one shows; 0 wake-ups at rest.
+  [Page](docs/features/bar.md#using-it),
+  [configuration](docs/configuration.md#bindingsmodule),
+  [decisions](docs/decisions.md#a-user-binding-replaces-a-modules-default-for-that-button-only-a-verb-runs-no-new-command),
+  [tooltips](docs/decisions.md#a-tooltip-spells-out-only-what-the-bar-draws-no-ssid-device-label-or-window-class).
+
 #### Changed
 
 - **A `gpu_sensor` naming a card also picks its usage** (27): with `gpu_metric = "auto"`, a

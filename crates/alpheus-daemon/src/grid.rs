@@ -138,6 +138,10 @@ pub enum Target {
     },
     /// A whole system module (volume, network…): `actions` decides by button.
     Module(ModuleId),
+    /// The cells of a module that has no click zone of its own (the window; the clock without the
+    /// calendar) but a binding: it takes no click of its own (`actions::command` and
+    /// `ModulePopup::of` ignore it), only its bindings' (`actions::bound`).
+    Passive(ModuleId),
     /// One tray icon: its gestures go to the application, never a command.
     TrayItem(ItemKey),
 }

@@ -28,7 +28,8 @@ The popup is between 12 and 48 cells wide, and a tall menu scrolls with `▴` an
 entry sends the application a `clicked` event; the bar runs nothing itself.
 
 **Tooltips.** Resting the pointer on an icon for half a second shows one line: the tooltip's title,
-else the `Title`, else the `Id`, cut to the output's width.
+else the `Title`, else the `Id`, cut to the output's width. The same timer and popup show the
+modules' tooltips ([the bar](bar.md)); one key turns them all off.
 
 ## Using it
 
@@ -59,7 +60,7 @@ In `bar.toml`, read at start (a change needs a restart of the bar). `tray` is in
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[tray] passive` | `"dim"` | how an item that says it is idle is drawn: `"dim"`, `"show"` (like an active one) or `"hide"` |
-| `[tray] tooltips` | `true` | `false` arms no hover timer at all |
+| `tooltips` (top level) | `true` | `false` arms no hover timer at all, over the tray or any module. `[tray] tooltips` is its old spelling, still accepted: `false` in either place turns every tooltip off |
 | `[tray.icons]` | empty | overrides of the glyph table: a key is matched as a lower-cased substring of the item's `Id`, `IconName`, tooltip title or process name, and its value is a glyph of one or two cells. At most 128 entries; a blank key, a control character, or two keys that differ only by case is an error |
 
 An unknown key or a bad value makes `bar.toml` invalid: the daemon logs one line and runs on the

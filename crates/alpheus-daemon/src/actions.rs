@@ -7,12 +7,17 @@
 //! (`[actions] open_tab`), run the monitor (`[actions] resources`) or change the volume through
 //! `wpctl`. What the daemon handles itself — the launcher's button, the bell's middle click, the
 //! timer chip's — is not a command at all, and `toggles_launcher`, `toggles_dnd` and
-//! `timer_middle` say so.
+//! `timer_middle` say so. A button bound in `[bindings.<module>]` is read first (`bound`): the
+//! user's argv, or a verb; a button left out keeps all of the above.
 //!
 //! Never:
-//! - build a command that is not on the allowlist: `every_click_on_a_full_bar_stays_on_the_allowlist`
-//!   clicks every zone of a bar where every module is shown, with every button, with the quick
-//!   panel and without it, and `every_click_only_runs_the_workspace_command` pins the workspaces';
+//! - build a default command that is not on the allowlist:
+//!   `every_click_on_a_full_bar_stays_on_the_allowlist` clicks every zone of a bar where every
+//!   module is shown, with every button, with the quick panel and without it, and
+//!   `every_click_only_runs_the_workspace_command` pins the workspaces';
+//! - run a binding other than as written: `every_user_binding_runs_as_written` (its program and
+//!   arguments, `{tab}` and `{output}` replaced, never a shell);
+//! - give a `Passive` zone a click of its own: `a_passive_zone_takes_no_click_of_its_own`;
 //! - write to the compositor (`the_daemon_only_reads_from_the_compositor`), or raise the volume
 //!   above 100 % (`wpctl`'s `-l 1.0`, as the control center does);
 //! - run anything through a shell: every command is an argument list, run as written.
@@ -21,10 +26,11 @@
 //! (`[actions]`, `[workspaces]`), docs/compositors.md (`wm-set` and what it stands for).
 
 use crate::compositor::Workspace;
-use crate::config::ModuleId;
+use crate::config::{Binding, ModuleId, Verb};
 use crate::grid::{Grid, Target};
 use crate::media::Control;
 use crate::painter::column_under;
+use crate::popup::ModulePopup;
 use crate::session_bus::{Gesture, Orientation};
 use crate::state::{Bar, Feed};
 use alpheus_common::exec::Executor;
@@ -146,9 +152,56 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
             Some(template.iter().map(|a| substitute(a, &[("{workspace}", &workspace), ("{output}", &workspace_output)])).collect())
         }
         Target::Module(m) => module_command(bar, *m, b),
-        // The tray never runs a command: its gestures are D-Bus calls.
-        Target::TrayItem(_) => None,
+        // A `Passive` zone has no click of its own (`bound` has its bindings'); the tray never
+        // runs a command: its gestures are D-Bus calls.
+        Target::Passive(_) | Target::TrayItem(_) => None,
     }
+}
+
+/// What a bound button does (`[bindings.<module>]`), read before any default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bound {
+    /// `none`: the button's default silenced.
+    Nothing,
+    /// An argv run as written: the user's, `open_tab`'s or `mute`'s.
+    Run(Vec<String>),
+    /// A module popup toggled under the zone pressed: `popup`, `quick`.
+    Popup(ModulePopup),
+    /// The launcher toggled, as its button does (`decide_click`).
+    Launcher,
+    /// Do not disturb flipped, as the bell's middle button does.
+    Dnd,
+}
+
+/// The binding of `b` on `target` in the bar of `output`, or None when that button is not bound
+/// (today's behaviour then). Only module zones take bindings, `Passive` ones included; a command's
+/// `{tab}` (the module's control-center tab) and `{output}` (the bar's connector) are replaced in
+/// one pass, each argument staying one argument.
+pub fn bound(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Bound> {
+    let (Target::Module(m) | Target::Passive(m)) = target else { return None };
+    let buttons = bar.config.bindings.get(m)?;
+    let binding = match b {
+        Button::Left => &buttons.left,
+        Button::Middle => &buttons.middle,
+        Button::Right => &buttons.right,
+        Button::WheelUp => &buttons.wheel_up,
+        Button::WheelDown => &buttons.wheel_down,
+    };
+    Some(match binding.as_ref()? {
+        Binding::Command(argv) => {
+            let tab = tab(*m).unwrap_or("{tab}");
+            Bound::Run(argv.iter().map(|a| substitute(a, &[("{tab}", tab), ("{output}", output)])).collect())
+        }
+        // `check_bindings` refused the verbs whose popup or tab is missing; were one to slip
+        // through, the button does nothing rather than today's default.
+        Binding::Verb(Verb::None) => Bound::Nothing,
+        Binding::Verb(Verb::Mute) => Bound::Run(wpctl(&["set-mute", SINK, "toggle"])),
+        Binding::Verb(Verb::OpenTab) => open_tab(bar, *m).map_or(Bound::Nothing, Bound::Run),
+        Binding::Verb(Verb::Popup) => m.spec().popup.map_or(Bound::Nothing, Bound::Popup),
+        Binding::Verb(Verb::Quick) => Bound::Popup(ModulePopup::Quick),
+        Binding::Verb(Verb::Launcher) => Bound::Launcher,
+        Binding::Verb(Verb::Dnd) => Bound::Dnd,
+    })
 }
 
 /// Left click on the launcher button: the daemon toggles its launcher

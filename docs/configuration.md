@@ -68,7 +68,7 @@ Conventions in the tables below:
 
 Read once at the daemon's start. Unknown keys and unknown module names make the file invalid.
 
-Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
+Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[workspaces]`](#workspaces), [`[actions]`](#actions), [`[bindings.<module>]`](#bindingsmodule), [`[resources]`](#resources), [`[battery]`](#battery), [`[tray]`](#tray), [`[media]`](#media), [`[privacy]`](#privacy), [`[failed]`](#failed), [`[notifications]`](#notifications), [`[osd]`](#osd), [`[quick]`](#quick), [`[timer]`](#timer), [`[keyboard]`](#keyboard), [`[displays]`](#displays), [`[clipboard]`](#clipboard), [`[shield]`](#shield), [`[captures]`](#captures), [`[hooks]`](#hooks), [the example](#example).
 
 ### Top level
 
@@ -76,6 +76,7 @@ Sections: [top level](#top-level), [`[font]`](#font), [`[clock]`](#clock), [`[wo
 |---|---|---|---|---|
 | `modules` | list of module names | every module below but `keyboard`, in this order | no duplicate; an unknown name is an error | The bar's modules, left to right, and which daemon features run at all. |
 | `height` | integer (logical px) | `22` | 12 to 64 | The bar's height. |
+| `tooltips` | bool | `true` | | A one-line tooltip after ½ s of hovering, on the modules and the tray items. `false` (here or as `[tray] tooltips`, its old spelling): no tooltip and no hover timer at all. |
 
 The module names, in order: `launcher`, `workspaces`, `window`, `keyboard`, `media`, `privacy`,
 `shield`, `failed`, `volume`, `network`, `bluetooth`, `battery`, `resources`, `tray`,
@@ -119,6 +120,58 @@ See [the calendar](features/calendar.md).
 | `open_tab` | command | `["alpheus-toggle", "{tab}"]` | non-empty, non-blank program | Opens the control center on a tab: a click on volume, network, Bluetooth, battery or `failed`; `{tab}` becomes `sound`, `network`, `bluetooth`, `home` (battery) or `diagnostics` (`failed`); no other module runs it. With the quick panel (`quick` in `modules`) a left click on volume, network or Bluetooth opens the panel instead, and `open_tab` runs on the right click. The Tools menu's control-center entries use it too. `alpheus-toggle` is an external script, see [compositors.md](compositors.md#external-commands). |
 | `resources` | command | `["foot", "-e", "btop"]` | non-empty, non-blank program | A system monitor: the right click on the resources module, and the popup's `Monitor…` row (a left click opens the popup); with it empty the popup has no `Monitor…` row. |
 
+### `[bindings.<module>]`
+
+One table per module binds its buttons to a command or a built-in verb; a button left out keeps
+today's behaviour, and no table at all changes nothing.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `left`, `middle`, `right` | command or verb | absent | The mouse button on the module. |
+| `wheel_up`, `wheel_down` | command or verb | absent | One wheel notch over the module. |
+
+- **Modules**: every module that draws a segment, except `workspaces` and `tray` (their zones are
+  per item): `launcher`, `window`, `media`, `privacy`, `shield`, `failed`, `volume`, `network`,
+  `bluetooth`, `battery`, `resources`, `notifications`, `timer`, `clock`, `power`. `osd`, `quick`,
+  `displays`, `workspaces`, `tray` or an unknown name is an error. A table for a module not in
+  `modules` is accepted and costs nothing.
+- **A command** is an argument list run as written (no shell, no `~` or `$VAR` expansion): 1 to 16
+  items, a non-blank program, no NUL. `{tab}` (the module's control-center tab; only on volume,
+  network, Bluetooth, battery and `failed`) and `{output}` (the bar's connector, such as `DP-1`) are
+  replaced, each a whole argument, at most once, never the program. `[]` is an error: use `"none"`.
+  A best-effort list of sleep commands is refused: `suspend`, `hibernate`, `hybrid-sleep`,
+  `rtcwake` or `zzz` as a whole word in any item, whatever its case (`SuspendThenHibernate` and
+  `HybridSleep` included), and `systemctl` or `loginctl` followed by `sleep` (options and their
+  values between them included). The values of `systemd-inhibit`'s `--what`, `--who` and `--why`
+  are not read, so a keep-awake `["systemd-inhibit", "--what=handle-suspend-key", …]` is accepted;
+  the command it runs is still checked. Beyond those checks a binding runs exactly what you wrote,
+  and what it does is yours: alpheus does not vet it.
+- **A verb** is a string:
+
+| Verb | Does | Needs |
+|---|---|---|
+| `"none"` | Nothing: the button's default silenced. | |
+| `"popup"` | The module's own popup, even one its settings otherwise leave off (the clock's month with `[clock] calendar = false`): the binding asks for it. | A module with a popup (`media`, `privacy`, `shield`, `volume`, `network`, `bluetooth`, `resources`, `notifications`, `timer`, `clock`, `power`); `quick` in `modules` when that popup is the quick panel (`shield`, volume, network, Bluetooth). |
+| `"quick"` | The quick settings panel. | `quick` in `modules`. |
+| `"open_tab"` | `[actions] open_tab` with the module's tab. | A module with a tab (volume, network, Bluetooth, battery, `failed`). |
+| `"launcher"` | Toggles the launcher, as its button does. | |
+| `"dnd"` | Toggles do not disturb. | `notifications` in `modules`. |
+| `"mute"` | Toggles the default output's mute. | |
+
+An invalid table makes the whole file fall back to the defaults, with one log line naming the key
+(`bindings.volume.right`), never the command. Two mistakes are caught while the file is read,
+before the key is known, so their line names neither the module nor the button: a string that is
+no verb (`unknown verb`, with the verbs listed; a command is a list) and a list holding something
+other than strings (`every argument must be a string`). Look for the binding in `[bindings.*]`.
+
+```toml
+[bindings.volume]
+right = ["pavucontrol"]   # its left click still opens the quick panel
+wheel_up = "none"
+[bindings.clock]
+middle = ["foot", "-e", "calcurse"]
+```
+
 ### `[resources]`
 
 | Key | Type | Default | Bounds | Meaning |
@@ -148,7 +201,7 @@ See [the resources popup](features/resources.md).
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
 | `passive` | `"dim"`, `"show"` or `"hide"` | `"dim"` | | How an item that says it is idle is drawn. |
-| `tooltips` | bool | `true` | | The item's name after ½ s of hovering (`false`: no hover timer at all). |
+| `tooltips` | bool | `true` | | The old spelling of the top-level `tooltips`: `false` here turns every tooltip off, the modules' too. |
 
 `[tray.icons]` (glyph overrides): a table of `name = "glyph"`. A key is matched, lower-cased, as a
 substring of the item's id, icon name, title or process name; at most 128 entries, no blank key,
@@ -355,6 +408,7 @@ valid as written):
 modules = ["launcher", "workspaces", "window", "media", "privacy", "shield", "failed", "volume", "network",
            "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "timer", "clock", "power"]
 height = 22
+tooltips = true      # a one-line tooltip after ½ s of hovering, modules and tray; false: no hover timer at all
 
 [font]
 family = "JetBrainsMono Nerd Font Mono"
@@ -376,6 +430,10 @@ resources = ["foot", "-e", "btop"]       # a right click on the resources module
 # {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth, "home" for battery and "diagnostics" for failed; no other module runs open_tab.
 # With the quick panel (`quick` in modules) a left click on volume, network or Bluetooth opens the panel instead, and open_tab runs on the right click.
 
+# [bindings.volume]       # one table per module; a button left out keeps today's behaviour
+# right = ["pavucontrol"] # left, middle, right, wheel_up, wheel_down: an argv ({tab}, {output} replaced) or a verb
+# wheel_up = "none"       # verbs: none, popup, quick, open_tab, launcher, dnd, mute
+
 [resources]
 interval = 2         # seconds between two readings of /proc (1 to 60)
 graph = 20           # ignored; accepted so older files stay valid
@@ -394,7 +452,7 @@ warn = [20, 10, 5]       # a notification when the battery, discharging, crosses
 
 [tray]
 passive = "dim"     # "dim" | "show" | "hide": items that say they are idle
-tooltips = true     # the item's name after ½ s of hovering
+# tooltips = true   # the old spelling of the top-level tooltips: false here turns every tooltip off
 
 [tray.icons]        # glyph overrides, keyed like the built-in table (id, icon name, title, process)
 # keepassxc = "󰌋"

@@ -247,7 +247,6 @@ fn indicators_open_their_tab() {
 /// `[actions] resources`; the other buttons do nothing.
 #[test]
 fn resources_left_opens_the_popup_right_runs_the_monitor() {
-    use crate::popup::ModulePopup;
     let mut b = without_quick(full());
     b.config.actions.resources = vec!["foot".into(), "htop".into()];
     let r = Target::Module(ModuleId::Resources);
@@ -270,7 +269,7 @@ fn a_left_click_opens_the_diag_tab() {
     for other in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
         assert_eq!(command(&b, "eDP-1", &t, other), None, "{other:?}");
     }
-    assert_eq!(crate::popup::ModulePopup::of(&t, Button::Left, true), None, "no popup");
+    assert_eq!(ModulePopup::of(&t, Button::Left, true), None, "no popup");
 }
 
 #[test]
@@ -359,4 +358,117 @@ fn a_failed_start_logs_a_kind_word_and_no_command() {
     assert!(lines.is_empty(), "a start that works logs nothing: {lines:?}");
     run_logged(&fake, &[], &mut |l| lines.push(l.to_string()));
     assert!(lines.is_empty(), "an empty command is nothing to run");
+}
+
+const BUTTONS: [Button; 5] = [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown];
+
+/// `full()` with `bindings` (bar.toml text) read the way the file is.
+fn bound_bar(bindings: &str) -> Bar {
+    let mut b = full();
+    b.config = BarConfig::from_text(bindings).unwrap();
+    b
+}
+
+fn run_argv(v: &[&str]) -> Option<Bound> {
+    Some(Bound::Run(v.iter().map(|s| s.to_string()).collect()))
+}
+
+#[test]
+fn a_command_binding_runs_as_written() {
+    let b = bound_bar("[bindings.volume]\nright = [\"my-mixer\", \"{output}\", \"{tab}\"]");
+    assert_eq!(bound(&b, "DP-1", &Target::Module(ModuleId::Volume), Button::Right), run_argv(&["my-mixer", "DP-1", "sound"]));
+    let b = bound_bar("[bindings.window]\nmiddle = [\"x; $(y)\", \"{output}\"]");
+    assert_eq!(
+        bound(&b, "DP-1", &Target::Passive(ModuleId::Window), Button::Middle),
+        run_argv(&["x; $(y)", "DP-1"]),
+        "a passive zone runs its binding; the argument stays one, never a shell"
+    );
+}
+
+#[test]
+fn each_verb_resolves() {
+    let b = bound_bar(
+        "[bindings.volume]\nleft = \"none\"\nright = \"mute\"\nmiddle = \"open_tab\"\nwheel_up = \"quick\"\nwheel_down = \"launcher\"\n\
+         [bindings.clock]\nleft = \"popup\"\nmiddle = \"dnd\"",
+    );
+    let v = Target::Module(ModuleId::Volume);
+    assert_eq!(bound(&b, "DP-1", &v, Button::Left), Some(Bound::Nothing));
+    assert_eq!(bound(&b, "DP-1", &v, Button::Right), run_argv(&["wpctl", "set-mute", SINK, "toggle"]));
+    assert_eq!(bound(&b, "DP-1", &v, Button::Middle), run_argv(&["alpheus-toggle", "sound"]));
+    assert_eq!(bound(&b, "DP-1", &v, Button::WheelUp), Some(Bound::Popup(ModulePopup::Quick)));
+    assert_eq!(bound(&b, "DP-1", &v, Button::WheelDown), Some(Bound::Launcher));
+    let c = Target::Module(ModuleId::Clock);
+    assert_eq!(bound(&b, "DP-1", &c, Button::Left), Some(Bound::Popup(ModulePopup::Calendar)));
+    assert_eq!(bound(&b, "DP-1", &c, Button::Middle), Some(Bound::Dnd));
+    assert_eq!(bound(&b, "DP-1", &Target::Passive(ModuleId::Clock), Button::Left), Some(Bound::Popup(ModulePopup::Calendar)));
+}
+
+#[test]
+fn an_unbound_button_keeps_today() {
+    let b = bound_bar("[bindings.volume]\nright = [\"my-mixer\"]");
+    let v = Target::Module(ModuleId::Volume);
+    for bt in [Button::Left, Button::Middle, Button::WheelUp, Button::WheelDown] {
+        assert_eq!(bound(&b, "DP-1", &v, bt), None, "{bt:?}");
+    }
+    assert_eq!(bound(&b, "DP-1", &Target::Module(ModuleId::Clock), Button::Right), None, "another module");
+    assert_eq!(bound(&b, "DP-1", &workspace("1", "DP-1"), Button::Right), None, "a workspace takes no binding");
+}
+
+/// `full()`'s feeds and a bell, under `config`.
+fn drawn(config: BarConfig) -> Bar {
+    let mut b = full();
+    b.config = config;
+    b.apply(Msg::Notifications(crate::notify::NotifyView { unread: 2, dnd: false, serving: true }));
+    b
+}
+
+/// A bar where every module draws, with and without the quick panel, and the same with empty
+/// `[bindings.<module>]` tables: the same zones (an empty table adds no `Passive` one), and every
+/// zone and button gives the same command and popup, and no binding.
+#[test]
+fn empty_bindings_change_no_click_byte_for_byte() {
+    for quick in [true, false] {
+        let (mut a, mut b) =
+            (drawn(BarConfig::default()), drawn(BarConfig::from_text("[bindings.volume]\n[bindings.clock]\n[bindings.window]").unwrap()));
+        assert_eq!(b.config.bindings.len(), 3, "three empty tables, the window's among them (it has no zone of its own)");
+        if !quick {
+            (a, b) = (without_quick(a), without_quick(b));
+        }
+        for output in ["HDMI-A-1", "DVI-I-1"] {
+            let (ga, gb) = (a.grid(output, 240), b.grid(output, 240));
+            assert_eq!(ga.zones(), gb.zones(), "{output}: the same zones");
+            assert!(ga.zones().iter().any(|z| z.target == Target::Module(ModuleId::Clock)), "the clock is drawn");
+            for z in ga.zones() {
+                for bt in BUTTONS {
+                    assert_eq!(command(&a, output, &z.target, bt), command(&b, output, &z.target, bt), "{z:?} {bt:?}");
+                    assert_eq!(
+                        ModulePopup::of(&z.target, bt, quick),
+                        ModulePopup::of(&z.target, bt, b.config.modules.contains(&ModuleId::Quick)),
+                        "{z:?} {bt:?}"
+                    );
+                    assert_eq!(bound(&b, output, &z.target, bt), None, "{z:?} {bt:?}");
+                    assert_eq!(bound(&a, output, &z.target, bt), None, "{z:?} {bt:?}");
+                }
+            }
+        }
+    }
+}
+
+/// The clock and the window are the modules that get a `Passive` zone; every module is checked, so
+/// a `Passive` zone read as its module's own (the volume's mute, the clock's calendar) shows.
+#[test]
+fn a_passive_zone_takes_no_click_of_its_own() {
+    for b in [full(), without_quick(full())] {
+        for m in ModuleId::ALL {
+            let t = Target::Passive(m);
+            for bt in BUTTONS {
+                assert_eq!(command(&b, "DP-1", &t, bt), None, "{m:?} {bt:?}");
+                assert_eq!(ModulePopup::of(&t, bt, true), None, "{m:?} {bt:?}");
+                assert_eq!(ModulePopup::of(&t, bt, false), None, "{m:?} {bt:?}");
+                assert!(!toggles_launcher(&t, bt) && !toggles_dnd(&t, bt) && !timer_middle(&t, bt), "{m:?} {bt:?}");
+                assert_eq!(media_control(&t, bt), None, "{m:?} {bt:?}");
+                assert_eq!(bound(&b, "DP-1", &t, bt), None, "no binding: nothing");
+            }
+        }
+    }
 }

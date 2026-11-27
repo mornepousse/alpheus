@@ -126,7 +126,7 @@ fn is_zero_width(c: char) -> bool {
 /// Leading/trailing whitespace, controls and zero-width characters trimmed
 /// before truncating: a name made only of these shows nothing, not a blank
 /// name piece or a stray space.
-fn trim_name(name: &str) -> &str {
+pub(crate) fn trim_name(name: &str) -> &str {
     name.trim_matches(|c: char| c.is_whitespace() || c.is_control() || is_zero_width(c))
 }
 
@@ -346,7 +346,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
 
 /// Whether a peripheral is shown under `visibility`, given whether it
 /// counts as low.
-fn shown(visibility: BatteryVisibility, low: bool) -> bool {
+pub(crate) fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     match visibility {
         BatteryVisibility::Always => true,
         BatteryVisibility::Low => low,

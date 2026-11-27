@@ -112,6 +112,45 @@ A middle click toggles do-not-disturb on the bell, pauses or resumes the timer o
 mutes the microphone on the privacy indicators. The wheel changes the volume on the volume module,
 the track on media, and the workspace on the workspaces. Each module's page has its own table.
 
+**Your own bindings.** `[bindings.<module>]` in `bar.toml` changes what one button of one module
+does: `left`, `middle`, `right`, `wheel_up` and `wheel_down`, each either an argument list run as
+written (`{tab}`, the module's control center tab, and `{output}`, the bar's connector, replaced in
+it) or a verb: `none` (the button does nothing), `popup` (the module's own popup), `quick` (the
+quick panel), `open_tab` (`[actions] open_tab` with the module's tab), `launcher`, `dnd` and `mute`
+(the default output's mute). A button left out keeps the behaviour above. The window, and the clock
+with `[clock] calendar = false`, have no click of their own: a binding gives them a zone that does
+only what is bound. The workspaces and the tray take no binding. A wheel bound to `popup`, `quick`
+or `launcher` toggles it once per notch: a second notch closes what the first opened. A bound
+command runs as written. alpheus refuses a best-effort list of sleep commands: an argv naming
+`suspend`, `hibernate`, `hybrid-sleep`, `rtcwake` or `zzz` as a whole word, in any case
+(`HybridSleep` included), or `systemctl sleep` and `loginctl sleep`, an option between them
+included; `systemd-inhibit`'s `--what`, `--who` and `--why` are not read, so a keep-awake
+`systemd-inhibit --what=handle-suspend-key …` is accepted. The list is no sandbox: what any other
+command does, a script of the user's own included, is the user's choice.
+
+**Tooltips.** Resting the pointer half a second on a module shows one line saying what its glyphs
+mean, on the tray's own hover timer and popup; the line goes when the pointer leaves. `tooltips =
+false` at the top of `bar.toml` turns every tooltip off, the tray's included.
+
+| Module | Its tooltip |
+|---|---|
+| clock | The full date: `Friday 27 November 2026` |
+| volume | `Volume 40 %`, or `Volume muted (40 %)` |
+| network | The link's kind (`Wi-Fi`, `Ethernet`, `VPN`), how many VPNs, `limited connectivity`; `Offline` |
+| Bluetooth | The first device's whole name, its battery, how many more; `Bluetooth on, nothing connected` |
+| battery | `Battery 82 %, discharging`, then each peripheral the bar draws by its kind (`Mouse 40 %`) |
+| resources | Each figure of `[resources] show` spelled out (`CPU 12 %`, `Memory 6.1 GiB`, …) |
+| window | The focused window's whole title |
+| `failed` | `3 failed units (system 2, user 1)` |
+| notifications | The unread count, exact, and `do not disturb` |
+
+A feed that is down reads `<Module> unavailable`. Launcher, workspaces, media, privacy, Shield,
+timer and power have none. A tooltip tells only what the bar already draws: never a network's
+name (the bar never draws the SSID, so the tooltip does not either), a sink's or source's label, a
+peripheral's own name or a window's program. The window title and the Bluetooth name are drawn cut
+on the bar, so their tooltip shows them whole (cleaned of control characters, 256 characters at
+most).
+
 **From a script or a key bind.** `alpheus-launch` drives the launcher, the notepad, the clipboard
 history, the Tools menu, do-not-disturb, the notification history, the OSD, the quick panel, the
 focus timer, Shield mode, the window switcher, the calculator, the power menu and the failed-units
@@ -121,6 +160,9 @@ itself.
 **Known limits.**
 
 - Right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered.
+- A shown tooltip is a snapshot: its text is taken when it shows and is never refreshed (the volume
+  changed under it reads the old level until the next hover). It closes when its module's cells
+  move or go (a wider volume figure, a new window title).
 - On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2) the bar's keyboard
   interactivity stays `None` while a menu or the calendar holds a grab, which is detected from its
   `hyprland_*` globals. Everywhere else the bar goes `Exclusive` for the grab, because sway and niri
@@ -142,7 +184,17 @@ invalid key, makes the whole file fall back to its defaults with one warning in 
 ```toml
 # ~/.config/alpheus/bar.toml
 modules = ["launcher", "workspaces", "window", "volume", "clock"]
+
+[bindings.volume]
+right = ["pavucontrol"]          # run as written, never through a shell
+wheel_up = "none"                # a verb: none, popup, quick, open_tab, launcher, dnd, mute
+
+[bindings.clock]
+middle = ["foot", "-e", "calcurse"]
 ```
+
+A binding's errors (an empty list, a blank program, a sleep word, a verb whose popup, tab or module
+is missing) name the key, never the command, and make the file fall back to its defaults like any other.
 
 The colours and the bar's shape are in `theme.toml` ([Themes](themes.md)), and the launcher's own
 settings in `launcher.toml` ([the launcher](launcher.md)).
@@ -164,7 +216,13 @@ modules and the walk through one event are in [`docs/ARCHITECTURE.md`](../ARCHIT
   show. The whole segment is one click zone, except the tray's, which has one per icon.
 - `layout.rs`: from the state to a screen's grid — the segments laid out left to right in the
   configured order, the elastic window module, the narrow-screen removal order, and the blocks of the
-  block styles.
+  block styles. A segment with no click zone of its own (the window, the clock without the calendar)
+  gets a `Passive` one when a button of its module is bound, or when the module has a tooltip and
+  `tooltips` is on (`wants_zone`).
+- `actions.rs`: a click or a wheel turn turned into what it does. `bound` reads the button's
+  binding first; `wayland.rs`'s `click` runs its argv through the executor, toggles its popup under
+  the zone, toggles the launcher (the launcher button's press rule) or do-not-disturb, or does
+  nothing, and only an unbound button goes on to the defaults (`command`, `ModulePopup::of`).
 - `popup.rs`: the bar's popups, each an `xdg_popup` attached to the bar's own layer surface and placed
   under the cells it hangs from, drawn as rows of cells into a pool of its own. One at a time, and
   everything is dropped whole on close.
@@ -205,7 +263,27 @@ These are enforced by tests, so a change that breaks one fails the build.
   altogether.
 - `every_click_on_a_full_bar_stays_on_the_allowlist` and `every_click_only_runs_the_workspace_command`:
   every zone of a bar where every module is shown, every button, with the quick panel and without it,
-  runs only a command of the allowlist, and each of those commands is reached by the test.
+  runs only a command of the allowlist, and each of those commands is reached by the test. They pin
+  the defaults only: a user's binding runs what the user wrote.
+- `every_user_binding_runs_as_written`: every button of every bindable module bound to an argv runs
+  exactly that program and those arguments, `{tab}` and `{output}` replaced, through the executor:
+  never `sh`, never `-c`, never `dpms`. `bindings_refuse_the_sleep_words` (`config/tests.rs`): an
+  argv holding `suspend`, `hibernate`, `hybrid-sleep`, `rtcwake` or `zzz` as a whole word (a
+  capital after a lowercase letter starts a word: `HybridSleep`), or `systemctl` or `loginctl` then
+  `sleep` (an option's value skipped), is an error naming only the key; `systemd-inhibit
+  --what=handle-suspend-key …` is accepted. `empty_bindings_change_no_click_byte_for_byte`: empty
+  `[bindings.<module>]` tables change no zone, command or popup. The headless
+  `a_bound_left_click_never_shows_the_calendar`: a bound button that has a default runs the binding
+  alone.
+- `tooltips_name_no_private_field` (`tests/guardrails.rs`): `tooltips.rs` reads no SSID, sink or
+  source label, notification field or app id, logs nothing and cannot panic.
+  `a_module_with_no_tooltip_arms_nothing` and `tooltips_false_arms_no_timer_anywhere`
+  (`session_bus/hover.rs`): the hover timer arms only over a tray icon or a module with a tooltip,
+  never with `tooltips = false`; `a_module_tooltip_is_never_gone_with_a_tray_item`: a tray change
+  never closes a module's tooltip. The headless `a_module_tooltip_fires_once_then_the_loop_sleeps`:
+  one tooltip, then no wake-up while the pointer rests.
+- `a_passive_zone_takes_no_click_of_its_own`: a zone added for a binding gives its module no
+  command, popup, launcher, do-not-disturb, timer or media action of its own.
 - `d_bus_is_confined_to_sources_and_read_only`: the `dbus` crate appears in six files only — one
   under `src/sources/dbus/` and the session-bus plumbing — and the reading sources can call no
   method that changes anything; `the_bluetooth_connection_acts_only_through_act_method` pins the one
@@ -247,3 +325,14 @@ here).
 - **At rest:** 0 wake-ups, the theme watch included. The bar's only timers are the clock's and the
   resources' (every 2 s, and only while the resources module is shown); every feature has its own
   `at_rest_no_wakeups_*` test, and each popup, panel and overlay is bounded by its own PSS test.
+- **Tooltips:** nothing at rest (the hover timer is armed only while the pointer rests on a zone
+  with a tooltip, and fires once). The first tooltip shown costs ≈ 250 KB once (its glyphs and
+  popup pool), one shown ≈ 16 KB more; 20 show-and-close cycles keep +0…+4 KB of anonymous memory
+  (`module_tooltips_free_everything_on_close`), and the loop sleeps after one
+  (`at_rest_no_wakeups_after_a_module_tooltip`).
+- **Bindings and tooltips together** (the whole delivery against the version before it, `[bindings]`
+  absent and `tooltips` on): +60 KiB in the stripped binary, and at start and in the steady state
+  within noise (`everything` 10,133–10,137 KB against 10,205–10,209, steady 11,957–11,984 against
+  12,093–12,101; `startup_pss_per_source`, `pss_under_budget_and_stable`). Without a binding the
+  bar holds an empty map; the window, and a clock without its calendar, get one more zone in their
+  grid when bound or when they have a tooltip.

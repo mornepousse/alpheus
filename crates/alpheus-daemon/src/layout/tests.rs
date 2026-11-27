@@ -96,6 +96,50 @@ fn the_clock_has_a_zone_only_with_the_calendar() {
     assert!(g.zones().iter().all(|z| z.target != clock), "no calendar: the clock is no zone");
 }
 
+/// A module with no click zone of its own (the window; the clock without the calendar) gets a
+/// `Passive` zone over its cells once a button of it is bound, and none without.
+#[test]
+fn a_bound_module_without_a_zone_gets_a_passive_one() {
+    let passive = |g: &Grid, m: ModuleId| g.zones().iter().find(|z| z.target == Target::Passive(m)).map(|z| (z.start, z.end));
+    let mut b = bar();
+    b.config.clock.calendar = false;
+    // Tooltips off: the binding alone decides (a tooltip would add the same zone).
+    b.config.tooltips = false;
+    let g = b.grid("HDMI-A-1", 160);
+    assert_eq!((passive(&g, ModuleId::Window), passive(&g, ModuleId::Clock)), (None, None), "no binding: no zone");
+    b.config.bindings = BarConfig::from_text("[bindings.window]\nright = [\"x\"]\n[bindings.clock]\nleft = \"none\"").unwrap().bindings;
+    let g = b.grid("HDMI-A-1", 160);
+    let text = g.text();
+    let t: Vec<char> = text.chars().collect();
+    let cell = |s: &str| text.find(s).map(|i| text[..i].chars().count() as u16).unwrap_or_else(|| panic!("{s}: {text}"));
+    let title = cell("Web page");
+    let (start, end) = passive(&g, ModuleId::Window).expect("a zone over the window");
+    assert!(start < title && title < end, "over the title: {start}..{end}, title at {title}");
+    assert_eq!(g.target_at(start), Some(&Target::Passive(ModuleId::Window)), "its first cell (the icon)");
+    let (start, end) = passive(&g, ModuleId::Clock).expect("a zone over the clock");
+    assert_eq!(start, cell("Sun 4 Oct"), "from the date's first cell");
+    assert_eq!(t[usize::from(end) - 1], '5', "to the time's last: {text}");
+    assert!(g.zones().iter().all(|z| z.target != Target::Module(ModuleId::Clock)), "still no calendar zone");
+    // A clock that opens the calendar keeps its own zone, never a second one.
+    b.config.clock.calendar = true;
+    let g = b.grid("HDMI-A-1", 160);
+    assert_eq!(passive(&g, ModuleId::Clock), None);
+    assert!(g.zones().iter().any(|z| z.target == Target::Module(ModuleId::Clock)));
+}
+
+#[test]
+fn a_tooltip_module_without_a_zone_gets_a_passive_one() {
+    let passive = |g: &Grid, m: ModuleId| g.zones().iter().any(|z| z.target == Target::Passive(m));
+    let mut b = bar();
+    b.config.clock.calendar = false;
+    let g = b.grid("HDMI-A-1", 160);
+    assert!(passive(&g, ModuleId::Window) && passive(&g, ModuleId::Clock), "tooltips on: a zone to rest on");
+    assert!(g.zones().iter().all(|z| z.target != Target::Module(ModuleId::Clock)), "still no calendar zone");
+    b.config.tooltips = false;
+    let g = b.grid("HDMI-A-1", 160);
+    assert!(!passive(&g, ModuleId::Window) && !passive(&g, ModuleId::Clock), "tooltips off, no binding: no zone");
+}
+
 #[test]
 fn workspace_zones() {
     let g = bar().grid("HDMI-A-1", 100);
@@ -117,7 +161,7 @@ fn workspace_zones() {
     assert_eq!(g.target_at(19), Some(&four), "last edge of workspace 4");
     assert_eq!(g.target_at(22), Some(&five), "last edge of workspace 5");
     assert_eq!(g.target_at(23), None, "on the separator, no zone");
-    assert_eq!(g.target_at(36), None, "title");
+    assert_eq!(g.target_at(36), Some(&Target::Passive(ModuleId::Window)), "the title: a passive zone for its tooltip, no click");
     let g = bar().grid("DVI-I-1", 60);
     let web = Target::Workspace { reference: "name:web".into(), output: "DVI-I-1".into() };
     assert_eq!(g.target_at(13), Some(&web));
