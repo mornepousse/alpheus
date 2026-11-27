@@ -18,9 +18,11 @@ starts, once its event loop runs: the setter is its child, so the wallpaper come
 the bar. `then` is not run then (the colours it wrote are already there). A remembered name that
 is no longer an image of the folder is ignored.
 
-**Rotation.** `alpheus-launch --wallpaper next` applies the name after the remembered one (the
-first when none), then `then`. With `remember = false` it steps from the name the daemon last
-applied, held in its memory only (the first after the daemon starts). Call it from a cron line or
+**Rotation.** `alpheus-launch --wallpaper next` applies the image after the last one applied
+(remembered, or in memory with `remember = false`; the first when none), then `then`. The daemon
+steps from the name it last applied, held in its memory; before any, from the remembered one (with
+`remember = false`, the first). A save that failed thus does not make `next` land on the same
+image again. Call it from a cron line or
 a systemd user timer
 ([../cli.md](../cli.md#alpheus-launch-scripting-bridge-to-the-daemon) has both). The daemon has
 no timer of its own.
@@ -77,8 +79,9 @@ start.
 - `--wallpaper next`: `Request::Wallpaper(WallpaperVerb::Next)`, the wire words `wallpaper next`,
   answered by `wallpaper_verb` before the launcher's guard (`launcher/socket_glue.rs`). It reads
   `launcher.toml` again, and `next_choice` lists the folder once on the loop (`wallpaper::list`,
-  at most 2,000 names) and takes `next_after` the remembered name, or with `remember = false` the
-  name `Setter::last_applied` holds (set by a set that worked, never written to disk). Its refusals
+  at most 2,000 names) and takes `next_after` the name `Setter::last_applied` holds (set by a set
+  that worked, in memory only), or before any set the remembered name (none with
+  `remember = false`): memory first, so a stale name left by a failed save is not read. Its refusals
   are fixed words:
   `wallpaper is off`, `the folder cannot be read`, `no image in the folder` (logged as
   `wallpaper: next refused`).
@@ -112,7 +115,8 @@ start.
 - `the_remembered_wallpaper_is_applied_at_start_without_then`,
   `a_remembered_name_outside_the_folder_is_not_applied`, `nothing_is_read_at_start_when_off`,
   `next_applies_the_name_after_the_remembered_one`,
-  `next_without_remember_steps_from_the_name_last_applied`, `the_wallpaper_verb_round_trips`,
+  `next_without_remember_steps_from_the_name_last_applied`,
+  `next_with_a_failed_save_steps_from_the_name_last_applied`, `the_wallpaper_verb_round_trips`,
   `alpheus_launch_parses_wallpaper_next` (an older daemon: exit 3).
 - Headless: `wallpaper_reapplied_at_start` (the remembered file, `then` not run),
   `wallpaper_next_steps_through_the_folder` (`a.png` then `b.png`, `then` after each),

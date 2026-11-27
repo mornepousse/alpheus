@@ -56,17 +56,18 @@ pub(crate) fn start_choice(w: &WallpaperConfig, state_dir: &Path, home: Option<&
 }
 
 /// The name for `--wallpaper next`: the folder's name after the current one (the first when none,
-/// or when it is no longer listed), with `then`. The current one is the remembered name, or with
-/// `remember = false` `last`, the name the running daemon last applied (nothing on disk). Err: the
-/// fixed words of the reply.
+/// or when it is no longer listed), with `then`. The current one is `last`, the name the running
+/// daemon last applied; before any, the remembered name (none with `remember = false`). Memory
+/// first: a save that failed leaves a stale name on disk, on which every `next` would land again.
+/// Err: the fixed words of the reply.
 pub(crate) fn next_choice(w: &WallpaperConfig, state_dir: &Path, home: Option<&Path>, last: Option<&str>) -> Result<Choice, &'static str> {
     if !w.enabled() {
         return Err("wallpaper is off");
     }
     let dir = resolve_dir(&w.dir, home).ok_or("the folder cannot be read")?;
     let listing = list(&dir, MAX_FILES).map_err(|_| "the folder cannot be read")?;
-    let remembered = if w.remember { read_wallpaper(state_dir) } else { last.map(str::to_owned) };
-    let name = next_after(&listing.names, remembered.as_deref()).ok_or("no image in the folder")?;
+    let current = last.map(str::to_owned).or_else(|| w.remember.then(|| read_wallpaper(state_dir)).flatten());
+    let name = next_after(&listing.names, current.as_deref()).ok_or("no image in the folder")?;
     Ok(Choice { name: name.to_string(), run_then: true })
 }
 
@@ -105,7 +106,8 @@ impl App {
     }
 
     /// `alpheus-launch --wallpaper next` (`launcher/socket_glue.rs`): `launcher.toml` read again (as
-    /// an open does), the folder listed once, the name after the remembered one applied. Done once
+    /// an open does), the folder listed once, the image after the last one applied (remembered, or
+    /// in memory with `remember = false`) applied. Done once
     /// the setter was asked to start (its failure is logged, as a pick's is); an error in fixed
     /// words when the picker is off or the folder holds no image.
     pub(crate) fn wallpaper_verb(&mut self, request: &Request) -> Reply {

@@ -133,3 +133,27 @@ fn next_without_remember_steps_from_the_name_last_applied() {
     }
     assert_eq!(read_wallpaper(&state).as_deref(), Some("a.png"), "the state file is left as it was");
 }
+
+/// `remember = true` with a save that fails: `next` steps from the name last applied in memory,
+/// not from the stale name left on disk, so it does not land on the same image again and again.
+#[test]
+fn next_with_a_failed_save_steps_from_the_name_last_applied() {
+    let (d, state) = folder("wp-next-unsaved", &["a.png", "b.png", "c.png"]);
+    let walls = d.join("walls");
+    let w = config(&walls);
+    // A stale name, then the state directory made read-only: every save from here fails.
+    save_wallpaper(&state, "c.png").unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let exec = FakeExecutor::new();
+    exec.watch_ok("swaybg", None);
+    let mut setter = Setter::new();
+    for want in ["a.png", "b.png"] {
+        let choice = next_choice(&w, &state, None, setter.last_applied()).unwrap();
+        assert_eq!(choice.name, want, "steps from the name last applied, not the stale one");
+        let Ok(Started::Running(applied)) = setter.start(&exec, &w, &walls, &choice.name, false) else { panic!("started") };
+        let ctx = RunContext { exec: &exec, spawner: Spawner::Detached, history_path: None, path_dirs: &[] };
+        assert_eq!(apply_outcome(&ctx, &state, &applied).saved, Some(false), "the save fails");
+    }
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(read_wallpaper(&state).as_deref(), Some("c.png"), "the stale name is still there");
+}
