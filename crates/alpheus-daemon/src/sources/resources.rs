@@ -389,25 +389,38 @@ impl Reader {
     /// reading of that same interface; the new counters replace the old ones on every successful
     /// read. A named interface never reads /proc/net/route.
     fn net(&mut self, now: Instant) -> Option<NetRate> {
-        let iface = match &self.net_interface {
-            Some(name) => Some(name.clone()),
-            None => std::fs::read_to_string(self.roots.root.join("proc/net/route")).ok().and_then(|t| default_route(&t)),
+        // A named interface is borrowed: no allocation per tick; only a change of interface (or the
+        // first reading) stores an owned name.
+        let routed;
+        let iface: &str = match &self.net_interface {
+            Some(name) => name,
+            None => {
+                routed = std::fs::read_to_string(self.roots.root.join("proc/net/route")).ok().and_then(|t| default_route(&t));
+                match &routed {
+                    Some(name) => name,
+                    None => {
+                        self.net = None;
+                        return None;
+                    }
+                }
+            }
         };
-        let Some(iface) = iface else {
-            self.net = None;
-            return None;
-        };
-        let counters = std::fs::read_to_string(self.roots.root.join("proc/net/dev")).ok().and_then(|t| net_counters(&t, &iface));
+        let counters = std::fs::read_to_string(self.roots.root.join("proc/net/dev")).ok().and_then(|t| net_counters(&t, iface));
         let Some(counters) = counters else {
             self.net = None;
             return None;
         };
-        let rate = match &self.net {
-            Some((was, prev, at)) if *was == iface => net_rate(*prev, counters, now.saturating_duration_since(*at)),
-            _ => None,
-        };
-        self.net = Some((iface, counters, now));
-        rate
+        match &mut self.net {
+            Some((was, prev, at)) if was == iface => {
+                let rate = net_rate(*prev, counters, now.saturating_duration_since(*at));
+                (*prev, *at) = (counters, now);
+                rate
+            }
+            slot => {
+                *slot = Some((iface.to_owned(), counters, now));
+                None
+            }
+        }
     }
 
     /// One reading at the current time.
