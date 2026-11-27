@@ -125,9 +125,11 @@ See [the calendar](features/calendar.md).
 | `interval` | integer (seconds) | `2` | 1 to 60 | Seconds between two readings of `/proc` (the popup's graph spans 60 × `interval`). |
 | `graph` | integer | `20` | 0 to 60 | Ignored; accepted so older files stay valid. |
 | `sensor` | string | `""` | | An hwmon name or a thermal zone type for the temperature; `""`: automatic. |
-| `show` | list | `["cpu", "memory", "temperature"]` | not empty, no repeat; items `cpu`, `memory`, `temperature`, `net`, `disk`, `gpu` | The figures shown, in this order. `net` is the IPv4 default route's interface, or `net_interface` (receive and send rates), `disk` is `$HOME`'s filesystem (percent used, rounded up like `df`; `statvfs` on the event loop at each pass: a hung network `$HOME` would block the bar), `gpu` is the GPU's hwmon temperature. Nothing is read for an item left out. |
+| `show` | list | `["cpu", "memory", "temperature"]` | not empty, no repeat; items `cpu`, `memory`, `temperature`, `net`, `disk`, `gpu` | The figures shown, in this order. `net` is the IPv4 default route's interface, or `net_interface` (receive and send rates), `disk` is each `disk_mounts` path's filesystem, else `$HOME`'s (percent used, rounded up like `df`; the bar shows the fullest, the popup one block per path; `statvfs` on the event loop every `disk_interval` seconds: a hung network mount would block the bar), `gpu` is the GPU's hwmon temperature. Nothing is read for an item left out. |
 | `gpu_sensor` | string | `""` | | A GPU hwmon name (`amdgpu`, `nouveau`, `i915`, `xe`, `nvidia`); `""`: automatic. Reading a discrete GPU's hwmon can wake it on a hybrid laptop: name the integrated GPU's driver. |
 | `net_interface` | string | `""` | at most 15 bytes, no `/`, `:` or space | The interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's. Named, `/proc/net/route` is never read; absent from `/proc/net/dev`, `net` shows no figure. |
+| `disk_mounts` | list of paths | `[]` | at most 4, absolute, no repeat | The paths whose filesystems `disk` measures, in order (`["/", "/fictional/data"]`); `[]`: `$HOME`'s. A path that cannot be read shows `—` in its block. Each is `statvfs`-ed on the event loop, and a hung network mount (NFS, SMB, sshfs whose server went away) blocks that call, and the bar with it, until the mount answers: list local filesystems, or network ones mounted `soft` or with a timeout. A config error names the entry's position, never its path. |
+| `disk_interval` | integer (seconds) | `15` | 1 to 300 | Seconds between two readings of the disks: the first pass reads them, then once this long has passed; in between, every pass repeats the last figures (the graph has no gaps). |
 
 See [the resources popup](features/resources.md).
 
@@ -366,9 +368,11 @@ resources = ["foot", "-e", "btop"]       # a right click on the resources module
 interval = 2         # seconds between two readings of /proc (1 to 60)
 graph = 20           # ignored; accepted so older files stay valid
 sensor = ""          # an hwmon name or a thermal zone type; "": automatic
-show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem, statvfs on the event loop), "gpu"
+show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" (disk_mounts, else $HOME's filesystem; statvfs on the event loop), "gpu"
 gpu_sensor = ""      # a GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic. A discrete GPU's hwmon can wake it on a hybrid laptop: name the iGPU's driver
 net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
+disk_mounts = []     # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem (a hung network mount stalls the bar)
+disk_interval = 15   # seconds between disk readings, 1 to 300; the last figures repeat in between
 
 [battery]
 peripherals = "always"   # "always" | "low" | "never": peripherals with a real percentage

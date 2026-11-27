@@ -6,7 +6,11 @@
 //! temperature — the max across every match when several packages or
 //! drivers share the hint's name, re-resolved by name whenever a cached
 //! sensor file stops existing (hwmon numbers are not stable across a reboot
-//! or a hot-(re)plug: never kept as a bare `hwmonN`). A file that can't be
+//! or a hot-(re)plug: never kept as a bare `hwmonN`), and the disks — each
+//! `disk_mounts` path, else `$HOME` — by `statvfs` once every `disk_interval`
+//! seconds, the last figures repeated in between (a hung network mount stalls
+//! that call: docs/decisions.md, "Disks are read every `disk_interval`
+//! seconds, the last figures repeat between reads"). A file that can't be
 //! read leaves its own figure out; the next tick tries again (resources
 //! have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
@@ -24,7 +28,7 @@
 use crate::config::{ResourceItem, ResourcesConfig};
 use crate::log::write as log;
 use crate::sys::FsBlocks;
-use crate::system::{NetRate, Sample};
+use crate::system::{DISKS, NetRate, Sample};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -291,6 +295,13 @@ pub struct Reader {
     net_interface: Option<String>,
     /// The interface of the last successful net reading, its counters and when.
     net: Option<(String, NetCounters, Instant)>,
+    /// `[resources] disk_mounts`, or `$HOME` alone when the list is empty (nothing without either).
+    disk_paths: Vec<PathBuf>,
+    /// The last disk figures, copied into every sample until the next reading.
+    disks: [Option<u8>; DISKS],
+    /// When the disks were last read; None before the first pass that shows `disk`.
+    disks_at: Option<Instant>,
+    disk_interval: Duration,
 }
 
 /// Does `path` still canonicalise to the device `was` named when resolved?
@@ -373,7 +384,31 @@ impl Reader {
         let cpu_sensor = sensor(ResourceItem::Temperature, SensorKind::Cpu, &config.sensor);
         let gpu_sensor = sensor(ResourceItem::Gpu, SensorKind::Gpu, &config.gpu_sensor);
         let net_interface = Some(config.net_interface.clone()).filter(|n| !n.is_empty());
-        Reader { roots, show, cpu_sensor, gpu_sensor, previous: None, net_interface, net: None }
+        // Kept only when `disk` is shown: an item left out keeps no state.
+        let disk_paths = match show.contains(&ResourceItem::Disk) {
+            false => Vec::new(),
+            true if config.disk_mounts.is_empty() => roots.home.iter().cloned().collect(),
+            true => config.disk_mounts.iter().take(DISKS).cloned().collect(),
+        };
+        Reader {
+            roots,
+            show,
+            cpu_sensor,
+            gpu_sensor,
+            previous: None,
+            net_interface,
+            net: None,
+            disk_paths,
+            disks: [None; DISKS],
+            disks_at: None,
+            disk_interval: Duration::from_secs(config.disk_interval),
+        }
+    }
+
+    /// Whether the disks are read on this pass: the first one, then once `disk_interval` has passed
+    /// since the last reading.
+    fn disk_due(&self, now: Instant) -> bool {
+        self.disks_at.is_none_or(|at| now.saturating_duration_since(at) >= self.disk_interval)
     }
 
     fn shows(&self, item: ResourceItem) -> bool {
@@ -449,8 +484,15 @@ impl Reader {
             sample.temperature = self.cpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));
         }
         if self.shows(ResourceItem::Disk) {
-            // A failing call leaves the figure out; the next tick asks again.
-            sample.disk = self.roots.home.as_deref().and_then(self.roots.statfs).and_then(disk_percent);
+            if self.disk_due(now) {
+                // A failing call leaves that figure out until the next reading. `statvfs` runs on
+                // the loop: a hung network mount stalls it (documented on `disk_mounts`).
+                for (slot, path) in self.disks.iter_mut().zip(&self.disk_paths) {
+                    *slot = (self.roots.statfs)(path).and_then(disk_percent);
+                }
+                self.disks_at = Some(now);
+            }
+            sample.disks = self.disks;
         }
         if self.shows(ResourceItem::Net) {
             sample.net = self.net(now);
@@ -770,10 +812,53 @@ mod tests {
     }
 
     #[test]
-    fn the_disk_of_home_through_the_injected_statfs() {
+    fn no_mounts_still_measures_home() {
         let t = workstation("disk");
-        assert_eq!(disk_reader(&t.0, Some("/fictional/home"), fake).sample().disk, Some(62));
-        assert_eq!(disk_reader(&t.0, None, fake).sample().disk, None, "no $HOME, no figure");
+        assert_eq!(disk_reader(&t.0, Some("/fictional/home"), fake).sample().disks, [Some(62), None, None, None]);
+        assert_eq!(disk_reader(&t.0, None, fake).sample().disks, [None; DISKS], "no $HOME, no figure");
+    }
+
+    fn mounts_reader(root: &Path, mounts: &[&str], statfs: StatFs) -> Reader {
+        let config = ResourcesConfig {
+            show: vec![ResourceItem::Disk],
+            disk_mounts: mounts.iter().map(PathBuf::from).collect(),
+            ..ResourcesConfig::default()
+        };
+        Reader::new(roots(root, Some("/fictional/home"), statfs), &config)
+    }
+
+    #[test]
+    fn disk_mounts_statfs_only_the_listed_paths() {
+        fn listed(p: &Path) -> Option<FsBlocks> {
+            match p.to_str() {
+                Some("/fictional/a") => Some(FsBlocks { blocks: 1000, free: 380, avail: 380 }),
+                Some("/fictional/b") => Some(FsBlocks { blocks: 1000, free: 900, avail: 900 }),
+                _ => panic!("statvfs of a path not listed"),
+            }
+        }
+        let t = workstation("mounts");
+        let mut r = mounts_reader(&t.0, &["/fictional/a", "/fictional/b"], listed);
+        assert_eq!(r.sample().disks, [Some(62), Some(10), None, None]);
+    }
+
+    #[test]
+    fn disks_are_read_once_per_disk_interval() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting(_: &Path) -> Option<FsBlocks> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Some(FsBlocks { blocks: 1000, free: 380, avail: 380 })
+        }
+        let t = workstation("cadence");
+        let mut r = mounts_reader(&t.0, &["/fictional/a"], counting);
+        assert_eq!(r.disk_interval, Duration::from_secs(15), "the default cadence");
+        let t0 = Instant::now();
+        for s in [0, 2, 14] {
+            let sample = r.sample_at(t0 + Duration::from_secs(s));
+            assert_eq!(sample.disks[0], Some(62), "the last figure repeats at {s} s");
+            assert_eq!(CALLS.load(Ordering::SeqCst), 1, "read once until 15 s, at {s} s");
+        }
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(15)).disks[0], Some(62));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2, "read again once 15 s have passed");
     }
 
     #[test]
@@ -784,8 +869,11 @@ mod tests {
         }
         let t = workstation("flaky");
         let mut r = disk_reader(&t.0, Some("/fictional/home"), flaky);
-        assert_eq!(r.sample().disk, None);
-        assert_eq!(r.sample().disk, Some(62));
+        // Due on every pass while the interval is 1 s and each pass is 1 s apart.
+        r.disk_interval = Duration::from_secs(1);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).disks[0], None);
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(1)).disks[0], Some(62));
     }
 
     #[test]
@@ -800,7 +888,12 @@ mod tests {
         // A $HOME is known, yet the default show has no Disk: `refuse` would panic on a statvfs.
         let mut d = Reader::new(roots(&t.0, Some("/fictional/home"), refuse), &ResourcesConfig::default());
         d.sample();
-        assert_eq!(d.sample().disk, None);
+        assert_eq!(d.sample().disks, [None; DISKS]);
+        // Mounts listed, yet no Disk in show: still not one statvfs.
+        let config = ResourcesConfig { disk_mounts: vec![PathBuf::from("/fictional/a")], ..ResourcesConfig::default() };
+        let mut d = Reader::new(roots(&t.0, Some("/fictional/home"), refuse), &config);
+        d.sample();
+        assert_eq!(d.sample().disks, [None; DISKS]);
     }
 
     #[test]

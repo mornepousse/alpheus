@@ -415,6 +415,9 @@ pub struct NetRate {
     pub up: u64,
 }
 
+/// Paths the disk item can follow (`[resources] disk_mounts` holds at most this many).
+pub const DISKS: usize = 4;
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
@@ -427,8 +430,9 @@ pub struct Sample {
     pub temperature: Option<i16>,
     /// Throughput of the default route's interface; None until two readings or without a route.
     pub net: Option<NetRate>,
-    /// Percent of `$HOME`'s filesystem in use, like `df`.
-    pub disk: Option<u8>,
+    /// Percent in use, like `df`, of each `[resources] disk_mounts` path in order (`$HOME`'s
+    /// filesystem first when the list is empty); the slots past the list stay None.
+    pub disks: [Option<u8>; DISKS],
     /// GPU temperature, °C.
     pub gpu: Option<i16>,
     /// Installed memory, in tenths of GiB (read with `memory`, never alone).

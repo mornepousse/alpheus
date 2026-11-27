@@ -26,9 +26,11 @@
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
-//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem), "gpu"
+//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" (disk_mounts, else $HOME's filesystem), "gpu"
 //! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
 //! net_interface = ""   # the interface "net" follows (wlan0, enp3s0…); "": the IPv4 default route's
+//! disk_mounts = []   # up to 4 absolute paths "disk" measures, in order; []: $HOME's filesystem (a hung network mount stalls the bar)
+//! disk_interval = 15   # seconds between disk readings, 1 to 300; the last figures repeat in between
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
@@ -123,6 +125,7 @@
 
 use crate::clock;
 use crate::grid::text_width;
+use crate::system::DISKS;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -342,6 +345,9 @@ impl Default for ActionsConfig {
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
+/// Longest `[resources] disk_interval`, in seconds (five minutes).
+pub const DISK_INTERVAL_MAX: u64 = 300;
+
 /// Longest interface name the kernel accepts (`IFNAMSIZ` 16, less the final NUL).
 pub const NET_INTERFACE_MAX: usize = 15;
 
@@ -387,6 +393,12 @@ pub struct ResourcesConfig {
     pub gpu_sensor: String,
     /// The interface whose throughput `net` shows; empty = the IPv4 default route's.
     pub net_interface: String,
+    /// The paths whose filesystems `disk` measures, in order (at most `DISKS`, absolute, no
+    /// repeat); empty = `$HOME`'s.
+    pub disk_mounts: Vec<PathBuf>,
+    /// Seconds between two readings of the disks (1 to 300): the first pass reads them, the
+    /// passes in between repeat the last figures.
+    pub disk_interval: u64,
 }
 
 impl Default for ResourcesConfig {
@@ -398,6 +410,8 @@ impl Default for ResourcesConfig {
             show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
             gpu_sensor: String::new(),
             net_interface: String::new(),
+            disk_mounts: Vec::new(),
+            disk_interval: 15,
         }
     }
 }
@@ -1362,6 +1376,22 @@ impl BarConfig {
         let n = &b.resources.net_interface;
         if n.len() > NET_INTERFACE_MAX || n.contains(['/', ':']) || n.chars().any(char::is_whitespace) {
             return Err("resources.net_interface: not an interface name (at most 15 bytes, no '/', ':' or space)".into());
+        }
+        // The paths stay out of the messages: a mount's name can be private (docs/decisions.md).
+        let mounts = &b.resources.disk_mounts;
+        if mounts.len() > DISKS {
+            return Err(format!("resources.disk_mounts: {} entries, at most {DISKS}", mounts.len()));
+        }
+        for (i, path) in mounts.iter().enumerate() {
+            if !path.is_absolute() {
+                return Err(format!("resources.disk_mounts: entry {} is not an absolute path", i + 1));
+            }
+            if mounts[..i].contains(path) {
+                return Err(format!("resources.disk_mounts: entry {} repeats an earlier one", i + 1));
+            }
+        }
+        if !(1..=DISK_INTERVAL_MAX).contains(&b.resources.disk_interval) {
+            return Err(format!("resources.disk_interval {} out of range 1 to {DISK_INTERVAL_MAX} s", b.resources.disk_interval));
         }
         for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {

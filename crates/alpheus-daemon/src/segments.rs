@@ -464,8 +464,10 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
                     figure(&mut pieces, "", UPLOAD, Hue::Cyan, rate(n.up), mc);
                 }
             }
+            // The fullest of the listed paths: see docs/decisions.md, "The bar shows the fullest
+            // disk, the popup one block per path".
             ResourceItem::Disk => {
-                if let Some(d) = s.disk {
+                if let Some(d) = s.disks.iter().flatten().max() {
                     figure(&mut pieces, gap, HARDDISK, Hue::Blue, format!("{d}%"), mc);
                 }
             }

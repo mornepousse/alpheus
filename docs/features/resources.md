@@ -13,7 +13,9 @@ A left click on the resources module opens a popup under it:
 - A header row: `Resources` on the left, and on the right, dim, the span the graphs cover
   (`last 2 min`).
 - One block per item of `[resources] show`, in that order, whether or not the item has a figure
-  right now. A block is a text row and a graph two rows tall:
+  right now, except `disk` with `disk_mounts` set: one block per listed path, in order, named by the
+  path (cut from the left with `…` to fit, so its end stays). A block is a text row and a graph two
+  rows tall:
   - the item's icon in its hue (CPU orange, Memory yellow, Temperature red, Network cyan, Disk
     blue, GPU purple, as on the bar), its name, and its current figure on the right:
     CPU `12%`; Memory `6.1G` then, dim, ` of 15.5G`; Temperature and GPU `54°`, in the error
@@ -29,6 +31,10 @@ A left click on the resources module opens a popup under it:
 The graphs' scales: CPU and disk 0 to 100 %; memory 0 to the machine's total; temperature and GPU
 0 to 100 °C (clamped); network one scale for both directions, the highest rate of either in the
 ring, never below 128 KiB/s so that an idle link does not fill it with noise.
+
+On the bar, `disk` shows the fullest of the listed paths (`󰋊 87%`). The disks are read every
+`disk_interval` seconds (15 by default), not every pass; in between, each pass repeats the last
+figures, so the graph has no gaps.
 
 The popup keeps its size while it is open, and it repaints on each tick of the bar's resources
 timer, and only while it is open.
@@ -58,6 +64,8 @@ In `bar.toml`, read at start (a change needs a restart of the bar).
 | --- | --- | --- |
 | `[resources] show` | `["cpu", "memory", "temperature"]` | the items, in order: also `net`, `disk`, `gpu`; one block each in the popup |
 | `[resources] net_interface` | `""` | the interface `net` follows (`wlan0`, `enp3s0`…); `""`: the IPv4 default route's; absent, `net` shows no figure |
+| `[resources] disk_mounts` | `[]` | up to 4 absolute paths `disk` measures, one block each; `[]`: `$HOME`'s filesystem, one block named `Disk`. A hung network mount stalls the bar (`statvfs` runs on the event loop) |
+| `[resources] disk_interval` | `15` | seconds between two readings of the disks, 1 to 300; the last figures repeat in between |
 | `[resources] interval` | `2` | seconds between two readings, 1 to 60; the graphs span 60 of them, so `last N min` where N is the interval |
 | `[actions] resources` | `["foot", "-e", "btop"]` | the command of `Monitor…` and of the right click, run as written (no shell); `[]` removes the row |
 
@@ -75,8 +83,10 @@ Two files in `crates/alpheus-daemon/src/resources/`, and the figures they read i
 
 - `mod.rs`: the pure model. `ResourcesPopup` (whether `Monitor…` is selected and whether it exists),
   `ResourcesAction` (what a key or the pointer asks of the wiring: nothing, redraw, run the
-  monitor, close), `series` (an item's history as points in permille), `net_top` (the network
-  graph's top), `figure` (an item's current text) and `render`, which returns the rows and the
+  monitor, close), `blocks` (the popup's blocks in order: one per item, one per `disk_mounts` path
+  for `disk`, each with its index into `Sample::disks`; `render`, its graphs and `monitor_row` all
+  count these), `mount_label` (a path cut from the left), `series` (one block's history as points
+  in permille), `net_top` (the network graph's top), `figure` (one block's current text) and `render`, which returns the rows and the
   graphs' descriptions (`list::Boxed`). The tests are in `tests.rs`.
 - `app.rs`: the wiring. `OPS` is the popup's row in the table of popups (`popup::POPUPS`).
   `resources_toggle` opens it, `resources_key` and `resources_pointer` hand input to the model,
@@ -119,7 +129,8 @@ reading. The popup owns no timer: opening it adds no wake-up.
 - The reasons are in [decisions.md](../decisions.md): "The resources history is kept always, as whole
   samples", "The resources popup spans 60 times the interval", "Every resources item keeps its
   block in the popup", "Each resources graph has a set scale; the network's follows its peak, with a
-  floor", "The resources popup has no timer of its own", "The left click opens the resources popup and the
+  floor", "The bar shows the fullest disk, the popup one block per path", "Disks are read every
+  `disk_interval` seconds, the last figures repeat between reads", "The resources popup has no timer of its own", "The left click opens the resources popup and the
   right click runs `[actions] resources`", "Logs carry fixed words and numbers only".
 
 ## What it costs

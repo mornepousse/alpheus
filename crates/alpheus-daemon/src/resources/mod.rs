@@ -4,8 +4,8 @@
 //! `system::Resources`, which holds the latest sample the bar read and a ring of the last 60
 //! (`History`), written on every tick of the bar's resources timer; the code that reads `/proc` and
 //! `/sys` to make those samples is `sources/resources.rs`. This file only reads them: a
-//! `ResourcesPopup` draws one block per item of `[resources] show` (its icon, name and current
-//! figure, then a graph two rows tall), a header with the span, and a `Monitor…` row, and answers
+//! `ResourcesPopup` draws one block per item of `[resources] show`, and one per `disk_mounts` path
+//! for `disk` (`blocks`: its icon, name and current figure, then a graph two rows tall), a header with the span, and a `Monitor…` row, and answers
 //! keys and the pointer with a `ResourcesAction`. `series` turns an item's history into the
 //! graphs' points in permille, and `render` returns a `Boxed` that also carries the graphs, which
 //! the painter draws in pixels. The other half, `app.rs`, opens the popup, repaints it on each
@@ -18,17 +18,19 @@
 //!
 //! See: docs/features/resources.md, and docs/decisions.md ("The resources history is kept always, as whole samples",
 //! "The resources popup spans 60 times the interval", "Every resources item keeps its block in the popup",
-//! "Each resources graph has a set scale; the network's follows its peak, with a floor").
+//! "Each resources graph has a set scale; the network's follows its peak, with a floor",
+//! "The bar shows the fullest disk, the popup one block per path").
 
 use crate::actions::Button;
 use crate::config::{ResourceItem, ResourcesConfig};
-use crate::grid::{Grid, Hue, Style, Tint, text_width};
+use crate::grid::{Grid, Hue, Style, Tint, char_width, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Graph, Row, Series};
 use crate::popup::PopupPointer;
 use crate::segments::{CPU, DOWNLOAD, GPU, HARDDISK, HOT, MEMORY, THERMOMETER, UPLOAD, icon_style, rate};
-use crate::system::{HISTORY, History, Resources};
+use crate::system::{DISKS, HISTORY, History, Resources, Sample};
 use alpheus_common::theme::settings::ModuleColors;
+use std::path::Path;
 
 /// A row's cells, its pad cell at each end included: 40 cells; the column positions
 /// inside them are this file's own.
@@ -84,7 +86,7 @@ fn permille(v: u64, top: u64) -> u16 {
 /// leading gaps, so the newest point stays at the right edge (a fixed time axis). Net gives two
 /// series, download then upload; the others one. A sample with no reading is a gap: the pass is
 /// kept, so the time axis never shifts.
-pub fn series(item: ResourceItem, h: &History) -> Vec<Vec<Option<u16>>> {
+pub fn series(item: ResourceItem, index: usize, h: &History) -> Vec<Vec<Option<u16>>> {
     let top = net_top(h).unwrap_or(NET_FLOOR);
     let count = if item == ResourceItem::Net { 2 } else { 1 };
     let mut out = vec![vec![None; HISTORY - h.len()]; count];
@@ -94,7 +96,7 @@ pub fn series(item: ResourceItem, h: &History) -> Vec<Vec<Option<u16>>> {
         // network's follows its peak, with a floor".
         let points: [Option<u16>; 2] = match item {
             ResourceItem::Cpu => [s.cpu.map(|p| permille(u64::from(p), 100)), None],
-            ResourceItem::Disk => [s.disk.map(|p| permille(u64::from(p), 100)), None],
+            ResourceItem::Disk => [disk_of(s, index).map(|p| permille(u64::from(p), 100)), None],
             ResourceItem::Memory => {
                 // No total, or a total of 0, gives no point rather than a division by zero.
                 let point = match (s.memory, s.memory_total) {
@@ -117,6 +119,48 @@ pub fn series(item: ResourceItem, h: &History) -> Vec<Vec<Option<u16>>> {
         }
     }
     out
+}
+
+/// The `index`th disk's figure; None past `DISKS`.
+fn disk_of(s: &Sample, index: usize) -> Option<u8> {
+    s.disks.get(index).copied().flatten()
+}
+
+/// The popup's blocks in order: one per item of `show`, except `disk`, which gives one per
+/// `disk_mounts` path (its index into `Sample::disks`); every other item, and `disk` with no list,
+/// has index 0. `render`, its graphs and `monitor_row` all count these, so they never drift.
+pub fn blocks(c: &ResourcesConfig) -> Vec<(ResourceItem, usize)> {
+    let mut out = Vec::with_capacity(c.show.len() + DISKS);
+    for &item in &c.show {
+        match item {
+            ResourceItem::Disk if !c.disk_mounts.is_empty() => out.extend((0..c.disk_mounts.len().min(DISKS)).map(|i| (item, i))),
+            _ => out.push((item, 0)),
+        }
+    }
+    out
+}
+
+/// `path` cut to `width` cells from the left, `…` first when cut, so the end of the path (the part
+/// that tells two mounts apart) stays.
+pub fn mount_label(path: &Path, width: u16) -> String {
+    let text = path.to_string_lossy();
+    if text_width(&text) <= width {
+        return text.into_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut kept = 0u16;
+    let mut start = text.len();
+    for (i, ch) in text.char_indices().rev() {
+        let w = char_width(ch);
+        if kept.saturating_add(w) > width - 1 {
+            break;
+        }
+        kept += w;
+        start = i;
+    }
+    format!("…{}", &text[start..])
 }
 
 /// °C on a 0 to 100 scale, in permille: a reading below 0 or above 100 is clamped.
@@ -167,7 +211,7 @@ fn degrees_figure(t: i16, hue: Hue) -> Vec<(String, Style)> {
 }
 
 /// The item's current figure as styled pieces; `—` in the dim style when there is none.
-fn figure(item: ResourceItem, r: &Resources) -> Vec<(String, Style)> {
+fn figure(item: ResourceItem, index: usize, r: &Resources) -> Vec<(String, Style)> {
     // `let ... else` leaves the function when there is no sample yet.
     let Some(s) = r.last else { return no_figure() };
     let (_, hue, _) = look(item);
@@ -176,7 +220,7 @@ fn figure(item: ResourceItem, r: &Resources) -> Vec<(String, Style)> {
             Some(p) => vec![(format!("{p}%"), Style::hue(hue))],
             None => no_figure(),
         },
-        ResourceItem::Disk => match s.disk {
+        ResourceItem::Disk => match disk_of(&s, index) {
             Some(p) => vec![(format!("{p}%"), Style::hue(hue))],
             None => no_figure(),
         },
@@ -216,9 +260,9 @@ fn figure(item: ResourceItem, r: &Resources) -> Vec<(String, Style)> {
 
 /// The graph's series: a filled body in the item's hue, and for the network its upload as a dim
 /// line over it.
-fn graph_series(item: ResourceItem, h: &History) -> Vec<Series> {
+fn graph_series(item: ResourceItem, index: usize, h: &History) -> Vec<Series> {
     let (_, hue, _) = look(item);
-    let mut lines = series(item, h).into_iter();
+    let mut lines = series(item, index, h).into_iter();
     let mut out = Vec::new();
     if let Some(points) = lines.next() {
         out.push(Series { points, ink: Tint::Hue(hue), fill: true });
@@ -232,7 +276,7 @@ fn graph_series(item: ResourceItem, h: &History) -> Vec<Series> {
 /// The `Monitor…` row's row in the `Boxed`'s coordinates: past the header and the blocks, and the
 /// separator. The `min` stops at the largest `u16` rather than wrapping round.
 pub fn monitor_row(c: &ResourcesConfig) -> u16 {
-    (2 + BLOCK * c.show.len()).min(usize::from(u16::MAX)) as u16
+    (2 + BLOCK * blocks(c).len()).min(usize::from(u16::MAX)) as u16
 }
 
 impl ResourcesPopup {
@@ -257,20 +301,27 @@ impl ResourcesPopup {
         // Right-aligned: `saturating_sub` stops at 0 for a span wider than the row.
         header.write(WIDTH.saturating_sub(text_width(&span)), WIDTH, &span, Style::MUTED);
         rows.push(header);
-        for &item in &c.show {
+        let blocks = blocks(c);
+        for &(item, index) in &blocks {
             let (icon, hue, name) = look(item);
             let mut g = Grid::empty(columns);
             // The icon always shows its hue, whatever `module_colors` says, as in the privacy
             // popup (`ModuleColors::Icons` is passed for that).
             let x = g.write(2, WIDTH, &icon.to_string(), icon_style(ModuleColors::Icons, hue, Style::NORMAL));
-            g.write(x + 1, WIDTH, name, Style::NORMAL);
             // The figure's pieces are right-aligned as one run: its width first, then each piece
             // is written where the last one ended.
-            let pieces = figure(item, r);
+            let pieces = figure(item, index, r);
             let mut width: u16 = 0;
             for (text, _) in &pieces {
                 width += text_width(text);
             }
+            // A listed path names its block, cut from the left to leave a cell before the figure.
+            match c.disk_mounts.get(index).filter(|_| item == ResourceItem::Disk) {
+                Some(path) => {
+                    g.write(x + 1, WIDTH, &mount_label(path, WIDTH.saturating_sub(width + 1).saturating_sub(x + 1)), Style::NORMAL)
+                }
+                None => g.write(x + 1, WIDTH, name, Style::NORMAL),
+            };
             let mut x = WIDTH.saturating_sub(width);
             for (text, style) in &pieces {
                 x = g.write(x, WIDTH, text, *style);
@@ -294,13 +345,13 @@ impl ResourcesPopup {
             rows.push(Grid::empty(columns));
         }
         let mut boxed = list::boxed(&rows, &separators, None);
-        for (i, &item) in c.show.iter().enumerate() {
+        for (i, &(item, index)) in blocks.iter().enumerate() {
             boxed.graphs.push(Graph {
                 row: 2 + BLOCK * i,
                 col: 1,
                 width: WIDTH - 2,
                 rows: GRAPH_ROWS,
-                series: graph_series(item, &r.history),
+                series: graph_series(item, index, &r.history),
             });
         }
         boxed

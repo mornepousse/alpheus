@@ -2043,3 +2043,25 @@ screen, which the panel never sets below 1 % (a black screen leaves no way back)
 unlit keyboard is a normal state, and the screen still shows the row to light it again.
 
 Date: 2026-11-27 · Source: tests `kbd_backlight_steps_by_level_or_by_percent` (`kbd_backlight.rs`), `kbd_backlight_sets_with_brightnessctl_leds_class`, `kbd_backlight_enter_and_space_cycle` (`quick/tests.rs`), `quick_kbd_backlight_right_sends_brightnessctl_leds` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-27-quick-radios-design.md` (owner decision 3)
+
+### The bar shows the fullest disk, the popup one block per path
+
+With `[resources] disk_mounts` listing up to four paths, the bar's `disk` figure is the fullest of
+them: one figure keeps the bar short, and the fullest is the one that needs watching. The popup has
+one block per path, in the order written, named by the path cut from the left (its end tells two
+mounts apart); with no list, the single block keeps its name `Disk` and measures `$HOME`. The
+paths stay out of logs and config errors, which name an entry by its position: a mount's name can
+be private.
+
+Date: 2026-11-27 · Source: tests `the_bar_shows_the_fullest_disk`, `one_block_per_mount_and_monitor_row_follows`, `a_mount_block_is_named_by_its_path_left_truncated`, `no_mounts_keeps_the_disk_block_name`, `disk_mounts_rejects_bad_entries_without_naming_them`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`
+
+### Disks are read every `disk_interval` seconds, the last figures repeat between reads
+
+A disk's fill changes slowly, so the disks are read on the first pass and then once
+`[resources] disk_interval` seconds (15 by default) have passed, inside the existing resources
+tick: no second timer, no thread. In between, every sample carries the last figures, so the graph
+has no gaps. `statvfs` stays on the event loop: a hung network mount blocks the bar while it hangs,
+as it already could for `$HOME`; the slower cadence makes that rarer, and the key's documentation
+warns about it (a timeout would need a thread).
+
+Date: 2026-11-27 · Source: tests `disks_are_read_once_per_disk_interval`, `disk_mounts_statfs_only_the_listed_paths`; spec `docs/superpowers/specs/2026-11-27-resources-gpu-design.md`

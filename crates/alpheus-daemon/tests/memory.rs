@@ -671,7 +671,7 @@ fn resources_pss_default_and_every_item() {
 }
 
 /// Every `[resources]` key that changes what a pass reads, on top of `EVERY_ITEM`.
-const EVERY_KEY: &str = "net_interface = \"lo\"\n";
+const EVERY_KEY: &str = "net_interface = \"lo\"\ndisk_mounts = [\"/\", \"/tmp\"]\n";
 
 /// The keys of `EVERY_KEY`: their one-time cost over `EVERY_ITEM` alone (two fresh daemons, same
 /// tick rate), then, in the daemon with every key, what ~60 more passes keep. Both bounds read
