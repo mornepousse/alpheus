@@ -8,6 +8,7 @@
 //! ```toml
 //! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; absent: every module in `ModuleId::ALL`'s order but "keyboard" ("timer" just before "clock")
 //! height = 22                                               # logical px
+//! tooltips = true                                           # a tooltip after ½ s of hovering, modules and tray; false (here or in [tray]): no hover timer
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
 //! size = 14.0
@@ -22,6 +23,9 @@
 //! [actions]                                                 # clicks on the system modules
 //! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth, diagnostics
 //! resources = ["foot", "-e", "btop"]                        # right click on the resources, and the popup's Monitor…
+//! [bindings.volume]                                         # one table per module (not workspaces, tray, osd, quick, displays); none: today's clicks
+//! right = ["pavucontrol"]                                   # left, middle, right, wheel_up, wheel_down: argv (1 to 16, {tab} and {output} whole, once) or a verb
+//! wheel_up = "none"                                         # none, popup, quick, open_tab, launcher, dnd, mute
 //! [resources]
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
@@ -38,7 +42,7 @@
 //! warn = [20, 10, 5]  # notify when the laptop battery, discharging, reaches each %; the lowest is critical (a single one too); [] turns it off; read at start, no hot reload (needs "notifications")
 //! [tray]
 //! passive = "dim"                                           # "dim" | "show" | "hide": items that say they are idle
-//! tooltips = true                                           # the item's name after ½ s of hovering
+//! tooltips = true                                           # the old spelling of the top-level key: false here turns every tooltip off
 //! [tray.icons]                                              # glyph overrides, keyed like the built-in table
 //! keepassxc = "󰌋"
 //! [media]
@@ -139,7 +143,7 @@ use std::path::{Path, PathBuf};
 /// The bar's modules, left to right by default: `[bar] modules` both orders the bar and
 /// says which daemon features run at all, so the OSD, the quick panel and the screens are named
 /// here although they draw no segment. An unknown name is an error when the file is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModuleId {
     /// The launcher's button (opens the launcher on a left click).
@@ -204,6 +208,12 @@ impl ModuleId {
     /// keyboard, which a user names (it makes the compositor source read the layout).
     pub fn defaults() -> Vec<ModuleId> {
         ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Keyboard).collect()
+    }
+
+    /// Whether `[bindings.<module>]` may name it: every module that draws a segment, except the
+    /// workspaces and the tray, whose zones are per item.
+    pub fn bindable(self) -> bool {
+        !matches!(self, ModuleId::Workspaces | ModuleId::Tray | ModuleId::Osd | ModuleId::Quick | ModuleId::Displays)
     }
 }
 
@@ -355,6 +365,138 @@ impl Default for ActionsConfig {
             resources: ["foot", "-e", "btop"].map(String::from).to_vec(),
         }
     }
+}
+
+/// A built-in action a button can be bound to instead of a command (`[bindings.<module>]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verb {
+    /// Nothing: the button's default silenced.
+    None,
+    /// The module's own popup (it must have one; the quick panel needs `quick` in `modules`).
+    Popup,
+    /// The quick panel (needs `quick` in `modules`).
+    Quick,
+    /// `[actions] open_tab` with the module's control-center tab (it must have one).
+    OpenTab,
+    /// Toggles the launcher, as its button does.
+    Launcher,
+    /// Toggles do not disturb (needs `notifications` in `modules`).
+    Dnd,
+    /// Toggles the default sink's mute.
+    Mute,
+}
+
+/// What one button of a module does: a verb (a TOML string) or an argv run as written (a list),
+/// `{tab}` and `{output}` replaced in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    Verb(Verb),
+    Command(Vec<String>),
+}
+
+impl<'de> Deserialize<'de> for Binding {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Binding;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a verb (none, popup, quick, open_tab, launcher, dnd, mute) or an argument list")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Binding, E> {
+                // Serde's own error names the accepted verbs.
+                Verb::deserialize(serde::de::value::StrDeserializer::<E>::new(v)).map(Binding::Verb)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Binding, A::Error> {
+                let mut argv = Vec::new();
+                while let Some(a) = seq.next_element::<String>()? {
+                    argv.push(a);
+                }
+                Ok(Binding::Command(argv))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// `[bindings.<module>]`: the five buttons of one module; one left out keeps today's behaviour.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ButtonBindings {
+    pub left: Option<Binding>,
+    pub middle: Option<Binding>,
+    pub right: Option<Binding>,
+    pub wheel_up: Option<Binding>,
+    pub wheel_down: Option<Binding>,
+}
+
+impl ButtonBindings {
+    /// Every button with its TOML key, in field order.
+    pub fn buttons(&self) -> [(&'static str, Option<&Binding>); 5] {
+        [
+            ("left", self.left.as_ref()),
+            ("middle", self.middle.as_ref()),
+            ("right", self.right.as_ref()),
+            ("wheel_up", self.wheel_up.as_ref()),
+            ("wheel_down", self.wheel_down.as_ref()),
+        ]
+    }
+}
+
+/// The longest argv a binding takes, program included.
+pub const BINDING_ARGV_MAX: usize = 16;
+
+/// `[bindings]` checked: bindable modules only; an argv of 1 to `BINDING_ARGV_MAX` items with a
+/// non-blank program, no NUL, `{tab}` (only where the module has a tab) and `{output}` each a whole
+/// argument at most once; a verb only where what it acts on exists. A table for a module absent from
+/// `modules` is accepted (it costs nothing). The message names the key, never the command.
+fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) -> Result<(), String> {
+    let has = |m: ModuleId| modules.contains(&m);
+    for (&m, buttons) in b {
+        if !m.bindable() {
+            return Err(format!("bindings.{}: this module takes no binding", m.name()));
+        }
+        let spec = m.spec();
+        for (button, binding) in buttons.buttons() {
+            let key = format!("bindings.{}.{button}", m.name());
+            match binding {
+                None => {}
+                Some(Binding::Command(argv)) => {
+                    if argv.is_empty() {
+                        return Err(format!("{key}: empty (use \"none\" to silence a button)"));
+                    }
+                    if argv.len() > BINDING_ARGV_MAX {
+                        return Err(format!("{key}: more than {BINDING_ARGV_MAX} arguments"));
+                    }
+                    if argv[0].trim().is_empty() {
+                        return Err(format!("{key}: the program is blank"));
+                    }
+                    if argv.iter().any(|a| a.contains('\0')) {
+                        return Err(format!("{key}: an argument holds a NUL"));
+                    }
+                    let tab = usize::from(spec.tab.is_some());
+                    check_placeholders(&key, argv, &[("{tab}", 0, tab), ("{output}", 0, 1)])?;
+                }
+                Some(Binding::Verb(verb)) => {
+                    let missing = match verb {
+                        Verb::Popup if spec.popup.is_none() => Some("this module has no popup"),
+                        Verb::Popup if spec.popup_needs_quick && !has(ModuleId::Quick) => Some("its popup needs \"quick\" in modules"),
+                        Verb::Quick if !has(ModuleId::Quick) => Some("needs \"quick\" in modules"),
+                        Verb::OpenTab if spec.tab.is_none() => Some("this module has no control center tab"),
+                        Verb::Dnd if !has(ModuleId::Notifications) => Some("needs \"notifications\" in modules"),
+                        Verb::None | Verb::Launcher | Verb::Mute | Verb::Popup | Verb::Quick | Verb::OpenTab | Verb::Dnd => None,
+                    };
+                    if let Some(why) = missing {
+                        return Err(format!("{key}: {why}"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
@@ -1344,6 +1486,11 @@ pub struct BarConfig {
     pub hooks: HooksConfig,
     pub shield: ShieldConfig,
     pub captures: CapturesConfig,
+    /// `[bindings.<module>]`: the buttons bound to a command or a verb; empty: today's clicks.
+    pub bindings: BTreeMap<ModuleId, ButtonBindings>,
+    /// The hover tooltips of the modules and the tray: `tooltips` and `[tray] tooltips` (its old
+    /// spelling) both true; false: no hover timer at all.
+    pub tooltips: bool,
 }
 
 impl Default for BarConfig {
@@ -1371,6 +1518,8 @@ impl Default for BarConfig {
             hooks: HooksConfig::default(),
             shield: ShieldConfig::default(),
             captures: CapturesConfig::default(),
+            bindings: BTreeMap::new(),
+            tooltips: true,
         }
     }
 }
@@ -1426,6 +1575,14 @@ struct Raw {
     shield: ShieldConfig,
     #[serde(default)]
     captures: CapturesConfig,
+    #[serde(default)]
+    bindings: BTreeMap<ModuleId, ButtonBindings>,
+    #[serde(default = "default_tooltips")]
+    tooltips: bool,
+}
+
+fn default_tooltips() -> bool {
+    true
 }
 
 impl BarConfig {
@@ -1589,12 +1746,14 @@ impl BarConfig {
         check_shield(&b.shield)?;
         check_captures(&b.captures)?;
         check_timer(&b.timer)?;
+        check_bindings(&b.bindings, &modules)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
             return Err(format!("battery.warn: {w} out of range 1 to 99"));
         }
         battery.warn.sort_unstable_by(|a, b| b.cmp(a));
         battery.warn.dedup();
+        let tooltips = b.tooltips && b.tray.tooltips;
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -1625,6 +1784,8 @@ impl BarConfig {
             hooks: b.hooks,
             shield: b.shield,
             captures: b.captures,
+            bindings: b.bindings,
+            tooltips,
         })
     }
 }

@@ -1257,3 +1257,127 @@ fn each_osd_kind_needs_its_source() {
     assert_eq!(OsdKind::Layout.needs(), Needs::KEYBOARD);
     assert_eq!(OsdKind::Track.needs(), Needs::MEDIA);
 }
+
+#[test]
+fn bindings_default_empty_and_tooltips_on() {
+    let d = BarConfig::default();
+    assert!(d.bindings.is_empty());
+    assert!(d.tooltips);
+    let c = BarConfig::from_text("").unwrap();
+    assert!(c.bindings.is_empty() && c.tooltips, "an empty file is the defaults");
+}
+
+#[test]
+fn a_binding_parses_as_argv_or_verb() {
+    let c = BarConfig::from_text("[bindings.volume]\nright = [\"pavucontrol\"]\nwheel_up = \"none\"\nleft = \"open_tab\"").unwrap();
+    let b = &c.bindings[&ModuleId::Volume];
+    assert_eq!(b.right, Some(Binding::Command(vec!["pavucontrol".into()])));
+    assert_eq!(b.wheel_up, Some(Binding::Verb(Verb::None)));
+    assert_eq!(b.left, Some(Binding::Verb(Verb::OpenTab)));
+    assert_eq!((&b.middle, &b.wheel_down), (&None, &None), "a button left out keeps today's behaviour");
+    assert_eq!(c.bindings.len(), 1);
+}
+
+fn binding_err(text: &str) -> String {
+    BarConfig::from_text(text).expect_err(text)
+}
+
+#[test]
+fn bindings_reject_blank_programs_unknown_modules_and_unknown_verbs() {
+    for (text, named) in [
+        ("[bindings.volume]\nright = []", "bindings.volume.right"),
+        ("[bindings.volume]\nright = [\" \"]", "bindings.volume.right"),
+        ("[bindings.clock]\nwheel_down = [\"\"]", "bindings.clock.wheel_down"),
+        ("[bindings.nowhere]\nright = [\"x\"]", "nowhere"),
+        ("[bindings.volume]\nright = \"explode\"", "explode"),
+        ("[bindings.volume]\nscroll = [\"x\"]", "scroll"),
+    ] {
+        let e = binding_err(text);
+        assert!(e.contains(named), "{text:?}: {e:?} names {named:?}");
+    }
+    assert!(binding_err("[bindings.volume]\nright = []").contains("none"), "[] points to the verb \"none\"");
+    assert!(binding_err("[bindings.volume]\nright = \"explode\"").contains("open_tab"), "an unknown verb names the accepted list");
+    assert!(BarConfig::from_text("[bindings.volume]\nright = 3").is_err(), "neither a string nor a list");
+}
+
+#[test]
+fn bindings_reject_unbindable_modules() {
+    for m in ["tray", "workspaces", "osd", "quick", "displays"] {
+        let e = binding_err(&format!("[bindings.{m}]\nright = [\"x\"]"));
+        assert!(e.contains(&format!("bindings.{m}")), "{m}: {e:?}");
+    }
+    for m in ModuleId::ALL {
+        let unbindable = matches!(m, ModuleId::Workspaces | ModuleId::Tray | ModuleId::Osd | ModuleId::Quick | ModuleId::Displays);
+        assert_eq!(m.bindable(), !unbindable, "{m:?}");
+        if m.bindable() {
+            BarConfig::from_text(&format!("[bindings.{}]\nright = [\"x\"]", m.name())).unwrap();
+        }
+    }
+}
+
+#[test]
+fn binding_argv_bounds_and_placeholders() {
+    let argv = |items: &[&str]| -> String {
+        let quoted: Vec<String> = items.iter().map(|a| format!("{a:?}")).collect();
+        format!("[{}]", quoted.join(", "))
+    };
+    let on = |module: &str, items: &[&str]| BarConfig::from_text(&format!("[bindings.{module}]\nright = {}", argv(items)));
+    let sixteen = vec!["x"; BINDING_ARGV_MAX];
+    assert!(on("volume", &sixteen).is_ok(), "16 items");
+    let seventeen = vec!["x"; BINDING_ARGV_MAX + 1];
+    assert!(on("volume", &seventeen).unwrap_err().contains("bindings.volume.right"), "17 items");
+    let nul = BarConfig::from_text("[bindings.volume]\nright = [\"x\", \"a\\u0000b\"]").unwrap_err();
+    assert!(nul.contains("bindings.volume.right") && nul.contains("NUL"), "{nul:?}");
+    assert!(on("clock", &["x", "{tab}"]).unwrap_err().contains("bindings.clock.right"), "the clock has no tab");
+    assert!(on("volume", &["x", "{tab}"]).is_ok(), "the volume has the sound tab");
+    assert!(on("volume", &["x", "{tab}", "{tab}"]).is_err(), "twice");
+    assert!(on("volume", &["x", "x{tab}"]).is_err(), "inside an argument");
+    assert!(on("volume", &["{tab}"]).is_err(), "as the program");
+    assert!(on("clock", &["x", "{output}"]).is_ok(), "{{output}} once");
+    assert!(on("clock", &["x", "{output}", "{output}"]).is_err(), "{{output}} twice");
+    assert!(on("clock", &["{output}"]).is_err(), "{{output}} as the program");
+}
+
+#[test]
+fn binding_verbs_need_what_they_act_on() {
+    let with = |modules: &str, module: &str, verb: &str| {
+        BarConfig::from_text(&format!("modules = [{modules}]\n[bindings.{module}]\nmiddle = \"{verb}\""))
+    };
+    let all = "\"volume\", \"battery\", \"clock\", \"quick\", \"notifications\"";
+    let no_quick = "\"volume\", \"battery\", \"clock\", \"notifications\"";
+    assert!(with(all, "battery", "popup").unwrap_err().contains("bindings.battery.middle"), "the battery has no popup");
+    assert!(with(no_quick, "volume", "popup").unwrap_err().contains("bindings.volume.middle"), "the volume's popup is the quick panel");
+    assert!(with(all, "volume", "popup").is_ok());
+    assert!(with(no_quick, "clock", "popup").is_ok(), "the calendar needs no quick panel");
+    assert!(with(no_quick, "clock", "quick").unwrap_err().contains("bindings.clock.middle"));
+    assert!(with(all, "clock", "quick").is_ok());
+    assert!(with(all, "clock", "open_tab").unwrap_err().contains("bindings.clock.middle"), "the clock has no tab");
+    assert!(with(all, "battery", "open_tab").is_ok());
+    assert!(with("\"clock\"", "clock", "dnd").unwrap_err().contains("bindings.clock.middle"));
+    assert!(with(all, "clock", "dnd").is_ok());
+    for verb in ["none", "launcher", "mute"] {
+        assert!(with("\"clock\"", "clock", verb).is_ok(), "{verb} needs nothing");
+    }
+}
+
+#[test]
+fn a_binding_for_an_absent_module_is_accepted() {
+    let c = BarConfig::from_text("modules = [\"clock\"]\n[bindings.volume]\nright = [\"pavucontrol\"]").unwrap();
+    assert!(c.bindings.contains_key(&ModuleId::Volume));
+}
+
+#[test]
+fn binding_errors_never_quote_the_command() {
+    let e = binding_err("[bindings.volume]\nright = [\"secret-tool\", \"\\u0000\"]");
+    assert!(!e.contains("secret-tool"), "{e:?}");
+    let e = binding_err("[bindings.clock]\nright = [\"secret-tool\", \"{tab}\"]");
+    assert!(!e.contains("secret-tool"), "{e:?}");
+}
+
+#[test]
+fn tray_tooltips_false_turns_every_tooltip_off() {
+    assert!(!BarConfig::from_text("tooltips = false").unwrap().tooltips);
+    assert!(!BarConfig::from_text("[tray]\ntooltips = false").unwrap().tooltips, "the old spelling still turns them off");
+    assert!(!BarConfig::from_text("tooltips = true\n[tray]\ntooltips = false").unwrap().tooltips, "false anywhere wins");
+    assert!(BarConfig::from_text("").unwrap().tooltips);
+}
