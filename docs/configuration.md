@@ -215,6 +215,7 @@ A rule needs `action`, `urgency` or both. See [notifications](features/notificat
 | `margin` | integer (px) | `48` | 0 to 400 | Distance above the output's bottom edge. |
 | `backlight` | string | `""` | a plain device name (no `/`, at most 64 bytes) | A device in `backlight_dir`; `""`: the first one, in sorted order. |
 | `backlight_dir` | absolute path | `"/sys/class/backlight"` | absolute | Where backlight devices are listed; read only, on `alpheus-launch --osd brightness` and when the quick panel opens. |
+| `kinds` | list of `"volume"`, `"mic"`, `"brightness"`, `"bluetooth"`, `"dnd"`, `"profile"`, `"layout"`, `"track"` | `["volume", "mic", "brightness"]` | each once; `"dnd"` needs `"notifications"` in `modules` | Which pills show. Each kind brings the source it reads with `osd` in `modules`: `volume` and `mic` `pw-dump`, `bluetooth` BlueZ, `profile` power-profiles-daemon; without `volume` and `mic` the OSD starts no `pw-dump`, without `brightness` the verb shows nothing. `layout` and `track` are accepted and not shown yet. |
 
 See [the on-screen display](features/osd.md).
 
@@ -433,6 +434,7 @@ width = 32           # cells of its row (24 to 60)
 margin = 48          # px above the bottom edge (0 to 400)
 backlight = ""       # a device in backlight_dir; "": the first one, in sorted order
 backlight_dir = "/sys/class/backlight"   # read only: on `alpheus-launch --osd brightness` and when the quick panel opens
+kinds = ["volume", "mic", "brightness"]  # also "bluetooth", "dnd" (needs "notifications"), "profile"; each brings its source
 
 [quick]
 step = 5                                   # % per ←/→ or wheel notch on a slider (1 to 25)

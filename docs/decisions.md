@@ -2172,3 +2172,21 @@ With several keyboards, the first one with a layout name gives the start, and th
 that changed wins. Still never the command message nor any other request.
 
 Date: 2026-11-27 · Source: tests `sway_writes_only_its_messages`, `compositor_requests_are_read_only` (`tests/guardrails.rs`), `keyboard_off_subscribes_to_two_events_and_never_asks_inputs`, `keyboard_on_subscribes_to_four_events_and_asks_inputs_once`, `an_input_event_updates_the_layout_without_reading_the_tree` (`sources/sway/tests.rs`), `sway_get_inputs_picks_the_first_keyboards_active_name`, `sway_no_mode_before_the_first_mode_event` (`compositor/sway.rs`)
+
+### An OSD kind is opt-in and brings the source it reads
+
+`[osd] kinds` lists the pills that show. The three levels (`volume`, `mic`, `brightness`) are on by
+default, as before; the passive kinds (`bluetooth`, `dnd`, `profile`, and `layout` and `track`
+next) are opt-in, so a pill at every Bluetooth or profile change is something the user asked for.
+A kind brings the source it reads, as the module brought `pw-dump` (`OsdKind::needs`, added by
+`modules::needs_of` only with `osd` in `modules`): `bluetooth` the BlueZ domain, `profile`
+power-profiles-daemon, `volume` and `mic` `pw-dump` and its OSD scope. A list without `volume` and
+`mic` therefore starts no `pw-dump` for the OSD, and without `brightness` the verb shows nothing.
+`dnd` brings nothing and needs the `notifications` module instead: the flag is the server's, and
+alpheus must hold the notification name for it to mean anything, so a `dnd` kind without the module
+makes the file invalid rather than silently showing nothing. Each passive kind follows the sound
+pill's rules (`osd::Passive`): the first state after its source (re)starts is the baseline, a 1 s
+grace follows, a source going down takes a new baseline. Bluetooth shows on a power flip only,
+never a device, and no pill or log line names a device or a profile.
+
+Date: 2026-11-27 · Source: tests `osd_kinds_default_is_the_three_levels`, `osd_dnd_kind_needs_the_notifications_module` (`config/tests.rs`), `osd_without_sound_kinds_needs_no_sound`, `osd_kinds_bring_their_source`, `kinds_without_the_osd_module_bring_nothing` (`startup/tests.rs`), `passive_first_value_is_the_baseline`, `passive_a_source_going_down_takes_a_new_baseline`, `bluetooth_device_changes_do_not_show` (`osd/tests.rs`), `the_osd_logs_are_fixed_words` (`tests/guardrails.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`

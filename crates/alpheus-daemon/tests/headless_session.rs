@@ -28,7 +28,7 @@ use common::{
     recorded_argv, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, wait_until_executable, wl_copy,
     wl_paste, write_atomically, wtype, wtype_spawn,
 };
-use common::{FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
+use common::{FakePowerProfiles, FakeSystemd, FakeVpn, OUTPUT_SIZE, shield_record, shield_stub, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -4637,6 +4637,98 @@ fn osd_the_pills_own_output_going_away_drops_it() {
     );
     assert_eq!(d.count("osd surface dropped"), 1, "dropped once: {log}");
     assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {log}");
+}
+
+// ---- The OSD's passive kinds: Bluetooth, do-not-disturb, the power profile. ----
+
+/// Waits for the pill's surface line that ends with `what` (`osd::describe`'s words), whatever the
+/// output it is on. The line is written when the surface appears, not for a change it then shows.
+fn osd_shown(d: &Daemon, what: &str) -> bool {
+    let end = format!(": {what}");
+    wait_until(|| d.log().iter().any(|l| l.contains("osd surface on ") && l.ends_with(&end)))
+}
+
+/// The OSD alone with `kinds`, on a private system bus that `serve` fills (a fake BlueZ, a fake
+/// power-profiles-daemon); returned once the source's first state is the baseline and its grace is
+/// over.
+fn osd_passive_daemon<T>(name: &str, kinds: &str, serve: impl FnOnce(&PrivateBus) -> T) -> (PrivateBus, T, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let fake = serve(&bus);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let toml = format!(
+        "modules = [\"osd\", \"clock\"]\n[osd]\nkinds = {kinds}\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    );
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    // The system bus read (the baseline), then past its grace.
+    thread::sleep(Duration::from_millis(500) + GRACE_OVER);
+    (bus, fake, sway, hypr, d)
+}
+
+/// A Bluetooth power flip shows its pill, off then on; a device connecting shows nothing. The pill
+/// says on or off, never a device's name; and without a `volume` or `mic` kind the OSD reads no
+/// pw-dump.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_bluetooth_flip_shows_its_pill() {
+    let (_bus, bluez, _sway, _hypr, d) = osd_passive_daemon("osd-bt", "[\"bluetooth\"]", FakeBluez::serve);
+    assert_eq!(d.count("osd surface on"), 0, "the first state is the baseline: {:?}", d.log());
+    bluez.set_connected(CASQUE, true);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("osd surface on"), 0, "a device connecting is not a power flip: {:?}", d.log());
+    bluez.set_powered(false);
+    assert!(osd_shown(&d, "bluetooth off"), "{:?}", d.log());
+    // A change while it shows replaces its content in place (no new surface line): the next one
+    // after it went.
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    bluez.set_powered(true);
+    assert!(osd_shown(&d, "bluetooth on"), "{:?}", d.log());
+    assert!(no_device_logged(&d), "{:?}", d.log());
+    assert_eq!(d.count("osd: sound baseline"), 0, "no pw-dump for a Bluetooth pill: {:?}", d.log());
+}
+
+/// A power profile change shows its pill; the log says it changed, never which profile.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_profile_change_shows_its_pill() {
+    let (_bus, power, _sway, _hypr, d) =
+        osd_passive_daemon("osd-profile", "[\"profile\"]", |bus| FakePowerProfiles::serve(bus, "balanced"));
+    assert_eq!(d.count("osd surface on"), 0, "the first profile is the baseline: {:?}", d.log());
+    power.set_active("performance");
+    assert!(osd_shown(&d, "profile changed"), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.starts_with("osd") && l.contains("performance")), "{:?}", d.log());
+}
+
+/// `alpheus-launch --dnd toggle` shows the do-not-disturb pill, on then off.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_a_dnd_toggle_shows_its_pill() {
+    let toml = "modules = [\"osd\", \"notifications\", \"clock\"]\n[osd]\nkinds = [\"dnd\"]\n";
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("osd-dnd", toml, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    thread::sleep(GRACE_OVER);
+    assert_eq!(d.count("osd surface on"), 0, "the first view while serving is the baseline: {:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(osd_shown(&d, "dnd on"), "{:?}", d.log());
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(osd_shown(&d, "dnd off"), "{:?}", d.log());
+}
+
+/// With the default kinds and no `bluetooth` module, BlueZ is never read: not one call reaches it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_kinds_off_read_no_bluez() {
+    let (_bus, bluez, _sway, _hypr, d) = osd_passive_daemon("osd-no-bt", "[\"volume\", \"mic\", \"brightness\"]", FakeBluez::serve);
+    bluez.set_powered(false);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(bluez.calls(), Vec::<String>::new(), "{:?}", d.log());
+    assert_eq!(d.count("osd surface on"), 0, "{:?}", d.log());
 }
 
 const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";

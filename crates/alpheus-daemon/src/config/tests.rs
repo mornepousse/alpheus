@@ -481,7 +481,8 @@ fn osd_defaults_and_settings() {
             width: 32,
             margin: 48,
             backlight: String::new(),
-            backlight_dir: PathBuf::from("/sys/class/backlight")
+            backlight_dir: PathBuf::from("/sys/class/backlight"),
+            kinds: vec![OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness],
         }
     );
     assert!(d.modules.contains(&ModuleId::Osd), "on by default");
@@ -498,7 +499,8 @@ fn osd_defaults_and_settings() {
             width: 40,
             margin: 0,
             backlight: "intel_backlight".into(),
-            backlight_dir: PathBuf::from("/tmp/fake")
+            backlight_dir: PathBuf::from("/tmp/fake"),
+            kinds: vec![OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness],
         }
     );
     for t in ["[osd]\ntimeout_ms = 600", "[osd]\ntimeout_ms = 5000", "[osd]\nwidth = 24", "[osd]\nwidth = 60", "[osd]\nmargin = 400"] {
@@ -1186,4 +1188,72 @@ fn keyboard_is_not_a_default_module() {
     assert_eq!(at(ModuleId::Keyboard), at(ModuleId::Window) + 1, "right after the title");
     let c = BarConfig::from_text("modules = [\"keyboard\", \"clock\"]").unwrap();
     assert_eq!(c.modules, vec![ModuleId::Keyboard, ModuleId::Clock]);
+}
+
+#[test]
+fn osd_kinds_default_is_the_three_levels() {
+    assert_eq!(OsdConfig::default().kinds, [OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness]);
+    let c = BarConfig::from_text("[osd]\nwidth = 40\n").unwrap();
+    assert_eq!(c.osd.kinds, [OsdKind::Volume, OsdKind::Mic, OsdKind::Brightness], "absent: the three levels");
+}
+
+#[test]
+fn osd_kinds_parses_every_name() {
+    let c = BarConfig::from_text(
+        "[osd]\nkinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\", \"layout\", \"track\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        c.osd.kinds,
+        [
+            OsdKind::Volume,
+            OsdKind::Mic,
+            OsdKind::Brightness,
+            OsdKind::Bluetooth,
+            OsdKind::Dnd,
+            OsdKind::Profile,
+            OsdKind::Layout,
+            OsdKind::Track
+        ]
+    );
+    assert_eq!(BarConfig::from_text("[osd]\nkinds = []\n").unwrap().osd.kinds, [], "no pill at all");
+    assert_eq!(BarConfig::from_text("[osd]\nkinds = [\"bluetooth\"]\n").unwrap().osd.kinds, [OsdKind::Bluetooth]);
+}
+
+#[test]
+fn osd_kinds_unknown_name_is_invalid() {
+    let e = BarConfig::from_text("[osd]\nkinds = [\"wifi\"]\n").unwrap_err();
+    assert!(e.contains("wifi"), "{e}");
+    let e = BarConfig::from_text("[osd]\nkinds = [\"Volume\"]\n").unwrap_err();
+    assert!(e.contains("Volume"), "lower case only: {e}");
+    let e = BarConfig::from_text("[osd]\nkinds = [\"mic\", \"mic\"]\n").unwrap_err();
+    assert!(e.contains("osd.kinds: duplicate \"mic\""), "{e}");
+    let (c, w) = BarConfig::load(&file("osd-kinds", "[osd]\nkinds = [\"wifi\"]\n"));
+    assert_eq!(c, BarConfig::default());
+    assert!(w.is_some_and(|w| w.contains("bar.toml invalid")));
+}
+
+#[test]
+fn osd_dnd_kind_needs_the_notifications_module() {
+    let e = BarConfig::from_text("modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"dnd\"]\n").unwrap_err();
+    assert!(e.contains("osd.kinds: \"dnd\" needs \"notifications\" in modules"), "{e}");
+    let c = BarConfig::from_text("modules = [\"osd\", \"notifications\"]\n[osd]\nkinds = [\"dnd\"]\n").unwrap();
+    assert_eq!(c.osd.kinds, [OsdKind::Dnd]);
+    assert!(BarConfig::from_text("[osd]\nkinds = [\"dnd\"]\n").is_ok(), "the default modules hold notifications");
+    assert!(
+        BarConfig::from_text("modules = [\"osd\", \"clock\"]\n[osd]\nkinds = [\"bluetooth\", \"profile\"]\n").is_ok(),
+        "no other kind needs a module"
+    );
+}
+
+#[test]
+fn each_osd_kind_needs_its_source() {
+    assert_eq!(OsdKind::Volume.needs(), Needs::SOUND.or(Needs::OSD_SCOPE));
+    assert_eq!(OsdKind::Mic.needs(), Needs::SOUND.or(Needs::OSD_SCOPE));
+    assert_eq!(OsdKind::Brightness.needs(), Needs::NONE);
+    assert_eq!(OsdKind::Bluetooth.needs(), Needs::BLUETOOTH);
+    assert_eq!(OsdKind::Dnd.needs(), Needs::NONE);
+    assert_eq!(OsdKind::Profile.needs(), Needs::POWER_PROFILE);
+    assert_eq!(OsdKind::Layout.needs(), Needs::KEYBOARD);
+    assert_eq!(OsdKind::Track.needs(), Needs::MEDIA);
 }

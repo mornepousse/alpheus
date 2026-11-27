@@ -1,6 +1,6 @@
 use super::*;
 use crate::compositor::example;
-use crate::config::{ModuleId, ResourcesConfig};
+use crate::config::{ModuleId, OsdKind, ResourcesConfig};
 use crate::sources::dbus::{Domain, SystemState, messages};
 use crate::system::*;
 
@@ -54,9 +54,9 @@ fn keyboard_wanted_with_the_module() {
 
 #[test]
 fn privacy_alone_starts_the_sound_source() {
-    assert!(wanted(&[ModuleId::Privacy]).sound);
+    assert!(wanted(&[ModuleId::Privacy], &OsdConfig::default()).sound);
     assert_eq!(
-        wanted(&[ModuleId::Privacy]),
+        wanted(&[ModuleId::Privacy], &OsdConfig::default()),
         Wanted { sound: true, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false },
         "the capture graph needs pw-dump and nothing else"
     );
@@ -64,22 +64,22 @@ fn privacy_alone_starts_the_sound_source() {
         .into_iter()
         .filter(|m| !matches!(m, ModuleId::Privacy | ModuleId::Volume | ModuleId::Osd | ModuleId::Quick))
         .collect();
-    assert!(!wanted(&without).sound, "every other module: no pw-dump");
+    assert!(!wanted(&without, &OsdConfig::default()).sound, "every other module: no pw-dump");
 }
 
 #[test]
 fn only_the_sources_the_modules_need() {
     let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power, Domain::Units];
     assert_eq!(
-        wanted(&ModuleId::ALL),
+        wanted(&ModuleId::ALL, &OsdConfig::default()),
         Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true, failed: true }
     );
     assert_eq!(
-        wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
+        wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock], &OsdConfig::default()),
         Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false }
     );
     assert_eq!(
-        wanted(&[ModuleId::Battery]),
+        wanted(&[ModuleId::Battery], &OsdConfig::default()),
         Wanted {
             sound: false,
             dbus: vec![Domain::Battery],
@@ -91,7 +91,7 @@ fn only_the_sources_the_modules_need() {
         }
     );
     assert_eq!(
-        wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
+        wanted(&[ModuleId::Bluetooth, ModuleId::Clock], &OsdConfig::default()),
         Wanted {
             sound: false,
             dbus: vec![Domain::Bluetooth],
@@ -103,7 +103,7 @@ fn only_the_sources_the_modules_need() {
         }
     );
     assert_eq!(
-        wanted(&[ModuleId::Battery, ModuleId::Network]),
+        wanted(&[ModuleId::Battery, ModuleId::Network], &OsdConfig::default()),
         Wanted {
             sound: false,
             dbus: vec![Domain::Network, Domain::Battery],
@@ -116,16 +116,16 @@ fn only_the_sources_the_modules_need() {
         "reading order, whatever the bar's order"
     );
     assert_eq!(
-        wanted(&[ModuleId::Volume, ModuleId::Resources]),
+        wanted(&[ModuleId::Volume, ModuleId::Resources], &OsdConfig::default()),
         Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false, failed: false }
     );
     assert_eq!(
-        wanted(&[ModuleId::Quick]).dbus,
+        wanted(&[ModuleId::Quick], &OsdConfig::default()).dbus,
         vec![Domain::Network, Domain::Bluetooth, Domain::Power],
         "the panel's Wi-Fi row (NetworkManager's state), the Bluetooth row (the bar's BtState) and power profile: read only, on the system bus"
     );
     assert_eq!(
-        wanted(&[ModuleId::Quick, ModuleId::Network]).dbus,
+        wanted(&[ModuleId::Quick, ModuleId::Network], &OsdConfig::default()).dbus,
         vec![Domain::Network, Domain::Bluetooth, Domain::Power],
         "the network domain read once for the module and the panel"
     );
@@ -142,31 +142,34 @@ fn the_units_domain_follows_its_need_and_only_the_failed_module_has_it() {
         vec![Domain::Network, Domain::Power, Domain::Units]
     );
     let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Failed).collect();
-    assert!(!wanted(&without).dbus.contains(&Domain::Units), "no other module sets it");
-    assert!(!wanted(&without).failed, "nor the user manager's count on the session bus");
-    assert!(wanted(&[ModuleId::Failed]).dbus.contains(&Domain::Units) && wanted(&[ModuleId::Failed]).failed);
+    assert!(!wanted(&without, &OsdConfig::default()).dbus.contains(&Domain::Units), "no other module sets it");
+    assert!(!wanted(&without, &OsdConfig::default()).failed, "nor the user manager's count on the session bus");
+    assert!(
+        wanted(&[ModuleId::Failed], &OsdConfig::default()).dbus.contains(&Domain::Units)
+            && wanted(&[ModuleId::Failed], &OsdConfig::default()).failed
+    );
     assert!(wanted_for(Needs::UNITS).failed, "the same need asks for both counts");
     assert!(!wanted_for(Needs::NETWORK).failed);
-    assert_eq!(wanted_for(Needs::NONE), wanted(&[]));
+    assert_eq!(wanted_for(Needs::NONE), wanted(&[], &OsdConfig::default()));
 }
 
 /// The power button reads nothing: no source, no thread.
 #[test]
 fn the_power_module_wants_no_source() {
     assert_eq!(
-        wanted(&[ModuleId::Power]),
+        wanted(&[ModuleId::Power], &OsdConfig::default()),
         Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false, failed: false }
     );
 }
 
 #[test]
 fn wanted_tray_only_with_the_module() {
-    assert!(wanted(&[ModuleId::Tray]).tray);
-    assert!(wanted(&[ModuleId::Workspaces, ModuleId::Tray, ModuleId::Clock]).tray);
+    assert!(wanted(&[ModuleId::Tray], &OsdConfig::default()).tray);
+    assert!(wanted(&[ModuleId::Workspaces, ModuleId::Tray, ModuleId::Clock], &OsdConfig::default()).tray);
     let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Tray).collect();
-    assert!(!wanted(&without).tray, "every other module: no session bus");
+    assert!(!wanted(&without, &OsdConfig::default()).tray, "every other module: no session bus");
     assert_eq!(
-        wanted(&[ModuleId::Tray]),
+        wanted(&[ModuleId::Tray], &OsdConfig::default()),
         Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false, notifications: false, failed: false },
         "the tray alone"
     );
@@ -174,11 +177,11 @@ fn wanted_tray_only_with_the_module() {
 
 #[test]
 fn wanted_media_only_with_the_module() {
-    assert!(wanted(&[ModuleId::Media]).media);
+    assert!(wanted(&[ModuleId::Media], &OsdConfig::default()).media);
     let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Media).collect();
-    assert!(!wanted(&without).media, "every other module: no MPRIS");
+    assert!(!wanted(&without, &OsdConfig::default()).media, "every other module: no MPRIS");
     assert_eq!(
-        wanted(&[ModuleId::Media]),
+        wanted(&[ModuleId::Media], &OsdConfig::default()),
         Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true, notifications: false, failed: false },
         "media alone needs no other source"
     );
@@ -186,11 +189,11 @@ fn wanted_media_only_with_the_module() {
 
 #[test]
 fn wanted_notifications_only_with_the_module() {
-    assert!(wanted(&[ModuleId::Notifications]).notifications);
+    assert!(wanted(&[ModuleId::Notifications], &OsdConfig::default()).notifications);
     let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Notifications).collect();
-    assert!(!wanted(&without).notifications, "every other module: no RequestName");
+    assert!(!wanted(&without, &OsdConfig::default()).notifications, "every other module: no RequestName");
     assert_eq!(
-        wanted(&[ModuleId::Notifications]),
+        wanted(&[ModuleId::Notifications], &OsdConfig::default()),
         Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: true, failed: false },
         "the bell alone needs no other source"
     );
@@ -436,25 +439,25 @@ fn a_burst_of_compositor_messages_feeds_the_launcher_once() {
 
 #[test]
 fn the_sound_source_publishes_for_the_osd_only_with_its_module() {
-    assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Osd]), Scope::Osd);
-    assert_eq!(sound_scope(&[ModuleId::Osd]), Scope::Osd);
-    assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Clock]), Scope::Bar, "bar-only: the sink's volume alone");
+    assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Osd], &OsdConfig::default()), Scope::Osd);
+    assert_eq!(sound_scope(&[ModuleId::Osd], &OsdConfig::default()), Scope::Osd);
+    assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Clock], &OsdConfig::default()), Scope::Bar, "bar-only: the sink's volume alone");
 }
 
 #[test]
 fn the_osd_alone_starts_the_sound_source() {
-    assert!(wanted(&[ModuleId::Osd]).sound, "the OSD reads pw-dump even without the volume module");
-    assert!(wanted(&[ModuleId::Volume]).sound);
-    assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
+    assert!(wanted(&[ModuleId::Osd], &OsdConfig::default()).sound, "the OSD reads pw-dump even without the volume module");
+    assert!(wanted(&[ModuleId::Volume], &OsdConfig::default()).sound);
+    assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock], &OsdConfig::default()).sound);
 }
 
 /// The panel's volume and microphone rows read pw-dump, even without the volume
 /// module; the sink list is the panel's to ask for while it is open, never the base scope.
 #[test]
 fn the_quick_panel_reads_the_sound() {
-    assert!(wanted(&[ModuleId::Quick]).sound);
-    assert_eq!(sound_scope(&[ModuleId::Quick]), Scope::Bar);
-    assert!(!wanted(&[ModuleId::Clock]).sound, "nothing else asks for it");
+    assert!(wanted(&[ModuleId::Quick], &OsdConfig::default()).sound);
+    assert_eq!(sound_scope(&[ModuleId::Quick], &OsdConfig::default()), Scope::Bar);
+    assert!(!wanted(&[ModuleId::Clock], &OsdConfig::default()).sound, "nothing else asks for it");
 }
 
 fn shield_in(flag: &str) -> crate::config::ShieldConfig {
@@ -544,4 +547,58 @@ fn the_shutdown_grace_covers_the_recorders_stop_while_recording() {
     assert_eq!(shutdown_grace(false), GRACE);
     assert_eq!(shutdown_grace(true), GRACE + crate::captures::record::STOP_LIMIT);
     assert!(shutdown_grace(true) > crate::captures::record::STOP_LIMIT, "the wait ends before the forced exit");
+}
+
+/// `[osd]` with these `kinds`, the rest by default.
+fn osd_kinds(kinds: &[OsdKind]) -> OsdConfig {
+    OsdConfig { kinds: kinds.to_vec(), ..OsdConfig::default() }
+}
+
+#[test]
+fn osd_without_sound_kinds_needs_no_sound() {
+    let w = wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Bluetooth]));
+    assert!(!w.sound, "no volume nor mic kind: no pw-dump for the OSD");
+    assert_eq!(w.dbus, [Domain::Bluetooth]);
+    assert_eq!(sound_scope(&[ModuleId::Osd, ModuleId::Volume], &osd_kinds(&[OsdKind::Bluetooth])), Scope::Bar);
+    assert!(wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Mic])).sound, "the microphone pill reads pw-dump");
+    assert_eq!(sound_scope(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Mic])), Scope::Osd);
+    assert_eq!(
+        wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Brightness, OsdKind::Dnd])),
+        wanted(&[], &OsdConfig::default()),
+        "brightness is read on request, do-not-disturb comes from the notifications module"
+    );
+}
+
+#[test]
+fn osd_kinds_bring_their_source() {
+    assert_eq!(wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Profile])).dbus, [Domain::Power]);
+    assert!(wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Track])).media);
+    assert_eq!(
+        wanted(&[ModuleId::Osd], &osd_kinds(&[OsdKind::Bluetooth, OsdKind::Profile])).dbus,
+        [Domain::Bluetooth, Domain::Power],
+        "reading order"
+    );
+    assert_eq!(
+        wanted(&[ModuleId::Osd, ModuleId::Bluetooth], &osd_kinds(&[OsdKind::Bluetooth])).dbus,
+        [Domain::Bluetooth],
+        "read once for the module and the pill"
+    );
+}
+
+#[test]
+fn kinds_without_the_osd_module_bring_nothing() {
+    let every = osd_kinds(&[
+        OsdKind::Volume,
+        OsdKind::Mic,
+        OsdKind::Brightness,
+        OsdKind::Bluetooth,
+        OsdKind::Dnd,
+        OsdKind::Profile,
+        OsdKind::Layout,
+        OsdKind::Track,
+    ]);
+    let modules = [ModuleId::Workspaces, ModuleId::Clock];
+    assert_eq!(wanted(&modules, &every), wanted(&modules, &OsdConfig::default()));
+    assert_eq!(wanted(&modules, &every), wanted(&[], &OsdConfig::default()));
+    assert_eq!(sound_scope(&modules, &every), Scope::Bar);
 }

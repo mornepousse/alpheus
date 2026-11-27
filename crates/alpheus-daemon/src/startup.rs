@@ -45,7 +45,7 @@ use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
 use crate::launcher::tools::nav::{Counts, StateJob};
 use crate::lock;
-use crate::modules::Needs;
+use crate::modules::{Needs, needs_of};
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
 use crate::pipewire::Scope;
@@ -298,7 +298,8 @@ use crate::log::write as log;
 /// (no thread, no child process, no timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
-    /// The pw-dump child: for the volume module, the OSD (its passive trigger) or the quick panel's rows.
+    /// The pw-dump child: for the volume module, the OSD with a `volume` or `mic` kind, or the quick
+    /// panel's rows.
     pub sound: bool,
     /// The D-Bus domains to read and follow (the quick panel's Wi-Fi row and power profile among
     /// them); empty: no D-Bus thread.
@@ -317,8 +318,9 @@ pub struct Wanted {
     pub failed: bool,
 }
 
-pub fn wanted(modules: &[ModuleId]) -> Wanted {
-    wanted_for(Needs::of(modules))
+/// The sources `modules` and, with `osd` among them, the OSD's kinds ask for (`modules::needs_of`).
+pub fn wanted(modules: &[ModuleId], osd: &OsdConfig) -> Wanted {
+    wanted_for(needs_of(modules, osd))
 }
 
 /// What `needs` ask for together (`wanted`; tests give theirs directly).
@@ -365,10 +367,10 @@ pub(crate) fn keyboard_wanted_for(needs: Needs) -> bool {
     needs.contains(Needs::KEYBOARD)
 }
 
-/// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
-/// microphone or a label change wakes nothing).
-pub fn sound_scope(modules: &[ModuleId]) -> Scope {
-    if Needs::of(modules).contains(Needs::OSD_SCOPE) { Scope::Osd } else { Scope::Bar }
+/// What the sound source publishes for: without the `osd` module and a `volume` or `mic` kind, the
+/// bar's sink volume alone (a microphone or a label change wakes nothing).
+pub fn sound_scope(modules: &[ModuleId], osd: &OsdConfig) -> Scope {
+    if needs_of(modules, osd).contains(Needs::OSD_SCOPE) { Scope::Osd } else { Scope::Bar }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {
@@ -377,7 +379,7 @@ pub fn resources_period(c: &ResourcesConfig) -> Duration {
 
 impl App {
     /// One message from a source thread, in the order the readers need: the quick panel takes a
-    /// sound message's sink list first, the OSD reads every sound message before the
+    /// sound message's sink list first, the OSD reads every sound message (and a passive kind's) before the
     /// bar keeps it (its trigger rules compare it with the last one), the privacy
     /// indicators read sound and compositor messages first; then the bar's own
     /// handling, and the panel refreshes if it took something.
@@ -386,6 +388,7 @@ impl App {
         if let Msg::Sound(s) = &m {
             self.osd_sound(s.as_ref());
         }
+        self.osd_passive(&m);
         // Hooks first: a sound or compositor source going down must be known when the privacy
         // indicators it clears reach `hooks_capture`.
         self.hooks_msg(&m);
@@ -617,8 +620,8 @@ impl Plan {
     fn of(config: &BarConfig) -> Plan {
         Plan {
             seconds: clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date),
-            want: wanted(&config.modules),
-            scope: sound_scope(&config.modules),
+            want: wanted(&config.modules, &config.osd),
+            scope: sound_scope(&config.modules, &config.osd),
             privacy: camera_wanted(&config.modules),
             keyboard: keyboard_wanted(&config.modules, &config.osd),
             camera_roots: (config.privacy.dev_dir.clone(), config.privacy.proc_dir.clone()),

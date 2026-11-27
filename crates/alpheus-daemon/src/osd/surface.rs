@@ -6,8 +6,9 @@
 //! is EMPTY, so it never takes a click. It is created when a pill is shown and dropped when the
 //! pill goes, with its own small pool of shared memory, so nothing of it stays resident. One
 //! `DeadlineTimer` (`OsdSurface::timer`) hides it `timeout_ms` after the last change. `osd_sound`
-//! (every sound message) and `osd_verb` (`alpheus-launch --osd brightness`) both end in
-//! `osd_show`; `osd_sync` is the one place that creates or updates the surface, `osd_drop` the one
+//! (every sound message), `osd_passive` (a passive kind's message) and `osd_verb`
+//! (`alpheus-launch --osd brightness`) all end in `osd_show`, each for the kinds `[osd] kinds`
+//! lists; `osd_sync` is the one place that creates or updates the surface, `osd_drop` the one
 //! place that drops it. The rules that decide what shows are `mod.rs`'s; this file is kept thin.
 //!
 //! Never:
@@ -23,7 +24,7 @@
 //! when its surface appears and once when it goes").
 
 use crate::backlight;
-use crate::config::ModuleId;
+use crate::config::{ModuleId, OsdKind};
 use crate::deadline::DeadlineTimer;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
 use crate::list::Boxed;
@@ -32,6 +33,7 @@ use crate::notify::bubbles;
 use crate::osd::{self, Heard, Osd, Pill};
 use crate::painter::FrameInk;
 use crate::popup::box_size;
+use crate::state::Msg;
 use crate::system::SoundState;
 use crate::wayland::{App, pick_buffer};
 use alpheus_common::launcher_ipc::{OsdVerb, Reply, Request};
@@ -90,17 +92,54 @@ impl App {
         self.bar.config.modules.contains(&ModuleId::Osd)
     }
 
+    /// Whether the module is on and `[osd] kinds` lists `kind`.
+    fn osd_shows(&self, kind: OsdKind) -> bool {
+        self.osd_enabled() && self.bar.config.osd.kinds.contains(&kind)
+    }
+
     /// Every sound message, before the bar applies it (`App::on_bar_message`): the trigger
-    /// rules (`osd::Watch`), then the pill when they say so. Nothing without the module.
+    /// rules (`osd::Watch`), then the pill when they say so and its kind is listed. Nothing without
+    /// the module, nor without a `volume` or `mic` kind.
     pub(crate) fn osd_sound(&mut self, s: Option<&SoundState>) {
-        if !self.osd_enabled() {
+        if !self.osd_shows(OsdKind::Volume) && !self.osd_shows(OsdKind::Mic) {
             return;
         }
         let now = Instant::now();
         match self.osd.model.sound(s, now) {
             Heard::Baseline => log("osd: sound baseline"),
-            Heard::Show(pill) => self.osd_show(pill, now),
+            Heard::Show(pill) => {
+                let kind = if matches!(pill, Pill::Mic(_)) { OsdKind::Mic } else { OsdKind::Volume };
+                if self.osd_shows(kind) {
+                    self.osd_show(pill, now);
+                }
+            }
             Heard::Quiet => {}
+        }
+    }
+
+    /// A passive kind's message (Bluetooth, the bell's view, the power profile), before the bar
+    /// applies it: its trigger rules (`osd::Kinds`), then the pill. Returns at once unless the
+    /// module is on and the message's kind is listed, so a kind not listed keeps no memory either.
+    pub(crate) fn osd_passive(&mut self, m: &Msg) {
+        let kind = match m {
+            Msg::Bluetooth(_) => OsdKind::Bluetooth,
+            Msg::Notifications(_) => OsdKind::Dnd,
+            Msg::Profile(_) => OsdKind::Profile,
+            _ => return,
+        };
+        if !self.osd_shows(kind) {
+            return;
+        }
+        let now = Instant::now();
+        let kinds = &mut self.osd.model.kinds;
+        let pill = match m {
+            Msg::Bluetooth(s) => kinds.bluetooth(s.as_ref(), now),
+            Msg::Notifications(view) => kinds.dnd(*view, now),
+            Msg::Profile(s) => kinds.profile(s.as_ref(), now),
+            _ => None,
+        };
+        if let Some(pill) = pill {
+            self.osd_show(pill, now);
         }
     }
 
@@ -114,7 +153,8 @@ impl App {
     }
 
     /// `alpheus-launch --osd brightness` the backlight read once, then the pill.
-    /// Always Done: with the module off or no backlight, nothing shows (exit 0). Brightness is
+    /// Always Done: with the module off, `brightness` not in `[osd] kinds` or no backlight, nothing
+    /// shows (exit 0). Brightness is
     /// shown on request only; see docs/decisions.md, "Brightness is shown on request, read once".
     pub(crate) fn osd_verb(&mut self, request: &Request) -> Reply {
         if !matches!(request, Request::Osd(OsdVerb::Brightness)) {
@@ -122,6 +162,10 @@ impl App {
         }
         if !self.osd_enabled() {
             log("osd: brightness asked, but the osd module is not in modules");
+            return Reply::Done;
+        }
+        if !self.osd_shows(OsdKind::Brightness) {
+            log("osd: brightness asked, but brightness is not in osd.kinds");
             return Reply::Done;
         }
         let cfg = &self.bar.config.osd;

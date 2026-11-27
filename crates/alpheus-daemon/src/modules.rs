@@ -18,7 +18,7 @@
 //! See: docs/adding-a-module.md (the recipe, step by step), docs/features/bar.md (the table of
 //! modules a reader sees), docs/ARCHITECTURE.md ("The core").
 
-use crate::config::ModuleId;
+use crate::config::{ModuleId, OsdConfig};
 use crate::grid::{GroupKind, Hue};
 use crate::layout::{Segment, bar_clock, window, workspaces};
 use crate::popup::ModulePopup;
@@ -66,6 +66,17 @@ impl Needs {
     pub(crate) fn of(modules: &[ModuleId]) -> Needs {
         modules.iter().fold(Needs::NONE, |n, m| n.or(m.spec().needs))
     }
+}
+
+/// What `modules` ask for, with the OSD's kinds when `osd` is among them: each kind brings the source
+/// it reads (`OsdKind::needs`), and kinds without the module bring nothing. See docs/decisions.md,
+/// "An OSD kind is opt-in and brings the source it reads".
+pub(crate) fn needs_of(modules: &[ModuleId], osd: &OsdConfig) -> Needs {
+    let needs = Needs::of(modules);
+    if !modules.contains(&ModuleId::Osd) {
+        return needs;
+    }
+    osd.kinds.iter().fold(needs, |n, k| n.or(k.needs()))
 }
 
 /// One module's facts.
@@ -203,8 +214,9 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         needs: Needs::NOTIFICATIONS,
         ..row(ModuleId::Notifications, "notifications", GroupKind::Status)
     },
-    // The OSD draws its own surface (osd/surface.rs), never in the bar.
-    ModuleSpec { needs: Needs::SOUND.or(Needs::OSD_SCOPE), ..row(ModuleId::Osd, "osd", GroupKind::Status) },
+    // The OSD draws its own surface (osd/surface.rs), never in the bar. Its sources are its kinds'
+    // (`needs_of`), not the row's.
+    row(ModuleId::Osd, "osd", GroupKind::Status),
     // The quick panel is a popup (quick/mod.rs), never a segment. It reads the sink list, NetworkManager
     // (the Wi-Fi row), BlueZ (the Bluetooth row) and the power profile.
     ModuleSpec {

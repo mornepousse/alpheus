@@ -39,6 +39,7 @@ enum Command {
     Add(u8, String, i16),
     Remove(u8),
     Connected(u8, bool),
+    Powered(bool),
     Release,
     Stop,
 }
@@ -126,6 +127,11 @@ impl FakeBluez {
     /// The device `n` connects or disconnects: `PropertiesChanged` of `Connected` goes out.
     pub fn set_connected(&self, n: u8, on: bool) {
         let _ = self.commands.send(Command::Connected(n, on));
+    }
+
+    /// hci0 powers on or off: `PropertiesChanged` of `Powered` and `PowerState` goes out.
+    pub fn set_powered(&self, on: bool) {
+        let _ = self.commands.send(Command::Powered(on));
     }
 
     /// Every method call received, `"<Member> <path> <args>"`, in arrival order.
@@ -243,6 +249,22 @@ fn emit(peer: &Peer, command: Command, tree: &mut Tree) {
             let mut m = Message::new_signal(&p, PROPERTIES, "PropertiesChanged").unwrap();
             push_reply(&mut m, &json!({ "type": "s", "data": [DEVICE] }).to_string());
             push_reply(&mut m, &json!({ "type": "a{sv}", "data": [{ "Connected": prop("b", on.into()) }] }).to_string());
+            push_reply(&mut m, &json!({ "type": "as", "data": [[]] }).to_string());
+            send(peer, m);
+        }
+        Command::Powered(on) => {
+            let state = if on { "on" } else { "off" };
+            if let Some(a) = tree.get_mut(ADAPTER).and_then(|i| i.get_mut("org.bluez.Adapter1")) {
+                a.insert("Powered".into(), prop("b", on.into()));
+                a.insert("PowerState".into(), prop("s", state.into()));
+            }
+            let mut m = Message::new_signal(ADAPTER, PROPERTIES, "PropertiesChanged").unwrap();
+            push_reply(&mut m, &json!({ "type": "s", "data": ["org.bluez.Adapter1"] }).to_string());
+            push_reply(
+                &mut m,
+                &json!({ "type": "a{sv}", "data": [{ "Powered": prop("b", on.into()), "PowerState": prop("s", state.into()) }] })
+                    .to_string(),
+            );
             push_reply(&mut m, &json!({ "type": "as", "data": [[]] }).to_string());
             send(peer, m);
         }

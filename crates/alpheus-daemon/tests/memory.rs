@@ -532,6 +532,8 @@ fn startup_pss_per_source() {
     if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none() {
         // `[failed]` at its defaults: `subscribe = true`.
         cases.push(("+ failed", concat!(every_module!(), ", \"failed\""), ""));
+        // A Bluetooth pill alone: the BlueZ domain without its module, and no pw-dump.
+        cases.push(("+ osd kinds", "\"workspaces\", \"window\", \"osd\", \"clock\"", "[osd]\nkinds = [\"bluetooth\"]\n"));
     }
     let mut report = Vec::new();
     for (i, (what, modules, extra)) in cases.iter().enumerate() {
@@ -551,6 +553,11 @@ fn startup_pss_per_source() {
     // The failed count is a number per manager and a listener, nothing kept.
     if let Some((_, failed)) = report.iter().find(|(what, _)| *what == "+ failed") {
         assert!(*failed <= everything + 256, "+ failed {failed} KB vs everything {everything} KB: more than 256 KB at rest");
+    }
+    // A kind brings its source and nothing else: at most the D-Bus case's cost over the bar alone.
+    if let Some((_, kinds)) = report.iter().find(|(what, _)| *what == "+ osd kinds") {
+        let (bar, dbus) = (kb("bar only"), kb("+ D-Bus"));
+        assert!(*kinds <= dbus.max(bar) + 256, "+ osd kinds {kinds} KB vs + D-Bus {dbus} KB: more than one domain's cost");
     }
     // The history on, nothing copied yet, reports a small step (report, never raise).
     let clipboard = kb("+ clipboard");
@@ -1449,17 +1456,27 @@ fn osd_pss_idle_shown_and_gone() {
     assert!(gone <= idle + 256, "gone: {gone} KB vs {idle} KB before it — the surface and its pool must go");
 }
 
-/// Once a pill went, no timer, no wake-up, no spin.
+/// Once a pill went, no timer, no wake-up, no spin; a passive pill too (a Bluetooth flip on the fake
+/// BlueZ, the build under test knowing `[osd] kinds`).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_the_osd() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("osd-rest");
-    let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
+    let bluez = FakeBluez::serve(&bus);
+    // A base from before the kinds would refuse the key: it runs the plain bar.
+    let passive = std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_none();
+    let toml = if passive { format!("{OSD_BAR}kinds = [\"volume\", \"mic\", \"bluetooth\"]\n") } else { OSD_BAR.to_string() };
+    let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(&toml), PwDump::Fifo);
     assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(1300)); // the start-up grace
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
     assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    if passive {
+        bluez.set_powered(false);
+        assert!(d.wait_for("bluetooth off", DELAY), "{:?}", d.log());
+        assert!(d.wait_for_count("osd surface dropped (timeout", 2, DELAY), "{:?}", d.log());
+    }
     std::thread::sleep(TRAY_SETTLE);
     const REST: Duration = Duration::from_secs(10);
     away_from_the_minute(REST);
@@ -1987,6 +2004,48 @@ fn at_rest_no_wakeups_after_the_vpn_detail() {
     let root = since.iter().filter(|c| c.as_str() == "GetAll /org/freedesktop/NetworkManager org.freedesktop.NetworkManager").count();
     let actives = since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).count();
     assert_eq!((root, actives), (2, 2), "closed: the domain's own reads only, one per signal: {since:?}");
+}
+
+/// The passive kinds' bar: their modules either way (BlueZ, power profiles and the bell are read
+/// with or without the kinds), so the difference is the kinds' own state.
+const KINDS_BAR: &str = "modules = [\"workspaces\", \"bluetooth\", \"notifications\", \"osd\", \"quick\", \"clock\"]\n[osd]\n";
+
+/// The default kinds against the three passive ones added: the anonymous memory they keep (a few
+/// words each), then one Bluetooth pill shown and gone.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_kinds_pss_off_and_on() {
+    require_release(cfg!(debug_assertions));
+    if std::env::var_os("ALPHEUS_DEMON_UNDER_TEST").is_some() {
+        eprintln!("osd kinds: the build under test predates [osd] kinds, skipped");
+        return;
+    }
+    let bus = PrivateBus::start("osd-kinds");
+    let bluez = FakeBluez::serve(&bus);
+    let (off_pss, off_anon) = {
+        let (_sway, _hypr, d) = start("osd-kinds-off", 1, &bus, None, Some(KINDS_BAR), PwDump::Fifo);
+        std::thread::sleep(TRAY_SETTLE);
+        (d.pss_kb(), d.anonymous_kb())
+    };
+    let on = format!("{KINDS_BAR}kinds = [\"volume\", \"mic\", \"brightness\", \"bluetooth\", \"dnd\", \"profile\"]\n");
+    let (_sway, _hypr, d) = start("osd-kinds-on", 1, &bus, None, Some(&on), PwDump::Fifo);
+    std::thread::sleep(TRAY_SETTLE);
+    let (on_pss, on_anon) = (d.pss_kb(), d.anonymous_kb());
+    bluez.set_powered(false);
+    assert!(d.wait_for("bluetooth off", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500)); // configured and painted
+    let shown = d.pss_kb();
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (gone_pss, gone_anon) = (d.pss_kb(), d.anonymous_kb());
+    eprintln!(
+        "osd kinds PSS (KB): {off_pss} default kinds, {on_pss} with bluetooth, dnd and profile, {shown} with a Bluetooth pill, \
+         {gone_pss} once gone; anonymous (KB): {off_anon} default, {on_anon} on, {gone_anon} gone"
+    );
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report it, never raise");
+    let delta = on_anon.saturating_sub(off_anon);
+    assert!(delta <= 64, "the kinds keep {delta} KB of anonymous memory (a few words each: ≤ 64 KB)");
+    assert!(gone_anon <= on_anon + 64, "gone: {gone_anon} KB anonymous vs {on_anon} KB before the pill");
 }
 
 /// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the

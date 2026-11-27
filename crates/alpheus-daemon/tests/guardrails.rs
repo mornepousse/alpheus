@@ -2993,6 +2993,120 @@ fn the_osd_has_no_panicking_path() {
     }
 }
 
+/// The placeholders an OSD log line may interpolate: an error's word, the output's connector name
+/// (or a fixed phrase), `describe`'s words, a buffer's size, a drop's literal reason and a count.
+const OSD_LOG_PLACEHOLDERS: [&str; 7] = ["{word}", "{place}", "{what}", "{w}", "{h}", "{why}", "{shown}"];
+
+/// The first `log(` call in `code` that is not fixed words, if any: its argument must be a string
+/// literal, or `&format!` of one whose placeholders are `OSD_LOG_PLACEHOLDERS` (`word` bound to
+/// `crate::log::error_word(&e)` and nothing else).
+fn osd_unfixed_log(code: &str) -> Option<String> {
+    let mut rest = code;
+    while let Some(i) = rest.find("log(") {
+        let before = rest[..i].chars().next_back();
+        let call = &rest[i..];
+        // A longer name (`catalog(`) is not the call.
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            rest = &call["log(".len()..];
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = call.len();
+        for (j, c) in call.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = call[..end].replace(", word = crate::log::error_word(&e)", "");
+        for ok in OSD_LOG_PLACEHOLDERS {
+            text = text.replace(ok, "");
+        }
+        let arg = text["log(".len()..text.len().saturating_sub(1)].trim();
+        let arg = arg.strip_prefix("&format!(").and_then(|a| a.strip_suffix(')')).unwrap_or(arg).trim();
+        let literal = arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2 && !arg[1..arg.len() - 1].contains('"');
+        if !literal || text.contains('{') {
+            return Some(call[..end].to_string());
+        }
+        rest = &call[end..];
+    }
+    None
+}
+
+/// The OSD's log lines are fixed words: never a layout, a profile, a title or a device name (a pill
+/// may show them, the journal never). Every `log(` in `OSD_FILES` is a literal or interpolates only
+/// `OSD_LOG_PLACEHOLDERS`; `what` is only ever `osd::describe`'s, a drop's reason only a literal; and
+/// `describe`'s arms are literals plus numbers only.
+#[test]
+fn the_osd_logs_are_fixed_words() {
+    let files = source_files();
+    let mut seen = 0;
+    for &name in OSD_FILES {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let code = production_code_without_comments(t);
+        assert_eq!(osd_unfixed_log(&code), None, "a log call in {name} names more than fixed words");
+        seen += code.matches("log(").count();
+    }
+    assert!(seen >= 8, "the OSD's log calls were found: {seen}");
+    let surface =
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "osd/surface.rs").expect("surface.rs").1);
+    // `what` comes from `describe` alone, and travels by `osd_sync(&what)` to the surface's line.
+    assert_eq!(surface.matches("let what = ").count(), 1, "one place makes `what`");
+    assert!(surface.contains("let what = osd::describe(&pill);"), "`what` is describe's");
+    for (i, _) in surface.match_indices("self.osd_sync(") {
+        let arg = &surface[i + "self.osd_sync(".len()..];
+        assert!(arg.starts_with("&what)"), "osd_sync takes describe's words only: {}", &arg[..arg.find(')').unwrap_or(0)]);
+    }
+    for (i, _) in surface.match_indices("self.osd_drop(").chain(surface.match_indices("app.osd_drop(")) {
+        let arg = &surface[i..];
+        let arg = &arg[arg.find('(').unwrap_or(0) + 1..];
+        assert!(arg.starts_with('"'), "a drop's reason is a literal: {}", &arg[..arg.find(')').unwrap_or(0)]);
+    }
+    let model = production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == "osd/mod.rs").expect("mod.rs").1);
+    let describe = function_body(&model, "pub fn describe(");
+    // Each arm is a literal, or a format of numbers: a level's percent and its "muted" word.
+    let mut arms = 0;
+    for arm in describe.split("Pill::").skip(1) {
+        arms += 1;
+        let value = &arm[arm.find("=>").unwrap_or_else(|| panic!("an arm: {arm}")) + 2..];
+        let value = value[..value.find(",\n").unwrap_or(value.len())].trim();
+        let literal = value.starts_with('"') && value.ends_with("\".into()") && value.matches('"').count() == 2;
+        // A format: its string's placeholders are empty or `p` (a percent), its arguments numbers.
+        let numbers = value.strip_prefix("format!(\"").and_then(|v| v.strip_suffix(')')).is_some_and(|v| {
+            let Some(q) = v.find('"') else { return false };
+            let (text, args) = (&v[..q], &v[q + 1..]);
+            let placeholders_ok = text.split('{').skip(1).all(|p| p.starts_with('}') || p.starts_with("p}"));
+            let args_ok = args
+                .split(',')
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .all(|a| ["v.percent", "muted(v)", "volume.percent", "muted(volume)"].contains(&a));
+            placeholders_ok && args_ok
+        });
+        assert!(literal || numbers, "describe's arm is not fixed words and numbers: {value}");
+    }
+    assert!(arms >= 7, "describe's arms were found: {arms}");
+}
+
+#[test]
+fn the_osd_log_guardrail_bites() {
+    assert_eq!(osd_unfixed_log("log(\"osd: sound baseline\");"), None);
+    assert_eq!(osd_unfixed_log("log(&format!(\"osd surface on {place}: {what}\"));"), None);
+    assert_eq!(osd_unfixed_log("log(&format!(\"osd: input region: {word}, not shown\", word = crate::log::error_word(&e)));"), None);
+    assert!(osd_unfixed_log("log(&format!(\"osd: layout {layout}\"));").is_some());
+    assert!(osd_unfixed_log("log(&format!(\"osd: {word}\", word = name));").is_some(), "word bound to something else");
+    assert!(osd_unfixed_log("log(&format!(\"osd: {}\", name));").is_some());
+    assert!(osd_unfixed_log("log(&label);").is_some(), "a variable is not fixed words");
+    assert!(osd_unfixed_log("log(\"a\"); log(&format!(\"{what} {title}\"));").is_some());
+}
+
 /// Resources popup: no panic in the model's production code, nor in the wiring's (it runs on every
 /// resources tick while the popup is open).
 #[test]

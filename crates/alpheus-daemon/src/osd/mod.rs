@@ -1,12 +1,14 @@
-//! The on-screen display's model: when a sound change shows the pill, and what the pill says.
+//! The on-screen display's model: when a change shows the pill, and what the pill says.
 //!
-//! The pill is the small bar that shows a volume, microphone or brightness level for a moment. This
-//! file is its pure half. `Watch` decides when a sound change shows it: the baseline after pw-dump
-//! (re)starts, a 1 s grace after startup or after a default device appears, a level that must
-//! move, the microphone on a mute flip only, a default sink that was switched (its name card kept
-//! up to date while it shows). `Osd` keeps the pill that is shown and its deadline. `rows` builds
-//! the pill's one row of cells, and `brightness_percent` turns the backlight's two sysfs texts into
-//! a level. The Wayland surface is `surface.rs`'s; the files of the backlight are read by
+//! The pill is the small bar that shows a volume, microphone or brightness level, or a passive
+//! kind's state (Bluetooth, do-not-disturb, the power profile), for a moment. This file is its pure
+//! half. `Watch` decides when a sound change shows it: the baseline after pw-dump (re)starts, a 1 s
+//! grace after startup or after a default device appears, a level that must move, the microphone on
+//! a mute flip only, a default sink that was switched (its name card kept up to date while it
+//! shows). `Passive` does the same for one passive value (baseline, grace, change), and `Kinds`
+//! holds one per kind with the mapping from each source's message. `Osd` keeps the pill that is
+//! shown and its deadline. `rows` builds the pill's one row of cells, and `brightness_percent` turns
+//! the backlight's two sysfs texts into a level. The Wayland surface is `surface.rs`'s; the files of the backlight are read by
 //! `backlight.rs`.
 //!
 //! Never:
@@ -18,14 +20,17 @@
 //! See: docs/features/osd.md and docs/decisions.md
 //! ("The microphone pill shows only when its mute flips", "A sound change within a second of a
 //! start or a new default device shows nothing", "The OSD counts a volume change in whole
-//! percent", "Brightness is shown on request, read once").
+//! percent", "Brightness is shown on request, read once", "An OSD kind is opt-in and brings the
+//! source it reads").
 
 use crate::config::OsdConfig;
-use crate::grid::{Grid, Style, Tint};
+use crate::grid::{Grid, Style, Tint, text_width};
 use crate::list::{self, Boxed};
 use crate::media::truncate_title;
-use crate::segments::{VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
-use crate::system::{DeviceName, SoundState, Volume};
+use crate::notify::NotifyView;
+use crate::quick::PROFILE;
+use crate::segments::{BELL, BELL_OFF, BLUETOOTH, VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
+use crate::system::{BtState, DeviceName, Profile, ProfileState, SoundState, Volume};
 use std::time::{Duration, Instant};
 
 /// After startup, a pw-dump restart, or a default device appearing or switching: no pill. See docs/decisions.md, "A sound change within a second of a start or a new default
@@ -52,6 +57,12 @@ pub enum Pill {
     Mic(Volume),
     /// The backlight, 0 to 100 %.
     Brightness(u8),
+    /// The Bluetooth adapter powered on (true) or off.
+    Bluetooth(bool),
+    /// Do-not-disturb turned on (true) or off.
+    Dnd(bool),
+    /// The active power profile changed to this one.
+    Profile(Profile),
 }
 
 /// What a sound message means for the OSD: nothing to show, the baseline, or a pill to show.
@@ -226,10 +237,82 @@ impl Watch {
     }
 }
 
+/// One passive value's trigger memory: the first value after its source (re)starts is the baseline,
+/// a `GRACE` follows it, then a change of value shows. The same rules as `Watch::sound`'s, for a
+/// value that has no level to move. See docs/decisions.md, "An OSD kind is opt-in and brings the
+/// source it reads".
+#[derive(Debug, Clone)]
+pub struct Passive<T> {
+    last: Option<T>,
+    grace: Option<Instant>,
+}
+
+impl<T> Default for Passive<T> {
+    fn default() -> Self {
+        Passive { last: None, grace: None }
+    }
+}
+
+impl<T: PartialEq + Clone> Passive<T> {
+    /// A value at `now` (None: the source went down, or has nothing to say); Some: show it.
+    pub fn hear(&mut self, value: Option<T>, now: Instant) -> Option<T> {
+        let Some(new) = value else {
+            self.last = None;
+            self.grace = None;
+            return None;
+        };
+        // `replace` keeps the new value and gives back the old one: None for the baseline.
+        match self.last.replace(new.clone()) {
+            None => {
+                self.grace = Some(now + GRACE);
+                None
+            }
+            Some(old) if old == new => None,
+            // Inside the grace: before its end (at exactly its end it is over).
+            Some(_) if self.grace.is_some_and(|end| now < end) => None,
+            Some(_) => Some(new),
+        }
+    }
+}
+
+/// The passive kinds' trigger memories, one per kind, and what each source's message means.
+#[derive(Debug, Clone, Default)]
+pub struct Kinds {
+    pub bluetooth: Passive<bool>,
+    pub dnd: Passive<bool>,
+    pub profile: Passive<Profile>,
+}
+
+impl Kinds {
+    /// BlueZ's state: a power flip shows, never a device connecting or leaving (only the power is
+    /// compared). No adapter, or the bus down: a reset.
+    pub fn bluetooth(&mut self, s: Option<&BtState>, now: Instant) -> Option<Pill> {
+        let powered = match s {
+            Some(BtState::On { .. }) => Some(true),
+            Some(BtState::Off) => Some(false),
+            Some(BtState::Absent) | None => None,
+        };
+        self.bluetooth.hear(powered, now).map(Pill::Bluetooth)
+    }
+
+    /// The bell's view: do-not-disturb, only while alpheus holds the notification name (otherwise
+    /// another server decides, and the flag shows nothing real).
+    pub fn dnd(&mut self, view: NotifyView, now: Instant) -> Option<Pill> {
+        let dnd = if view.serving { Some(view.dnd) } else { None };
+        self.dnd.hear(dnd, now).map(Pill::Dnd)
+    }
+
+    /// power-profiles-daemon's active profile; none active, or the bus down: a reset.
+    pub fn profile(&mut self, s: Option<&ProfileState>, now: Instant) -> Option<Pill> {
+        self.profile.hear(s.and_then(|s| s.active), now).map(Pill::Profile)
+    }
+}
+
 /// The OSD's state: its trigger memory, and the pill shown with its deadline (None at rest).
 #[derive(Debug, Clone, Default)]
 pub struct Osd {
     pub watch: Watch,
+    pub kinds: Kinds,
     shown: Option<(Pill, Instant)>,
 }
 
@@ -337,6 +420,24 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
     percent(g, end, v, selected);
 }
 
+/// A text pill's row in `g`: the glyph in `style`, a space, the label, and the `right` word
+/// right-aligned at the end, where the percentage sits on a level pill. The label gives way (cut
+/// with an ellipsis) so that one blank cell stays before the word.
+pub(crate) fn text_row(g: &mut Grid, glyph: char, style: Style, label: &str, right: &str) {
+    let end = g.width();
+    let w = text_width(right);
+    let x = g.write(0, end, &glyph.to_string(), style);
+    let x = g.write(x, end, " ", Style::NORMAL);
+    let room = end.saturating_sub(x).saturating_sub(w.saturating_add(1));
+    g.write(x, x.saturating_add(room), &truncate_title(label, room), Style::NORMAL);
+    g.write(end.saturating_sub(w), end, right, Style::NORMAL);
+}
+
+/// "on" or "off", and the glyph's style: accent, or dim when off.
+fn switch(on: bool) -> (&'static str, Style) {
+    if on { ("on", Style::ACCENT) } else { ("off", Style::MUTED) }
+}
+
 /// The pill's one row: `width` cells of content, padded like the popups' (`list::padded`).
 pub fn rows(pill: &Pill, width: u16) -> Boxed {
     let mut g = Grid::empty(width);
@@ -353,11 +454,21 @@ pub fn rows(pill: &Pill, width: u16) -> Boxed {
             g.write(x, x.saturating_add(bar), &truncate_title(label, bar), Style::NORMAL);
             percent(&mut g, width, *volume, false);
         }
+        Pill::Bluetooth(on) => {
+            let (word, style) = switch(*on);
+            text_row(&mut g, BLUETOOTH, style, "Bluetooth", word);
+        }
+        Pill::Dnd(on) => {
+            let (word, style) = switch(*on);
+            text_row(&mut g, if *on { BELL_OFF } else { BELL }, style, "Do not disturb", word);
+        }
+        Pill::Profile(p) => text_row(&mut g, PROFILE, Style::ACCENT, "Power profile", p.label()),
     }
     list::padded(&[g])
 }
 
-/// The pill in a log line; no device name (a label stays out of the journal).
+/// The pill in a log line: fixed words and numbers, never a device name nor a profile (a label stays
+/// out of the journal; a guardrail reads these arms).
 pub fn describe(pill: &Pill) -> String {
     let muted = |v: &Volume| if v.muted { " muted" } else { "" };
     match pill {
@@ -365,6 +476,11 @@ pub fn describe(pill: &Pill) -> String {
         Pill::Sink { volume, .. } => format!("default sink changed, {}%{}", volume.percent, muted(volume)),
         Pill::Mic(v) => format!("mic {}%{}", v.percent, muted(v)),
         Pill::Brightness(p) => format!("brightness {p}%"),
+        Pill::Bluetooth(true) => "bluetooth on".into(),
+        Pill::Bluetooth(false) => "bluetooth off".into(),
+        Pill::Dnd(true) => "dnd on".into(),
+        Pill::Dnd(false) => "dnd off".into(),
+        Pill::Profile(_) => "profile changed".into(),
     }
 }
 
