@@ -2156,3 +2156,19 @@ Caps Lock and Num Lock indicators are left out: no source is both event-driven a
 keyboard focus (see the spec).
 
 Date: 2026-11-27 · Source: tests `mango_the_monitors_carry_keymode_and_keyboardlayout`, `mango_layout_comes_from_the_active_monitor`, `mango_without_keyboard_publishes_no_layout_nor_mode` (`compositor/mango.rs`), `a_layout_change_without_keyboard_publishes_nothing`, `a_layout_change_with_keyboard_publishes_it` (`sources/mango.rs`), `keyboard_wanted_follows_needs` (`startup/tests.rs`); spec `docs/superpowers/specs/2026-11-27-osd-keyboard-design.md`
+
+### Sway is asked for its inputs once per session, and only with the keyboard
+
+The Sway source's messages are a fixed list, checked by `sway_writes_only_its_messages`. The
+owner extended it on 2026-11-27 (decision 1 of that day) for the keyboard module, with two read-only
+additions: `GET_INPUTS` (type 100, no payload), sent once at the start of each session, and a
+second subscription that adds the `input` and `mode` events to the workspace and window ones. Both
+are sent only when the keyboard is wanted (`Needs::KEYBOARD`); without the module the source sends
+exactly what it sent before. The `input` event carries the keyboard's new active layout and the
+`mode` event the mode's name, so neither costs a read: no `GET_INPUTS` after an event, no tree read
+either, the last published state with the new layout or mode is published. Sway names no mode at
+start (neither `GET_INPUTS` nor the tree says it), so none is shown until the first `mode` event.
+With several keyboards, the first one with a layout name gives the start, and then the last one
+that changed wins. Still never the command message nor any other request.
+
+Date: 2026-11-27 · Source: tests `sway_writes_only_its_messages`, `compositor_requests_are_read_only` (`tests/guardrails.rs`), `keyboard_off_subscribes_to_two_events_and_never_asks_inputs`, `keyboard_on_subscribes_to_four_events_and_asks_inputs_once`, `an_input_event_updates_the_layout_without_reading_the_tree` (`sources/sway/tests.rs`), `sway_get_inputs_picks_the_first_keyboards_active_name`, `sway_no_mode_before_the_first_mode_event` (`compositor/sway.rs`)

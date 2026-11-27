@@ -328,7 +328,7 @@ fn hyprland_flapper_backs_off() {
 fn sway_flapper_backs_off() {
     let f = sway::fake::FakeSway::start("flapper", sway::fake::Script { flapper: true, ..Default::default() });
     let socket = f.socket.clone();
-    let (delays, log, published) = flapping(|p| sway::session(&socket, p), Duration::ZERO);
+    let (delays, log, published) = flapping(|p| sway::session(&socket, false, p), Duration::ZERO);
     assert_eq!(published, 6, "the initial state served every round");
     assert_eq!(delays, [1, 2, 4, 8, 16]);
     assert_eq!(log.len(), 1, "{log:?}");

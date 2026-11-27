@@ -7,7 +7,7 @@
 //! Never:
 //! - write to a compositor: each backend's requests are a fixed list, checked by
 //!   `compositor_requests_are_read_only`, `mango_writes_only_its_request_lines` and
-//!   `sway_writes_only_its_three_messages`; the one write alpheus makes is the configured
+//!   `sway_writes_only_its_messages`; the one write alpheus makes is the configured
 //!   workspace command, from `actions.rs`;
 //! - open a socket anywhere else (`compositor_sockets_opened_only_in_sources`);
 //! - poll: every backend blocks on its socket, so a quiet session costs no wake-up.
@@ -228,7 +228,7 @@ pub fn spawn_source<T: Send + 'static>(
 
 /// Starts the compositor source, after one line naming it. No compositor recognized: "–" once,
 /// with no backoff (nothing will change in this session). `keyboard`: the states carry the
-/// keyboard layout and mode (Mango; Hyprland and niri never do).
+/// keyboard layout and mode (Mango and Sway; Hyprland and niri never do).
 pub fn start(c: Option<Compositor>, keyboard: bool, send: impl Fn(Option<CompositorState>) -> bool + Send + 'static) {
     log(&describe(c.as_ref()));
     let r = match c {
@@ -241,7 +241,7 @@ pub fn start(c: Option<Compositor>, keyboard: bool, send: impl Fn(Option<Composi
         Some(Compositor::Mango { socket }) => {
             spawn_source("compositor", move |p| mango::session(&mango_path(|k| std::env::var_os(k), &socket), keyboard, p), send)
         }
-        Some(Compositor::Sway { socket }) => spawn_source("compositor", move |p| sway::session(&socket, p), send),
+        Some(Compositor::Sway { socket }) => spawn_source("compositor", move |p| sway::session(&socket, keyboard, p), send),
     };
     if let Err(e) = r {
         log(&format!("compositor thread: {word}", word = crate::log::error_word(&e)));

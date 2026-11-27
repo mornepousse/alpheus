@@ -153,9 +153,13 @@ fn compositor_requests_are_read_only() {
     assert_eq!(texts, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
     assert_eq!(REQUEST, "\"EventStream\"");
     assert_eq!(mango::REQUESTS, ["watch all-monitors", "watch all-clients"]);
-    assert_eq!(sway::Message::ALL.map(|m| m.code()), [1, 2, 4], "GET_WORKSPACES, SUBSCRIBE, GET_TREE: never RUN_COMMAND (0)");
+    assert_eq!(
+        sway::Message::ALL.map(|m| m.code()),
+        [1, 2, 2, 4, 100],
+        "GET_WORKSPACES, SUBSCRIBE (twice), GET_TREE, GET_INPUTS: never RUN_COMMAND (0)"
+    );
     assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
-    assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), 0]);
+    assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), sway::SUBSCRIPTION_KEYBOARD.len(), 0, 0]);
 }
 
 /// Every other way to write on a socket, refused in the Mango and Sway sources: their one
@@ -180,18 +184,27 @@ fn mango_writes_only_its_request_lines() {
 }
 
 /// The Sway source writes one thing, a `Message`'s frame; adding a
-/// message type must update this exhaustive match (and so this review). No other way to write on
-/// a socket (`OTHER_WRITES`) is used.
+/// message type must update this exhaustive match (and so this review). Five messages: the two
+/// reads, the two subscriptions (the keyboard's adds the `input` and `mode` events) and
+/// GET_INPUTS, a read with no payload (docs/decisions.md, "Sway is asked for its inputs once per
+/// session, and only with the keyboard"). No other way to write on a socket (`OTHER_WRITES`) is
+/// used.
 #[test]
-fn sway_writes_only_its_three_messages() {
+fn sway_writes_only_its_messages() {
     fn name(m: sway::Message) -> &'static str {
         match m {
             sway::Message::GetWorkspaces => "GET_WORKSPACES",
             sway::Message::Subscribe => "SUBSCRIBE",
+            sway::Message::SubscribeKeyboard => "SUBSCRIBE with input and mode",
             sway::Message::GetTree => "GET_TREE",
+            sway::Message::GetInputs => "GET_INPUTS",
         }
     }
-    assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "GET_TREE"]);
+    assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "SUBSCRIBE with input and mode", "GET_TREE", "GET_INPUTS"]);
+    assert_eq!(sway::Message::ALL.map(sway::Message::code), [1, 2, 2, 4, 100]);
+    assert!(sway::Message::GetInputs.payload().is_empty(), "GET_INPUTS carries nothing");
+    assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
+    assert_eq!(sway::SUBSCRIPTION_KEYBOARD, "[\"workspace\",\"window\",\"input\",\"mode\"]");
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/sway.rs")).unwrap();
     let prod = production_code(&text);
     assert_eq!(prod.matches("write_all(").count(), 1, "one write in the Sway source");

@@ -33,7 +33,7 @@ ink, in the status block. The name comes from the compositor, the way it gives i
 | Compositor | Layout and mode |
 | --- | --- |
 | Mango | yes: the monitors snapshot already read for the tags (`keyboardlayout`, `keymode`), the active monitor's |
-| Sway | not yet: nothing drawn |
+| Sway | yes: `GET_INPUTS` once per session, then the `input` and `mode` events; no mode until Sway sends its first `mode` event; with several keyboards, the last one that changed |
 | Hyprland, niri | nothing drawn (the backends of both are retired) |
 | Other layer-shell compositors | nothing drawn |
 
@@ -69,6 +69,17 @@ show_mode = false  # never the bind mode
   reads `Needs::KEYBOARD`, which only this module's row of `modules.rs` asks for, and passes it to
   `sources::start`. Without the module, Mango's two fields are parsed and dropped, so a layout
   switch publishes nothing and the main loop does not wake.
+- **Under Sway** (`sources/sway.rs`, `compositor/sway.rs`), the module changes what the source
+  sends: its subscription adds the `input` and `mode` events, and it reads `GET_INPUTS` once at the
+  start of each session, where the first keyboard with a layout name gives the layout. Then each
+  `input` event (`xkb_layout`, or `xkb_keymap`) carries the keyboard's new active layout, and each
+  `mode` event the mode's name: the model takes them, and the source publishes its last state with
+  them, without asking Sway anything (no `GET_INPUTS`, no tree read). Sway names no mode at start,
+  so none is drawn before the first `mode` event. With several keyboards the last one that changed
+  wins. Without the module the source subscribes to the workspace and window events only and never
+  sends `GET_INPUTS`: these two messages are the owner's extension of the Sway guardrail
+  (`sway_writes_only_its_messages`; "Sway is asked for its inputs once per session, and only with
+  the keyboard" in [decisions.md](../decisions.md)).
 - **The segment** is `segments::keyboard`, with `segments::short_layout` for the name; it carries
   no click zone. Its row in `modules.rs` has no hue, tab or popup, and `layout.rs` places it in
   `REMOVAL`.
@@ -81,6 +92,8 @@ show_mode = false  # never the bind mode
 **The path of one change.** Mango writes a new monitors snapshot on the watch the compositor
 thread already holds; the thread parses it, and because the keyboard is wanted the state differs,
 so it mails `Msg::Compositor`. The bar applies it and redraws; the segment reads the two fields.
+Under Sway, the switch arrives as one `input` event on the subscribed connection, and the
+compositor thread mails the last state with the new layout, without a read.
 
 The tests: `short_layout_*` and `keyboard_segment_*` (`segments/tests.rs`), `keyboard_defaults`,
 `keyboard_unknown_key_is_invalid`, `keyboard_is_not_a_default_module` (`config/tests.rs`),
@@ -89,15 +102,30 @@ The tests: `short_layout_*` and `keyboard_segment_*` (`segments/tests.rs`), `key
 headless tests under a fake Mango (`keyboard_under_mango_shows_the_layout_and_follows_a_change`,
 `keyboard_under_mango_draws_a_layout_only_change`,
 `keyboard_off_under_mango_redraws_nothing_on_a_layout_change`); `a_layout_or_mode_only_change_redraws`
-(`state.rs`) for the redraw check.
+(`state.rs`) for the redraw check. Under Sway: `sway_get_inputs_*`, `sway_input_*`, `sway_mode_*`,
+`sway_no_mode_before_the_first_mode_event`, `sway_keyboard_fields_stay_none_without_keyboard` and
+`sway_inputs_unreadable_or_too_deep_changes_nothing` (`compositor/sway.rs`);
+`keyboard_off_subscribes_to_two_events_and_never_asks_inputs`,
+`keyboard_on_subscribes_to_four_events_and_asks_inputs_once`,
+`an_input_event_updates_the_layout_without_reading_the_tree`,
+`a_mode_event_is_published_without_reading_the_tree` and
+`a_burst_of_input_and_window_events_reads_the_tree_once` (`sources/sway/tests.rs`, a fake Sway);
+and two headless tests on the isolated Sway, where the harness's virtual keyboard has two layouts
+and the harness switches them, or enters a mode, on its private socket
+(`keyboard_under_sway_follows_a_layout_switch`, `keyboard_under_sway_shows_a_mode`).
 
 ## Rules it keeps
 
 - No thread, timer, connection or child of its own: the layout rides the compositor source's
-  existing read (`at_rest_no_wakeups_with_the_keyboard_module`).
+  existing read under Mango, and its existing connections under Sway
+  (`at_rest_no_wakeups_with_the_keyboard_module`, both compositors).
+- Sway is only read: `GET_INPUTS` and the two more events are the whole extension
+  (`sway_writes_only_its_messages`, `tests/guardrails.rs`).
 - Off costs nothing at run time: without the module the source publishes no layout
   (`keyboard_off_under_mango_redraws_nothing_on_a_layout_change`, and
-  `a_layout_change_without_keyboard_publishes_nothing` in `sources/mango.rs`).
+  `a_layout_change_without_keyboard_publishes_nothing` in `sources/mango.rs`); under Sway it
+  subscribes to no keyboard event and never asks for the inputs
+  (`keyboard_off_subscribes_to_two_events_and_never_asks_inputs`).
 - No click: `every_click_on_a_full_bar_stays_on_the_allowlist` (`tests/guardrails.rs`) draws the
   module on its full bar, and it adds no command.
 - No log line carries a layout or a mode.
@@ -117,4 +145,9 @@ Measured in release, back to back with the version before it (the full table is 
 - **Layout changes:** +40 KB anonymous over the first 100 (the new letters' first rasterisation and
   the allocator settling), then +0 KB over the next 100 (bound 8 KB), in each run; flat up to 500
   changes in a longer run.
-- **Wake-ups:** none at rest once a change is drawn (`at_rest_no_wakeups_with_the_keyboard_module`).
+- **Under Sway** (`keyboard_module_pss_under_sway`): +4 KB of anonymous memory with the module
+  (one `GET_INPUTS` reply, read and dropped, and two strings), +16 KB over the first 100 layout
+  switches and +0 KB over the next 100, in each of three runs. Without the module the Sway source
+  sends what it sent before.
+- **Wake-ups:** none at rest once a change is drawn, under Mango and under Sway
+  (`at_rest_no_wakeups_with_the_keyboard_module`).

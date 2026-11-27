@@ -199,7 +199,7 @@ These are enforced by tests, so a change that breaks one fails the build.
   compositor are the workspace command and the output configurations, built in `outputs/wlr.rs` and
   sent only from `outputs/app.rs`, plus the clipboard's own selection for a re-copy
   ([clipboard](clipboard.md)). `compositor_requests_are_read_only`,
-  `mango_writes_only_its_request_lines`, `sway_writes_only_its_three_messages` and
+  `mango_writes_only_its_request_lines`, `sway_writes_only_its_messages` and
   `compositor_sockets_opened_only_in_sources` pin each backend's requests, and
   `output_power_management_never_appears` keeps `dpms` and output power management out of alpheus
   altogether.

@@ -28,9 +28,9 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeSystemd, FakeVpn, NmChange, Peer, PrivateBus,
-    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder,
-    fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub, start_daemon_with, volume_delta,
-    wait_until_executable, write_atomically, wtype, wtype_spawn,
+    PwDump, SIGNATURE, Sway, TempDir, UUID_HOME, VirtualKeyboard, Workstation, assert_no_spin, capture_delta, capture_gone,
+    fake_env_recorder, fake_recorder, fake_source, fake_stdin_recorder, launcher, pw_dump_send, shield_record, shield_stub,
+    start_daemon_with, volume_delta, wait_until_executable, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -2407,8 +2407,60 @@ fn quiet_loop(d: &Daemon) {
     }
 }
 
-/// With the keyboard module under Mango, once a layout change is drawn the daemon sleeps: no
-/// wake-up of the loop nor of the compositor thread in a 5 s window (no timer, no polling).
+/// The bar under the isolated Sway read as the compositor, with its two-layout virtual keyboard
+/// there before the daemon (the session's GET_INPUTS names it); the system bus `bus`, pw-dump
+/// silent. Returned once the compositor is read.
+fn start_sway_keyboard(name: &str, bus: &PrivateBus, bar_toml: &str) -> (Sway, VirtualKeyboard, Daemon) {
+    let sway = Sway::start(name, 1);
+    let keyboard = sway.keyboard();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(bar_toml),
+            system_bus: Some(&bus.address),
+            pw_dump: PwDump::Silent,
+            backend: Backend::Sway,
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("compositor: Sway", DELAY), "{:?}", d.log());
+    (sway, keyboard, d)
+}
+
+/// The keyboard module under Sway: PSS without it, with it (the `input` and `mode` events and one
+/// GET_INPUTS), and after 100 then 200 layout switches by the harness (`xkb_switch_layout next` on
+/// its private socket: English (US), French, alternated). Printed for docs/measurements.md, bounded
+/// as under Mango.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn keyboard_module_pss_under_sway() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("kb-pss-sway");
+    let _workstation = Workstation::serve(&bus);
+    let mut figures = Vec::new();
+    for (name, bar) in [("kb-sway-off", NO_KEYBOARD_BAR), ("kb-sway-on", KEYBOARD_BAR)] {
+        let (sway, _keyboard, d) = start_sway_keyboard(name, &bus, bar);
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        figures.push((d.pss_kb(), d.anonymous_kb()));
+        if bar == KEYBOARD_BAR {
+            for _ in 0..2 {
+                for _ in 0..100 {
+                    sway.command("input type:keyboard xkb_switch_layout next");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                std::thread::sleep(Duration::from_secs(2)); // the last switch drawn
+                figures.push((d.pss_kb(), d.anonymous_kb()));
+            }
+            assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+        }
+    }
+    report_keyboard_figures("Sway", &figures);
+}
+
+/// With the keyboard module, under Mango and under Sway, once a layout change is drawn the daemon
+/// sleeps: no wake-up of the loop nor of the compositor thread in a 5 s window (no timer, no
+/// polling).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_with_the_keyboard_module() {
@@ -2416,20 +2468,32 @@ fn at_rest_no_wakeups_with_the_keyboard_module() {
     let bus = PrivateBus::start("kb-rest");
     let _workstation = Workstation::serve(&bus);
     // No clock: its minute tick is a planned wake-up of its own.
-    let (_sway, fake, d) = start_reading("kb-rest", 1, &bus, Some("modules = [\"workspaces\", \"window\", \"keyboard\"]\n"), true);
-    let fake = fake.expect("the fake Mango");
-    wait_until_read(&fake, &d);
-    std::thread::sleep(Duration::from_secs(2)); // end of startup
-    fake.push_monitors("mango-monitors-layout-fr-only.json");
-    quiet_loop(&d); // the change drawn, its frame done
-    let (main_before, compositor_before, ticks) =
-        (d.main_thread_wakeups(), d.thread_wakeups("compositor").expect("the compositor thread runs"), d.cpu_ticks());
-    std::thread::sleep(Duration::from_secs(5));
-    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "with the keyboard module");
-    let main = d.main_thread_wakeups().saturating_sub(main_before);
-    let compositor = d.thread_wakeups("compositor").unwrap().saturating_sub(compositor_before);
-    eprintln!("wake-ups at rest with the keyboard module under Mango (5 s): loop {main}, compositor thread {compositor}");
-    assert_eq!((main, compositor), (0, 0), "the keyboard module wakes the daemon at rest");
+    let bar = "modules = [\"workspaces\", \"window\", \"keyboard\"]\n";
+    for what in ["Mango", "Sway"] {
+        // Kept to the end of the window: the fake Mango, or the Sway and its keyboard.
+        let (_sway, _fake, _keyboard, d) = if what == "Mango" {
+            let (sway, fake, d) = start_reading("kb-rest", 1, &bus, Some(bar), true);
+            let fake = fake.expect("the fake Mango");
+            wait_until_read(&fake, &d);
+            std::thread::sleep(Duration::from_secs(2)); // end of startup
+            fake.push_monitors("mango-monitors-layout-fr-only.json");
+            (sway, Some(fake), None, d)
+        } else {
+            let (sway, keyboard, d) = start_sway_keyboard("kb-rest-sway", &bus, bar);
+            std::thread::sleep(Duration::from_secs(2)); // end of startup
+            sway.command("input type:keyboard xkb_switch_layout next");
+            (sway, None, Some(keyboard), d)
+        };
+        quiet_loop(&d); // the change drawn, its frame done
+        let (main_before, compositor_before, ticks) =
+            (d.main_thread_wakeups(), d.thread_wakeups("compositor").expect("the compositor thread runs"), d.cpu_ticks());
+        std::thread::sleep(Duration::from_secs(5));
+        assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "with the keyboard module");
+        let main = d.main_thread_wakeups().saturating_sub(main_before);
+        let compositor = d.thread_wakeups("compositor").unwrap().saturating_sub(compositor_before);
+        eprintln!("wake-ups at rest with the keyboard module under {what} (5 s): loop {main}, compositor thread {compositor}");
+        assert_eq!((main, compositor), (0, 0), "the keyboard module wakes the daemon at rest under {what}");
+    }
 }
 
 /// The power menu's bars: the button and the clock, then the clock alone (the baseline).
