@@ -1468,21 +1468,25 @@ mod shapes {
         (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) != fill).collect()
     }
 
+    /// The glyph's ink is centred in its tile within a pixel, at both scales (the centring rounds
+    /// half a pixel at most; a pixel more is a drift).
     #[test]
     fn a_tile_glyph_is_centred_in_its_shape() {
         let (mut p, r) = (fonts(), distinct());
-        let (s, ((x0, x1), (y0, y1))) = tile(&mut p, crate::launcher::tools::catalog::FOLDER, 2);
-        // Inside the tile's chip, clear of its rounded corners: only the glyph differs from the fill.
-        let inset = 4 * 2;
-        let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
-        assert!(ink.len() > 20, "the glyph is drawn: {} px", ink.len());
-        let (lx, hx) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
-        let (ly, hy) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
-        let (cx, cy) = (f64::from(lx + hx + 1) / 2.0, f64::from(ly + hy + 1) / 2.0);
-        let (sx, sy) = (f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
-        assert!((cx - sx).abs() <= 2.0, "centred across: ink {cx} vs tile {sx}");
-        assert!((cy - sy).abs() <= 2.0, "centred down: ink {cy} vs tile {sy}");
-        assert!(ink.iter().any(|&(_, y)| y >= y0 + s.rh), "the top row alone does not hold the glyph");
+        for scale in [1, 2] {
+            let (s, ((x0, x1), (y0, y1))) = tile(&mut p, crate::launcher::tools::catalog::FOLDER, scale);
+            // Inside the tile's chip, clear of its rounded corners: only the glyph differs from the fill.
+            let inset = 4 * scale as u32;
+            let ink = inked(&s, ((x0 + inset, x1 - inset), (y0 + inset, y1 - inset)), r.pill_bg);
+            assert!(ink.len() > 10 * scale as usize, "scale {scale}: the glyph is drawn: {} px", ink.len());
+            let (lx, hx) = (ink.iter().map(|p| p.0).min().unwrap(), ink.iter().map(|p| p.0).max().unwrap());
+            let (ly, hy) = (ink.iter().map(|p| p.1).min().unwrap(), ink.iter().map(|p| p.1).max().unwrap());
+            let (cx, cy) = (f64::from(lx + hx + 1) / 2.0, f64::from(ly + hy + 1) / 2.0);
+            let (sx, sy) = (f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
+            assert!((cx - sx).abs() <= 1.0, "scale {scale}: centred across: ink {cx} vs tile {sx}");
+            assert!((cy - sy).abs() <= 1.0, "scale {scale}: centred down: ink {cy} vs tile {sy}");
+            assert!(ink.iter().any(|&(_, y)| y >= y0 + s.rh), "scale {scale}: the top row alone does not hold the glyph");
+        }
     }
 
     #[test]
