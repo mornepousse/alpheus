@@ -55,6 +55,13 @@ that names one is refused (see Configuration).
   only until 3 s after it, so a double click or a double Enter never confirms. Moving the
   selection, pressing another row, any other key, or 3 s passing cancels the question and draws
   the row plain again.
+- **The countdown.** With `countdown` set, the confirming activation of a row that asks (and the
+  activation of a row with a `countdown` of its own) does not run it yet: the row reads
+  `⏻ Power off in 5 s · Esc` in the warning colour, redrawn each second, and runs when it reaches
+  0, closing the menu. **Esc** cancels it and leaves the menu open (a second Esc closes); any other
+  key cancels it too and does nothing else, but **Enter** and **Space** do nothing, so the key that
+  confirmed cannot cut it short. Hovering or pressing another row cancels it (the press runs
+  nothing); closing the menu by any route drops it.
 - **A held key** repeats only to move: a held Enter or digit acts once. The wheel, and the right and middle
   buttons, do nothing in the menu.
 - **From a key.** `alpheus-launch --power` opens the menu under the bar's right end on the focused
@@ -82,8 +89,8 @@ start (a change needs a restart of the bar).
 | Key (under `[power]`) | Default | Meaning |
 | --- | --- | --- |
 | `builtins` | `true` | `false` hides the four rows above from this menu (the quick panel keeps them) |
-| `countdown` | `0` | seconds counted after a confirming activation, 0 to 30; read and checked, the countdown itself is not built yet |
-| `[[power.entry]]` | none, at most 8 | a row of your own: `name` (1 to 24 characters), `icon` (one character, default `•`), `run` (an argument list, not empty), `confirm` (default `false`: runs at once), `countdown` (0 to 30, this row's own; not used yet) |
+| `countdown` | `0` | seconds counted after the confirming activation of a row that asks (Reboot, Power off, a `confirm` row), 0 to 30; 0 runs at once |
+| `[[power.entry]]` | none, at most 8 | a row of your own: `name` (1 to 24 characters), `icon` (one character, default `•`), `run` (an argument list, not empty), `confirm` (default `false`: runs at once), `countdown` (0 to 30, this row's own, over the global one, whether the row asks or not; 0 turns it off for the row) |
 
 A command is an argument list, run as written: there is no shell, so no `$VARIABLE` and no `;`. An
 empty `[quick]` list hides its row.
@@ -144,9 +151,16 @@ Two files in `crates/alpheus-daemon/src/power/`, and the rule they share in `ses
 The button itself is a segment (`segments::power`, none when `power::any_rows` is false)
 and `ModuleId::Power`, the last of `ModuleId::ALL`; its click zone is the module.
 
-**The question's timer.** `power_timer` is one `DeadlineTimer` that `power_timer_sync` arms to the
-question's end after every repaint, and disarms when there is no question. `power_closed`, the
-menu's `closed` hook, disarms it whatever closed the menu, so nothing is left running.
+**The menu's timer.** `power_timer` is one `DeadlineTimer` that `power_timer_sync` arms to the
+menu's deadline (`Power::deadline`: the question's end, or the countdown's next whole second)
+after every repaint and every tick, and disarms when there is neither. `power_closed`, the menu's
+`closed` hook, disarms it whatever closed the menu, so nothing is left running.
+
+**The countdown.** A `Countdown` (the row, its end, the whole seconds drawn) is a field of the
+menu's `Power`, so it goes with the popup. `Power::due` redraws when the seconds left change and
+answers `RunAndClose` at the end; a tick that changed nothing still re-arms the timer. The log
+says `power: countdown power off` (or `entry 2`) when one starts and `power: countdown cancelled`
+when one goes without running; its end is the row's own `power: power off`.
 
 **The path of a click.** The bar's click handler finds the module's zone and calls the popup table's
 `toggle` for it, which is `power_toggle`. It builds a `Power` from `[quick]` and `[power]`, asks
@@ -160,6 +174,9 @@ start), never as its command or its name, which can name the user.
 
 - `the_tray_spawns_no_thread`: `power/mod.rs` starts no thread, process or command.
 - `the_power_menu_has_no_panicking_path`: neither file's production code panics.
+- `power_countdown_closed_popup_disarms_the_timer`: `power_closed` disarms the timer, `power_tick`
+  re-syncs it after every tick, and a countdown is held by the menu's `Power` only, never by a field
+  of `App` nor in any other file.
 - `the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry`: the popup's `closed` hook releases
   the timer, a repaint re-syncs it, and the only command spawned is the row's own (a fixed row's
   `[quick]` command, a user row's `run`, in the two arms of `PowerEntry::command`), once, through
@@ -169,7 +186,10 @@ start), never as its command or its name, which can name the user.
   is driven through it only ever asks to run a row whose command is set (a fixed row only while
   shown, and with its `[quick]` command), every row is reached, no command holds a sleep word, and
   Reboot, Power off and a `confirm` row never run without their own question and a second
-  activation at least 0.4 s later. The keys driven include the digits 1 to 9.
+  activation at least 0.4 s later. The keys driven include the digits 1 to 9. With a countdown
+  (the global one and a row's own), a row that has one runs only from `due` at or after its end,
+  after its own question for a row that asks, and every countdown left running is stepped by the
+  menu's own deadlines, at most a second apart.
 - `the_top_rows_keys_are_digits_by_position` and `the_power_menu_reads_the_top_rows_digits_by_position`:
   evdev 2 to 10 are the digits 1 to 9 in the power menu only (AZERTY's `&` is 1), never with Ctrl,
   Alt or Super, never over a named key (an arrow, Enter) or a typed digit, which a virtual keyboard
@@ -183,14 +203,15 @@ start), never as its command or its name, which can name the user.
   `power_a_click_on_a_row_runs_it`, `power_off_asks_then_a_second_enter_after_half_a_second_runs_it`,
   `power_two_enters_a_tenth_of_a_second_apart_run_nothing`,
   `power_escape_closes_it_with_its_question_and_nothing_stays_awake`,
-  `power_verb_opens_and_closes_the_menu` and `power_a_digit_runs_a_user_row`) pin the click, the
+  `power_verb_opens_and_closes_the_menu`, `power_a_digit_runs_a_user_row`,
+  `power_countdown_escape_runs_nothing` and `power_countdown_runs_at_its_end`) pin the click, the
   keys, a digit, the question and the verb against
   a fake executor that records each command; no test runs a real `loginctl` or `systemctl`.
 - The reasons are in [decisions.md](../decisions.md): "The power menu runs the `[quick]` commands,
   and `[power]` adds rows", "A user row of the power menu never sleeps", "Reboot and power off ask
   first, and a second activation confirms from 0.4 s to 3 s", "Nothing is selected when the power
   menu opens", "A held key repeats only to move, in the power menu", "A digit picks a power row,
-  and the same digit confirms", "The power menu has its own
+  and the same digit confirms", "The power menu's countdown lives and dies with the menu", "The power menu has its own
   timer", "`alpheus-launch --power` opens the menu without a grab".
 
 ## What it costs

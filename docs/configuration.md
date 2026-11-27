@@ -255,7 +255,7 @@ The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as
 
 | Key | Type | Default | Bounds | Meaning |
 |---|---|---|---|---|
-| `countdown` | integer (seconds) | `0` | 0 to 30 | Seconds counted after a confirming activation; 0 is off. Read and checked; the countdown itself is not built yet. |
+| `countdown` | integer (seconds) | `0` | 0 to 30 | Seconds counted after the confirming activation of a row that asks (Reboot, Power off, a `confirm` row) before it runs; 0 is off. Esc, any key but Enter and Space, another row, or closing the menu cancels it. |
 | `builtins` | bool | `true` | | `false` hides the four fixed rows (Lock, Log out, Reboot, Power off) from the ⏻ menu only; the quick panel keeps its session buttons. |
 
 `[[power.entry]]`: a row of your own, after the fixed ones in file order, **at most 8**.
@@ -266,7 +266,7 @@ The ⏻ menu's own rows. Absent, the menu shows `[quick]`'s four session rows as
 | `icon` | string | absent (`•`) | exactly one character | The row's glyph. |
 | `run` | command | required | not empty, non-blank program, no NUL, no sleep word | Run as given, never through a shell, never waited for. |
 | `confirm` | bool | `false` | | The row asks first, as Reboot and Power off do: a second activation 0.4 s to 3 s later runs it. |
-| `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one (stored, not used yet). |
+| `countdown` | integer (seconds) | absent | 0 to 30 | This row's own countdown, over the global one, whether it asks or not (a row that does not ask counts from its activation); 0 turns it off for the row. |
 
 A `run` holding `suspend`, `hibernate`, `hybrid-sleep`, `dpms`, niri's `power-off-monitors` or
 `wlopm` anywhere in any argument, in any case, makes `bar.toml` invalid: alpheus never handles sleep
@@ -483,7 +483,7 @@ airplane = true                             # the airplane mode row (hidden with
 rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (absolute); read when the panel opens, never written
 
 [power]
-countdown = 0        # seconds counted after a confirming activation (0 to 30); 0: off (not built yet)
+countdown = 0        # seconds counted after a confirming activation (0 to 30); 0: off
 builtins = true      # false hides the four [quick] rows from the ⏻ menu
 # [[power.entry]]    # a row of your own after the fixed ones, at most 8; never suspend, hibernate, hybrid-sleep, dpms, power-off-monitors or wlopm
 # name = "Quit session"            # 1 to 24 characters

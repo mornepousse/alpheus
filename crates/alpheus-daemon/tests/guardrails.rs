@@ -3832,8 +3832,13 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
 /// while the built-ins show) or a `[[power.entry]]` row (its own `run`). Each row is reached, and a
 /// row that asks (reboot, power off, a user row with `confirm`) never runs without a second
 /// activation CONFIRM_AFTER after its own first. No command run holds a sleep word, in any case.
+/// With a countdown, a row that has one never runs from a key or the pointer: only `due`, at or
+/// after the countdown's end, runs it, and a row that asks starts its countdown only from its own
+/// question and a second activation CONFIRM_AFTER later. Every countdown left running is stepped
+/// by the menu's own deadlines to its end.
 /// The configs: the four commands set or not, times no user row, a plain one or one that asks,
-/// times the built-ins shown or hidden.
+/// times the built-ins shown or hidden, times no countdown or one of 2 s (the global one, and the
+/// plain row's own).
 #[test]
 fn every_power_menu_activation_is_a_configured_session() {
     let keys = [
@@ -3859,7 +3864,7 @@ fn every_power_menu_activation_is_a_configured_session() {
     ];
     let t = Instant::now();
     let later = t + session::CONFIRM_AFTER;
-    for builtins in [true, false] {
+    for (builtins, cd) in [(true, 0u8), (false, 0), (true, 2), (false, 2)] {
         // 0: no user row; 1: a plain one; 2: one with `confirm`.
         for extra in 0..3u8 {
             for mask in 0..16u8 {
@@ -3873,17 +3878,20 @@ fn every_power_menu_activation_is_a_configured_session() {
                 };
                 let mut config = BarConfig { quick, ..BarConfig::default() };
                 config.power.builtins = builtins;
+                config.power.countdown = cd;
                 if extra > 0 {
+                    // The plain row has its own countdown when there is one; the confirm row takes
+                    // the global one.
                     let row = PowerEntryConfig {
                         name: "Row".into(),
                         icon: None,
                         run: vec!["fake-entry".into()],
                         confirm: extra == 2,
-                        countdown: None,
+                        countdown: (extra == 1 && cd > 0).then_some(cd),
                     };
                     config.power.entry = vec![row];
                 }
-                let case = format!("mask {mask:04b}, builtins {builtins}, extra {extra}");
+                let case = format!("mask {mask:04b}, builtins {builtins}, extra {extra}, countdown {cd}");
                 let Some(fresh) = Power::new(&config) else {
                     assert!(extra == 0 && (mask == 0 || !builtins), "a command set: a menu ({case})");
                     continue;
@@ -3894,46 +3902,84 @@ fn every_power_menu_activation_is_a_configured_session() {
                     PowerEntry::Session(s) => s.asks(),
                     PowerEntry::User(i) => config.power.entry.get(i).is_some_and(|u| u.confirm),
                 };
-                let mut ran: Vec<PowerEntry> = Vec::new();
-                // `before`: the question pending just before a late activation; a row that asks runs
-                // only when it was its own.
-                let mut record = |a: PowerAction, late: bool, before: Option<(PowerEntry, Instant)>| {
-                    if let PowerAction::RunAndClose(e) = a {
-                        assert!(!e.command(&config).is_empty(), "{e:?} has no command ({case})");
-                        if let PowerEntry::Session(s) = e {
-                            assert!(builtins, "{s:?} ran with the built-ins hidden ({case})");
-                            assert_eq!(e.command(&config), s.command(&config.quick), "a fixed row runs its [quick] command ({case})");
-                        }
-                        assert!(
-                            !asks(e) || (late && matches!(before, Some((q, _)) if q == e)),
-                            "{e:?} ran without a question of its own and a second activation 0.4 s later ({case})"
-                        );
-                        ran.push(e);
+                // Whether a row counts down before it runs, read from the config as well.
+                let counts = |e: PowerEntry| match e {
+                    PowerEntry::Session(s) => s.asks() && cd > 0,
+                    PowerEntry::User(i) => {
+                        config.power.entry.get(i).is_some_and(|u| u.countdown.unwrap_or(if u.confirm { cd } else { 0 }) > 0)
                     }
                 };
+                let mut ran: Vec<PowerEntry> = Vec::new();
+                // `before`: the question pending just before a late activation; a row that asks runs
+                // (or starts its countdown) only when it was its own. `started`: the row whose
+                // countdown the call started; `ended`: the run came from `due` at the countdown's end.
+                let mut record =
+                    |a: PowerAction, started: Option<PowerEntry>, late: bool, before: Option<(PowerEntry, Instant)>, ended: bool| {
+                        if let Some(e) = started {
+                            assert!(counts(e), "{e:?} counted down without a countdown ({case})");
+                            assert!(
+                                !asks(e) || (late && matches!(before, Some((q, _)) if q == e)),
+                                "{e:?}'s countdown started without a question of its own and a second activation 0.4 s later ({case})"
+                            );
+                        }
+                        if let PowerAction::RunAndClose(e) = a {
+                            assert!(!e.command(&config).is_empty(), "{e:?} has no command ({case})");
+                            if let PowerEntry::Session(s) = e {
+                                assert!(builtins, "{s:?} ran with the built-ins hidden ({case})");
+                                assert_eq!(e.command(&config), s.command(&config.quick), "a fixed row runs its [quick] command ({case})");
+                            }
+                            if counts(e) {
+                                assert!(ended, "{e:?} ran before its countdown's end ({case})");
+                            } else {
+                                assert!(
+                                    !ended && (!asks(e) || (late && matches!(before, Some((q, _)) if q == e))),
+                                    "{e:?} ran without a question of its own and a second activation 0.4 s later ({case})"
+                                );
+                            }
+                            ran.push(e);
+                        }
+                    };
                 for k1 in keys {
                     for k2 in keys {
                         let mut p = fresh.clone();
-                        record(p.key(k1, false, t), false, None);
-                        record(p.key(k2, false, t), false, None);
+                        let (a, s) = power_call(&mut p, |p| p.key(k1, false, t));
+                        record(a, s, false, None, false);
+                        let (a, s) = power_call(&mut p, |p| p.key(k2, false, t));
+                        record(a, s, false, None, false);
                         for k3 in keys {
                             let mut q = p.clone();
                             let before = q.question;
-                            record(q.key(k3, false, later), true, before);
+                            let (a, s) = power_call(&mut q, |q| q.key(k3, false, later));
+                            record(a, s, true, before, false);
+                            if let Some(a) = power_countdown_end(&mut q) {
+                                record(a, None, true, None, true);
+                            }
                         }
                     }
                 }
                 for row in 0..6u16 {
                     let mut p = fresh.clone();
-                    record(p.press(row, t), false, None);
-                    record(p.press(row, t), false, None);
+                    let (a, s) = power_call(&mut p, |p| p.press(row, t));
+                    record(a, s, false, None, false);
+                    let (a, s) = power_call(&mut p, |p| p.press(row, t));
+                    record(a, s, false, None, false);
                     let before = p.question;
-                    record(p.press(row, later), true, before);
+                    let (a, s) = power_call(&mut p, |p| p.press(row, later));
+                    record(a, s, true, before, false);
+                    if let Some(a) = power_countdown_end(&mut p) {
+                        record(a, None, true, None, true);
+                    }
                     let mut p = fresh.clone();
-                    record(p.hover(row), false, None);
-                    record(p.key(Key::Enter, false, t), false, None);
+                    let (a, s) = power_call(&mut p, |p| p.hover(row));
+                    record(a, s, false, None, false);
+                    let (a, s) = power_call(&mut p, |p| p.key(Key::Enter, false, t));
+                    record(a, s, false, None, false);
                     let before = p.question;
-                    record(p.key(Key::Enter, false, later), true, before);
+                    let (a, s) = power_call(&mut p, |p| p.key(Key::Enter, false, later));
+                    record(a, s, true, before, false);
+                    if let Some(a) = power_countdown_end(&mut p) {
+                        record(a, None, true, None, true);
+                    }
                 }
                 if builtins {
                     for s in session::configured(&config.quick) {
@@ -3953,6 +3999,37 @@ fn every_power_menu_activation_is_a_configured_session() {
             }
         }
     }
+}
+
+/// One call on the power menu: its answer, and the row whose countdown it started (none counting
+/// before the call, one after).
+fn power_call(p: &mut Power, f: impl FnOnce(&mut Power) -> PowerAction) -> (PowerAction, Option<PowerEntry>) {
+    let was = p.counting.is_some();
+    let a = f(p);
+    let started = if was { None } else { p.counting.map(|c| c.entry) };
+    (a, started)
+}
+
+/// A countdown left running, stepped by the menu's own deadlines: nothing runs a millisecond before
+/// its end, every deadline is at most a second after the last (one wake-up a second), and the row
+/// runs at the deadline that reaches the end. None when nothing counts.
+fn power_countdown_end(p: &mut Power) -> Option<PowerAction> {
+    let c = p.counting?;
+    let mut early = p.clone();
+    assert!(!matches!(early.due(c.ends - Duration::from_millis(1)), PowerAction::RunAndClose(_)), "ran before its end: {c:?}");
+    let mut last = c.ends - Duration::from_secs(u64::from(c.left));
+    for _ in 0..=c.left {
+        let at = p.deadline().expect("a countdown has a deadline");
+        assert!(at > last && at - last <= Duration::from_secs(1), "a tick a second: {c:?}");
+        last = at;
+        let a = p.due(at);
+        if let PowerAction::RunAndClose(e) = a {
+            assert!(at >= c.ends && e == c.entry, "{e:?} ran at its end only: {c:?}");
+            assert!(p.counting.is_none() && p.deadline().is_none(), "nothing left after it ran");
+            return Some(a);
+        }
+    }
+    panic!("the countdown never ended: {c:?}");
 }
 
 /// A `[[power.entry]]` whose `run` names a sleep word, `dpms`, niri's `power-off-monitors` or
@@ -4732,6 +4809,44 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert!(row.contains("key: App::power_key,"), "{row}");
     let key = function_body(&power_app, "fn power_key(");
     assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
+}
+
+/// The power menu's countdown lives and dies with the menu: it is a field of the menu's `Power`
+/// (dropped whole with its popup) and of nothing else, `power_closed` disarms the timer whatever
+/// closed the menu, and `power_tick` syncs the timer again after every tick, so the countdown's
+/// one-second timer exists only while a countdown runs. No field of `App` holds a countdown, and
+/// no file but `power/mod.rs` builds or stores one.
+#[test]
+fn power_countdown_closed_popup_disarms_the_timer() {
+    let files = source_files();
+    let src = |name: &str| {
+        production_code_without_comments(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)
+    };
+    let (power_mod, power_app, wayland) = (src("power/mod.rs"), src("power/app.rs"), src("wayland.rs"));
+    let closed = function_body(&power_app, "pub(crate) fn power_closed(");
+    assert!(closed.contains("self.power_timer.sync_opt(self.loop_handle.as_ref(), None, App::power_tick)"), "{closed}");
+    let tick = function_body(&power_app, "pub(crate) fn power_tick(");
+    let (due, sync) = (tick.find(".due("), tick.rfind("app.power_timer_sync()"));
+    assert!(matches!((due, sync), (Some(d), Some(s)) if d < s), "the timer re-synced after every tick: {tick}");
+    let sync = function_body(&power_app, "pub(crate) fn power_timer_sync(");
+    assert!(sync.contains("p.deadline()") && sync.contains("_ => None"), "no menu, no deadline: {sync}");
+    let app = function_body(&wayland, "pub struct App {");
+    for word in ["Countdown", "counting"] {
+        assert!(!app.contains(word), "a field of App holds {word}: the countdown belongs to the menu");
+    }
+    let power = function_body(&power_mod, "pub struct Power {");
+    assert!(power.contains("pub counting: Option<Countdown>,"), "{power}");
+    for (path, text) in &files {
+        let name = relative_path(path);
+        if name == "power/mod.rs" {
+            continue;
+        }
+        let code = production_code_without_comments(text);
+        for form in ["Countdown { entry", "Option<Countdown>", "power::Countdown", ".counting =", "counting: Some"] {
+            assert!(!code.contains(form), "{form} in {name}: only the menu's model holds a countdown");
+        }
+        assert!(!code.lines().any(|l| l.contains("power::") && l.contains("Countdown")), "{name} imports the menu's countdown");
+    }
 }
 
 /// Whatever closes the timer popup, the one-second cadence goes (`timer_sync`

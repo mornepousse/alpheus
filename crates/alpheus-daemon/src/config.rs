@@ -88,14 +88,14 @@
 //! airplane = true                                           # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
 //! rfkill_dir = "/sys/class/rfkill"                          # where rfkill switches are listed (an absolute path); read when the panel opens, never written
 //! [power]                                                   # the ⏻ menu's own rows (read at start)
-//! countdown = 0                                             # seconds, 0 to 30 (0: off); stored, not yet used
+//! countdown = 0                                             # seconds, 0 to 30 (0: off), after a confirming activation
 //! builtins = true                                           # false hides the four [quick] rows
 //! [[power.entry]]   # a row of your own after the fixed ones, at most 8; never a sleep or screen power word
 //! name = "Quit session"                                     # 1 to 24 characters
 //! icon = "•"                                                # one character; absent: •
 //! run = ["my-session-quit"]                                 # argv, run as given, never through a shell; not empty
 //! confirm = false                                           # true: asks first, a second activation 0.4 s to 3 s later runs it
-//! # countdown = 5                                           # 0 to 30, this row's own; stored, not yet used
+//! # countdown = 5                                           # 0 to 30, this row's own, over the global one
 //! [timer]                                                  # the focus timer (with "timer" in modules); read at start
 //! countdown = 10                                            # minutes, the popup's Timer row at start, 1 to 180
 //! work = 25                                                 # Pomodoro, minutes, 1 to 180

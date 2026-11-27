@@ -3,12 +3,12 @@
 //! A `Power` holds the rows (the `[quick]` session commands that are set, in the order Lock,
 //! Log out, Reboot, Power off, unless `[power] builtins = false`; then the `[[power.entry]]` rows
 //! in file order), which one is selected, and the question a row that asks (Reboot, Power off, a
-//! user row with `confirm`) shows before it runs. `key`, `hover`, `press` and `due` change it and
-//! answer with a `PowerAction` (nothing to do, redraw, close, or run a row and close); `render`
-//! turns it into the grid. The rule for the question (when a second activation confirms, when the
-//! question expires) is `session::ask` and `session::expire`, shared with the quick panel's
-//! session buttons. The other half, `app.rs`, opens the popup (`PopupBody::Power`), arms the timer
-//! and spawns the commands.
+//! user row with `confirm`) shows before it runs, and the countdown a row with one shows before it
+//! runs (`Countdown`). `key`, `hover`, `press` and `due` change it and answer with a `PowerAction`
+//! (nothing to do, redraw, close, or run a row and close); `render` turns it into the grid. The
+//! rule for the question (when a second activation confirms, when the question expires) is
+//! `session::ask` and `session::expire`, shared with the quick panel's session buttons. The other
+//! half, `app.rs`, opens the popup (`PopupBody::Power`), arms the timer and spawns the commands.
 //!
 //! Never:
 //! - read a clock: the caller passes `now` to every call that needs it;
@@ -28,7 +28,7 @@ use crate::keys::{Key, Mods};
 use crate::list::{self, Boxed, Row, Shape, ShapeKind};
 use crate::session::{self, Activation, Session};
 use std::borrow::Cow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The rows that carry a digit capsule: 1 to 9, the keys that pick them.
 pub const DIGITS: usize = 9;
@@ -103,7 +103,7 @@ pub struct PowerRow {
     pub label: String,
     /// Asks first (Reboot, Power off, a user row with `confirm`).
     pub asks: bool,
-    /// The seconds counted before it runs; 0: none. Stored, not used yet.
+    /// The seconds counted before it runs (`Countdown`); 0: it runs at once.
     pub countdown: u8,
 }
 
@@ -111,6 +111,11 @@ impl PowerRow {
     /// The question while it waits for its second activation, drawn in warn: "󰜉 Reboot? ⏎".
     fn question(&self) -> String {
         format!("{} {}? ⏎", self.glyph, self.label)
+    }
+
+    /// Its countdown's line with `left` seconds to go, drawn in warn: "⏻ Power off in 5 s · Esc".
+    fn countdown_line(&self, left: u8) -> String {
+        format!("{} {} in {} s · Esc", self.glyph, self.label, left)
     }
 
     /// The cells its longest text takes: the glyph, a space and the label; its question when it
@@ -121,7 +126,7 @@ impl PowerRow {
             cells = cells.max(text_width(&self.question()));
         }
         if self.countdown > 0 {
-            cells = cells.max(text_width(&format!("{} {} in {} s · Esc", self.glyph, self.label, self.countdown)));
+            cells = cells.max(text_width(&self.countdown_line(self.countdown)));
         }
         cells
     }
@@ -178,6 +183,19 @@ pub struct Power {
     pub selected: Option<usize>,
     /// The row that is asking ("Power off? ⏎") and the instant its question ends.
     pub question: Option<(PowerEntry, Instant)>,
+    /// The row counting down before it runs ("⏻ Power off in 5 s · Esc"), if one is.
+    pub counting: Option<Countdown>,
+}
+
+/// A row counting down before it runs: armed by its confirming activation (by its activation for a
+/// row that does not ask), it runs at `ends`; `left` is the whole seconds drawn. It lives in
+/// `Power`, so it goes with the menu. See docs/decisions.md, "The power menu's countdown lives and
+/// dies with the menu".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Countdown {
+    pub entry: PowerEntry,
+    pub ends: Instant,
+    pub left: u8,
 }
 
 impl Power {
@@ -187,7 +205,7 @@ impl Power {
         if rows.is_empty() {
             return None;
         }
-        Some(Power { rows, selected: None, question: None })
+        Some(Power { rows, selected: None, question: None, counting: None })
     }
 
     /// The selection on row `to`; moving it cancels the question, since the question belongs to
@@ -215,30 +233,53 @@ impl Power {
 
     /// Row `i` activated (Enter, Space, a left press): a row that does not ask runs at once; one
     /// that asks follows `session::ask` (asked, then confirmed by a second activation 0.4 s to
-    /// 3 s later). An index past the rows does nothing.
+    /// 3 s later). A row with a countdown starts it where it would run (`run`). An index past the
+    /// rows does nothing.
     fn activate(&mut self, i: usize, now: Instant) -> PowerAction {
         let Some(row) = self.rows.get(i) else { return PowerAction::Nothing };
-        let (entry, asks) = (row.entry, row.asks);
+        let (entry, asks, secs) = (row.entry, row.asks, row.countdown);
         if !asks {
             self.question = None;
-            return PowerAction::RunAndClose(entry);
+            return self.run(entry, secs, now);
         }
         match session::ask(&mut self.question, entry, now) {
-            Activation::Run => PowerAction::RunAndClose(entry),
+            Activation::Run => self.run(entry, secs, now),
             Activation::Ask => PowerAction::Redraw,
             Activation::Wait => PowerAction::Nothing,
         }
     }
 
+    /// `entry` is to run: at once without a countdown (`secs` 0); else its countdown starts, the
+    /// question gone, and only `due` runs it, at its end.
+    fn run(&mut self, entry: PowerEntry, secs: u8, now: Instant) -> PowerAction {
+        if secs == 0 {
+            return PowerAction::RunAndClose(entry);
+        }
+        self.question = None;
+        self.counting = Some(Countdown { entry, ends: now + Duration::from_secs(u64::from(secs)), left: secs });
+        PowerAction::Redraw
+    }
+
     /// A key: ↑ ↓ Tab Shift+Tab (and Ctrl+P, Ctrl+N) move, Enter and Space activate, Escape closes,
     /// a digit 1 to 9 selects its row and activates it (the same digit again confirms a row that
-    /// asks). Any other key cancels the question. `repeat` is true for the keyboard's auto-repeat,
-    /// which only the moves follow (see docs/decisions.md, "A held key repeats only to move, in the
-    /// power menu", "A digit picks a power row, and the same digit confirms").
+    /// asks). Any other key cancels the question. During a countdown, Escape and every other key
+    /// but Enter and Space cancel it and do nothing else. `repeat` is true for the keyboard's
+    /// auto-repeat, which only the moves follow (see docs/decisions.md, "A held key repeats only to
+    /// move, in the power menu", "A digit picks a power row, and the same digit confirms", "The
+    /// power menu's countdown lives and dies with the menu").
     pub fn key(&mut self, k: Key, repeat: bool, now: Instant) -> PowerAction {
         let moves = matches!(k, Key::Up | Key::Down | Key::Tab | Key::BackTab | Key::CtrlP | Key::CtrlN);
         if repeat && !moves {
             return PowerAction::Nothing;
+        }
+        // A countdown takes every key: Enter and Space do nothing (the key that confirmed must not
+        // cut it short), any other cancels it, and nothing more; a second Escape then closes.
+        if self.counting.is_some() {
+            if matches!(k, Key::Enter | Key::Char(' ')) {
+                return PowerAction::Nothing;
+            }
+            self.counting = None;
+            return PowerAction::Redraw;
         }
         // A digit on a row: that row's own activation. Moving onto it drops another row's question
         // (`select`); the same row's question stays for its confirming press. Past the rows, a
@@ -275,38 +316,81 @@ impl Power {
         action
     }
 
-    /// The pointer over content row `row` (one menu row per grid row): selects it. A row past the
-    /// rows does nothing.
+    /// The pointer over content row `row` (one menu row per grid row): selects it; on another row
+    /// than a countdown's, that cancels the countdown. A row past the rows does nothing.
     pub fn hover(&mut self, row: u16) -> PowerAction {
         let i = usize::from(row);
         if i >= self.rows.len() {
             return PowerAction::Nothing;
         }
+        if let Some(action) = self.pointer_on_countdown(i) {
+            return action;
+        }
         self.select(i)
     }
 
-    /// A left press on content row `row`: selects that row and activates it. A row past the rows
-    /// does nothing.
+    /// A left press on content row `row`: selects that row and activates it. During a countdown it
+    /// only cancels it (on another row, which it selects): it never runs a second row. A row past
+    /// the rows does nothing.
     pub fn press(&mut self, row: u16, now: Instant) -> PowerAction {
         let i = usize::from(row);
         if i >= self.rows.len() {
             return PowerAction::Nothing;
         }
+        if let Some(action) = self.pointer_on_countdown(i) {
+            return action;
+        }
         self.select(i);
         self.activate(i, now)
     }
 
-    /// The question's end, if one is pending: the only deadline the menu has, so the timer is
-    /// armed only while this gives a time.
+    /// During a countdown, the pointer on row `i`: on the counting row, Nothing; on another, the
+    /// countdown cancelled and row `i` selected (Redraw). None when nothing counts.
+    fn pointer_on_countdown(&mut self, i: usize) -> Option<PowerAction> {
+        let c = self.counting?;
+        if self.rows.get(i).is_some_and(|r| r.entry == c.entry) {
+            return Some(PowerAction::Nothing);
+        }
+        self.counting = None;
+        self.select(i);
+        Some(PowerAction::Redraw)
+    }
+
+    /// The menu's next deadline: the earlier of the question's end and the countdown's next whole
+    /// second (its end, at 1 s left). The timer is armed only while this gives a time, so a menu
+    /// with neither has none, and a countdown wakes it once a second.
     pub fn deadline(&self) -> Option<Instant> {
         // `map` changes what is inside a Some and leaves a None as it is; the closure takes the
         // instant out of the pair (the row asking, the end).
-        self.question.map(|(_, at)| at)
+        let question = self.question.map(|(_, at)| at);
+        // With `left` seconds drawn, the next change is `left - 1` seconds before the end.
+        let tick = self.counting.map(|c| c.ends.checked_sub(Duration::from_secs(u64::from(c.left.saturating_sub(1)))).unwrap_or(c.ends));
+        match (question, tick) {
+            (Some(q), Some(t)) => Some(q.min(t)),
+            (q, t) => q.or(t),
+        }
     }
 
-    /// At `now`: the question gone once its 3 s passed (Redraw), else Nothing.
+    /// At `now`: the question gone once its 3 s passed (Redraw); the countdown's row run at its end
+    /// (RunAndClose, the countdown gone), or redrawn when its whole seconds left changed; else
+    /// Nothing.
     pub fn due(&mut self, now: Instant) -> PowerAction {
-        if session::expire(&mut self.question, now) { PowerAction::Redraw } else { PowerAction::Nothing }
+        let mut action = if session::expire(&mut self.question, now) { PowerAction::Redraw } else { PowerAction::Nothing };
+        if let Some(c) = self.counting.as_mut() {
+            if now >= c.ends {
+                let entry = c.entry;
+                self.counting = None;
+                return PowerAction::RunAndClose(entry);
+            }
+            // The seconds left, rounded up: 5 at the start, 4 once a whole second has passed.
+            let rest = c.ends.saturating_duration_since(now);
+            let left = u8::try_from(rest.as_secs() + u64::from(rest.subsec_nanos() > 0)).unwrap_or(u8::MAX);
+            if left != c.left {
+                c.left = left;
+                action = PowerAction::Redraw;
+            }
+        }
+        action
     }
 
     /// The menu's cells across, the same in every state so the popup keeps its size: the longest
@@ -320,7 +404,8 @@ impl Power {
 
     /// The rows, `width()` cells wide, drawn inside `list::boxed`'s ring as the tray menus are: the
     /// glyph in the accent then the label; the selection on a band; the row asking, its question
-    /// in the warning colour instead, with no band. Rows 1 to 9 end with their digit, dim, in a
+    /// in the warning colour instead, with no band, as the row counting down its countdown line.
+    /// Rows 1 to 9 end with their digit, dim, in a
     /// capsule (`ShapeKind::Chip(Tint::Pill)`, painted under the cells by `paint_boxed`) outside
     /// the band, one pad cell from the edge.
     pub fn render(&self) -> Boxed {
@@ -333,9 +418,13 @@ impl Power {
         let mut shapes = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             let mut g = Grid::empty(columns);
-            match self.question {
-                // The `if` after the pattern: only the row that asked shows its question.
-                Some((asking, _)) if asking == r.entry => {
+            match (self.counting, self.question) {
+                // The `if` after the pattern: only the row counting shows its line.
+                (Some(c), _) if c.entry == r.entry => {
+                    g.write(2, band_end, &r.countdown_line(c.left), Style::WARN);
+                }
+                // Only the row that asked shows its question.
+                (_, Some((asking, _))) if asking == r.entry => {
                     g.write(2, band_end, &r.question(), Style::WARN);
                 }
                 _ => {
@@ -832,5 +921,168 @@ mod tests {
         let mut out: Vec<String> = b.rows.iter().map(|g| format!("{}\n{}", g.text(), g.styles())).collect();
         out.extend(b.shapes.iter().map(|s| format!("{s:?}")));
         insta::assert_snapshot!("power_menu_with_digits", out.join("\n"));
+    }
+
+    /// The default rows with a global countdown of `secs`.
+    fn counting(secs: u8) -> BarConfig {
+        let mut c = BarConfig::default();
+        c.power.countdown = secs;
+        c
+    }
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    /// Power off asked by `3`, then confirmed by `3` at `t + CONFIRM_AFTER`: the answer of the
+    /// confirming press, and the instant it came.
+    fn confirm_power_off(p: &mut Power, t: Instant) -> (PowerAction, Instant) {
+        assert_eq!(digit(p, '3', t), PowerAction::Redraw, "asked");
+        let at = t + CONFIRM_AFTER;
+        (digit(p, '3', at), at)
+    }
+
+    /// With `countdown = 5`, Power off's confirming activation starts the countdown instead of
+    /// running: a redraw, 5 s left, the question gone, the row drawn as its countdown line in warn.
+    #[test]
+    fn the_confirming_activation_starts_the_countdown() {
+        let t = Instant::now();
+        let mut p = Power::new(&counting(5)).unwrap();
+        let (action, at) = confirm_power_off(&mut p, t);
+        assert_eq!(action, PowerAction::Redraw, "no RunAndClose");
+        let poweroff = PowerEntry::Session(Session::Poweroff);
+        assert_eq!(p.counting, Some(Countdown { entry: poweroff, ends: at + 5 * SECOND, left: 5 }));
+        assert_eq!(p.question, None);
+        let b = p.render();
+        assert_eq!(row_texts(&b)[2], format!(" {POWER} Power off in 5 s · Esc"));
+        assert_eq!(&b.rows[2].styles()[1..25], "w".repeat(24), "in warn, glyph to Esc");
+        assert_eq!(b.cells(), Power::new(&counting(5)).unwrap().render().cells(), "the popup keeps its size");
+        // Enter at once, as the same digit: the countdown is not the question, nothing runs.
+        assert_eq!(p.key(Key::Enter, false, at + CONFIRM_AFTER), PowerAction::Nothing);
+    }
+
+    /// The deadline is each whole second, then the end; `due` redraws as `left` falls and runs the
+    /// row at the end, never before.
+    #[test]
+    fn the_countdown_steps_each_second_then_runs() {
+        let t = Instant::now();
+        let mut p = Power::new(&counting(5)).unwrap();
+        let (_, at) = confirm_power_off(&mut p, t);
+        for n in 1..5u32 {
+            assert_eq!(p.deadline(), Some(at + n * SECOND), "the {n}th second");
+            assert_eq!(p.due(at + n * SECOND - Duration::from_millis(1)), PowerAction::Nothing, "not yet");
+            assert_eq!(p.due(at + n * SECOND), PowerAction::Redraw);
+            assert_eq!(p.counting.map(|c| c.left), Some(5 - n as u8));
+        }
+        assert_eq!(row_texts(&p.render())[2], format!(" {POWER} Power off in 1 s · Esc"));
+        assert_eq!(p.deadline(), Some(at + 5 * SECOND), "then its end");
+        assert_eq!(p.due(at + 5 * SECOND - Duration::from_millis(1)), PowerAction::Nothing);
+        assert_eq!(p.due(at + 5 * SECOND), PowerAction::RunAndClose(PowerEntry::Session(Session::Poweroff)));
+        assert_eq!((p.counting, p.deadline()), (None, None), "and nothing left to wait for");
+        // A late tick (the loop was busy) still lands on the right second.
+        let mut p = Power::new(&counting(5)).unwrap();
+        let (_, at) = confirm_power_off(&mut p, t);
+        assert_eq!(p.due(at + 2 * SECOND + Duration::from_millis(300)), PowerAction::Redraw);
+        assert_eq!(p.counting.map(|c| c.left), Some(3));
+        assert_eq!(p.deadline(), Some(at + 3 * SECOND));
+        assert_eq!(p.due(at + 9 * SECOND), PowerAction::RunAndClose(PowerEntry::Session(Session::Poweroff)), "very late: runs");
+    }
+
+    /// Escape cancels the countdown and nothing runs, the menu stays (Power off drawn plain); a
+    /// second Escape closes it.
+    #[test]
+    fn esc_cancels_the_countdown_and_runs_nothing() {
+        let t = Instant::now();
+        let mut p = Power::new(&counting(3)).unwrap();
+        let (_, at) = confirm_power_off(&mut p, t);
+        assert!(p.counting.is_some());
+        assert_eq!(p.key(Key::Escape, false, at + SECOND), PowerAction::Redraw, "cancelled, the menu open");
+        assert_eq!((p.counting, p.question, p.deadline()), (None, None, None));
+        assert_eq!(row_texts(&p.render())[2], format!(" {POWER} Power off"));
+        assert_eq!(p.due(at + 3 * SECOND), PowerAction::Nothing, "its end runs nothing");
+        assert_eq!(p.key(Key::Escape, false, at + SECOND), PowerAction::Close, "a second Escape closes");
+    }
+
+    /// Enter and Space, pressed or held, do nothing to a countdown; neither does a held key.
+    #[test]
+    fn enter_and_space_during_the_countdown_do_nothing() {
+        let t = Instant::now();
+        let mut p = Power::new(&counting(3)).unwrap();
+        let (_, at) = confirm_power_off(&mut p, t);
+        let running = p.counting;
+        for (k, repeat) in [(Key::Enter, false), (Key::Char(' '), false), (Key::Enter, true), (Key::Char('3'), true), (Key::Escape, true)] {
+            assert_eq!(p.key(k, repeat, at + SECOND), PowerAction::Nothing, "{k:?} repeat {repeat}");
+            assert_eq!(p.counting, running, "{k:?} repeat {repeat}");
+        }
+        assert_eq!(p.hover(2), PowerAction::Nothing, "hovering its own row keeps it");
+        assert_eq!(p.press(2, at + SECOND), PowerAction::Nothing, "so does a press on it");
+        assert_eq!(p.counting, running);
+    }
+
+    /// Any other key cancels it, and only cancels (the key does nothing else); so do a hover and a
+    /// press on another row, the hover selecting that row, the press running nothing.
+    #[test]
+    fn any_other_key_or_a_hover_elsewhere_cancels_it() {
+        let t = Instant::now();
+        let start = || {
+            let mut p = Power::new(&counting(3)).unwrap();
+            let (_, at) = confirm_power_off(&mut p, t);
+            (p, at + SECOND)
+        };
+        for k in [Key::Up, Key::Down, Key::Tab, Key::Char('x'), Key::Char('1'), Key::Char('3'), Key::Left] {
+            let (mut p, now) = start();
+            assert_eq!(p.key(k, false, now), PowerAction::Redraw, "{k:?}");
+            assert_eq!((p.counting, p.question, p.selected), (None, None, Some(2)), "{k:?}: cancelled, nothing else");
+        }
+        let (mut p, _) = start();
+        assert_eq!(p.hover(0), PowerAction::Redraw);
+        assert_eq!((p.counting, p.selected), (None, Some(0)), "a hover elsewhere: cancelled, that row selected");
+        let (mut p, now) = start();
+        assert_eq!(p.press(0, now), PowerAction::Redraw, "a press elsewhere cancels and never runs Lock");
+        assert_eq!((p.counting, p.selected), (None, Some(0)));
+        assert_eq!(p.hover(9), PowerAction::Nothing, "past the rows: nothing");
+    }
+
+    /// A row's own countdown overrides the global one, and counts for a row that does not ask
+    /// (at its first activation); a confirm row without its own takes the global one.
+    #[test]
+    fn a_rows_own_countdown_overrides_the_global_one() {
+        let t = Instant::now();
+        let mut own = user("Own", false);
+        own.countdown = Some(2);
+        let mut asks = user("Asks", true);
+        asks.countdown = Some(7);
+        let mut c = with_rows(vec![own, asks, user("Global", true)]);
+        c.power.countdown = 4;
+        let mut p = Power::new(&c).unwrap();
+        assert_eq!(digit(&mut p, '4', t), PowerAction::Redraw, "no question: its countdown at once");
+        assert_eq!(p.counting, Some(Countdown { entry: PowerEntry::User(0), ends: t + 2 * SECOND, left: 2 }));
+        let mut p = Power::new(&c).unwrap();
+        digit(&mut p, '5', t);
+        assert_eq!(digit(&mut p, '5', t + CONFIRM_AFTER), PowerAction::Redraw);
+        assert_eq!(p.counting.map(|c| (c.entry, c.left)), Some((PowerEntry::User(1), 7)), "its own 7 over the global 4");
+        let mut p = Power::new(&c).unwrap();
+        digit(&mut p, '6', t);
+        digit(&mut p, '6', t + CONFIRM_AFTER);
+        assert_eq!(p.counting.map(|c| (c.entry, c.left)), Some((PowerEntry::User(2), 4)), "the global one");
+        // A row's own 0 turns the global one off for it.
+        let mut zero = user("Zero", true);
+        zero.countdown = Some(0);
+        let mut c = with_rows(vec![zero]);
+        c.power.countdown = 4;
+        let mut p = Power::new(&c).unwrap();
+        digit(&mut p, '4', t);
+        assert_eq!(digit(&mut p, '4', t + CONFIRM_AFTER), PowerAction::RunAndClose(PowerEntry::User(0)));
+    }
+
+    /// `countdown = 0` (the default): the confirming activation runs at once, as before.
+    #[test]
+    fn countdown_zero_runs_at_once() {
+        let t = Instant::now();
+        let mut p = Power::new(&counting(0)).unwrap();
+        let (action, _) = confirm_power_off(&mut p, t);
+        assert_eq!(action, PowerAction::RunAndClose(PowerEntry::Session(Session::Poweroff)));
+        assert_eq!((p.counting, p.deadline()), (None, None));
+        // Lock does not ask and has no countdown of its own: the global one leaves it alone.
+        let mut p = Power::new(&counting(5)).unwrap();
+        assert_eq!(digit(&mut p, '1', t), PowerAction::RunAndClose(PowerEntry::Session(Session::Lock)));
     }
 }

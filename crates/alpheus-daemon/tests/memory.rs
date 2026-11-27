@@ -2652,6 +2652,15 @@ fn at_rest_no_wakeups_with_the_keyboard_module() {
 /// (the baseline).
 const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n[[power.entry]]\nname = \"Row one\"\nrun = [\"true\"]\n[[power.entry]]\nname = \"Row two\"\nrun = [\"true\"]\nconfirm = true\n";
 const NO_POWER_BAR: &str = "modules = [\"clock\"]\n";
+/// `POWER_BAR` with countdowns: 5 s for the rows that ask, and 5 s of its own for "Row one" (the
+/// fourth row), which counts down at its first press. Reboot and Power off run `true`, so a
+/// countdown that reaches its end runs nothing that matters (the harness PATH has neither
+/// `systemctl` nor `loginctl` anyway).
+const POWER_COUNTDOWN_BAR: &str = "modules = [\"power\", \"clock\"]\n[quick]\nreboot = [\"true\"]\npoweroff = [\"true\"]\n\
+                                   [power]\ncountdown = 5\n[[power.entry]]\nname = \"Row one\"\nrun = [\"true\"]\ncountdown = 5\n\
+                                   [[power.entry]]\nname = \"Row two\"\nrun = [\"true\"]\nconfirm = true\n";
+/// The menu's fourth row ("Row one"), cell 4: as `POWER_OFF_ROW`, one row lower.
+const ROW_ONE: (u32, u32) = (POWER_OFF_ROW.0, POWER_OFF_ROW.1 + 22);
 /// The power button: cell 1 of the bar.
 const POWER_BUTTON: (u32, u32) = (12, 10);
 /// The menu's third row (Power off, with the default `[quick]`), cell 4: the menu hangs from cell 1
@@ -2821,14 +2830,14 @@ fn power_menu_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
-/// Once the menu closed — the last time with its question pending — no timer, no
-/// wake-up, no spin.
+/// Once the menu closed — once with its question pending, then once after a countdown cancelled
+/// by Escape — no timer, no wake-up, no spin.
 #[test]
-#[ignore = "headless sway and dbus-daemon (nix develop)"]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn at_rest_no_wakeups_after_the_power_menu() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("power-rest");
-    let (sway, _hypr, d) = start("power-rest", 1, &bus, None, Some(POWER_BAR), PwDump::Silent);
+    let (sway, _hypr, d) = start("power-rest", 1, &bus, None, Some(POWER_COUNTDOWN_BAR), PwDump::Silent);
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     for n in 1..=3 {
         power_click(&sway, &d, "power menu shown", n);
@@ -2844,8 +2853,18 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     sway.click(POWER_OFF_ROW.0, POWER_OFF_ROW.1, "button1"); // the question asked, by the mouse alone
     power_asking(&sway, &d); // a click before the map would dismiss the menu and ask nothing
     power_click(&sway, &d, "popup closed", 4);
-    assert_eq!(d.count("power menu shown"), 4, "{:?}", d.log());
-    assert_eq!(d.count("popup closed (outside click)"), 4, "the 4th close is the button's own second click: {:?}", d.log());
+    // A countdown, cancelled by Escape: its one-second timer must go with it, and the menu too.
+    power_click(&sway, &d, "power menu shown", 5);
+    std::thread::sleep(Duration::from_millis(300));
+    sway.click(ROW_ONE.0, ROW_ONE.1, "button1"); // Row one counts down at once
+    assert!(d.wait_for("power: countdown entry 1", DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("power: countdown cancelled", DELAY), "{:?}", d.log());
+    power_click(&sway, &d, "popup closed", 5);
+    assert_eq!(d.count("power: entry 1"), 0, "the cancelled row never ran: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // wtype's virtual keyboard going settles (one late wake-up)
+    assert_eq!(d.count("power menu shown"), 5, "{:?}", d.log());
+    assert_eq!(d.count("popup closed (outside click)"), 5, "the closes are the button's own second click: {:?}", d.log());
     assert_eq!(d.count("popup closed (dismissed)"), 0, "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(300));
     let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
@@ -2854,8 +2873,37 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after the power menu (10 s): {delta} whole daemon, {main_delta} loop thread");
-    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's timer went with the menu");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's and the countdown's timer went with the menu");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The most loop-thread wake-ups over a 5 s countdown: two a second, each tick's own and the
+/// compositor's reply to the repaint it asks (its buffer release), plus the end's. 11 measured
+/// (2026-11-27, release, three runs); a timer armed every 100 ms gives about 50.
+const COUNTDOWN_WAKEUPS_MAX: u64 = 12;
+
+/// A 5 s countdown left to run: the loop thread wakes once a second for it (its tick, and the
+/// compositor's reply to the repaint), never more, and the row runs at its end.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn power_countdown_wakes_once_a_second() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("power-count");
+    let (sway, _hypr, d) = start("power-count", 1, &bus, None, Some(POWER_COUNTDOWN_BAR), PwDump::Silent);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    away_from_the_minute(Duration::from_secs(15)); // no clock tick inside the window
+    power_click(&sway, &d, "power menu shown", 1);
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    sway.click(ROW_ONE.0, ROW_ONE.1, "button1");
+    assert!(d.wait_for("power: countdown entry 1", DELAY), "{:?}", d.log());
+    let (before, ticks, began) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks(), Instant::now());
+    assert!(d.wait_for("popup closed (activated)", Duration::from_secs(10)), "{:?}", d.log());
+    let (wakeups, took) = (d.main_thread_wakeups().saturating_sub(before), began.elapsed());
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), took, "the countdown");
+    eprintln!("loop-thread wake-ups over a 5 s countdown: {wakeups} in {took:?}");
+    assert!(d.wait_for("power: entry 1", DELAY), "the row ran at its end: {:?}", d.log());
+    assert!(took >= Duration::from_millis(4500), "ran after {took:?}, before its 5 s");
+    assert!(wakeups <= COUNTDOWN_WAKEUPS_MAX, "{wakeups} loop-thread wake-ups over a 5 s countdown");
 }
 
 /// The resources popup measurements' bar: the module alone (a one-cell-wide click target at the

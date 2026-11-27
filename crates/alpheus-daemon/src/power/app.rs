@@ -5,16 +5,17 @@
 //! set for it, handed to the daemon's executor (the object every program the daemon runs goes
 //! through, which tests replace with a fake) exactly as written and never waited for. One
 //! `DeadlineTimer` (alpheus's one-shot timer on the event loop), `power_timer`, is armed only while
-//! a reboot or power-off question is pending, and goes with the menu whatever closes it
-//! (`power_closed`). `OPS` is this popup's row in the table of popups (`popup::POPUPS`), which is
-//! how the shared popup code reaches the functions below.
+//! a question is pending (to its end) or a countdown runs (once a second), and goes with the menu
+//! whatever closes it (`power_closed`). `OPS` is this popup's row in the table of popups
+//! (`popup::POPUPS`), which is how the shared popup code reaches the functions below.
 //!
 //! Never:
 //! - wait for a command, or log it: the log line names the entry (`power: power off`), because the
 //!   command's program or arguments may name the user (see docs/decisions.md, "Logs carry fixed
 //!   words and numbers only");
 //! - run anything but the entry's own `[quick]` command (a guardrail checks);
-//! - leave the timer armed once the menu is gone.
+//! - leave the timer armed once the menu is gone, or keep a countdown anywhere but in the menu's
+//!   `Power` (`power_countdown_closed_popup_disarms_the_timer`).
 //!
 //! See: docs/features/power.md and docs/decisions.md ("The power menu has its own timer",
 //! "`alpheus-launch --power` opens the menu without a grab").
@@ -81,6 +82,18 @@ pub(crate) fn spawn_session(exec: &dyn Executor, argv: &[String], entry: PowerEn
         Ok(()) => format!("power: {}", entry.word()),
         Err(e) => format!("power: {} could not start ({})", entry.word(), crate::log::exec_word(&e)),
     })
+}
+
+/// The log line of a change of the menu's countdown, from the row counting `before` a call to the
+/// one `after` it, given the call's `action`: "power: countdown power off" (or "entry 2") when one
+/// starts, "power: countdown cancelled" when one goes without running. Its end logs nothing here:
+/// the row's run is logged by `spawn_session`. Fixed words only, never a name or a command.
+pub(crate) fn countdown_log(before: Option<PowerEntry>, after: Option<PowerEntry>, action: PowerAction) -> Option<String> {
+    match (before, after) {
+        (None, Some(e)) => Some(format!("power: countdown {}", e.word())),
+        (Some(_), None) if !matches!(action, PowerAction::RunAndClose(_)) => Some("power: countdown cancelled".into()),
+        _ => None,
+    }
 }
 
 /// The pointer on the open menu: one entry per row, the column never matters, and a cell's row
@@ -170,11 +183,18 @@ impl App {
         }
     }
 
-    /// Runs `f` on the open menu and gives its answer; Nothing when the open popup is not the
-    /// power menu.
+    /// Runs `f` on the open menu and gives its answer, logging a countdown that starts or is
+    /// cancelled (`countdown_log`); Nothing when the open popup is not the power menu.
     pub(crate) fn power_with(&mut self, f: impl FnOnce(&mut Power) -> PowerAction) -> PowerAction {
         match self.popup_body_mut() {
-            Some(PopupBody::Power(p)) => f(p),
+            Some(PopupBody::Power(p)) => {
+                let before = p.counting.map(|c| c.entry);
+                let action = f(p);
+                if let Some(line) = countdown_log(before, p.counting.map(|c| c.entry), action) {
+                    log(&line);
+                }
+                action
+            }
             _ => PowerAction::Nothing,
         }
     }
@@ -210,8 +230,8 @@ impl App {
         self.power_timer_sync();
     }
 
-    /// The timer follows the pending question's end, and is disarmed without one, so a menu with no
-    /// question has no timer.
+    /// The timer follows the menu's deadline (the question's end, the countdown's next second), and
+    /// is disarmed without one, so a menu with neither has no timer.
     pub(crate) fn power_timer_sync(&mut self) {
         let at = match self.popup_body() {
             Some(PopupBody::Power(p)) => p.deadline(),
@@ -221,11 +241,14 @@ impl App {
     }
 
     /// The timer fired (calloop, the event loop, calls this; the timer's source is already dropped):
-    /// the question's 3 s are up.
+    /// the question's 3 s are up, or the countdown's next second (or end) came. The timer is synced
+    /// again even when nothing changed, so a countdown never stalls on a tick that changed nothing;
+    /// once the menu is gone (its row ran) the sync finds no deadline and arms nothing.
     pub(crate) fn power_tick(app: &mut App, now: Instant) {
         app.power_timer.fired();
         let action = app.power_with(|p| p.due(now));
         app.power_action(action);
+        app.power_timer_sync();
     }
 
     /// The menu went, whatever closed it (`popup_close`): its timer goes too, and the verb's
@@ -372,5 +395,18 @@ mod tests {
         assert_eq!(pointer(&mut menu, None, PopupPointer::Press(Button::Left), now), PowerAction::Nothing, "off every cell");
         assert_eq!(pointer(&mut menu, Some((3, 0)), PopupPointer::Press(Button::Left), now), PowerAction::RunAndClose(menu.rows[0].entry));
         assert_eq!(menu.rows[0].entry, PowerEntry::Session(Session::Lock));
+    }
+
+    /// The countdown's two lines: its start names the row by its word, its cancel says only that;
+    /// its end is the row's own "power: <word>" from `spawn_session`, so it logs nothing here.
+    #[test]
+    fn the_countdown_logs_its_start_and_its_cancel_in_fixed_words() {
+        let (off, entry) = (PowerEntry::Session(Session::Poweroff), PowerEntry::User(1));
+        assert_eq!(countdown_log(None, Some(off), PowerAction::Redraw), Some("power: countdown power off".into()));
+        assert_eq!(countdown_log(None, Some(entry), PowerAction::Redraw), Some("power: countdown entry 2".into()));
+        assert_eq!(countdown_log(Some(off), None, PowerAction::Redraw), Some("power: countdown cancelled".into()));
+        assert_eq!(countdown_log(Some(off), None, PowerAction::RunAndClose(off)), None, "its end: the spawn's own line");
+        assert_eq!(countdown_log(Some(off), Some(off), PowerAction::Redraw), None, "a second ticked");
+        assert_eq!(countdown_log(None, None, PowerAction::Close), None);
     }
 }

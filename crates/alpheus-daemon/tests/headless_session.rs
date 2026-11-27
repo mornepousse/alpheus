@@ -6455,15 +6455,20 @@ const POWER_AT: (u32, u32) = (12, 10);
 /// recording their calls first on the daemon's PATH (the rest of it is coreutils only, checked to
 /// hold neither: never the real ones), the default `[quick]` (lock, reboot, power off).
 fn power_daemon(name: &str) -> (Sway, FakeHyprland, Daemon) {
+    power_daemon_with(name, "modules = [\"power\"]\n", &["loginctl", "systemctl"])
+}
+
+/// `power_daemon` with its own `bar.toml` and a fake recorder for each of `programs`.
+fn power_daemon_with(name: &str, bar: &str, programs: &[&str]) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    for program in ["loginctl", "systemctl"] {
+    for program in programs {
         fake_recorder(&sway, program);
     }
-    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("modules = [\"power\"]\n"), ..DaemonOptions::default() });
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
     (sway, hypr, d)
@@ -6602,6 +6607,57 @@ fn power_a_digit_runs_a_user_row() {
     thread::sleep(Duration::from_millis(500)); // a second run would have landed by now
     assert_eq!(recorded(&sway, "fake-quit"), ["fake-quit --now"], "once: {:?}", d.log());
     assert!(recorded(&sway, "loginctl").is_empty() && recorded(&sway, "systemctl").is_empty(), "nothing else ran");
+}
+
+/// A bar with the ⏻ menu, Power off running the fake recorder `fake-off`, and a global countdown of
+/// `secs` seconds.
+fn power_countdown_bar(secs: u8) -> String {
+    format!("modules = [\"power\"]\n[quick]\npoweroff = [\"fake-off\", \"now\"]\n[power]\ncountdown = {secs}\n")
+}
+
+/// ↑ selects Power off, Enter asks, a second Enter 0.8 s later confirms: with a countdown, it starts.
+fn power_off_confirmed(sway: &Sway, d: &Daemon) {
+    assert!(wtype(sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "800", "-k", "Return"]).success());
+    assert!(d.wait_for("power: countdown power off", DELAY), "{:?}", d.log());
+}
+
+/// A 3 s countdown on Power off, confirmed, then Escape a second in: the countdown is cancelled and
+/// the menu stays open; 4 s later (past its end) nothing ran; a second Escape closes the menu.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_countdown_escape_runs_nothing() {
+    let (sway, _hypr, d) = power_daemon_with("power-count-esc", &power_countdown_bar(3), &["loginctl", "systemctl", "fake-off"]);
+    power_open(&sway, &d, 1);
+    power_off_confirmed(&sway, &d);
+    thread::sleep(Duration::from_secs(1));
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("power: countdown cancelled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(4));
+    assert!(recorded(&sway, "fake-off").is_empty(), "Escape runs nothing: {:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "the first Escape only cancels: {:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "the second Escape closes: {:?}", d.log());
+    assert!(recorded(&sway, "fake-off").is_empty() && recorded(&sway, "systemctl").is_empty(), "nothing ran");
+}
+
+/// A 2 s countdown on Power off, confirmed and left alone: Power off's command runs once, about 2 s
+/// after the countdown began, and the menu closes.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_countdown_runs_at_its_end() {
+    let (sway, _hypr, d) = power_daemon_with("power-count-end", &power_countdown_bar(2), &["loginctl", "systemctl", "fake-off"]);
+    power_open(&sway, &d, 1);
+    power_off_confirmed(&sway, &d);
+    let began = Instant::now();
+    assert!(recorded(&sway, "fake-off").is_empty(), "not at once: {:?}", d.log());
+    assert!(wait_for_call(&sway, "fake-off", "fake-off now"), "{:?} {:?}", recorded(&sway, "fake-off"), d.log());
+    let waited = began.elapsed();
+    assert!(waited >= Duration::from_millis(1500), "ran {waited:?} after the countdown's line, before its 2 s: {:?}", d.log());
+    assert!(d.wait_for("power: power off", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // a second run would have landed by now
+    assert_eq!(recorded(&sway, "fake-off"), ["fake-off now"], "once: {:?}", d.log());
+    assert!(recorded(&sway, "systemctl").is_empty() && recorded(&sway, "loginctl").is_empty(), "nothing else ran");
 }
 
 /// Two requests on two connections, both written before either reply is read: the daemon gets the

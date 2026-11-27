@@ -360,6 +360,22 @@ allowed, its words being too common to spot without refusing harmless rows. A ro
 
 Date: 2026-11-27 · Source: tests `a_power_entry_naming_sleep_makes_bar_toml_invalid` (`config/tests.rs`) and guardrails `a_power_entry_naming_sleep_or_dpms_makes_bar_toml_invalid` and `every_power_menu_activation_is_a_configured_session`; `check_power`
 
+### The power menu's countdown lives and dies with the menu
+
+`[power] countdown` (and a row's own `countdown`) turns the run of a row into a countdown: the row
+reads `⏻ Power off in 5 s · Esc` in the warning colour and runs at 0. It is a field of the menu's
+model (`Power::counting`), so closing the menu by any route drops it, and its one-second ticks use
+the menu's own `DeadlineTimer`, armed only while a question or a countdown is pending: no new
+timer, no wake-up at rest. Escape cancels it and leaves the menu open, so a hand that reached for
+Esc too late does not also lose the menu; a second Escape closes. Any other key or a hover or
+press on another row cancels it and does nothing else (a press never runs a second row). Enter
+and Space do nothing, because the key that confirmed may still be down or pressed twice. The
+global countdown applies to the rows that ask; a row's own applies whether it asks or not, and
+counts from its activation when it does not ask. Decision Q2 (a) of the session menu design: no
+countdown on the quick panel's buttons.
+
+Date: 2026-11-27 · Source: tests `the_confirming_activation_starts_the_countdown`, `the_countdown_steps_each_second_then_runs`, `esc_cancels_the_countdown_and_runs_nothing`, `enter_and_space_during_the_countdown_do_nothing`, `any_other_key_or_a_hover_elsewhere_cancels_it`, `a_rows_own_countdown_overrides_the_global_one`, `countdown_zero_runs_at_once`; guardrails `power_countdown_closed_popup_disarms_the_timer` and `every_power_menu_activation_is_a_configured_session`; headless `power_countdown_escape_runs_nothing`, `power_countdown_runs_at_its_end`; memory `at_rest_no_wakeups_after_the_power_menu`, `power_countdown_wakes_once_a_second`
+
 ### Reboot and power off ask first, and a second activation confirms from 0.4 s to 3 s
 
 Lock and Log out run at once. Reboot and Power off turn their row into `Reboot? ⏎` or
