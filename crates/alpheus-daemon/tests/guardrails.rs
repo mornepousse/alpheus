@@ -159,7 +159,8 @@ fn compositor_requests_are_read_only() {
         "GET_WORKSPACES, SUBSCRIBE (twice), GET_TREE, GET_INPUTS: never RUN_COMMAND (0)"
     );
     assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
-    assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), sway::SUBSCRIPTION_KEYBOARD.len(), 0, 0]);
+    let payloads: [&[u8]; 5] = [b"", b"[\"workspace\",\"window\"]", b"[\"workspace\",\"window\",\"input\",\"mode\"]", b"", b""];
+    assert_eq!(sway::Message::ALL.map(sway::Message::payload), payloads, "the bytes each message carries, not only their lengths");
 }
 
 /// Every other way to write on a socket, refused in the Mango and Sway sources: their one
@@ -202,7 +203,8 @@ fn sway_writes_only_its_messages() {
     }
     assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "SUBSCRIBE with input and mode", "GET_TREE", "GET_INPUTS"]);
     assert_eq!(sway::Message::ALL.map(sway::Message::code), [1, 2, 2, 4, 100]);
-    assert!(sway::Message::GetInputs.payload().is_empty(), "GET_INPUTS carries nothing");
+    let payloads: [&[u8]; 5] = [b"", b"[\"workspace\",\"window\"]", b"[\"workspace\",\"window\",\"input\",\"mode\"]", b"", b""];
+    assert_eq!(sway::Message::ALL.map(sway::Message::payload), payloads, "the three reads, GET_INPUTS among them, carry nothing");
     assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
     assert_eq!(sway::SUBSCRIPTION_KEYBOARD, "[\"workspace\",\"window\",\"input\",\"mode\"]");
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/sway.rs")).unwrap();
