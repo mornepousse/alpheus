@@ -12,6 +12,20 @@ tables are in [docs/measurements.md](docs/measurements.md). The number in parent
 
 #### Added
 
+- **Resources: a named network interface, up to four disks, GPU usage** (27): `[resources]
+  net_interface` names the interface `net` follows instead of the default route's;
+  `disk_mounts` lists up to four paths whose filesystems `disk` measures (the bar shows the
+  fullest, the popup one block per path), read every `disk_interval` seconds (15 by default),
+  and a path on a network filesystem or an automount is never read and shows `—`, so a server
+  that went away cannot block the bar; `gpu_metric` shows the GPU's usage from sysfs (amdgpu's
+  busy share and VRAM, an estimate from idle residency on Intel, NVIDIA proprietary shows `—`)
+  or its temperature, read only while the card is awake and at most once per its autosuspend
+  delay and a second, so the bar never keeps it from sleeping. Cost: within noise at start and
+  over ~60 passes with every key; the history ring stays under 4 KiB (3,376 B); nothing is read
+  for an item left out.
+  [Page](docs/features/resources.md),
+  [configuration](docs/configuration.md#resources),
+  [decisions](docs/decisions.md#a-gpus-usage-is-read-without-keeping-it-awake).
 - **Keyboard backlight and airplane mode in quick settings** (27): a keyboard backlight slider right
   under the brightness, over the LED's own levels (← → one level, a step of `step` % above 10
   levels, Space or Enter cycle, 0 allowed), set with `brightnessctl --class=leds`; an airplane mode
