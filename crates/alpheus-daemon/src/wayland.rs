@@ -1154,6 +1154,7 @@ impl CompositorHandler for App {
             self.surfaces[i].scale = f;
             self.surfaces[i].last = None;
             self.draw(i);
+            self.hover_module_moved();
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
@@ -1193,6 +1194,7 @@ impl OutputHandler for App {
             self.surfaces[i].name = n;
             self.surfaces[i].last = None;
             self.draw(i);
+            self.hover_module_moved();
         }
     }
 
@@ -1333,6 +1335,8 @@ impl LayerShellHandler for App {
             self.awaiting_configure.retain(|s| *s != output);
         }
         self.draw(i);
+        // A resize may move the hovered module from under a pending tooltip.
+        self.hover_module_moved();
         // Signals that came before any bar was configured asked no frame yet:
         // ask it now, on a surface that has a buffer (drawn just above).
         self.tray_sync();
