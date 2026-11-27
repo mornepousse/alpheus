@@ -17,6 +17,10 @@ and the `--wallpaper next` verb follow (`docs/superpowers/plans/2026-11-27-wallp
   (`swww img`, `restart = false`) only once it exits 0.
 - After a set that worked, the name is kept (`remember`) and `then` runs; after a failed one,
   neither.
+- A one-shot setter's success is heard on its pidfd through the event loop: without a loop or a
+  pidfd, its exit 0 is lost (no name kept, no `then`) until the next start reaps it.
+- With `restart = true`, success is the start: a setter that exits at once (an unreadable image)
+  still counts as applied, and its end is then logged as `wallpaper: setter ended`.
 
 ## Configuration
 

@@ -6750,6 +6750,11 @@ fn the_wallpaper_ends_only_the_setter_it_started() {
             "pgrep",
             "pidof",
             "/proc/",
+            "\"/proc\"",
+            "\"kill\"",
+            "Command::new",
+            "std::process::",
+            "nix::",
             "spawn_watched_free(",
         ] {
             assert!(!code.contains(p), "{p} in {name}");
@@ -6763,8 +6768,14 @@ fn the_wallpaper_ends_only_the_setter_it_started() {
     let setter = production_code_without_comments(&captures_file("wallpaper/setter.rs"));
     let start = function_body(&setter, "pub fn start(");
     let spawn = start.find("spawn_watched(").expect("the start spawns");
-    let replace = start.find("self.child = ").or_else(|| start.find("self.pending = ")).expect("the start replaces a handle");
-    assert!(spawn < replace, "the old handle is dropped only after the new setter started");
+    let mut replacements = 0;
+    for what in ["self.child = ", "self.pending = ", "self.child.take()", "self.pending.take()", ".take()", "mem::take", "mem::replace"] {
+        for (at, _) in start.match_indices(what) {
+            replacements += 1;
+            assert!(spawn < at, "{what}: the old handle is dropped only after the new setter started");
+        }
+    }
+    assert!(replacements > 0, "the start replaces a handle");
 }
 
 /// The wallpaper's files log fixed words only: every `log(` takes one string literal, never a

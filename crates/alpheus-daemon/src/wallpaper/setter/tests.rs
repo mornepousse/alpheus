@@ -135,6 +135,46 @@ fn a_one_shot_setter_succeeds_only_on_exit_zero() {
     assert!(setter.child_ended().is_none(), "each end is told once");
 }
 
+/// A one-shot set while a setter runs: the running one survives the one-shot's start and its
+/// failure, and goes only once a one-shot exits 0.
+#[test]
+fn a_one_shot_replaces_the_running_setter_only_on_exit_zero() {
+    let dir = folder("wp-oneshot-over", &["a.png", "b.png", "c.png"]);
+    let exec = FakeExecutor::new();
+    exec.watch_ok("swaybg", None);
+    exec.watch_ok("swww", None);
+    let mut setter = Setter::new();
+    assert!(matches!(setter.start(&exec, &swaybg(&dir), &dir, "a.png", true), Ok(Started::Running(_))));
+    assert!(matches!(setter.start(&exec, &swww(&dir), &dir, "b.png", true), Ok(Started::Pending)));
+    assert!(!exec.children()[0].killed(), "a pending one-shot leaves the running setter");
+    exec.children()[1].end(Some(1));
+    assert!(matches!(setter.child_ended(), Some((Ended::Failed, None))));
+    assert!(!exec.children()[0].killed(), "a failed one-shot leaves the running setter");
+    assert!(matches!(setter.start(&exec, &swww(&dir), &dir, "c.png", true), Ok(Started::Pending)));
+    exec.children()[2].end(Some(0));
+    assert!(matches!(setter.child_ended(), Some((Ended::Applied, Some(_)))));
+    assert!(exec.children()[0].killed(), "the running setter goes once a one-shot worked");
+}
+
+/// A restart setter that cannot start while a one-shot is pending keeps that one-shot: its exit 0
+/// still applies.
+#[test]
+fn a_failed_restart_keeps_the_pending_one_shot() {
+    let dir = folder("wp-pending-kept", &["a.png", "b.png"]);
+    let exec = FakeExecutor::new();
+    exec.watch_ok("swww", None);
+    exec.watch_err("swaybg", ExecError::NotFound);
+    let mut setter = Setter::new();
+    assert!(matches!(setter.start(&exec, &swww(&dir), &dir, "a.png", true), Ok(Started::Pending)));
+    assert!(setter.start(&exec, &swaybg(&dir), &dir, "b.png", true).is_err());
+    assert!(!exec.children()[0].killed(), "a failed start never drops the pending one-shot");
+    exec.children()[0].end(Some(0));
+    match setter.child_ended() {
+        Some((Ended::Applied, Some(applied))) => assert_eq!(applied.name, "a.png"),
+        other => panic!("the one-shot still applies: {:?}", other.map(|(e, a)| (e, a.map(|a| a.name)))),
+    }
+}
+
 #[test]
 fn a_running_setter_that_ends_on_its_own_is_gone() {
     let dir = folder("wp-gone", &["a.png"]);
