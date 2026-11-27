@@ -257,7 +257,8 @@ bar is not running or is older than the verb, the one code on which a script fal
 
 **`alpheus-launch --binds`** opens the Keybindings level alone, with nothing beneath it: Esc, or ← on
 an empty query, closes the box. It replaces any other open launcher, the Tools menu at another level
-included, then toggles like `--tools` (a second `--binds` within 250 ms of its open is ignored, and a
+included, then toggles like `--tools`: it closes the box whenever the Keybindings level shows, also
+when the level was reached from the panel (a second `--binds` within 250 ms of its open is ignored, and a
 `--tools` closes it too). It exits 2 with `no key bindings source for this compositor` on Hyprland,
 niri or a compositor not detected, and then replaces nothing; 3 as `--tools` does.
 

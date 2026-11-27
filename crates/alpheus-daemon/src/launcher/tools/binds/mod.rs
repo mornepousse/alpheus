@@ -204,7 +204,7 @@ impl Walk<'_> {
         let here = path.parent().unwrap_or(Path::new("/"));
         let includes = match self.st.dialect {
             Dialect::Mango => mango::parse(&text, here, &mut self.st),
-            Dialect::Sway => sway::parse(&text, here, &mut self.st, self.files, MAX_FILES.saturating_sub(self.taken.len())),
+            Dialect::Sway => sway::parse(&text, here, &mut self.st, self.files, &self.taken),
         };
         for p in includes {
             self.take(normal(&p));

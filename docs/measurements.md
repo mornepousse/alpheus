@@ -385,8 +385,10 @@ bindings) with each cycle opened by `--binds` and closed by a second `--binds`, 
 
 The verb costs less than the menu, not more. The box's shm pools are the same (3,904 KB mapped,
 the panel's size, both ways); their PSS reads higher open through the verb (2,792 KB against
-1,880 by the menu, one diagnostic run each on the branch) only because the box drew fewer frames
-and less of the pools is shared with the compositor at the reading. Without the pools, the
+1,880 by the menu, one diagnostic run each on the branch), attributed (from that one diagnostic
+run) to the box drawing fewer frames and less of the pools being shared with the compositor at
+the reading. So the absolute open PSS is higher through the verb: about 12,899 KB against
+12,496…12,524 KB by the menu. Without the pools, the
 daemon's own memory open over closed is +56 KB through the verb against +153 KB by the menu, and
 closed it stays ~430 KB lower (10,037 against 10,471 KB): a `--binds` open never draws the panel,
 so the panel's warm-up is never paid. The menu path on the branch stays within the base's.

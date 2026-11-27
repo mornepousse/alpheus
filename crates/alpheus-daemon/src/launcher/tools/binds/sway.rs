@@ -8,7 +8,7 @@
 
 use super::describe::{self, rule_name};
 use super::mango::split_comment;
-use super::{Dialect, Files, MAX_LINE, Parse};
+use super::{Dialect, Files, MAX_FILES, MAX_LINE, Parse, normal};
 use std::path::{Path, PathBuf};
 
 /// Blocks open at once that are told apart; deeper ones count as skipped blocks, so a config of
@@ -65,9 +65,10 @@ impl Blocks {
 }
 
 /// Parses one file's `text` (its folder is `here`) into `st`; gives the paths it includes, in
-/// order, a glob's matches sorted (through `files`, which lists the folder). `free` is how many
-/// files the walk can still take: once that many paths are given, no glob is listed any more.
-pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files, free: usize) -> Vec<PathBuf> {
+/// order, a glob's matches sorted (through `files`, which lists the folder). `taken` is the paths
+/// the walk holds already: once as many new paths are given as it has slots left, no glob is
+/// listed any more.
+pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files, taken: &[PathBuf]) -> Vec<PathBuf> {
     let mut includes = Vec::new();
     let mut blocks = Blocks::default();
     let mut joined = String::new();
@@ -151,7 +152,7 @@ pub(crate) fn parse(text: &str, here: &Path, st: &mut Parse, files: &dyn Files, 
             }
             "include" => {
                 let path = st.expand(rest.trim());
-                include(&path, here, files, st, &mut includes, free);
+                include(&path, here, files, st, &mut includes, taken);
             }
             _ => {}
         }
@@ -209,14 +210,15 @@ fn bind(text: &str, code: bool, above: Option<String>, st: &mut Parse) {
     st.push(describe::combo(Dialect::Sway, mods, &key), description, action.to_string());
 }
 
-/// Queues the file(s) `path` names: its quotes taken off, relative to `here`, `~` and `$HOME` left
-/// to the glue (as `~`), a `*` or `?` in the last component matched against that folder's entries
-/// (hidden ones only by a pattern starting with `.`); a pattern before the last component, or a
-/// variable left unexpanded, is not followed and counted. Once `free` paths are queued, a glob is
-/// counted in `cut.files` instead of listed.
-fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut Vec<PathBuf>, free: usize) {
+/// Queues the file(s) `path` names: its quotes taken off, relative to `here`, `~`, `$HOME` and
+/// `${HOME}` left to the glue (as `~`), a `*` or `?` in the last component matched against that
+/// folder's entries (hidden ones only by a pattern starting with `.`); a pattern before the last
+/// component, or a variable left unexpanded, is not followed and counted. Once the walk's free
+/// slots are filled by new paths (neither in `taken` nor given already), a glob is counted in
+/// `cut.files` instead of listed.
+fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut Vec<PathBuf>, taken: &[PathBuf]) {
     let path = unquote(path);
-    let home = match path.strip_prefix("$HOME") {
+    let home = match path.strip_prefix("${HOME}").or_else(|| path.strip_prefix("$HOME")) {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     };
@@ -235,8 +237,9 @@ fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut
         st.out.not_understood += 1;
         return;
     }
+    let free = MAX_FILES.saturating_sub(taken.len());
     if !pattern.contains(['*', '?']) {
-        out.push(path);
+        push_new(out, taken, free, path);
         return;
     }
     if out.len() >= free {
@@ -246,9 +249,20 @@ fn include(path: &str, here: &Path, files: &dyn Files, st: &mut Parse, out: &mut
     for entry in files.list(dir) {
         let name = entry.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if (pattern.starts_with('.') || !name.starts_with('.')) && glob(&pattern, &name) {
-            out.push(entry);
+            push_new(out, taken, free, entry);
         }
     }
+}
+
+/// Adds `path` (normalised) to `out` unless the walk would skip it as taken already, so `out`
+/// counts new paths only. Past `free` the check is skipped (the walk counts or skips the rest), so
+/// a file of thousands of includes costs no quadratic search.
+fn push_new(out: &mut Vec<PathBuf>, taken: &[PathBuf], free: usize, path: PathBuf) {
+    let path = normal(&path);
+    if out.len() < free && (taken.contains(&path) || out.contains(&path)) {
+        return;
+    }
+    out.push(path);
 }
 
 /// Adds `piece` to the line being joined, up to MAX_LINE bytes: the part past it, and every piece

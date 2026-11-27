@@ -715,3 +715,36 @@ fn a_mode_past_the_depth_cap_never_changes_the_group() {
     assert_eq!(b.binds.len(), 1);
     assert_eq!(b.groups[b.binds[0].group], "m8");
 }
+
+#[test]
+fn an_include_takes_braced_home_like_a_tilde() {
+    let files = FakeFiles::with(&[("/c/config", "include ${HOME}/x\ninclude ${HOME}\ninclude ${HOMEX}/y\n")]);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!((files.reads("~/x"), files.reads("~")), (1, 1), "${{HOME}} goes to the glue as ~");
+    assert_eq!(b.not_understood, 1, "only the unknown variable is not understood");
+}
+
+#[test]
+fn repeated_includes_do_not_use_up_the_glob_slots() {
+    // The same file included ten times takes one slot: the glob after it is still listed.
+    let root = format!("{}include d/*\n", "include a\n".repeat(10));
+    let files = FakeFiles::with(&[("/c/config", root.as_str()), ("/c/a", ""), ("/c/d/x", "bindsym Mod4+x kill\n")]);
+    let b = load(Dialect::Sway, &first_of("/c/config"), &files);
+    assert_eq!(files.lists.get(), 1, "the glob is listed");
+    assert_eq!(b.files, ["config", "a", "x"]);
+    assert_eq!(b.cut, Cut::default());
+}
+
+#[test]
+fn a_continued_line_cut_inside_a_middle_piece_keeps_a_whole_char() {
+    // "bindsym Mod4+a exec " is 20 bytes, then the x run and a space: 3 bytes are left for the
+    // middle piece, whose third byte falls inside its second `é`.
+    let long = "x".repeat(MAX_LINE - 24);
+    let b = sway(&format!("bindsym Mod4+a exec {long} \\\n  éééééé \\\n  tail\nbindsym Mod4+b kill\n"));
+    assert_eq!(b.binds.len(), 2);
+    assert!(b.binds[0].command.ends_with(" é"), "cut back to the char boundary");
+    assert!(b.binds[0].command.len() < MAX_LINE);
+    assert!(!b.binds[0].command.contains("tail"));
+    assert_eq!(b.cut.lines, 1);
+    assert_eq!(b.binds[1].command, "kill");
+}
