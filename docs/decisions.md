@@ -1998,3 +1998,14 @@ sized once per open and keeps that size, so nothing jumps on the first key; one 
 no second font is loaded. `[tools] panel = false` keeps the category list.
 
 Date: 2026-11-26 · Source: tests `a_letter_runs_the_tool_its_capsule_shows`, `a_letter_of_a_tool_not_in_the_tab_starts_the_search`, `a_held_letter_runs_nothing`, `a_mod_space_jump_into_tools_never_runs_a_letter`, `enter_without_a_picked_chip_opens_the_choices`, `a_click_on_a_chip_picks_it_and_runs_nothing`, `panel_off_keeps_today_s_root` (`launcher/model/tests.rs`), `a_chip_is_picked_only_by_words_found_in_its_text` (`launcher/matching/tests.rs`), `tools_panel_slash_then_letters_search`, `tools_panel_tab_changes_the_tab` (`tests/headless_session.rs`); spec `docs/superpowers/specs/2026-11-26-superx-panel-design.md`
+
+### Every part is measured, resident or not
+
+Every change measures the RAM of every part it touches. The resident daemon has its memory suite
+(`tests/memory.rs`) and its 15 MB budget; the parts started on demand, the control center (`alpheus`)
+and `alpheus-launch`, now have release memory tests of their own, so a change to a shared crate
+cannot grow them unseen. Their bounds are first bounds, about twice the highest of three runs, to
+catch a doubling rather than a boot's drift; a growth bound reads anonymous memory. The figures
+are recorded in `docs/measurements.md`, "Parts that are not resident".
+
+Date: 2026-11-27 · Source: tests `the_control_center_stays_light_through_every_tab` (`crates/alpheus/tests/memory.rs`), `alpheus_launch_stays_light` (`crates/alpheus-daemon/tests/launch_memory.rs`)

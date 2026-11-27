@@ -74,6 +74,15 @@ for the words, [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
   absolute figures: PSS drifts by about half a megabyte between boots. Leak
   bounds read anonymous memory. Record the result in
   [`docs/measurements.md`](docs/measurements.md), which also gives the method.
+- **Every part is measured, resident or not.** Every change measures the RAM
+  of every part it touches, not only the resident daemon's: the control center
+  (`alpheus`) and `alpheus-launch` have their own release memory tests, run the
+  same way (`docs/decisions.md`, "Every part is measured, resident or not"):
+
+  ```sh
+  nix develop -c cargo test -q --release -p alpheus --test memory -- --include-ignored --test-threads=1
+  nix develop -c cargo test -q --release -p alpheus-daemon --test launch_memory -- --include-ignored --test-threads=1
+  ```
 - **One logical change per commit**, with a subject that states
   what the change does as a short statement, behind a `type(scope):` prefix
   (`docs: the bar page in the house layout`, `fix(tui): Dvorak navigation keys
