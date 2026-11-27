@@ -49,6 +49,7 @@ use crate::quick::dnd::{DndChoice, DndDetail};
 use crate::quick::shield::{ShieldAsk, ShieldPanel};
 use crate::quick::vpn::Vpn;
 use crate::quick::wifi::Wifi;
+use crate::rfkill::Airplane;
 use crate::segments::BELL;
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
@@ -61,8 +62,8 @@ pub use draw::rows;
 // `pub(crate)`: visible inside the daemon, not outside it.
 pub(crate) use draw::{dnd_switch, note_row, session_cells, switch, text_row};
 use draw::{
-    draw_bluetooth, draw_brightness, draw_headset, draw_kbd, draw_mark, draw_mic, draw_profile, draw_shield, draw_volume, draw_vpn,
-    draw_wifi, session_row, write_cell,
+    draw_airplane, draw_bluetooth, draw_brightness, draw_headset, draw_kbd, draw_mark, draw_mic, draw_profile, draw_shield, draw_volume,
+    draw_vpn, draw_wifi, session_row, write_cell,
 };
 use std::time::{Duration, Instant};
 
@@ -91,7 +92,9 @@ pub const KEEP_AWAKE: char = '\u{f0176}';
 pub const NIGHT_LIGHT: char = '\u{f0594}';
 pub const MIXER: char = '\u{f066a}'; // md-tune_vertical
 pub const KBD_BACKLIGHT: char = '\u{f030c}'; // md-keyboard
-/// Re-reads after a command: the backlight (and the keyboard's), a configured toggle's state.
+pub const AIRPLANE: char = '\u{f001d}'; // md-airplane
+/// Re-reads after a command: the backlight (and the keyboard's), a configured toggle's state (and
+/// the radios' after a radio command).
 pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
 /// A slider sends at most one command per window this long: a held key, the wheel or clicks in a
@@ -156,7 +159,9 @@ pub enum Row {
     Brightness,
     /// The keyboard backlight: right under the brightness, the last of the sliders.
     KbdBacklight,
-    /// The Wi-Fi: first under the sliders' separator.
+    /// Airplane mode: first under the sliders' separator, right above the radios it switches.
+    Airplane,
+    /// The Wi-Fi: right under the airplane mode row.
     Wifi,
     /// The Bluetooth adapter: right under the Wi-Fi row.
     Bluetooth,
@@ -380,6 +385,8 @@ pub struct Due {
     pub backlight: bool,
     /// The keyboard backlight's re-read.
     pub kbd: bool,
+    /// The radios' re-read (airplane mode), after a radio command.
+    pub airplane: bool,
     pub toggles: [bool; Toggle::ALL.len()],
     pub redraw: bool,
     pub run: Vec<QuickAction>,
@@ -510,6 +517,24 @@ fn kbd_command(k: &Kbd) -> QuickAction {
     QuickAction::Run { argv, what: format!("keyboard backlight {}", k.level) }
 }
 
+/// `rfkill block|unblock wlan bluetooth wwan`: the three types in one command, by type (never an
+/// index). Leaving airplane mode unblocks all three, whatever was on before.
+fn airplane_command(block: bool) -> QuickAction {
+    let verb = if block { "block" } else { "unblock" };
+    run(&["rfkill", verb, "wlan", "bluetooth", "wwan"], if block { "airplane on" } else { "airplane off" })
+}
+
+/// A command that switches a radio (the Wi-Fi row's `nmcli radio`, the Bluetooth row's or
+/// airplane mode's `rfkill`): the airplane mode row reads the radios again after it.
+fn switches_a_radio(a: &QuickAction) -> bool {
+    let QuickAction::Run { argv, .. } = a else { return false };
+    match argv.first().map(String::as_str) {
+        Some("rfkill") => true,
+        Some("nmcli") => argv.get(1).is_some_and(|w| w == "radio"),
+        _ => false,
+    }
+}
+
 /// The percent a press on a slider's bar sets; None off the bar. See docs/decisions.md, "A click
 /// on a slider's bar sets the level of the cell".
 fn bar_value(col: u16) -> Option<u8> {
@@ -557,6 +582,10 @@ pub struct Quick {
     pub backlight: Option<Backlight>,
     /// The keyboard backlight, while the panel is open (`set_kbd`); None hides its row.
     pub kbd: Option<Kbd>,
+    /// Airplane mode, while the panel is open (`set_airplane`); None hides its row.
+    pub airplane: Option<Airplane>,
+    /// When to read the radios again: TOGGLE_REREAD after a radio command.
+    pub reread_airplane: Option<Instant>,
     /// Keep awake, night light: on, off, or unknown (`·`).
     pub toggles: [Option<bool>; Toggle::ALL.len()],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
@@ -629,7 +658,7 @@ struct RowSpec {
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
 ///   header) and its state read in `app.rs`. The per-toggle arrays follow `Toggle::ALL`.
-const ROWS: [RowSpec; 15] = [
+const ROWS: [RowSpec; 16] = [
     RowSpec {
         row: Row::Volume,
         name: "volume",
@@ -640,6 +669,7 @@ const ROWS: [RowSpec; 15] = [
     RowSpec { row: Row::Headset, name: "headset", group: 0, present: |_, q| q.headset.is_some(), draw: draw_headset },
     RowSpec { row: Row::Brightness, name: "brightness", group: 0, present: |_, q| q.backlight.is_some(), draw: draw_brightness },
     RowSpec { row: Row::KbdBacklight, name: "kbd-backlight", group: 0, present: |_, q| q.kbd.is_some(), draw: draw_kbd },
+    RowSpec { row: Row::Airplane, name: "airplane", group: 1, present: |_, q| q.airplane.is_some(), draw: draw_airplane },
     RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
     RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
     RowSpec { row: Row::Vpn, name: "vpn", group: 1, present: |_, q| q.vpn.shows(), draw: draw_vpn },
@@ -751,6 +781,8 @@ impl Quick {
             headset: None,
             backlight,
             kbd: None,
+            airplane: None,
+            reread_airplane: None,
             toggles,
             confirm: None,
             volume_level: None,
@@ -975,6 +1007,7 @@ impl Quick {
         } else {
             self.rows_key(live, k, now)
         };
+        self.after_radio(&action, now);
         self.keep_in_view(live);
         if cancelled && action == QuickAction::Nothing { QuickAction::Redraw } else { action }
     }
@@ -1007,6 +1040,12 @@ impl Quick {
             (Row::KbdBacklight, Key::Right) => self.kbd_to(|k| k.stepped(true, step), now),
             (Row::KbdBacklight, Key::Left) => self.kbd_to(|k| k.stepped(false, step), now),
             (Row::KbdBacklight, Key::Char(' ') | Key::Enter) => self.kbd_to(Kbd::cycled, now),
+            (Row::Airplane, Key::Char(' ') | Key::Enter) => match self.airplane {
+                Some(Airplane::Off) => airplane_command(true),
+                Some(Airplane::On) => airplane_command(false),
+                // Every radio held off by a kill switch: nothing rfkill can do.
+                Some(Airplane::HardBlocked) | None => QuickAction::Nothing,
+            },
             (Row::Wifi, Key::Char(' ')) => self.wifi.radio(),
             (Row::Wifi, Key::Enter | Key::Right) => self.open_wifi(),
             (Row::Bluetooth, Key::Char(' ')) => {
@@ -1067,6 +1106,15 @@ impl Quick {
         k.level = to(k).min(k.max);
         self.kbd_settle = None;
         if self.kbd_pace.ask(now) { kbd_command(k) } else { QuickAction::Redraw }
+    }
+
+    /// After a key or a press: a radio switched (`switches_a_radio`) has the radios read again
+    /// TOGGLE_REREAD later, so the airplane mode row never contradicts a radio switched from its own
+    /// row. Nothing without the row (`[quick] airplane = false` reads nothing).
+    fn after_radio(&mut self, a: &QuickAction, now: Instant) {
+        if self.airplane.is_some() && switches_a_radio(a) {
+            self.reread_airplane = Some(now + TOGGLE_REREAD);
+        }
     }
 
     /// A configured toggle: its command as given; its state re-read TOGGLE_REREAD later.
@@ -1218,6 +1266,7 @@ impl Quick {
             }
             _ => QuickAction::Nothing,
         };
+        self.after_radio(&action, now);
         if action == QuickAction::Nothing && (cancelled || self.selected != before) { QuickAction::Redraw } else { action }
     }
 
@@ -1286,6 +1335,7 @@ impl Quick {
             self.volume_settle,
             self.brightness_settle,
             self.kbd_settle,
+            self.reread_airplane,
             self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
             self.bt.deadline(),
@@ -1342,6 +1392,10 @@ impl Quick {
             // One last re-read, taken whatever it says.
             self.kbd_settle = None;
             d.kbd = true;
+        }
+        if self.reread_airplane.is_some_and(|at| at <= now) {
+            self.reread_airplane = None;
+            d.airplane = true;
         }
         for t in Toggle::ALL {
             let i = t.index();
@@ -1677,6 +1731,12 @@ impl Quick {
             (KbdReread::Gone, _) => self.kbd = None,
             (KbdReread::Level(_), None) | (KbdReread::Unreadable, _) => {}
         }
+    }
+
+    /// Airplane mode, read at open and TOGGLE_REREAD after a radio command (`app.rs`); None hides
+    /// its row (no radio left, or `[quick] airplane = false`).
+    pub fn set_airplane(&mut self, a: Option<Airplane>) {
+        self.airplane = a;
     }
 
     /// A re-read of a toggle's state.

@@ -1074,3 +1074,19 @@ fn a_relative_kbd_backlight_dir_is_refused() {
     let err = BarConfig::from_text("[quick]\nkbd_backlight_dir = \"leds\"\n").unwrap_err();
     assert!(err.contains("quick.kbd_backlight_dir must be an absolute path"), "{err}");
 }
+
+#[test]
+fn airplane_keys_default_and_parse() {
+    let d = QuickConfig::default();
+    assert!(d.airplane, "on by default (still hidden without a radio)");
+    assert_eq!(d.rfkill_dir, PathBuf::from("/sys/class/rfkill"));
+    let c = BarConfig::from_text("[quick]\nairplane = false\nrfkill_dir = \"/tmp/rfkill\"\n").unwrap();
+    assert!(!c.quick.airplane);
+    assert_eq!(c.quick.rfkill_dir, PathBuf::from("/tmp/rfkill"));
+}
+
+#[test]
+fn a_relative_rfkill_dir_is_refused() {
+    let err = BarConfig::from_text("[quick]\nrfkill_dir = \"rfkill\"\n").unwrap_err();
+    assert!(err.contains("quick.rfkill_dir must be an absolute path"), "{err}");
+}

@@ -50,6 +50,7 @@ pub mod privacy;
 pub mod quick;
 pub mod resources;
 pub mod retired;
+pub mod rfkill;
 pub mod segments;
 pub mod session;
 pub mod session_bus;

@@ -1448,8 +1448,8 @@ macro_rules! rows {
 }
 
 rows! {
-    Volume => 0, Headset => 1, Brightness => 2, KbdBacklight => 3, Wifi => 4, Bluetooth => 5, Vpn => 6, Shield => 7, Mic => 8,
-    Mixer => 9, Dnd => 10, Profile => 11, KeepAwake => 12, NightLight => 13, Session => 14,
+    Volume => 0, Headset => 1, Brightness => 2, KbdBacklight => 3, Airplane => 4, Wifi => 5, Bluetooth => 6, Vpn => 7, Shield => 8,
+    Mic => 9, Mixer => 10, Dnd => 11, Profile => 12, KeepAwake => 13, NightLight => 14, Session => 15,
 }
 
 /// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
@@ -1468,6 +1468,7 @@ fn one_spec_per_row_in_variant_order() {
             "headset",
             "brightness",
             "kbd-backlight",
+            "airplane",
             "wifi",
             "bluetooth",
             "vpn",
@@ -1482,7 +1483,7 @@ fn one_spec_per_row_in_variant_order() {
         ]
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
-    assert_eq!(groups, [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+    assert_eq!(groups, [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
 }
 
 /// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
@@ -2280,4 +2281,129 @@ fn kbd_backlight_reread_gone_hides_the_row() {
     assert!(!shown(&l, &q).contains(&Row::KbdBacklight));
     assert_ne!(q.selected, Row::KbdBacklight, "the selection falls back on a shown row");
     assert!(shown(&l, &q).contains(&q.selected));
+}
+
+fn airplane_command_of(block: bool) -> QuickAction {
+    let verb = if block { "block" } else { "unblock" };
+    run_of(&["rfkill", verb, "wlan", "bluetooth", "wwan"], if block { "airplane on" } else { "airplane off" })
+}
+
+/// The panel open on `w` with the Wi-Fi row shown and airplane mode `a`, its row selected.
+fn airplane_panel(w: &World, a: Airplane) -> Quick {
+    let mut q = panel_opened_on(w, Focus::Top);
+    q.set_wifi(Some(wifi_state(true, true, false)), Instant::now());
+    q.set_airplane(Some(a));
+    q.selected = Row::Airplane;
+    q
+}
+
+#[test]
+fn airplane_row_sits_above_wifi() {
+    let w = World::full();
+    let l = w.live();
+    let q = airplane_panel(&w, Airplane::Off);
+    let rows = shown(&l, &q);
+    let at = rows.iter().position(|r| *r == Row::Airplane).unwrap();
+    assert_eq!(rows[at + 1], Row::Wifi, "right above the Wi-Fi: {rows:?}");
+    let all = lines(&l, &q);
+    let line = all.iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap();
+    assert_eq!(all[line - 1], Line::Separator, "the first of the radios' block");
+    let texts = row_texts(&rows_of(&l, &q));
+    assert!(texts[line].contains(AIRPLANE) && texts[line].contains("Airplane mode") && texts[line].ends_with("○ off"), "{texts:?}");
+    let mut q = q;
+    q.set_airplane(Some(Airplane::On));
+    assert!(row_texts(&rows_of(&l, &q))[line].ends_with("ON  ●"));
+    q.set_airplane(None);
+    assert!(!shown(&l, &q).contains(&Row::Airplane), "no radio, no row");
+}
+
+#[test]
+fn airplane_toggle_runs_one_rfkill_for_the_three_types() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), airplane_command_of(true));
+    assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "re-read once rfkill ran");
+    assert_eq!(q.deadline(), Some(t + TOGGLE_REREAD));
+    assert_eq!(q.due(t + TOGGLE_REREAD), Due { airplane: true, ..Due::default() });
+    assert_eq!(q.reread_airplane, None, "once");
+    let mut q = airplane_panel(&w, Airplane::On);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), airplane_command_of(false), "leaving unblocks all three");
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Enter, false, t), airplane_command_of(true), "Enter acts as Space");
+    let mut q = airplane_panel(&w, Airplane::Off);
+    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space acts once");
+    let line = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap() as u16;
+    q.selected = Row::Volume;
+    assert_eq!(q.press(&l, (5, line), Button::Left, t), airplane_command_of(true), "a click is Enter");
+    assert_eq!(q.selected, Row::Airplane);
+}
+
+#[test]
+fn airplane_space_does_nothing_when_hard_blocked() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut q = airplane_panel(&w, Airplane::HardBlocked);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing);
+    assert_eq!(q.reread_airplane, None, "nothing ran: nothing to re-read");
+    let line = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Airplane)).unwrap();
+    assert!(row_texts(&rows_of(&l, &q))[line].ends_with("hard blocked"), "{:?}", row_texts(&rows_of(&l, &q)));
+}
+
+#[test]
+fn a_radio_row_switch_rereads_airplane() {
+    let mut w = World::full();
+    let t = Instant::now();
+    {
+        let l = w.live();
+        let mut q = airplane_panel(&w, Airplane::On);
+        q.selected = Row::Wifi;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "off"], "wifi off"));
+        assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "the Wi-Fi radio switched: airplane re-read");
+        assert!(q.due(t + TOGGLE_REREAD).airplane);
+        let mut q = airplane_panel(&w, Airplane::On);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        assert_eq!(q.reread_airplane, None, "opening the detail switches nothing");
+        let mut q = panel_opened_on(&w, Focus::Top);
+        q.set_wifi(Some(wifi_state(true, true, false)), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Char(' '), false, t);
+        assert_eq!(q.reread_airplane, None, "no airplane row (off, or no radio): nothing to re-read");
+    }
+    w.bluetooth = Some(BtState::Off);
+    let l = w.live();
+    let mut q = airplane_panel(&w, Airplane::On);
+    q.bt.view = Some(BtView {
+        adapter: Some(crate::system::BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }),
+        ..BtView::default()
+    });
+    q.selected = Row::Bluetooth;
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["rfkill", "unblock", "bluetooth"], "bluetooth unblock"));
+    assert_eq!(q.reread_airplane, Some(t + TOGGLE_REREAD), "rfkill unblocked the Bluetooth: airplane re-read");
+    assert!(q.due(t + TOGGLE_REREAD).airplane);
+}
+
+#[test]
+fn airplane_off_reads_nothing() {
+    let root = std::env::temp_dir().join(format!("alpheus-{}-quick-rfkill", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let d = root.join("rfkill0");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("type"), "wlan\n").unwrap();
+    std::fs::write(d.join("soft"), "0\n").unwrap();
+    std::fs::write(d.join("hard"), "0\n").unwrap();
+    let mut c = QuickConfig { rfkill_dir: root.clone(), ..QuickConfig::default() };
+    assert_eq!(app::airplane_at_open(&c), Some(Airplane::Off), "the radio read");
+    c.airplane = false;
+    assert_eq!(app::airplane_at_open(&c), None, "airplane = false: nothing read, no row");
+    let _ = std::fs::remove_dir_all(&root);
+    let w = World::full();
+    let l = w.live();
+    let mut q = panel_opened_on(&w, Focus::Top);
+    q.set_airplane(app::airplane_at_open(&c));
+    assert!(!shown(&l, &q).contains(&Row::Airplane));
 }

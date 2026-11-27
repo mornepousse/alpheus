@@ -80,6 +80,8 @@
 //! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
 //! kbd_backlight = true                                      # the keyboard backlight row (hidden without a *::kbd_backlight LED); false: nothing read
 //! kbd_backlight_dir = "/sys/class/leds"                     # where LEDs are listed (an absolute path); read when the panel opens, never written
+//! airplane = true                                           # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
+//! rfkill_dir = "/sys/class/rfkill"                          # where rfkill switches are listed (an absolute path); read when the panel opens, never written
 //! [timer]                                                   # the focus timer (with "timer" in modules); read at start
 //! countdown = 10                                            # minutes, the popup's Timer row at start, 1 to 180
 //! work = 25                                                 # Pomodoro, minutes, 1 to 180
@@ -957,6 +959,11 @@ pub struct QuickConfig {
     pub kbd_backlight: bool,
     /// Where LEDs are listed (absolute): the keyboard backlight is read there, never written.
     pub kbd_backlight_dir: PathBuf,
+    /// The airplane mode row (still hidden without a Wi-Fi, Bluetooth or WWAN radio); false:
+    /// nothing read at open.
+    pub airplane: bool,
+    /// Where rfkill switches are listed (absolute): the radios are read there, never written.
+    pub rfkill_dir: PathBuf,
 }
 
 impl QuickConfig {
@@ -986,6 +993,8 @@ impl Default for QuickConfig {
             dnd_until: "08:00".into(),
             kbd_backlight: true,
             kbd_backlight_dir: PathBuf::from("/sys/class/leds"),
+            airplane: true,
+            rfkill_dir: PathBuf::from("/sys/class/rfkill"),
         }
     }
 }
@@ -1095,6 +1104,9 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
     }
     if !q.kbd_backlight_dir.is_absolute() {
         return Err("quick.kbd_backlight_dir must be an absolute path".into());
+    }
+    if !q.rfkill_dir.is_absolute() {
+        return Err("quick.rfkill_dir must be an absolute path".into());
     }
     Ok(())
 }

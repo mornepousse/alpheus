@@ -70,12 +70,18 @@ fn the_harness_leaves_displays_out_for_a_base_build() {
             !base,
             "the keyboard backlight row never reads the machine's /sys/class/leds: {text}"
         );
+        assert_eq!(
+            text.contains("rfkill_dir = \"/run/test/quick-rfkill\""),
+            !base,
+            "the airplane mode row never reads the machine's /sys/class/rfkill: {text}"
+        );
         assert!(alpheus_daemon::config::BarConfig::from_text(&text).is_ok(), "{text}");
     }
     let own = harness_bar_toml("[displays]\ndrm_dir = \"/x\"\n", runtime, false);
     assert_eq!(own.matches("drm_dir").count(), 1, "the test's own table is kept: {own}");
-    let own = harness_bar_toml("[quick]\nkbd_backlight_dir = \"/y\"\n", runtime, false);
+    let own = harness_bar_toml("[quick]\nkbd_backlight_dir = \"/y\"\nrfkill_dir = \"/z\"\n", runtime, false);
     assert_eq!(own.matches("kbd_backlight_dir").count(), 1, "the test's own directory is kept: {own}");
+    assert_eq!(own.matches("rfkill_dir").count(), 1, "the test's own directory is kept: {own}");
     assert!(alpheus_daemon::config::BarConfig::from_text(&own).is_ok(), "{own}");
 }
 

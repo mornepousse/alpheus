@@ -30,6 +30,7 @@ use alpheus_daemon::notify::NotifyView;
 use alpheus_daemon::power::{Power, PowerAction};
 use alpheus_daemon::privacy::{Capture, Indicator};
 use alpheus_daemon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
+use alpheus_daemon::rfkill::Airplane;
 use alpheus_daemon::session::{self, Session};
 use alpheus_daemon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
 use alpheus_daemon::session_bus::{
@@ -2166,6 +2167,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "osd/surface.rs",
     "backlight.rs",
     "kbd_backlight.rs",
+    "rfkill.rs",
     "notify/bubbles.rs",
     "notify/bubbles_surface.rs",
     "notify/panel.rs",
@@ -3026,12 +3028,12 @@ fn the_quick_model_and_its_state_reader_only_read() {
     }
 }
 
-/// The quick panel's sysfs readers for the keyboard backlight (and, later, the radios): each file
+/// The quick panel's sysfs readers for the keyboard backlight and the radios: each file
 /// must exist (`unmatched_entries`), so a rename cannot take one out of the checks in silence.
-const RADIO_READERS: &[&str] = &["kbd_backlight.rs"];
+const RADIO_READERS: &[&str] = &["kbd_backlight.rs", "rfkill.rs"];
 
 /// The radio readers read sysfs and decide, nothing else: no file written, nothing created, no raw
-/// system call; and, through `NO_THREAD_NOR_COMMAND`, no command run (brightnessctl goes through
+/// system call; and, through `NO_THREAD_NOR_COMMAND`, no command run (brightnessctl and rfkill go through
 /// the panel's `QuickAction`, never from here). Production code only.
 #[test]
 fn the_radio_readers_only_read() {
@@ -3114,6 +3116,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         let mut q = Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
         q.set_headset(Some(Headset { device: 61, label: "CasqueBT".into(), active: HeadsetMode::HiFi, hifi: 1, mic: 3 }));
         q.set_kbd(Some(Kbd { device: "fake::kbd_backlight".into(), level: 1, max: 2 }));
+        q.set_airplane(Some(Airplane::Off));
         q
     };
     let t = Instant::now();
@@ -3132,6 +3135,29 @@ fn every_quick_command_stays_on_the_allowlist() {
             q.selected = row;
             record(q.key(&live, k, false, t));
             record(q.key(&live, k, false, later));
+        }
+    }
+    // Airplane mode on: every key on every row and every press again, from that state.
+    let fresh_on = || {
+        let mut q = fresh();
+        q.set_airplane(Some(Airplane::On));
+        q
+    };
+    for row in quick::shown(&live, &fresh_on()) {
+        for k in keys {
+            let mut q = fresh_on();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, later));
+        }
+    }
+    for y in 0..quick::lines(&live, &fresh_on()).len() as u16 {
+        for x in 0..quick::WIDTH + 2 {
+            for b in [Button::Left, Button::Right, Button::Middle] {
+                let mut q = fresh_on();
+                record(q.press(&live, (x, y), b, t));
+                record(q.press(&live, (x, y), b, later));
+            }
         }
     }
     let mut q = fresh();
@@ -3349,6 +3375,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
             ["rfkill", "unblock", "bluetooth"] => true,
+            ["rfkill", "block" | "unblock", "wlan", "bluetooth", "wwan"] => true, // airplane mode: by type, never an index
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
@@ -3390,6 +3417,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "fake-vpn-more",
         "fake-mixer",
         "rfkill unblock bluetooth",
+        "rfkill block wlan bluetooth wwan",
+        "rfkill unblock wlan bluetooth wwan",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }

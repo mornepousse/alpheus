@@ -684,7 +684,7 @@ pub fn base_config() -> bool {
 
 /// What the harness writes as bar.toml: the test's `text`, with the camera watch's `[privacy]`
 /// roots, the DisplayLink detection's `[displays] drm_dir` and the quick panel's
-/// `[quick] kbd_backlight_dir` pointed at empty directories under `runtime` (never the machine's
+/// `[quick] kbd_backlight_dir` and `rfkill_dir` pointed at empty directories under `runtime` (never the machine's
 /// /dev, /proc or /sys) unless the test sets its own; `base` (`base_config`) leaves `[displays]`
 /// and the keys a base build does not know out.
 pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
@@ -706,6 +706,13 @@ pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
     if !base && !text.contains("kbd_backlight_dir") {
         let leds = runtime.join("quick-leds");
         text = under_table(&text, "quick", &format!("kbd_backlight_dir = \"{}\"\n", leds.display()));
+    }
+    // The airplane mode row reads the radios there, never the machine's /sys/class/rfkill (its
+    // `rfkill` command acts by type whatever this says: the private PATH, without `rfkill`, is what
+    // keeps the machine's radios safe; this keeps the row's state the test's own).
+    if !base && !text.contains("rfkill_dir") {
+        let rfkill = runtime.join("quick-rfkill");
+        text = under_table(&text, "quick", &format!("rfkill_dir = \"{}\"\n", rfkill.display()));
     }
     text
 }
@@ -757,7 +764,7 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc", "quick-leds"] {
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm", "timer-proc", "quick-leds", "quick-rfkill"] {
         fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
     fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();

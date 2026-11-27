@@ -1520,11 +1520,13 @@ fn quick_pss_idle_open_and_closed() {
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
 
-/// The radio rows' cost: one daemon with a fake keyboard backlight (`fake::kbd_backlight`, 1 of 2)
-/// and `[quick] kbd_backlight = true`, one with `false`; the panel opened and closed by the verb as
-/// in `quick_pss_idle_open_and_closed`. The row is one more line and a short `String`: the open
-/// panel may add 64 KB more anonymous memory over rest with it than without it, and nothing of it
-/// stays once closed (anonymous memory, the leak figure; total PSS is printed).
+/// The radio rows' cost: one daemon with a fake keyboard backlight (`fake::kbd_backlight`, 1 of 2),
+/// a fake rfkill directory (`rfkill0` wlan, `rfkill1` bluetooth, both on) and `[quick]
+/// kbd_backlight = true`, `airplane = true`, one with both `false`; the panel opened and closed by
+/// the verb as in `quick_pss_idle_open_and_closed`. The rows are two more lines, a short `String`
+/// and a byte: the open panel may add 64 KB more anonymous memory over rest with them than without
+/// them, and nothing of it stays once closed (anonymous memory, the leak figure; total PSS is
+/// printed). No key is pressed: `rfkill` never runs (nor is it on the harness's PATH).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn quick_pss_with_the_radio_rows() {
@@ -1537,12 +1539,21 @@ fn quick_pss_with_the_radio_rows() {
     std::fs::create_dir_all(&led).unwrap();
     std::fs::write(led.join("brightness"), "1\n").unwrap();
     std::fs::write(led.join("max_brightness"), "2\n").unwrap();
+    let rfkill = TempDir::new("quick-radios-rfkill");
+    for (name, kind) in [("rfkill0", "wlan"), ("rfkill1", "bluetooth")] {
+        let d = rfkill.0.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("type"), format!("{kind}\n")).unwrap();
+        std::fs::write(d.join("soft"), "0\n").unwrap();
+        std::fs::write(d.join("hard"), "0\n").unwrap();
+    }
     // (rest, open, closed, cycled) PSS, and (rest, closed, cycled) anonymous memory.
     let run = |name: &str, on: bool| {
         let bar = format!(
-            "{}[quick]\nkbd_backlight = {on}\nkbd_backlight_dir = {:?}\n",
+            "{}[quick]\nkbd_backlight = {on}\nkbd_backlight_dir = {:?}\nairplane = {on}\nrfkill_dir = {:?}\n",
             quick_bar(true, &backlight.0),
-            leds.0.display().to_string()
+            leds.0.display().to_string(),
+            rfkill.0.display().to_string()
         );
         let (sway, _hypr, d) = start(name, 1, &bus, None, Some(&bar), PwDump::Fifo);
         assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
@@ -1553,6 +1564,7 @@ fn quick_pss_with_the_radio_rows() {
         assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
         let shown = d.log().into_iter().find(|l| l.contains("quick shown")).unwrap_or_default();
         assert_eq!(shown.contains("kbd-backlight"), on, "{shown}");
+        assert_eq!(shown.contains("airplane"), on, "{shown}");
         std::thread::sleep(Duration::from_secs(1)); // configured and painted
         let (open, open_anon) = (d.pss_kb(), d.anonymous_kb());
         toggle();
@@ -1568,7 +1580,11 @@ fn quick_pss_with_the_radio_rows() {
         }
         std::thread::sleep(TRAY_SETTLE);
         let (cycled, cycled_anon) = (d.pss_kb(), d.anonymous_kb());
-        assert!(!d.log().iter().any(|l| l.contains("keyboard backlight")), "no key, no command: {:?}", d.log());
+        assert!(
+            !d.log().iter().any(|l| l.contains("quick: keyboard backlight") || l.contains("quick: airplane")),
+            "no key, no command: {:?}",
+            d.log()
+        );
         ((rest, open, closed, cycled), (rest_anon, open_anon, closed_anon, cycled_anon))
     };
     let (without, without_anon) = run("quick-radios-a", false);
@@ -1591,8 +1607,8 @@ fn quick_pss_with_the_radio_rows() {
     // opening adds to each daemon's own anonymous memory, with the row against without it.
     let pss_delta = with.1 as i64 - without.1 as i64;
     let row_cost = (with_anon.1 as i64 - with_anon.0 as i64) - (without_anon.1 as i64 - without_anon.0 as i64);
-    eprintln!("the keyboard backlight row, open: {pss_delta:+} KB PSS, {row_cost:+} KB anonymous");
-    assert!(row_cost <= 64, "the keyboard backlight row costs {row_cost} KB anonymous open (one line and a short String: <= 64 KB)");
+    eprintln!("the keyboard backlight and airplane mode rows, open: {pss_delta:+} KB PSS, {row_cost:+} KB anonymous");
+    assert!(row_cost <= 64, "the radio rows cost {row_cost} KB anonymous open (two lines, a short String, a byte: <= 64 KB)");
 }
 
 /// Once the panel closed, no timer, no wake-up, no spin.

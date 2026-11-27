@@ -1,7 +1,7 @@
 # The quick settings panel
 
 A panel opened from the bar for everyday settings, without opening the control center: the volume
-and the output, the brightness, the keyboard backlight, the microphone, do-not-disturb, the power profile, two toggles you
+and the output, the brightness, the keyboard backlight, airplane mode, the microphone, do-not-disturb, the power profile, two toggles you
 configure, the Wi-Fi, Bluetooth and VPN lists, Shield mode and the session buttons. This page says
 what it does, how to use it, how to configure it, how it is built, which rules the tests enforce on
 it, and what it costs. It describes the code as it is today.
@@ -31,6 +31,18 @@ A row whose tool, hardware or command is missing is not shown.
   `kbd_backlight = false`. The log names no device: `quick: keyboard backlight 2`.
   **Not yet verified:** that brightnessctl, unable to write the LED's root-owned file, reaches it
   through logind's `SetBrightness` on the `leds` subsystem for the active session.
+- **Airplane mode.** The first row of the radios' block, right above Wi-Fi: the switch on when every
+  Wi-Fi, Bluetooth and WWAN radio that is not held off by a kill switch is blocked. Space or Enter
+  (or a click) runs `rfkill block wlan bluetooth wwan`, or `rfkill unblock wlan bluetooth wwan` to
+  leave: leaving unblocks all three types, whatever was on before. The radios are read from
+  `[quick] rfkill_dir` when the panel opens and again 300 ms after any radio command (this row's,
+  the Wi-Fi row's `nmcli radio wifi`, the Bluetooth row's `rfkill unblock bluetooth`), so the row
+  never contradicts a radio switched from its own row; the Wi-Fi and Bluetooth rows follow through
+  their own feeds (NetworkManager and BlueZ follow rfkill). A radio held off by a kill switch does
+  not count: when every radio is, the row shows `hard blocked` and Space does nothing. GPS, NFC and
+  other radio types are left alone. Hidden without a radio of the three types, and nothing is read
+  with `airplane = false`. The log is a fixed word: `quick: airplane on`, `quick: airplane off`.
+  **Not yet verified:** that `rfkill` writes `/dev/rfkill` unprivileged through the uaccess ACL.
 - **Microphone.** `Microphone`, muted or live. Hidden without a default source.
 - **Mixer.** `Mixer…` opens a terminal mixer (`[quick] mixer`).
 - **Do not disturb.** Space toggles it. Enter or → opens a detail with six choices (`Off`,
@@ -49,7 +61,7 @@ A row whose tool, hardware or command is missing is not shown.
 
 ### Wi-Fi
 
-**The row.** A Wi-Fi row first under the sliders: a glyph by the signal of the connected network
+**The row.** A Wi-Fi row right under airplane mode (first under the sliders without it): a glyph by the signal of the connected network
 (another glyph when the radio is on and nothing is connected, another when it is off), then the SSID
 cut to 16 cells (`hidden` for one that shows nothing), `on` or `off`. Space runs
 `nmcli radio wifi on|off`. The row is hidden when NetworkManager has no Wi-Fi device.
@@ -288,6 +300,8 @@ ignored (`quick: toggle debounced`), because Hyprland fires a press bind again.
 | `dnd_until` | `"08:00"` | the time of the do-not-disturb detail's `Until` entry, `HH:MM` local |
 | `kbd_backlight` | `true` | the keyboard backlight row (still hidden without a `*::kbd_backlight` LED); `false` reads nothing |
 | `kbd_backlight_dir` | `"/sys/class/leds"` | where LEDs are listed, an absolute path; read only |
+| `airplane` | `true` | the airplane mode row (still hidden without a Wi-Fi, Bluetooth or WWAN radio); `false` reads nothing |
+| `rfkill_dir` | `"/sys/class/rfkill"` | where rfkill switches are listed, an absolute path; read only |
 
 A toggle's `state` is `""` (unknown: the row shows `·`), `"file:<path>"` (on while the file exists;
 the path starts with `/`, `~/` or `$XDG_RUNTIME_DIR/`) or `"process:<name>"` (on while a process
@@ -326,6 +340,10 @@ pure model, pure details, and the wiring that touches the outside world.
 - `kbd_backlight.rs` (outside this folder, next to `backlight.rs`): the keyboard backlight's LED,
   found and re-read in sysfs (at most 64 names, capped reads), and its steps, cycle and nearest
   level. Read only, no command: the row's `brightnessctl` is a `QuickAction` like the others.
+- `rfkill.rs` (outside this folder): the radios' switches read in sysfs (at most 32 entries, capped
+  reads, Wi-Fi, Bluetooth and WWAN only) and the airplane state they make. Read only, no command and
+  no `/dev/rfkill`: the row's `rfkill` is a `QuickAction`, and a radio command anywhere in the panel
+  schedules the 300 ms re-read on the panel's one timer.
 - `session.rs` (outside this folder): the session entries and the confirmation rule, shared with the
   power menu.
 - The tests sit next to each file (`tests.rs`, `app/tests.rs`, `dnd/tests.rs`, `shield/tests.rs`,
@@ -395,10 +413,13 @@ These are enforced by tests, so a change that breaks one fails the build.
 - `the_tray_spawns_no_thread`: the quick panel's model files and `bt_app.rs` are on its
   `NO_THREAD_NOR_COMMAND` list, so they run no command and start no thread.
 - `the_radio_readers_only_read` and `the_radio_readers_have_no_panicking_path`: `kbd_backlight.rs`
-  writes nothing, makes no raw system call and has no panicking path; it is on
-  `NO_THREAD_NOR_COMMAND` too. The allowlist knows its one shape,
-  `brightnessctl --class=leds --device=<led> set <level>`, and the harness points
-  `kbd_backlight_dir` at an empty folder and keeps `brightnessctl` and `rfkill` off its `PATH`.
+  and `rfkill.rs` write nothing, make no raw system call and have no panicking path; both are on
+  `NO_THREAD_NOR_COMMAND` too. The allowlist knows their exact shapes,
+  `brightnessctl --class=leds --device=<led> set <level>` and
+  `rfkill block|unblock wlan bluetooth wwan` (by type, never an index), walked with airplane mode on
+  and off; the harness points `kbd_backlight_dir` and `rfkill_dir` at empty folders and keeps
+  `brightnessctl` and `rfkill` off its `PATH` (`rfkill` acts by type on the machine whatever
+  directory a test names).
 - `the_quick_panels_timer_follows_the_view_from_the_open`: the timer is synced as the panel opens, so
   a `failed` shown at open clears at its 4 s.
 - `the_bluetooth_connection_goes_with_the_panel` and `the_vpn_tap_follows_the_panel`: the acting
@@ -430,6 +451,11 @@ Figures are those recorded when each part merged, in release, back to back with 
   (`startup_pss_per_source`, back to back); shown, +8…+20 KB of anonymous memory while the panel is
   open, none kept once closed (`quick_pss_with_the_radio_rows`). Closed, or with
   `kbd_backlight = false`, it holds nothing: no fd, thread or timer.
+- **The airplane mode row:** +8 KiB in the stripped binary and nothing measurable at start
+  (`startup_pss_per_source`, back to back); shown with the keyboard backlight row, +0…+12 KB of
+  anonymous memory while the panel is open, none kept once closed (`quick_pss_with_the_radio_rows`).
+  Closed, or with `airplane = false`, it holds nothing: no fd, thread, timer or `/dev/rfkill`; about
+  a dozen small sysfs reads per open, one more read 300 ms after a radio command.
 - **The acting Bluetooth connection:** +54…+116 KB while the detail is open
   (`bluetooth_acting_connection_cost`), the headset row +12…+20 KB (`bluetooth_headset_row_cost`).
 - **Wake-ups:** none at rest after the panel closes, for the loop and for the D-Bus thread

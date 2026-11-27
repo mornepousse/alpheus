@@ -230,6 +230,8 @@ See [the on-screen display](features/osd.md).
 | `dnd_until` | string `HH:MM` | `"08:00"` | a local time 0:00 to 23:59 | The do-not-disturb detail's "Until" entry (tomorrow if already past). |
 | `kbd_backlight` | bool | `true` | | The keyboard backlight row; still hidden without a `*::kbd_backlight` LED. `false`: nothing is read when the panel opens. |
 | `kbd_backlight_dir` | path | `"/sys/class/leds"` | absolute | Where LEDs are listed; read when the panel opens (and 150 ms after its command), never written. |
+| `airplane` | bool | `true` | | The airplane mode row; still hidden without a Wi-Fi, Bluetooth or WWAN radio. `false`: nothing is read when the panel opens. |
+| `rfkill_dir` | path | `"/sys/class/rfkill"` | absolute | Where rfkill switches are listed; read when the panel opens (and 300 ms after a radio command), never written. |
 
 A toggle's `toggle` is a command run as given (`[]` hides the row); its `state` is `""` (unknown,
 the row shows `·`), `"file:<path>"` (on while the file exists; the path starts with `/`, `~/` or
@@ -428,6 +430,8 @@ poweroff = ["systemctl", "poweroff"]
 dnd_until = "08:00"                         # the do-not-disturb detail's "Until" entry, HH:MM (local time, tomorrow if past)
 kbd_backlight = true                        # the keyboard backlight row (hidden without a *::kbd_backlight LED); false: nothing read
 kbd_backlight_dir = "/sys/class/leds"       # where LEDs are listed (absolute); read when the panel opens, never written
+airplane = true                             # the airplane mode row (hidden without a Wi-Fi, Bluetooth or WWAN radio); false: nothing read
+rfkill_dir = "/sys/class/rfkill"            # where rfkill switches are listed (absolute); read when the panel opens, never written
 
 [timer]
 countdown = 10       # minutes, the popup's Timer row at start (1 to 180)
