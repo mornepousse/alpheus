@@ -147,6 +147,64 @@ fn every_click_on_a_full_bar_stays_on_the_allowlist() {
     }
 }
 
+/// A bar binding every button of every bindable module to `["recorder", "{output}"]`, `{tab}` added
+/// where the module has a control-center tab: each binding runs through the executor exactly as
+/// written, its placeholders replaced, never through a shell, never `dpms`. The allowlist test
+/// above pins the defaults; this one pins that a user's argv is run as it stands.
+#[test]
+fn every_user_binding_runs_as_written() {
+    use alpheus_daemon::actions::{Bound, bound};
+    use alpheus_daemon::grid::Target;
+    let tabs = [
+        (ModuleId::Failed, "diagnostics"),
+        (ModuleId::Volume, "sound"),
+        (ModuleId::Network, "network"),
+        (ModuleId::Bluetooth, "bluetooth"),
+        (ModuleId::Battery, "home"),
+    ];
+    let tab = |m: ModuleId| tabs.iter().find(|(t, _)| *t == m).map(|(_, name)| *name);
+    let mut toml = String::new();
+    let bindable: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| m.bindable()).collect();
+    for &m in &bindable {
+        let argv = if tab(m).is_some() { r#"["recorder", "{output}", "{tab}"]"# } else { r#"["recorder", "{output}"]"# };
+        toml.push_str(&format!("[bindings.{}]\n", m.name()));
+        for key in ["left", "middle", "right", "wheel_up", "wheel_down"] {
+            toml.push_str(&format!("{key} = {argv}\n"));
+        }
+        let with_tab = format!("[bindings.{}]\nleft = [\"recorder\", \"{{tab}}\"]", m.name());
+        assert_eq!(BarConfig::from_text(&with_tab).is_ok(), tab(m).is_some(), "{m:?}: the tabs listed here are the config's");
+    }
+    let config = BarConfig::from_text(&toml).unwrap();
+    for b in [Bar::new(config.clone()), {
+        let mut b = Bar::new(config);
+        b.config.modules.retain(|m| *m != ModuleId::Quick);
+        b
+    }] {
+        let fake = FakeExecutor::new();
+        let mut expected = Vec::new();
+        for &m in &bindable {
+            for target in [Target::Module(m), Target::Passive(m)] {
+                for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                    let Some(Bound::Run(argv)) = bound(&b, "eDP-1", &target, bt) else { panic!("{m:?} {bt:?}: not run") };
+                    run(&fake, &argv);
+                    expected.push(match tab(m) {
+                        Some(t) => format!("recorder eDP-1 {t}"),
+                        None => "recorder eDP-1".to_string(),
+                    });
+                }
+            }
+        }
+        let calls = fake.calls();
+        assert_eq!(calls, expected);
+        for c in &calls {
+            let words: Vec<&str> = c.split(' ').collect();
+            assert!(!matches!(words[0], "sh" | "bash"), "never a shell: {c}");
+            assert!(!words.contains(&"-c"), "{c}");
+            assert!(!c.to_lowercase().contains("dpms"), "{c}");
+        }
+    }
+}
+
 #[test]
 fn compositor_requests_are_read_only() {
     let texts: Vec<&str> = Request::ALL.iter().map(|r| r.text()).collect();

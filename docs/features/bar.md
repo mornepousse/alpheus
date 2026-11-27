@@ -112,6 +112,15 @@ A middle click toggles do-not-disturb on the bell, pauses or resumes the timer o
 mutes the microphone on the privacy indicators. The wheel changes the volume on the volume module,
 the track on media, and the workspace on the workspaces. Each module's page has its own table.
 
+**Your own bindings.** `[bindings.<module>]` in `bar.toml` changes what one button of one module
+does: `left`, `middle`, `right`, `wheel_up` and `wheel_down`, each either an argument list run as
+written (`{tab}`, the module's control center tab, and `{output}`, the bar's connector, replaced in
+it) or a verb: `none` (the button does nothing), `popup` (the module's own popup), `quick` (the
+quick panel), `open_tab` (`[actions] open_tab` with the module's tab), `launcher`, `dnd` and `mute`
+(the default output's mute). A button left out keeps the behaviour above. The window, and the clock
+with `[clock] calendar = false`, have no click of their own: a binding gives them a zone that does
+only what is bound. The workspaces and the tray take no binding.
+
 **From a script or a key bind.** `alpheus-launch` drives the launcher, the notepad, the clipboard
 history, the Tools menu, do-not-disturb, the notification history, the OSD, the quick panel, the
 focus timer, Shield mode, the window switcher, the calculator, the power menu and the failed-units
@@ -142,7 +151,17 @@ invalid key, makes the whole file fall back to its defaults with one warning in 
 ```toml
 # ~/.config/alpheus/bar.toml
 modules = ["launcher", "workspaces", "window", "volume", "clock"]
+
+[bindings.volume]
+right = ["pavucontrol"]          # run as written, never through a shell
+wheel_up = "none"                # a verb: none, popup, quick, open_tab, launcher, dnd, mute
+
+[bindings.clock]
+middle = ["foot", "-e", "calcurse"]
 ```
+
+A binding's errors (an empty list, a blank program, a verb whose popup, tab or module is missing)
+name the key, never the command, and make the file fall back to its defaults like any other.
 
 The colours and the bar's shape are in `theme.toml` ([Themes](themes.md)), and the launcher's own
 settings in `launcher.toml` ([the launcher](launcher.md)).
@@ -164,7 +183,12 @@ modules and the walk through one event are in [`docs/ARCHITECTURE.md`](../ARCHIT
   show. The whole segment is one click zone, except the tray's, which has one per icon.
 - `layout.rs`: from the state to a screen's grid — the segments laid out left to right in the
   configured order, the elastic window module, the narrow-screen removal order, and the blocks of the
-  block styles.
+  block styles. A segment with no click zone of its own (the window, the clock without the calendar)
+  gets a `Passive` one when a button of its module is bound (`wants_zone`).
+- `actions.rs`: a click or a wheel turn turned into what it does. `bound` reads the button's
+  binding first; `wayland.rs`'s `click` runs its argv through the executor, toggles its popup under
+  the zone, toggles the launcher (the launcher button's press rule) or do-not-disturb, or does
+  nothing, and only an unbound button goes on to the defaults (`command`, `ModulePopup::of`).
 - `popup.rs`: the bar's popups, each an `xdg_popup` attached to the bar's own layer surface and placed
   under the cells it hangs from, drawn as rows of cells into a pool of its own. One at a time, and
   everything is dropped whole on close.
@@ -205,7 +229,14 @@ These are enforced by tests, so a change that breaks one fails the build.
   altogether.
 - `every_click_on_a_full_bar_stays_on_the_allowlist` and `every_click_only_runs_the_workspace_command`:
   every zone of a bar where every module is shown, every button, with the quick panel and without it,
-  runs only a command of the allowlist, and each of those commands is reached by the test.
+  runs only a command of the allowlist, and each of those commands is reached by the test. They pin
+  the defaults only: a user's binding runs what the user wrote.
+- `every_user_binding_runs_as_written`: every button of every bindable module bound to an argv runs
+  exactly that program and those arguments, `{tab}` and `{output}` replaced, through the executor:
+  never `sh`, never `-c`, never `dpms`. `empty_bindings_change_no_click_byte_for_byte`: empty
+  `[bindings.<module>]` tables change no zone, command or popup.
+- `a_passive_zone_takes_no_click_of_its_own`: a zone added for a binding gives its module no
+  command, popup, launcher, do-not-disturb, timer or media action of its own.
 - `d_bus_is_confined_to_sources_and_read_only`: the `dbus` crate appears in six files only — one
   under `src/sources/dbus/` and the session-bus plumbing — and the reading sources can call no
   method that changes anything; `the_bluetooth_connection_acts_only_through_act_method` pins the one

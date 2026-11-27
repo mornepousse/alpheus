@@ -202,9 +202,20 @@ pub(crate) fn bar_clock(bar: &Bar) -> Segment {
     Segment { module: ModuleId::Clock, pieces, elastic: false, target, withhold_hue: false }
 }
 
-/// A module's segment, or None if it has nothing to show.
+/// A module's segment, or None if it has nothing to show. A segment with no click zone of its own
+/// gets a `Passive` one when the module wants it (`wants_zone`): it adds no click.
 fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
-    m.spec().segment.and_then(|f| f(bar, output))
+    let mut s = m.spec().segment.and_then(|f| f(bar, output))?;
+    if s.target.is_none() && wants_zone(bar, m) {
+        s.target = Some(Target::Passive(m));
+    }
+    Some(s)
+}
+
+/// Whether `m` needs a zone over its cells: a button of it is bound (an empty `[bindings.<module>]`
+/// table binds nothing, so it adds no zone).
+pub(crate) fn wants_zone(bar: &Bar, m: ModuleId) -> bool {
+    bar.config.bindings.get(&m).is_some_and(|b| b.buttons().iter().any(|(_, binding)| binding.is_some()))
 }
 
 /// The segment the free space goes before when none is elastic: `gap_at` (the absent window

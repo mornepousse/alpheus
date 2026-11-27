@@ -28,7 +28,7 @@
 //! See: docs/ARCHITECTURE.md ("The core"), docs/tour.md (a click from the pointer to the command),
 //! docs/features/bar.md, docs/compositors.md (what each compositor gives).
 
-use crate::actions::{self, Button, Wheel};
+use crate::actions::{self, Bound, Button, Wheel};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
@@ -964,22 +964,56 @@ impl App {
         s.last = Some(grid);
     }
 
-    /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
-    /// and the zone's target (the quick panel's section).
-    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
+    /// The zone under `x` on bar `i`: its cells (a popup's anchor) and its target.
+    fn zone_anchor(&mut self, i: usize, x: f64) -> Option<(PopupAnchor, Target)> {
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
-        let quick = self.bar.config.modules.contains(&ModuleId::Quick);
         let s = &self.surfaces[i];
         let zone = s.last.as_ref()?.zone_at(column)?;
-        let popup = ModulePopup::of(&zone.target, b, quick)?;
-        Some((popup, PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
+        Some((PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
+    }
+
+    /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
+    /// and the zone's target (the quick panel's section). A bound button toggles its binding's
+    /// popup or none (`actions::bound`), so the press race (`closed_by_done`) and a second press
+    /// closing its own popup follow the binding too.
+    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
+        let quick = self.bar.config.modules.contains(&ModuleId::Quick);
+        let (anchor, target) = self.zone_anchor(i, x)?;
+        let popup = match actions::bound(&self.bar, &anchor.output, &target, b) {
+            Some(Bound::Popup(p)) => p,
+            Some(_) => return None,
+            None => ModulePopup::of(&target, b, quick)?,
+        };
+        Some((popup, anchor, target))
+    }
+
+    /// A bound button (`[bindings.<module>]`) on the zone under `x`: done here, and true; false
+    /// when the button is not bound, so today's click goes on.
+    fn bound_click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) -> bool {
+        let Some((anchor, target)) = self.zone_anchor(i, x) else { return false };
+        let Some(action) = actions::bound(&self.bar, &anchor.output, &target, b) else { return false };
+        match action {
+            Bound::Nothing => {}
+            Bound::Run(argv) => actions::run(self.exec.as_ref(), &argv),
+            Bound::Popup(p) => (p.ops().toggle)(self, qh, anchor, &target),
+            Bound::Launcher => {
+                if decide_click(true, launcher_was_open) == ClickDecision::ToggleLauncher {
+                    self.launcher_toggle(qh);
+                }
+            }
+            Bound::Dnd => self.set_dnd(!self.dnd),
+        }
+        true
     }
 
     /// `launcher_was_open`: whether the launcher was open right before this
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
+        if self.bound_click(qh, i, x, b, launcher_was_open) {
+            return;
+        }
         if let Some((popup, anchor, target)) = self.module_popup_at(i, x, b) {
             (popup.ops().toggle)(self, qh, anchor, &target);
             return;

@@ -2019,6 +2019,29 @@ fn clock_bar(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
     (sway, hypr, d)
 }
 
+/// `[bindings.clock] right = [recorder, "{output}"]`: a right click on the clock runs the recorder
+/// with the bar's connector, one argument, nothing logged of it; the left click keeps the calendar.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_user_binding_runs_its_argv_on_a_click() {
+    let sway = Sway::start("binding-argv", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let rec = fake_argv_recorder(&sway, "bound");
+    let toml = format!("modules = [\"clock\"]\n[bindings.clock]\nright = [\"{}\", \"{{output}}\"]\n", rec.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    sway.click(40, 10, "button3");
+    assert!(wait_until(|| recorded_argv(&sway, "bound").len() == 1), "{:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "bound"), [["HEADLESS-1"]]);
+    assert_eq!(d.count("calendar shown"), 0, "the right click is the binding's alone: {:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "the left click keeps today's: {:?}", d.log());
+    assert_eq!(recorded_argv(&sway, "bound").len(), 1, "{:?}", d.log());
+    let program = rec.display().to_string();
+    assert!(d.log().iter().all(|l| !l.contains(&program)), "never the command in the log: {:?}", d.log());
+}
+
 /// "YYYY-MM" of every "calendar shown/shows" line, in order.
 fn calendar_months(d: &Daemon) -> Vec<String> {
     d.log().iter().filter_map(|l| l.split_once("calendar show").map(|(_, r)| r.rsplit(' ').next().unwrap_or("").to_string())).collect()
