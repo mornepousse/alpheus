@@ -139,8 +139,9 @@ today's behaviour, and no table at all changes nothing.
   items, a non-blank program, no NUL. `{tab}` (the module's control-center tab; only on volume,
   network, Bluetooth, battery and `failed`) and `{output}` (the bar's connector, such as `DP-1`) are
   replaced, each a whole argument, at most once, never the program. `[]` is an error: use `"none"`.
-  `suspend`, `hibernate` or `hybrid-sleep` as a whole word in any item, whatever its case, is an
-  error (a binding never puts the machine to sleep). Beyond those checks a binding runs exactly what
+  `suspend`, `hibernate` or `hybrid-sleep` as a whole word in any item, whatever its case
+  (`SuspendThenHibernate` and `HybridSleep` included), is an error, and so is `systemctl` or
+  `loginctl` followed by `sleep`. Beyond those checks a binding runs exactly what
   you wrote, and what it does is yours: alpheus does not vet it.
 - **A verb** is a string:
 

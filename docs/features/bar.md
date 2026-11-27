@@ -122,8 +122,8 @@ with `[clock] calendar = false`, have no click of their own: a binding gives the
 only what is bound. The workspaces and the tray take no binding. A wheel bound to `popup`, `quick`
 or `launcher` toggles it once per notch: a second notch closes what the first opened. A bound
 command runs as written: alpheus refuses only an argv naming `suspend`, `hibernate` or
-`hybrid-sleep` (the machine is never put to sleep from the bar), and what any other command does is
-the user's own choice.
+`hybrid-sleep` (in any case or spelling, `HybridSleep` included) or `systemctl sleep` and `loginctl
+sleep`; what any other command does, a script of the user's own included, is the user's choice.
 
 **Tooltips.** Resting the pointer half a second on a module shows one line saying what its glyphs
 mean, on the tray's own hover timer and popup; the line goes when the pointer leaves. `tooltips =
@@ -264,8 +264,9 @@ These are enforced by tests, so a change that breaks one fails the build.
 - `every_user_binding_runs_as_written`: every button of every bindable module bound to an argv runs
   exactly that program and those arguments, `{tab}` and `{output}` replaced, through the executor:
   never `sh`, never `-c`, never `dpms`. `bindings_refuse_the_sleep_words` (`config/tests.rs`): an
-  argv holding `suspend`, `hibernate` or `hybrid-sleep` as a whole word is an error naming only the
-  key. `empty_bindings_change_no_click_byte_for_byte`: empty
+  argv holding `suspend`, `hibernate` or `hybrid-sleep` as a whole word (a capital after a
+  lowercase letter starts a word: `HybridSleep`), or `systemctl` or `loginctl` then `sleep`, is an
+  error naming only the key. `empty_bindings_change_no_click_byte_for_byte`: empty
   `[bindings.<module>]` tables change no zone, command or popup. The headless
   `a_bound_left_click_never_shows_the_calendar`: a bound button that has a default runs the binding
   alone.

@@ -177,6 +177,12 @@ pub fn tooltip_columns(bar_columns: u16, extra_width: u32, advance: f32) -> u16 
     bar_columns.saturating_sub(frame.min(u32::from(u16::MAX)) as u16)
 }
 
+/// The text a tooltip keeps: made drawable (`text::clean`), and none at all when nothing is left
+/// to read: a title of only invisible characters shows no empty box.
+pub fn shown_text(text: Option<String>) -> Option<String> {
+    text.map(|t| clean(&t)).filter(|t| !t.trim().is_empty())
+}
+
 /// The tooltip's one row: the text made drawable (`text::clean`: controls and bidirectional
 /// formatting gone, at most `MAX_TEXT` characters — a window title or a device name comes whole
 /// and uncapped from `tooltips.rs`), truncated with "…" to `max_columns` − 2 (the room
@@ -396,6 +402,16 @@ mod tests {
         assert!(text.starts_with("[31mEvil eltit"), "the line kept, its controls gone: {:?}", &text[..40]);
         assert!(text.chars().count() <= crate::text::MAX_TEXT, "capped whatever the room: {}", text.chars().count());
         assert!(super::tooltip_row(&hostile, 30).width() <= 28, "and cut to the room");
+    }
+
+    /// A title of only invisible or blank characters leaves nothing to read: no tooltip at all,
+    /// never an empty framed box.
+    #[test]
+    fn nothing_left_to_read_shows_no_tooltip() {
+        assert_eq!(shown_text(Some("\u{200b}".into())), None);
+        assert_eq!(shown_text(Some(" \n\u{200e}".into())), None);
+        assert_eq!(shown_text(None), None);
+        assert_eq!(shown_text(Some("Evil\u{7}\ntitle".into())).as_deref(), Some("Evil title"));
     }
 
     #[test]

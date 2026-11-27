@@ -1382,7 +1382,8 @@ fn binding_errors_never_quote_the_command() {
 
 /// A binding never sleeps the machine: a suspend froze the DisplayLink dock, so `suspend`,
 /// `hibernate` and `hybrid-sleep` are refused as a whole word anywhere in the argv, whatever the
-/// case; the error names the key, never the command.
+/// case (a lowercase letter then a capital splits words: `HybridSleep`), and so is `systemctl` or
+/// `loginctl` then `sleep`; the error names the key, never the command.
 #[test]
 fn bindings_refuse_the_sleep_words() {
     for argv in [
@@ -1392,13 +1393,28 @@ fn bindings_refuse_the_sleep_words() {
         "[\"/usr/bin/suspend\"]",
         "[\"systemctl\", \"suspend-then-hibernate\"]",
         "[\"sh-wrapper\", \"--then=suspend\"]",
+        "[\"busctl\", \"SuspendThenHibernate\"]",
+        "[\"busctl\", \"HybridSleep\"]",
+        "[\"x\", \"hybridsleep\"]",
+        "[\"systemctl\", \"sleep\"]",
+        "[\"/run/current-system/sw/bin/loginctl\", \"--no-ask-password\", \"Sleep\"]",
+        "[\"sh\", \"-c\", \"systemctl sleep\"]",
     ] {
         let e = binding_err(&format!("[bindings.clock]\nright = {argv}"));
         assert!(e.contains("bindings.clock.right"), "{argv}: {e:?}");
         assert!(!e.contains("systemctl") && !e.contains("loginctl") && !e.contains("wrapper"), "{argv}: the key only: {e:?}");
         assert!(!e.to_lowercase().contains("suspend") && !e.to_lowercase().contains("hibernate"), "{argv}: nothing of the argv: {e:?}");
     }
-    for argv in ["[\"suspended-jobs\"]", "[\"my_suspend\"]", "[\"notify-send\", \"unsuspendable\"]", "[\"hibernates\"]"] {
+    for argv in [
+        "[\"suspended-jobs\"]",
+        "[\"my_suspend\"]",
+        "[\"notify-send\", \"unsuspendable\"]",
+        "[\"hibernates\"]",
+        "[\"echo\", \"hibernated\"]",
+        "[\"sleep\", \"5\"]",
+        "[\"systemctl\", \"status\"]",
+        "[\"busctl\", \"mySuspended\"]",
+    ] {
         assert!(BarConfig::from_text(&format!("[bindings.clock]\nright = {argv}")).is_ok(), "{argv}: not the whole word");
     }
 }

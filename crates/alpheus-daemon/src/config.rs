@@ -458,18 +458,47 @@ pub const BINDING_ARGV_MAX: usize = 16;
 /// argument at most once; a verb only where what it acts on exists. A table for a module absent from
 /// `modules` is accepted (it costs nothing). The message names the key, never the command.
 /// The words a binding's argv may not hold, as a whole word in any case: a suspend froze the
-/// DisplayLink dock, and the power rows never offer one either.
-const SLEEP_WORDS: [&str; 3] = ["suspend", "hibernate", "hybrid-sleep"];
+/// DisplayLink dock, and the power rows never offer one either. `hybrid-sleep` is the word pair
+/// `hybrid` `sleep` or the one word `hybridsleep`.
+const SLEEP_WORDS: [&str; 3] = ["suspend", "hibernate", "hybridsleep"];
 
-/// Whether `arg` holds one of `SLEEP_WORDS` as a whole word (no letter, digit or `_` right before
-/// or after it), whatever its case: `suspend-then-hibernate` and `/usr/bin/suspend` do,
-/// `suspended` does not.
-fn sleeps(arg: &str) -> bool {
-    let arg = arg.to_lowercase();
-    let word_char = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    SLEEP_WORDS.iter().any(|w| {
-        arg.match_indices(w).any(|(at, _)| !word_char(arg[..at].chars().next_back()) && !word_char(arg[at + w.len()..].chars().next()))
-    })
+/// The words of `arg`, lowercased: runs of letters, digits and `_`, also cut where a lowercase
+/// letter meets a capital (`SuspendThenHibernate` is three words, `HIBERNATE` one).
+fn words(arg: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut prev_lower = false;
+    for c in arg.chars() {
+        let in_word = c.is_alphanumeric() || c == '_';
+        if (!in_word || (prev_lower && c.is_uppercase())) && !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+        if in_word {
+            word.extend(c.to_lowercase());
+        }
+        prev_lower = c.is_lowercase();
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Whether `argv` would put the machine to sleep, as far as its words tell: one of `SLEEP_WORDS`
+/// as a whole word (`suspend-then-hibernate`, `/usr/bin/suspend`, `HybridSleep` do; `suspended`
+/// and `my_suspend` do not), or `systemctl` or `loginctl` whose next argument that is no option is
+/// `sleep` (arguments split at blanks too, for a `sh -c` string).
+fn sleeps(argv: &[String]) -> bool {
+    let by_word = argv.iter().any(|a| {
+        let w = words(a);
+        w.iter().any(|w| SLEEP_WORDS.contains(&w.as_str())) || w.windows(2).any(|p| p[0] == "hybrid" && p[1] == "sleep")
+    });
+    let tokens: Vec<&str> = argv.iter().flat_map(|a| a.split_whitespace()).collect();
+    let by_pair = tokens.iter().enumerate().any(|(i, t)| {
+        matches!(t.rsplit('/').next(), Some("systemctl" | "loginctl"))
+            && tokens[i + 1..].iter().find(|t| !t.starts_with('-')).is_some_and(|t| t.eq_ignore_ascii_case("sleep"))
+    });
+    by_word || by_pair
 }
 
 fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) -> Result<(), String> {
@@ -496,7 +525,7 @@ fn check_bindings(b: &BTreeMap<ModuleId, ButtonBindings>, modules: &[ModuleId]) 
                     if argv.iter().any(|a| a.contains('\0')) {
                         return Err(format!("{key}: an argument holds a NUL"));
                     }
-                    if argv.iter().any(|a| sleeps(a)) {
+                    if sleeps(argv) {
                         return Err(format!("{key}: a binding never puts the machine to sleep"));
                     }
                     let tab = usize::from(spec.tab.is_some());

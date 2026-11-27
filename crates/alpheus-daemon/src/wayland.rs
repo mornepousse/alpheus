@@ -1666,8 +1666,9 @@ impl App {
             // Taken now, never refreshed while shown.
             HoverKey::Module(m) => m.spec().tooltip.and_then(|f| f(&app.bar)),
         };
-        // Clean and capped before it is kept: the row draws it so, and the body holds no more.
-        let Some(text) = text.map(|t| crate::text::clean(&t)) else { return };
+        // Clean and capped before it is kept (the row draws it so, and the body holds no more);
+        // nothing left to read shows nothing.
+        let Some(text) = hover::shown_text(text) else { return };
         // By `hover_surface`'s IDENTITY, never by
         // re-deriving the bar from `anchor.output`: up to ½ s has passed since `hover_moved` armed
         // this, time enough for `update_output` to rename it, or for the name to be briefly shared.
