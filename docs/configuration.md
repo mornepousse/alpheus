@@ -151,7 +151,7 @@ today's behaviour, and no table at all changes nothing.
 | Verb | Does | Needs |
 |---|---|---|
 | `"none"` | Nothing: the button's default silenced. | |
-| `"popup"` | The module's own popup. | A module with a popup (`media`, `privacy`, `shield`, `volume`, `network`, `bluetooth`, `resources`, `notifications`, `timer`, `clock`, `power`); `quick` in `modules` when that popup is the quick panel (`shield`, volume, network, Bluetooth). |
+| `"popup"` | The module's own popup, even one its settings otherwise leave off (the clock's month with `[clock] calendar = false`): the binding asks for it. | A module with a popup (`media`, `privacy`, `shield`, `volume`, `network`, `bluetooth`, `resources`, `notifications`, `timer`, `clock`, `power`); `quick` in `modules` when that popup is the quick panel (`shield`, volume, network, Bluetooth). |
 | `"quick"` | The quick settings panel. | `quick` in `modules`. |
 | `"open_tab"` | `[actions] open_tab` with the module's tab. | A module with a tab (volume, network, Bluetooth, battery, `failed`). |
 | `"launcher"` | Toggles the launcher, as its button does. | |
