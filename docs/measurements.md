@@ -367,3 +367,26 @@ Reading Sway's config costs what reading Mango's does: the same 100 bindings, th
 freed with the level. Sway's cold PSS reads ~50 KB above Mango's (9,201 against 9,149–9,169 KB):
 the daemon's own Sway backend in place of the FakeMango client, not the parser. Mango's figures on
 the branch stay within the base's.
+
+Task 5, `alpheus-launch --binds` (on pc-simu, release, base Task 4 e144d6a0 and the branch
+alternated, 3 rounds, each run holding the memory lock exclusively through the turnstile; other
+agents' builds ran on the machine meanwhile: loaded machine, 2026-11-27). The new
+`binds_pss_open_and_closed_by_the_verb` is `binds_pss_open_and_closed` (Mango, the same 100
+bindings) with each cycle opened by `--binds` and closed by a second `--binds`, instead of
+`--tools`, its letter, Esc and `--tools`. The base has no verb, so its menu run is the comparison:
+
+| Test | Base Task 4, menu | Branch, menu | Branch, `--binds` |
+|---|---|---|---|
+| PSS closed (after the first cycle) / open | 10,511…10,535 / 12,496…12,520 KB | 10,423…10,535 / 12,408…12,524 KB | 10,085…10,093 / 12,897…12,901 KB |
+| PSS open over closed | +1,985…+1,989 KB | +1,985…+1,989 KB | +2,808…+2,812 KB |
+| anonymous open over closed / closed again | +276…+280 / −104…−84 KB | +276…+280 / −96…+16 KB | +72…+76 / +16…+28 KB |
+| anonymous after 10 more / after 20 more | +52…+68 / +80…+100 KB | +48…+68 / +76…+84 KB | +24…+44 / +52…+60 KB |
+| threads | 3 → 3 | 3 → 3 | 3 → 3 |
+
+The verb costs less than the menu, not more. The box's shm pools are the same (3,904 KB mapped,
+the panel's size, both ways); their PSS reads higher open through the verb (2,792 KB against
+1,880 by the menu, one diagnostic run each on the branch) only because the box drew fewer frames
+and less of the pools is shared with the compositor at the reading. Without the pools, the
+daemon's own memory open over closed is +56 KB through the verb against +153 KB by the menu, and
+closed it stays ~430 KB lower (10,037 against 10,471 KB): a `--binds` open never draws the panel,
+so the panel's warm-up is never paid. The menu path on the branch stays within the base's.
