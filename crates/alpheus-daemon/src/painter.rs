@@ -835,7 +835,7 @@ impl Fonts {
                     .find(|b| usize::from(b.start) <= col && col < usize::from(b.end))
                     .map_or(own, |b| if c.style.fg == Tint::FgDim { b.muted } else { b.ink })
             };
-            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, height);
+            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, (0, height));
         }
     }
 
@@ -1105,13 +1105,24 @@ impl Fonts {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
+            let on = b.shapes.iter().rev().find(|sh| covers(sh, i, col));
             let under = if c.style.bg != Tint::Bg {
                 color(roles, base, c.style.bg)
             } else {
-                b.shapes.iter().rev().find(|sh| covers(sh, i, col)).map_or(base, |sh| shape_fill(roles, base, sh.kind))
+                on.map_or(base, |sh| shape_fill(roles, base, sh.kind))
+            };
+            // A glyph on a chip stays inside it: a full-height one (the search field's cursor)
+            // would otherwise reach past its inset.
+            let inset = CHIP_INSET * self.scale.max(1) as u32;
+            let rows = match on {
+                Some(sh) if matches!(sh.kind, ShapeKind::Chip(_)) => (
+                    if i == sh.row { inset } else { 0 },
+                    if i + 1 == sh.row + usize::from(sh.rows) { height.saturating_sub(inset) } else { height },
+                ),
+                _ => (0, height),
             };
             let x = x0 + self.edge(col);
-            self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, height);
+            self.glyph(c.ch, c.style.bold, x as f32, color(roles, under, c.style.fg), px, width, rows);
         }
     }
 
@@ -1159,8 +1170,9 @@ impl Fonts {
         (left <= right).then_some((left, top, right, bottom))
     }
 
+    /// `ch` in `ink` from `x0`, its pixels kept to the buffer's rows [rows.0, rows.1).
     #[allow(clippy::too_many_arguments)]
-    fn glyph(&mut self, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, height: u32) {
+    fn glyph(&mut self, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, rows: (u32, u32)) {
         // Bounded memory: past the ceiling, we start over from an empty
         // cache (the shown glyphs are rasterized again, once).
         if self.cache.image_cache.len() >= MAX_CACHE {
@@ -1177,7 +1189,10 @@ impl Fonts {
         for g in self.shaped(ch, bold).iter() {
             let tint = g.color_opt.unwrap_or(base);
             self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
-                blend(px, width, height, x0 + g.dx + dx, g.y + dy, c);
+                let y = g.y + dy;
+                if y >= i32::try_from(rows.0).unwrap_or(i32::MAX) {
+                    blend(px, width, rows.1, x0 + g.dx + dx, y, c);
+                }
             });
         }
     }

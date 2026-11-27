@@ -1344,13 +1344,8 @@ fn panel_home_snapshot() {
 
 /// `l` drawn in `b` and painted at `scale` with the default theme, in a surface sized as the host
 /// sizes it (`surface::box_frame`, `surface::layout_size`): the pixels (r, g, b), the width, the
-/// height, the frame as painted, and the x span of the search field's cursor's cell.
-fn painted(
-    fonts: &mut crate::painter::Fonts,
-    l: &Launcher,
-    b: &BoxLayout,
-    scale: i32,
-) -> (Vec<Rgb>, u32, u32, crate::painter::Frame, (u32, u32)) {
+/// height and the frame as painted.
+fn painted(fonts: &mut crate::painter::Fonts, l: &Launcher, b: &BoxLayout, scale: i32) -> (Vec<Rgb>, u32, u32, crate::painter::Frame) {
     use crate::config::DEFAULT_HEIGHT;
     use crate::launcher::surface::{box_frame, layout_size};
     let rows = draw_in(l, b);
@@ -1363,9 +1358,7 @@ fn painted(
     let mut px = vec![0u8; (w * h * 4) as usize];
     fonts.paint_boxed(&rows, &roles, &mut px, w, h, rh, scale, FrameInk::Border);
     let frame = frame.fitted(rows.cells(), advance, rh, (w, h));
-    let col = rows.rows[0].text().chars().position(|c| c == '▏').expect("the search field's cursor") as f32;
-    let cursor = (frame.side + (col * advance).round() as u32, frame.side + ((col + 1.0) * advance).round() as u32);
-    (px.chunks(4).map(|p| Rgb(p[2], p[1], p[0])).collect(), w, h, frame, cursor)
+    (px.chunks(4).map(|p| Rgb(p[2], p[1], p[0])).collect(), w, h, frame)
 }
 
 /// The panel's outermost content (the search field's chip at the top, the footer's capsules at
@@ -1380,12 +1373,12 @@ fn the_panel_s_content_is_as_far_from_the_frame_on_every_side() {
     let (bg, line) = (roles.popup_bg, roles.border_over(roles.popup_bg));
     for scale in [1, 2] {
         let (l, b) = panel_box(PINNED);
-        let (px, w, h, frame, cursor) = painted(&mut fonts, &l, &b, scale);
+        let (px, w, h, frame) = painted(&mut fonts, &l, &b, scale);
         // Neither the surface nor a line (the frame's stroke, the separators run up to it).
         let content = |x: u32, y: u32| ![bg, line].contains(&px[(y * w + x) as usize]);
         let (st, r) = (frame.stroke, frame.radius);
-        // The cursor's bar is the font's full line, taller than the field's chip: not a margin.
-        let xs: Vec<u32> = (st + r..w - st - r).filter(|x| !(cursor.0..cursor.1).contains(x)).collect();
+        // The search field's cursor included: it stays inside the field's chip.
+        let xs: Vec<u32> = (st + r..w - st - r).collect();
         let ys = st + r..h - st - r;
         let left = ys.clone().filter_map(|y| (st..w).find(|&x| content(x, y))).min().unwrap() - st;
         let right = (w - st - 1) - ys.filter_map(|y| (0..w - st).rev().find(|&x| content(x, y))).max().unwrap();

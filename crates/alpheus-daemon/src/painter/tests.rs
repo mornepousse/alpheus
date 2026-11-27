@@ -1458,6 +1458,30 @@ mod shapes {
         assert_eq!(s.at(x0, y0), r.popup_bg, "its corner is rounded off");
     }
 
+    /// A glyph on a chip stays inside it: the search field's cursor (`▏`, the full line's height)
+    /// no longer pokes out above or below the field at scale 1, nor at 2.
+    #[test]
+    fn a_full_height_glyph_on_a_chip_stays_inside_it() {
+        let (mut p, r) = (fonts(), distinct());
+        // The cursor, and a box-drawing line and a full block, which reach the bottom too.
+        for glyph in ["▏", "│", "█"] {
+            let mut b = blank(20, 3);
+            b.shapes.push(shape(1, 2, 10, 1, ShapeKind::Chip(Tint::Pill)));
+            b.rows[1].write(4, 20, glyph, Style::ACCENT);
+            for scale in [1, 2] {
+                let s = Painted::new(&mut p, &b, scale);
+                let ((x0, x1), (y0, y1)) = s.cells(&p, 1, 4, 1, 1);
+                let inset = CHIP_INSET * scale as u32;
+                let inked = |ys: std::ops::Range<u32>| {
+                    ys.flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) != r.popup_bg).count()
+                };
+                assert!(inked(y0 + inset..y1 - inset) > 0, "scale {scale}, {glyph}: drawn");
+                assert_eq!(inked(y0..y0 + inset), 0, "scale {scale}, {glyph}: nothing above the chip");
+                assert_eq!(inked(y1 - inset..y1), 0, "scale {scale}, {glyph}: nothing below the chip");
+            }
+        }
+    }
+
     /// A pixel rectangle: its x span, its y span (ends exclusive).
     type Rect = ((u32, u32), (u32, u32));
 
