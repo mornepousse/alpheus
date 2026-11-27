@@ -41,6 +41,7 @@ use blocks::OnBlock;
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// Rasterized glyphs kept at most (≈ 1 MB at 14 px).
 pub const MAX_CACHE: usize = 2048;
@@ -210,7 +211,7 @@ pub struct Fonts {
     /// a scale change (`set_scale`), since a shape's `cache_key` and
     /// physical offsets are only valid for the metrics they were measured
     /// at.
-    shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
+    shapes: HashMap<(char, bool), Rc<[ShapedGlyph]>>,
     /// The bar shapes' corner masks, made on first use per radius and scale.
     masks: MaskCache,
 }
@@ -848,7 +849,7 @@ impl Fonts {
     fn measure_ink(&mut self) -> Ink {
         let row = (self.height * self.scale as u32) as i32;
         let (mut left, mut top, mut bottom) = (i32::MAX, i32::MAX, i32::MIN);
-        for g in self.shaped('E', false) {
+        for g in self.shaped('E', false).iter() {
             self.cache.with_pixels(&mut self.fs, g.cache_key, Color::rgb(255, 255, 255), |dx, dy, c| {
                 if c.a() > 0 {
                     left = left.min(g.dx + dx);
@@ -1013,7 +1014,7 @@ impl Fonts {
         let base = Color::rgb(r, g, b);
         let shaped = self.shaped(ch, false);
         let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for g in &shaped {
+        for g in shaped.iter() {
             self.cache.with_pixels(&mut self.fs, g.cache_key, base, |dx, dy, c| {
                 if c.a() > 0 {
                     (left, right) = (left.min(g.dx + dx), right.max(g.dx + dx));
@@ -1028,7 +1029,7 @@ impl Fonts {
         let span = |a: u32, b: u32| i64::from(a) + i64::from(b);
         let shift = |rect: i64, lo: i32, hi: i32| i32::try_from((rect - i64::from(lo) - i64::from(hi) - 1).div_euclid(2)).unwrap_or(0);
         let (ox, oy) = (shift(span(x.0, x.1), left, right), shift(span(y.0, y.1), top, bottom));
-        for g in &shaped {
+        for g in shaped.iter() {
             let tint = g.color_opt.unwrap_or(base);
             self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
                 blend(px, width, height, ox.saturating_add(g.dx + dx), oy.saturating_add(g.y + dy), c);
@@ -1095,15 +1096,16 @@ impl Fonts {
     /// column and redraw it appears in. Bounded like `cache` (`MAX_CACHE`):
     /// past the ceiling we start over from an empty memo, same as the
     /// rasterized glyph cache does.
-    fn shaped(&mut self, ch: char, bold: bool) -> Vec<ShapedGlyph> {
+    /// Shared, not copied: a hit costs a reference count, never an allocation per glyph drawn.
+    fn shaped(&mut self, ch: char, bold: bool) -> Rc<[ShapedGlyph]> {
         if let Some(s) = self.shapes.get(&(ch, bold)) {
-            return s.clone();
+            return Rc::clone(s);
         }
         if self.shapes.len() >= MAX_CACHE {
             self.shapes.clear();
         }
-        let s = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold);
-        self.shapes.insert((ch, bold), s.clone());
+        let s: Rc<[ShapedGlyph]> = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold).into();
+        self.shapes.insert((ch, bold), Rc::clone(&s));
         s
     }
 
@@ -1122,7 +1124,7 @@ impl Fonts {
         // lands on the same subpixel bin, hence the same `cache_key`, as
         // reshaping at this exact `x0` would (see `ShapedGlyph`'s doc).
         let x0 = x0.round() as i32;
-        for g in self.shaped(ch, bold) {
+        for g in self.shaped(ch, bold).iter() {
             let tint = g.color_opt.unwrap_or(base);
             self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
                 blend(px, width, height, x0 + g.dx + dx, g.y + dy, c);
