@@ -7,6 +7,9 @@
 //!
 //! See: docs/configuration.md (`[wallpaper]`), docs/superpowers/specs/2026-11-27-wallpaper-design.md.
 
+pub mod app;
+pub mod setter;
+
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 

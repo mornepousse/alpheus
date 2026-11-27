@@ -512,6 +512,8 @@ pub struct App {
     pub(crate) pick: Option<crate::captures::pick_app::OpenPick>,
     /// The capture flow: idle at rest, one capture at a time (nothing else of it resident).
     pub(crate) capture: crate::captures::app::CaptureApp,
+    /// The wallpaper's setter: the one alpheus started, while it runs; empty at rest.
+    pub(crate) wallpaper: crate::wallpaper::setter::Setter,
     /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
     /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
@@ -716,6 +718,7 @@ impl App {
             select: None,
             pick: None,
             capture: crate::captures::app::CaptureApp::new(),
+            wallpaper: crate::wallpaper::setter::Setter::new(),
             mail: None,
             xdg,
             popup: None,

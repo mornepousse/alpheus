@@ -1,5 +1,6 @@
-//! Small files the daemon keeps: the mode for the TUI (`$XDG_RUNTIME_DIR/alpheus/mode`) and
-//! do-not-disturb (`$XDG_STATE_HOME/alpheus/dnd`). One hardened writer: an owner-only directory
+//! Small files the daemon keeps: the mode for the TUI (`$XDG_RUNTIME_DIR/alpheus/mode`),
+//! do-not-disturb (`$XDG_STATE_HOME/alpheus/dnd`), the focus timer and the wallpaper's last name
+//! (`$XDG_STATE_HOME/alpheus/wallpaper`). One hardened writer: an owner-only directory
 //! (never a symlink, never open to others), a fresh temporary file never followed, renamed over the
 //! old one, so a reader sees the old file or the new one, never half of one.
 //!
@@ -30,6 +31,12 @@ pub const DND_FILE: &str = "dnd";
 
 /// The focus timer's file: one line, removed while the timer is idle.
 pub const TIMER_FILE: &str = "timer";
+
+/// The wallpaper picker's last choice: one name of `[wallpaper] dir`, re-applied at the daemon's start.
+pub const WALLPAPER_FILE: &str = "wallpaper";
+
+/// Bytes of the wallpaper file read: a name, far under it.
+const WALLPAPER_READ_CAP: u64 = 4096;
 
 fn euid() -> u32 {
     // SAFETY: geteuid(2) cannot fail.
@@ -210,6 +217,24 @@ pub fn save_timer(state_dir: &Path, text: Option<&str>) -> io::Result<()> {
         Some(t) => write_private(state_dir, TIMER_FILE, t.as_bytes()),
         None => remove_private(state_dir, TIMER_FILE),
     }
+}
+
+/// The wallpaper's remembered name: the file's text without its final newline, when it is a plain
+/// name (`wallpaper::is_plain_name`: no `/`, never `.` or `..`) of valid UTF-8 within
+/// `WALLPAPER_READ_CAP`, read through `read_private` (a regular file of ours, never a link). Any
+/// other case is None: nothing is re-applied. Only the newline is taken off, so a name that starts
+/// or ends with a space comes back as it was written.
+pub fn read_wallpaper(state_dir: &Path) -> Option<String> {
+    let PrivateRead::Bytes(bytes) = read_private(state_dir, WALLPAPER_FILE, WALLPAPER_READ_CAP) else { return None };
+    let text = String::from_utf8(bytes).ok()?;
+    let name = text.strip_suffix('\n').unwrap_or(&text);
+    crate::wallpaper::is_plain_name(name).then(|| name.to_string())
+}
+
+/// Saves the wallpaper's name, one line; a name that is not plain is refused (never written).
+pub fn save_wallpaper(state_dir: &Path, name: &str) -> io::Result<()> {
+    plain(name)?;
+    write_private(state_dir, WALLPAPER_FILE, format!("{name}\n").as_bytes())
 }
 
 #[cfg(test)]

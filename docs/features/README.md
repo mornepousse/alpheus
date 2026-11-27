@@ -32,6 +32,7 @@ volume, the network, Bluetooth, the battery and the clock — are described on t
 - [The on-screen display](osd.md): a pill that shows a volume, microphone or brightness level for a moment.
 - [The Tools menu](tools-menu.md): one launcher-style box for "do something to my session".
 - [Captures](captures.md): screenshots of the screen or an area, copied or saved, a colour picker, an area annotated or read as text (OCR) by an external tool, and screen recording, from a key or the Tools menu.
+- [The wallpaper picker](wallpaper.md): a wallpaper picked by name from one folder, your setter restarted with it by its handle, the last choice applied again at start.
 
 ## Behind the scenes
 
